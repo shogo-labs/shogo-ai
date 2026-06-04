@@ -55,6 +55,12 @@ import {
   getHeadSha,
   repoStoreConfigFromEnv,
   gatherCommitMeta,
+  ensureLfsRepoSetup,
+  autoTrackLargeFiles,
+  lfsPushAll,
+  lfsPull,
+  lfsRemoteConfigFromEnv,
+  migrateOffloadedAssetsToLfs,
   type CloudSyncMode,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
@@ -311,13 +317,47 @@ let gitSyncInstance: GitWorkspaceSync | null = null
 let workspaceMemberSyncs: Map<string, import('@shogo/shared-runtime').S3Sync> = new Map()
 
 /**
+ * Whether real Git LFS is active for this pod. Scoped to `git_only` (the
+ * pod-owned default): the LFS object-offload step is wired into that mode's
+ * `afterCommit` durability path, and LFS attributes are only written for
+ * these repos, so other modes (dual_shadow/s3) keep the legacy offload and
+ * never accidentally LFS-ify files. LFS is always on for git_only — there is
+ * no separate enable flag.
+ */
+function isLfsActive(): boolean {
+  return resolveCloudSyncMode() === 'git_only'
+}
+
+/**
+ * Persist `.git` to object storage, first offloading LFS object bytes to OCI
+ * when LFS is active. The local `.git/lfs/objects` cache is excluded from the
+ * tarball ONLY when the push succeeded — otherwise the bytes would be durable
+ * nowhere, so we keep them in the tarball as a fallback. Shared by the
+ * afterCommit, publish-tag, and shutdown durability paths.
+ */
+async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; reason?: string }> {
+  const repoCfg = repoStoreConfigFromEnv()
+  if (!repoCfg) return { ok: true, changed: false, reason: 'no-store-config' }
+  let excludeLfsObjects = false
+  if (isLfsActive()) {
+    const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+    if (lfsCfg) excludeLfsObjects = await lfsPushAll(lfsCfg)
+  }
+  return persistRepoToStore(WORKSPACE_DIR, repoCfg, { excludeLfsObjects })
+}
+
+/**
  * Offload large/binary assets to S3 and refresh `.git/info/exclude` so the
  * subsequent git push stays source-only. Fire-and-forget — paired with the
  * git push at the turn-complete boundary in `git_only` / `dual_shadow`.
  * No-op unless object storage is configured and a git sync is active.
+ *
+ * In Git LFS mode this legacy size-based offload is replaced by the LFS
+ * clean filter (pointers) + `git lfs push` (bytes), so it no-ops.
  */
 function triggerLargeFileSync(): void {
   if (!gitSyncInstance) return
+  if (isLfsActive()) return
   const cfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
   if (!cfg) return
   void syncLargeFiles(cfg).catch((err: any) =>
@@ -334,9 +374,9 @@ function triggerLargeFileSync(): void {
  * is already durable and the row can be reconciled on the next API hydrate).
  */
 async function persistAndRecordCheckpoint(sha: string): Promise<void> {
-  const repoCfg = repoStoreConfigFromEnv()
-  if (repoCfg) {
-    const res = await persistRepoToStore(WORKSPACE_DIR, repoCfg)
+  if (repoStoreConfigFromEnv()) {
+    // Offload LFS object bytes to OCI (when active) then persist `.git`.
+    const res = await persistDurableRepo()
     if (!res.ok) throw new Error(`durable repo persist failed: ${res.reason}`)
   }
   // Record the checkpoint row (best-effort; the commit is already durable in
@@ -4301,16 +4341,18 @@ app.post('/agent/git-flush', async (c) => {
     /* no body */
   }
   try {
+    // Legacy size-based offload (skipped under LFS — flush() handles LFS via
+    // beforeStage track + afterCommit push).
     const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
-    if (lfCfg) await syncLargeFiles(lfCfg)
+    if (lfCfg && !isLfsActive()) await syncLargeFiles(lfCfg)
     await gitSyncInstance.flush()
 
     let taggedSha: string | null = null
     if (tag) {
       taggedSha = await createTagLocal(WORKSPACE_DIR, tag, { message: tagMessage, force: true })
-      // Re-persist so the durable repo carries the new tag.
-      const repoCfg = repoStoreConfigFromEnv()
-      if (repoCfg) await persistRepoToStore(WORKSPACE_DIR, repoCfg)
+      // Re-persist so the durable repo carries the new tag (LFS objects are
+      // already in OCI from the flush; re-push is a cheap no-op via dedup).
+      await persistDurableRepo()
     }
 
     const sha = taggedSha ?? (await getHeadSha(WORKSPACE_DIR))
@@ -4702,6 +4744,23 @@ async function initializeEssentials(): Promise<void> {
           console.error('[agent-runtime] restoreLargeFiles failed:', error.message)
         }
       }
+      // Git LFS (git_only): configure the repo's LFS filter +
+      // .gitattributes, run the one-time migration off the legacy assets/
+      // offload (no-op once done), then materialize object bytes for the
+      // current checkout (smudge is skipped on checkout, so we fetch
+      // explicitly). All best-effort — a failure leaves pointer files and is
+      // recovered on the next pull.
+      if (isLfsActive()) {
+        try {
+          await ensureLfsRepoSetup(WORKSPACE_DIR)
+          await migrateOffloadedAssetsToLfs(WORKSPACE_DIR)
+          const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+          if (lfsCfg) await lfsPull(lfsCfg)
+          logTiming('Git LFS setup + pull')
+        } catch (error: any) {
+          console.error('[agent-runtime] Git LFS setup failed:', error?.message ?? error)
+        }
+      }
     } else {
       console.warn('[agent-runtime] git mode requested but SHOGO_API_URL/RUNTIME_AUTH_SECRET/PROJECT_ID incomplete; skipping repo bootstrap')
     }
@@ -4712,6 +4771,11 @@ async function initializeEssentials(): Promise<void> {
         // origin. dual_shadow keeps the push model.
         localOnly: cloudSyncMode === 'git_only',
         afterCommit: cloudSyncMode === 'git_only' ? persistAndRecordCheckpoint : undefined,
+        // Git LFS: before each `git add -A`, track newly-introduced large
+        // files so the clean filter writes pointers instead of raw bytes.
+        beforeStage: isLfsActive()
+          ? async () => { await autoTrackLargeFiles(WORKSPACE_DIR) }
+          : undefined,
         onDegrade: (reason) => {
           console.warn(
             `[agent-runtime] cloud-sync degraded (mode=${cloudSyncMode}): ${reason}`,
@@ -5001,9 +5065,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
     const mode = resolveCloudSyncMode()
     if (gitSyncInstance) {
       // Final large-file offload before the last push so the durable repo
-      // stays source-only and the offloaded asset set is current.
+      // stays source-only and the offloaded asset set is current. Skipped
+      // under LFS — flushAndShutdown's afterCommit runs the LFS object push.
       const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
-      if (lfCfg) {
+      if (lfCfg && !isLfsActive()) {
         try {
           await syncLargeFiles(lfCfg)
         } catch (err: any) {

@@ -45,6 +45,7 @@ import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { gitHttpRoutes } from './routes/git-http'
+import { gitLfsRoutes } from './routes/git-lfs'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
@@ -4251,6 +4252,12 @@ app.route('/api', checkpointRouter)
 // See routes/git-http.ts for the wire-protocol bridge to `git http-backend`.
 const gitHttpRouter = gitHttpRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', gitHttpRouter)
+
+// Mount the Git LFS batch API (presigned OCI URLs for large-file objects).
+// See routes/git-lfs.ts. Object bytes flow pod<->OCI directly; the API only
+// mints the batch response, so no git-lfs binary is needed here.
+const gitLfsRouter = gitLfsRoutes({ workspacesDir: workspacesDirResolved })
+app.route('/api', gitLfsRouter)
 
 // Mount GitHub routes
 const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })

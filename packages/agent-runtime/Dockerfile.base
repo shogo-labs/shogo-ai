@@ -14,7 +14,7 @@ WORKDIR /app
 
 # System packages + Node 24 + Bun 1.3
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl bash git tar gzip zstd ca-certificates gnupg unzip \
+    curl bash git git-lfs tar gzip zstd ca-certificates gnupg unzip \
     chromium nss-plugin-pem fonts-freefont-ttf \
     ffmpeg imagemagick ripgrep \
     build-essential && \
@@ -38,6 +38,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     STRIPE_ARCH="$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/x86_64/')" && \
     curl -fsSL "https://github.com/stripe/stripe-cli/releases/download/v${STRIPE_VER}/stripe_${STRIPE_VER}_linux_${STRIPE_ARCH}.tar.gz" \
       | tar -xz -C /usr/local/bin stripe && \
+    # Git LFS: configure the clean/smudge filters system-wide but SKIP smudge
+    # so checkout/`reset --hard` leaves pointer files (fast, no network). The
+    # runtime materializes object bytes explicitly via `git lfs pull`. LFS only
+    # activates for repos that opt in via .gitattributes (git_only mode).
+    git lfs install --system --skip-smudge && \
     # Cleanup
     apt-get purge -y gnupg unzip && \
     apt-get autoremove -y && \

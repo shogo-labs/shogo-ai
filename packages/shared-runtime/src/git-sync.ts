@@ -125,6 +125,14 @@ export interface GitWorkspaceSyncConfig {
    * retry/degrade path as a failed push.
    */
   afterCommit?: (sha: string) => Promise<void> | void
+  /**
+   * Optional hook run at the start of every push cycle, BEFORE `git add -A`.
+   * In Git LFS mode the agent-runtime wires this to `autoTrackLargeFiles` so
+   * newly-introduced large files are `git lfs track`-ed before staging and
+   * the clean filter writes pointers instead of raw bytes. Best-effort: a
+   * throw is logged and ignored so it can never block the commit/push.
+   */
+  beforeStage?: () => Promise<void> | void
 }
 
 export interface SpawnGitFn {
@@ -194,7 +202,7 @@ function buildGitUrl(cloudApiUrl: string, projectId: string): string {
 
 export class GitWorkspaceSync {
   private readonly cfg: Required<Omit<GitWorkspaceSyncConfig,
-    'onDegrade' | 'onRecovered' | 'logger' | 'spawnGit' | 'authorEmail' | 'authorName' | 'afterCommit'>> & {
+    'onDegrade' | 'onRecovered' | 'logger' | 'spawnGit' | 'authorEmail' | 'authorName' | 'afterCommit' | 'beforeStage'>> & {
     onDegrade: (reason: string) => void
     onRecovered: () => void
     logger: Logger
@@ -202,6 +210,7 @@ export class GitWorkspaceSync {
     authorEmail: string
     authorName: string
     afterCommit: ((sha: string) => Promise<void> | void) | null
+    beforeStage: (() => Promise<void> | void) | null
   }
 
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -232,6 +241,7 @@ export class GitWorkspaceSync {
       authorEmail: config.authorEmail ?? 'agent-runtime@shogo.ai',
       authorName: config.authorName ?? 'Shogo Agent',
       afterCommit: config.afterCommit ?? null,
+      beforeStage: config.beforeStage ?? null,
     }
   }
 
@@ -351,6 +361,17 @@ export class GitWorkspaceSync {
     }
 
     try {
+      // LFS hook: track newly-introduced large files before staging so the
+      // clean filter writes pointers, not raw bytes. Best-effort — never let
+      // it block the commit/push.
+      if (this.cfg.beforeStage) {
+        try {
+          await this.cfg.beforeStage()
+        } catch (hookErr: any) {
+          logger.warn(`[GitWorkspaceSync] beforeStage hook threw: ${hookErr?.message ?? hookErr}`)
+        }
+      }
+
       // Stage everything (respects `.gitignore`).
       await this.runGit(spawnGit, ['add', '-A'], workspaceDir, commitEnv)
 
@@ -503,7 +524,7 @@ export function resolveCloudSyncMode(env: NodeJS.ProcessEnv = process.env): Clou
  */
 export function createGitSyncFromEnv(
   workspaceDir: string,
-  opts: Pick<GitWorkspaceSyncConfig, 'onDegrade' | 'onRecovered' | 'debounceMs' | 'degradeAfterFailures' | 'logger' | 'localOnly' | 'afterCommit'> = {},
+  opts: Pick<GitWorkspaceSyncConfig, 'onDegrade' | 'onRecovered' | 'debounceMs' | 'degradeAfterFailures' | 'logger' | 'localOnly' | 'afterCommit' | 'beforeStage'> = {},
 ): GitWorkspaceSync | null {
   const cloudApiUrl = process.env.SHOGO_API_URL
   const runtimeAuthSecret = process.env.RUNTIME_AUTH_SECRET
