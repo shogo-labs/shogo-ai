@@ -646,10 +646,12 @@ async function executeInBackground(request: TerminalExecRequest): Promise<Termin
     : request.command
   const terminalLabel = `Shogo (${display})`
 
-  // Spawn a new session labeled as agent terminal
+  // Spawn an INTERACTIVE shell (no -c flag). This ensures the shell
+  // integration hooks fire, the user sees the prompt + command, and
+  // long-running processes stream live output into the terminal.
   const session = await host.spawn({
     shell: process.env.SHELL || '/bin/zsh',
-    args: ['-l', '-c', request.command],
+    args: [],
     cwd: request.cwd || process.env.HOME || '/',
     cols: 200,
     rows: 50,
@@ -661,11 +663,19 @@ async function executeInBackground(request: TerminalExecRequest): Promise<Termin
     },
   })
 
+  // Notify the renderer so it can attach a tab (infinity icon)
   notifyAgentTerminalSpawned({
     sessionId: session.id,
     terminalLabel,
     cwd: request.cwd ?? session.cwd ?? null,
   })
+
+  // Write the command to the terminal after the shell has initialized
+  // (displayed its first prompt). 600ms is enough for zsh/bash to
+  // source rcfiles and render the prompt.
+  setTimeout(() => {
+    host.write(session.id, request.command + '\n').catch(() => {})
+  }, 600)
 
   return {
     exitCode: null,
