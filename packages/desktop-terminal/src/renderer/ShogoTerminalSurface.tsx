@@ -5,7 +5,6 @@ import type { Terminal as XTerminal } from '@xterm/xterm'
 import type { FitAddon as XFitAddon } from '@xterm/addon-fit'
 import { OscDecoder } from '@shogo/pty-core'
 import { Osc633Tracker, type Command } from './osc633-tracker'
-import { CommandDecorations } from './command-decorations'
 import { StickyScroll } from './sticky-scroll'
 import { WriteBatcher } from './write-batcher'
 import { GpuRenderer } from './gpu-renderer'
@@ -441,15 +440,6 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         const decoder = new OscDecoder()
         const batcher = new WriteBatcher({ sink: term.write.bind(term) })
         tracker.setMarkerFactory({ registerMarker: () => term.registerMarker(0) ?? undefined })
-        const decorations = new CommandDecorations({
-          host: term,
-          tracker,
-          onClick: ({ command, mouseEvent }) => {
-            mouseEvent.preventDefault()
-            mouseEvent.stopPropagation()
-            setCmdMenu({ x: mouseEvent.clientX, y: mouseEvent.clientY, command })
-          },
-        })
         const quickFix = new QuickFixManager({
           host: term,
           tracker,
@@ -602,7 +592,6 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           offTracker()
           ro.disconnect()
           batcher.dispose()
-          decorations.dispose()
           quickFix.dispose()
           gpu.dispose()
           search.dispose?.()

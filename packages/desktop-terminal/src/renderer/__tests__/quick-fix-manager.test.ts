@@ -4,7 +4,10 @@
 import { describe, it, expect } from 'bun:test'
 import { Osc633Tracker, type CommandMarker, type MarkerFactory } from '../osc633-tracker'
 import { OscDecoder } from '@shogo/pty-core'
-import type { DecorationHandle, DecorationHost, DecorationOptions } from '../command-decorations'
+// Inline xterm.js decoration types
+interface DecorationHandle { onRender(cb: (el: HTMLElement) => void): void; dispose(): void; }
+interface DecorationHost { registerDecoration(opts: any): DecorationHandle | undefined }
+type DecorationOptions = any
 import {
   QuickFixManager,
   type BufferReader,
