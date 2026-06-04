@@ -37,9 +37,20 @@ const KNATIVE_VERSION = "v1"
 
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
-/** Stable Knative Service name for a workspace runtime. */
-export function workspaceServiceName(workspaceId: string): string {
-  return `workspace-${workspaceId}`
+/**
+ * Stable Knative Service name for a workspace runtime.
+ *
+ * Project-anchored runtimes (the universal "open a project → it runs on a
+ * merged workspace runtime" path) are keyed by the ANCHOR project id, so two
+ * different anchors in the same workspace (different attachment sets) get
+ * distinct Services — mirroring the host `ws:proj:<anchor>` runtimes-map key.
+ * Workspace-session runtimes (no single anchor) stay keyed by workspaceId.
+ *
+ * Both forms are DNS-1035 safe: ids are lowercase UUIDs, and
+ * `workspace-proj-<uuid>` is 51 chars (< 63 limit).
+ */
+export function workspaceServiceName(workspaceId: string, anchorProjectId?: string): string {
+  return anchorProjectId ? `workspace-proj-${anchorProjectId}` : `workspace-${workspaceId}`
 }
 
 // =============================================================================
@@ -93,6 +104,12 @@ export interface WorkspacePodStatus {
 export interface BuildKnativeWorkspaceServiceOpts {
   workspaceId: string
   attachedProjectIds: string[]
+  /**
+   * Anchor project id for project-anchored runtimes. Determines the Service
+   * name (`workspace-proj-<anchor>`) and a label; the env map is expected to
+   * already carry `WORKSPACE_ANCHOR_PROJECT_ID` (set by `buildWorkspaceEnv`).
+   */
+  anchorProjectId?: string
   /** Env map from `buildWorkspaceEnv` (string→string). */
   env: Record<string, string>
   namespace: string
@@ -124,6 +141,7 @@ export interface BuildKnativeWorkspaceServiceOpts {
 export function buildKnativeWorkspaceService(opts: BuildKnativeWorkspaceServiceOpts): any {
   const {
     workspaceId,
+    anchorProjectId,
     env: envMap,
     namespace,
     image,
@@ -215,12 +233,13 @@ export function buildKnativeWorkspaceService(opts: BuildKnativeWorkspaceServiceO
     apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
     kind: "Service",
     metadata: {
-      name: workspaceServiceName(workspaceId),
+      name: workspaceServiceName(workspaceId, anchorProjectId),
       namespace,
       labels: {
         "app.kubernetes.io/part-of": "shogo",
         "shogo.io/workspace": workspaceId,
         "shogo.io/component": componentLabel,
+        ...(anchorProjectId ? { "shogo.io/anchor-project": anchorProjectId } : {}),
       },
     },
     spec: {
@@ -268,15 +287,15 @@ export class KnativeWorkspaceManager {
     this.cpuLimit = config.cpuLimit || "1000m"
   }
 
-  getWorkspacePodUrl(workspaceId: string): string {
+  getWorkspacePodUrl(workspaceId: string, anchorProjectId?: string): string {
     if (!isKubernetes()) {
       throw new Error("KnativeWorkspaceManager requires Kubernetes environment")
     }
-    return `http://${workspaceServiceName(workspaceId)}.${this.namespace}.svc.cluster.local`
+    return `http://${workspaceServiceName(workspaceId, anchorProjectId)}.${this.namespace}.svc.cluster.local`
   }
 
-  async getStatus(workspaceId: string): Promise<WorkspacePodStatus> {
-    const serviceName = workspaceServiceName(workspaceId)
+  async getStatus(workspaceId: string, anchorProjectId?: string): Promise<WorkspacePodStatus> {
+    const serviceName = workspaceServiceName(workspaceId, anchorProjectId)
     try {
       const api = getCustomApi()
       const response = await api.getNamespacedCustomObject({
@@ -293,7 +312,7 @@ export class KnativeWorkspaceManager {
       return {
         exists: true,
         ready: readyCondition?.status === "True",
-        url: status.url || this.getWorkspacePodUrl(workspaceId),
+        url: status.url || this.getWorkspacePodUrl(workspaceId, anchorProjectId),
         replicas: status.actualReplicas || 0,
         message: readyCondition?.message,
         createdAt: service.metadata?.creationTimestamp,
@@ -336,19 +355,27 @@ export class KnativeWorkspaceManager {
     }
   }
 
-  async createWorkspace(workspaceId: string, attachedProjectIds: string[]): Promise<string> {
-    const status = await this.getStatus(workspaceId)
+  async createWorkspace(
+    workspaceId: string,
+    attachedProjectIds: string[],
+    opts: { anchorProjectId?: string; readonlyProjectIds?: string[] } = {},
+  ): Promise<string> {
+    const { anchorProjectId } = opts
+    const status = await this.getStatus(workspaceId, anchorProjectId)
     if (status.exists) {
-      return this.getWorkspacePodUrl(workspaceId)
+      return this.getWorkspacePodUrl(workspaceId, anchorProjectId)
     }
 
     const env = await buildWorkspaceEnv(workspaceId, attachedProjectIds, {
       logPrefix: "KnativeWorkspaceManager",
+      anchorProjectId,
+      readonlyProjectIds: opts.readonlyProjectIds,
     })
     const { resourceSpec, diskSizeLimit, minScale } = await this.resolveResources(workspaceId)
 
     const service = buildKnativeWorkspaceService({
       workspaceId,
+      anchorProjectId,
       attachedProjectIds,
       env,
       namespace: this.namespace,
@@ -373,7 +400,7 @@ export class KnativeWorkspaceManager {
         plural: "services",
         body: service,
       })
-      console.log(`[KnativeWorkspaceManager] Created Knative Service: ${workspaceServiceName(workspaceId)}`)
+      console.log(`[KnativeWorkspaceManager] Created Knative Service: ${workspaceServiceName(workspaceId, anchorProjectId)}`)
     } catch (error: any) {
       const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code
       if (statusCode === 409 || error?.body?.reason === "AlreadyExists" || error?.message?.includes("already exists")) {
@@ -383,14 +410,14 @@ export class KnativeWorkspaceManager {
       }
     }
 
-    return this.getWorkspacePodUrl(workspaceId)
+    return this.getWorkspacePodUrl(workspaceId, anchorProjectId)
   }
 
-  async waitForReady(workspaceId: string, timeoutMs = 180000): Promise<void> {
+  async waitForReady(workspaceId: string, timeoutMs = 180000, anchorProjectId?: string): Promise<void> {
     const startTime = Date.now()
     while (Date.now() - startTime < timeoutMs) {
-      const status = await this.getStatus(workspaceId)
-      if (status.ready && (await this.healthCheck(workspaceId))) {
+      const status = await this.getStatus(workspaceId, anchorProjectId)
+      if (status.ready && (await this.healthCheck(workspaceId, anchorProjectId))) {
         return
       }
       await new Promise((resolve) => setTimeout(resolve, 1000))
@@ -398,9 +425,9 @@ export class KnativeWorkspaceManager {
     throw new Error(`Workspace ${workspaceId} did not become ready within ${timeoutMs}ms`)
   }
 
-  async healthCheck(workspaceId: string): Promise<boolean> {
+  async healthCheck(workspaceId: string, anchorProjectId?: string): Promise<boolean> {
     try {
-      const url = this.getWorkspacePodUrl(workspaceId)
+      const url = this.getWorkspacePodUrl(workspaceId, anchorProjectId)
       const response = await fetch(`${url}/ready`, {
         method: "GET",
         signal: AbortSignal.timeout(5000),
@@ -411,7 +438,7 @@ export class KnativeWorkspaceManager {
     }
   }
 
-  async deleteWorkspace(workspaceId: string): Promise<void> {
+  async deleteWorkspace(workspaceId: string, anchorProjectId?: string): Promise<void> {
     const api = getCustomApi()
     try {
       await api.deleteNamespacedCustomObject({
@@ -419,9 +446,9 @@ export class KnativeWorkspaceManager {
         version: KNATIVE_VERSION,
         namespace: this.namespace,
         plural: "services",
-        name: workspaceServiceName(workspaceId),
+        name: workspaceServiceName(workspaceId, anchorProjectId),
       })
-      console.log(`[KnativeWorkspaceManager] Deleted Knative Service: ${workspaceServiceName(workspaceId)}`)
+      console.log(`[KnativeWorkspaceManager] Deleted Knative Service: ${workspaceServiceName(workspaceId, anchorProjectId)}`)
     } catch (error: any) {
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
     }
@@ -450,16 +477,18 @@ export function getKnativeWorkspaceManager(): KnativeWorkspaceManager {
 export async function getWorkspacePodUrl(
   workspaceId: string,
   attachedProjectIds: string[],
+  opts: { anchorProjectId?: string; readonlyProjectIds?: string[] } = {},
 ): Promise<string> {
+  const { anchorProjectId } = opts
   const manager = getKnativeWorkspaceManager()
-  const status = await manager.getStatus(workspaceId)
+  const status = await manager.getStatus(workspaceId, anchorProjectId)
   if (status.exists) {
     if (!status.ready) {
-      await manager.waitForReady(workspaceId, 120000)
+      await manager.waitForReady(workspaceId, 120000, anchorProjectId)
     }
-    return manager.getWorkspacePodUrl(workspaceId)
+    return manager.getWorkspacePodUrl(workspaceId, anchorProjectId)
   }
-  await manager.createWorkspace(workspaceId, attachedProjectIds)
-  await manager.waitForReady(workspaceId, 180000)
-  return manager.getWorkspacePodUrl(workspaceId)
+  await manager.createWorkspace(workspaceId, attachedProjectIds, opts)
+  await manager.waitForReady(workspaceId, 180000, anchorProjectId)
+  return manager.getWorkspacePodUrl(workspaceId, anchorProjectId)
 }

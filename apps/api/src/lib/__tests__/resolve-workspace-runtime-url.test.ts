@@ -38,6 +38,48 @@ describe('resolveWorkspaceRuntimeUrl', () => {
     expect(res).toEqual({ mode: 'k8s', url: 'http://ws.example/ws-1/p1+p2' })
   })
 
+  it('k8s + anchor resolves and forwards anchorProjectId, leasing on the anchor', async () => {
+    const leaseCalls: string[] = []
+    let seenAnchor: string | undefined
+    let seenReadonly: string[] | undefined
+    const res = await resolveWorkspaceRuntimeUrl('ws-1', {
+      attachedProjectIds: ['anchor', 'p2'],
+      anchorProjectId: 'anchor',
+      readonlyProjectIds: ['p2'],
+      _isEnabled: enabled,
+      _isKubernetes: () => true,
+      _isVMIsolation: () => false,
+      _spawnLease: (id, fn) => {
+        leaseCalls.push(id)
+        return fn()
+      },
+      _k8sResolver: async (_ws, _ids, o) => {
+        seenAnchor = o?.anchorProjectId
+        seenReadonly = o?.readonlyProjectIds
+        return 'http://workspace-proj-anchor.svc'
+      },
+    })
+    expect(res).toEqual({ mode: 'k8s', url: 'http://workspace-proj-anchor.svc' })
+    // Anchored runtimes lease on the anchor id, not the workspace id.
+    expect(leaseCalls).toEqual(['proj:anchor'])
+    expect(seenAnchor).toBe('anchor')
+    expect(seenReadonly).toEqual(['p2'])
+  })
+
+  it('VM + anchor (no k8s) still throws not-yet-supported', async () => {
+    await expect(
+      resolveWorkspaceRuntimeUrl('ws-1', {
+        attachedProjectIds: ['anchor'],
+        anchorProjectId: 'anchor',
+        _isEnabled: enabled,
+        _isKubernetes: () => false,
+        _isVMIsolation: () => true,
+        _spawnLease: passthroughLease,
+        _vmResolver: async () => 'http://vm',
+      }),
+    ).rejects.toThrow(/not yet[\s\S]*VM-isolation/)
+  })
+
   it('routes VM when SHOGO_VM_ISOLATION and K8s is off', async () => {
     const res = await resolveWorkspaceRuntimeUrl('ws-1', {
       attachedProjectIds: ['p1'],

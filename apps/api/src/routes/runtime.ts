@@ -276,9 +276,16 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         // Canvas iframe loads directly from the agent runtime so
         // `fetch('/api/...')` resolves same-origin (not via this
         // API server's proxy).
-        const canvasBaseUrl = res.runtime.agentPort
+        const base = res.runtime.agentPort
           ? `http://localhost:${res.runtime.agentPort}`
           : res.runtime.url
+        // Workspace runtimes (`ws:proj:<anchorId>`) host every attached
+        // project under a `/p/<projectId>/` base path on the shared agent
+        // port. The iframe + readiness poll must target that subpath, not
+        // the runtime root (which 404s). Single-project runtimes serve the
+        // app at the root, so they keep the bare base.
+        const isWorkspaceRuntime = !!res.runtime.id?.startsWith('ws:')
+        const canvasBaseUrl = isWorkspaceRuntime ? `${base}/p/${projectId}` : base
         log('done', { ready: isReady, status: res.runtime.status })
         return c.json({
           url: res.runtime.url,

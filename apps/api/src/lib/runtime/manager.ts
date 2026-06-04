@@ -152,6 +152,22 @@ export class RuntimeManager implements IRuntimeManager {
    */
   private agentManagedProjects: Set<string> = new Set()
 
+  /**
+   * MRU of project-anchored workspace runtime keys (`ws:proj:<id>`),
+   * most-recently-opened first. We keep the last {@link workspacePreviewMax}
+   * anchored previews warm and evict the least-recently-used beyond the cap
+   * (instead of stopping a runtime the moment the user navigates away — fast
+   * switch-back stays warm). Updated on `startProjectWorkspace` and `touch`,
+   * pruned on `stop`. Cloud (k8s) uses the same MRU concept but keeps the
+   * top-N warm via keep-alive pings rather than stopping (Knative scale-to-
+   * zero owns teardown there) — see warm-pool keep-warm.
+   */
+  private workspacePreviewMru: string[] = []
+  private readonly workspacePreviewMax: number = (() => {
+    const n = parseInt(process.env.WORKSPACE_PREVIEW_MAX || '3', 10)
+    return Number.isFinite(n) && n > 0 ? n : 3
+  })()
+
   constructor(config: Partial<IRuntimeConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.cleanupStaleProcesses()
@@ -1416,6 +1432,8 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           `[RuntimeManager] startProjectWorkspace(${key}): merged-root refresh on reuse failed: ${err?.message ?? err}`,
         )
       }
+      // Reuse counts as "opened" — keep this preview warmest.
+      this.recordWorkspaceMru(key)
       return this.toPublicRuntime(existing)
     }
 
@@ -1445,7 +1463,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     })
     this.startingPromises.set(key, promise)
     try {
-      return await promise
+      const result = await promise
+      // Newly opened — record as most-recent and evict the LRU beyond the
+      // warm cap so opening a 4th project stops the oldest (not the active
+      // one). Best-effort; never fails the start.
+      this.recordWorkspaceMru(key)
+      await this.enforceWorkspacePreviewCap().catch(() => {})
+      return result
     } finally {
       this.startingPromises.delete(key)
     }
@@ -2446,26 +2470,82 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     throw new Error(`Timeout waiting for agent server ${projectId} to start on port ${port} after ${MAX_RETRIES} attempts`)
   }
 
+  /**
+   * Resolve the runtimes-map key for a caller-supplied `projectId`. Under
+   * the universal workspace-runtime model a project runs on its anchored
+   * merged-root runtime (`ws:proj:<id>`), so a bare-UUID lookup would miss
+   * it — `stop()` would be a silent no-op and `touch()` would reset the
+   * wrong (or no) idle window. Mirrors {@link status}: prefer the anchored
+   * key when the flag is on and that runtime exists, else the bare key
+   * (which also passes through pre-resolved `ws:*` keys unchanged).
+   */
+  private resolveRuntimeKey(projectId: string): string {
+    if (process.env.SHOGO_WORKSPACE_RUNTIME === 'true') {
+      const anchored = projectWorkspaceRuntimeKey(projectId)
+      if (this.runtimes.has(anchored)) return anchored
+    }
+    return projectId
+  }
+
+  /** Move an anchored workspace key to the front of the warm-preview MRU. */
+  private recordWorkspaceMru(key: string): void {
+    if (!key.startsWith('ws:proj:')) return
+    const i = this.workspacePreviewMru.indexOf(key)
+    if (i >= 0) this.workspacePreviewMru.splice(i, 1)
+    this.workspacePreviewMru.unshift(key)
+  }
+
+  /**
+   * Keep at most {@link workspacePreviewMax} project-anchored previews warm.
+   * Beyond the cap, stop the least-recently-used live anchored runtimes so
+   * the same project folder is never served by stale duplicates and vite
+   * watchers don't pile up across many open/close cycles. Idempotent and
+   * best-effort.
+   */
+  private async enforceWorkspacePreviewCap(): Promise<void> {
+    const cap = this.workspacePreviewMax
+    if (cap <= 0) return
+    const liveAnchored = Array.from(this.runtimes.keys()).filter(
+      (k) => k.startsWith('ws:proj:') && this.runtimes.get(k)?.status !== 'stopped',
+    )
+    if (liveAnchored.length <= cap) return
+    // Order by recency (MRU index; unknown keys sort last = oldest).
+    const ordered = [...liveAnchored].sort((a, b) => {
+      const ia = this.workspacePreviewMru.indexOf(a)
+      const ib = this.workspacePreviewMru.indexOf(b)
+      return (ia < 0 ? Infinity : ia) - (ib < 0 ? Infinity : ib)
+    })
+    for (const key of ordered.slice(cap)) {
+      console.log(`[RuntimeManager] Workspace preview LRU: evicting ${key} (cap=${cap})`)
+      try {
+        await this.stop(key)
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] LRU evict stop(${key}) failed: ${err?.message ?? err}`)
+      }
+    }
+  }
+
   async stop(projectId: string): Promise<void> {
-    const runtime = this.runtimes.get(projectId)
+    const key = this.resolveRuntimeKey(projectId)
+    const runtime = this.runtimes.get(key)
     if (!runtime) {
       // Idempotent: succeed silently if not running
       return
     }
 
-    this.stopHealthCheck(projectId)
+    this.stopHealthCheck(key)
     runtime.status = 'stopping'
 
     // Stop the agent-runtime via the embedded WorkerRuntimeManager.
     // It owns the ChildProcess + idle/restart timers and waits for
     // the spawned process to exit (with SIGKILL after a grace window
     // — same semantics as the legacy agentProcess.kill loop here).
-    if (this.agentManagedProjects.has(projectId)) {
-      this.agentManagedProjects.delete(projectId)
+    if (this.agentManagedProjects.has(key)) {
+      this.agentManagedProjects.delete(key)
       try {
-        await this.agentManager.stop(projectId)
+        await this.agentManager.stop(key)
       } catch (err: any) {
-        console.warn(`[RuntimeManager] agentManager.stop(${projectId}) failed: ${err?.message ?? err}`)
+        console.warn(`[RuntimeManager] agentManager.stop(${key}) failed: ${err?.message ?? err}`)
       }
     } else if (runtime.agentProcess) {
       // Backwards-compat: if some legacy code path attached an
@@ -2506,7 +2586,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
     runtime.status = 'stopped'
     this.releasePort(runtime.port)
-    this.runtimes.delete(projectId)
+    this.runtimes.delete(key)
+    const mi = this.workspacePreviewMru.indexOf(key)
+    if (mi >= 0) this.workspacePreviewMru.splice(mi, 1)
   }
 
   /**
@@ -2653,7 +2735,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   touch(projectId: string): void {
     if (!projectId || projectId === 'api-key') return
     try {
-      this.agentManager.touch(projectId)
+      // Resolve to the anchored `ws:proj:<id>` key under the workspace-
+      // runtime model so the worker resets the right slot's idle window
+      // (a bare-UUID touch would miss the anchored slot entirely). Keep the
+      // anchored preview warm in the MRU so an active chat survives the cap.
+      const key = this.resolveRuntimeKey(projectId)
+      this.agentManager.touch(key)
+      if (key.startsWith('ws:proj:')) this.recordWorkspaceMru(key)
     } catch (err: any) {
       console.warn(`[RuntimeManager] touch(${projectId}) failed: ${err?.message ?? err}`)
     }

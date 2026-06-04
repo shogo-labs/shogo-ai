@@ -47,6 +47,14 @@ export interface BuildWorkspaceEnvOpts {
    */
   anchorProjectId?: string
   /**
+   * Subset of attached projects to mount read-only. Exposed to the runtime as
+   * `WORKSPACE_READONLY_PROJECT_IDS` so the cloud pod can mark those members'
+   * subfolders write-denied (the host computes READONLY_ROOTS from real dirs
+   * in the manager; cloud derives them from this list relative to its own
+   * WORKSPACE_DIR). Unset → all members writable.
+   */
+  readonlyProjectIds?: string[]
+  /**
    * Test-only injection seams. Production callers omit these and the
    * builder resolves prisma / owner lookup / token mint lazily, exactly
    * like `buildProjectEnv`.
@@ -97,6 +105,9 @@ export async function buildWorkspaceEnv(
   }
   if (opts.anchorProjectId) {
     env.WORKSPACE_ANCHOR_PROJECT_ID = opts.anchorProjectId
+  }
+  if (opts.readonlyProjectIds && opts.readonlyProjectIds.length > 0) {
+    env.WORKSPACE_READONLY_PROJECT_IDS = opts.readonlyProjectIds.join(',')
   }
 
   // Workspace identity carries the base agent persona; per-project
