@@ -637,18 +637,9 @@ function decodeSessionData(dataB64: string): string {
 async function executeInBackground(request: TerminalExecRequest): Promise<TerminalExecResponse> {
   const { getPtyHostClient } = await import('../pty-host-client')
   const host = getPtyHostClient()
-  const startMs = Date.now()
 
-  // Build the terminal label
-  const maxLen = 50
-  const display = request.command.length > maxLen
-    ? request.command.slice(0, maxLen) + '...'
-    : request.command
-  const terminalLabel = `Shogo (${display})`
-
-  // Spawn an INTERACTIVE shell (no -c flag). This ensures the shell
-  // integration hooks fire, the user sees the prompt + command, and
-  // long-running processes stream live output into the terminal.
+  // Spawn an interactive shell (no -c — shell integration wraps args
+  // with --rcfile which conflicts with -c on some shells).
   const session = await host.spawn({
     shell: process.env.SHELL || '/bin/zsh',
     args: [],
@@ -663,19 +654,21 @@ async function executeInBackground(request: TerminalExecRequest): Promise<Termin
     },
   })
 
-  // Notify the renderer so it can attach a tab (infinity icon)
+  // Notify renderer immediately so the tab appears.
+  const terminalLabel = 'Shogo'
   notifyAgentTerminalSpawned({
     sessionId: session.id,
     terminalLabel,
     cwd: request.cwd ?? session.cwd ?? null,
   })
 
-  // Write the command to the terminal after the shell has initialized
-  // (displayed its first prompt). 600ms is enough for zsh/bash to
-  // source rcfiles and render the prompt.
-  setTimeout(() => {
-    host.write(session.id, request.command + '\n').catch(() => {})
-  }, 600)
+  // Wait for shell init, then type the command — matching Cursor's UX.
+  await new Promise((r) => setTimeout(r, 1500))
+  try {
+    await host.write(session.id, request.command + '\r')
+  } catch (err) {
+    console.error('[TerminalExecServer] write to agent terminal failed:', err)
+  }
 
   return {
     exitCode: null,
