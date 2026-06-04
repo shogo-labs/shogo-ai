@@ -236,6 +236,15 @@ export async function buildWorkspaceEnv(
     if (process.env.S3_FORCE_PATH_STYLE === 'true') env.S3_FORCE_PATH_STYLE = 'true'
   }
 
+  // Git LFS: propagate the master switch so git_only pods activate the LFS
+  // clean filter + object push/pull (see shared-runtime `isLfsActive`). Pods
+  // reach the LFS batch endpoint via SHOGO_API_URL + RUNTIME_AUTH_SECRET and
+  // transfer bytes with presigned URLs, so no S3 creds / S3_LFS_* are needed
+  // pod-side. Inert unless the project is in git_only mode.
+  if (process.env.LFS_ENABLED === 'true' || process.env.LFS_ENABLED === '1') {
+    env.LFS_ENABLED = 'true'
+  }
+
   console.log(`[${prefix}] total ${Date.now() - startTime}ms for workspace ${workspaceId} (${attachedProjectIds.length} projects)`)
   return env
 }
