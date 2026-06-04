@@ -549,3 +549,77 @@ describe('PreviewManager.resolveBundlerCwd', () => {
     expect(pm.bundlerCwd).toBe(join(root, 'project'))
   })
 })
+
+// ---------------------------------------------------------------------------
+// 8. runPrismaIfNeeded — generated-client detection (Prisma 7 custom output)
+//
+// Regression guard: Prisma 7's `prisma-client` provider (what the SDK
+// templates pin) writes the client to a project-relative `output`
+// (`../src/generated/prisma`), NOT the legacy `node_modules/.prisma/client`.
+// The skip check used to look only at the legacy path, so `prisma generate`
+// re-ran on every warm restart even with no schema changes.
+// ---------------------------------------------------------------------------
+
+const PRISMA7_SCHEMA = `datasource db { provider = "sqlite"; url = "file:./dev.db" }
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+model User { id String @id }
+`
+
+describe('PreviewManager.prismaClientDirCandidates', () => {
+  test('resolves the generator `output` relative to prisma/ (Prisma 7)', () => {
+    const root = makeWorkspace({ withPrismaSchema: PRISMA7_SCHEMA })
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    const cwd = (pm as any).bundlerCwd as string
+    const cands = (pm as any).prismaClientDirCandidates(cwd) as string[]
+    // Declared output wins (resolved against prisma/), then the legacy path.
+    expect(cands[0]).toBe(join(cwd, 'src', 'generated', 'prisma'))
+    expect(cands).toContain(join(cwd, 'node_modules', '.prisma', 'client'))
+  })
+
+  test('falls back to SDK default + legacy path when no `output` is declared', () => {
+    const root = makeWorkspace({
+      withPrismaSchema: `generator client { provider = "prisma-client-js" }\nmodel User { id String @id }\n`,
+    })
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    const cwd = (pm as any).bundlerCwd as string
+    const cands = (pm as any).prismaClientDirCandidates(cwd) as string[]
+    expect(cands).toEqual([
+      join(cwd, 'src', 'generated', 'prisma'),
+      join(cwd, 'node_modules', '.prisma', 'client'),
+    ])
+  })
+})
+
+describe('PreviewManager.runPrismaIfNeeded (skip detection)', () => {
+  test('skips generate when the declared output dir exists (no respawn on warm restart)', async () => {
+    const root = makeWorkspace({ withPrismaSchema: PRISMA7_SCHEMA })
+    const cwd = join(root, 'project')
+    // Simulate a warm project: client already generated + sqlite db present.
+    mkdirSync(join(cwd, 'src', 'generated', 'prisma'), { recursive: true })
+    writeFileSync(join(cwd, 'src', 'generated', 'prisma', 'index.js'), '// client')
+    writeFileSync(join(cwd, 'prisma', 'dev.db'), '')
+
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    const timings: Record<string, number> = {}
+    await (pm as any).runPrismaIfNeeded(timings)
+
+    // Both steps short-circuit → no `prisma generate` / `db push` subprocess.
+    expect(timings.prisma).toBe(0)
+    expect(timings.dbPush).toBe(0)
+    expect(spawnCalls.length).toBe(0)
+  })
+
+  test('still honors the legacy node_modules/.prisma/client location', () => {
+    const root = makeWorkspace({
+      withPrismaSchema: `generator client { provider = "prisma-client-js" }\nmodel User { id String @id }\n`,
+    })
+    const cwd = join(root, 'project')
+    mkdirSync(join(cwd, 'node_modules', '.prisma', 'client'), { recursive: true })
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    const cands = (pm as any).prismaClientDirCandidates(cwd) as string[]
+    expect(cands.some((p) => existsSync(p))).toBe(true)
+  })
+})
