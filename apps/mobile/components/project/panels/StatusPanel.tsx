@@ -26,6 +26,7 @@ import { Switch } from '@/components/ui/switch'
 import { useRouter } from 'expo-router'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { API_URL } from '../../../lib/api'
+import { resolveShortName } from '../../../lib/visible-models'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { MarkdownText } from '../../chat/MarkdownText'
 
@@ -90,6 +91,8 @@ interface HeartbeatConfig {
   quietHoursEnd: string | null
   quietHoursTimezone: string | null
   modelName: string
+  /** Server-resolved display label for `modelName` (falls back to client resolution). */
+  modelLabel?: string | null
 }
 
 interface ChannelInfo {
@@ -819,7 +822,14 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
 
                     {/* Cost estimate */}
                     {!localMode && (() => {
-                      const modelName = hbConfig?.modelName ?? status.model?.name ?? 'claude-sonnet-4-5'
+                      // Prefer the server-resolved label; otherwise resolve the
+                      // raw id (a UUID for DB models) client-side. Either form
+                      // still carries the family substring the tier estimate needs.
+                      const modelName =
+                        hbConfig?.modelLabel
+                        ?? (hbConfig?.modelName ? resolveShortName(hbConfig.modelName) : undefined)
+                        ?? (status.model?.name ? resolveShortName(status.model.name) : undefined)
+                        ?? 'claude-sonnet-4-5'
                       const interval = hbConfig?.heartbeatInterval ?? status.heartbeat.intervalSeconds
                       const cost = estimateDailyCost(
                         interval,
@@ -853,7 +863,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
               <View className="flex-row items-center gap-2 px-3 py-2 rounded-lg border border-border/40 bg-muted/20">
                 <Zap size={14} className="text-muted-foreground" />
                 <Text className="text-xs text-muted-foreground">Model:</Text>
-                <Text className="text-xs font-medium text-foreground">{status.model.name}</Text>
+                <Text className="text-xs font-medium text-foreground">{resolveShortName(status.model.name)}</Text>
                 <Text className="text-xs text-muted-foreground">({status.model.provider})</Text>
               </View>
             )}
