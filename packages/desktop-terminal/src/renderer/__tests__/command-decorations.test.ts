@@ -67,14 +67,17 @@ describe('CommandDecorations', () => {
     const dec = new CommandDecorations({ tracker, host: host as any })
     cmdComplete(tracker, 0)
     expect(host.registered.length).toBe(2)
-    expect(host.registered[1]!.opts.anchor).toBe('right')
+    // Left-anchored gutter decoration (width:1, no anchor = left default)
+    expect(host.registered[1]!.opts.width).toBe(0)
+    expect(host.registered[1]!.opts.anchor).toBeUndefined()
   })
 
   it('creates decoration after non-zero exit', () => {
     const dec = new CommandDecorations({ tracker, host: host as any })
     cmdComplete(tracker, 1)
     expect(host.registered.length).toBe(2)
-    expect(host.registered[1]!.opts.anchor).toBe('right')
+    expect(host.registered[1]!.opts.width).toBe(0)
+    expect(host.registered[1]!.opts.anchor).toBeUndefined()
   })
 
   it('replaces running decoration with finished one', () => {
@@ -95,9 +98,8 @@ describe('CommandDecorations', () => {
     })
     cmdComplete(tracker, 0)
     expect(host.registered.length).toBe(2)
-    // onClick is stored internally (private), verify the decoration has an element
-    // that can be clicked — check overviewRulerOptions is set
-    expect(host.registered[1]!.opts.anchor).toBe('right')
+    // onClick is wired — decoration exists and has the right width
+    expect(host.registered[1]!.opts.width).toBe(0)
   })
 
   it('adopts pre-existing commands', () => {

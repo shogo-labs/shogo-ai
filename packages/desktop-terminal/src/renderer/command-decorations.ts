@@ -201,28 +201,39 @@ export class CommandDecorations {
     if (!marker) return
     const style = this.styles[kind]
 
-    // Small dot anchored to the RIGHT edge of the terminal.
-    // anchor:'right' + x:1 positions it 1 cell from the right edge.
-    // width:1 makes it a single-cell decoration (tiny dot).
     const handle = this.host.registerDecoration({
       marker,
-      anchor: 'right',
-      x: 1,
-      width: 1,
+      // don't reserve a visible left gutter cell for the dot
+      width: 0,
       layer: 'top',
     })
     if (!handle) return
+
     this.handles.set(c.id, handle)
+
     handle.onRender((el) => {
-      // Render a small colored circle
+      el.textContent = ''
+      el.style.position = 'absolute'
+      el.style.right = '8px'
+      el.style.top = '50%'
+      el.style.transform = 'translateY(-50%)'
       el.style.display = 'flex'
       el.style.alignItems = 'center'
       el.style.justifyContent = 'center'
-      el.style.width = '100%'
-      el.style.height = '100%'
+      el.style.pointerEvents = 'auto'
+      el.style.background = 'transparent'
       el.style.cursor = 'pointer'
-      el.style.borderRadius = '50%'
-      el.style.background = style.color
+      el.style.zIndex = '10'
+
+      const dot = document.createElement('span')
+      dot.style.width = '6px'
+      dot.style.height = '6px'
+      dot.style.borderRadius = '999px'
+      dot.style.background = style.color
+      dot.style.display = 'block'
+
+      el.appendChild(dot)
+
       el.title = `${style.ariaLabel}: $ ${c.commandLine}`
       el.setAttribute('aria-label', style.ariaLabel)
       el.setAttribute('data-command-id', String(c.id))
