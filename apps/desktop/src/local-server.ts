@@ -309,6 +309,7 @@ export async function startLocalServer(): Promise<void> {
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
     SHOGO_BUN_PATH: bunPath,
+    ...(process.env.TERMINAL_EXEC_URL ? { TERMINAL_EXEC_URL: process.env.TERMINAL_EXEC_URL } : {}),
     // Path-safe SDK CLI fallback. PreviewManager uses this when a
     // project's `package.json` declares the legacy
     // `"generate": "bunx shogo generate"` script — `bunx` would resolve

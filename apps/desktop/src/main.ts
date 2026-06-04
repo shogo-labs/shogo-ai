@@ -1360,7 +1360,7 @@ app.whenReady().then(async () => {
     console.log('[Desktop] Starting local server...')
     try {
       // Start the terminal exec server for agent -> visible terminal commands
-      const terminalExecUrl = startTerminalExecServer()
+      const terminalExecUrl = await startTerminalExecServer()
       process.env.TERMINAL_EXEC_URL = terminalExecUrl
       await startLocalServer()
     } catch (err) {

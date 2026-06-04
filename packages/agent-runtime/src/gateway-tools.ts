@@ -183,6 +183,30 @@ export interface ToolContext {
     durationMs: number | null
     timedOut: boolean
   }>
+  /** Read recent output from the user's desktop IDE terminal. */
+  terminalRead?: (params: {
+    terminalId?: string
+    cwd?: string
+    maxChars?: number
+  }) => Promise<{
+    source: string
+    terminalId: string | null
+    cwd: string | null
+    content: string
+    sessions: Array<{
+      id: string
+      cwd: string | null
+      shell: string | null
+      createdAt: number | null
+      updatedAt: number | null
+      exitedAt: number | null
+      bytes: number
+      active: boolean
+    }>
+    truncated: boolean
+    error?: string
+    hint?: string
+  }>
   /** Interrupt the currently running terminal command (sends SIGINT). */
   terminalInterrupt?: () => Promise<{ interrupted: boolean }>
 
@@ -4347,11 +4371,13 @@ function createTerminalReadTool(ctx: ToolContext): AgentTool {
   return {
     name: 'terminal_read',
     label: 'Read Terminal Output',
-    description: `Read saved terminal output from disk files.
+    description: `Read recent terminal output from the user's IDE terminal.
 Use this to answer questions like "what did I just do?" or "what commands did I run?"
-by reading the persisted terminal scrollback.
+by reading the desktop terminal context bridge when available, with saved terminal
+files as a fallback.
 
-If no terminal ID is specified, reads the most recent terminal file.
+If no terminal ID is specified, reads the most relevant active terminal for the
+current workspace, falling back to the most recent terminal.
 Returns the serialized terminal commands + output for the agent to analyze.`,
     parameters: Type.Object({
       terminalId: Type.Optional(Type.String({ description: 'Terminal ID to read (default: most recent)' })),
@@ -4359,6 +4385,27 @@ Returns the serialized terminal commands + output for the agent to analyze.`,
     }),
     execute: async (_toolCallId: string, params: unknown) => {
       const { terminalId, cwd } = params as { terminalId?: string; cwd?: string }
+
+      let bridgeFallback: unknown = null
+      if (ctx.terminalRead) {
+        try {
+          const result = await ctx.terminalRead({
+            terminalId,
+            cwd: cwd ?? ctx.workspaceDir,
+            maxChars: 24_000,
+          })
+          if (result.content) {
+            return textResult(result)
+          }
+          bridgeFallback = result
+        } catch (err: any) {
+          bridgeFallback = {
+            error: err?.message ?? String(err),
+            hint: 'Live desktop terminal bridge failed; falling back to saved terminal files.',
+          }
+        }
+      }
+
       const baseDir = cwd
         ? `${cwd}/.shogo/terminals`
         : ctx.workspaceDir
@@ -4373,9 +4420,12 @@ Returns the serialized terminal commands + output for the agent to analyze.`,
         const txtFiles = files.filter((f) => f.endsWith('.txt'))
 
         if (txtFiles.length === 0) {
+          if (bridgeFallback) return textResult(bridgeFallback)
           return textResult({
             error: 'No saved terminal files found.',
-            hint: 'Terminal output is saved when a terminal session closes. Try running some commands in the terminal first.',
+            hint: ctx.terminalRead
+              ? 'No live desktop terminal context or saved terminal files were available. Open the IDE Terminal tab and run a command first.'
+              : 'Terminal output is saved when a terminal session closes. Try running some commands in the terminal first.',
           })
         }
 
