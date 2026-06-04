@@ -182,6 +182,8 @@ export interface ToolContext {
     durationMs: number | null
     timedOut: boolean
   }>
+  /** Interrupt the currently running terminal command (sends SIGINT). */
+  terminalInterrupt?: () => Promise<{ interrupted: boolean }>
 
   subagentInstanceId?: string
 }
@@ -4353,18 +4355,35 @@ Returns: { exitCode, output, cwd, durationMs, timedOut }.
 
 If the desktop terminal is not available (web/mobile), falls back to the sandboxed exec.`,
     parameters: Type.Object({
-      command: Type.String({ description: 'The shell command to execute' }),
+      command: Type.Optional(Type.String({ description: 'The shell command to execute (required for run action)' })),
+      action: Type.Optional(Type.String({ description: '"run" (default) to execute a command, "interrupt" to send SIGINT to the running command', enum: ['run', 'interrupt'] })),
       cwd: Type.Optional(Type.String({ description: 'Working directory (defaults to current)' })),
       timeoutMs: Type.Optional(Type.Number({ description: 'Max wait time in ms (default: 120000)' })),
     }),
     execute: async (params) => {
-      const { command, cwd, timeoutMs } = params as { command: string; cwd?: string; timeoutMs?: number }
+      const { command, cwd, timeoutMs, action } = params as { command?: string; cwd?: string; timeoutMs?: number; action?: string }
 
       if (!ctx.terminalExec) {
         return textResult({
           error: 'Desktop terminal not available. Use exec tool instead.',
           hint: 'This command can only run on the desktop app.',
         })
+      }
+
+      if (action === 'interrupt') {
+        if (!ctx.terminalInterrupt) {
+          return textResult({ error: 'Terminal interrupt not available.' })
+        }
+        try {
+          const result = await ctx.terminalInterrupt()
+          return textResult(result)
+        } catch (err: any) {
+          return textResult({ error: err?.message ?? String(err) })
+        }
+      }
+
+      if (!command) {
+        return textResult({ error: 'command parameter is required for run action.' })
       }
 
       try {

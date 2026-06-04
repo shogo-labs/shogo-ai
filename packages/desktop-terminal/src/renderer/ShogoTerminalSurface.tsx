@@ -472,6 +472,10 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             return
           }
           if (decoded.events.length > 0) tracker.feedAll(decoded.events)
+          // Feed raw output to the bridge for streaming (ANSI-stripped internally)
+          if (decoded.passthrough.byteLength > 0) {
+            bridgeRef.current?.feedOutput(new TextDecoder().decode(decoded.passthrough))
+          }
           const activeCommand = activeCommandRef.current
           if (activeCommand !== null && decoded.passthrough.byteLength > 0) {
             commandOutputRef.current.get(activeCommand)?.push(new TextDecoder().decode(decoded.passthrough))

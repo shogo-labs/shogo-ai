@@ -50,6 +50,15 @@ export interface CommandResult {
   durationMs: number | null
   /** Whether the command timed out. */
   timedOut: boolean
+  /** Accumulated output while the command was running (ANSI-stripped). */
+  output?: string
+}
+
+export interface SendCommandOptions {
+  /** Called with streaming output chunks as the command runs. */
+  onOutput?: (chunk: string) => void
+  /** Max ms to wait. Overrides the bridge default. */
+  timeoutMs?: number
 }
 
 export interface BackgroundTask {
@@ -85,6 +94,9 @@ export class AgentTerminalBridge {
   /** The command ID currently being awaited by sendCommand (only one at a time). */
   private activeCommandId: number | null = null
 
+  /** Streaming output callback registered by the current sendCommand. */
+  private onOutputCallback: ((chunk: string) => void) | null = null
+
   private off: (() => void) | null = null
   private disposed = false
 
@@ -102,6 +114,27 @@ export class AgentTerminalBridge {
   }
 
   /**
+   * Feed raw terminal output data into the active command's output accumulator.
+   * Call this from the terminal's onData handler while a command is running.
+   * ANSI sequences are stripped automatically.
+   */
+  feedOutput(data: string): void {
+    // Strip ANSI escape sequences inline
+    const stripped = data.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1bP[^\x1b]*\x1b\\/g, '')
+      .replace(/\x1b[()][AB012]/g, '')
+    if (stripped.length > 0 && this.activeCommandId != null) {
+      for (const pending of this.pending.values()) {
+        if (!('_output' in pending)) (pending as any)._output = ''
+        ;(pending as any)._output += stripped
+      }
+      // Also call the streaming callback if one was registered
+      this.onOutputCallback?.(stripped)
+    }
+  }
+
+  /**
    * Update the send function (e.g. when the terminal reconnects).
    */
   setSend(fn: (data: string) => void): void {
@@ -110,22 +143,31 @@ export class AgentTerminalBridge {
 
   /**
    * Send a command to the terminal and wait for it to complete.
-   * Returns a CommandResult with exit code, duration, etc.
+   * Returns a CommandResult with exit code, duration, output, etc.
    *
    * Resolves with `timedOut: true` if the command doesn't finish
-   * within `commandTimeoutMs` (default 120s).
+   * within `timeoutMs` (default 120s).
+   *
+   * If `onOutput` is provided, ANSI-stripped output chunks are streamed
+   * as the command runs (debounced, threshold-based).
    */
-  sendCommand(command: string): Promise<CommandResult> {
+  sendCommand(command: string, options?: SendCommandOptions): Promise<CommandResult> {
     if (this.disposed) {
       return Promise.resolve({ command, exitCode: null, cwd: null, durationMs: null, timedOut: false })
     }
+
+    const timeoutMs = options?.timeoutMs ?? this.commandTimeoutMs
+    const onOutput = options?.onOutput
+    this.onOutputCallback = onOutput ? (chunk) => { outputAccumulator += chunk; onOutput(chunk) } : null
+    let outputAccumulator = ''
 
     return new Promise<CommandResult>((resolve) => {
       let resolved = false
       const safeResolve = (result: CommandResult) => {
         if (resolved) return
         resolved = true
-        resolve(result)
+        this.onOutputCallback = null
+        resolve({ ...result, output: outputAccumulator || undefined })
       }
 
       // Fire the command — use the ref so we always call the latest send
@@ -145,10 +187,10 @@ export class AgentTerminalBridge {
               command,
               exitCode: null,
               cwd: ev.command.cwd,
-              durationMs: this.commandTimeoutMs,
+              durationMs: timeoutMs,
               timedOut: true,
             })
-          }, this.commandTimeoutMs)
+          }, timeoutMs)
 
           this.pending.set(cmdId, {
             resolve: safeResolve,
@@ -325,6 +367,7 @@ export class AgentTerminalBridge {
       cwd: cmd.cwd,
       durationMs,
       timedOut: false,
+      output: (pending as any)._output || undefined,
     })
   }
 }
