@@ -77,6 +77,7 @@ import {
   ArchiveRestore,
   Pencil,
   Loader2,
+  SlidersHorizontal,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -100,6 +101,14 @@ import { workspaceProjectFilter } from '../../lib/project-load'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { invitationEvents } from '../../lib/invitation-events'
 import { chatSessionEvents, chatActivityEvents } from '../../lib/chat-session-events'
+import {
+  getPinnedProjectIds,
+  setPinnedProjectIds,
+  getProjectFilter,
+  setProjectFilter,
+  type ProjectSort,
+  type ProjectScope,
+} from '../../lib/project-prefs-store'
 
 function getInitials(name: string | null | undefined): string {
   if (!name) return '?'
@@ -159,7 +168,7 @@ function NavItem({
       role={href || externalHref ? 'link' : 'button'}
       accessibilityLabel={label}
       className={cn(
-        'flex-row items-center gap-2 rounded-md px-2 py-2',
+        'flex-row items-center gap-2 rounded-md px-2 py-1',
         active
           ? 'bg-accent'
           : 'active:bg-accent/50',
@@ -324,14 +333,26 @@ function ChatTreeItem({
 
 // ─── ProjectTreeItem (a project + its nested chats) ─────────
 
+// Cap the per-project chat list; pinned + the active chat always show, the
+// rest collapse behind a "More" toggle.
+const MAX_VISIBLE_CHATS = 5
+
+// Cap the projects list; pinned + the open project always show, the rest
+// collapse behind a "More" toggle.
+const MAX_VISIBLE_PROJECTS = 5
+
 const ProjectTreeItem = observer(function ProjectTreeItem({
   project,
   collapsed,
   onNavPress,
+  isPinned,
+  onTogglePin,
 }: {
   project: any
   collapsed?: boolean
   onNavPress?: () => void
+  isPinned?: boolean
+  onTogglePin?: (projectId: string, next: boolean) => void
 }) {
   const router = useRouter()
   const pathname = usePathname()
@@ -339,6 +360,8 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   const http = useDomainHttp()
   const actions = useDomainActions()
   const [expanded, setExpanded] = useState(false)
+  // Per-project "show all chats" toggle (defaults to the capped view).
+  const [showAllChats, setShowAllChats] = useState(false)
   // Chats are fetched directly into local state (rather than the shared
   // chat-session collection) because the collection's loaders prune items
   // from other contexts — expanding a second project would otherwise wipe
@@ -488,6 +511,24 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
     [activeChatId, isActive, project.id, router, onNavPress],
   )
 
+  // Create a new chat for this project and land on it. Session creation
+  // (workspace-runtime vs project scope) is non-trivial and lives in the
+  // project layout's `handleCreateNewSession`, so reuse it: when the project
+  // is already open, ask it to mint one in place via the event bus; otherwise
+  // navigate in with a one-shot `newChat` param the layout consumes on mount.
+  const handleCreateChat = useCallback(() => {
+    if (isActive) {
+      setExpanded(true)
+      chatSessionEvents.requestNewChat({ projectId: project.id })
+    } else {
+      router.push({
+        pathname: '/(app)/projects/[id]',
+        params: { id: project.id, newChat: '1', newChatNonce: String(Date.now()) },
+      } as any)
+    }
+    onNavPress?.()
+  }, [isActive, project.id, router, onNavPress])
+
   // Pin / rename / archive operate against the domain collection and update
   // local state optimistically (the sidebar fetches chats over HTTP, so it
   // isn't auto-synced to the collection). On failure we re-fetch to reconcile.
@@ -531,27 +572,15 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   )
 
   if (collapsed) {
-    return (
-      <Pressable
-        onPress={openProject}
-        role="link"
-        accessibilityLabel={`Project: ${project.name || 'Untitled'}`}
-        className={cn(
-          'items-center justify-center rounded-md px-2 py-2',
-          isActive ? 'bg-accent' : 'active:bg-accent/50',
-        )}
-      >
-        <Folder size={16} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
-      </Pressable>
-    )
+    return ("")
   }
 
   return (
     <View>
       <View
         className={cn(
-          'flex-row items-center gap-1.5 rounded-md pr-2 py-1.5',
-          isActive ? 'bg-accent' : '',
+          'group flex-row items-center gap-1.5 rounded-md pr-1 py-1.5',
+          isActive ? 'bg-accent' : 'active:bg-accent/50',
         )}
       >
 
@@ -559,7 +588,7 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
           onPress={openProject}
           role="link"
           accessibilityLabel={`Project: ${project.name || 'Untitled'}`}
-          className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70"
+          className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70 min-w-0"
         >
           <Folder size={12} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
           <Text
@@ -569,6 +598,35 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
             {project.name || 'Untitled'}
           </Text>
         </Pressable>
+        {/* Persistent pin glyph when pinned (hidden while hovering so the
+            hover actions can take its place). */}
+        {isPinned && (
+          <View className="group-hover:hidden pr-1 shrink-0">
+            <Pin size={10} className="text-muted-foreground" />
+          </View>
+        )}
+        {/* Hover-reveal actions (web). Siblings of the project Pressable, so
+            tapping one never triggers the project-open press. */}
+        <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
+          <Pressable
+            onPress={handleCreateChat}
+            className="p-0.5"
+            accessibilityLabel={`New chat in ${project.name || 'Untitled'}`}
+          >
+            <Plus size={12} className="text-muted-foreground" />
+          </Pressable>
+          <Pressable
+            onPress={() => onTogglePin?.(project.id, !isPinned)}
+            className="p-0.5"
+            accessibilityLabel={isPinned ? `Unpin ${project.name || 'Untitled'}` : `Pin ${project.name || 'Untitled'}`}
+          >
+            {isPinned ? (
+              <PinOff size={11} className="text-muted-foreground" />
+            ) : (
+              <Pin size={11} className="text-muted-foreground" />
+            )}
+          </Pressable>
+        </View>
       </View>
       {expanded && (() => {
         const activeSessions = sessions
@@ -577,6 +635,20 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
           // (sessions is already sorted by activity desc) holds within groups.
           .sort((a: any, b: any) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0))
         const archivedSessions = sessions.filter((s: any) => s.isArchived)
+        // Cap the visible chats. Pinned + the active chat always show even when
+        // they sort past the cap; everything else collapses behind "more".
+        let visibleSessions = activeSessions
+        if (!showAllChats && activeSessions.length > MAX_VISIBLE_CHATS) {
+          const head = activeSessions.slice(0, MAX_VISIBLE_CHATS)
+          const headIds = new Set(head.map((s: any) => s.id))
+          const forced = activeSessions.filter(
+            (s: any) =>
+              !headIds.has(s.id) &&
+              (s.isPinned || (isActive && s.id === activeChatId)),
+          )
+          visibleSessions = [...head, ...forced]
+        }
+        const hiddenChatCount = activeSessions.length - visibleSessions.length
         const renderChat = (s: any) => (
           <ChatTreeItem
             key={s.id}
@@ -600,7 +672,23 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
               </View>
             ) : (
               <>
-                {activeSessions.map(renderChat)}
+                {visibleSessions.map(renderChat)}
+                {activeSessions.length > MAX_VISIBLE_CHATS && (hiddenChatCount > 0 || showAllChats) && (
+                  <Pressable
+                    onPress={() => setShowAllChats((v) => !v)}
+                    accessibilityLabel={showAllChats ? 'Show fewer chats' : 'Show all chats'}
+                    className="flex-row items-center gap-1 px-1 pt-1 pb-0.5 active:opacity-70"
+                  >
+                    {showAllChats ? (
+                      <ChevronDown size={10} className="text-muted-foreground shrink-0" />
+                    ) : (
+                      <ChevronRight size={10} className="text-muted-foreground shrink-0" />
+                    )}
+                    <Text className="text-[11px] text-muted-foreground flex-1">
+                      {showAllChats ? 'Show less' : `${hiddenChatCount} more`}
+                    </Text>
+                  </Pressable>
+                )}
                 {archivedSessions.length > 0 && (
                   <>
                     <Pressable
@@ -1356,20 +1444,80 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   const [allPlans, setAllPlans] = useState<Record<string, { planId: string; status: string | null }>>({})
 
+  // Device-local projects-list prefs (pins + filter) seeded from storage.
+  const [pinnedProjectIds, setPinnedProjectIdsState] = useState<Set<string>>(
+    () => new Set(getPinnedProjectIds()),
+  )
+  const [projectFilter, setProjectFilterState] = useState(() => getProjectFilter())
+  const [showAllProjects, setShowAllProjects] = useState(false)
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false)
+
+  const handleToggleProjectPin = useCallback((projectId: string, next: boolean) => {
+    setPinnedProjectIdsState((prev) => {
+      const updated = new Set(prev)
+      if (next) updated.add(projectId)
+      else updated.delete(projectId)
+      setPinnedProjectIds(Array.from(updated))
+      return updated
+    })
+  }, [])
+
+  const updateProjectFilter = useCallback(
+    (patch: Partial<{ sort: ProjectSort; scope: ProjectScope }>) => {
+      setProjectFilterState((prev) => {
+        const next = { ...prev, ...patch }
+        setProjectFilter(next)
+        return next
+      })
+    },
+    [],
+  )
+
   let workspaceProjects: any[]
   try {
     const all = projects?.all ?? []
     const workspaceScoped = activeWorkspaceId
       ? all.filter((p: any) => p.workspaceId === activeWorkspaceId)
       : all
-    workspaceProjects = [...workspaceScoped].sort((a: any, b: any) => {
+    const scopeFiltered =
+      projectFilter.scope === 'mine' && user?.id
+        ? workspaceScoped.filter((p: any) => p.createdBy === user.id)
+        : workspaceScoped
+    const sorted = [...scopeFiltered].sort((a: any, b: any) => {
+      if (projectFilter.sort === 'name') {
+        return String(a.name || '').localeCompare(String(b.name || ''))
+      }
       const aTime = a.lastMessageAt || a.updatedAt || 0
       const bTime = b.lastMessageAt || b.updatedAt || 0
       return bTime - aTime
     })
+    // Float pinned projects to the top. Array.sort is stable, so the chosen
+    // sort order is preserved within the pinned / unpinned groups.
+    workspaceProjects = sorted.sort((a: any, b: any) => {
+      const ap = pinnedProjectIds.has(a.id) ? 1 : 0
+      const bp = pinnedProjectIds.has(b.id) ? 1 : 0
+      return bp - ap
+    })
   } catch {
     workspaceProjects = []
   }
+
+  // Cap the list to MAX_VISIBLE_PROJECTS. Pinned + the currently open project
+  // always show even when they sort past the cap; everything else collapses
+  // behind the "More" toggle.
+  const visibleProjects = (() => {
+    if (showAllProjects || workspaceProjects.length <= MAX_VISIBLE_PROJECTS) {
+      return workspaceProjects
+    }
+    const head = workspaceProjects.slice(0, MAX_VISIBLE_PROJECTS)
+    const headIds = new Set(head.map((p: any) => p.id))
+    const forced = workspaceProjects.filter(
+      (p: any) =>
+        !headIds.has(p.id) && (pinnedProjectIds.has(p.id) || pathname.includes(p.id)),
+    )
+    return [...head, ...forced]
+  })()
+  const hiddenProjectCount = workspaceProjects.length - visibleProjects.length
 
   const [collapsed, setCollapsed] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
@@ -1507,7 +1655,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       )}
 
       {/* ── Main Navigation (scrollable) ── */}
-      <ScrollView className="flex-1 py-2" showsVerticalScrollIndicator={false}>
+      <ScrollView className="flex-1 pt-2" showsVerticalScrollIndicator={false}>
         {/* Primary nav */}
         <View className="px-2">
           <NavItem
@@ -1540,25 +1688,126 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         {/* PROJECTS tree — each project expands to show its chats */}
         <View className="mt-4 px-2">
           {!collapsed && (
-            <Text className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Projects
-            </Text>
+            <View className="flex-row items-center justify-between px-1 pb-1">
+              <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Projects
+              </Text>
+              <Popover
+                placement="bottom right"
+                size="sm"
+                isOpen={filterMenuOpen}
+                onOpen={() => setFilterMenuOpen(true)}
+                onClose={() => setFilterMenuOpen(false)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    role="button"
+                    accessibilityLabel="Filter and sort projects"
+                    accessibilityState={{ expanded: filterMenuOpen }}
+                    className="h-6 w-6 items-center justify-center rounded-md active:bg-muted"
+                  >
+                    <SlidersHorizontal size={13} className="text-muted-foreground" />
+                  </Pressable>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="w-[200px] p-0">
+                  <PopoverBody>
+                    <View className="py-1">
+                      <Text className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Sort by
+                      </Text>
+                      {([
+                        { value: 'recent' as const, label: 'Recent' },
+                        { value: 'name' as const, label: 'Name' },
+                      ]).map((opt) => (
+                        <Pressable
+                          key={opt.value}
+                          onPress={() => updateProjectFilter({ sort: opt.value })}
+                          role="menuitemradio"
+                          accessibilityState={{ checked: projectFilter.sort === opt.value }}
+                          className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+                        >
+                          <Text
+                            className={cn(
+                              'text-sm flex-1',
+                              projectFilter.sort === opt.value ? 'text-foreground' : 'text-muted-foreground',
+                            )}
+                          >
+                            {opt.label}
+                          </Text>
+                          {projectFilter.sort === opt.value && <Check size={14} className="text-primary" />}
+                        </Pressable>
+                      ))}
+                      <View className="h-px bg-border my-1" />
+                      <Text className="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Show
+                      </Text>
+                      {([
+                        { value: 'all' as const, label: 'All projects' },
+                        { value: 'mine' as const, label: 'My projects' },
+                      ]).map((opt) => (
+                        <Pressable
+                          key={opt.value}
+                          onPress={() => updateProjectFilter({ scope: opt.value })}
+                          role="menuitemradio"
+                          accessibilityState={{ checked: projectFilter.scope === opt.value }}
+                          className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+                        >
+                          <Text
+                            className={cn(
+                              'text-sm flex-1',
+                              projectFilter.scope === opt.value ? 'text-foreground' : 'text-muted-foreground',
+                            )}
+                          >
+                            {opt.label}
+                          </Text>
+                          {projectFilter.scope === opt.value && <Check size={14} className="text-primary" />}
+                        </Pressable>
+                      ))}
+                    </View>
+                  </PopoverBody>
+                </PopoverContent>
+              </Popover>
+            </View>
           )}
           {workspaceProjects.length === 0 ? (
             !collapsed && (
               <View className="px-2 py-2">
-                <Text className="text-xs text-muted-foreground">No projects yet</Text>
+                <Text className="text-xs text-muted-foreground">
+                  {projectFilter.scope === 'mine' ? 'No projects you created' : 'No projects yet'}
+                </Text>
               </View>
             )
           ) : (
-            workspaceProjects.map((project: any) => (
-              <ProjectTreeItem
-                key={project.id}
-                project={project}
-                collapsed={collapsed}
-                onNavPress={onNavPress}
-              />
-            ))
+            <>
+              {visibleProjects.map((project: any) => (
+                <ProjectTreeItem
+                  key={project.id}
+                  project={project}
+                  collapsed={collapsed}
+                  onNavPress={onNavPress}
+                  isPinned={pinnedProjectIds.has(project.id)}
+                  onTogglePin={handleToggleProjectPin}
+                />
+              ))}
+              {!collapsed && workspaceProjects.length > MAX_VISIBLE_PROJECTS && (hiddenProjectCount > 0 || showAllProjects) && (
+                <Pressable
+                  onPress={() => setShowAllProjects((v) => !v)}
+                  accessibilityLabel={showAllProjects ? 'Show fewer projects' : 'Show all projects'}
+                  className="flex-row items-center gap-1.5 rounded-md px-2 py-1.5 active:bg-accent/50"
+                >
+                  {showAllProjects ? (
+                    <ChevronDown size={12} className="text-muted-foreground shrink-0" />
+                  ) : (
+                    <ChevronRight size={12} className="text-muted-foreground shrink-0" />
+                  )}
+                  <Text className="text-xs text-muted-foreground flex-1">
+                    {showAllProjects ? 'Show less' : `${hiddenProjectCount} more`}
+                  </Text>
+                </Pressable>
+              )}
+            </>
           )}
         </View>
       </ScrollView>
