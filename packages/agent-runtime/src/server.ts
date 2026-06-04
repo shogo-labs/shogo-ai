@@ -114,6 +114,7 @@ import { subscribe as subscribeScreencast, getLastFrame as getLastScreencastFram
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
 import { saveUploadedFileParts, buildUploadedFilesNote } from './upload-attachments'
+import { buildReferencedContext } from './reference-context'
 import { maybeRunInteractive } from './interactive/entry'
 
 // Interactive CLI mode. When this binary is invoked as `agent-runtime
@@ -1376,6 +1377,18 @@ app.post('/agent/chat', async (c) => {
       'conversation — do not restart, repeat completed steps, or re-run tools ' +
       'whose results are already present. Pick up exactly where you left off ' +
       'and finish the task.'
+  }
+
+  // Resolve "@" references (tagged files + workspaces) into inline context and
+  // append it to the user's message. Done before the empty-message guard so a
+  // references-only message is still valid. Skipped on continuation turns (the
+  // client doesn't send references there). File contents are read from the
+  // workspace on disk; workspace metadata comes from the client-built summary.
+  if (!isContinueTurn) {
+    const referencedContext = buildReferencedContext(body.references, WORKSPACE_DIR)
+    if (referencedContext) {
+      userText = userText ? `${userText}\n\n${referencedContext}` : referencedContext
+    }
   }
 
   if (!userText && userFileParts.length === 0) {

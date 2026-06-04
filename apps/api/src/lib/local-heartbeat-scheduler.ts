@@ -80,7 +80,7 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
 
   protected async triggerAgent(projectId: string): Promise<void> {
     try {
-      const { deriveRuntimeToken } = await import('./runtime-token')
+      const { deriveProjectRuntimeToken } = await import('./project-runtime-token')
 
       let runtime = this.runtimeProvider?.status(projectId)
       if (!runtime?.agentPort) {
@@ -102,7 +102,8 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
       }
 
       const podUrl = `http://localhost:${runtime.agentPort}`
-      const token = deriveRuntimeToken(projectId)
+      // Workspace token under SHOGO_WORKSPACE_RUNTIME, project token otherwise.
+      const token = await deriveProjectRuntimeToken(projectId)
 
       const response = await fetch(`${podUrl}/agent/heartbeat/trigger`, {
         method: 'POST',

@@ -2345,8 +2345,14 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // transport.
   const contentType = c.req.header('content-type')
   const accept = c.req.header('accept')
-  const { deriveRuntimeToken } = await import('./lib/runtime-token')
-  const runtimeToken = deriveRuntimeToken(projectId)
+  // Under SHOGO_WORKSPACE_RUNTIME the project is served by a merged-root
+  // "unified" runtime that authenticates with the WORKSPACE token, not the
+  // project token — sending the project token here 401s every proxied call
+  // (config, quick-actions, workspace tree/search, chat). The resolver picks
+  // the right token type for the active topology. `authedWorkspaceId` is set
+  // for all non-webchat paths; webchat falls back to a (cached) lookup.
+  const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
+  const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId: authedWorkspaceId })
 
   // Read the chat-session id from the client. The billing-session map is
   // keyed by `(projectId, chatSessionId)` so concurrent chat sessions on
@@ -3013,14 +3019,14 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
     // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
       const podUrl = await getProjectPodUrl(projectId)
       const targetUrl = `${podUrl}/terminal/commands`
       
       console.log(`[TerminalProxy] Proxying commands list to ${targetUrl}`)
       
       const response = await fetch(targetUrl, {
-        headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+        headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
       })
       
       // Handle non-OK responses with proper JSON errors
@@ -3140,13 +3146,13 @@ async function resolveRuntimeBaseUrl(projectId: string): Promise<string> {
  * stays a one-liner.
  */
 async function ptyPodRestDeps() {
-  const [{ deriveRuntimeToken }, { proxyTerminalSessionsToPod }] = await Promise.all([
-    import('./lib/runtime-token'),
+  const [{ deriveProjectRuntimeToken }, { proxyTerminalSessionsToPod }] = await Promise.all([
+    import('./lib/project-runtime-token'),
     import('./lib/pty-pod-rest-proxy'),
   ])
   return {
     proxyTerminalSessionsToPod,
-    deps: { resolvePodUrl: resolveRuntimeBaseUrl, deriveRuntimeToken, isSafeProjectId },
+    deps: { resolvePodUrl: resolveRuntimeBaseUrl, deriveRuntimeToken: deriveProjectRuntimeToken, isSafeProjectId },
   }
 }
 
@@ -3275,14 +3281,14 @@ app.get('/api/projects/:projectId/diagnostics', async (c) => {
   if (isKubernetes()) {
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
       const podUrl = await raceAbort(getProjectPodUrl(projectId), c.req.raw.signal)
       // Forward the original query string verbatim (?source=, ?since=).
       const inUrl = new URL(c.req.url)
       const target = new URL(`${podUrl}/diagnostics`)
       inUrl.searchParams.forEach((v, k) => target.searchParams.set(k, v))
       const response = await fetch(target, {
-        headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+        headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
         signal: c.req.raw.signal,
       })
       return forwardDiagnosticsResponse(c, response, 'GET /diagnostics')
@@ -3344,14 +3350,14 @@ app.post('/api/projects/:projectId/diagnostics/refresh', async (c) => {
   if (isKubernetes()) {
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
       const podUrl = await raceAbort(getProjectPodUrl(projectId), c.req.raw.signal)
       const target = `${podUrl}/diagnostics/refresh`
       const body = await c.req.text()
       const response = await fetch(target, {
         method: 'POST',
         headers: {
-          'x-runtime-token': deriveRuntimeToken(projectId),
+          'x-runtime-token': await deriveProjectRuntimeToken(projectId),
           'content-type': c.req.header('content-type') ?? 'application/json',
         },
         body,
@@ -4529,12 +4535,12 @@ app.post('/api/projects/:projectId/agent/tool-mocks', async (c) => {
   }
 
   try {
-    const { deriveRuntimeToken } = await import('./lib/runtime-token')
+    const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
     const resp = await fetch(`${baseUrl}/agent/tool-mocks`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-runtime-token': deriveRuntimeToken(projectId),
+        'x-runtime-token': await deriveProjectRuntimeToken(projectId),
       },
       body,
     })
@@ -4560,10 +4566,10 @@ app.delete('/api/projects/:projectId/agent/tool-mocks', async (c) => {
   }
 
   try {
-    const { deriveRuntimeToken } = await import('./lib/runtime-token')
+    const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
     const resp = await fetch(`${baseUrl}/agent/tool-mocks`, {
       method: 'DELETE',
-      headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+      headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
     })
     const text = await resp.text()
     return new Response(text, {
@@ -7692,13 +7698,13 @@ export default {
           return new Response('Invalid id', { status: 400 })
         }
         try {
-          const { deriveRuntimeToken } = await import('./lib/runtime-token')
+          const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
           const podUrl = await resolveRuntimeBaseUrl(projectId)
           const data: PtyPodBridgeData = buildPtyPodBridgeData({
             podUrl,
             sessionId,
             since,
-            runtimeToken: deriveRuntimeToken(projectId),
+            runtimeToken: await deriveProjectRuntimeToken(projectId),
           })
           const upgraded = server.upgrade(req, { data })
           if (upgraded) return undefined

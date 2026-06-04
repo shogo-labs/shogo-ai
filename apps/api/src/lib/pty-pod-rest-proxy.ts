@@ -24,8 +24,12 @@ const HOP_BY_HOP = new Set(['transfer-encoding', 'connection'])
 export interface ProxyDeps {
   /** Resolves `getProjectPodUrl(projectId)` → http(s):// origin of the pod. */
   resolvePodUrl: (projectId: string) => Promise<string>
-  /** Derives the shared `x-runtime-token` for the pod's auth middleware. */
-  deriveRuntimeToken: (projectId: string) => string
+  /**
+   * Derives the `x-runtime-token` for the runtime's auth middleware. May be
+   * async — under `SHOGO_WORKSPACE_RUNTIME` the host path resolves the
+   * project's `workspaceId` to mint a workspace-scoped token.
+   */
+  deriveRuntimeToken: (projectId: string) => string | Promise<string>
   /** Guard against path-traversal / weird ids before we hit the resolver. */
   isSafeProjectId: (id: string) => boolean
   /** Injectable for tests. Defaults to global `fetch`. */
@@ -60,7 +64,7 @@ export async function proxyTerminalSessionsToPod(
   try {
     const podUrl = await resolvePodUrl(projectId)
     const targetUrl = `${trimTrailingSlash(podUrl)}/terminal/sessions${pathSuffix}`
-    const headers: Record<string, string> = { 'x-runtime-token': deriveRuntimeToken(projectId) }
+    const headers: Record<string, string> = { 'x-runtime-token': await deriveRuntimeToken(projectId) }
     if (body !== undefined) {
       headers['content-type'] = contentType ?? 'application/json'
     }

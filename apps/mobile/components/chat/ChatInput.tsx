@@ -44,6 +44,7 @@ import {
   Lock,
   File,
   FileText,
+  Boxes,
   Image as ImageIcon,
   ChevronDown,
   ChevronUp,
@@ -74,6 +75,9 @@ import { PastedTextChip } from "./PastedTextChip"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
 import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
 import type { ToolCallData } from "./tools/types"
+import { AgentClient } from "@shogo-ai/sdk/agent"
+import { agentFetch } from "../../lib/agent-fetch"
+import { useChatContextSafe } from "./ChatContext"
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
@@ -147,6 +151,123 @@ export interface FileAttachment {
   type: string
 }
 
+/**
+ * A structured "@" reference attached to a chat message. Files point at a
+ * path inside the current project's agent workspace (resolved to real
+ * contents by the runtime); workspaces carry a client-built `summary` so
+ * the runtime can inject them as context without a DB lookup (works even
+ * in direct-to-runtime / desktop mode).
+ */
+export type ChatReference =
+  | { type: "file"; path: string; name: string; label?: string }
+  | { type: "workspace"; id: string; name: string; slug: string; summary?: string; label?: string }
+
+/** Lightweight workspace shape the composer needs for the "@" menu. */
+export interface WorkspaceMentionOption {
+  id: string
+  name: string
+  slug: string
+  description?: string
+}
+
+/** One selectable row in the "@" menu (files first, then workspaces). */
+type MentionItem =
+  | { kind: "file"; path: string; name: string }
+  | { kind: "workspace"; id: string; name: string; slug: string; description?: string }
+
+const MAX_MENTION_FILE_RESULTS = 8
+const MAX_MENTION_WORKSPACE_RESULTS = 8
+
+function referenceKey(ref: ChatReference): string {
+  return ref.type === "file" ? `file:${ref.path}` : `workspace:${ref.id}`
+}
+
+function buildWorkspaceSummary(ws: WorkspaceMentionOption): string {
+  const lines = [`Workspace: ${ws.name} (slug: ${ws.slug}, id: ${ws.id})`]
+  if (ws.description && ws.description.trim()) {
+    lines.push(`Description: ${ws.description.trim()}`)
+  }
+  return lines.join("\n")
+}
+
+function basename(path: string): string {
+  const parts = path.split("/").filter(Boolean)
+  return parts[parts.length - 1] || path
+}
+
+/**
+ * True when `label` (an "@token") occurs in `text` at a mention boundary —
+ * start-of-string or right after whitespace, mirroring `detectMentionToken`.
+ * Used to prune references whose inline text the user edited/deleted and to
+ * decide what the inline-highlight overlay should pill.
+ */
+function labelPresent(text: string, label: string): boolean {
+  if (!label) return false
+  let from = 0
+  for (;;) {
+    const idx = text.indexOf(label, from)
+    if (idx === -1) return false
+    if (idx === 0 || /\s/.test(text[idx - 1])) return true
+    from = idx + 1
+  }
+}
+
+/** A run of composer text: either plain or a tagged "@mention". */
+type MentionSegment = { text: string; mention: boolean }
+
+/**
+ * Split `text` into plain / mention runs by matching known reference `labels`
+ * at mention boundaries (longest-first so `@foo.tsx` wins over `@foo`). Backs
+ * the transparent overlay that draws an inline pill behind each "@mention"
+ * while the real (crisp) text stays in the TextInput on top.
+ */
+function buildMentionSegments(text: string, labels: string[]): MentionSegment[] {
+  const unique = Array.from(new Set(labels.filter(Boolean))).sort((a, b) => b.length - a.length)
+  if (unique.length === 0) return [{ text, mention: false }]
+  const segments: MentionSegment[] = []
+  let i = 0
+  let plainStart = 0
+  while (i < text.length) {
+    let matched: string | null = null
+    if (i === 0 || /\s/.test(text[i - 1])) {
+      for (const lab of unique) {
+        if (text.startsWith(lab, i)) {
+          matched = lab
+          break
+        }
+      }
+    }
+    if (matched) {
+      if (plainStart < i) segments.push({ text: text.slice(plainStart, i), mention: false })
+      segments.push({ text: matched, mention: true })
+      i += matched.length
+      plainStart = i
+    } else {
+      i++
+    }
+  }
+  if (plainStart < text.length) segments.push({ text: text.slice(plainStart), mention: false })
+  return segments
+}
+
+/**
+ * Find the active "@" mention token in `text` ending at `caret`. Matches a
+ * leading "@" preceded by start-of-string or whitespace with no whitespace
+ * (or further "@") between it and the caret — e.g. typing `look at @comp`.
+ * Returns the token's start index (the "@") and the query after it.
+ */
+function detectMentionToken(
+  text: string,
+  caret: number
+): { start: number; query: string } | null {
+  const safeCaret = Math.max(0, Math.min(caret, text.length))
+  const upToCaret = text.slice(0, safeCaret)
+  const match = /(^|\s)@([^\s@]*)$/.exec(upToCaret)
+  if (!match) return null
+  const query = match[2]
+  return { start: safeCaret - query.length - 1, query }
+}
+
 export type RestoreDraftRequest = {
   nonce: number
   content: string
@@ -173,7 +294,12 @@ export type QueuedMessage = {
 }
 
 export interface ChatInputProps {
-  onSubmit: (content: string, files?: FileAttachment[], modelId?: string) => void
+  onSubmit: (
+    content: string,
+    files?: FileAttachment[],
+    modelId?: string,
+    references?: ChatReference[]
+  ) => void
   disabled?: boolean
   placeholder?: string
   isStreaming?: boolean
@@ -203,6 +329,17 @@ export interface ChatInputProps {
   quickActions?: { label: string; prompt: string }[]
   onQuickActionClick?: (prompt: string) => void
   restoreDraftRequest?: RestoreDraftRequest | null
+  /**
+   * Current project id. Enables the "@" menu's Files section (file
+   * references are scoped to this project's agent workspace).
+   */
+  projectId?: string
+  /**
+   * Org/team workspaces the user can tag via the "@" menu's Workspaces
+   * section. Pass a referentially-stable array (memoized) so the memoized
+   * ChatInput doesn't re-render on every parent render.
+   */
+  workspaces?: WorkspaceMentionOption[]
   dimWhenDisabled?: boolean
   /**
    * When true, draws an accent-colored ring on the visible input
@@ -262,6 +399,8 @@ function ChatInputImpl({
   quickActions = [],
   onQuickActionClick,
   restoreDraftRequest,
+  projectId,
+  workspaces = [],
   dimWhenDisabled = true,
   highlighted = false,
   flush = false,
@@ -427,6 +566,208 @@ function ChatInputImpl({
         s.description.toLowerCase().includes(lower)
     )
   }, [filterText])
+
+  // ---- "@" mention menu (files + workspaces) --------------------------------
+  const chatContext = useChatContextSafe()
+  const agentUrl = chatContext?.agentUrl ?? null
+  const agentClient = useMemo(
+    () =>
+      agentUrl ? new AgentClient({ baseUrl: agentUrl.replace(/\/$/, ""), fetch: agentFetch }) : null,
+    [agentUrl]
+  )
+
+  const [references, setReferences] = useState<ChatReference[]>([])
+  const [showMentionMenu, setShowMentionMenu] = useState(false)
+  const [mentionQuery, setMentionQuery] = useState("")
+  const [mentionIndex, setMentionIndex] = useState(0)
+  const [fileResults, setFileResults] = useState<{ path: string; name: string }[]>([])
+  // The active "@" token's range in the input, so selecting an item can strip
+  // exactly that token regardless of where the caret is.
+  const mentionTokenRef = useRef<{ start: number; end: number } | null>(null)
+  // One-shot caret override: after inserting an inline "@mention" we move the
+  // caret to just past it, then release control so normal typing isn't pinned.
+  const [selectionOverride, setSelectionOverride] = useState<
+    { start: number; end: number } | undefined
+  >(undefined)
+  // Mirror the TextInput's internal scroll so the highlight overlay tracks it
+  // once the composer grows past its max height and starts scrolling.
+  const [overlayScrollY, setOverlayScrollY] = useState(0)
+
+  const closeMentionMenu = useCallback(() => {
+    setShowMentionMenu(false)
+    setMentionQuery("")
+    setMentionIndex(0)
+    mentionTokenRef.current = null
+  }, [])
+
+  // Re-evaluate the active "@" token whenever the text or caret changes.
+  const updateMentionState = useCallback(
+    (text: string, caret: number) => {
+      const token = detectMentionToken(text, caret)
+      if (!token) {
+        if (mentionTokenRef.current) {
+          mentionTokenRef.current = null
+          setShowMentionMenu(false)
+          setMentionQuery("")
+          setMentionIndex(0)
+        }
+        return
+      }
+      mentionTokenRef.current = { start: token.start, end: caret }
+      setShowMentionMenu(true)
+      setMentionIndex(0)
+      setMentionQuery((prev) => (prev === token.query ? prev : token.query))
+    },
+    []
+  )
+
+  // Debounced file search against the project's agent workspace. Empty query
+  // shows top-level files; otherwise we use the runtime's RAG search. Gated on
+  // `projectId` so the Files section only appears in a project composer (and
+  // stays empty in the inline-edit composer, where references aren't threaded).
+  useEffect(() => {
+    if (!showMentionMenu || !agentClient || !projectId) {
+      setFileResults([])
+      return
+    }
+    let cancelled = false
+    const query = mentionQuery.trim()
+    const timer = setTimeout(async () => {
+      try {
+        const seen = new Set<string>()
+        const results: { path: string; name: string }[] = []
+        if (!query) {
+          const tree = await agentClient.getWorkspaceTree("")
+          const pushFiles = (nodes: any[]) => {
+            for (const node of nodes) {
+              if (results.length >= MAX_MENTION_FILE_RESULTS) return
+              if (node?.type === "file" && node.path && !seen.has(node.path)) {
+                seen.add(node.path)
+                results.push({ path: node.path, name: node.name || basename(node.path) })
+              } else if (node?.type === "directory" && Array.isArray(node.children)) {
+                pushFiles(node.children)
+              }
+            }
+          }
+          pushFiles(Array.isArray(tree) ? tree : [])
+        } else {
+          const hits = await agentClient.searchFiles(query, { limit: MAX_MENTION_FILE_RESULTS * 2 })
+          for (const hit of hits) {
+            if (results.length >= MAX_MENTION_FILE_RESULTS) break
+            if (hit?.path && !seen.has(hit.path)) {
+              seen.add(hit.path)
+              results.push({ path: hit.path, name: basename(hit.path) })
+            }
+          }
+        }
+        if (!cancelled) setFileResults(results)
+      } catch {
+        if (!cancelled) setFileResults([])
+      }
+    }, 150)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [showMentionMenu, mentionQuery, agentClient, projectId])
+
+  const filteredWorkspaces = useMemo(() => {
+    const q = mentionQuery.trim().toLowerCase()
+    const list = workspaces ?? []
+    const matched = q
+      ? list.filter(
+          (w) =>
+            w.name.toLowerCase().includes(q) || w.slug.toLowerCase().includes(q)
+        )
+      : list
+    return matched.slice(0, MAX_MENTION_WORKSPACE_RESULTS)
+  }, [workspaces, mentionQuery])
+
+  // Flat, ordered list backing keyboard navigation (files first, then workspaces).
+  const mentionItems = useMemo<MentionItem[]>(
+    () => [
+      ...fileResults.map((f) => ({ kind: "file" as const, path: f.path, name: f.name })),
+      ...filteredWorkspaces.map((w) => ({
+        kind: "workspace" as const,
+        id: w.id,
+        name: w.name,
+        slug: w.slug,
+        description: w.description,
+      })),
+    ],
+    [fileResults, filteredWorkspaces]
+  )
+
+  const addReference = useCallback((ref: ChatReference) => {
+    setReferences((prev) =>
+      prev.some((r) => referenceKey(r) === referenceKey(ref)) ? prev : [...prev, ref]
+    )
+  }, [])
+
+  const selectMention = useCallback(
+    (item: MentionItem) => {
+      // Insert the mention INLINE as an "@token" (replacing the active query,
+      // or appended at the caret-less end) so it renders as a pill where it
+      // was typed — instead of stripping it into a chip above the box. Files
+      // tag by basename, workspaces by slug (both whitespace-free tokens).
+      const base = inputValueRef.current
+      const token = mentionTokenRef.current
+      const label = `@${item.kind === "file" ? item.name : item.slug}`
+      let caret: number
+      if (token) {
+        const start = Math.max(0, Math.min(token.start, base.length))
+        const end = Math.max(start, Math.min(token.end, base.length))
+        const insert = `${label} `
+        const next = base.slice(0, start) + insert + base.slice(end)
+        inputValueRef.current = next
+        setInputValue(next)
+        caret = start + insert.length
+      } else {
+        const sep = base.length === 0 || base.endsWith(" ") ? "" : " "
+        const insert = `${sep}${label} `
+        const next = base + insert
+        inputValueRef.current = next
+        setInputValue(next)
+        caret = next.length
+      }
+
+      if (item.kind === "file") {
+        addReference({ type: "file", path: item.path, name: item.name, label })
+      } else {
+        addReference({
+          type: "workspace",
+          id: item.id,
+          name: item.name,
+          slug: item.slug,
+          label,
+          summary: buildWorkspaceSummary({
+            id: item.id,
+            name: item.name,
+            slug: item.slug,
+            description: item.description,
+          }),
+        })
+      }
+
+      closeMentionMenu()
+      setSelectionOverride({ start: caret, end: caret })
+      setTimeout(() => {
+        textInputRef.current?.focus()
+        setSelectionOverride(undefined)
+      }, 0)
+    },
+    [addReference, closeMentionMenu]
+  )
+
+  // Keep references in sync with what's actually visible: if the user edits or
+  // deletes a mention's inline "@token", drop the matching reference so we
+  // don't ship context the composer no longer shows.
+  useEffect(() => {
+    setReferences((prev) => {
+      const next = prev.filter((r) => !r.label || labelPresent(inputValue, r.label))
+      return next.length === prev.length ? prev : next
+    })
+  }, [inputValue])
 
   const formatFileSize = useCallback((bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`
@@ -608,6 +949,22 @@ function ChatInputImpl({
     onTranscript: appendTranscriptToInput,
   })
 
+  // Inline "@mention" highlight overlay. Mirror EXACTLY what the TextInput
+  // shows (including the live voice transcript) so the pills line up with the
+  // real text painted on top.
+  const composerDisplayValue =
+    voiceInput.isRecording && voiceInput.liveTranscript
+      ? voiceInput.liveTranscript
+      : inputValue
+  const mentionLabels = useMemo(
+    () => references.map((r) => r.label).filter((l): l is string => !!l),
+    [references]
+  )
+  const mentionSegments = useMemo(
+    () => buildMentionSegments(composerDisplayValue, mentionLabels),
+    [composerDisplayValue, mentionLabels]
+  )
+
   const selectSkill = useCallback(
     (skill: SkillOption) => {
       const spaceIndex = inputValue.indexOf(" ")
@@ -622,7 +979,10 @@ function ChatInputImpl({
   const handleSubmit = useCallback(() => {
     const trimmedContent = inputValue.trim()
     if (
-      (!trimmedContent && pendingFiles.length === 0 && pastedTexts.length === 0) ||
+      (!trimmedContent &&
+        pendingFiles.length === 0 &&
+        pastedTexts.length === 0 &&
+        references.length === 0) ||
       disabled ||
       isProcessingFiles ||
       voiceInput.isBusy
@@ -639,17 +999,21 @@ function ChatInputImpl({
       ...pastedAttachments,
     ]
     const fileData = combinedFiles.length > 0 ? combinedFiles : undefined
+    const refData = references.length > 0 ? references : undefined
 
-    onSubmit(trimmedContent, fileData, currentModelId)
+    onSubmit(trimmedContent, fileData, currentModelId, refData)
+    inputValueRef.current = ""
     setInputValue("")
     setInputHeight(MIN_INPUT_HEIGHT)
     setPendingFiles([])
     setPastedTexts([])
     setViewingPastedId(null)
+    setReferences([])
     setFileError(null)
+    closeMentionMenu()
 
     textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue, pastedTexts, voiceInput.isBusy])
+  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue, pastedTexts, references, voiceInput.isBusy, closeMentionMenu])
 
   const handleChangeText = useCallback(
     (text: string) => {
@@ -667,11 +1031,16 @@ function ChatInputImpl({
       const paste = extractLongPaste(inputValueRef.current, text)
       if (paste) {
         addPastedText(paste.inserted)
+        inputValueRef.current = paste.restored
         setInputValue(paste.restored)
         setShowSkillPicker(false)
+        closeMentionMenu()
         return
       }
 
+      // Keep the ref in sync synchronously so onSelectionChange (which fires
+      // right after with the authoritative caret) sees the latest text.
+      inputValueRef.current = text
       setInputValue(text)
       if (text.length === 0) {
         setInputHeight(MIN_INPUT_HEIGHT)
@@ -684,8 +1053,12 @@ function ChatInputImpl({
       } else {
         setShowSkillPicker(false)
       }
+
+      // Provisional mention detection using the end of the text as the caret;
+      // onSelectionChange refines this with the real caret position.
+      updateMentionState(text, text.length)
     },
-    [addPastedText]
+    [addPastedText, closeMentionMenu, updateMentionState]
   )
 
   const getFileIcon = useCallback((fileType: string) => {
@@ -1071,21 +1444,17 @@ function ChatInputImpl({
         </View>
       )}
 
-      {/* Main input container */}
-      <View
-        ref={dropZoneRef as any}
-        className={cn(
-          "relative border bg-muted/30 overflow-hidden",
-          queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl",
-          isDragOver ? "border-primary border-dashed" : "border-border/60",
-          // Accent ring for the inline-edit "active edit target"
-          // state. Drag-over still takes precedence (its dashed
-          // primary border is more important to surface than the
-          // edit-target highlight). The inner border stays at
-          // 1px so toggling `highlighted` doesn't shift layout.
-          highlighted && !isDragOver && "ring-2 ring-primary/70"
-        )}
-      >
+      {/* Dropdown + input layer.
+
+          This bare `relative` wrapper is the positioning context for the
+          floating dropdowns (skill picker + "@" mention menu) that open
+          ABOVE the composer via `bottom-full`. They MUST live here rather
+          than inside the bordered input box below: that box uses
+          `overflow-hidden` to clip its own rounded corners, which also
+          clips anything positioned outside its bounds — so a dropdown
+          anchored at `bottom: 100%` (just above the box) was being clipped
+          completely out of view. The wrapper itself never clips. */}
+      <View className="relative">
         {/* Skill picker dropdown */}
         {showSkillPicker && filteredSkills.length > 0 && (
           <View className="absolute bottom-full left-0 right-0 mb-1 max-h-[200px] rounded-md border border-border bg-popover shadow-md z-50">
@@ -1111,6 +1480,107 @@ function ChatInputImpl({
           </View>
         )}
 
+        {/* "@" mention menu — files (current project) + workspaces */}
+        {showMentionMenu && (
+          <View className="absolute bottom-full left-0 right-0 mb-1 max-h-[280px] rounded-md border border-border bg-popover shadow-md z-50">
+            <ScrollView keyboardShouldPersistTaps="handled">
+              {fileResults.length > 0 && (
+                <>
+                  <Text className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Files
+                  </Text>
+                  {fileResults.map((file, i) => {
+                    const active = i === mentionIndex
+                    return (
+                      <Pressable
+                        key={`mention-file-${file.path}`}
+                        onPress={() => selectMention({ kind: "file", path: file.path, name: file.name })}
+                        className={cn(
+                          "w-full flex-row items-center gap-2 px-3 py-2",
+                          active && "bg-accent"
+                        )}
+                      >
+                        <FileText className="h-4 w-4 text-muted-foreground" size={16} />
+                        <View className="flex-1">
+                          <Text className="text-sm text-foreground" numberOfLines={1}>
+                            {file.name}
+                          </Text>
+                          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                            {file.path}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    )
+                  })}
+                </>
+              )}
+
+              {filteredWorkspaces.length > 0 && (
+                <>
+                  <Text className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Workspaces
+                  </Text>
+                  {filteredWorkspaces.map((ws, i) => {
+                    const idx = fileResults.length + i
+                    const active = idx === mentionIndex
+                    return (
+                      <Pressable
+                        key={`mention-ws-${ws.id}`}
+                        onPress={() =>
+                          selectMention({
+                            kind: "workspace",
+                            id: ws.id,
+                            name: ws.name,
+                            slug: ws.slug,
+                            description: ws.description,
+                          })
+                        }
+                        className={cn(
+                          "w-full flex-row items-center gap-2 px-3 py-2",
+                          active && "bg-accent"
+                        )}
+                      >
+                        <Boxes className="h-4 w-4 text-muted-foreground" size={16} />
+                        <View className="flex-1">
+                          <Text className="text-sm text-foreground" numberOfLines={1}>
+                            {ws.name}
+                          </Text>
+                          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                            {ws.slug}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    )
+                  })}
+                </>
+              )}
+
+              {mentionItems.length === 0 && (
+                <Text className="px-3 py-3 text-xs text-muted-foreground">
+                  {!agentClient && (workspaces?.length ?? 0) === 0
+                    ? "Nothing to reference yet"
+                    : "No matches"}
+                </Text>
+              )}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Main input container */}
+        <View
+          ref={dropZoneRef as any}
+          className={cn(
+            "relative border bg-muted/30 overflow-hidden",
+            queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl",
+            isDragOver ? "border-primary border-dashed" : "border-border/60",
+            // Accent ring for the inline-edit "active edit target"
+            // state. Drag-over still takes precedence (its dashed
+            // primary border is more important to surface than the
+            // edit-target highlight). The inner border stays at
+            // 1px so toggling `highlighted` doesn't shift layout.
+            highlighted && !isDragOver && "ring-2 ring-primary/70"
+          )}
+        >
         {/* Hidden file input for web (including mobile-web on Android/iOS browsers) */}
         {Platform.OS === "web" && (
           <input
@@ -1139,12 +1609,96 @@ function ChatInputImpl({
           </View>
         )}
 
+        {/* Tagged files / workspaces now render INLINE as "@mention" pills via
+            the highlight overlay below, so the old chip row above the box is
+            gone. References themselves are still tracked + sent on submit. */}
+
+        <View className="relative">
+          {/* Highlight backdrop: a transparent mirror of the composer text that
+              paints a pill behind each "@mention". The real TextInput sits on
+              top (zIndex) so typed text stays crisp and the caret is native;
+              only the pill backgrounds show through its transparent fill. The
+              mirror MUST match the TextInput's font/line-height/padding (shared
+              `text-xs` + `px-4 pt-4`) or the pills drift off the words. */}
+          <View
+            pointerEvents="none"
+            className="absolute top-0 bottom-0 left-0 right-0 overflow-hidden px-4 pt-4"
+            style={{ zIndex: 0 }}
+          >
+            <Text
+              className="text-xs"
+              style={[
+                { color: "transparent", transform: [{ translateY: -overlayScrollY }] },
+                Platform.OS === "web"
+                  ? ({ whiteSpace: "pre-wrap", wordBreak: "break-word" } as any)
+                  : null,
+              ]}
+            >
+              {mentionSegments.map((seg, idx) =>
+                seg.mention ? (
+                  <Text
+                    key={idx}
+                    className="text-xs rounded bg-primary/20"
+                    style={{ color: "transparent" }}
+                  >
+                    {seg.text}
+                  </Text>
+                ) : (
+                  <Text key={idx} className="text-xs" style={{ color: "transparent" }}>
+                    {seg.text}
+                  </Text>
+                )
+              )}
+            </Text>
+          </View>
+
         <TextInput
           ref={textInputRef}
           value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : inputValue}
+          selection={selectionOverride}
           onChangeText={handleChangeText}
+          onSelectionChange={(e) => {
+            // Re-detect against the freshest text (kept in inputValueRef by
+            // handleChangeText) using the authoritative caret position.
+            updateMentionState(inputValueRef.current, e.nativeEvent.selection.start)
+          }}
+          onScroll={(e) => {
+            // Keep the inline-mention overlay aligned once the box scrolls.
+            setOverlayScrollY((e.nativeEvent as any)?.contentOffset?.y ?? 0)
+          }}
+          scrollEventThrottle={16}
           onSubmitEditing={handleSubmit}
           onKeyPress={(e: any) => {
+            // While the "@" menu is open, intercept navigation keys so they
+            // drive the menu instead of the textarea / message submit.
+            if (
+              Platform.OS === "web" &&
+              showMentionMenu &&
+              mentionItems.length > 0
+            ) {
+              const key = e.nativeEvent.key
+              if (key === "ArrowDown") {
+                e.preventDefault()
+                setMentionIndex((i) => (i + 1) % mentionItems.length)
+                return
+              }
+              if (key === "ArrowUp") {
+                e.preventDefault()
+                setMentionIndex((i) => (i - 1 + mentionItems.length) % mentionItems.length)
+                return
+              }
+              if (key === "Enter" || key === "Tab") {
+                e.preventDefault()
+                const item = mentionItems[Math.min(mentionIndex, mentionItems.length - 1)]
+                if (item) selectMention(item)
+                return
+              }
+              if (key === "Escape") {
+                e.preventDefault()
+                closeMentionMenu()
+                return
+              }
+            }
             if (Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
               e.preventDefault()
               cycleInteractionMode()
@@ -1169,7 +1723,7 @@ function ChatInputImpl({
               setInputHeight(clamped)
             }
           }}
-          style={{ height: inputHeight }}
+          style={{ height: inputHeight, zIndex: 1 }}
           className={cn(
             "min-h-[60px] max-h-[200px] w-full",
             "bg-transparent",
@@ -1179,6 +1733,7 @@ function ChatInputImpl({
           )}
           textAlignVertical="top"
         />
+        </View>
 
         {/* Bottom toolbar */}
         <View className="flex-row items-center justify-between p-1.5">
@@ -1557,6 +2112,7 @@ function ChatInputImpl({
             ) : null}
           </View>
           )}
+        </View>
         </View>
       </View>
 
