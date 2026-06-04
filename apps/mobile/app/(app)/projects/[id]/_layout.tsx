@@ -3472,23 +3472,56 @@ function CanvasPanel({
   // Dev server reachable (non-404 root) AND the agent runtime is up.
   const baseReady = !!agentUrl && !!readyCanvasBaseUrl
 
-  const CONNECTION_TIMEOUT_MS = 60_000
-  const [timedOut, setTimedOut] = useState(false)
+  // Two independent fallbacks, deliberately kept separate:
+  //
+  //  - baseTimedOut: the agent runtime / dev server never became reachable
+  //    (a genuine failure) → surface the "Connection timed out" error + Retry.
+  //
+  //  - apiWaitElapsed: the dev server IS up but the API sidecar hasn't reported
+  //    healthy within a bounded window → show the app anyway rather than block.
+  //    This is intentionally NON-RESETTING. On a fresh project the sidecar only
+  //    goes healthy after a cold `bun install` + build + spawn, and during that
+  //    time the dev-server root can flip 404<->200 as `dist/` is rebuilt. The
+  //    previous single timer keyed on `baseReady`, so every flip restarted the
+  //    clock and the gate could hang on "Starting API server…" forever. We
+  //    start this timer once (on first base-ready) and never restart it.
+  const BASE_TIMEOUT_MS = 60_000
+  const API_WAIT_TIMEOUT_MS = 20_000
+  const [baseTimedOut, setBaseTimedOut] = useState(false)
   useEffect(() => {
-    if (baseReady && apiLatched) {
-      setTimedOut(false)
+    if (baseReady) {
+      setBaseTimedOut(false)
       return
     }
-    setTimedOut(false)
-    const timer = setTimeout(() => setTimedOut(true), CONNECTION_TIMEOUT_MS)
+    setBaseTimedOut(false)
+    const timer = setTimeout(() => setBaseTimedOut(true), BASE_TIMEOUT_MS)
     return () => clearTimeout(timer)
-  }, [baseReady, apiLatched])
+  }, [baseReady])
 
-  // Load the canvas once the dev server is reachable AND the sidecar is
-  // healthy. The 60s timeout is a safety net so a sidecar that never reports
-  // healthy (crash loop, template without `/health`) still eventually shows
-  // the app instead of hanging on a spinner forever.
-  const showCanvas = shouldShowCanvas({ baseReady, apiLatched, timedOut })
+  const [apiWaitElapsed, setApiWaitElapsed] = useState(false)
+  const apiWaitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (apiLatched) return
+    if (!baseReady) return
+    // Start exactly once; do NOT restart on baseReady / phase oscillation.
+    if (apiWaitTimerRef.current) return
+    apiWaitTimerRef.current = setTimeout(() => setApiWaitElapsed(true), API_WAIT_TIMEOUT_MS)
+  }, [baseReady, apiLatched])
+  useEffect(
+    () => () => {
+      if (apiWaitTimerRef.current) {
+        clearTimeout(apiWaitTimerRef.current)
+        apiWaitTimerRef.current = null
+      }
+    },
+    [],
+  )
+
+  // Load the canvas once the dev server is reachable AND the sidecar is healthy
+  // (latched). `apiWaitElapsed` is the bounded safety net so a slow cold start
+  // or a sidecar that never reports healthy (crash loop, template without
+  // `/health`) still shows the app within ~20s instead of hanging forever.
+  const showCanvas = shouldShowCanvas({ baseReady, apiLatched, timedOut: apiWaitElapsed })
 
   if (!showCanvas) {
     // `!baseReady` → runtime / dev server not up yet (show its phase, and the
@@ -3503,7 +3536,7 @@ function CanvasPanel({
       : PHASE_LABELS['starting-api']
     return (
       <View className="flex-1 items-center justify-center px-6">
-        {timedOut ? (
+        {baseTimedOut ? (
           <>
             <View className="w-3 h-3 rounded-full mb-3 bg-destructive" />
             <Text className="text-foreground font-semibold mb-1">
