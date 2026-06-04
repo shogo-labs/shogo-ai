@@ -19,6 +19,8 @@ import { MatcherEngine } from './problem-matchers'
 import { TerminalContextMenu, buildVsCodeMenuGroups } from './context-menu'
 import { ApprovalStore, workspaceHashOf, type ApprovalDecision } from './approval-store'
 import { buildDebugContext, serialiseDebugContext, type DebugContext } from './debug-with-ai'
+import { AgentTerminalBridge, type CommandResult, type BackgroundTask } from './agent-terminal-bridge'
+import { terminalContextStore } from './terminal-context-store'
 import { useShogoTheme, type ThemeSource, type XtermThemeColors } from './use-shogo-theme'
 import { SnapshotStore, captureScrollback, restoreScrollback } from './persistence/snapshot-store'
 // xterm.js depends on this stylesheet to size the row container and
@@ -46,6 +48,14 @@ export interface ShogoTerminalSurfaceHandle {
   refit(): void
   openFind?(): void
   openRecent?(): void
+  /** Send a command and wait for it to complete (agent terminal API). */
+  sendCommand?(command: string): Promise<CommandResult>
+  /** Send a command without waiting for completion. */
+  sendCommandBackground?(command: string): BackgroundTask
+  /** Interrupt the currently running command (sends SIGINT). */
+  interruptCommand?(): CommandResult | null
+  /** Get recent commands from the tracker. */
+  getRecentCommands?(limit?: number): Command[]
 }
 
 export interface ShogoTerminalSurfaceProps {
@@ -170,6 +180,18 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     const fitRef = React.useRef<XFitAddon | null>(null)
     const trackerRef = React.useRef(new Osc633Tracker())
     const [tracker] = React.useState(() => trackerRef.current)
+    /** Agent terminal bridge — Promise-based sendCommand for the agent loop. */
+    const bridgeRef = React.useRef<AgentTerminalBridge | null>(null)
+    if (!bridgeRef.current) {
+      bridgeRef.current = new AgentTerminalBridge({
+        tracker,
+        send: (data) => client.send(data),
+        signal: (sig) => client.signal(sig),
+      })
+    }
+    // Keep the bridge's send reference current across re-renders
+    // (e.g. after terminal reconnect, the client prop changes).
+    bridgeRef.current.setSend((data) => client.send(data))
     const [state, setState] = React.useState(client.state)
     const [searchController, setSearchController] = React.useState<SearchController | null>(null)
     const [searchOpen, setSearchOpen] = React.useState(false)
@@ -471,6 +493,15 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         client.resize(term.cols, term.rows)
         if (autoFocus && !hidden) term.focus()
 
+        // Publish terminal context to the module-level store so the chat
+        // panel can auto-inject terminal context into messages.
+        terminalContextStore.publish({
+            tracker,
+            bridge: bridgeRef.current!,
+            cwd: tracker.snapshot().cwd ?? null,
+            publishedAt: Date.now(),
+          })
+
         cleanup = () => {
           // Phase 10: flush one last snapshot before tearing down the
           // terminal — captures any post-last-command typing/output.
@@ -483,10 +514,12 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           quickFix.dispose()
           gpu.dispose()
           search.dispose?.()
+          bridgeRef.current?.dispose()
           term.dispose()
           termRef.current = null
           fitRef.current = null
           setSearchController(null)
+          terminalContextStore.withdraw()
         }
       })()
 
@@ -559,6 +592,10 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         setSearchOpen(true)
       },
       openRecent: () => recentCommandPicker.open(),
+      sendCommand: (command: string) => bridgeRef.current!.sendCommand(command),
+      sendCommandBackground: (command: string) => bridgeRef.current!.sendCommandBackground(command),
+      interruptCommand: () => bridgeRef.current!.interruptCommand(),
+      getRecentCommands: (limit?: number) => bridgeRef.current!.getRecentCommands(limit),
     }), [recentCommandPicker])
 
     const openContextMenu = (ev: React.MouseEvent) => {
@@ -783,6 +820,14 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
                     },
                   })
                   setDebugPanel(ctx)
+                  // Also push the context to the IDE's chat panel so
+                  // the user can continue debugging in a conversational
+                  // flow. Best-effort: if the bridge is unavailable
+                  // (e.g. web/mobile) the local side panel still works.
+                  try {
+                    const md = serialiseDebugContext(ctx)
+                    void getDesktopBridge().llm?.openChatWithContext?.(md)
+                  } catch { /* bridge unavailable */ }
                 },
               },
             ]],

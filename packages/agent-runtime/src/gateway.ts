@@ -1683,7 +1683,35 @@ export class AgentGateway {
         }
         this.reloadConfig()
       },
+
     }
+
+    // Terminal exec callback — routes commands to the user's visible terminal
+    // when running on the desktop. The Electron main process starts a tiny
+    // HTTP handler and passes its URL via TERMINAL_EXEC_URL env var.
+    const terminalExecUrl = process.env.TERMINAL_EXEC_URL
+    if (terminalExecUrl) {
+      toolContext.terminalExec = async ({ command, cwd, timeoutMs }) => {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), timeoutMs ?? 130_000)
+        try {
+          const res = await fetch(`${terminalExecUrl}/terminal/exec`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command, cwd, timeoutMs }),
+            signal: controller.signal,
+          })
+          if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            throw new Error(`Terminal exec failed (HTTP ${res.status}): ${body}`)
+          }
+          return await res.json()
+        } finally {
+          clearTimeout(timer)
+        }
+      }
+    }
+
 
     const baseTools = createTools(toolContext)
 

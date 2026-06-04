@@ -376,6 +376,25 @@ export type {
   TerminalDiagnostic,
 } from './renderer/problem-matchers'
 
+// Context Aggregator — auto context injection for chat messages
+// Lazy-loaded: only pulled in by terminalContextStore.enrichMessage()
+export {
+  ContextAggregator,
+  serializeContext,
+  formatContextMessage,
+} from './renderer/context-aggregator'
+export type {
+  ActiveFileInfo,
+  AggregatedContext,
+  ContextAggregatorOptions,
+  ContextSource,
+  DiagnosticsContextSource,
+  Diagnostic,
+  EditorContextSource,
+  GitContextSource,
+  GitStatus,
+} from './renderer/context-aggregator'
+
 export {
   SnapshotStore,
   InMemorySnapshotStorage,
@@ -387,6 +406,26 @@ export type {
   SnapshotStorage,
   SnapshotStoreOptions,
 } from './renderer/persistence/snapshot-store'
+
+// Terminal Context — shared store bridging terminal ↔ chat (module singleton)
+export {
+  terminalContextStore,
+} from './renderer/terminal-context-store'
+export type {
+  TerminalContextSnapshot,
+  TerminalContextListener,
+} from './renderer/terminal-context-store'
+
+// TerminalContext — desktop-only React context, import directly from './renderer/terminal-context'
+
+// TerminalCommandExecutor — desktop-only, import directly from './renderer/terminal-command-executor'
+
+// AgentTerminalFactory — desktop-only, import directly from './renderer/agent-terminal-factory'
+// Not re-exported from barrel to avoid pulling pty-core into the Expo web bundle.
+
+// OutputStreamer — desktop-only, import directly from './renderer/output-streamer'
+
+// AgentTerminalPanel — desktop-only, import directly from './renderer/agent-terminal-panel'
 
 export {
   DARK_PLUS_THEME,

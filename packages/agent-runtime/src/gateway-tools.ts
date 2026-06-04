@@ -166,6 +166,23 @@ export interface ToolContext {
   /** When this tool runs inside a spawned subagent, the AgentManager instance id.
    *  Used e.g. to key the CDP screencast broadcaster so the mobile LiveBrowserView
    *  can subscribe to the right running subagent's browser viewport. */
+  /**
+   * Execute a command in the user's visible terminal (desktop only).
+   * When provided, the terminal_exec tool routes commands through
+   * the user's terminal instead of the sandboxed exec.
+   */
+  terminalExec?: (params: {
+    command: string
+    cwd?: string
+    timeoutMs?: number
+  }) => Promise<{
+    exitCode: number | null
+    output: string
+    cwd: string | null
+    durationMs: number | null
+    timedOut: boolean
+  }>
+
   subagentInstanceId?: string
 }
 
@@ -4318,6 +4335,51 @@ function createReadGuideTool(ctx: ToolContext): AgentTool {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Terminal Exec Tool — runs commands in the user's visible terminal (desktop)
+// ---------------------------------------------------------------------------
+
+function createTerminalExecTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'terminal_exec',
+    description: `Execute a shell command in the user's visible terminal (desktop app only).
+Unlike exec (which runs in a sandbox), this sends the command to the user's terminal,
+waits for completion, and returns the output. Use this when the command needs to run
+in the user's actual shell environment (e.g. with their PATH, nvm, conda, etc.) or
+when the user should see the command running.
+
+Returns: { exitCode, output, cwd, durationMs, timedOut }.
+
+If the desktop terminal is not available (web/mobile), falls back to the sandboxed exec.`,
+    parameters: Type.Object({
+      command: Type.String({ description: 'The shell command to execute' }),
+      cwd: Type.Optional(Type.String({ description: 'Working directory (defaults to current)' })),
+      timeoutMs: Type.Optional(Type.Number({ description: 'Max wait time in ms (default: 120000)' })),
+    }),
+    execute: async (params) => {
+      const { command, cwd, timeoutMs } = params as { command: string; cwd?: string; timeoutMs?: number }
+
+      if (!ctx.terminalExec) {
+        return textResult({
+          error: 'Desktop terminal not available. Use exec tool instead.',
+          hint: 'This command can only run on the desktop app.',
+        })
+      }
+
+      try {
+        const result = await ctx.terminalExec({ command, cwd, timeoutMs })
+        return textResult(result)
+      } catch (err: any) {
+        return textResult({
+          error: err?.message ?? String(err),
+          command,
+        })
+      }
+    },
+  }
+}
+
 /** All gateway tools (unified set). Includes base tools + agent_* orchestration tools. */
 export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
@@ -4359,6 +4421,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createCreatePlanTool(ctx),
     createUpdatePlanTool(ctx),
     createQuickActionTool(ctx),
+    createTerminalExecTool(ctx),
     createReadGuideTool(ctx),
   ]
 
@@ -4690,7 +4753,7 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
  * Skills can reference either group names or individual tool names.
  */
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
-  shell: ['exec', 'exec_wait'],
+  shell: ['exec', 'exec_wait', 'terminal_exec'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
   files: ['delete_file', 'search', 'read_file', 'write_file', 'edit_file', 'read_lints'],
   search: ['search', 'impact_radius'],
@@ -4712,7 +4775,7 @@ export const ALL_TOOL_NAMES = [
   'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
-  'heartbeat_configure', 'heartbeat_status',
+  'heartbeat_configure', 'heartbeat_status', 'terminal_exec',
   'read_lints', 'server_sync',
   'search_integrations', 'connect', 'disconnect',
   'transcribe_audio',
