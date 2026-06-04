@@ -208,33 +208,37 @@ export class ContextAggregator {
  * prepending to a chat message. The LLM receives this as a
  * [CONTEXT — auto-generated] block and uses it for reasoning.
  */
+/** Serialize recent terminal commands (OSC633) for agent context / IPC bridge. */
+export function serializeTerminalCommands(commands: readonly Command[]): string {
+  const sections: string[] = []
+  const usable = commands.filter((c) => (c.commandLine ?? '').trim().length > 0)
+  if (usable.length === 0) return ''
+
+  sections.push('## Terminal (desktop IDE — user session)')
+  for (const cmd of usable) {
+    const exitLabel = cmd.exitCode === null
+      ? 'interrupted'
+      : cmd.exitCode === 0
+        ? '✓'
+        : `exit ${cmd.exitCode}`
+    const duration = (cmd.startedAt != null && cmd.finishedAt != null)
+      ? formatDuration(cmd.finishedAt - cmd.startedAt)
+      : null
+
+    sections.push(`$ ${cmd.commandLine.trim()}`)
+    if (cmd.cwd) sections.push(`  cwd: ${cmd.cwd}`)
+    if (duration) sections.push(`  ${exitLabel} (${duration})`)
+    else sections.push(`  ${exitLabel}`)
+    sections.push('')
+  }
+  return sections.join('\n').trimEnd()
+}
+
 export function serializeContext(ctx: AggregatedContext): string {
   const sections: string[] = []
 
-  if (ctx.terminalCommands.length > 0) {
-    sections.push('## Terminal')
-    for (const cmd of ctx.terminalCommands) {
-      const exitLabel = cmd.exitCode === null
-        ? 'interrupted'
-        : cmd.exitCode === 0
-          ? '✓'
-          : `exit ${cmd.exitCode}`
-      const duration = (cmd.startedAt != null && cmd.finishedAt != null)
-        ? formatDuration(cmd.finishedAt - cmd.startedAt)
-        : null
-
-      sections.push(`$ ${cmd.commandLine || '(no command)'}`)
-      if (cmd.cwd) {
-        sections.push(`  cwd: ${cmd.cwd}`)
-      }
-      if (duration) {
-        sections.push(`  ${exitLabel} (${duration})`)
-      } else {
-        sections.push(`  ${exitLabel}`)
-      }
-      sections.push('')
-    }
-  }
+  const terminalBlock = serializeTerminalCommands(ctx.terminalCommands)
+  if (terminalBlock) sections.push(terminalBlock)
 
   if (ctx.diagnostics.length > 0) {
     sections.push('## Diagnostics')

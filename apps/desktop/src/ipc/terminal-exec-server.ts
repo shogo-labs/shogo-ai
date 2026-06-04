@@ -23,7 +23,10 @@
  */
 
 import { createServer, type Server } from 'node:http'
+import { BrowserWindow } from 'electron'
 import type { ControlEvent, SessionInfo } from '../pty-host/protocol'
+
+export const TERMINAL_AGENT_SPAWN_CHANNEL = 'shogo:terminal:agent-spawned' as const
 
 // ─── types ──────────────────────────────────────────────────────────────
 
@@ -98,6 +101,40 @@ type BufferedSession = {
 }
 
 const terminalBuffers = new Map<string, BufferedSession>()
+
+type RendererTerminalContext = {
+  sessionId: string
+  cwd: string | null
+  content: string
+  updatedAt: number
+}
+
+/** Structured command history pushed from the renderer (OSC633 tracker). */
+const rendererContexts = new Map<string, RendererTerminalContext>()
+
+export function updateRendererTerminalContext(payload: {
+  sessionId: string
+  cwd: string | null
+  content: string
+}): void {
+  if (!payload.sessionId || !payload.content.trim()) return
+  rendererContexts.set(payload.sessionId, {
+    sessionId: payload.sessionId,
+    cwd: payload.cwd,
+    content: payload.content.trim(),
+    updatedAt: Date.now(),
+  })
+}
+
+function notifyAgentTerminalSpawned(payload: {
+  sessionId: string
+  terminalLabel: string
+  cwd: string | null
+}): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { win.webContents.send(TERMINAL_AGENT_SPAWN_CHANNEL, payload) } catch { /* gone */ }
+  }
+}
 
 /**
  * Start the terminal exec HTTP server. Returns the URL to pass
@@ -466,23 +503,39 @@ async function readTerminalContext(request: TerminalContextRequest): Promise<Ter
     }
   }
 
+  const rendererCtx = rendererContexts.get(target.id)
   const buffered = terminalBuffers.get(target.id)
   const raw = buffered?.chunks.join('') ?? ''
   const maxChars = clampMaxChars(request.maxChars)
-  const plain = stripAnsi(raw)
-  const truncated = plain.length > maxChars
-  const content = truncated ? plain.slice(plain.length - maxChars) : plain
+  const plainScrollback = stripAnsi(raw)
+  const scrollbackTruncated = plainScrollback.length > maxChars
+  const scrollbackTail = scrollbackTruncated
+    ? plainScrollback.slice(plainScrollback.length - maxChars)
+    : plainScrollback
+
+  const structured = rendererCtx?.content ?? ''
+  const parts: string[] = []
+  if (structured) parts.push(structured)
+  if (scrollbackTail.trim()) {
+    parts.push('## Terminal scrollback (raw)')
+    parts.push(scrollbackTail.trim())
+  }
+  const combined = parts.join('\n\n')
+  const truncated = scrollbackTruncated || combined.length > maxChars
+  const content = combined.length > maxChars
+    ? combined.slice(combined.length - maxChars)
+    : combined
 
   return {
     source: 'desktop-pty',
     terminalId: target.id,
-    cwd: target.cwd,
+    cwd: rendererCtx?.cwd ?? target.cwd,
     content,
     sessions,
     truncated,
     ...(content
       ? {}
-      : { hint: 'The terminal exists, but no output has reached the desktop context buffer yet.' }),
+      : { hint: 'The terminal exists, but no output has reached the desktop context buffer yet. Run a command in the IDE terminal first.' }),
   }
 }
 
@@ -606,7 +659,12 @@ async function executeInBackground(request: TerminalExecRequest): Promise<Termin
       SHOGO_TERMINAL: '1',
       SHOGO_AGENT_TERMINAL: '1',
     },
+  })
 
+  notifyAgentTerminalSpawned({
+    sessionId: session.id,
+    terminalLabel,
+    cwd: request.cwd ?? session.cwd ?? null,
   })
 
   return {

@@ -26,6 +26,7 @@ const LONG_RUNNING_PATTERNS = [
   /\byarn\s+(dev|start|serve)\b/,
   /\bpnpm\s+(dev|start|serve)\b/,
   /\bdocker-compose\s+up\b/,
+  /\bdocker\s+compose\s+up\b/,
   /\bdocker\s+run\b/,
   /\bforever\b/,
   /\bsupervisor\b/,

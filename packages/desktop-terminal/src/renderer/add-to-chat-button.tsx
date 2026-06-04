@@ -9,7 +9,7 @@
 import * as React from 'react'
 
 export interface AddToChatButtonProps {
-  /** Whether the terminal has content to send. */
+  /** Whether the terminal has a selection or other content to send. */
   hasContent: boolean
   /** Callback when the user clicks the button or presses Cmd+L. */
   onAddToChat: () => void
@@ -18,25 +18,7 @@ export interface AddToChatButtonProps {
 const ADD_TO_CHAT_EVENT = 'shogo:add-to-chat'
 
 export function AddToChatButton({ hasContent, onAddToChat }: AddToChatButtonProps) {
-  const [visible, setVisible] = React.useState(false)
-
-  React.useEffect(() => {
-    const show = () => setVisible(true)
-    const hide = () => setVisible(false)
-    // These are set by the parent terminal container via onMouseEnter/Leave
-    const container = document.querySelector('[data-shogo-terminal-container]')
-    if (container) {
-      container.addEventListener('mouseenter', show)
-      container.addEventListener('mouseleave', hide)
-      return () => {
-        container.removeEventListener('mouseenter', show)
-        container.removeEventListener('mouseleave', hide)
-      }
-    }
-    return undefined
-  }, [])
-
-  if (!hasContent || !visible) return null
+  if (!hasContent) return null
 
   return React.createElement('button', {
     onClick: (e: React.MouseEvent) => {
