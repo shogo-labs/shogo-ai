@@ -939,6 +939,51 @@ function ensureWorkspaceFiles(): void {
 let gatewayReadyResolve: (() => void) | null = null
 let gatewayReadyPromise: Promise<void> | null = null
 
+// Resolves once the workspace's `node_modules` are ready (installed or
+// restored). The boot path no longer blocks the gateway on this: the install
+// runs in the background while the gateway starts and accepts the first chat
+// message. Work that genuinely needs deps (the LSP) awaits this instead.
+// Defaults to already-resolved so callers never hang when no install is
+// required (e.g. external projects, which own their own deps).
+let workspaceDepsReadyPromise: Promise<void> = Promise.resolve()
+
+/**
+ * Kick off the workspace dependency install/restore in the background and
+ * publish it via `workspaceDepsReadyPromise`.
+ *
+ * Callers MUST NOT await the returned promise on the gateway-start critical
+ * path — the whole point is that the gateway comes up (and the first message
+ * streams) while this runs. `bun install` here can race PreviewManager's own
+ * `installDepsIfNeeded`; that is safe because both go through the per-workspace
+ * install mutex (`runWorkspaceInstall`), which shares a single in-flight
+ * install instead of running two concurrent `bun install`s.
+ */
+function startWorkspaceDepsInstall(opts: { afterS3Restore?: boolean } = {}): Promise<void> {
+  const p = (async () => {
+    if (opts.afterS3Restore && s3SyncInstance && !s3SyncInstance.areDepsReady()) {
+      logTiming('Waiting for background deps restore...')
+      await s3SyncInstance.waitForDeps()
+      logTiming('Background deps restore ready')
+    }
+    try {
+      const { didInstall } = await ensureWorkspaceDeps(WORKSPACE_DIR)
+      workspaceStatus.depsInstalled = true
+      // If an install actually ran (template deps didn't match the user's
+      // package.json — common after a warm-pool assign where the template
+      // stack differed), invalidate the pre-seeded marker so the next S3
+      // sync uploads the freshly-installed deps + deps-hash.txt pointer.
+      if (didInstall && s3SyncInstance) {
+        s3SyncInstance.markDepsChanged()
+      }
+      logTiming('Workspace deps ready')
+    } catch (err: any) {
+      console.error('[agent-runtime] Workspace deps install failed:', err.message)
+    }
+  })()
+  workspaceDepsReadyPromise = p
+  return p
+}
+
 // =============================================================================
 // Stream Buffer Store (SSE reconnect support)
 // =============================================================================
@@ -4802,9 +4847,12 @@ async function initializeEssentials(): Promise<void> {
     }
   }
 
-  // Ensure workspace has node_modules. If S3 sync is restoring deps in the
-  // background, skip the blocking install here — deps will be available
-  // before the gateway starts (startGateway awaits waitForDeps).
+  // Ensure workspace has node_modules. This no longer blocks boot: the install
+  // runs in the background (`startWorkspaceDepsInstall`) so the gateway can
+  // start and accept the first chat message while deps install. Deps-dependent
+  // work (the LSP) awaits `workspaceDepsReadyPromise`. If S3 sync is restoring
+  // deps in the background, `startGateway` owns the restore-then-install
+  // sequence (also in the background).
   //
   // External (VS Code-style) projects: never run `bun install` on the
   // user's repo. `ensureWorkspaceDeps` also calls `migrateLegacyShogoSdkPin`
@@ -4815,24 +4863,10 @@ async function initializeEssentials(): Promise<void> {
   if (WORKING_MODE === 'external') {
     logTiming('External project: skipped workspace deps install')
   } else if (s3SyncInstance && !s3SyncInstance.areDepsReady()) {
-    logTiming('Deps restoring in background — skipping blocking install')
+    logTiming('Deps restoring in background — startGateway will finish the install')
   } else {
-    try {
-      const { didInstall } = await ensureWorkspaceDeps(WORKSPACE_DIR)
-      workspaceStatus.depsInstalled = true
-      // If ensureWorkspaceDeps actually ran an install (template deps
-      // didn't match the user's package.json — common after a warm-pool
-      // assignment where the template was Vite but the project is Expo
-      // or vice-versa), invalidate the pre-seeded marker so the next
-      // periodic S3 sync uploads the freshly-installed deps and writes
-      // the per-project deps-hash.txt pointer.
-      if (didInstall && s3SyncInstance) {
-        s3SyncInstance.markDepsChanged()
-      }
-      logTiming('Workspace deps ready')
-    } catch (err: any) {
-      console.error('[agent-runtime] Workspace deps install failed:', err.message)
-    }
+    startWorkspaceDepsInstall()
+    logTiming('Workspace deps install started (background)')
   }
 
   // Run any pending tech-stack setup script. External projects can't
@@ -4953,26 +4987,23 @@ async function startGateway(): Promise<void> {
 
   gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
 
-  // Wait for background deps restoration before starting the gateway.
-  // The gateway initializes the LSP and canvas build which need node_modules.
+  // Previously we awaited the S3 deps restore + `ensureWorkspaceDeps` here
+  // before constructing the gateway, which meant the first `/agent/chat`
+  // request 503'd for the entire cold install. The gateway itself does not
+  // hard-require workspace node_modules — the LSP binary resolves from
+  // agent-runtime's own deps, and the canvas build is gated on
+  // `PreviewManager.depsReady` — so kick the restore+install in the background
+  // and start the gateway immediately. The LSP start awaits
+  // `workspaceDepsReadyPromise` (wired via `setWorkspaceDepsReady` below).
   if (s3SyncInstance && !s3SyncInstance.areDepsReady()) {
-    logTiming('Waiting for background deps before starting gateway...')
-    await s3SyncInstance.waitForDeps()
-    logTiming('Background deps ready')
-    // Now run ensureWorkspaceDeps in case the S3 deps didn't fully satisfy
-    try {
-      const { didInstall } = await ensureWorkspaceDeps(WORKSPACE_DIR)
-      workspaceStatus.depsInstalled = true
-      if (didInstall && s3SyncInstance) {
-        s3SyncInstance.markDepsChanged()
-      }
-    } catch (err: any) {
-      console.error('[agent-runtime] Post-deps-restore install failed:', err.message)
-    }
+    startWorkspaceDepsInstall({ afterS3Restore: true })
   }
 
   const { AgentGateway } = await import('./gateway')
   agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
+  // Gate the gateway's deps-dependent work (the LSP) on the background install
+  // kicked off above / in essentials, instead of blocking the whole start.
+  agentGateway.setWorkspaceDepsReady(() => workspaceDepsReadyPromise)
   // Wire the runtime's API-server-owning PreviewManager into the gateway
   // so prompt builders and tools can query/sync the project's backend.
   agentGateway.attachApiServer(getPreviewManager())
