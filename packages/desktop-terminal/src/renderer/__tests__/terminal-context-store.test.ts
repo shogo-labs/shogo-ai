@@ -63,6 +63,8 @@ describe('TerminalContextStore', () => {
   let store: ReturnType<typeof createTerminalContextStore>
 
   beforeEach(() => {
+    // Clear global singleton backing store between tests
+    delete (globalThis as any).__shogoTerminalContext
     store = createTerminalContextStore()
   })
 

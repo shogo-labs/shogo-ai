@@ -4475,7 +4475,26 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
       }
 
       try {
-        const effectiveMode = mode ?? 'foreground'
+        // Auto-detect long-running commands when mode is not explicitly set
+        let effectiveMode: 'foreground' | 'background' = (mode ?? 'foreground') as 'foreground' | 'background'
+        if (!mode) {
+          const lc = command.toLowerCase().trim()
+          const longPatterns = [
+            /\bdev\b/, /\bstart\b/, /\bserve\b/, /\bwatch\b/,
+            /\bvite\b/, /\bexpo\b/, /\bmetro\b/, /\bwebpack\b/,
+            /\bnpm\s+run\s+(dev|start|serve|preview)\b/,
+            /\bbun\s+run\b/, /\byarn\s+(dev|start|serve)\b/,
+            /\bdocker(-compose)?\s+(run|up)\b/,
+            /\bpm2\s+(start|serve)\b/,
+            /\bnohup\b/, /\bforever\b/, /\bsupervisor\b/,
+            /\bpython\s+-m\s+http\.server\b/,
+            /\buvicorn\b/, /\bgunicorn\b/,
+            /\s*&\s*$/,
+          ]
+          for (const p of longPatterns) {
+            if (p.test(lc)) { effectiveMode = 'background' as const; break }
+          }
+        }
         const result = await ctx.terminalExec({
           command,
           cwd,

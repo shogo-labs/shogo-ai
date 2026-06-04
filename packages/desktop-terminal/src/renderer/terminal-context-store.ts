@@ -44,18 +44,37 @@ export interface TerminalContextSnapshot {
 
 export type TerminalContextListener = (snapshot: TerminalContextSnapshot | null) => void
 
+// ─── global singleton bridge ────────────────────────────────────────────
+// Use globalThis as backing store so that even if two module instances
+// exist (e.g. ShogoTerminalSurface imports directly, _layout.tsx imports
+// via the package barrel), they share the same data.
+
+const GLOBAL_KEY = '__shogoTerminalContext'
+
+interface GlobalStore {
+  snapshot: TerminalContextSnapshot | null
+  listeners: Set<TerminalContextListener>
+}
+
+function getGlobalStore(): GlobalStore {
+  const g = globalThis as any
+  if (!g[GLOBAL_KEY]) {
+    g[GLOBAL_KEY] = { snapshot: null, listeners: new Set() } as GlobalStore
+  }
+  return g[GLOBAL_KEY]
+}
+
 // ─── store ──────────────────────────────────────────────────────────────
 
 class TerminalContextStore {
-  private current_: TerminalContextSnapshot | null = null
-  private listeners = new Set<TerminalContextListener>()
+  private get store(): GlobalStore { return getGlobalStore() }
 
   /**
    * Publish the current terminal context. Called by the terminal surface
    * on mount / tracker change / unmount.
    */
   publish(snapshot: TerminalContextSnapshot): void {
-    this.current_ = snapshot
+    this.store.snapshot = snapshot
     this.notify()
   }
 
@@ -63,7 +82,7 @@ class TerminalContextStore {
    * Withdraw the terminal context. Called on terminal surface unmount.
    */
   withdraw(): void {
-    this.current_ = null
+    this.store.snapshot = null
     this.notify()
   }
 
@@ -72,22 +91,22 @@ class TerminalContextStore {
    * surface is not mounted.
    */
   current(): TerminalContextSnapshot | null {
-    return this.current_
+    return this.store.snapshot
   }
 
   /**
    * Subscribe to context changes. Returns an unsubscribe function.
    */
   subscribe(listener: TerminalContextListener): () => void {
-    this.listeners.add(listener)
-    return () => { this.listeners.delete(listener) }
+    this.store.listeners.add(listener)
+    return () => { this.store.listeners.delete(listener) }
   }
 
   /**
    * Check if the terminal surface is currently mounted and ready.
    */
   isReady(): boolean {
-    return this.current_ !== null
+    return this.store.snapshot !== null
   }
 
   // ─── convenience methods ──────────────────────────────────────────
@@ -104,7 +123,7 @@ class TerminalContextStore {
     git?: { getStatus(): Promise<any> }
     diagnostics?: { getDiagnostics(): Promise<any> }
   }): Promise<string> {
-    const ctx = this.current_
+    const ctx = this.store.snapshot
     if (!ctx) return userText
 
     const aggregator = new ContextAggregator({
@@ -125,7 +144,7 @@ class TerminalContextStore {
    * Get recent terminal commands (last N).
    */
   getRecentCommands(limit: number = 5): Command[] {
-    const ctx = this.current_
+    const ctx = this.store.snapshot
     if (!ctx) return []
     return ctx.tracker.snapshot().commands.slice(-limit)
   }
@@ -134,7 +153,7 @@ class TerminalContextStore {
    * Get the current working directory.
    */
   getCwd(): string | null {
-    return this.current_?.cwd ?? null
+    return this.store.snapshot?.cwd ?? null
   }
 
   /**
@@ -142,8 +161,8 @@ class TerminalContextStore {
    * Returns null if the terminal is not mounted.
    */
   async sendCommand(command: string): Promise<ReturnType<AgentTerminalBridge['sendCommand']> | null> {
-    if (!this.current_) return Promise.resolve(null)
-    return this.current_.bridge.sendCommand(command)
+    if (!this.store.snapshot) return Promise.resolve(null)
+    return this.store.snapshot.bridge.sendCommand(command)
   }
 
   /**
@@ -151,22 +170,22 @@ class TerminalContextStore {
    * Returns null if no terminal mounted or no command running.
    */
   interruptCommand(): CommandResult | null {
-    if (!this.current_) return null
-    return this.current_.bridge.interruptCommand()
+    if (!this.store.snapshot) return null
+    return this.store.snapshot.bridge.interruptCommand()
   }
 
   /**
    * Send a POSIX signal to the terminal's PTY process.
    */
   sendSignal(sig: 'INT' | 'TERM'): void {
-    this.current_?.bridge.sendSignal(sig)
+    this.store.snapshot?.bridge.sendSignal(sig)
   }
 
   // ─── internals ────────────────────────────────────────────────────
 
   private notify(): void {
-    for (const listener of this.listeners) {
-      listener(this.current_)
+    for (const listener of this.store.listeners) {
+      listener(this.store.snapshot)
     }
   }
 }

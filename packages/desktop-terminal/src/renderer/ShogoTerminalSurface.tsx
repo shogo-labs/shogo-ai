@@ -588,6 +588,29 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         // F3 / Shift+F3 — VS Code parity. Only meaningful when search is
         // already open AND a query has been typed; otherwise we just open
         // the popover so the user can start typing.
+        // Cmd+L — Add to Chat: capture selected or recent terminal text
+        if ((isMac ? ev.metaKey : ev.ctrlKey) && ev.key.toLowerCase() === 'l') {
+          ev.preventDefault()
+          const term = termRef.current
+          if (!term) return
+          let text = term.getSelection() || ''
+          if (!text.trim()) {
+            // Fall back to last 20 lines of scrollback
+            const buf = term.buffer.active
+            const lines: string[] = []
+            const start = Math.max(0, buf.length - 20)
+            for (let i = start; i < buf.length; i++) {
+              const line = buf.getLine(i)
+              if (line) lines.push(line.translateToString(true))
+            }
+            text = lines.join('\n').trim()
+          }
+          if (text) {
+            try {
+              window.dispatchEvent(new CustomEvent('shogo:add-to-chat', { detail: { text } }))
+            } catch { /* noop */ }
+          }
+        }
         if (ev.key === 'F3') {
           ev.preventDefault()
           if (!searchOpen) {
@@ -745,6 +768,12 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           scrollbar-gutter: stable;
           scrollbar-width: thin;
         }
+        [data-shogo-terminal-surface] .xterm-rows {
+          padding-left: 24px !important;
+        }
+        [data-shogo-terminal-surface] .xterm-decoration {
+          margin-left: 0px !important;
+        }
         [data-shogo-terminal-surface] .xterm-viewport::-webkit-scrollbar {
           width: 10px;
         }
@@ -776,18 +805,24 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         ? React.createElement(TerminalContextMenu, {
             groups: [[
               {
-                label: 'Re-run command',
-                disabled: !cmdMenu.command.commandLine,
-                // Phase 8: gate Re-run through the approval store so a
-                // remembered "deny" rule (e.g. `rm -rf …`) actually
-                // blocks the second attempt, not just the first.
-                onSelect: () => runWithApprovalRef.current(cmdMenu.command.commandLine),
-              },
-              {
                 label: 'Copy command',
-                disabled: !cmdMenu.command.commandLine,
+                disabled: false,
                 onSelect: () => {
-                  try { navigator.clipboard?.writeText(cmdMenu.command.commandLine).catch(() => undefined) } catch { /* */ }
+                  let cmdText = cmdMenu.command.commandLine
+                  if (!cmdText) {
+                    const term = termRef.current
+                    const pLine = cmdMenu.command.promptMarker?.line
+                    const sLine = cmdMenu.command.startMarker?.line
+                    if (term && pLine != null && sLine != null && sLine > pLine) {
+                      const base = term.buffer.active.baseY
+                      const raw = term.buffer.active.getLine(sLine - base)?.translateToString(true) ?? ''
+                      const lastDollar = Math.max(raw.lastIndexOf('$ '), raw.lastIndexOf('% '))
+                      cmdText = lastDollar >= 0 ? raw.slice(lastDollar + 2).trim() : raw.trim()
+                    }
+                  }
+                  if (cmdText) {
+                    try { navigator.clipboard?.writeText(cmdText).catch(() => undefined) } catch { /* noop */ }
+                  }
                 },
               },
               {
