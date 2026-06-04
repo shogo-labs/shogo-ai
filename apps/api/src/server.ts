@@ -26,10 +26,13 @@ import * as nodeMetricsService from './services/node-metrics.service'
 import * as affiliateService from './services/affiliate.service'
 import { INSTANCE_SIZES, INSTANCE_SIZE_ORDER, getInstanceDisplayPrice, type InstanceSizeName } from './config/instance-sizes'
 import {
-  sendPlanUpgradedEmail, sendPaymentReceiptEmail, sendPaymentFailedEmail,
+  sendPlanUpgradedEmail,
   sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail,
   sendMemberJoinedEmail, sendMemberRemovedEmail, sendAccountDeletedEmail,
 } from './services/email.service'
+import { getUnreadNotificationCount } from './services/notification.service'
+import { notifyPaymentReceipt, notifyPaymentFailed } from './services/billing-alerts.service'
+import { STRIPE_API_VERSION, resolveInvoiceSubscriptionId } from './lib/stripe-helpers'
 import * as workspaceService from './services/workspace.service'
 import * as workspaceModelsService from './services/workspace-models.service'
 import { publishRoutes } from './routes/publish'
@@ -5548,9 +5551,10 @@ app.post('/api/chat', async (c) => {
 // =============================================================================
 // Billing routes (simplified - accepts workspaceId in body)
 // =============================================================================
-// Only initialize Stripe if the API key is set
+// Only initialize Stripe if the API key is set. Pin the API version so the
+// webhook payload shape and our request shapes stay stable across SDK bumps.
 const stripe = process.env.STRIPE_SECRET_KEY
-  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION })
   : null
 
 /**
@@ -6066,6 +6070,63 @@ app.post('/api/billing/portal', async (c) => {
     return c.json({ url: session.url }, 200)
   } catch (error: any) {
     console.error('[Billing] Portal error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+// In-app billing history: recent Stripe invoices for a workspace, sanitized
+// for the client. Lets users see what they were charged (and grab the hosted
+// invoice / PDF) without leaving the app or opening the Stripe portal.
+app.get('/api/billing/invoices', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const url = new URL(c.req.url)
+    const workspaceId = url.searchParams.get('workspaceId')
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+
+    const limitParam = parseInt(url.searchParams.get('limit') || '12', 10)
+    const limit = Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 12, 1), 50)
+
+    // Resolve the Stripe customer from our subscription record. No customer yet
+    // → return an empty list (clean "no history" state) rather than a 404.
+    const subscription = await billingService.getSubscription(workspaceId)
+    const customerId = subscription?.stripeCustomerId
+    if (!customerId) {
+      return c.json({ ok: true, invoices: [] }, 200)
+    }
+
+    const list = await stripe.invoices.list({ customer: customerId, limit })
+    const invoices = list.data.map((inv) => ({
+      id: inv.id,
+      number: inv.number ?? null,
+      status: inv.status ?? null,
+      total: (inv.total ?? 0) / 100,
+      amountPaid: (inv.amount_paid ?? 0) / 100,
+      amountDue: (inv.amount_due ?? 0) / 100,
+      currency: (inv.currency ?? 'usd').toUpperCase(),
+      created: inv.created ? inv.created * 1000 : null,
+      periodStart: inv.period_start ? inv.period_start * 1000 : null,
+      periodEnd: inv.period_end ? inv.period_end * 1000 : null,
+      hostedInvoiceUrl: inv.hosted_invoice_url ?? null,
+      invoicePdf: inv.invoice_pdf ?? null,
+      description: inv.description ?? null,
+      lines: (inv.lines?.data ?? []).map((line) => ({
+        description: line.description ?? null,
+        amount: (line.amount ?? 0) / 100,
+      })),
+    }))
+
+    return c.json({ ok: true, invoices }, 200)
+  } catch (error: any) {
+    console.error('[Billing] invoices error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
   }
 })
@@ -6664,11 +6725,16 @@ app.post('/api/webhooks/stripe', async (c) => {
         break
       }
       case 'invoice.payment_succeeded': {
-        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null; billing_reason?: string }
+        const invoice = event.data.object as Stripe.Invoice & { billing_reason?: string }
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
-        if (customerId && invoice.subscription) {
+        // Resolve the subscription id across Stripe API versions: it moved from
+        // `invoice.subscription` to `invoice.parent.subscription_details` in
+        // 2025+. The old code only read the legacy field (null on the current
+        // version), so this entire receipt + monthly-refill path never ran.
+        const subscriptionId = resolveInvoiceSubscriptionId(invoice)
+        if (customerId && subscriptionId) {
           try {
-            const sub = await stripe!.subscriptions.retrieve(invoice.subscription)
+            const sub = await stripe!.subscriptions.retrieve(subscriptionId)
             const wsId = sub.metadata?.workspaceId
             const planId = sub.metadata?.planId
             if (wsId && planId) {
@@ -6686,20 +6752,17 @@ app.post('/api/webhooks/stripe', async (c) => {
                   console.error('[Webhook] Failed to refill monthly included USD:', allocErr.message)
                 }
               }
-              const workspace = await prisma.workspace.findUnique({ where: { id: wsId }, include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } } })
-              const ownerEmail = workspace?.members?.[0]?.user?.email
-              if (ownerEmail) {
-                const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
-                sendPaymentReceiptEmail({
-                  to: ownerEmail,
-                  workspaceName: workspace!.name,
-                  planName: planLabel,
-                  amount: ((invoice.amount_paid || 0) / 100).toFixed(2),
-                  currency: (invoice.currency || 'usd') === 'usd' ? '$' : invoice.currency?.toUpperCase() || '$',
-                  invoiceDate: new Date((invoice.created || 0) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-                  ...(invoice.hosted_invoice_url ? { invoiceUrl: invoice.hosted_invoice_url } : {}),
-                }).catch((err) => console.error('[Webhook] payment-receipt email failed:', err))
-              }
+              // Receipt: in-app notification + email to all billing admins,
+              // deduped on the invoice id so Stripe webhook retries can't
+              // double-send. Fire-and-forget (already inside the webhook 200).
+              const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
+              void notifyPaymentReceipt(wsId, {
+                planName: planLabel,
+                amountUsd: (invoice.amount_paid || 0) / 100,
+                invoiceDate: new Date((invoice.created || 0) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+                invoiceId: invoice.id,
+                invoiceUrl: invoice.hosted_invoice_url ?? undefined,
+              })
             }
           } catch (err: any) {
             console.error('[Webhook] payment-receipt lookup failed:', err.message)
@@ -6743,27 +6806,22 @@ app.post('/api/webhooks/stripe', async (c) => {
         break
       }
       case 'invoice.payment_failed': {
-        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null }
+        const invoice = event.data.object as Stripe.Invoice
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
-        if (customerId && invoice.subscription) {
+        const subscriptionId = resolveInvoiceSubscriptionId(invoice)
+        if (customerId && subscriptionId) {
           try {
-            const sub = await stripe!.subscriptions.retrieve(invoice.subscription)
+            const sub = await stripe!.subscriptions.retrieve(subscriptionId)
             const wsId = sub.metadata?.workspaceId
             if (wsId) {
-              const workspace = await prisma.workspace.findUnique({ where: { id: wsId }, include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } } })
-              const ownerEmail = workspace?.members?.[0]?.user?.email
-              if (ownerEmail) {
-                const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
-                const baseUrl = getFrontendUrl()
-                sendPaymentFailedEmail({
-                  to: ownerEmail,
-                  workspaceName: workspace!.name,
-                  planName: planLabel,
-                  amount: ((invoice.amount_due || 0) / 100).toFixed(2),
-                  currency: (invoice.currency || 'usd') === 'usd' ? '$' : invoice.currency?.toUpperCase() || '$',
-                  retryUrl: `${baseUrl}/billing`,
-                }).catch((err) => console.error('[Webhook] payment-failed email failed:', err))
-              }
+              // In-app notification + payment-failed email to all billing
+              // admins, deduped on the invoice id.
+              const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
+              void notifyPaymentFailed(wsId, {
+                planName: planLabel,
+                amountUsd: (invoice.amount_due || 0) / 100,
+                invoiceId: invoice.id,
+              })
             }
           } catch (err: any) {
             console.error('[Webhook] payment-failed lookup failed:', err.message)
@@ -7438,6 +7496,18 @@ app.get('/api/invite-links/:token/info', async (c) => {
 // more specific `/:id/truncate-from` here instead of falling through
 // to the generated `/:id` PATCH/DELETE handlers in chat-message.routes.ts.
 app.route('/api/chat-messages', createChatMessageEditRoutes())
+
+// Unread notification count for the in-app inbox bell/badge. MUST be mounted
+// BEFORE the generated routes so Hono matches `/notifications/unread-count`
+// here instead of the generated `/notifications/:id` GET handler.
+app.get('/api/notifications/unread-count', async (c) => {
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const count = await getUnreadNotificationCount(userId)
+  return c.json({ ok: true, count }, 200)
+})
 
 // Mount generated routes at /api
 const generatedRoutes = createGeneratedRoutes({

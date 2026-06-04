@@ -100,6 +100,26 @@ export interface RegionalPricingResponse {
   plans: Record<string, { monthly: number; annual: number }>
 }
 
+/** A sanitized Stripe invoice row returned by `GET /api/billing/invoices`. */
+export interface BillingInvoice {
+  id: string
+  number: string | null
+  status: string | null
+  /** Decimal dollars (Stripe cents / 100). */
+  total: number
+  amountPaid: number
+  amountDue: number
+  currency: string
+  /** Epoch milliseconds, or null. */
+  created: number | null
+  periodStart: number | null
+  periodEnd: number | null
+  hostedInvoiceUrl: string | null
+  invoicePdf: string | null
+  description: string | null
+  lines: { description: string | null; amount: number }[]
+}
+
 function throwIfBetterAuthErrorPayload(data: unknown): void {
   if (!data || typeof data !== 'object') return
   const err = (data as { error?: { message?: unknown } | null }).error
@@ -171,6 +191,20 @@ export const api = {
       returnUrl ? { returnUrl } : {},
     )
     return res.data
+  },
+
+  /** GET /api/billing/invoices — recent Stripe invoices for the workspace. */
+  async listInvoices(http: HttpClient, workspaceId: string, limit = 12) {
+    const res = await http.get<{ ok?: boolean; invoices?: BillingInvoice[] }>(
+      `/api/billing/invoices?workspaceId=${encodeURIComponent(workspaceId)}&limit=${limit}`,
+    )
+    return res.data?.invoices ?? []
+  },
+
+  /** GET /api/notifications/unread-count — unread inbox count for the bell badge. */
+  async getUnreadNotificationCount(http: HttpClient) {
+    const res = await http.get<{ ok?: boolean; count?: number }>('/api/notifications/unread-count')
+    return res.data?.count ?? 0
   },
 
   async setUsageBasedPricing(
