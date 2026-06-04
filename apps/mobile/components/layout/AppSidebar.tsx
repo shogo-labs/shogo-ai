@@ -745,19 +745,6 @@ function UserMenuContent({
 
   return (
     <>
-      {/* User info header */}
-      <View
-        className="px-4 py-3 border-b border-border"
-        accessibilityLabel={`Signed in as ${user?.name || 'User'}${user?.email ? `, ${user.email}` : ''}`}
-      >
-        <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
-          {user?.name || 'User'}
-        </Text>
-        <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-          {user?.email || ''}
-        </Text>
-      </View>
-
       {/* Menu items */}
       <View role="menu" className="py-1">
         <Pressable
