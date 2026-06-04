@@ -18,9 +18,9 @@ import { getDesktopBridge } from './desktop-features'
 import { MatcherEngine } from './problem-matchers'
 import { TerminalContextMenu, buildVsCodeMenuGroups } from './context-menu'
 import { ApprovalStore, workspaceHashOf, type ApprovalDecision } from './approval-store'
-import { buildDebugContext, serialiseDebugContext, type DebugContext } from './debug-with-ai'
 import { AgentTerminalBridge, type CommandResult, type BackgroundTask } from './agent-terminal-bridge'
 import { terminalContextStore } from './terminal-context-store'
+import { TerminalPersistence } from './terminal-persistence'
 import { useShogoTheme, type ThemeSource, type XtermThemeColors } from './use-shogo-theme'
 import { SnapshotStore, captureScrollback, restoreScrollback } from './persistence/snapshot-store'
 // xterm.js depends on this stylesheet to size the row container and
@@ -180,6 +180,9 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     const fitRef = React.useRef<XFitAddon | null>(null)
     const trackerRef = React.useRef(new Osc633Tracker())
     const [tracker] = React.useState(() => trackerRef.current)
+    /** Terminal persistence — saves command history to disk. */
+    const persistenceRef = React.useRef<TerminalPersistence | null>(null)
+
     /** Agent terminal bridge — Promise-based sendCommand for the agent loop. */
     const bridgeRef = React.useRef<AgentTerminalBridge | null>(null)
     if (!bridgeRef.current) {
@@ -229,7 +232,6 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
       workspaceHash: workspaceHashOf(projectId ?? 'default'),
     }))
     const [approvalAsk, setApprovalAsk] = React.useState<{ decision: ApprovalDecision; onResolve(ok: boolean, remember: boolean): void } | null>(null)
-    const [debugPanel, setDebugPanel] = React.useState<DebugContext | null>(null)
 
     /**
      * runWithApproval — single chokepoint for every "run a command on
@@ -456,8 +458,18 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             // Persistence: every finished command is a good time to
             // checkpoint scrollback + cwd to the snapshot store.
             scheduleSnapshotSave()
+            // Persist to disk for agent terminal_read tool
+            persistenceRef.current?.persistSnapshot(tracker.snapshot().commands, tracker.snapshot().cwd ?? null).catch(() => {})
           }
         })
+        // Terminal persistence — saves command history to disk for agent read-back
+        const persistenceId = `terminal-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        persistenceRef.current = new TerminalPersistence({
+          terminalId: persistenceId,
+          dir: '.shogo/terminals',
+          flushIntervalMs: 0, // Manual flush only — on command finish + terminal close
+        })
+
         term.onData((data) => client.send(data))
         term.onResize(({ cols, rows }) => client.resize(cols, rows))
 
@@ -519,6 +531,9 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           gpu.dispose()
           search.dispose?.()
           bridgeRef.current?.dispose()
+          // Persist final snapshot before teardown
+          void persistenceRef.current?.dispose(tracker.snapshot().commands, tracker.snapshot().cwd ?? null)
+          persistenceRef.current = null
           term.dispose()
           termRef.current = null
           fitRef.current = null
@@ -791,49 +806,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
                   try { navigator.clipboard?.writeText(rows.join('\n').trimEnd()).catch(() => undefined) } catch { /* */ }
                 },
               },
-              {
-                // Phase 8: real Debug-with-AI flow. Bundle the failing
-                // command + its tail output + cwd + exit code into a
-                // DebugContext and open the side panel. The panel shows
-                // a markdown report and offers an "Apply Fix" action
-                // that re-routes through runWithApproval.
-                label: cmdMenu.command.exitCode && cmdMenu.command.exitCode !== 0
-                  ? 'Debug with AI'
-                  : 'Explain this command',
-                disabled: !cmdMenu.command.commandLine,
-                onSelect: () => {
-                  const term = termRef.current
-                  if (!term) return
-                  // BufferReader contract (see debug-with-ai.ts):
-                  // readRows(startLine, endLine) returns the inclusive
-                  // range of rendered terminal rows. We reuse the same
-                  // base-offset translation as the Copy-Output handler.
-                  const ctx = buildDebugContext({
-                    command: cmdMenu.command,
-                    shell: null,
-                    tailRows: 200,
-                    buffer: {
-                      readRows(startLine: number, endLine: number) {
-                        const base = term.buffer.active.baseY
-                        const out: string[] = []
-                        for (let line = startLine; line <= endLine; line += 1) {
-                          out.push(term.buffer.active.getLine(line - base)?.translateToString(true) ?? '')
-                        }
-                        return out
-                      },
-                    },
-                  })
-                  setDebugPanel(ctx)
-                  // Also push the context to the IDE's chat panel so
-                  // the user can continue debugging in a conversational
-                  // flow. Best-effort: if the bridge is unavailable
-                  // (e.g. web/mobile) the local side panel still works.
-                  try {
-                    const md = serialiseDebugContext(ctx)
-                    void getDesktopBridge().llm?.openChatWithContext?.(md)
-                  } catch { /* bridge unavailable */ }
-                },
-              },
+
             ]],
             x: cmdMenu.x,
             y: cmdMenu.y,
@@ -846,23 +819,8 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
       approvalAsk
         ? React.createElement(ApprovalAskModal, { ask: approvalAsk })
         : null,
-      // Phase 8: Debug-with-AI side panel — shows the serialised
-      // DebugContext markdown report. "Apply Fix" routes through the
-      // approval gate. Close dismisses without sending anything.
-      debugPanel
-        ? React.createElement(DebugWithAiPanel, {
-            context: debugPanel,
-            onClose: () => setDebugPanel(null),
-            onApply: (fix: string) => {
-              setDebugPanel(null)
-              runWithApprovalRef.current(fix)
-            },
-            onAskMore: () => {
-              setDebugPanel(null)
-              cmdK.open()
-            },
-          })
-        : null,
+
+
       React.createElement(StickyScroll as React.ComponentType<any>, {
         tracker,
         // Phase 7: VS Code hides the sticky bar once the user has
@@ -1175,111 +1133,3 @@ function ApprovalAskModal(props: {
   )
 }
 
-/**
- * Phase 8 — Debug-with-AI side panel.
- *
- * Renders the serialised `DebugContext` markdown as plain text (we don't
- * pull a markdown lib into this package — apps/desktop can swap this for
- * a fancier renderer later). Offers three actions: copy report to the
- * clipboard, ask the ⌘K palette for follow-up, close.
- */
-function DebugWithAiPanel(props: {
-  context: DebugContext
-  onClose(): void
-  onApply(fix: string): void
-  onAskMore(): void
-}): React.ReactElement {
-  const md = React.useMemo(() => serialiseDebugContext(props.context), [props.context])
-
-  React.useEffect(() => {
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') { ev.preventDefault(); props.onClose() }
-    }
-    document.addEventListener('keydown', onKey, true)
-    return () => document.removeEventListener('keydown', onKey, true)
-  }, [props])
-
-  return React.createElement('aside', {
-    role: 'complementary',
-    'aria-label': 'Debug with AI',
-    'data-testid': 'shogo-debug-with-ai',
-    style: {
-      position: 'absolute',
-      top: 0,
-      right: 0,
-      bottom: 0,
-      width: 380,
-      zIndex: 30,
-      background: '#252526',
-      borderLeft: '1px solid #3c3c3c',
-      color: '#cccccc',
-      font: '12px system-ui, -apple-system, sans-serif',
-      display: 'flex',
-      flexDirection: 'column',
-    },
-  },
-    React.createElement('header', {
-      style: {
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '8px 12px', borderBottom: '1px solid #3c3c3c', fontWeight: 600,
-      },
-    },
-      React.createElement('span', null,
-        props.context.exitCode != null && props.context.exitCode !== 0
-          ? `Debug failed command (exit ${props.context.exitCode})`
-          : 'Explain command'),
-      React.createElement('button', {
-        type: 'button',
-        onClick: props.onClose,
-        'aria-label': 'Close debug panel',
-        style: { background: 'transparent', color: '#cccccc', border: 'none', fontSize: 18, cursor: 'pointer' },
-      }, '×'),
-    ),
-    React.createElement('pre', {
-      'data-testid': 'shogo-debug-with-ai-body',
-      style: {
-        flex: 1, margin: 0, padding: 12, overflow: 'auto',
-        font: '12px ui-monospace, "SF Mono", monospace',
-        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-      },
-    }, md),
-    React.createElement('footer', {
-      style: {
-        padding: 8, borderTop: '1px solid #3c3c3c',
-        display: 'flex', gap: 6, justifyContent: 'flex-end',
-      },
-    },
-      React.createElement('button', {
-        type: 'button',
-        onClick: () => {
-          try { navigator.clipboard?.writeText(md).catch(() => undefined) } catch { /* */ }
-        },
-        style: btnStyle(false),
-      }, 'Copy report'),
-      React.createElement('button', {
-        type: 'button',
-        onClick: props.onAskMore,
-        style: btnStyle(false),
-      }, 'Ask ⌘K…'),
-      props.context.commandLine
-        ? React.createElement('button', {
-            type: 'button',
-            onClick: () => props.onApply(props.context.commandLine),
-            style: btnStyle(true),
-          }, 'Re-run')
-        : null,
-    ),
-  )
-}
-
-function btnStyle(primary: boolean): React.CSSProperties {
-  return {
-    padding: '3px 10px',
-    borderRadius: 3,
-    border: '1px solid #3c3c3c',
-    background: primary ? '#0e639c' : 'transparent',
-    color: '#ffffff',
-    font: 'inherit',
-    cursor: 'pointer',
-  }
-}

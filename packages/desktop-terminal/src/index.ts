@@ -316,18 +316,6 @@ export type {
 } from './renderer/approval-store'
 
 export {
-  buildDebugContext,
-  debugWithAi,
-  serialiseDebugContext,
-} from './renderer/debug-with-ai'
-export type {
-  BuildDebugContextOptions,
-  DebugContext,
-  DebugEnvSnapshot,
-  DebugWithAiHandler,
-} from './renderer/debug-with-ai'
-
-export {
   CmdKController,
   CmdKPopover,
   useCmdK,
@@ -439,3 +427,34 @@ export type {
   UseShogoThemeOptions,
   UseShogoThemeResult,
 } from './renderer/use-shogo-theme'
+
+
+// Add to Chat (Cmd+L)
+export { AddToChatButton, dispatchAddToChat, onAddToChat, ADD_TO_CHAT_EVENT } from './renderer/add-to-chat-button'
+export type { AddToChatButtonProps } from './renderer/add-to-chat-button'
+
+// Terminal Selection (capture for Cmd+L)
+export { captureTerminalText, formatTerminalContextForChat } from './renderer/terminal-selection'
+export type { TerminalSelectionResult } from './renderer/terminal-selection'
+
+
+// Command Classifier (short vs long heuristic)
+export { classifyCommand, isShortCommand } from './renderer/command-classifier'
+export type { CommandKind, ClassificationResult } from './renderer/command-classifier'
+
+// Agent Terminal Tab (infinity icon, read-only, details)
+export { AgentTerminalTab, InfinityIcon, AgentStatusBar } from './renderer/agent-terminal-tab'
+export type { AgentTerminalInfo, AgentTerminalTabProps, AgentStatusBarProps } from './renderer/agent-terminal-tab'
+
+
+// Ready Signal Detector
+export { ReadySignalDetector } from './renderer/ready-signal-detector'
+export type { ReadySignal, ReadySignalListener } from './renderer/ready-signal-detector'
+
+// Background Task Manager
+export { BackgroundTaskManager, backgroundTaskManager } from './renderer/background-task-manager'
+export type { BackgroundTask, BackgroundTaskListener } from './renderer/background-task-manager'
+
+// Background Terminal Indicator (chat UI)
+export { BackgroundTerminalIndicator } from './renderer/background-terminal-indicator'
+export type { BackgroundTerminalIndicatorProps } from './renderer/background-terminal-indicator'

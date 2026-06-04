@@ -28,6 +28,7 @@ interface TerminalExecRequest {
   command: string
   cwd?: string
   timeoutMs?: number
+  mode?: 'foreground' | 'background'
 }
 
 interface TerminalExecResponse {
@@ -37,6 +38,9 @@ interface TerminalExecResponse {
   durationMs: number | null
   timedOut: boolean
   error?: string
+  mode?: 'foreground' | 'background'
+  sessionId?: string
+  terminalLabel?: string
 }
 
 const TERMINAL_EXEC_CHANNEL = 'shogo:terminal:exec'
@@ -304,6 +308,52 @@ function readBody(req: import('node:http').IncomingMessage): Promise<string> {
     req.on('end', () => resolve(Buffer.concat(chunks).toString()))
     req.on('error', reject)
   })
+}
+
+
+/**
+ * Execute a command in a NEW agent terminal tab (background mode).
+ * The terminal appears as "Shogo (cd /path && command...)" with an
+ * infinity icon. The user can see it running but cannot type in it.
+ */
+async function executeInBackground(request: TerminalExecRequest): Promise<TerminalExecResponse> {
+  const { getPtyHostClient } = await import('../pty-host-client')
+  const host = getPtyHostClient()
+  const startMs = Date.now()
+
+  // Build the terminal label
+  const maxLen = 50
+  const display = request.command.length > maxLen
+    ? request.command.slice(0, maxLen) + '...'
+    : request.command
+  const terminalLabel = `Shogo (${display})`
+
+  // Spawn a new session labeled as agent terminal
+  const session = await host.spawn({
+    shell: process.env.SHELL || '/bin/zsh',
+    args: ['-l', '-c', request.command],
+    cwd: request.cwd || process.env.HOME || '/',
+    cols: 200,
+    rows: 50,
+    env: {
+      ...process.env as Record<string, string>,
+      TERM_PROGRAM: 'shogo',
+      SHOGO_TERMINAL: '1',
+      SHOGO_AGENT_TERMINAL: '1',
+    },
+
+  })
+
+  return {
+    exitCode: null,
+    output: '',
+    cwd: request.cwd ?? null,
+    durationMs: null,
+    timedOut: false,
+    mode: 'background',
+    sessionId: session.id,
+    terminalLabel,
+  }
 }
 
 /** Strip ANSI escape sequences from output. */
