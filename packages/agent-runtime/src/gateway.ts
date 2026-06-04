@@ -68,7 +68,7 @@ import { SHOGO_SDK_GUIDE } from './shogo-sdk-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager, resolveBin } from '@shogo/shared-runtime'
-import { isWorkspaceRuntimeMode, workspaceAttachedProjectIds } from './workspace-runtime-mode'
+import { isWorkspaceRuntimeMode, workspaceAttachedProjectIds, workspaceProjectsManifest } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api'
 import { getRuntimeTrust } from './runtime-trust'
@@ -2994,6 +2994,25 @@ export class AgentGateway {
       }
     }
 
+    // 6a. Attached-projects manifest (multi-project workspace runtimes only).
+    // WORKSPACE.md is written at the merged-root only when this runtime serves
+    // several attached projects (see workspace-runtime-mode.ts). Surfacing it
+    // here is what makes the agent aware of its sibling projects — without it
+    // the agent sees only bare UUID folders in the file tree and tends to
+    // refuse them as "other users' projects". Gated on file presence so
+    // single-project runtimes (which never write WORKSPACE.md) are unaffected.
+    const workspaceManifestPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'WORKSPACE.md')
+    if (workspaceManifestPath) {
+      const manifest = readFileSync(workspaceManifestPath, 'utf-8').trim()
+      if (manifest) {
+        pushDynamic('attached-projects', [
+          manifest,
+          '',
+          "**Every project listed above belongs to the current user and is part of this workspace — you have been granted access to all of them.** Treat each top-level folder as a sibling repository under one root: you may read and edit files in any of them unless it is explicitly marked read-only. Do NOT describe them as other users' projects, do NOT refuse to access them on privacy or isolation grounds, and do NOT claim you can only see a single project. When the user asks which projects or folders you can see, list the projects above.",
+        ].join('\n'))
+      }
+    }
+
     // 6b. STACK.md — preview-truncated to save tokens. The full file is
     // available to the agent via read_file when it needs the complete reference.
     const STACK_PREVIEW_WORDS = 200
@@ -3602,6 +3621,14 @@ export class AgentGateway {
       const SKIP = new Set(['.shogo', 'node_modules', '.git', '.cache', '.next', 'dist', 'build', 'files'])
       const MAX_FILES = 80
 
+      // In a multi-project workspace runtime the top-level entries are the
+      // workspace's attached projects (symlinks on host, real dirs in cloud).
+      // Map id -> name so the tree labels each one ("(attached project: X)")
+      // instead of showing a bare UUID the agent might mistake for an
+      // unrelated or other-user folder. Empty for single-project runtimes.
+      const projectNameById = new Map<string, string>()
+      for (const p of workspaceProjectsManifest()) projectNameById.set(p.id, p.name)
+
       const walk = (dir: string, prefix: string, depth: number) => {
         if (depth > 4 || lines.length >= MAX_FILES) return
         let entries: import('fs').Dirent[]
@@ -3620,6 +3647,17 @@ export class AgentGateway {
           if (SKIP.has(entry.name)) continue
 
           const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+
+          // Top-level attached project folder: label it and stop here. Its
+          // contents are listed only when the agent opens that project, which
+          // keeps the merged-root tree concise (the symlink targets can be
+          // large) while making ownership unambiguous.
+          const attachedName = depth === 0 ? projectNameById.get(entry.name) : undefined
+          if (attachedName) {
+            lines.push(`${relPath}/  (attached project: ${attachedName})`)
+            continue
+          }
+
           if (entry.isDirectory()) {
             lines.push(`${relPath}/`)
             walk(join(dir, entry.name), relPath, depth + 1)

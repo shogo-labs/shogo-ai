@@ -34,7 +34,7 @@ const VALID_TRACKS = [
   'coding-discipline', 'subagent', 'subagent-code', 'subagent-ab',
   'subagent-coordination', 'teammate-coordination', 'business-user',
   'startup-cto', 'freelancer', 'content-creator', 'event-planner',
-  'nonprofit', 'adversarial', 'cross-cutting',
+  'nonprofit', 'adversarial', 'cross-cutting', 'workspace-attachments',
 ]
 
 const VALID_MODELS = new Set([
