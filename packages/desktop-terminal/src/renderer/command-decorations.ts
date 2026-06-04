@@ -203,9 +203,9 @@ export class CommandDecorations {
 
     const handle = this.host.registerDecoration({
       marker,
-      // don't reserve a visible left gutter cell for the dot
-      width: 0,
+      width: 1,          // reserve space for every command
       layer: 'top',
+      backgroundColor: 'transparent',
     })
     if (!handle) return
 
@@ -213,17 +213,15 @@ export class CommandDecorations {
 
     handle.onRender((el) => {
       el.textContent = ''
-      el.style.position = 'absolute'
-      el.style.right = '8px'
-      el.style.top = '50%'
-      el.style.transform = 'translateY(-50%)'
+      el.style.position = 'relative'
+      el.style.width = '100%'
+      el.style.height = '100%'
       el.style.display = 'flex'
       el.style.alignItems = 'center'
       el.style.justifyContent = 'center'
       el.style.pointerEvents = 'auto'
       el.style.background = 'transparent'
       el.style.cursor = 'pointer'
-      el.style.zIndex = '10'
 
       const dot = document.createElement('span')
       dot.style.width = '6px'
@@ -231,6 +229,7 @@ export class CommandDecorations {
       dot.style.borderRadius = '999px'
       dot.style.background = style.color
       dot.style.display = 'block'
+      dot.style.flexShrink = '0'
 
       el.appendChild(dot)
 
