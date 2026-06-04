@@ -357,11 +357,27 @@ export function handleInstanceWsMessage(ws: WebSocket & { data?: any }, raw: str
   }
 }
 
-export function handleInstanceWsClose(ws: WebSocket & { data?: any }) {
+export function handleInstanceWsClose(
+  ws: WebSocket & { data?: any },
+  code?: number,
+  reason?: string,
+) {
   const { instanceId } = ws.data || {}
   if (!instanceId) return
 
+  const closeInfo = `code=${code ?? 'none'} reason=${reason || 'none'}`
+
   const conn = tunnels.get(instanceId)
+
+  // Ignore a stale close: during a reconnect flap a newer socket may already
+  // own the registry entry, and tearing down here would evict the live tunnel.
+  if (conn && conn.ws !== ws) {
+    console.log(
+      `[RemoteControl] Instance ${instanceId} stale WS close ignored — superseded by a newer connection (${closeInfo})`,
+    )
+    return
+  }
+
   if (conn) {
     for (const [, pending] of conn.pendingRequests) {
       clearTimeout(pending.timeout)
@@ -384,7 +400,7 @@ export function handleInstanceWsClose(ws: WebSocket & { data?: any }) {
     data: { status: 'offline' },
   }).catch(() => {})
 
-  console.log(`[RemoteControl] Instance ${instanceId} disconnected`)
+  console.log(`[RemoteControl] Instance ${instanceId} disconnected (${closeInfo})`)
 }
 
 /**

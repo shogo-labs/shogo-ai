@@ -199,6 +199,67 @@ describe('instance WebSocket handlers', () => {
     expect(unregistered).toEqual(['inst-1'])
     expect(instanceUpdates[0]).toMatchObject({ where: { id: 'inst-1' }, data: { status: 'offline' } })
   })
+
+  test('close ignores a stale socket that was superseded by a newer connection', async () => {
+    // Reconnect-flap race: the first socket drops (1006) and the worker
+    // reconnects, but the old socket's close event is delivered AFTER the new
+    // socket has already taken over the registry. The stale close must NOT
+    // evict the live tunnel, drop Redis ownership, or flip the DB offline.
+    const oldWs = fakeWs({ instanceId: 'inst-1', workspaceId: 'ws-1' })
+    await handleInstanceWsOpen(oldWs)
+
+    const newWs = fakeWs({ instanceId: 'inst-1', workspaceId: 'ws-1' })
+    await handleInstanceWsOpen(newWs)
+
+    // The live registry entry now belongs to the new socket.
+    expect(_testing.tunnels.get('inst-1')!.ws).toBe(newWs)
+
+    // Only observe side effects produced by the stale close below.
+    instanceUpdates.length = 0
+    unregistered.length = 0
+
+    const logs: string[] = []
+    const originalLog = console.log
+    console.log = ((...args: unknown[]) => { logs.push(args.join(' ')) }) as typeof console.log
+    try {
+      handleInstanceWsClose(oldWs, 1006, 'Connection ended')
+    } finally {
+      console.log = originalLog
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // Live tunnel preserved.
+    expect(_testing.tunnels.has('inst-1')).toBe(true)
+    expect(_testing.tunnels.get('inst-1')!.ws).toBe(newWs)
+    // Redis ownership and DB status untouched by the stale close.
+    expect(unregistered).toEqual([])
+    expect(instanceUpdates).toEqual([])
+    // Close code/reason is logged for diagnosability.
+    expect(logs.some((line) => line.includes('stale WS close ignored') && line.includes('code=1006') && line.includes('reason=Connection ended'))).toBe(true)
+  })
+
+  test('close tears down the live socket and logs the close code/reason', async () => {
+    const ws = fakeWs({ instanceId: 'inst-1', workspaceId: 'ws-1' })
+    await handleInstanceWsOpen(ws)
+
+    instanceUpdates.length = 0
+    unregistered.length = 0
+
+    const logs: string[] = []
+    const originalLog = console.log
+    console.log = ((...args: unknown[]) => { logs.push(args.join(' ')) }) as typeof console.log
+    try {
+      handleInstanceWsClose(ws, 1000, 'Idle timeout')
+    } finally {
+      console.log = originalLog
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(_testing.tunnels.has('inst-1')).toBe(false)
+    expect(unregistered).toEqual(['inst-1'])
+    expect(instanceUpdates[0]).toMatchObject({ where: { id: 'inst-1' }, data: { status: 'offline' } })
+    expect(logs.some((line) => line.includes('disconnected') && line.includes('code=1000') && line.includes('reason=Idle timeout'))).toBe(true)
+  })
 })
 
 describe('authenticateInstanceWs', () => {
