@@ -1898,13 +1898,48 @@ export class PreviewManager {
     this.depsReadyResolve = null
   }
 
+  /**
+   * Candidate on-disk locations for the generated Prisma client, used to
+   * decide whether `prisma generate` can be skipped on (re)start.
+   *
+   * Prisma 7's `prisma-client` provider (what the SDK templates pin) writes
+   * the client to a project-relative `output` — the runtime template uses
+   * `../src/generated/prisma` — NOT the legacy `node_modules/.prisma/client`
+   * that `prisma-client-js` used. Checking only the legacy path meant the
+   * client was "never found", so `prisma generate` re-ran on every restart
+   * even with no schema changes (the user-visible "shogo generate runs before
+   * the server starts" on a warm project). We parse the declared `output`
+   * from `schema.prisma` and fall back to the SDK default + the legacy path
+   * so both new and old projects skip correctly.
+   */
+  private prismaClientDirCandidates(cwd: string): string[] {
+    const candidates: string[] = []
+    const schemaDir = join(cwd, 'prisma')
+    try {
+      const schema = readFileSync(join(schemaDir, 'schema.prisma'), 'utf-8')
+      // `output = "..."` inside the `generator <name> { ... }` block.
+      const generatorBlock = schema.match(/generator\s+\w+\s*\{[\s\S]*?\}/)?.[0]
+      const output = generatorBlock?.match(/\boutput\s*=\s*["']([^"']+)["']/)?.[1]
+      if (output) {
+        // `output` resolves relative to the schema file's directory.
+        candidates.push(output.startsWith('/') ? output : join(schemaDir, output))
+      }
+    } catch {
+      // Unreadable schema — fall through to the defaults below.
+    }
+    // SDK template default (Prisma 7) + legacy prisma-client-js location.
+    candidates.push(join(cwd, 'src', 'generated', 'prisma'))
+    candidates.push(join(cwd, 'node_modules', '.prisma', 'client'))
+    return [...new Set(candidates)]
+  }
+
   private async runPrismaIfNeeded(timings: Record<string, number>): Promise<void> {
     const cwd = this.bundlerCwd
     const prismaSchema = join(cwd, 'prisma', 'schema.prisma')
     if (!existsSync(prismaSchema)) return
 
-    const prismaClientPath = join(cwd, 'node_modules', '.prisma', 'client')
-    if (existsSync(prismaClientPath)) {
+    const prismaClientExists = this.prismaClientDirCandidates(cwd).some((p) => existsSync(p))
+    if (prismaClientExists) {
       console.log(`[${LOG_PREFIX}] Prisma client exists — skipping generate`)
       timings.prisma = 0
     } else {
