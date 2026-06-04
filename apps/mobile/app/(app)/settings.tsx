@@ -50,6 +50,7 @@ import {
   Plug,
   Download,
   Bug,
+  Monitor,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -73,6 +74,7 @@ import { ComputeTab } from '../../components/settings/ComputeTab'
 import { BugReportTab } from '../../components/settings/BugReportTab'
 import { IntegrationsTab } from '../../components/settings/IntegrationsTab'
 import { WorkspaceModelsTab } from '../../components/settings/WorkspaceModelsTab'
+import { RemoteControlTab } from '../../components/settings/RemoteControlTab'
 import {
   type AnalyticsPeriod,
   type UsageSummaryData,
@@ -115,9 +117,9 @@ import { useDualPlan } from '../../lib/dual-plan-preference'
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'models' | 'integrations' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support'
+type TabId = 'workspace' | 'people' | 'models' | 'integrations' | 'remote-control' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'models', 'integrations', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'models', 'integrations', 'remote-control', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
@@ -134,6 +136,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'people', label: 'People', icon: Users },
   { id: 'models', label: 'Models', icon: Boxes },
   { id: 'integrations', label: 'Integrations', icon: Plug },
+  { id: 'remote-control', label: 'Remote Control', icon: Monitor },
   { id: 'account', label: 'Account', icon: User },
   ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [{ id: 'compute' as TabId, label: 'Compute', icon: Server }] : []),
   { id: 'billing', label: 'Billing', icon: CreditCard },
@@ -144,6 +147,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
 const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'integrations', label: 'Integrations', icon: Plug },
+  { id: 'remote-control', label: 'Remote Control', icon: Monitor },
   { id: 'account', label: 'Account', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
@@ -236,6 +240,7 @@ function SettingsSidebar({
     ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
     ...(!(localMode || !showBilling) ? [{ id: 'models' as TabId, label: 'Models' }] : []),
     { id: 'integrations' as TabId, label: 'Integrations' },
+    { id: 'remote-control' as TabId, label: 'Remote Control' },
     ...(showBilling
       ? [
           ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [{ id: 'compute' as TabId, label: 'Compute' }] : []),
@@ -3176,6 +3181,7 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'people' && !isLocal && <PeopleTab />}
       {activeTab === 'models' && !isLocal && <WorkspaceModelsTab />}
       {activeTab === 'integrations' && <IntegrationsTab />}
+      {activeTab === 'remote-control' && <RemoteControlTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
       {activeTab === 'compute' && !isLocal && !HIDE_COMPUTE_PURCHASES_ON_IOS && <ComputeTab />}
