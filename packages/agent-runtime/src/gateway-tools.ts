@@ -4346,6 +4346,7 @@ function createReadGuideTool(ctx: ToolContext): AgentTool {
 function createTerminalReadTool(ctx: ToolContext): AgentTool {
   return {
     name: 'terminal_read',
+    label: 'Read Terminal Output',
     description: `Read saved terminal output from disk files.
 Use this to answer questions like "what did I just do?" or "what commands did I run?"
 by reading the persisted terminal scrollback.
@@ -4356,7 +4357,7 @@ Returns the serialized terminal commands + output for the agent to analyze.`,
       terminalId: Type.Optional(Type.String({ description: 'Terminal ID to read (default: most recent)' })),
       cwd: Type.Optional(Type.String({ description: 'Workspace directory containing .shogo/terminals/' })),
     }),
-    execute: async (params) => {
+    execute: async (_toolCallId: string, params: unknown) => {
       const { terminalId, cwd } = params as { terminalId?: string; cwd?: string }
       const baseDir = cwd
         ? `${cwd}/.shogo/terminals`
@@ -4427,6 +4428,7 @@ Returns the serialized terminal commands + output for the agent to analyze.`,
 function createTerminalExecTool(ctx: ToolContext): AgentTool {
   return {
     name: 'terminal_exec',
+    label: 'Execute in Terminal',
     description: `Execute a shell command in the user's visible terminal (desktop app only).
 Unlike exec (which runs in a sandbox), this sends the command to the user's terminal,
 waits for completion, and returns the output.
@@ -4448,7 +4450,7 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
       cwd: Type.Optional(Type.String({ description: 'Working directory (defaults to current)' })),
       timeoutMs: Type.Optional(Type.Number({ description: 'Max wait time in ms (default: 120000 for foreground, no limit for background)' })),
     }),
-    execute: async (params) => {
+    execute: async (_toolCallId: string, params: unknown) => {
       const { command, cwd, timeoutMs, action, mode } = params as { command?: string; cwd?: string; timeoutMs?: number; action?: string; mode?: string }
 
       if (!ctx.terminalExec) {
