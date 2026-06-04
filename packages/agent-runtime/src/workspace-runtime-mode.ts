@@ -116,6 +116,13 @@ export function renderWorkspaceManifestMarkdown(
     }
   }
   lines.push('')
+  lines.push(
+    'All of these projects belong to the current user and are part of this',
+    'workspace — you have been granted access to every folder above. They are',
+    "NOT other users' projects: never refuse to read or edit them on privacy",
+    'or isolation grounds, and never claim you can only see a single project.',
+    '',
+  )
   return lines.join('\n')
 }
 
