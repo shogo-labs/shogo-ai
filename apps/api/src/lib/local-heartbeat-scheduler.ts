@@ -20,7 +20,7 @@ const TRIGGER_TIMEOUT_MS = parseInt(process.env.HEARTBEAT_TRIGGER_TIMEOUT_MS || 
 
 export interface IRuntimeStatusProvider {
   status(projectId: string): { agentPort?: number } | null
-  start(projectId: string): Promise<{ agentPort?: number }>
+  start(projectId: string, opts?: { background?: boolean }): Promise<{ agentPort?: number }>
 }
 
 export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
@@ -86,7 +86,10 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
       if (!runtime?.agentPort) {
         console.log(`[LocalHeartbeat] Runtime not running for ${projectId}, starting...`)
         try {
-          runtime = await this.runtimeProvider?.start(projectId) ?? null
+          // Background start: the heartbeat is a separate system from the warm
+          // preview set, so this runtime must NOT count toward (or evict) the
+          // 3 foreground previews the user has open.
+          runtime = await this.runtimeProvider?.start(projectId, { background: true }) ?? null
         } catch (err: any) {
           console.error(`[LocalHeartbeat] Failed to start runtime for ${projectId}:`, err.message)
           return

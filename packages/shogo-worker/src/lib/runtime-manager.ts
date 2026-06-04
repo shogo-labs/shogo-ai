@@ -48,6 +48,30 @@ const PORT_RANGE_START = 37100;
 const PORT_RANGE_END = 37900;
 const API_PORT_OFFSET = 1; // API server port = agentPort + 1.
 
+/**
+ * Offset (from the agent port) of the workspace preview sidecar base.
+ *
+ * A workspace runtime serves N attached projects, each with its own preview
+ * sidecar (`server.tsx`) on `WORKSPACE_API_PORT_BASE + projectIndex`. We anchor
+ * that base at `agentPort + 2` (agentPort=+0, its API/skill server=+1) so every
+ * runtime gets a DISTINCT sidecar range. Before warm-multiple, only one runtime
+ * ran at a time and all of them could share the fixed default base (3101); now
+ * that several runtimes stay warm concurrently they were all binding 3101 and
+ * crash-looping (force-killing each other's leaked sidecars), which SIGKILLed
+ * the agent-runtime and restart-looped it.
+ */
+const PREVIEW_API_BASE_OFFSET = 2;
+
+/**
+ * Contiguous ports reserved per runtime: agent(+0), API/skill server(+1) and
+ * the preview sidecars (+2 … +RUNTIME_PORT_BLOCK-1). Reserving the whole block
+ * (rather than just the two eagerly-bound ports) guarantees no OTHER runtime's
+ * block overlaps this one's sidecar range. 16 supports up to 14 attached
+ * projects per workspace; the 800-port range still fits 50 such blocks (>> the
+ * default maxRuntimes of 10).
+ */
+const RUNTIME_PORT_BLOCK = 16;
+
 /** Default idle eviction window — unused runtimes get killed after this. */
 const RUNTIME_IDLE_MS = 15 * 60 * 1000;
 
@@ -1249,6 +1273,12 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       PORT: String(slot.agentPort),
       API_SERVER_PORT: String(slot.apiServerPort),
       SKILL_SERVER_PORT: String(slot.apiServerPort),
+      // Per-runtime base for workspace preview sidecars (server.tsx). Anchored
+      // at agentPort+2 so each warm runtime owns a distinct sidecar range and
+      // they can't all collide on the fixed default (3101) — the cause of the
+      // preview-manager crash-loop / agent-runtime SIGKILL restart storm when
+      // multiple projects are kept warm at once.
+      WORKSPACE_API_PORT_BASE: String(slot.agentPort + PREVIEW_API_BASE_OFFSET),
       NODE_ENV: 'production',
       SHOGO_CLOUD_URL: cfg.cloudUrl,
       SHOGO_API_URL: cfg.cloudUrl,
@@ -1434,12 +1464,23 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     const maxAttempts = Math.min(range, 50);
     for (let i = 0; i < maxAttempts; i++) {
       const candidate = PORT_RANGE_START + Math.floor(Math.random() * range);
-      if (this.usedPorts.has(candidate) || this.usedPorts.has(candidate + API_PORT_OFFSET)) continue;
+      // Reserve a contiguous per-runtime block so the agent port, its API
+      // server AND every preview sidecar (WORKSPACE_API_PORT_BASE + idx) live
+      // in a range that no other warm runtime can overlap.
+      if (candidate + RUNTIME_PORT_BLOCK - 1 > PORT_RANGE_END) continue;
+      let blockFree = true;
+      for (let off = 0; off < RUNTIME_PORT_BLOCK; off++) {
+        if (this.usedPorts.has(candidate + off)) { blockFree = false; break; }
+      }
+      if (!blockFree) continue;
+      // Liveness-probe only the two ports we bind eagerly (agent + its API
+      // server). The sidecar ports are bound lazily by the agent-runtime and
+      // guarded by its own leaked-process force-kill, so probing the whole
+      // block here would just slow allocation down.
       const agentInUse = await this.isPortListening(candidate);
       const apiInUse = await this.isPortListening(candidate + API_PORT_OFFSET);
       if (agentInUse || apiInUse) continue;
-      this.usedPorts.add(candidate);
-      this.usedPorts.add(candidate + API_PORT_OFFSET);
+      for (let off = 0; off < RUNTIME_PORT_BLOCK; off++) this.usedPorts.add(candidate + off);
       return candidate;
     }
     throw new Error(
@@ -1449,8 +1490,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   private releasePort(port: number): void {
     if (!port) return;
-    this.usedPorts.delete(port);
-    this.usedPorts.delete(port + API_PORT_OFFSET);
+    for (let off = 0; off < RUNTIME_PORT_BLOCK; off++) this.usedPorts.delete(port + off);
   }
 
   private async isPortListening(port: number): Promise<boolean> {

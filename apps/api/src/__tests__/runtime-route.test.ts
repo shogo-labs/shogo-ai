@@ -63,10 +63,13 @@ const rmStatusMock = mock((_: string) => null as any)
 const rmStartMock = mock(async (_: string) => ({}))
 const rmStopMock = mock(async (_: string) => {})
 
+const rmMarkPreviewActiveMock = mock((_: string) => {})
+
 const runtimeManager = {
   status: rmStatusMock,
   start: rmStartMock,
   stop: rmStopMock,
+  markPreviewActive: rmMarkPreviewActiveMock,
 } as any
 
 // ─── env scaffolding ──────────────────────────────────────────────────────
