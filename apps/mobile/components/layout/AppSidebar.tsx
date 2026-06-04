@@ -94,6 +94,7 @@ import {
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { getPlanDisplayName } from '../../lib/billing-config'
 import { CompactUsageWindows } from '../billing/UsageWindows'
+import { NotificationBell } from '../notifications/NotificationBell'
 import { api } from '../../lib/api'
 import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
@@ -1853,6 +1854,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               localMode={localMode}
             />
           </View>
+
+          {!collapsed && <NotificationBell size={18} />}
 
           {!collapsed && (
             <Pressable

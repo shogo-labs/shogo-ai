@@ -626,6 +626,9 @@ model UsageWallet {
   overageHardLimitUsd          Float?
   overageAccumulatedUsd        Float    @default(0)
   overageBilledUsd             Float    @default(0)
+  // JSON-encoded per-period alert dedupe ledger (Json? on PG). See
+  // prisma/schema.prisma UsageWallet.alertsSentThisPeriod.
+  alertsSentThisPeriod         String?
   stripeMeteredItemId          String?
   anniversaryDay               Int
   lastDailyReset               DateTime
