@@ -268,6 +268,7 @@ describe('Pipeline: Output streaming', () => {
 // ─── Pipeline 5: Store lifecycle ────────────────────────────────────────
 
 describe('Pipeline: TerminalContextStore lifecycle', () => {
+  beforeEach(() => { delete (globalThis as any).__shogoTerminalContext })
   it('publish → enrichMessage → withdraw → no-op', async () => {
     const store = createTerminalContextStore()
     const tracker = new Osc633Tracker()
