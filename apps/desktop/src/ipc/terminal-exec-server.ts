@@ -155,8 +155,16 @@ async function executeViaRenderer(request: TerminalExecRequest): Promise<Termina
 }
 
 /**
- * Fallback: execute a command directly via the PTY host.
- * Used when the renderer doesn't handle the terminal:exec channel.
+ * Execute a command in the user's VISIBLE terminal.
+ *
+ * Strategy:
+ *   1. List existing terminal sessions via PTY host
+ *   2. If an active session exists, write the command there (user sees it!)
+ *   3. If no active session, spawn a new one (fallback)
+ *   4. Use a sentinel marker to detect when the command finishes
+ *
+ * The key difference from the old approach: we write to the EXISTING
+ * terminal so the user sees the command running in their own terminal.
  */
 async function executeViaPtyHost(request: TerminalExecRequest): Promise<TerminalExecResponse> {
   const { getPtyHostClient } = await import('../pty-host-client')
@@ -164,7 +172,70 @@ async function executeViaPtyHost(request: TerminalExecRequest): Promise<Terminal
   const startMs = Date.now()
   const timeoutMs = request.timeoutMs ?? 120_000
 
-  // Spawn a one-shot terminal session
+  // Find the user's active terminal session
+  const sessions = await host.list()
+  const activeSession = sessions.length > 0 ? sessions[0] : null
+
+  if (activeSession) {
+    // ── Write to the user's visible terminal ──
+    const sessionId = activeSession.id
+    let output = ''
+    let exitCode: number | null = null
+    let timedOut = false
+
+    // Use a unique sentinel to detect when the command finishes.
+    // The shell integration PROMPT_COMMAND will emit after the command,
+    // and we detect completion by watching for the next prompt marker.
+    const sentinel = `__SHOGO_EXEC_DONE_${Date.now()}__`
+
+    // Collect output from this session
+    const dataHandler = (data: any) => {
+      if (data.sessionId === sessionId && data.type === 'data') {
+        // Stop collecting after we see the sentinel (command done)
+        if (!data.data.includes(sentinel)) {
+          output += data.data
+        }
+      }
+    }
+
+    host.on('event', dataHandler)
+
+    try {
+      // Write the command followed by a sentinel echo to detect completion
+      await host.write(sessionId, `${request.command} ; echo "${sentinel}"\n`)
+
+      // Wait for sentinel to appear in output, or timeout
+      const deadline = startMs + timeoutMs
+      while (!output.includes(sentinel) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100))
+      }
+
+      // Extract output before the sentinel
+      const sentinelIdx = output.indexOf(sentinel)
+      if (sentinelIdx >= 0) {
+        output = output.substring(0, sentinelIdx)
+        exitCode = 0 // Command completed (sentinel ran after it)
+      }
+
+      if (exitCode === null) {
+        timedOut = true
+        exitCode = null
+        output += '\n[Timed out after ' + timeoutMs + 'ms]'
+      }
+
+      return {
+        exitCode,
+        output: stripAnsi(output),
+        cwd: request.cwd ?? null,
+        durationMs: Date.now() - startMs,
+        timedOut,
+      }
+    } finally {
+      host.removeListener('event', dataHandler)
+    }
+  }
+
+  // ── Fallback: no active session — spawn a hidden one-shot ──
   const session = await host.spawn({
     shell: process.env.SHELL || '/bin/zsh',
     args: ['-l'],
@@ -183,7 +254,6 @@ async function executeViaPtyHost(request: TerminalExecRequest): Promise<Terminal
   let exitCode: number | null = null
   let timedOut = false
 
-  // Collect output
   const dataHandler = (data: any) => {
     if (data.sessionId === sessionId && data.type === 'data') {
       output += data.data
@@ -199,10 +269,8 @@ async function executeViaPtyHost(request: TerminalExecRequest): Promise<Terminal
   host.on('event', dataHandler)
   host.on('event', exitHandler)
 
-  // Send the command + exit sentinel
   await host.write(sessionId, `${request.command}\n`)
 
-  // Wait for completion or timeout
   const deadline = startMs + timeoutMs
   while (exitCode === null && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 100))
@@ -214,7 +282,6 @@ async function executeViaPtyHost(request: TerminalExecRequest): Promise<Terminal
     output += '\n[Timed out after ' + timeoutMs + 'ms]'
   }
 
-  // Clean up
   host.removeListener('event', dataHandler)
   host.removeListener('event', exitHandler)
   try { await host.kill(sessionId) } catch { /* already dead */ }
