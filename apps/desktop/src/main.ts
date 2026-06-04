@@ -47,6 +47,7 @@ import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
 import { registerRunIpcHandlers, disposeRunIpc } from './run-ipc'
 import { registerDebugIpcHandlers, disposeDebugIpc } from './debug-ipc'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
+import { startTerminalExecServer, stopTerminalExecServer } from './ipc/terminal-exec-server'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
 import { createTray, destroyTray } from './tray'
@@ -1358,6 +1359,9 @@ app.whenReady().then(async () => {
   if (!isCloudMode && !skipLocalServer) {
     console.log('[Desktop] Starting local server...')
     try {
+      // Start the terminal exec server for agent -> visible terminal commands
+      const terminalExecUrl = startTerminalExecServer()
+      process.env.TERMINAL_EXEC_URL = terminalExecUrl
       await startLocalServer()
     } catch (err) {
       writeLogSync('FATAL', '[Desktop] Failed to start local server:', err)
@@ -1461,7 +1465,7 @@ app.on('before-quit', (event) => {
   disposeGitIpc()
     disposeRunIpc()
     disposeDebugIpc()
-  Promise.allSettled([disposeTerminalIpc(), stopLocalServer()])
+  Promise.allSettled([disposeTerminalIpc(), stopTerminalExecServer(), stopLocalServer()])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))
     .finally(() => {

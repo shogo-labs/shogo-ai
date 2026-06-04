@@ -707,7 +707,7 @@ function baselineMigrations(
         // healthy post-migration schema. A naive "create any CREATE TABLE whose
         // target is missing" sweep resurrects them as empty orphans on EVERY
         // launch, which is mostly harmless until a *later* migration legitimately
-        // reuses the same temp name: `prisma migrate deploy` then hits
+        // reuses the same temp name: 'prisma migrate deploy' then hits
         // "table new_<table> already exists", half-applies, and bricks startup
         // (this is exactly what 20260531063135_add_workspace_chat_sessions did to
         // every v1.9.11 install). Collect the RENAME-source names within this
