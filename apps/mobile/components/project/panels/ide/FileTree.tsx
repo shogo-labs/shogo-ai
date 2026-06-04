@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight,
+  Download,
   File,
   FilePlus,
   Folder,
@@ -25,6 +26,11 @@ export interface FileTreeHandlers {
   onRename: (node: TreeNode, newName: string) => Promise<void>;
   onDelete: (node: TreeNode) => Promise<void>;
   onMove: (from: TreeNode, toDir: TreeNode | null) => Promise<void>;
+  /**
+   * Download a file to the user's machine (web only). Wired to the workspace
+   * service's authed blob fetch in Workbench; only offered for files.
+   */
+  onDownload: (node: TreeNode) => void | Promise<void>;
   /**
    * Fetch the children of a directory whose `lazy` flag was set by the
    * server (e.g. `node_modules`, `dist`). The handler is expected to splice
@@ -585,6 +591,19 @@ export function FileTree({
               selectedNodes.map((n) => n.path).join("\n"),
             ),
         },
+        ...(fileCount > 0
+          ? [
+              {
+                label: `Download ${fileCount} file${fileCount === 1 ? "" : "s"}`,
+                icon: <Download size={14} />,
+                onClick: () => {
+                  for (const n of selectedNodes) {
+                    if (n.kind === "file") void handlers.onDownload(n);
+                  }
+                },
+              } as MenuEntry,
+            ]
+          : []),
         { separator: true },
         {
           label: `Delete ${count} items`,
@@ -623,6 +642,15 @@ export function FileTree({
         label: "Copy Path",
         onClick: () => void navigator.clipboard.writeText(node.path),
       },
+      ...(node.kind === "file"
+        ? [
+            {
+              label: "Download",
+              icon: <Download size={14} />,
+              onClick: () => void handlers.onDownload(node),
+            } as MenuEntry,
+          ]
+        : []),
       {
         label: "Delete",
         shortcut: "⌫",
