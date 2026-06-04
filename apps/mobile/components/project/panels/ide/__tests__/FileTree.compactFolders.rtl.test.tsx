@@ -22,6 +22,7 @@ function handlers(overrides: Partial<FileTreeHandlers> = {}): FileTreeHandlers {
     onRename: mock(async () => {}),
     onDelete: mock(async () => {}),
     onMove: mock(async () => {}),
+    onDownload: mock(() => {}),
     ...overrides,
   };
 }

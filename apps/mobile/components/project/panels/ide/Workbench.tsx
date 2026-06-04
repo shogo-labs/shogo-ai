@@ -1003,6 +1003,47 @@ export function Workbench({
     [svcOf, loadRoot, showToast],
   );
 
+  // Download a file via the workspace service's authed blob fetch (same path
+  // as binary previews). We fetch to a blob: URL rather than linking the agent
+  // download endpoint directly so the `download` attribute is always honored
+  // (blob: is same-origin) and the IDE never navigates away — the runtime
+  // serves images/pdf with `Content-Disposition: inline`. Web only.
+  const handleDownload = useCallback(
+    async (node: TreeNode) => {
+      if (node.kind !== "file" || typeof document === "undefined") return;
+      const svc = svcOf(node.rootId);
+      if (!svc) {
+        showToast(`Unknown workspace: ${node.rootId}`, 2500);
+        return;
+      }
+      if (!svc.readFileUrl) {
+        showToast("Download not supported for this workspace", 2500);
+        return;
+      }
+      let url: string | null = null;
+      try {
+        url = await svc.readFileUrl(node.path);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = node.name;
+        a.rel = "noopener noreferrer";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } catch (err) {
+        showToast(`Download failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
+      } finally {
+        // Defer revocation so the browser has started the download before the
+        // blob: URL is released.
+        if (url) {
+          const toRevoke = url;
+          setTimeout(() => URL.revokeObjectURL(toRevoke), 1000);
+        }
+      }
+    },
+    [svcOf, showToast],
+  );
+
   const treeHandlers: FileTreeHandlers = useMemo(
     () => ({
       onOpen: handleOpenFile,
@@ -1010,9 +1051,10 @@ export function Workbench({
       onRename: handleRenameNode,
       onDelete: handleDeleteNode,
       onMove: handleMove,
+      onDownload: handleDownload,
       onLoadSubtree: loadSubtree,
     }),
-    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, loadSubtree],
+    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree],
   );
 
   // ─── Save ────────────────────────────────────────────────────────────
