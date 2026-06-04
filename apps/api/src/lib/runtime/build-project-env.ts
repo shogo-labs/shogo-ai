@@ -145,6 +145,16 @@ export async function buildProjectEnv(
     if (process.env.S3_FORCE_PATH_STYLE === 'true') env.S3_FORCE_PATH_STYLE = 'true'
   }
 
+  // Git LFS: propagate the master switch so git_only pods activate the LFS
+  // clean filter + object push/pull (see shared-runtime `isLfsActive` /
+  // `lfs.ts`). Pods reach the LFS batch endpoint via SHOGO_API_URL +
+  // RUNTIME_AUTH_SECRET and transfer bytes with presigned URLs, so they need
+  // no S3 credentials or S3_LFS_* (those are API-side, used only to mint the
+  // presigned URLs). Inert unless the project is in git_only mode.
+  if (process.env.LFS_ENABLED === 'true' || process.env.LFS_ENABLED === '1') {
+    env.LFS_ENABLED = 'true'
+  }
+
   // Voice mock mode for demo recordings. When the API server has
   // SHOGO_VOICE_MODE=mock (or SHOGO_DEMO_VOICE=mock as a more obvious
   // alias), forward it into the pod env so `createClient().voice.telephony`
