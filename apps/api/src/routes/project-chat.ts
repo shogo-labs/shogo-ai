@@ -25,7 +25,7 @@ import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
-import { enrichWorkspaceReferences } from "../lib/chat-references"
+import { enrichWorkspaceReferences, enrichProjectReferences } from "../lib/chat-references"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -958,13 +958,21 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         }
       }
 
-      // Harden "@" workspace references: verify the acting user's access and
-      // replace client summaries with authoritative DB metadata + project
-      // list (dropping any the user can't access) before forwarding. File
-      // references pass through untouched (resolved by the runtime on disk).
+      // Harden "@" references before forwarding. Workspace refs get an
+      // authoritative DB summary; project refs are access-checked + normalized.
+      // File references pass through untouched (resolved by the runtime on
+      // disk). NOTE: a per-project runtime is single-root, so referenced
+      // sibling projects are NOT mounted here — the runtime reports them as
+      // unavailable. Cross-project file context lands on the merged-root
+      // workspace runtime (workspace-chat path).
       if (Array.isArray(parsedBody?.references) && parsedBody.references.length > 0) {
-        const refsChanged = await enrichWorkspaceReferences(parsedBody, verifiedUserId)
-        if (refsChanged) {
+        const wsChanged = await enrichWorkspaceReferences(parsedBody, verifiedUserId)
+        const projectRefs = await enrichProjectReferences(
+          parsedBody,
+          verifiedUserId,
+          project.workspaceId,
+        )
+        if (wsChanged || projectRefs.changed) {
           body = JSON.stringify(parsedBody)
         }
       }

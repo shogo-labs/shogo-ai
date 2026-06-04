@@ -44,7 +44,7 @@ import {
   Lock,
   File,
   FileText,
-  Boxes,
+  FolderGit2,
   Image as ImageIcon,
   ChevronDown,
   ChevronUp,
@@ -154,40 +154,49 @@ export interface FileAttachment {
 /**
  * A structured "@" reference attached to a chat message. Files point at a
  * path inside the current project's agent workspace (resolved to real
- * contents by the runtime); workspaces carry a client-built `summary` so
- * the runtime can inject them as context without a DB lookup (works even
- * in direct-to-runtime / desktop mode).
+ * contents by the runtime); projects tag a sibling project by id — the API
+ * durably attaches it to this chat's project so the merged-root runtime
+ * mounts it and the agent can read its files. The `workspace` variant is
+ * retained for back-compat but the menu no longer offers it.
  */
 export type ChatReference =
   | { type: "file"; path: string; name: string; label?: string }
+  | { type: "project"; id: string; name: string; label?: string }
   | { type: "workspace"; id: string; name: string; slug: string; summary?: string; label?: string }
 
-/** Lightweight workspace shape the composer needs for the "@" menu. */
-export interface WorkspaceMentionOption {
+/** Lightweight sibling-project shape the composer needs for the "@" menu. */
+export interface ProjectMentionOption {
   id: string
   name: string
-  slug: string
-  description?: string
 }
 
-/** One selectable row in the "@" menu (files first, then workspaces). */
+/** One selectable row in the "@" menu (files first, then projects). */
 type MentionItem =
   | { kind: "file"; path: string; name: string }
-  | { kind: "workspace"; id: string; name: string; slug: string; description?: string }
+  | { kind: "project"; id: string; name: string }
 
 const MAX_MENTION_FILE_RESULTS = 8
-const MAX_MENTION_WORKSPACE_RESULTS = 8
+const MAX_MENTION_PROJECT_RESULTS = 8
 
 function referenceKey(ref: ChatReference): string {
-  return ref.type === "file" ? `file:${ref.path}` : `workspace:${ref.id}`
+  if (ref.type === "file") return `file:${ref.path}`
+  if (ref.type === "project") return `project:${ref.id}`
+  return `workspace:${ref.id}`
 }
 
-function buildWorkspaceSummary(ws: WorkspaceMentionOption): string {
-  const lines = [`Workspace: ${ws.name} (slug: ${ws.slug}, id: ${ws.id})`]
-  if (ws.description && ws.description.trim()) {
-    lines.push(`Description: ${ws.description.trim()}`)
-  }
-  return lines.join("\n")
+/**
+ * Whitespace-free "@token" body for a project mention. Projects have no slug
+ * and their names can contain spaces, which the inline-token model can't
+ * represent, so we slugify the name (the structured reference still carries the
+ * real id + name). Collisions are cosmetic — resolution keys off the id.
+ */
+function slugifyMention(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  return slug || "project"
 }
 
 function basename(path: string): string {
@@ -335,11 +344,13 @@ export interface ChatInputProps {
    */
   projectId?: string
   /**
-   * Org/team workspaces the user can tag via the "@" menu's Workspaces
-   * section. Pass a referentially-stable array (memoized) so the memoized
-   * ChatInput doesn't re-render on every parent render.
+   * Sibling projects (same workspace, excluding the current one) the user can
+   * tag via the "@" menu's Projects section. Tagging one durably attaches it to
+   * this chat's project (mounted into the runtime) so the agent can read its
+   * files. Pass a referentially-stable array (memoized) so the memoized
+   * ChatInput doesn't re-render every render.
    */
-  workspaces?: WorkspaceMentionOption[]
+  projects?: ProjectMentionOption[]
   dimWhenDisabled?: boolean
   /**
    * When true, draws an accent-colored ring on the visible input
@@ -400,7 +411,7 @@ function ChatInputImpl({
   onQuickActionClick,
   restoreDraftRequest,
   projectId,
-  workspaces = [],
+  projects = [],
   dimWhenDisabled = true,
   highlighted = false,
   flush = false,
@@ -567,7 +578,7 @@ function ChatInputImpl({
     )
   }, [filterText])
 
-  // ---- "@" mention menu (files + workspaces) --------------------------------
+  // ---- "@" mention menu (files + sibling projects) --------------------------
   const chatContext = useChatContextSafe()
   const agentUrl = chatContext?.agentUrl ?? null
   const agentClient = useMemo(
@@ -581,6 +592,12 @@ function ChatInputImpl({
   const [mentionQuery, setMentionQuery] = useState("")
   const [mentionIndex, setMentionIndex] = useState(0)
   const [fileResults, setFileResults] = useState<{ path: string; name: string }[]>([])
+  // Per-project cache of the workspace file list, so name matching as the user
+  // types is instant and doesn't refetch the tree on every keystroke.
+  const treeFilesRef = useRef<{
+    projectId: string | null
+    files: { path: string; name: string }[]
+  }>({ projectId: null, files: [] })
   // The active "@" token's range in the input, so selecting an item can strip
   // exactly that token regardless of where the caret is.
   const mentionTokenRef = useRef<{ start: number; end: number } | null>(null)
@@ -621,42 +638,71 @@ function ChatInputImpl({
     []
   )
 
-  // Debounced file search against the project's agent workspace. Empty query
-  // shows top-level files; otherwise we use the runtime's RAG search. Gated on
-  // `projectId` so the Files section only appears in a project composer (and
-  // stays empty in the inline-edit composer, where references aren't threaded).
+  // Debounced file search against the project's agent workspace, matched by
+  // FILE NAME (the composer "@" menu is a name picker, not a content search).
+  // We cache the workspace file list once per project, then filter by basename
+  // as the user types; deeper files the name-cache misses are backfilled from
+  // the content index but still filtered to basename matches so results stay
+  // name-relevant. Gated on `projectId` so the Files section only appears in a
+  // project composer (and stays empty in the inline-edit composer).
   useEffect(() => {
     if (!showMentionMenu || !agentClient || !projectId) {
       setFileResults([])
       return
     }
     let cancelled = false
-    const query = mentionQuery.trim()
+    const q = mentionQuery.trim().toLowerCase()
     const timer = setTimeout(async () => {
       try {
-        const seen = new Set<string>()
-        const results: { path: string; name: string }[] = []
-        if (!query) {
+        // Load + cache the workspace file list once per project. The tree route
+        // is shallow (eager-depth), so this covers the common top-level files;
+        // the content-index backfill below reaches deeper ones.
+        if (treeFilesRef.current.projectId !== projectId) {
           const tree = await agentClient.getWorkspaceTree("")
-          const pushFiles = (nodes: any[]) => {
+          const files: { path: string; name: string }[] = []
+          const walk = (nodes: any[]) => {
             for (const node of nodes) {
-              if (results.length >= MAX_MENTION_FILE_RESULTS) return
-              if (node?.type === "file" && node.path && !seen.has(node.path)) {
-                seen.add(node.path)
-                results.push({ path: node.path, name: node.name || basename(node.path) })
+              if (node?.type === "file" && node.path) {
+                files.push({ path: node.path, name: node.name || basename(node.path) })
               } else if (node?.type === "directory" && Array.isArray(node.children)) {
-                pushFiles(node.children)
+                walk(node.children)
               }
             }
           }
-          pushFiles(Array.isArray(tree) ? tree : [])
+          walk(Array.isArray(tree) ? tree : [])
+          treeFilesRef.current = { projectId, files }
+        }
+
+        const seen = new Set<string>()
+        const results: { path: string; name: string }[] = []
+        const push = (f: { path: string; name: string }) => {
+          if (results.length >= MAX_MENTION_FILE_RESULTS || seen.has(f.path)) return
+          seen.add(f.path)
+          results.push(f)
+        }
+
+        if (!q) {
+          // No query yet: show the first cached files as suggestions.
+          for (const f of treeFilesRef.current.files) push(f)
         } else {
-          const hits = await agentClient.searchFiles(query, { limit: MAX_MENTION_FILE_RESULTS * 2 })
-          for (const hit of hits) {
-            if (results.length >= MAX_MENTION_FILE_RESULTS) break
-            if (hit?.path && !seen.has(hit.path)) {
-              seen.add(hit.path)
-              results.push({ path: hit.path, name: basename(hit.path) })
+          // Name match against the cached list first…
+          for (const f of treeFilesRef.current.files) {
+            if (f.name.toLowerCase().includes(q)) push(f)
+          }
+          // …then backfill deeper files from the content index, keeping only
+          // those whose basename matches the typed query.
+          if (results.length < MAX_MENTION_FILE_RESULTS) {
+            try {
+              const hits = await agentClient.searchFiles(mentionQuery.trim(), {
+                limit: MAX_MENTION_FILE_RESULTS * 4,
+              })
+              for (const hit of hits) {
+                if (!hit?.path) continue
+                const name = basename(hit.path)
+                if (name.toLowerCase().includes(q)) push({ path: hit.path, name })
+              }
+            } catch {
+              /* name matches from the cache already populated results */
             }
           }
         }
@@ -671,31 +717,29 @@ function ChatInputImpl({
     }
   }, [showMentionMenu, mentionQuery, agentClient, projectId])
 
-  const filteredWorkspaces = useMemo(() => {
+  const filteredProjects = useMemo(() => {
     const q = mentionQuery.trim().toLowerCase()
-    const list = workspaces ?? []
+    const list = projects ?? []
     const matched = q
       ? list.filter(
-          (w) =>
-            w.name.toLowerCase().includes(q) || w.slug.toLowerCase().includes(q)
+          (p) =>
+            p.name.toLowerCase().includes(q) || slugifyMention(p.name).includes(q)
         )
       : list
-    return matched.slice(0, MAX_MENTION_WORKSPACE_RESULTS)
-  }, [workspaces, mentionQuery])
+    return matched.slice(0, MAX_MENTION_PROJECT_RESULTS)
+  }, [projects, mentionQuery])
 
-  // Flat, ordered list backing keyboard navigation (files first, then workspaces).
+  // Flat, ordered list backing keyboard navigation (files first, then projects).
   const mentionItems = useMemo<MentionItem[]>(
     () => [
       ...fileResults.map((f) => ({ kind: "file" as const, path: f.path, name: f.name })),
-      ...filteredWorkspaces.map((w) => ({
-        kind: "workspace" as const,
-        id: w.id,
-        name: w.name,
-        slug: w.slug,
-        description: w.description,
+      ...filteredProjects.map((p) => ({
+        kind: "project" as const,
+        id: p.id,
+        name: p.name,
       })),
     ],
-    [fileResults, filteredWorkspaces]
+    [fileResults, filteredProjects]
   )
 
   const addReference = useCallback((ref: ChatReference) => {
@@ -709,10 +753,10 @@ function ChatInputImpl({
       // Insert the mention INLINE as an "@token" (replacing the active query,
       // or appended at the caret-less end) so it renders as a pill where it
       // was typed — instead of stripping it into a chip above the box. Files
-      // tag by basename, workspaces by slug (both whitespace-free tokens).
+      // tag by basename, projects by slugified name (both whitespace-free).
       const base = inputValueRef.current
       const token = mentionTokenRef.current
-      const label = `@${item.kind === "file" ? item.name : item.slug}`
+      const label = `@${item.kind === "file" ? item.name : slugifyMention(item.name)}`
       let caret: number
       if (token) {
         const start = Math.max(0, Math.min(token.start, base.length))
@@ -734,19 +778,7 @@ function ChatInputImpl({
       if (item.kind === "file") {
         addReference({ type: "file", path: item.path, name: item.name, label })
       } else {
-        addReference({
-          type: "workspace",
-          id: item.id,
-          name: item.name,
-          slug: item.slug,
-          label,
-          summary: buildWorkspaceSummary({
-            id: item.id,
-            name: item.name,
-            slug: item.slug,
-            description: item.description,
-          }),
-        })
+        addReference({ type: "project", id: item.id, name: item.name, label })
       }
 
       closeMentionMenu()
@@ -1480,13 +1512,13 @@ function ChatInputImpl({
           </View>
         )}
 
-        {/* "@" mention menu — files (current project) + workspaces */}
+        {/* "@" mention menu — files (current project) + sibling projects */}
         {showMentionMenu && (
           <View className="absolute bottom-full left-0 right-0 mb-1 max-h-[280px] rounded-md border border-border bg-popover shadow-md z-50">
             <ScrollView keyboardShouldPersistTaps="handled">
               {fileResults.length > 0 && (
                 <>
-                  <Text className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <Text className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                     Files
                   </Text>
                   {fileResults.map((file, i) => {
@@ -1496,59 +1528,41 @@ function ChatInputImpl({
                         key={`mention-file-${file.path}`}
                         onPress={() => selectMention({ kind: "file", path: file.path, name: file.name })}
                         className={cn(
-                          "w-full flex-row items-center gap-2 px-3 py-2",
+                          "w-full flex-row items-center gap-2 px-3 py-1.5",
                           active && "bg-accent"
                         )}
                       >
-                        <FileText className="h-4 w-4 text-muted-foreground" size={16} />
-                        <View className="flex-1">
-                          <Text className="text-sm text-foreground" numberOfLines={1}>
-                            {file.name}
-                          </Text>
-                          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-                            {file.path}
-                          </Text>
-                        </View>
+                        <FileText className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                        <Text className="flex-1 text-xs text-foreground" numberOfLines={1}>
+                          {file.name}
+                        </Text>
                       </Pressable>
                     )
                   })}
                 </>
               )}
 
-              {filteredWorkspaces.length > 0 && (
+              {filteredProjects.length > 0 && (
                 <>
-                  <Text className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Workspaces
+                  <Text className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Projects
                   </Text>
-                  {filteredWorkspaces.map((ws, i) => {
+                  {filteredProjects.map((proj, i) => {
                     const idx = fileResults.length + i
                     const active = idx === mentionIndex
                     return (
                       <Pressable
-                        key={`mention-ws-${ws.id}`}
-                        onPress={() =>
-                          selectMention({
-                            kind: "workspace",
-                            id: ws.id,
-                            name: ws.name,
-                            slug: ws.slug,
-                            description: ws.description,
-                          })
-                        }
+                        key={`mention-project-${proj.id}`}
+                        onPress={() => selectMention({ kind: "project", id: proj.id, name: proj.name })}
                         className={cn(
-                          "w-full flex-row items-center gap-2 px-3 py-2",
+                          "w-full flex-row items-center gap-2 px-3 py-1.5",
                           active && "bg-accent"
                         )}
                       >
-                        <Boxes className="h-4 w-4 text-muted-foreground" size={16} />
-                        <View className="flex-1">
-                          <Text className="text-sm text-foreground" numberOfLines={1}>
-                            {ws.name}
-                          </Text>
-                          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-                            {ws.slug}
-                          </Text>
-                        </View>
+                        <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                        <Text className="flex-1 text-xs text-foreground" numberOfLines={1}>
+                          {proj.name}
+                        </Text>
                       </Pressable>
                     )
                   })}
@@ -1557,7 +1571,7 @@ function ChatInputImpl({
 
               {mentionItems.length === 0 && (
                 <Text className="px-3 py-3 text-xs text-muted-foreground">
-                  {!agentClient && (workspaces?.length ?? 0) === 0
+                  {!agentClient && (projects?.length ?? 0) === 0
                     ? "Nothing to reference yet"
                     : "No matches"}
                 </Text>
@@ -1609,7 +1623,7 @@ function ChatInputImpl({
           </View>
         )}
 
-        {/* Tagged files / workspaces now render INLINE as "@mention" pills via
+        {/* Tagged files / projects now render INLINE as "@mention" pills via
             the highlight overlay below, so the old chip row above the box is
             gone. References themselves are still tracked + sent on submit. */}
 
