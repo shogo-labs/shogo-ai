@@ -25,6 +25,7 @@ import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
+import { enrichWorkspaceReferences } from "../lib/chat-references"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -817,12 +818,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     init?: RequestInit,
   ): Promise<Response> {
     const baseUrl = await getProjectUrl(projectId)
-    const { deriveRuntimeToken } = await import("../lib/runtime-token")
+    const { deriveProjectRuntimeToken } = await import("../lib/project-runtime-token")
     const headers = new Headers(init?.headers)
     if (!headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json")
     }
-    headers.set("x-runtime-token", deriveRuntimeToken(projectId))
+    headers.set("x-runtime-token", await deriveProjectRuntimeToken(projectId))
     return fetch(`${baseUrl}${path}`, { ...init, headers })
   }
 
@@ -957,6 +958,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         }
       }
 
+      // Harden "@" workspace references: verify the acting user's access and
+      // replace client summaries with authoritative DB metadata + project
+      // list (dropping any the user can't access) before forwarding. File
+      // references pass through untouched (resolved by the runtime on disk).
+      if (Array.isArray(parsedBody?.references) && parsedBody.references.length > 0) {
+        const refsChanged = await enrichWorkspaceReferences(parsedBody, verifiedUserId)
+        if (refsChanged) {
+          body = JSON.stringify(parsedBody)
+        }
+      }
+
       // Extract the chat-session id up-front so the billing session can be
       // keyed by `(projectId, chatSessionId)`. The id is on the request
       // body (`parsedBody.chatSessionId`) for follow-up turns and on the
@@ -1005,8 +1017,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         "Content-Type": "application/json",
       }
 
-      const { deriveRuntimeToken } = await import('../lib/runtime-token')
-      headers["x-runtime-token"] = deriveRuntimeToken(projectId)
+      const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
+      headers["x-runtime-token"] = await deriveProjectRuntimeToken(projectId, { workspaceId: project.workspaceId })
 
       // Copy relevant headers from original request
       const authHeader = c.req.header("Authorization")

@@ -18,7 +18,7 @@
 import { Hono } from "hono"
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
-import { deriveRuntimeToken } from "../lib/runtime-token"
+import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
 
 // S3 configuration. `PUBLISH_BUCKET` must be set explicitly in every K8s
 // overlay (k8s/overlays/{staging,production-*}/api-service.yaml) — the
@@ -252,7 +252,7 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
   // publish before this fix either got a bare 404 (proxy's no-port branch)
   // or the user app's SPA fallback HTML (which then failed JSON parsing).
   const response = await fetch(`${podUrl}/agent/dist-files`, {
-    headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+    headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
     signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
   })
 
@@ -288,7 +288,7 @@ async function flushGitSync(
     const response = await fetch(`${podUrl}/agent/git-flush`, {
       method: 'POST',
       headers: {
-        'x-runtime-token': deriveRuntimeToken(projectId),
+        'x-runtime-token': await deriveProjectRuntimeToken(projectId),
         'content-type': 'application/json',
       },
       body: JSON.stringify({ tag: opts.tag, tagMessage: opts.tagMessage }),

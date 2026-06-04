@@ -66,7 +66,7 @@ import {
   rollbackProjectToCheckpoint,
   type PrecedingCheckpointResult,
 } from "@shogo/shared-app/chat"
-import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession } from "@shogo/shared-app/domain"
+import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession, useWorkspaceCollection } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import { probeChatTurnStatus, shouldAttachLiveStream, type ChatTurnStatus } from "./probe-turn-status"
@@ -86,6 +86,8 @@ import {
   DEFAULT_MODEL_FREE,
   type InteractionMode,
   type FileAttachment,
+  type ChatReference,
+  type WorkspaceMentionOption,
   type RestoreDraftRequest,
 } from "./ChatInput"
 import {
@@ -183,6 +185,7 @@ export type QueuedMessage = {
   content: string
   files?: FileAttachment[]
   selectedModel?: string
+  references?: ChatReference[]
 }
 
 function buildOptimisticUserMessage(input: OptimisticUserInput, id = "optimistic-user-pending"): UIMessage {
@@ -727,6 +730,31 @@ export const ChatPanel = observer(function ChatPanel({
 
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
+
+  // Org/team workspaces for the composer's "@" mention menu. AppSidebar
+  // already loads these app-wide; we call loadAll() defensively in case the
+  // panel mounts first. ChatPanel is an observer, so the memo below re-runs
+  // when the collection populates.
+  const workspaceCollection = useWorkspaceCollection()
+  useEffect(() => {
+    workspaceCollection.loadAll().catch(() => {})
+  }, [workspaceCollection])
+  const workspaceMentionSignature = workspaceCollection.all
+    .map((w: any) => `${w.id}:${w.name}:${w.slug}`)
+    .join("|")
+  const workspaceMentionOptions = useMemo<WorkspaceMentionOption[]>(
+    () =>
+      workspaceCollection.all.map((w: any) => ({
+        id: w.id,
+        name: w.name,
+        slug: w.slug,
+        description: w.description ?? "",
+      })),
+    // Signature keeps the array referentially stable across token-by-token
+    // streaming re-renders (matters because ChatInput is memoized).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [workspaceMentionSignature]
+  )
 
   const platformFeatures = legacyDomains?.platformFeatures
   const componentBuilder = legacyDomains?.componentBuilder
@@ -3367,7 +3395,13 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Internal function that actually sends a message (used by queue processor)
   const sendMessageInternal = useCallback(
-    async (content: string, files?: FileAttachment[], perMsgModel?: string, extraBody?: Record<string, unknown>) => {
+    async (
+      content: string,
+      files?: FileAttachment[],
+      perMsgModel?: string,
+      extraBody?: Record<string, unknown>,
+      references?: ChatReference[]
+    ) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
@@ -3507,6 +3541,12 @@ export const ChatPanel = observer(function ChatPanel({
           bodyExtra.interactionMode = "agent"
           confirmedPlanRef.current = null
         }
+        if (references && references.length > 0) {
+          // The runtime resolves these into real context (file contents +
+          // workspace summaries) before the model runs. Passed through the
+          // API proxy untouched, so it also works in direct-to-runtime mode.
+          bodyExtra.references = references
+        }
         if (extraBody) {
           Object.assign(bodyExtra, extraBody)
         }
@@ -3588,7 +3628,9 @@ export const ChatPanel = observer(function ChatPanel({
       await sendMessageInternal(
         nextMessage.content,
         nextMessage.files,
-        nextMessage.selectedModel
+        nextMessage.selectedModel,
+        undefined,
+        nextMessage.references
       )
     } catch (err) {
       console.error("[ChatPanel] Error processing queued message:", err)
@@ -3794,13 +3836,22 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Handle message submission
   const handleSendMessage = useCallback(
-    async (content: string, files?: FileAttachment[], perMsgModel?: string) => {
+    async (
+      content: string,
+      files?: FileAttachment[],
+      perMsgModel?: string,
+      references?: ChatReference[]
+    ) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
       }
 
-      if (!content.trim() && (!files || files.length === 0)) {
+      if (
+        !content.trim() &&
+        (!files || files.length === 0) &&
+        (!references || references.length === 0)
+      ) {
         return
       }
 
@@ -3814,20 +3865,26 @@ export const ChatPanel = observer(function ChatPanel({
             content: trimmedContent,
             files,
             selectedModel: perMsgModel,
+            references,
           },
         ])
         return
       }
 
-      await sendMessageInternal(trimmedContent, files, perMsgModel)
+      await sendMessageInternal(trimmedContent, files, perMsgModel, undefined, references)
     },
     [isStreaming, sendMessageInternal, currentSessionId]
   )
 
   // Handle form submit from ChatInput
   const handleInputSubmit = useCallback(
-    (content: string, files?: FileAttachment[], perMsgModel?: string) => {
-      handleSendMessage(content, files, perMsgModel)
+    (
+      content: string,
+      files?: FileAttachment[],
+      perMsgModel?: string,
+      references?: ChatReference[]
+    ) => {
+      handleSendMessage(content, files, perMsgModel, references)
     },
     [handleSendMessage]
   )
@@ -4936,6 +4993,8 @@ export const ChatPanel = observer(function ChatPanel({
               quickActions={quickActions}
               onQuickActionClick={handleQuickActionClick}
               restoreDraftRequest={restoreDraftRequest}
+              projectId={projectId}
+              workspaces={workspaceMentionOptions}
             />
           </View>
         </KeyboardAvoidingView>

@@ -28,7 +28,7 @@
 
 import { prisma } from './prisma'
 import { getProjectPodUrl } from './knative-project-manager'
-import { deriveRuntimeToken } from './runtime-token'
+import { deriveProjectRuntimeToken } from './project-runtime-token'
 
 /**
  * Per-file size caps on what we paste into Shogo's prompt. The
@@ -94,7 +94,7 @@ async function fetchPodFile(params: {
 
   try {
     const res = await fetch(url, {
-      headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+      headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
       signal: controller.signal,
     })
     if (!res.ok) {

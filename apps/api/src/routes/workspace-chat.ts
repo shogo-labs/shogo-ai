@@ -43,6 +43,7 @@ import {
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session'
+import { enrichWorkspaceReferences } from '../lib/chat-references'
 import { trackUsageFromStream } from './project-chat'
 
 // Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
@@ -552,6 +553,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           parsedBody.agentMode = 'claude-haiku-4-5-20251001'
           body = JSON.stringify(parsedBody)
         }
+      }
+    }
+
+    // Harden "@" workspace references: verify the acting user's access and
+    // replace client summaries with authoritative DB metadata + project list
+    // (dropping any the user can't access) before forwarding to the runtime.
+    if (Array.isArray(parsedBody?.references) && parsedBody.references.length > 0) {
+      if (await enrichWorkspaceReferences(parsedBody, auth.userId)) {
+        body = JSON.stringify(parsedBody)
       }
     }
 
