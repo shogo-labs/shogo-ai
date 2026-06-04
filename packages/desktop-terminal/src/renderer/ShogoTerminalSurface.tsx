@@ -824,19 +824,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           scrollbar-width: thin;
         }
         [data-shogo-terminal-surface] .xterm-rows {
-          padding-left: 32px !important;
-        }
-        [data-shogo-terminal-surface] .xterm-decoration-overlay-container,
-        [data-shogo-terminal-surface] .xterm-decoration-container,
-        [data-shogo-terminal-surface] .xterm-decoration {
-          box-sizing: border-box;
-          padding-left: 4px !important;
-        }
-        [data-shogo-terminal-surface] .xterm-decoration {
-          width: 28px !important;
-          margin-left: 0 !important;
           padding-right: 6px;
-          justify-content: flex-end !important;
         }
         [data-shogo-terminal-surface] .xterm-viewport::-webkit-scrollbar {
           width: 10px;
