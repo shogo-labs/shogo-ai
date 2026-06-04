@@ -122,3 +122,68 @@ describe('WorkerRuntimeManager.buildEnv — TREE_SITTER_WASM_DIR injection', () 
     expect(env.TREE_SITTER_WASM_DIR).toBe('/runtime/tree-sitter-wasm');
   });
 });
+
+describe('WorkerRuntimeManager.buildEnv — WORKSPACE_API_PORT_BASE (per-runtime preview sidecar base)', () => {
+  // Regression: every workspace runtime previously fell back to the fixed
+  // default base (3101) for its preview sidecars, so the first project of each
+  // concurrently-warm runtime bound the SAME port — crash-looping the
+  // preview-manager and SIGKILL-restart-storming the agent-runtime. The base
+  // must be derived from the runtime's unique agent port instead.
+  function mgr() {
+    return new WorkerRuntimeManager({ env: {} as NodeJS.ProcessEnv }) as unknown as {
+      buildEnv(slot: unknown, runtimeBinPath: string): NodeJS.ProcessEnv;
+    };
+  }
+
+  it('anchors WORKSPACE_API_PORT_BASE at agentPort + 2 (above agent + its API server)', () => {
+    const env = mgr().buildEnv(
+      fakeSlot({ agentPort: 37646, apiServerPort: 37647 }),
+      '/runtime/shogo-agent-runtime',
+    );
+    expect(env.WORKSPACE_API_PORT_BASE).toBe('37648');
+  });
+
+  it('gives two distinct runtimes distinct sidecar bases (no cross-runtime 3101 collision)', () => {
+    const m = mgr();
+    const a = m.buildEnv(fakeSlot({ agentPort: 37646 }), '/runtime/shogo-agent-runtime');
+    const b = m.buildEnv(fakeSlot({ agentPort: 37404 }), '/runtime/shogo-agent-runtime');
+    expect(a.WORKSPACE_API_PORT_BASE).not.toBe(b.WORKSPACE_API_PORT_BASE);
+    expect(a.WORKSPACE_API_PORT_BASE).toBe('37648');
+    expect(b.WORKSPACE_API_PORT_BASE).toBe('37406');
+  });
+});
+
+describe('WorkerRuntimeManager.allocatePort — per-runtime port block reservation', () => {
+  function rawMgr() {
+    return new WorkerRuntimeManager({ env: {} as NodeJS.ProcessEnv }) as unknown as {
+      allocatePort(): Promise<number>;
+      releasePort(port: number): void;
+      usedPorts: Set<number>;
+    };
+  }
+
+  it('reserves a contiguous block so a second allocation never overlaps the first runtime sidecar range', async () => {
+    const m = rawMgr();
+    const p1 = await m.allocatePort();
+    const p2 = await m.allocatePort();
+    // The two blocks [p, p+15] must be disjoint — otherwise runtime 2's agent
+    // port (or a sidecar) could land inside runtime 1's sidecar range.
+    const block1 = new Set<number>();
+    for (let off = 0; off < 16; off++) block1.add(p1 + off);
+    for (let off = 0; off < 16; off++) {
+      expect(block1.has(p2 + off)).toBe(false);
+    }
+  });
+
+  it('releasePort frees the whole block so the ports can be reused', async () => {
+    const m = rawMgr();
+    const p = await m.allocatePort();
+    // Sidecar ports (p+2 … p+15) are reserved, not just p and p+1.
+    expect(m.usedPorts.has(p + 2)).toBe(true);
+    expect(m.usedPorts.has(p + 15)).toBe(true);
+    m.releasePort(p);
+    for (let off = 0; off < 16; off++) {
+      expect(m.usedPorts.has(p + off)).toBe(false);
+    }
+  });
+});

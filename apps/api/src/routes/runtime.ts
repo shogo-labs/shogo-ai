@@ -272,6 +272,14 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       }
 
       if (res.mode === 'host') {
+        // The UI is actively opening/viewing this project's preview. Refresh
+        // its warm-preview recency (and promote it out of the background
+        // heartbeat pool if it was warmed there) so the project on screen is
+        // never the LRU eviction victim — the root cause of the cold-start /
+        // "Spawning agent-runtime for ws:proj:…" on switch-back. This is the
+        // UI-only open signal; agent/chat `touch()` deliberately does NOT
+        // promote (a heartbeat-driven turn must not crowd the foreground cap).
+        runtimeManager.markPreviewActive(projectId)
         const isReady = res.runtime.status === 'running'
         // Canvas iframe loads directly from the agent runtime so
         // `fetch('/api/...')` resolves same-origin (not via this

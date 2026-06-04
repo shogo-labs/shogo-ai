@@ -3357,11 +3357,23 @@ function ChatPanelResizeHandle({
  *  Override knob: window.__shogoPreviewReadinessTimeoutMs (for tests
  *  / future tuning without redeploying).
  */
+// Warm switch-back cache: base URLs we've already confirmed serve a live
+// preview. Switching away and back remounts CanvasPanel, which would otherwise
+// reset `ready=false` and re-run the 404 poll — flashing the loading screen for
+// a runtime that never went down. Seeding `ready=true` for a known-good base
+// URL renders the warm iframe immediately; the poll still revalidates and a
+// genuine 404 drops the cache + reverts to the loading gate.
+const warmPreviewReadyCache = new Set<string>()
+
 function usePreviewReadiness(baseUrl: string | null | undefined): string | null {
-  const [ready, setReady] = useState(false)
+  const [ready, setReady] = useState(() => (baseUrl ? warmPreviewReadyCache.has(baseUrl) : false))
 
   useEffect(() => {
     if (!baseUrl) { setReady(false); return }
+
+    // Seed from the warm cache so a switch-back shows the preview immediately;
+    // the poll below revalidates and corrects if the runtime is actually down.
+    setReady(warmPreviewReadyCache.has(baseUrl))
 
     let alive = true
 
@@ -3377,11 +3389,20 @@ function usePreviewReadiness(baseUrl: string | null | undefined): string | null 
       for (let i = 0; i < maxIterations && alive; i++) {
         try {
           const res = await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(perRequestTimeoutMs) })
-          if (res.status !== 404) { if (alive) setReady(true); return }
+          if (res.status !== 404) {
+            warmPreviewReadyCache.add(baseUrl)
+            if (alive) setReady(true)
+            return
+          }
+          // Definitive 404 — the preview is not (yet) being served. Drop any
+          // optimistic warm seed so switch-back can't keep showing a dead
+          // iframe, and keep polling.
+          warmPreviewReadyCache.delete(baseUrl)
+          if (alive) setReady(false)
         } catch { /* CORS / network failure / per-request timeout — keep polling */ }
         await new Promise(r => setTimeout(r, interIterationDelayMs))
       }
-      if (alive) setReady(true)
+      if (alive) { warmPreviewReadyCache.add(baseUrl); setReady(true) }
     }
 
     poll()

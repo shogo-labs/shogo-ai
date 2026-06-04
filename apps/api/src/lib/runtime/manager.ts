@@ -108,6 +108,17 @@ interface InternalRuntime extends IProjectRuntime {
    */
   agentProcess: ChildProcess | null
   agentPort: number | undefined
+  /**
+   * True when this runtime was spawned by a BACKGROUND system (the local
+   * heartbeat scheduler) rather than opened in the UI. Background runtimes are
+   * a separate concern from the warm-preview set: they are never recorded in
+   * {@link workspacePreviewMru}, never counted toward
+   * {@link workspacePreviewMax}, and never evicted by
+   * {@link enforceWorkspacePreviewCap}. They are bounded instead by the
+   * embedded worker's own idle/maxRuntimes lifecycle. Cleared (promoted to a
+   * foreground preview) the moment the project is opened in the UI.
+   */
+  background?: boolean
 }
 
 /**
@@ -166,6 +177,24 @@ export class RuntimeManager implements IRuntimeManager {
   private readonly workspacePreviewMax: number = (() => {
     const n = parseInt(process.env.WORKSPACE_PREVIEW_MAX || '3', 10)
     return Number.isFinite(n) && n > 0 ? n : 3
+  })()
+
+  /**
+   * Completely separate pool for BACKGROUND (local heartbeat) runtimes. The
+   * heartbeat is its own system: its runtimes must never count toward or evict
+   * the warm preview set (handled in {@link enforceWorkspacePreviewCap}), and —
+   * crucially — they must not be able to crowd the embedded worker's global
+   * `maxRuntimes` ceiling to the point where it LRU-evicts a foreground
+   * preview. We therefore bound the background pool with its own small cap and
+   * LRU-evict among background runtimes only. With foreground (3) + background
+   * ({@link workspaceBackgroundMax}) kept well under the worker's `maxRuntimes`
+   * (default 10), the worker's global cap never targets an open preview.
+   * Promoted out of this pool the moment the project is opened in the UI.
+   */
+  private workspaceBackgroundMru: string[] = []
+  private readonly workspaceBackgroundMax: number = (() => {
+    const n = parseInt(process.env.WORKSPACE_BACKGROUND_MAX || '2', 10)
+    return Number.isFinite(n) && n > 0 ? n : 2
   })()
 
   constructor(config: Partial<IRuntimeConfig> = {}) {
@@ -1267,7 +1296,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     return { workspaceId: anchor.workspaceId, attachedProjectIds, localFolders, readonlyProjectIds }
   }
 
-  async start(projectId: string): Promise<IProjectRuntime> {
+  async start(
+    projectId: string,
+    opts?: { background?: boolean },
+  ): Promise<IProjectRuntime> {
     // Universal workspace-runtime model: when SHOGO_WORKSPACE_RUNTIME is
     // enabled, every project runs on its project-anchored merged-root
     // runtime (`ws:proj:<id>`). The legacy single-project runtime keyed by
@@ -1280,7 +1312,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     if (process.env.SHOGO_WORKSPACE_RUNTIME === 'true') {
       const anchorOpts = await this.resolveAnchorSpawnOpts(projectId)
       if (anchorOpts) {
-        return this.startProjectWorkspace(projectId, anchorOpts)
+        return this.startProjectWorkspace(projectId, {
+          ...anchorOpts,
+          background: opts?.background,
+        })
       }
       // No workspaceId — cannot anchor; fall through to the legacy path.
     }
@@ -1314,7 +1349,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           `stopping leaked tree before respawn`,
       )
       try {
-        await this.stop(projectId)
+        await this.stop(projectId, 'pre-respawn')
       } catch (err: any) {
         console.warn(
           `[RuntimeManager] start(${projectId}): pre-respawn stop failed: ${err?.message ?? err} — continuing`,
@@ -1361,7 +1396,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
     if (existing && (existing.status === 'error' || existing.status === 'starting')) {
       try {
-        await this.stop(key)
+        await this.stop(key, 'pre-respawn')
       } catch (err: any) {
         console.warn(`[RuntimeManager] startWorkspace(${key}): pre-respawn stop failed: ${err?.message ?? err}`)
       }
@@ -1397,6 +1432,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       attachedProjectIds?: string[]
       localFolders?: string[]
       readonlyProjectIds?: string[]
+      /**
+       * Started by the background heartbeat scheduler rather than a UI open.
+       * Background runtimes stay out of the warm-preview MRU/cap entirely (see
+       * {@link InternalRuntime.background}). A later foreground open of the
+       * same project promotes it to a preview.
+       */
+      background?: boolean
     },
   ): Promise<IProjectRuntime> {
     if (!anchorProjectId) {
@@ -1432,8 +1474,24 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           `[RuntimeManager] startProjectWorkspace(${key}): merged-root refresh on reuse failed: ${err?.message ?? err}`,
         )
       }
-      // Reuse counts as "opened" — keep this preview warmest.
-      this.recordWorkspaceMru(key)
+      // Diagnostic (switch-back warmth): a reuse here means the runtime was
+      // NOT torn down while the user was away — switching back is warm. A
+      // fresh-spawn log (below) instead would mean a real restart.
+      console.log(
+        `[RuntimeManager] startProjectWorkspace(${key}): reuse (warm)${opts.background ? ' [background]' : ''}`,
+      )
+      // A foreground (UI) open promotes a background-only runtime into the warm
+      // preview set; a background (heartbeat) reuse must NOT pull a runtime into
+      // the preview MRU, nor demote a foreground preview to background.
+      if (!opts.background) {
+        existing.background = false
+        this.dropBackgroundMru(key)
+        // Reuse counts as "opened" — keep this preview warmest.
+        this.recordWorkspaceMru(key)
+      } else if (existing.background) {
+        // Still a background runtime — refresh its recency in the bg pool.
+        this.recordBackgroundMru(key)
+      }
       return this.toPublicRuntime(existing)
     }
 
@@ -1445,7 +1503,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
     if (existing && (existing.status === 'error' || existing.status === 'starting')) {
       try {
-        await this.stop(key)
+        await this.stop(key, 'pre-respawn')
       } catch (err: any) {
         console.warn(`[RuntimeManager] startProjectWorkspace(${key}): pre-respawn stop failed: ${err?.message ?? err}`)
       }
@@ -1461,14 +1519,32 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       readonlyProjectIds: opts.readonlyProjectIds ?? [],
       logLabel: `proj:${anchorProjectId.slice(0, 8)}`,
     })
+    // Diagnostic (switch-back warmth): a fresh-spawn means the runtime was not
+    // running when (re)opened — i.e. a real cold start / restart, not a warm
+    // reuse. Pairs with the `reuse (warm)` log above and the stop() reason log.
+    console.log(
+      `[RuntimeManager] startProjectWorkspace(${key}): fresh-spawn${opts.background ? ' [background]' : ''}`,
+    )
     this.startingPromises.set(key, promise)
     try {
       const result = await promise
-      // Newly opened — record as most-recent and evict the LRU beyond the
-      // warm cap so opening a 4th project stops the oldest (not the active
-      // one). Best-effort; never fails the start.
-      this.recordWorkspaceMru(key)
-      await this.enforceWorkspacePreviewCap().catch(() => {})
+      // Tag the origin so background (heartbeat) runtimes are kept out of the
+      // warm-preview set — they are a separate system bounded by the worker's
+      // own idle/maxRuntimes lifecycle, not by the preview cap.
+      const internal = this.runtimes.get(key)
+      if (internal) internal.background = !!opts.background
+      if (!opts.background) {
+        // Newly opened in the UI — record as most-recent and evict the LRU
+        // *preview* beyond the warm cap so opening a 4th project stops the
+        // oldest (not the active one). Best-effort; never fails the start.
+        this.recordWorkspaceMru(key)
+        await this.enforceWorkspacePreviewCap().catch(() => {})
+      } else {
+        // Background (heartbeat) start — bound the SEPARATE background pool so
+        // it can't crowd the worker's global maxRuntimes and evict a preview.
+        this.recordBackgroundMru(key)
+        await this.enforceWorkspaceBackgroundCap().catch(() => {})
+      }
       return result
     } finally {
       this.startingPromises.delete(key)
@@ -2487,51 +2563,103 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     return projectId
   }
 
-  /** Move an anchored workspace key to the front of the warm-preview MRU. */
+  /**
+   * Move an anchored workspace key to the front of the warm-preview MRU.
+   * No-ops for background (heartbeat) runtimes so a heartbeat-triggered agent
+   * turn — whose AI-proxy calls flow through {@link touch} — can't quietly pull
+   * a background runtime into the foreground preview set and count it against
+   * the cap.
+   */
   private recordWorkspaceMru(key: string): void {
     if (!key.startsWith('ws:proj:')) return
+    if (this.runtimes.get(key)?.background) return
     const i = this.workspacePreviewMru.indexOf(key)
     if (i >= 0) this.workspacePreviewMru.splice(i, 1)
     this.workspacePreviewMru.unshift(key)
   }
 
+  /** Move a background (heartbeat) key to the front of the background MRU. */
+  private recordBackgroundMru(key: string): void {
+    if (!key.startsWith('ws:proj:')) return
+    const i = this.workspaceBackgroundMru.indexOf(key)
+    if (i >= 0) this.workspaceBackgroundMru.splice(i, 1)
+    this.workspaceBackgroundMru.unshift(key)
+  }
+
+  /** Remove a key from the background pool (e.g. promotion to a preview). */
+  private dropBackgroundMru(key: string): void {
+    const i = this.workspaceBackgroundMru.indexOf(key)
+    if (i >= 0) this.workspaceBackgroundMru.splice(i, 1)
+  }
+
   /**
-   * Keep at most {@link workspacePreviewMax} project-anchored previews warm.
-   * Beyond the cap, stop the least-recently-used live anchored runtimes so
-   * the same project folder is never served by stale duplicates and vite
-   * watchers don't pile up across many open/close cycles. Idempotent and
-   * best-effort.
+   * Keep at most {@link workspaceBackgroundMax} background (heartbeat) runtimes
+   * warm, LRU-evicting among BACKGROUND runtimes only. This bounds the separate
+   * heartbeat pool so it can never push the embedded worker's global
+   * `maxRuntimes` ceiling high enough to evict a foreground preview. Idempotent
+   * and best-effort.
+   */
+  private async enforceWorkspaceBackgroundCap(): Promise<void> {
+    const cap = this.workspaceBackgroundMax
+    if (cap <= 0) return
+    const liveBackground = this.workspaceBackgroundMru.filter((k) => {
+      const rt = this.runtimes.get(k)
+      return !!rt && rt.status !== 'stopped' && rt.background === true
+    })
+    if (liveBackground.length <= cap) return
+    for (const key of liveBackground.slice(cap)) {
+      console.log(`[RuntimeManager] Workspace background LRU: evicting ${key} (cap=${cap})`)
+      try {
+        await this.stop(key, 'background-lru')
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] background LRU evict stop(${key}) failed: ${err?.message ?? err}`)
+      }
+    }
+  }
+
+  /**
+   * Keep at most {@link workspacePreviewMax} project-anchored PREVIEWS warm.
+   * Beyond the cap, stop the least-recently-used live preview runtimes so the
+   * same project folder is never served by stale duplicates and vite watchers
+   * don't pile up across many open/close cycles. Idempotent and best-effort.
+   *
+   * Operates strictly on the foreground preview set (the MRU). Background
+   * heartbeat runtimes are a completely separate system: they are never in the
+   * MRU, so they neither count toward the cap nor get evicted here, and — just
+   * as importantly — they can never push a real, open preview out of the warm
+   * set. (They're bounded by the embedded worker's idle/maxRuntimes lifecycle.)
    */
   private async enforceWorkspacePreviewCap(): Promise<void> {
     const cap = this.workspacePreviewMax
     if (cap <= 0) return
-    const liveAnchored = Array.from(this.runtimes.keys()).filter(
-      (k) => k.startsWith('ws:proj:') && this.runtimes.get(k)?.status !== 'stopped',
-    )
-    if (liveAnchored.length <= cap) return
-    // Order by recency (MRU index; unknown keys sort last = oldest).
-    const ordered = [...liveAnchored].sort((a, b) => {
-      const ia = this.workspacePreviewMru.indexOf(a)
-      const ib = this.workspacePreviewMru.indexOf(b)
-      return (ia < 0 ? Infinity : ia) - (ib < 0 ? Infinity : ib)
+    // MRU is most-recent-first; keep only entries with a live runtime.
+    const livePreviews = this.workspacePreviewMru.filter((k) => {
+      const st = this.runtimes.get(k)?.status
+      return !!st && st !== 'stopped'
     })
-    for (const key of ordered.slice(cap)) {
+    if (livePreviews.length <= cap) return
+    // Evict the tail (oldest opens) beyond the cap.
+    for (const key of livePreviews.slice(cap)) {
       console.log(`[RuntimeManager] Workspace preview LRU: evicting ${key} (cap=${cap})`)
       try {
-        await this.stop(key)
+        await this.stop(key, 'preview-lru')
       } catch (err: any) {
         console.warn(`[RuntimeManager] LRU evict stop(${key}) failed: ${err?.message ?? err}`)
       }
     }
   }
 
-  async stop(projectId: string): Promise<void> {
+  async stop(projectId: string, reason: string = 'external'): Promise<void> {
     const key = this.resolveRuntimeKey(projectId)
     const runtime = this.runtimes.get(key)
     if (!runtime) {
       // Idempotent: succeed silently if not running
       return
     }
+
+    // Diagnostic (switch-back warmth): attribute every teardown to its cause so
+    // an unexpected runtime restart can be traced to who stopped it.
+    console.log(`[RuntimeManager] stop(${key}) reason=${reason}`)
 
     this.stopHealthCheck(key)
     runtime.status = 'stopping'
@@ -2589,6 +2717,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     this.runtimes.delete(key)
     const mi = this.workspacePreviewMru.indexOf(key)
     if (mi >= 0) this.workspacePreviewMru.splice(mi, 1)
+    this.dropBackgroundMru(key)
   }
 
   /**
@@ -2598,7 +2727,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * project runtime.
    */
   async stopWorkspace(workspaceId: string): Promise<void> {
-    return this.stop(workspaceRuntimeKey(workspaceId))
+    return this.stop(workspaceRuntimeKey(workspaceId), 'stop-workspace')
   }
 
   /** Public status of a workspace runtime, or null when not running. */
@@ -2612,7 +2741,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     const existing = this.runtimes.get(projectId)
     if (existing && existing.status !== 'stopped') {
       console.log(`[RuntimeManager] Stopping existing runtime for ${projectId}`)
-      await this.stop(projectId)
+      await this.stop(projectId, 'restart')
     }
 
     console.log(`[RuntimeManager] Starting fresh runtime for ${projectId}`)
@@ -2703,7 +2832,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
   async stopAll(): Promise<void> {
     const stopPromises = Array.from(this.runtimes.keys()).map((projectId) =>
-      this.stop(projectId).catch((err) =>
+      this.stop(projectId, 'shutdown').catch((err) =>
         console.error(`[RuntimeManager] Failed to stop ${projectId}:`, err)
       )
     )
@@ -2744,6 +2873,55 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       if (key.startsWith('ws:proj:')) this.recordWorkspaceMru(key)
     } catch (err: any) {
       console.warn(`[RuntimeManager] touch(${projectId}) failed: ${err?.message ?? err}`)
+    }
+  }
+
+  /**
+   * Mark a project's preview as actively open in the UI.
+   *
+   * This is the fix for the "switch back to a project I left and it
+   * cold-starts" bug. `/sandbox/url` short-circuits on an already-running
+   * runtime (see `resolveProjectPodUrl`) and so never calls `start()`, which
+   * is the only path that refreshes the warm-preview MRU. Without a refresh,
+   * the project you are *actively viewing* drifts to the tail of the MRU and
+   * becomes the next LRU eviction victim the moment any other foreground start
+   * (e.g. a speculative `runtime/prewarm`) lands — the runtime is torn down
+   * behind your back and re-spawns ("Spawning agent-runtime for ws:proj:…")
+   * when you return.
+   *
+   * Unlike {@link touch} (which fires on every agent-proxy/AI-proxy request and
+   * MUST stay neutral so a heartbeat-driven turn can't promote a background
+   * runtime into the foreground cap), this is called ONLY from the UI preview
+   * open signal (`GET /sandbox/url`). It therefore both:
+   *   - promotes a background (heartbeat) runtime the user just opened into the
+   *     protected foreground preview set, and
+   *   - moves it to the front of the MRU so it can never be the LRU victim
+   *     while it is on screen.
+   *
+   * Safe no-op when the project has no running anchored runtime (cloud
+   * K8s/VM modes, or not yet started).
+   */
+  markPreviewActive(projectId: string): void {
+    if (!projectId || projectId === 'api-key') return
+    try {
+      const key = this.resolveRuntimeKey(projectId)
+      if (!key.startsWith('ws:proj:')) return
+      const rt = this.runtimes.get(key)
+      if (!rt || rt.status === 'stopped') return
+      // Promote a heartbeat-warmed runtime the user just opened into the
+      // foreground preview set (recordWorkspaceMru no-ops on background slots,
+      // so the demotion must happen first).
+      if (rt.background) {
+        rt.background = false
+        this.dropBackgroundMru(key)
+      }
+      this.recordWorkspaceMru(key)
+      this.agentManager.touch(key)
+      // A newly-promoted preview can push the foreground set over the cap;
+      // evict the genuine LRU (never this just-fronted key).
+      void this.enforceWorkspacePreviewCap().catch(() => {})
+    } catch (err: any) {
+      console.warn(`[RuntimeManager] markPreviewActive(${projectId}) failed: ${err?.message ?? err}`)
     }
   }
 

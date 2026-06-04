@@ -70,13 +70,21 @@ export interface IRuntimeConfig {
 export interface IRuntimeManager {
   /**
    * Start a runtime for the specified project.
+   *
+   * `opts.background` marks a non-UI start (the local heartbeat scheduler):
+   * such runtimes are kept out of the warm-preview cap and are managed as a
+   * separate system. Defaults to a foreground (preview) start.
    */
-  start(projectId: string): Promise<IProjectRuntime>
+  start(projectId: string, opts?: { background?: boolean }): Promise<IProjectRuntime>
 
   /**
    * Stop the runtime for the specified project.
+   *
+   * `reason` is a diagnostic tag identifying the trigger (e.g. 'preview-lru',
+   * 'background-lru', 'attach-restart', 'shutdown', 'external'); it is logged
+   * so a runtime teardown can be attributed to its cause.
    */
-  stop(projectId: string): Promise<void>
+  stop(projectId: string, reason?: string): Promise<void>
 
   /**
    * Restart the runtime for the specified project.
@@ -117,4 +125,17 @@ export interface IRuntimeManager {
    * Safe no-op if no runtime exists for `projectId`.
    */
   touch(projectId: string): void
+
+  /**
+   * Mark a project's preview as actively open in the UI (the
+   * `GET /sandbox/url` signal). Promotes a background/heartbeat runtime the
+   * user just opened into the protected foreground preview set and refreshes
+   * its position in the warm-preview MRU so the project currently on screen is
+   * never the LRU eviction victim. Unlike {@link touch}, this must only be
+   * called from the UI preview-open path (never from agent/chat traffic, which
+   * can be heartbeat-driven).
+   *
+   * Safe no-op when the project has no running anchored runtime.
+   */
+  markPreviewActive(projectId: string): void
 }

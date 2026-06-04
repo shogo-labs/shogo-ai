@@ -83,6 +83,30 @@ function nextRetryDelayMs(attempt: number): number {
  */
 const STALL_THRESHOLD_MS = 45_000
 
+/**
+ * Per-project warm-resolution cache.
+ *
+ * Switching away from a project and back remounts this hook, which would
+ * otherwise reset `ready=false`, blank the URLs, and re-poll `/sandbox/url` —
+ * re-showing the "Starting your project…" gate even though the runtime never
+ * went anywhere (the desktop RuntimeManager keeps the last-N previews warm and
+ * `resolveProjectPodUrl` short-circuits on a running runtime). We cache the
+ * last successful resolution per `${apiBaseUrl}|${projectId}` so a remount
+ * seeds `ready=true` with the known URLs immediately. The background poll still
+ * runs and is authoritative: if it reports the runtime is genuinely down
+ * (`ready:false` or a hard 4xx), we drop the optimistic seed and the cache so a
+ * truly cold runtime still shows the loading gate.
+ */
+type ResolvedUrls = {
+  agentUrl: string | null
+  previewUrl: string | null
+  canvasBaseUrl: string | null
+}
+const warmResolutionCache = new Map<string, ResolvedUrls>()
+function warmCacheKey(apiBaseUrl: string, projectId: string): string {
+  return `${apiBaseUrl}|${projectId}`
+}
+
 export function useAgentUrl(
   apiBaseUrl: string,
   projectId: string | undefined,
@@ -93,15 +117,25 @@ export function useAgentUrl(
     fetch?: typeof globalThis.fetch
   },
 ) {
-  const [agentUrl, setAgentUrl] = useState<string | null>(options?.localAgentUrl ?? null)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [canvasBaseUrl, setCanvasBaseUrl] = useState<string | null>(null)
+  // Warm switch-back: seed initial state from the last successful resolution
+  // for this project so a remount renders the warm preview immediately rather
+  // than flashing the loading gate. The background poll below revalidates.
+  const localAgentUrl = options?.localAgentUrl ?? null
+  const initialWarm =
+    !localAgentUrl && projectId
+      ? warmResolutionCache.get(warmCacheKey(apiBaseUrl, projectId)) ?? null
+      : null
+
+  const [agentUrl, setAgentUrl] = useState<string | null>(localAgentUrl ?? initialWarm?.agentUrl ?? null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(initialWarm?.previewUrl ?? null)
+  const [canvasBaseUrl, setCanvasBaseUrl] = useState<string | null>(initialWarm?.canvasBaseUrl ?? null)
   const [error, setError] = useState<string | null>(null)
   const [stalled, setStalled] = useState<boolean>(false)
-  const [lastStatus, setLastStatus] = useState<string | null>(null)
+  const [lastStatus, setLastStatus] = useState<string | null>(initialWarm ? 'ready' : null)
   // Local-agent-url short-circuit always counts as ready (the caller has
-  // pinned an explicit URL, so there's no runtime to wait on).
-  const [ready, setReady] = useState<boolean>(Boolean(options?.localAgentUrl))
+  // pinned an explicit URL, so there's no runtime to wait on). A warm cache
+  // hit also starts ready (revalidated by the poll).
+  const [ready, setReady] = useState<boolean>(Boolean(localAgentUrl) || Boolean(initialWarm))
   // Bumping this nonce restarts the polling effect, giving callers a
   // manual "retry now" path from a stalled-recovery UI without having
   // to navigate away and back.
@@ -110,8 +144,11 @@ export function useAgentUrl(
 
   const retry = useCallback(() => {
     abortRef.current?.abort()
+    // Manual retry is a recovery path — drop any optimistic warm seed so the
+    // re-poll is authoritative and the loading gate reflects the real state.
+    if (projectId) warmResolutionCache.delete(warmCacheKey(apiBaseUrl, projectId))
     setRetryNonce((n) => n + 1)
-  }, [])
+  }, [apiBaseUrl, projectId])
 
   useEffect(() => {
     if (options?.localAgentUrl) {
@@ -129,16 +166,29 @@ export function useAgentUrl(
 
     const doFetch = options?.fetch ?? fetch
 
-    // Reset readiness on every (projectId / apiBaseUrl) change so consumers
-    // see a fresh "starting" phase on navigation, not a stale `ready=true`
-    // from the previous project.
-    setReady(false)
-    setAgentUrl(null)
-    setPreviewUrl(null)
-    setCanvasBaseUrl(null)
-    setError(null)
-    setStalled(false)
-    setLastStatus(null)
+    // On a (projectId / apiBaseUrl) change, seed from the warm cache when we
+    // have a known-good resolution for the *incoming* project (fast
+    // switch-back, no Loading flash); otherwise reset to the "starting" phase
+    // so we don't show a stale `ready=true` from the previous project.
+    const cacheKey = warmCacheKey(apiBaseUrl, projectId)
+    const warm = warmResolutionCache.get(cacheKey)
+    if (warm) {
+      setAgentUrl(warm.agentUrl)
+      setPreviewUrl(warm.previewUrl)
+      setCanvasBaseUrl(warm.canvasBaseUrl)
+      setReady(true)
+      setError(null)
+      setStalled(false)
+      setLastStatus('ready')
+    } else {
+      setReady(false)
+      setAgentUrl(null)
+      setPreviewUrl(null)
+      setCanvasBaseUrl(null)
+      setError(null)
+      setStalled(false)
+      setLastStatus(null)
+    }
 
     let retryTimer: ReturnType<typeof setTimeout> | null = null
     let stallTimer: ReturnType<typeof setTimeout> | null = null
@@ -208,7 +258,14 @@ export function useAgentUrl(
           // 404 project deleted, 5xx server). Surface the status so the
           // UI can show "Open on web / sign in again" instead of an
           // infinite spinner.
+          // Authoritative failure for a project: drop any optimistic warm
+          // seed/cache so switch-back can't keep showing a dead runtime.
+          warmResolutionCache.delete(cacheKey)
           if (!controller.signal.aborted) {
+            setAgentUrl(null)
+            setPreviewUrl(null)
+            setCanvasBaseUrl(null)
+            setReady(false)
             setError(`Failed to get sandbox URL (HTTP ${res.status})`)
             setLastStatus(`http_${res.status}`)
           }
@@ -221,9 +278,16 @@ export function useAgentUrl(
 
         if (!isReady) {
           csMark('useAgentUrl:not-ready', { attempt: pollAttempt, status: data?.status })
-          // Host runtime is still `'starting'`. Keep URLs hidden so
-          // consumers don't hit ECONNREFUSED, and try again shortly.
+          // Host runtime is still `'starting'`. The runtime is NOT warm, so
+          // revert any optimistic switch-back seed and drop the cache: keep
+          // URLs hidden so consumers don't hit ECONNREFUSED, show the loading
+          // gate, and try again shortly.
+          warmResolutionCache.delete(cacheKey)
           if (!controller.signal.aborted) {
+            setAgentUrl(null)
+            setPreviewUrl(null)
+            setCanvasBaseUrl(null)
+            setReady(false)
             setError(null)
             setLastStatus(typeof data?.status === 'string' ? data.status : 'pending')
             scheduleRetry()
@@ -245,6 +309,14 @@ export function useAgentUrl(
         if (resolvedCanvas) {
           resolvedCanvas = rewriteLocalhostUrl(resolvedCanvas, apiBaseUrl)
         }
+
+        // Cache the warm resolution so a later remount (switch-back) seeds
+        // ready immediately instead of re-running the loading gate.
+        warmResolutionCache.set(cacheKey, {
+          agentUrl: resolvedAgent,
+          previewUrl: resolvedPreview,
+          canvasBaseUrl: resolvedCanvas,
+        })
 
         if (!controller.signal.aborted) {
           setAgentUrl(resolvedAgent)
