@@ -131,9 +131,14 @@ export class ContextAggregator {
     const sources: ContextSource[] = []
     let usedTokens = 0
 
-    // Priority 1: Terminal commands
+    // Priority 1: Terminal commands — skip shell-integration noise
     const includedCommands: Command[] = []
     for (const cmd of recent) {
+      // Skip commands that are just shell-integration markers (empty commandLine)
+      // These are PROMPT_COMMAND / DEBUG trap emissions, not user actions.
+      const cl = (cmd.commandLine ?? '').trim()
+      if (!cl) continue
+
       const tokens = estimateCommandTokens(cmd)
       if (usedTokens + tokens > this.tokenBudget) break
       includedCommands.push(cmd)
@@ -270,16 +275,16 @@ export function serializeContext(ctx: AggregatedContext): string {
  * Format the full message with context block prepended.
  * The [CONTEXT] block is clearly delimited so the LLM knows
  * it's auto-generated and should not cite it directly.
+ *
+ * The user's actual message is SEPARATE from the context block.
  */
 export function formatContextMessage(contextBlock: string, userMessage: string): string {
-  // Escape double quotes in the user message to prevent broken formatting
-  const escaped = userMessage.replace(/"/g, '\\"')
   return [
     '[CONTEXT — auto-generated, do not cite directly]',
     contextBlock.trim(),
     '[END CONTEXT]',
     '',
-    `User message: "${escaped}"`,
+    userMessage,
   ].join('\n')
 }
 

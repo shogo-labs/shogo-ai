@@ -379,19 +379,21 @@ describe('serializeContext', () => {
 describe('formatContextMessage', () => {
   it('wraps context in [CONTEXT] block with delimiters', () => {
     const result = formatContextMessage('## Terminal\n$ ls', 'hello')
-    expect(result).toContain('[CONTEXT — auto-generated, do not cite directly]')
+    expect(result).toContain('[CONTEXT \u2014 auto-generated, do not cite directly]')
     expect(result).toContain('[END CONTEXT]')
     expect(result).toContain('## Terminal\n$ ls')
-    expect(result).toContain('User message: "hello"')
+    expect(result).toContain('hello')
+    expect(result).not.toContain('User message:')
   })
 
-  it('escapes double quotes in user message', () => {
+  it('does not wrap user message in quotes', () => {
     const result = formatContextMessage('ctx', 'say "hello"')
-    expect(result).toContain('User message: "say \\"hello\\""')
+    expect(result).toContain('say "hello"')
+    expect(result).not.toContain('User message:')
   })
 
   it('trims the context block', () => {
     const result = formatContextMessage('  \n  context\n  \n', 'msg')
-    expect(result).toContain('[END CONTEXT]\n\nUser message:')
+    expect(result).toContain('[END CONTEXT]\n\nmsg')
   })
 })

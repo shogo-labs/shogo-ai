@@ -217,6 +217,15 @@ export class CommandDecorations {
       el.style.color = style.color
       el.style.fontWeight = 'bold'
       el.style.cursor = 'pointer'
+      el.style.fontSize = '12px'
+      el.style.lineHeight = '18px'
+      el.style.display = 'flex'
+      el.style.alignItems = 'center'
+      el.style.justifyContent = 'center'
+      el.style.borderRadius = '3px'
+      el.style.background = style.color + '22'
+      el.style.margin = '1px 2px'
+      el.title = `${style.ariaLabel}: $ ${c.commandLine}`
       el.setAttribute('aria-label', style.ariaLabel)
       el.setAttribute('data-command-id', String(c.id))
       el.setAttribute('data-command-kind', kind)
