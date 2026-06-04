@@ -761,12 +761,6 @@ const HomeScreen = observer(function HomeScreen() {
           >
             What's on your mind, {firstName}?
           </Text>
-          <Text
-            className="text-center mb-8 text-muted-foreground"
-            style={heroSubtitleStyle}
-          >
-            Build agents by chatting with AI
-          </Text>
 
           <View className="w-full rounded-2xl" style={composerWrapperStyle}>
             <CompactChatInput
