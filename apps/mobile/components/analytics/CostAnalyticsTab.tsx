@@ -57,6 +57,8 @@ import { ExperimentsSection, type ExperimentItem } from './ExperimentsSection'
 interface AgentBreakdownEntry {
   agentType: string
   model: string
+  /** Server-resolved display label for `model` (falls back to client resolution). */
+  modelLabel?: string
   totalRuns: number
   promiseSuccesses?: number
   qualitySuccesses?: number
@@ -113,6 +115,8 @@ interface SubagentOverrideRecord {
   projectId: string | null
   agentType: string
   model: string
+  /** Server-resolved display label for `model` (falls back to client resolution). */
+  modelLabel?: string
   provider: string | null
   updatedBy: string | null
   createdAt: string
@@ -545,7 +549,7 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
                       <View className="flex-row items-center gap-1.5 mt-0.5">
                         <View className={cn('px-1.5 py-0.5 rounded border', getModelColor(entry.model))}>
                           <Text className={cn('text-[10px] font-medium', getModelTextColor(entry.model))}>
-                            {getModelDisplayName(entry.model)}
+                            {entry.modelLabel ?? getModelDisplayName(entry.model)}
                           </Text>
                         </View>
                         <Text className="text-[10px] text-muted-foreground">

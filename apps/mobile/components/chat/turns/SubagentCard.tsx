@@ -17,6 +17,7 @@ import { Motion } from "@legendapp/motion"
 import { type ToolCallData, getToolKeyArg, formatToolName } from "../tools/types"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 import { stopSubagent } from "../../../lib/subagent-stop"
+import { resolveShortName } from "../../../lib/visible-models"
 import { LiveBrowserView } from "../LiveBrowserView"
 import { useChatContextSafe } from "../ChatContext"
 import { useChatBridgeOptional } from "../../voice-mode/ChatBridgeContext"
@@ -227,7 +228,7 @@ export function SubagentCard({ tool, className, agentUrl: agentUrlProp }: Subage
           </Text>
           {model && (
             <Text className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-muted/60" numberOfLines={1}>
-              {model}
+              {resolveShortName(model)}
             </Text>
           )}
           <Text className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-muted/60">

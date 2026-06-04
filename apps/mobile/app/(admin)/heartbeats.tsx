@@ -99,6 +99,8 @@ interface HeartbeatRow {
   quietHoursTimezone: string | null
   modelProvider: string
   modelName: string
+  /** Server-resolved display label for `modelName` (falls back to the raw id). */
+  modelLabel?: string | null
   updatedAt: string
   project: {
     id: string
@@ -583,7 +585,7 @@ function HeartbeatRowItem({
             )}
           </View>
           <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-            {wsName} · {row.modelProvider}/{row.modelName}
+            {wsName} · {row.modelProvider}/{row.modelLabel ?? row.modelName}
           </Text>
         </View>
 

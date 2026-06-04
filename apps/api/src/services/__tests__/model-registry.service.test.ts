@@ -37,6 +37,9 @@ const {
   getDbModelEntriesSync,
   getDbRoutingConfigSync,
   getDbModelPricingSync,
+  resolveModelLabelSync,
+  resolveModelLabels,
+  resolveModelLabel,
 } = await import('../model-registry.service')
 
 const MIMO_KEY = 'sk-mimo-staging-key-abcdef'
@@ -287,5 +290,100 @@ describe('usage-cost DB per-token billing', () => {
     // A non-DB, non-catalog id should not blow up; it returns a finite cost.
     const { billedUsd } = calculateUsageCost(1000, 1000, 'totally-unknown-model-id')
     expect(Number.isFinite(billedUsd)).toBe(true)
+  })
+})
+
+// ─── Model label resolution (UUID → human display name) ─────────────────────
+// Post catalog-uuid-migration, stored references are opaque UUIDs. These cover
+// the resolvers the analytics / eval / cost surfaces use to render names.
+const LABEL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+describe('model label resolution', () => {
+  beforeEach(async () => {
+    seedMimo()
+    await primeModelRegistry()
+  })
+
+  test('resolveModelLabelSync resolves a DB model id to its short display name', () => {
+    expect(resolveModelLabelSync('claude-opus-4-8')).toBe('Opus 4.8')
+    expect(resolveModelLabelSync('mimo-v2.5')).toBe('MiMo 2.5')
+  })
+
+  test('resolveModelLabelSync resolves a DB alias to the canonical entry label', () => {
+    expect(resolveModelLabelSync('opus')).toBe('Opus 4.8')
+    expect(resolveModelLabelSync('mimo')).toBe('MiMo 2.5')
+  })
+
+  test('resolveModelLabelSync resolves a static-catalog id via the entry label', () => {
+    const entry = getMergedModelEntrySync('claude-sonnet-4-6')
+    expect(entry).toBeDefined()
+    const expected = entry!.shortDisplayName || entry!.displayName || entry!.apiModel
+    expect(resolveModelLabelSync('claude-sonnet-4-6')).toBe(expected)
+    // …and it never just echoes the raw slug back as the "label".
+    expect(resolveModelLabelSync('claude-sonnet-4-6')).not.toBe('claude-sonnet-4-6')
+  })
+
+  test('resolveModelLabelSync echoes the raw id for unknown / empty input', () => {
+    expect(resolveModelLabelSync('totally-unknown-model-id')).toBe('totally-unknown-model-id')
+    expect(resolveModelLabelSync('')).toBe('')
+  })
+
+  test('resolveModelLabels batch-resolves DB ids, aliases, and unknown slugs', async () => {
+    const map = await resolveModelLabels(['claude-opus-4-8', 'mimo', 'ghost-model'])
+    expect(map.get('claude-opus-4-8')).toBe('Opus 4.8')
+    expect(map.get('mimo')).toBe('MiMo 2.5')
+    // Unknown, non-UUID id maps to itself so callers can blindly use the map.
+    expect(map.get('ghost-model')).toBe('ghost-model')
+  })
+
+  test('resolveModelLabels ignores blank / duplicate ids', async () => {
+    const map = await resolveModelLabels(['mimo', 'mimo', '', 'mimo'])
+    expect(map.get('mimo')).toBe('MiMo 2.5')
+    expect(map.has('')).toBe(false)
+  })
+
+  test('resolveModelLabels does a targeted lookup for UUIDs absent from the enabled snapshot', async () => {
+    // A canonical UUID not in the primed snapshot (mirrors an admin-disabled
+    // row the enabled-only refresh skips). We mutate MODELS *without* re-priming
+    // so the snapshot still lacks it and the registry is fresh (no auto-refresh),
+    // forcing resolution down the targeted `model_definitions` fallback.
+    const uuid = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+    MODELS = [
+      ...MODELS,
+      {
+        id: uuid,
+        provider: 'anthropic',
+        providerId: null,
+        apiModel: 'claude-ancient',
+        displayName: 'Claude Ancient',
+        shortDisplayName: 'Ancient',
+        tier: 'premium',
+        family: 'opus',
+        generation: 'legacy',
+        maxOutputTokens: 4096,
+        enabled: true,
+        sortOrder: null,
+        aliases: [],
+        capabilities: null,
+        inputPerMillion: 1,
+        cachedInputPerMillion: 0,
+        cacheWritePerMillion: 0,
+        outputPerMillion: 1,
+      },
+    ]
+    const map = await resolveModelLabels([uuid])
+    expect(map.get(uuid)).toBe('Ancient')
+  })
+
+  test('resolveModelLabels maps a UUID with no DB match to itself', async () => {
+    const orphan = '99999999-9999-4999-8999-999999999999'
+    expect(LABEL_UUID_RE.test(orphan)).toBe(true)
+    const map = await resolveModelLabels([orphan])
+    expect(map.get(orphan)).toBe(orphan)
+  })
+
+  test('resolveModelLabel (single, async) resolves an alias and passes through empty', async () => {
+    expect(await resolveModelLabel('opus')).toBe('Opus 4.8')
+    expect(await resolveModelLabel('')).toBe('')
   })
 })

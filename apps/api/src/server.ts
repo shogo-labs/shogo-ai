@@ -4316,7 +4316,13 @@ app.get('/api/projects/:projectId/heartbeat', async (c) => {
     return c.json({ error: 'Agent config not found' }, 404)
   }
 
-  return c.json(config)
+  // modelName is an opaque UUID for DB models post catalog-uuid migration; attach
+  // a display label (id kept intact for any model picker).
+  const { resolveModelLabel } = await import('./services/model-registry.service')
+  return c.json({
+    ...config,
+    modelLabel: config.modelName ? await resolveModelLabel(config.modelName) : null,
+  })
 })
 
 app.patch('/api/projects/:projectId/heartbeat', async (c) => {
@@ -4379,7 +4385,11 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
     },
   })
 
-  return c.json(updated)
+  const { resolveModelLabel } = await import('./services/model-registry.service')
+  return c.json({
+    ...updated,
+    modelLabel: updated.modelName ? await resolveModelLabel(updated.modelName) : null,
+  })
 })
 
 // Sync heartbeat config from runtime config.json to DB (local mode).
