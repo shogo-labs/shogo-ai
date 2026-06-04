@@ -83,7 +83,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
 import { CommandPalette, useCommandPalette } from './CommandPalette'
 import { useActiveInstance } from '../../contexts/active-instance'
-import { ShogoLogoMark } from '../branding/ShogoLogoMark'
+import { ShogoWordmark } from '../branding/ShogoWordmark'
 import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
@@ -1025,20 +1025,17 @@ function WorkspaceMenuSection({
 // ─── AccountNavLinks (resources/links moved into the account menu) ─
 
 function AccountNavLinks({
-  features,
   localMode,
   onNavigate,
   onClose,
 }: {
-  features: { marketplace?: boolean }
   localMode?: boolean
   onNavigate: (href: string) => void
   onClose: () => void
 }) {
   const items: Array<{ icon: React.ElementType; label: string; href: string }> = [
-    { icon: Star, label: 'Starred', href: '/(app)/starred' },
-    ...(!localMode ? [{ icon: Users, label: 'Shared with me', href: '/(app)/shared' }] : []),
-    ...(features.marketplace ? [{ icon: Store, label: 'Marketplace', href: '/(app)/marketplace' }] : []),
+    // { icon: Star, label: 'Starred', href: '/(app)/starred' },
+    // ...(!localMode ? [{ icon: Users, label: 'Shared with me', href: '/(app)/shared' }] : []),
     { icon: Monitor, label: 'Remote Control', href: '/(app)/remote-control' },
     ...(!localMode ? [{ icon: Key, label: 'API Keys', href: '/(app)/api-keys' }] : []),
   ]
@@ -1082,7 +1079,6 @@ interface AccountMenuProps extends UserMenuProps {
   onSwitchWorkspace: (workspaceId: string) => void
   onCreateWorkspace: () => void
   localMode?: boolean
-  features: { marketplace?: boolean }
 }
 
 function AccountMenu({
@@ -1102,7 +1098,6 @@ function AccountMenu({
   onSwitchWorkspace,
   onCreateWorkspace,
   localMode,
-  features,
 }: AccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
   const close = useCallback(() => setIsOpen(false), [])
@@ -1147,7 +1142,6 @@ function AccountMenu({
       />
       <View className="h-px bg-border" />
       <AccountNavLinks
-        features={features}
         localMode={localMode}
         onNavigate={onNavigate}
         onClose={close}
@@ -1607,14 +1601,15 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
   const isMeetingsPage = pathname.startsWith('/meetings') || pathname.startsWith('/(app)/meetings')
+  const isMarketplacePage = pathname.startsWith('/marketplace') || pathname.startsWith('/(app)/marketplace')
 
   const sidebarContent = (
     <View role="navigation" accessibilityLabel="App sidebar" className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}>
       {/* ── Logo Row ── */}
       <View
         className={cn(
-          'h-14 border-b border-border flex-row items-center',
-          collapsed ? 'justify-center px-2' : 'justify-between px-4'
+          'h-10 border-b border-border flex-row items-center',
+          collapsed ? 'justify-center px-2' : 'justify-between px-3'
         )}
       >
         {!collapsed && (
@@ -1623,21 +1618,21 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               onPress={() => { router.push('/(app)' as any); onNavPress() }}
               role="link"
               accessibilityLabel="Shogo Home"
-              className="flex-row items-center gap-2"
+              className="flex-row items-center"
             >
-              <ShogoLogoMark />
-              <Text className="font-semibold text-foreground">Shogo</Text>
+              <ShogoWordmark className="text-xl" />
             </Pressable>
             <Pressable onPress={toggleCollapse} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
-              <PanelLeftClose size={16} className="text-muted-foreground" />
+              <PanelLeftClose size={12} className="text-muted-foreground" />
             </Pressable>
           </>
         )}
         {collapsed && (
           <Pressable
             onPress={toggleCollapse}
+            accessibilityLabel="Expand sidebar"
           >
-            <ShogoLogoMark />
+            <ShogoWordmark compact className="text-2xl" />
           </Pressable>
         )}
       </View>
@@ -1666,6 +1661,16 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             collapsed={collapsed}
             onNavPress={onNavPress}
           />
+          {features.marketplace && (
+            <NavItem
+              icon={Store}
+              label="Marketplace"
+              href="/(app)/marketplace"
+              active={isMarketplacePage}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+          )}
           <NavItem
             icon={Search}
             label="Search"
@@ -1860,7 +1865,6 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               onSwitchWorkspace={handleSwitchWorkspace}
               onCreateWorkspace={handleCreateWorkspace}
               localMode={localMode}
-              features={features}
             />
           </View>
 
