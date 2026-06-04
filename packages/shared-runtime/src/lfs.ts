@@ -45,13 +45,8 @@ type Logger = Pick<Console, 'log' | 'warn' | 'error'>
 const GIT_TIMEOUT_MS = 5 * 60 * 1000
 
 // ---------------------------------------------------------------------------
-// Feature flag + storage layout (shared API <-> pod contract)
+// Storage layout (shared API <-> pod contract)
 // ---------------------------------------------------------------------------
-
-/** Whether real Git LFS is enabled for this pod. */
-export function isLfsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.LFS_ENABLED === 'true' || env.LFS_ENABLED === '1'
-}
 
 /** Object-storage key prefix for LFS objects within a project namespace. */
 export function lfsKeyPrefix(env: NodeJS.ProcessEnv = process.env): string {
@@ -201,7 +196,7 @@ function runGit(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<G
 }
 
 // ---------------------------------------------------------------------------
-// Repo setup (pod side, git_only + LFS_ENABLED only)
+// Repo setup (pod side, git_only only)
 // ---------------------------------------------------------------------------
 
 /**

@@ -107,8 +107,8 @@ resource "oci_objectstorage_bucket" "schemas" {
 # -----------------------------------------------------------------------------
 # Workspaces Sync Bucket (project file persistence)
 # -----------------------------------------------------------------------------
-# NOTE (Git LFS): when LFS_ENABLED is set on the app, Git LFS objects are
-# stored in THIS bucket under `<projectId>/lfs/objects/<oid>` (content-addressed
+# NOTE (Git LFS): git_only-mode pods store Git LFS objects in THIS bucket
+# under `<projectId>/lfs/objects/<oid>` (content-addressed
 # sha256), alongside repo.git.tar.gz and the legacy assets/ namespace. LFS
 # objects are immutable and never overwritten, so usage grows monotonically:
 # a reachability-based GC job (enumerate live pointer oids per project, delete

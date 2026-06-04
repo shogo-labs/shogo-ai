@@ -16,7 +16,6 @@ import {
   lfsObjectKey,
   lfsKeyPrefix,
   buildLfsEndpointUrl,
-  isLfsEnabled,
   buildManagedAttributesBlock,
   writeManagedGitAttributes,
 } from '../lfs'
@@ -56,15 +55,6 @@ describe('buildLfsEndpointUrl', () => {
     expect(buildLfsEndpointUrl('https://api.shogo.ai/', 'p1')).toBe(
       'https://api.shogo.ai/api/projects/p1/git/info/lfs',
     )
-  })
-})
-
-describe('isLfsEnabled', () => {
-  it('is true only for "true"/"1"', () => {
-    expect(isLfsEnabled({ LFS_ENABLED: 'true' } as any)).toBe(true)
-    expect(isLfsEnabled({ LFS_ENABLED: '1' } as any)).toBe(true)
-    expect(isLfsEnabled({ LFS_ENABLED: 'false' } as any)).toBe(false)
-    expect(isLfsEnabled({} as any)).toBe(false)
   })
 })
 

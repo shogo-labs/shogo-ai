@@ -41,7 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Git LFS: configure the clean/smudge filters system-wide but SKIP smudge
     # so checkout/`reset --hard` leaves pointer files (fast, no network). The
     # runtime materializes object bytes explicitly via `git lfs pull`. LFS only
-    # activates for repos that opt in via .gitattributes (git_only + LFS_ENABLED).
+    # activates for repos that opt in via .gitattributes (git_only mode).
     git lfs install --system --skip-smudge && \
     # Cleanup
     apt-get purge -y gnupg unzip && \

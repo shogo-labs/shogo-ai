@@ -275,9 +275,9 @@ from the pod's durable object store:
 ## Large / binary file offload (hybrid)
 
 Git stays small by keeping only text/source. There are two strategies; which
-one runs depends on `LFS_ENABLED`.
+one runs depends on the cloud sync mode.
 
-### Git LFS (`LFS_ENABLED=true`, `git_only` only) — versioned
+### Git LFS (`git_only` mode) — versioned
 
 Real Git LFS replaces the legacy offload
 ([packages/shared-runtime/src/lfs.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/shared-runtime/src/lfs.ts)):
@@ -309,7 +309,7 @@ Real Git LFS replaces the legacy offload
   pointers and pushes the bytes. **GC:** LFS objects are immutable and never
   auto-pruned, so a reachability-based retention job is a required follow-up.
 
-### Legacy size-based offload (default / non-LFS) — latest-only
+### Legacy size-based offload (`dual_shadow` / `s3` modes) — latest-only
 
 Any file `> LARGE_FILE_BYTES` is classified as an offloaded asset
 ([packages/shared-runtime/src/large-file-sync.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/shared-runtime/src/large-file-sync.ts)):
