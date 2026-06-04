@@ -275,6 +275,65 @@ describe('PreviewManager.getStatus (non-running)', () => {
     expect(s.devServer).toBe('vite')
     expect(s.metroUrl).toBe(null)
     expect(s.errors).toEqual({ install: null, generate: null })
+    // API sidecar hasn't been decided yet (startApiServer hasn't run): the
+    // phase is the default 'idle' and the gate is closed so the client waits.
+    expect(s.apiServerPhase).toBe('idle')
+    expect(s.apiReady).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3b. getStatus — apiReady / apiServerPhase gate (UI-waits-for-API)
+// ---------------------------------------------------------------------------
+
+describe('PreviewManager.getStatus (apiReady gate)', () => {
+  test('apiReady stays false while the sidecar is coming up, true once healthy', () => {
+    const root = makeWorkspace({})
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+
+    // Default: undecided sidecar → gate closed.
+    expect(pm.getStatus().apiReady).toBe(false)
+    expect(pm.getStatus().apiServerPhase).toBe('idle')
+
+    // startApiServer() has committed to spawning but the process isn't
+    // healthy yet — the prebuilt-dist path can make `running` true here, so
+    // the apiReady gate is what keeps the UI from loading too early.
+    ;(pm as any).hasApiServer = true
+    ;(pm as any).apiPhase = 'starting'
+    expect(pm.getStatus().apiServerPhase).toBe('starting')
+    expect(pm.getStatus().apiReady).toBe(false)
+
+    // /health came back 2xx → safe to load the UI.
+    ;(pm as any).apiPhase = 'healthy'
+    expect(pm.getStatus().apiServerPhase).toBe('healthy')
+    expect(pm.getStatus().apiReady).toBe(true)
+  })
+
+  test('apiReady is true when the project has no sidecar (nothing to wait on)', () => {
+    const root = makeWorkspace({})
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+
+    // No server.tsx / generated index and no prisma schema → no sidecar.
+    ;(pm as any).hasApiServer = false
+    ;(pm as any).apiPhase = 'idle'
+    const s = pm.getStatus()
+    expect(s.apiServerPhase).toBe('idle')
+    expect(s.apiReady).toBe(true)
+  })
+
+  test('startApiServer marks hasApiServer=false for a project without a schema', async () => {
+    // Default fixture has project/package.json but no prisma/schema.prisma
+    // and no server.tsx → startApiServer takes the no-sidecar early return.
+    const root = makeWorkspace({})
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+
+    await (pm as any).startApiServer()
+
+    expect((pm as any).hasApiServer).toBe(false)
+    const s = pm.getStatus()
+    expect(s.apiServerPhase).toBe('idle')
+    // No sidecar to wait on → the UI gate opens immediately.
+    expect(s.apiReady).toBe(true)
   })
 })
 

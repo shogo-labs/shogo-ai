@@ -56,6 +56,7 @@ import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
+import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas } from '../../../../lib/preview-gate'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
 import {
@@ -3453,27 +3454,53 @@ function CanvasPanel({
   // base so the phase label reflects the project actually being previewed.
   const workspacePreviewBase =
     canvasBaseUrl && /\/p\/[^/]+$/.test(canvasBaseUrl) ? canvasBaseUrl : null
-  const { phase: previewPhase } = usePreviewPhase(agentUrl, workspacePreviewBase)
+  const { phase: previewPhase, apiReady } = usePreviewPhase(agentUrl, workspacePreviewBase)
+
+  // Don't load the app UI until the project's API sidecar is responding —
+  // otherwise the SPA renders and fires `/api/*` calls into a server that
+  // isn't bound yet (the whole point of this gate). `apiReady` is true once
+  // the sidecar is healthy or the project has no sidecar at all.
+  //
+  // Latch it: a healthy sidecar that later restarts (schema / custom-routes
+  // edits trigger `restartApiServerOnly`) briefly flips `apiReady` false, and
+  // we don't want a live preview to flash back to a spinner on every save.
+  const [apiLatched, setApiLatched] = useState(false)
+  useEffect(() => {
+    if (apiReady) setApiLatched(true)
+  }, [apiReady])
+
+  // Dev server reachable (non-404 root) AND the agent runtime is up.
+  const baseReady = !!agentUrl && !!readyCanvasBaseUrl
 
   const CONNECTION_TIMEOUT_MS = 60_000
   const [timedOut, setTimedOut] = useState(false)
   useEffect(() => {
-    if (agentUrl && readyCanvasBaseUrl) {
+    if (baseReady && apiLatched) {
       setTimedOut(false)
       return
     }
     setTimedOut(false)
     const timer = setTimeout(() => setTimedOut(true), CONNECTION_TIMEOUT_MS)
     return () => clearTimeout(timer)
-  }, [agentUrl, readyCanvasBaseUrl])
+  }, [baseReady, apiLatched])
 
-  if (!agentUrl || !readyCanvasBaseUrl) {
-    const phaseLabel =
-      previewPhase && previewPhase !== 'idle'
+  // Load the canvas once the dev server is reachable AND the sidecar is
+  // healthy. The 60s timeout is a safety net so a sidecar that never reports
+  // healthy (crash loop, template without `/health`) still eventually shows
+  // the app instead of hanging on a spinner forever.
+  const showCanvas = shouldShowCanvas({ baseReady, apiLatched, timedOut })
+
+  if (!showCanvas) {
+    // `!baseReady` → runtime / dev server not up yet (show its phase, and the
+    // "Connection timed out" error path on failure). `baseReady && !apiLatched`
+    // → app is built and served but we're waiting on the API sidecar.
+    const phaseLabel = !baseReady
+      ? previewPhase && previewPhase !== 'idle'
         ? PHASE_LABELS[previewPhase] ?? 'Preparing preview...'
         : !agentUrl
           ? 'Connecting to agent runtime...'
           : 'Loading preview...'
+      : PHASE_LABELS['starting-api']
     return (
       <View className="flex-1 items-center justify-center px-6">
         {timedOut ? (
@@ -3552,12 +3579,20 @@ const PHASE_LABELS: Record<string, string> = {
  * Polls `${agentUrl}/preview/status` so callers can show the user *what*
  * the runtime is doing (installing deps, building, starting API, …)
  * rather than a generic spinner. Returns:
- *   phase    – PreviewManager phase string ('idle', 'installing', …)
- *   running  – true once the preview is fully up and the iframe / canvas
- *              should be loaded
+ *   phase          – PreviewManager phase string ('idle', 'installing', …)
+ *   running        – true once the preview is serveable (note: a prebuilt
+ *                    `dist/` flips this true *before* the API sidecar binds)
+ *   apiReady       – true once the project's API sidecar is healthy, or the
+ *                    project has no sidecar. The correct gate for loading the
+ *                    app UI so its `/api/*` calls don't fire into a 503.
+ *   apiServerPhase – sidecar phase ('idle' | 'starting' | 'healthy' | …) for
+ *                    accurate labels while waiting.
  *
- * Polling stops as soon as `running === true` and resumes if the
- * `agentUrl` changes (e.g. the user navigates to a different project).
+ * Polling stops once `running === true && apiReady === true` and resumes if
+ * the status base changes (e.g. the user navigates to a different project).
+ * We keep polling while `running` but `!apiReady` precisely because the
+ * prebuilt-dist path reports `running` early — the API sidecar comes up
+ * afterwards, and `apiReady` is what flips when it's actually responding.
  *
  * Reused by both the AppPreviewPanel and CanvasPanel so their "waiting"
  * states stay consistent and the previously misleading "Send a message
@@ -3571,9 +3606,15 @@ function usePreviewPhase(
   // reports a stale phase. When set, this overrides the status base so the
   // poll targets the per-project `/p/<id>/preview/status` instead.
   statusBaseOverride?: string | null,
-): { phase: string; running: boolean } {
+): { phase: string; running: boolean; apiReady: boolean; apiServerPhase: string } {
   const [phase, setPhase] = useState<string>('idle')
   const [running, setRunning] = useState<boolean>(false)
+  // Starts `false` (gate closed) and is reset to `false` on each navigation.
+  // Backwards-compat for older runtimes whose `/preview/status` predates the
+  // `apiReady` field is handled by `resolveApiReady` (absent → ready) so the
+  // gate degrades to the old `running`-only behaviour instead of hanging.
+  const [apiReady, setApiReady] = useState<boolean>(false)
+  const [apiServerPhase, setApiServerPhase] = useState<string>('idle')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const statusBase = statusBaseOverride || agentUrl
 
@@ -3583,6 +3624,8 @@ function usePreviewPhase(
     // project.
     setPhase('idle')
     setRunning(false)
+    setApiReady(false)
+    setApiServerPhase('idle')
 
     if (!statusBase) return
 
@@ -3597,8 +3640,13 @@ function usePreviewPhase(
         if (resp.ok) {
           const data = await resp.json()
           if (data.phase) setPhase(data.phase)
-          if (data.running) {
-            setRunning(true)
+          if (data.apiServerPhase) setApiServerPhase(data.apiServerPhase)
+          setApiReady(resolveApiReady(data))
+          if (data.running) setRunning(true)
+          // Stop only once the preview is running AND the API is ready — the
+          // prebuilt-dist path reports `running` before the sidecar binds, so
+          // `running` alone would stop the poll too early.
+          if (shouldStopPreviewPoll(data)) {
             if (pollRef.current) {
               clearInterval(pollRef.current)
               pollRef.current = null
@@ -3622,7 +3670,7 @@ function usePreviewPhase(
     }
   }, [statusBase])
 
-  return { phase, running }
+  return { phase, running, apiReady, apiServerPhase }
 }
 
 function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; agentUrl: string | null }) {
