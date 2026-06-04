@@ -175,6 +175,7 @@ export interface ToolContext {
     command: string
     cwd?: string
     timeoutMs?: number
+    mode?: 'foreground' | 'background'
   }) => Promise<{
     exitCode: number | null
     output: string
@@ -4339,6 +4340,87 @@ function createReadGuideTool(ctx: ToolContext): AgentTool {
 
 
 // ---------------------------------------------------------------------------
+// Terminal Read Tool — reads saved terminal output from disk
+// ---------------------------------------------------------------------------
+
+function createTerminalReadTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'terminal_read',
+    description: `Read saved terminal output from disk files.
+Use this to answer questions like "what did I just do?" or "what commands did I run?"
+by reading the persisted terminal scrollback.
+
+If no terminal ID is specified, reads the most recent terminal file.
+Returns the serialized terminal commands + output for the agent to analyze.`,
+    parameters: Type.Object({
+      terminalId: Type.Optional(Type.String({ description: 'Terminal ID to read (default: most recent)' })),
+      cwd: Type.Optional(Type.String({ description: 'Workspace directory containing .shogo/terminals/' })),
+    }),
+    execute: async (params) => {
+      const { terminalId, cwd } = params as { terminalId?: string; cwd?: string }
+      const baseDir = cwd
+        ? `${cwd}/.shogo/terminals`
+        : ctx.workspaceDir
+          ? `${ctx.workspaceDir}/.shogo/terminals`
+          : '.shogo/terminals'
+
+      try {
+        const { readdir, readFile, stat } = await import('node:fs/promises')
+        const { join } = await import('node:path')
+
+        const files = await readdir(baseDir).catch(() => [] as string[])
+        const txtFiles = files.filter((f) => f.endsWith('.txt'))
+
+        if (txtFiles.length === 0) {
+          return textResult({
+            error: 'No saved terminal files found.',
+            hint: 'Terminal output is saved when a terminal session closes. Try running some commands in the terminal first.',
+          })
+        }
+
+        let targetFile: string
+        if (terminalId) {
+          const match = txtFiles.find((f) => f === `${terminalId}.txt`)
+          if (!match) {
+            return textResult({
+              error: `Terminal "${terminalId}" not found.`,
+              available: txtFiles.map((f) => f.replace('.txt', '')),
+            })
+          }
+          targetFile = match
+        } else {
+          // Find most recent file by mtime
+          let newest = txtFiles[0]!
+          let newestMtime = 0
+          for (const f of txtFiles) {
+            try {
+              const s = await stat(join(baseDir, f))
+              if (s.mtimeMs > newestMtime) {
+                newestMtime = s.mtimeMs
+                newest = f
+              }
+            } catch { /* skip */ }
+          }
+          targetFile = newest
+        }
+
+        const content = await readFile(join(baseDir, targetFile), 'utf-8')
+        return textResult({
+          file: targetFile,
+          terminalId: targetFile.replace('.txt', ''),
+          content,
+        })
+      } catch (err: any) {
+        return textResult({
+          error: err?.message ?? String(err),
+          hint: 'Could not read terminal files. Ensure .shogo/terminals/ exists.',
+        })
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Terminal Exec Tool — runs commands in the user's visible terminal (desktop)
 // ---------------------------------------------------------------------------
 
@@ -4347,21 +4429,27 @@ function createTerminalExecTool(ctx: ToolContext): AgentTool {
     name: 'terminal_exec',
     description: `Execute a shell command in the user's visible terminal (desktop app only).
 Unlike exec (which runs in a sandbox), this sends the command to the user's terminal,
-waits for completion, and returns the output. Use this when the command needs to run
-in the user's actual shell environment (e.g. with their PATH, nvm, conda, etc.) or
-when the user should see the command running.
+waits for completion, and returns the output.
 
-Returns: { exitCode, output, cwd, durationMs, timedOut }.
+For SHORT one-shot commands (echo, ls, git status, etc.): runs in the user's existing
+terminal, captures output, returns result in chat.
+
+For LONG-running commands (dev servers, watchers, etc.): creates a new agent terminal
+tab named "Shogo" with an infinity icon. The user can see it running. Returns a
+"background task started" message with the terminal ID.
+
+Returns: { exitCode, output, cwd, durationMs, timedOut, mode, sessionId? }.
 
 If the desktop terminal is not available (web/mobile), falls back to the sandboxed exec.`,
     parameters: Type.Object({
-      command: Type.Optional(Type.String({ description: 'The shell command to execute (required for run action)' })),
-      action: Type.Optional(Type.String({ description: '"run" (default) to execute a command, "interrupt" to send SIGINT to the running command', enum: ['run', 'interrupt'] })),
+      command: Type.Optional(Type.String({ description: 'The shell command to execute' })),
+      action: Type.Optional(Type.String({ description: '"run" (default), "interrupt" to send SIGINT', enum: ['run', 'interrupt'] })),
+      mode: Type.Optional(Type.String({ description: '"foreground" (default, auto-detected) or "background" to force agent terminal tab', enum: ['foreground', 'background'] })),
       cwd: Type.Optional(Type.String({ description: 'Working directory (defaults to current)' })),
-      timeoutMs: Type.Optional(Type.Number({ description: 'Max wait time in ms (default: 120000)' })),
+      timeoutMs: Type.Optional(Type.Number({ description: 'Max wait time in ms (default: 120000 for foreground, no limit for background)' })),
     }),
     execute: async (params) => {
-      const { command, cwd, timeoutMs, action } = params as { command?: string; cwd?: string; timeoutMs?: number; action?: string }
+      const { command, cwd, timeoutMs, action, mode } = params as { command?: string; cwd?: string; timeoutMs?: number; action?: string; mode?: string }
 
       if (!ctx.terminalExec) {
         return textResult({
@@ -4387,7 +4475,13 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
       }
 
       try {
-        const result = await ctx.terminalExec({ command, cwd, timeoutMs })
+        const effectiveMode = mode ?? 'foreground'
+        const result = await ctx.terminalExec({
+          command,
+          cwd,
+          timeoutMs: effectiveMode === 'background' ? undefined : (timeoutMs ?? 120_000),
+          mode: effectiveMode,
+        })
         return textResult(result)
       } catch (err: any) {
         return textResult({
@@ -4441,6 +4535,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createUpdatePlanTool(ctx),
     createQuickActionTool(ctx),
     createTerminalExecTool(ctx),
+    createTerminalReadTool(ctx),
     createReadGuideTool(ctx),
   ]
 
@@ -4772,7 +4867,7 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
  * Skills can reference either group names or individual tool names.
  */
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
-  shell: ['exec', 'exec_wait', 'terminal_exec'],
+  shell: ['exec', 'exec_wait', 'terminal_exec', 'terminal_read'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
   files: ['delete_file', 'search', 'read_file', 'write_file', 'edit_file', 'read_lints'],
   search: ['search', 'impact_radius'],
@@ -4794,7 +4889,7 @@ export const ALL_TOOL_NAMES = [
   'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
-  'heartbeat_configure', 'heartbeat_status', 'terminal_exec',
+  'heartbeat_configure', 'heartbeat_status', 'terminal_exec', 'terminal_read',
   'read_lints', 'server_sync',
   'search_integrations', 'connect', 'disconnect',
   'transcribe_audio',

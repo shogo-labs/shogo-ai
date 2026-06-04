@@ -1691,14 +1691,14 @@ export class AgentGateway {
     // HTTP handler and passes its URL via TERMINAL_EXEC_URL env var.
     const terminalExecUrl = process.env.TERMINAL_EXEC_URL
     if (terminalExecUrl) {
-      toolContext.terminalExec = async ({ command, cwd, timeoutMs }) => {
+      toolContext.terminalExec = async ({ command, cwd, timeoutMs, mode }) => {
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), timeoutMs ?? 130_000)
         try {
           const res = await fetch(`${terminalExecUrl}/terminal/exec`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command, cwd, timeoutMs }),
+            body: JSON.stringify({ command, cwd, timeoutMs, mode }),
             signal: controller.signal,
           })
           if (!res.ok) {
