@@ -1778,6 +1778,13 @@ model ApiKey {
 model Instance {
   id            String         @id @default(cuid())
   workspaceId   String
+  /// User who paired this machine — derived from the API key used to
+  /// register/heartbeat it (see resolveApiKey). Machines are scoped to
+  /// their owner so the picker only lists the signed-in user's machines.
+  /// Nullable for back-compat with rows registered before ownership
+  /// tracking; such rows are reset by the add_instance_user_id migration
+  /// and re-created (owned) on the next heartbeat.
+  userId        String?
   name          String
   hostname      String
   os            String?
@@ -1800,8 +1807,9 @@ model Instance {
   pushSubscriptions PushSubscription[]
   preferredByProjects Project[]        @relation("ProjectPreferredInstance")
 
-  @@unique([workspaceId, hostname])
+  @@unique([workspaceId, userId, hostname])
   @@index([workspaceId])
+  @@index([workspaceId, userId])
   @@index([workspaceId, kind])
   @@map("instances")
 }

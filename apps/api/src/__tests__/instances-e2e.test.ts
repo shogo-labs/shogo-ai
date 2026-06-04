@@ -23,7 +23,8 @@ let instancesByKey: Map<string, string> = new Map()
 const mockPrisma = {
   instance: {
     upsert: mock(async (args: any) => {
-      const compoundKey = `${args.where.workspaceId_hostname.workspaceId}:${args.where.workspaceId_hostname.hostname}`
+      const w = args.where.workspaceId_userId_hostname
+      const compoundKey = `${w.workspaceId}:${w.userId}:${w.hostname}`
       const existingId = instancesByKey.get(compoundKey)
       if (existingId) {
         const existing = instancesById.get(existingId)!
@@ -47,7 +48,11 @@ const mockPrisma = {
     }),
     findMany: mock(async (args: any) => {
       return [...instancesById.values()]
-        .filter((i: any) => i.workspaceId === args.where.workspaceId)
+        .filter(
+          (i: any) =>
+            i.workspaceId === args.where.workspaceId &&
+            (args.where.userId === undefined || i.userId === args.where.userId),
+        )
         .map((i) => ({ ...i }))
     }),
     update: mock(async (args: any) => {
@@ -66,7 +71,7 @@ const mockPrisma = {
   member: {
     findFirst: mock(async () => ({
       id: 'member-1',
-      userId: 'user-1',
+      userId: 'user-e2e',
       workspaceId: 'ws-e2e',
     })),
   },
@@ -88,7 +93,11 @@ mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: mock(async () => {}),
 }))
 
-const testUser = { id: 'user-1', userId: 'user-1', email: 'e2e@test.com', role: 'super_admin' }
+// The viewing user must match the user that owns the machine (the API key
+// owner returned by resolveApiKey below), since machines are now scoped to
+// their owner. Using a different userId here would (correctly) hide the
+// machine from the list and 403 the ownership-checked routes.
+const testUser = { id: 'user-e2e', userId: 'user-e2e', email: 'e2e@test.com', role: 'super_admin' }
 
 const { instanceRoutes, _testing } = await import('../routes/instances')
 

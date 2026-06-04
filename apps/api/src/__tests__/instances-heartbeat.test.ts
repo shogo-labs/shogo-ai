@@ -264,8 +264,9 @@ describe('authenticateInstanceWs', () => {
 
     expect(mockPrisma.instance.upsert).toHaveBeenCalledTimes(1)
     const args = mockPrisma.instance.upsert.mock.calls[0][0] as any
-    expect(args.where.workspaceId_hostname).toEqual({
+    expect(args.where.workspaceId_userId_hostname).toEqual({
       workspaceId: 'ws-1',
+      userId: 'user-1',
       hostname: 'header-host',
     })
     expect(args.update).toMatchObject({
@@ -275,6 +276,7 @@ describe('authenticateInstanceWs', () => {
     })
     expect(args.create).toMatchObject({
       workspaceId: 'ws-1',
+      userId: 'user-1',
       hostname: 'header-host',
       name: 'Header Name',
       os: 'darwin',
