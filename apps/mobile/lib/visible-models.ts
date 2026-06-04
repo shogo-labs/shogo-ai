@@ -402,3 +402,57 @@ export function useModelPickerList(): PickerModel[] {
   const visible = useVisibleModels()
   return useMemo(() => buildModelList(visible), [visible])
 }
+
+// ===========================================================================
+// Stale-selection reconciliation.
+//
+// Model ids that pre-date the slug->UUID migration (e.g. `mimo-v2.5`,
+// `claude-opus-4-8`) survive only as server-side aliases — they are no longer
+// catalog ids. A selection persisted before the migration therefore can't be
+// matched or labelled by the picker (it renders the raw slug). Detect that and
+// reset to the tier default once the live catalog has loaded.
+// ===========================================================================
+
+/**
+ * Decide whether a stored selection is stale against the live catalog. Returns
+ * the id to reset to, or `null` when no reset is needed — i.e. the selection is
+ * `Auto`/a known catalog id, or the catalog hasn't loaded yet (so a valid
+ * selection is never reset before metadata arrives). If the requested
+ * `fallback` itself isn't visible, returns `AUTO_MODEL_ID` so we never swap one
+ * unrenderable slug for another.
+ */
+export function reconcileModelSelection(
+  selected: string,
+  fallback: string,
+  visible: ResolvedVisibleModels | null,
+): string | null {
+  if (!visible) return null
+  const known = new Set<string>([
+    ...(visible.catalogModels ?? []).map((m) => m.id),
+    ...(visible.openrouterModels ?? []).map((m) => m.id),
+  ])
+  if (known.size === 0) return null
+  if (selected === AUTO_MODEL_ID || known.has(selected)) return null
+  return known.has(fallback) ? fallback : AUTO_MODEL_ID
+}
+
+/**
+ * Reset a stale stored model selection to `fallback` once the catalog loads.
+ * `onReset` should route through the owner's normal model-change handler so the
+ * corrected id is persisted (and any runtime config re-synced). Pass
+ * `enabled = false` to skip reconciliation (e.g. when a parent already owns and
+ * reconciles the selection).
+ */
+export function useReconcileStaleModelSelection(
+  selected: string,
+  fallback: string,
+  onReset: (id: string) => void,
+  enabled = true,
+): void {
+  const visible = useVisibleModels()
+  useEffect(() => {
+    if (!enabled) return
+    const next = reconcileModelSelection(selected, fallback, visible)
+    if (next && next !== selected) onReset(next)
+  }, [visible, selected, fallback, onReset, enabled])
+}

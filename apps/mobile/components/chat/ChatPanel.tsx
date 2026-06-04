@@ -105,6 +105,7 @@ import {
   loadModelPreference,
   saveModelPreference,
 } from "../../lib/agent-mode-preference"
+import { useReconcileStaleModelSelection } from "../../lib/visible-models"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
@@ -1031,6 +1032,17 @@ export const ChatPanel = observer(function ChatPanel({
       saveModelPreference(modelId, projectId)
     }
   }, [controlledOnModelChange, projectId])
+
+  // Reset a pre-UUID stored selection (an old slug that's now only a server
+  // alias, so the picker can't label it) to the tier default once the catalog
+  // loads. Only when uncontrolled — a controlling parent owns and reconciles
+  // its own selection.
+  useReconcileStaleModelSelection(
+    internalSelectedModel,
+    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    handleModelChange,
+    !isModelControlled,
+  )
 
   const [interactionMode, setInteractionMode] = useState<InteractionMode>(
     () => initialInteractionMode ?? "agent"

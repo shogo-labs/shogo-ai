@@ -67,7 +67,12 @@ import { EzModeChatPanel } from '../../../../components/voice-mode/EzModeChatPan
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
-import { resolveReasoningEffort, resolveProvider, useVisibleModels } from '../../../../lib/visible-models'
+import {
+  resolveReasoningEffort,
+  resolveProvider,
+  useVisibleModels,
+  useReconcileStaleModelSelection,
+} from '../../../../lib/visible-models'
 import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
 import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
@@ -865,6 +870,16 @@ export default observer(function ProjectLayout() {
       }
     }
   }, [agentUrl, projectId])
+
+  // Reset a pre-UUID stored selection (an old slug that's now only a server
+  // alias, so the picker can't label it) to the tier default once the catalog
+  // loads. Routes through handleModelChange so the corrected id is persisted
+  // and re-synced to the runtime.
+  useReconcileStaleModelSelection(
+    selectedModel,
+    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    handleModelChange,
+  )
 
   const splitRowRef = useRef<View>(null)
 

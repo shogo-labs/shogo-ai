@@ -30,6 +30,7 @@ import {
   saveInteractionModePreference,
 } from '../../lib/interaction-mode-preference'
 import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
+import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { workspaceProjectFilter } from '../../lib/project-load'
@@ -374,6 +375,15 @@ const HomeScreen = observer(function HomeScreen() {
     setSelectedModel(modelId)
     void saveModelPreference(modelId)
   }, [])
+
+  // Reset a pre-UUID stored selection (an old slug that's now only a server
+  // alias, so the picker can't label it) to the tier default once the catalog
+  // loads.
+  useReconcileStaleModelSelection(
+    selectedModel,
+    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    handleHomeModelChange,
+  )
 
   const homeComposerPlaceholder =
     interactionMode === 'plan'
