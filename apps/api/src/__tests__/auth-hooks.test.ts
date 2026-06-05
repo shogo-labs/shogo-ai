@@ -329,6 +329,33 @@ describe('databaseHooks.user.create.before', () => {
     const out = await capturedConfig.databaseHooks.user.create.before(u)
     expect(out.data.name).toBeUndefined()
   })
+
+  test('neutralizes URL in name (hyperlink injection)', async () => {
+    const u: { name?: string } = { name: 'https://evil.com click here' }
+    const out = await capturedConfig.databaseHooks.user.create.before(u)
+    expect(out.data.name).not.toContain('https://')
+    expect(out.data.name).not.toContain('evil.com')
+    expect(out.data.name).toBe('evil com click here')
+  })
+
+  test('strips www. and defangs bare domains', async () => {
+    const u: { name?: string } = { name: 'www.evil.com' }
+    const out = await capturedConfig.databaseHooks.user.create.before(u)
+    expect(out.data.name).not.toContain('www.')
+    expect(out.data.name).not.toContain('evil.com')
+  })
+
+  test('neutralizes javascript: scheme', async () => {
+    const u: { name?: string } = { name: 'javascript:alert(1)' }
+    const out = await capturedConfig.databaseHooks.user.create.before(u)
+    expect(out.data.name).not.toContain('javascript:')
+  })
+
+  test('caps overly long names', async () => {
+    const u: { name?: string } = { name: 'a'.repeat(500) }
+    const out = await capturedConfig.databaseHooks.user.create.before(u)
+    expect(out.data.name.length).toBeLessThanOrEqual(100)
+  })
 })
 
 // ===========================================================================
@@ -346,6 +373,13 @@ describe('databaseHooks.user.update.before', () => {
     const u: { name?: string } = {}
     const out = await capturedConfig.databaseHooks.user.update.before(u)
     expect(out.data.name).toBeUndefined()
+  })
+
+  test('neutralizes URL in name on update (hyperlink injection)', async () => {
+    const u: { name?: string } = { name: 'Check http://evil.com/login' }
+    const out = await capturedConfig.databaseHooks.user.update.before(u)
+    expect(out.data.name).not.toContain('http://')
+    expect(out.data.name).not.toContain('evil.com')
   })
 })
 
