@@ -1742,113 +1742,7 @@ export function Workbench({
       data-theme={themeMode}
     >
       <div className="flex flex-1 min-h-0">
-        <ActivityBar
-          active={activity}
-          sidebarOpen={sidebarOpen}
-          terminalOpen={bottomPanelOpen}
-          badges={activityBadges}
-          onSelect={(id) => {
-            setActivity(id);
-            if (!sidebarOpen) setSidebarOpen(true);
-          }}
-          onToggleSidebar={() => setSidebarOpen((v) => !v)}
-          onToggleTerminal={() => setBottomPanelOpen((v) => !v)}
-        />
-
         <div className="flex flex-1 min-w-0">
-          {/* The Checkpoint activity renders the commit graph as a full
-              main-area view (graph columns + a 400px detail panel), so it
-              suppresses the narrow sidebar — otherwise the detail panel
-              overflows and squeezes the graph to nothing. */}
-          {sidebarOpen && activity !== "checkpoint" && (
-            <>
-              <div
-                style={{ width: sidebarSplit.size, flexShrink: 0, maxWidth: "55%", minWidth: 0 }}
-                className="h-full bg-[color:var(--ide-surface)] overflow-hidden"
-              >
-                {activity === "files" && (
-                  <FilesPane
-                    roots={roots}
-                    virtualTree={virtualTree}
-                    activePath={active?.path ?? null}
-                    handlers={treeHandlers}
-                    newRequest={newRequest}
-                    fsaSupported={fsaSupported}
-                    onRefresh={refreshAllRoots}
-                    onNew={(kind) => setNewRequest({ kind, nonce: Date.now() })}
-                    onOpenFolder={() => void openLocalFolder()}
-                    onRestore={() => void restoreRoots()}
-                    onCloseRoot={(id) => void closeRoot(id)}
-                    onCollapse={() => setSidebarOpen(false)}
-                  />
-                )}
-                {activity === "search" && (
-                  <SearchPane
-                    roots={roots}
-                    services={services}
-                    onReveal={(rootId, path, line, col) =>
-                      void revealMatch(rootId, path, line, col)
-                    }
-                    onReplaced={(matches, files) => {
-                      showToast(
-                        `Replaced ${matches} match${matches === 1 ? "" : "es"} in ${files} file${files === 1 ? "" : "s"}`,
-                      );
-                    }}
-                  />
-                )}
-                {activity === "outline" && (
-                  <OutlinePanel
-                    symbols={outlineSymbols}
-                    loading={outlineLoading}
-                    hasFile={!!active}
-                    activeLine={cursor.line}
-                    onReveal={revealSymbol}
-                    onCollapse={() => setSidebarOpen(false)}
-                  />
-                )}
-                {activity === "git" && (
-                  <div className="flex flex-col h-full">
-                    {projectId && (
-                      <button
-                        onClick={() => setGraphOpen(true)}
-                        className="flex items-center gap-1.5 mx-2 mt-2 mb-1 px-2 py-1.5 rounded text-[12px] border border-[color:var(--ide-border-strong)] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
-                      >
-                        <GitBranch size={13} className="text-[color:var(--ide-muted)]" />
-                        Open Commit Graph
-                      </button>
-                    )}
-                    <div className="flex-1 min-h-0">
-                  <SourceControlViewlet
-                    workspaceRoot={gitWorkspaceRoot}
-                    onOpenDiff={(path, group) => {
-                      // G4.5: clicking a Merge row opens the 3-way merge
-                      // editor. Other groups still fall through to the
-                      // (forthcoming) Monaco diff view — tracked as G2.5
-                      // polish.
-                      if (group === "merge" && gitWorkspaceRoot) {
-                        setMergePath(path);
-                      }
-                    }}
-                    // Checkpoint now lives on its own activity bar entry
-                    // (id: "checkpoint"); the SourceControl viewlet no
-                    // longer falls back to it. If the project has no git
-                    // repo, the viewlet renders its own empty state.
-                  />
-                    </div>
-                  </div>
-                )}
-                {activity === "debug" && (
-                  <RunDebugPanel workspaceRoot={gitWorkspaceRoot} />
-                )}
-                {activity === "settings" && (
-                  <SettingsPane settings={settings} onChange={setSettings} />
-                )}
-              </div>
-
-              <VerticalSplit onMouseDown={sidebarSplit.onMouseDown} />
-            </>
-          )}
-
           <div className="flex flex-1 min-w-0 flex-col">
             <AgentEditBanner
               conflicts={conflicts}
@@ -1973,6 +1867,113 @@ export function Workbench({
 
           </div>
         </div>
+
+        {/* The Checkpoint activity renders the commit graph as a full
+            main-area view (graph columns + a 400px detail panel), so it
+            suppresses the narrow sidebar — otherwise the detail panel
+            overflows and squeezes the graph to nothing. */}
+        {sidebarOpen && activity !== "checkpoint" && (
+          <>
+
+            <VerticalSplit onMouseDown={sidebarSplit.onMouseDown} />
+
+            <div
+              style={{ width: sidebarSplit.size, flexShrink: 0, maxWidth: "55%", minWidth: 0 }}
+              className="h-full bg-[color:var(--ide-surface)] overflow-hidden"
+            >
+              {activity === "files" && (
+                <FilesPane
+                  roots={roots}
+                  virtualTree={virtualTree}
+                  activePath={active?.path ?? null}
+                  handlers={treeHandlers}
+                  newRequest={newRequest}
+                  fsaSupported={fsaSupported}
+                  onRefresh={refreshAllRoots}
+                  onNew={(kind) => setNewRequest({ kind, nonce: Date.now() })}
+                  onOpenFolder={() => void openLocalFolder()}
+                  onRestore={() => void restoreRoots()}
+                  onCloseRoot={(id) => void closeRoot(id)}
+                  onCollapse={() => setSidebarOpen(false)}
+                />
+              )}
+              {activity === "search" && (
+                <SearchPane
+                  roots={roots}
+                  services={services}
+                  onReveal={(rootId, path, line, col) =>
+                    void revealMatch(rootId, path, line, col)
+                  }
+                  onReplaced={(matches, files) => {
+                    showToast(
+                      `Replaced ${matches} match${matches === 1 ? "" : "es"} in ${files} file${files === 1 ? "" : "s"}`,
+                    );
+                  }}
+                />
+              )}
+              {activity === "outline" && (
+                <OutlinePanel
+                  symbols={outlineSymbols}
+                  loading={outlineLoading}
+                  hasFile={!!active}
+                  activeLine={cursor.line}
+                  onReveal={revealSymbol}
+                  onCollapse={() => setSidebarOpen(false)}
+                />
+              )}
+              {activity === "git" && (
+                <div className="flex flex-col h-full">
+                  {projectId && (
+                    <button
+                      onClick={() => setGraphOpen(true)}
+                      className="flex items-center gap-1.5 mx-2 mt-2 mb-1 px-2 py-1.5 rounded text-[12px] border border-[color:var(--ide-border-strong)] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
+                    >
+                      <GitBranch size={13} className="text-[color:var(--ide-muted)]" />
+                      Open Commit Graph
+                    </button>
+                  )}
+                  <div className="flex-1 min-h-0">
+                <SourceControlViewlet
+                  workspaceRoot={gitWorkspaceRoot}
+                  onOpenDiff={(path, group) => {
+                    // G4.5: clicking a Merge row opens the 3-way merge
+                    // editor. Other groups still fall through to the
+                    // (forthcoming) Monaco diff view — tracked as G2.5
+                    // polish.
+                    if (group === "merge" && gitWorkspaceRoot) {
+                      setMergePath(path);
+                    }
+                  }}
+                  // Checkpoint now lives on its own activity bar entry
+                  // (id: "checkpoint"); the SourceControl viewlet no
+                  // longer falls back to it. If the project has no git
+                  // repo, the viewlet renders its own empty state.
+                />
+                  </div>
+                </div>
+              )}
+              {activity === "debug" && (
+                <RunDebugPanel workspaceRoot={gitWorkspaceRoot} />
+              )}
+              {activity === "settings" && (
+                <SettingsPane settings={settings} onChange={setSettings} />
+              )}
+            </div>
+          </>
+          )}
+
+        <ActivityBar
+          active={activity}
+          sidebarOpen={sidebarOpen}
+          terminalOpen={bottomPanelOpen}
+          badges={activityBadges}
+          onSelect={(id) => {
+            setActivity(id);
+            if (!sidebarOpen) setSidebarOpen(true);
+          }}
+          onToggleSidebar={() => setSidebarOpen((v) => !v)}
+          onToggleTerminal={() => setBottomPanelOpen((v) => !v)}
+        />
       </div>
 
       <StatusBar

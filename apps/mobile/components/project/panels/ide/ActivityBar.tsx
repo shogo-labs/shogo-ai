@@ -88,7 +88,7 @@ export function ActivityBar({
   const badgeFor = (id: ActivityId): BadgeData | undefined => badges?.[id];
 
   return (
-    <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between bg-[color:var(--ide-panel)] border-r border-[color:var(--ide-border)] py-2">
+    <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between bg-[color:var(--ide-panel)] border-l border-[color:var(--ide-border)] py-2">
       <div className="flex flex-col items-center gap-1">
         {ITEMS.map(({ id, icon: Icon, label, hint }) => {
           const isActive = active === id && sidebarOpen;
@@ -105,7 +105,7 @@ export function ActivityBar({
               }`}
             >
               {isActive && (
-                <span className="absolute left-0 top-1/2 h-6 -translate-y-1/2 w-0.5 bg-[color:var(--ide-text-strong)] rounded-r" />
+                <span className="absolute right-0 top-1/2 h-6 -translate-y-1/2 w-0.5 bg-[color:var(--ide-text-strong)] rounded-l" />
               )}
               <Icon size={20} />
               {badge && <ActivityBadgePill data={badge} />}
@@ -124,7 +124,7 @@ export function ActivityBar({
           }`}
         >
           {terminalOpen && (
-            <span className="absolute left-0 top-1/2 h-6 -translate-y-1/2 w-0.5 bg-[color:var(--ide-text-strong)] rounded-r" />
+            <span className="absolute right-0 top-1/2 h-6 -translate-y-1/2 w-0.5 bg-[color:var(--ide-text-strong)] rounded-l" />
           )}
           <TerminalIcon size={20} />
         </button>
