@@ -6,10 +6,10 @@
  * Opus 4.8 is a DB-defined model addressed by an opaque UUID. With only the
  * UUID, `inferProviderFromModel` can't recognize it and falls back to
  * `'custom'`, which routes the turn through the OpenAI-compat → Anthropic
- * *conversion* path (lossy: thinking can't be enabled there). The client now
- * sends the model's `provider` (resolved from the catalog it already holds)
- * alongside the override, and the gateway honors it so the turn routes through
- * the *native* Anthropic API shape instead.
+ * *conversion* path (lossy: thinking can't be enabled there). The API server
+ * now resolves the model's `provider` from its registry and stamps it on the
+ * forwarded request alongside the override; the gateway honors it so the turn
+ * routes through the *native* Anthropic API shape instead.
  *
  * The gateway's decision is a single inline expression in
  * `processChatMessageStream` (see `gateway.ts`, the non-auto branch):
@@ -32,7 +32,8 @@ import { inferProviderFromModel } from '@shogo/model-catalog'
 import { resolveModel } from '../pi-adapter'
 import { SessionManager } from '../session-manager'
 
-/** An opaque DB model id, as the client sends for Opus 4.8. */
+/** An opaque DB model id, as sent for Opus 4.8 (resolved to a provider by the
+ *  API server before the runtime sees it). */
 const OPUS_UUID = '11111111-1111-4111-8111-111111111111'
 
 /**
