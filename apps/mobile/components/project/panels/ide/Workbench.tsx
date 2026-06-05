@@ -194,6 +194,7 @@ export function Workbench({
   paneVisible = true,
   agentUrl,
   fetchImpl,
+  isExternalProject = true,
 }: {
   agentService: WorkspaceService;
   agentLabel?: string;
@@ -221,10 +222,20 @@ export function Workbench({
    * for tests.
    */
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  /** True when the project was opened via "Open folder…" (external/IDE-style). */
+  isExternalProject?: boolean;
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
   const [graphOpen, setGraphOpen] = useState<boolean>(false);
+
+  // For managed (non-external) projects, force the activity away from
+  // git/debug/checkpoint since those panels are hidden.
+  useEffect(() => {
+    if (!isExternalProject && (activity === "git" || activity === "debug" || activity === "outline")) {
+      setActivity("files");
+    }
+  }, [isExternalProject, activity]);
 
   // Deep-link: let surfaces outside the Workbench (e.g. the top-bar Publish
   // popover's "View history" link) switch the active activity — notably
@@ -1722,7 +1733,7 @@ export function Workbench({
     if (!desktopBadgesEnabled) return null;
     const out: Partial<Record<ActivityId, BadgeData>> = {};
     const gitN = gitChangeCount(gitSnapshot);
-    if (gitN > 0) out.git = { count: gitN, tone: "neutral" };
+    if (isExternalProject && gitN > 0) out.git = { count: gitN, tone: "neutral" };
     if (problemsBadgeResult.count > 0) {
       const tone = problemsBadgeResult.severity === "error" ? "error" : "warn";
       // Shogo surfaces the Problems pane under the Files (Explorer)
@@ -1732,7 +1743,7 @@ export function Workbench({
       out.files = { count: problemsBadgeResult.count, tone };
     }
     return Object.keys(out).length === 0 ? null : out;
-  }, [desktopBadgesEnabled, gitSnapshot, problemsBadgeResult.count, problemsBadgeResult.severity]);
+  }, [desktopBadgesEnabled, gitSnapshot, problemsBadgeResult.count, problemsBadgeResult.severity, isExternalProject]);
 
   return (
     <GitStatusProvider snapshot={gitSnapshot}>
@@ -1967,6 +1978,7 @@ export function Workbench({
           sidebarOpen={sidebarOpen}
           terminalOpen={bottomPanelOpen}
           badges={activityBadges}
+          hiddenItemIds={isExternalProject ? [] : (["git", "debug", "outline"] as ActivityId[])}
           onSelect={(id) => {
             setActivity(id);
             if (!sidebarOpen) setSidebarOpen(true);
@@ -1981,8 +1993,8 @@ export function Workbench({
         line={cursor.line}
         col={cursor.col}
         saved={!active?.dirty}
-        git={gitSnapshot}
-        workspaceRoot={gitWorkspaceRoot}
+        git={isExternalProject ? gitSnapshot : null}
+        workspaceRoot={isExternalProject ? gitWorkspaceRoot : null}
       />
 
       {palette === "command" && (
