@@ -184,6 +184,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Publish flow pre-checks then updates; cross-region race possible during failover, P2 follow-up.',
   },
   {
+    key: 'CustomDomain.hostname',
+    category: 'request_scoped',
+    reason:
+      'Written by the user-initiated POST /api/projects/:id/domains handler (publish.ts); a globally-unique hostname can only collide if two users add the same domain in different regions during failover, which CF custom-hostname registration would also reject. P2 — idempotent add, not leader election.',
+  },
+  {
     key: 'AgentConfig.projectId',
     category: 'single_tenant_upsert',
     reason:

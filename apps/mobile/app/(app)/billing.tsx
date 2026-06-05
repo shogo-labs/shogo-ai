@@ -59,6 +59,7 @@ import {
   getPlanDisplayName,
 } from '../../lib/billing-config'
 import { SeatCounter } from '../../components/billing/SeatCounter'
+import { BillingHistory } from '../../components/billing/BillingHistory'
 import { useToast, Toast, ToastTitle, ToastDescription } from '../../components/ui/toast'
 import { FeatureList } from '../../components/billing/FeatureList'
 import { UsageWindowBar } from '../../components/billing/UsageWindows'
@@ -645,6 +646,9 @@ export default observer(function BillingPage() {
           </View>
         </CardContent>
       </Card>
+
+      {/* Billing history (recent Stripe invoices) */}
+      <BillingHistory workspaceId={currentWorkspace.id} />
 
       {/* Redeem a license key */}
       <Card className="mb-4">

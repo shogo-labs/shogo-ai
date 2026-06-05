@@ -52,9 +52,16 @@ import {
   persistRepoToStore,
   seedRepoIfAbsent,
   createTagLocal,
+  deleteTagLocal,
   getHeadSha,
   repoStoreConfigFromEnv,
   gatherCommitMeta,
+  ensureLfsRepoSetup,
+  autoTrackLargeFiles,
+  lfsPushAll,
+  lfsPull,
+  lfsRemoteConfigFromEnv,
+  migrateOffloadedAssetsToLfs,
   type CloudSyncMode,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
@@ -108,6 +115,7 @@ import { subscribe as subscribeScreencast, getLastFrame as getLastScreencastFram
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
 import { saveUploadedFileParts, buildUploadedFilesNote } from './upload-attachments'
+import { buildReferencedContext } from './reference-context'
 import { maybeRunInteractive } from './interactive/entry'
 
 // Interactive CLI mode. When this binary is invoked as `agent-runtime
@@ -311,13 +319,47 @@ let gitSyncInstance: GitWorkspaceSync | null = null
 let workspaceMemberSyncs: Map<string, import('@shogo/shared-runtime').S3Sync> = new Map()
 
 /**
+ * Whether real Git LFS is active for this pod. Scoped to `git_only` (the
+ * pod-owned default): the LFS object-offload step is wired into that mode's
+ * `afterCommit` durability path, and LFS attributes are only written for
+ * these repos, so other modes (dual_shadow/s3) keep the legacy offload and
+ * never accidentally LFS-ify files. LFS is always on for git_only — there is
+ * no separate enable flag.
+ */
+function isLfsActive(): boolean {
+  return resolveCloudSyncMode() === 'git_only'
+}
+
+/**
+ * Persist `.git` to object storage, first offloading LFS object bytes to OCI
+ * when LFS is active. The local `.git/lfs/objects` cache is excluded from the
+ * tarball ONLY when the push succeeded — otherwise the bytes would be durable
+ * nowhere, so we keep them in the tarball as a fallback. Shared by the
+ * afterCommit, publish-tag, and shutdown durability paths.
+ */
+async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; reason?: string }> {
+  const repoCfg = repoStoreConfigFromEnv()
+  if (!repoCfg) return { ok: true, changed: false, reason: 'no-store-config' }
+  let excludeLfsObjects = false
+  if (isLfsActive()) {
+    const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+    if (lfsCfg) excludeLfsObjects = await lfsPushAll(lfsCfg)
+  }
+  return persistRepoToStore(WORKSPACE_DIR, repoCfg, { excludeLfsObjects })
+}
+
+/**
  * Offload large/binary assets to S3 and refresh `.git/info/exclude` so the
  * subsequent git push stays source-only. Fire-and-forget — paired with the
  * git push at the turn-complete boundary in `git_only` / `dual_shadow`.
  * No-op unless object storage is configured and a git sync is active.
+ *
+ * In Git LFS mode this legacy size-based offload is replaced by the LFS
+ * clean filter (pointers) + `git lfs push` (bytes), so it no-ops.
  */
 function triggerLargeFileSync(): void {
   if (!gitSyncInstance) return
+  if (isLfsActive()) return
   const cfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
   if (!cfg) return
   void syncLargeFiles(cfg).catch((err: any) =>
@@ -334,9 +376,9 @@ function triggerLargeFileSync(): void {
  * is already durable and the row can be reconciled on the next API hydrate).
  */
 async function persistAndRecordCheckpoint(sha: string): Promise<void> {
-  const repoCfg = repoStoreConfigFromEnv()
-  if (repoCfg) {
-    const res = await persistRepoToStore(WORKSPACE_DIR, repoCfg)
+  if (repoStoreConfigFromEnv()) {
+    // Offload LFS object bytes to OCI (when active) then persist `.git`.
+    const res = await persistDurableRepo()
     if (!res.ok) throw new Error(`durable repo persist failed: ${res.reason}`)
   }
   // Record the checkpoint row (best-effort; the commit is already durable in
@@ -899,6 +941,51 @@ function ensureWorkspaceFiles(): void {
 let gatewayReadyResolve: (() => void) | null = null
 let gatewayReadyPromise: Promise<void> | null = null
 
+// Resolves once the workspace's `node_modules` are ready (installed or
+// restored). The boot path no longer blocks the gateway on this: the install
+// runs in the background while the gateway starts and accepts the first chat
+// message. Work that genuinely needs deps (the LSP) awaits this instead.
+// Defaults to already-resolved so callers never hang when no install is
+// required (e.g. external projects, which own their own deps).
+let workspaceDepsReadyPromise: Promise<void> = Promise.resolve()
+
+/**
+ * Kick off the workspace dependency install/restore in the background and
+ * publish it via `workspaceDepsReadyPromise`.
+ *
+ * Callers MUST NOT await the returned promise on the gateway-start critical
+ * path — the whole point is that the gateway comes up (and the first message
+ * streams) while this runs. `bun install` here can race PreviewManager's own
+ * `installDepsIfNeeded`; that is safe because both go through the per-workspace
+ * install mutex (`runWorkspaceInstall`), which shares a single in-flight
+ * install instead of running two concurrent `bun install`s.
+ */
+function startWorkspaceDepsInstall(opts: { afterS3Restore?: boolean } = {}): Promise<void> {
+  const p = (async () => {
+    if (opts.afterS3Restore && s3SyncInstance && !s3SyncInstance.areDepsReady()) {
+      logTiming('Waiting for background deps restore...')
+      await s3SyncInstance.waitForDeps()
+      logTiming('Background deps restore ready')
+    }
+    try {
+      const { didInstall } = await ensureWorkspaceDeps(WORKSPACE_DIR)
+      workspaceStatus.depsInstalled = true
+      // If an install actually ran (template deps didn't match the user's
+      // package.json — common after a warm-pool assign where the template
+      // stack differed), invalidate the pre-seeded marker so the next S3
+      // sync uploads the freshly-installed deps + deps-hash.txt pointer.
+      if (didInstall && s3SyncInstance) {
+        s3SyncInstance.markDepsChanged()
+      }
+      logTiming('Workspace deps ready')
+    } catch (err: any) {
+      console.error('[agent-runtime] Workspace deps install failed:', err.message)
+    }
+  })()
+  workspaceDepsReadyPromise = p
+  return p
+}
+
 // =============================================================================
 // Stream Buffer Store (SSE reconnect support)
 // =============================================================================
@@ -1314,6 +1401,39 @@ app.post('/agent/chat', async (c) => {
       userFileParts = last.parts.filter(
         (p: any) => p.type === 'file' && p.url,
       )
+    }
+  }
+
+  // Non-destructive continuation. When a turn ended incomplete (e.g. a model
+  // call dropped and inference retries were exhausted), the client can ask the
+  // agent to pick up from where it stopped WITHOUT re-sending the original user
+  // message. The interrupted turn's completed tool calls were already persisted
+  // to the session (see gateway: persist result.newMessages before UI cleanup),
+  // so buildHistory replays them and the agent continues from that exact point.
+  // We supply a crafted continuation instruction server-side rather than
+  // re-running the original prompt (which would restart the work).
+  const isContinueTurn = body.continue === true || body.continueTurn === true
+  if (isContinueTurn && userFileParts.length === 0) {
+    // The model receives a crafted continuation instruction regardless of any
+    // short label the client rendered (e.g. a "Continue" bubble) so it resumes
+    // the preserved work instead of re-running the original prompt.
+    userText =
+      'Continue from where you stopped. The previous response was interrupted ' +
+      'mid-turn. Build on the tool results and progress already made in this ' +
+      'conversation — do not restart, repeat completed steps, or re-run tools ' +
+      'whose results are already present. Pick up exactly where you left off ' +
+      'and finish the task.'
+  }
+
+  // Resolve "@" references (tagged files + workspaces) into inline context and
+  // append it to the user's message. Done before the empty-message guard so a
+  // references-only message is still valid. Skipped on continuation turns (the
+  // client doesn't send references there). File contents are read from the
+  // workspace on disk; workspace metadata comes from the client-built summary.
+  if (!isContinueTurn) {
+    const referencedContext = buildReferencedContext(body.references, WORKSPACE_DIR)
+    if (referencedContext) {
+      userText = userText ? `${userText}\n\n${referencedContext}` : referencedContext
     }
   }
 
@@ -4291,30 +4411,65 @@ app.post('/agent/git-flush', async (c) => {
   if (!gitSyncInstance) {
     return c.json({ ok: true, flushed: false, reason: 'git-sync-not-active' })
   }
+  // Legacy single-tag fields (`tag`/`tagMessage`) are still accepted; the
+  // publish flow now sends `tags[]` (timestamped history + stable
+  // `published/<subdomain>` pointer) and `deleteTags[]` (old pointer cleanup
+  // on subdomain change / unpublish).
   let tag: string | undefined
   let tagMessage: string | undefined
+  let tags: Array<{ name: string; message?: string; force?: boolean }> = []
+  let deleteTags: string[] = []
   try {
     const body = await c.req.json().catch(() => ({}))
     tag = typeof body?.tag === 'string' ? body.tag : undefined
     tagMessage = typeof body?.tagMessage === 'string' ? body.tagMessage : undefined
+    if (Array.isArray(body?.tags)) {
+      tags = body.tags
+        .filter((t: any) => t && typeof t.name === 'string')
+        .map((t: any) => ({
+          name: t.name as string,
+          message: typeof t.message === 'string' ? t.message : undefined,
+          force: t.force === true,
+        }))
+    }
+    if (Array.isArray(body?.deleteTags)) {
+      deleteTags = body.deleteTags.filter((t: any) => typeof t === 'string')
+    }
   } catch {
     /* no body */
   }
+  // Fold the legacy single tag into the unified list (force, matching prior behavior).
+  if (tag) tags.push({ name: tag, message: tagMessage, force: true })
+
   try {
+    // Legacy size-based offload (skipped under LFS — flush() handles LFS via
+    // beforeStage track + afterCommit push).
     const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
-    if (lfCfg) await syncLargeFiles(lfCfg)
+    if (lfCfg && !isLfsActive()) await syncLargeFiles(lfCfg)
     await gitSyncInstance.flush()
 
+    let didTagOp = false
+    for (const name of deleteTags) {
+      try {
+        await deleteTagLocal(WORKSPACE_DIR, name)
+        didTagOp = true
+      } catch (e: any) {
+        console.warn(`[agent-runtime] git-flush: failed to delete tag ${name}:`, e?.message ?? e)
+      }
+    }
     let taggedSha: string | null = null
-    if (tag) {
-      taggedSha = await createTagLocal(WORKSPACE_DIR, tag, { message: tagMessage, force: true })
-      // Re-persist so the durable repo carries the new tag.
-      const repoCfg = repoStoreConfigFromEnv()
-      if (repoCfg) await persistRepoToStore(WORKSPACE_DIR, repoCfg)
+    for (const t of tags) {
+      taggedSha = await createTagLocal(WORKSPACE_DIR, t.name, { message: t.message, force: t.force })
+      didTagOp = true
+    }
+    if (didTagOp) {
+      // Re-persist so the durable repo carries the tag changes (LFS objects are
+      // already in OCI from the flush; re-push is a cheap no-op via dedup).
+      await persistDurableRepo()
     }
 
     const sha = taggedSha ?? (await getHeadSha(WORKSPACE_DIR))
-    return c.json({ ok: true, flushed: true, sha, tag: tag ?? null })
+    return c.json({ ok: true, flushed: true, sha, tag: tag ?? null, tags: tags.map((t) => t.name) })
   } catch (err: any) {
     console.error('[agent-runtime] /agent/git-flush failed:', err?.message ?? err)
     return c.json({ ok: false, error: err?.message ?? 'git-flush failed' }, 500)
@@ -4702,6 +4857,23 @@ async function initializeEssentials(): Promise<void> {
           console.error('[agent-runtime] restoreLargeFiles failed:', error.message)
         }
       }
+      // Git LFS (git_only): configure the repo's LFS filter +
+      // .gitattributes, run the one-time migration off the legacy assets/
+      // offload (no-op once done), then materialize object bytes for the
+      // current checkout (smudge is skipped on checkout, so we fetch
+      // explicitly). All best-effort — a failure leaves pointer files and is
+      // recovered on the next pull.
+      if (isLfsActive()) {
+        try {
+          await ensureLfsRepoSetup(WORKSPACE_DIR)
+          await migrateOffloadedAssetsToLfs(WORKSPACE_DIR)
+          const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+          if (lfsCfg) await lfsPull(lfsCfg)
+          logTiming('Git LFS setup + pull')
+        } catch (error: any) {
+          console.error('[agent-runtime] Git LFS setup failed:', error?.message ?? error)
+        }
+      }
     } else {
       console.warn('[agent-runtime] git mode requested but SHOGO_API_URL/RUNTIME_AUTH_SECRET/PROJECT_ID incomplete; skipping repo bootstrap')
     }
@@ -4712,6 +4884,11 @@ async function initializeEssentials(): Promise<void> {
         // origin. dual_shadow keeps the push model.
         localOnly: cloudSyncMode === 'git_only',
         afterCommit: cloudSyncMode === 'git_only' ? persistAndRecordCheckpoint : undefined,
+        // Git LFS: before each `git add -A`, track newly-introduced large
+        // files so the clean filter writes pointers instead of raw bytes.
+        beforeStage: isLfsActive()
+          ? async () => { await autoTrackLargeFiles(WORKSPACE_DIR) }
+          : undefined,
         onDegrade: (reason) => {
           console.warn(
             `[agent-runtime] cloud-sync degraded (mode=${cloudSyncMode}): ${reason}`,
@@ -4738,9 +4915,12 @@ async function initializeEssentials(): Promise<void> {
     }
   }
 
-  // Ensure workspace has node_modules. If S3 sync is restoring deps in the
-  // background, skip the blocking install here — deps will be available
-  // before the gateway starts (startGateway awaits waitForDeps).
+  // Ensure workspace has node_modules. This no longer blocks boot: the install
+  // runs in the background (`startWorkspaceDepsInstall`) so the gateway can
+  // start and accept the first chat message while deps install. Deps-dependent
+  // work (the LSP) awaits `workspaceDepsReadyPromise`. If S3 sync is restoring
+  // deps in the background, `startGateway` owns the restore-then-install
+  // sequence (also in the background).
   //
   // External (VS Code-style) projects: never run `bun install` on the
   // user's repo. `ensureWorkspaceDeps` also calls `migrateLegacyShogoSdkPin`
@@ -4751,24 +4931,10 @@ async function initializeEssentials(): Promise<void> {
   if (WORKING_MODE === 'external') {
     logTiming('External project: skipped workspace deps install')
   } else if (s3SyncInstance && !s3SyncInstance.areDepsReady()) {
-    logTiming('Deps restoring in background — skipping blocking install')
+    logTiming('Deps restoring in background — startGateway will finish the install')
   } else {
-    try {
-      const { didInstall } = await ensureWorkspaceDeps(WORKSPACE_DIR)
-      workspaceStatus.depsInstalled = true
-      // If ensureWorkspaceDeps actually ran an install (template deps
-      // didn't match the user's package.json — common after a warm-pool
-      // assignment where the template was Vite but the project is Expo
-      // or vice-versa), invalidate the pre-seeded marker so the next
-      // periodic S3 sync uploads the freshly-installed deps and writes
-      // the per-project deps-hash.txt pointer.
-      if (didInstall && s3SyncInstance) {
-        s3SyncInstance.markDepsChanged()
-      }
-      logTiming('Workspace deps ready')
-    } catch (err: any) {
-      console.error('[agent-runtime] Workspace deps install failed:', err.message)
-    }
+    startWorkspaceDepsInstall()
+    logTiming('Workspace deps install started (background)')
   }
 
   // Run any pending tech-stack setup script. External projects can't
@@ -4889,26 +5055,23 @@ async function startGateway(): Promise<void> {
 
   gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
 
-  // Wait for background deps restoration before starting the gateway.
-  // The gateway initializes the LSP and canvas build which need node_modules.
+  // Previously we awaited the S3 deps restore + `ensureWorkspaceDeps` here
+  // before constructing the gateway, which meant the first `/agent/chat`
+  // request 503'd for the entire cold install. The gateway itself does not
+  // hard-require workspace node_modules — the LSP binary resolves from
+  // agent-runtime's own deps, and the canvas build is gated on
+  // `PreviewManager.depsReady` — so kick the restore+install in the background
+  // and start the gateway immediately. The LSP start awaits
+  // `workspaceDepsReadyPromise` (wired via `setWorkspaceDepsReady` below).
   if (s3SyncInstance && !s3SyncInstance.areDepsReady()) {
-    logTiming('Waiting for background deps before starting gateway...')
-    await s3SyncInstance.waitForDeps()
-    logTiming('Background deps ready')
-    // Now run ensureWorkspaceDeps in case the S3 deps didn't fully satisfy
-    try {
-      const { didInstall } = await ensureWorkspaceDeps(WORKSPACE_DIR)
-      workspaceStatus.depsInstalled = true
-      if (didInstall && s3SyncInstance) {
-        s3SyncInstance.markDepsChanged()
-      }
-    } catch (err: any) {
-      console.error('[agent-runtime] Post-deps-restore install failed:', err.message)
-    }
+    startWorkspaceDepsInstall({ afterS3Restore: true })
   }
 
   const { AgentGateway } = await import('./gateway')
   agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
+  // Gate the gateway's deps-dependent work (the LSP) on the background install
+  // kicked off above / in essentials, instead of blocking the whole start.
+  agentGateway.setWorkspaceDepsReady(() => workspaceDepsReadyPromise)
   // Wire the runtime's API-server-owning PreviewManager into the gateway
   // so prompt builders and tools can query/sync the project's backend.
   agentGateway.attachApiServer(getPreviewManager())
@@ -5001,9 +5164,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
     const mode = resolveCloudSyncMode()
     if (gitSyncInstance) {
       // Final large-file offload before the last push so the durable repo
-      // stays source-only and the offloaded asset set is current.
+      // stays source-only and the offloaded asset set is current. Skipped
+      // under LFS — flushAndShutdown's afterCommit runs the LFS object push.
       const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
-      if (lfCfg) {
+      if (lfCfg && !isLfsActive()) {
         try {
           await syncLargeFiles(lfCfg)
         } catch (err: any) {

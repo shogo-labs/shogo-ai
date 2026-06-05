@@ -21,6 +21,8 @@ export interface DisplayRow {
   edges: GraphEdge[];
   refs: GitRef[];
   isCheckpoint: boolean;
+  /** True for the commit currently published/live (resolved from the publish pointer tag). */
+  isLive: boolean;
   /** Working-dir change count, only for the WIP row. */
   wipCount?: number;
 }

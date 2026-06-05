@@ -93,14 +93,14 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
   protected async triggerAgent(projectId: string): Promise<void> {
     try {
       const { getProjectPodUrl } = await import('./knative-project-manager')
-      const { deriveRuntimeToken } = await import('./runtime-token')
+      const { deriveProjectRuntimeToken } = await import('./project-runtime-token')
       const podUrl = await getProjectPodUrl(projectId)
 
       const response = await fetch(`${podUrl}/agent/heartbeat/trigger`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-runtime-token': deriveRuntimeToken(projectId),
+          'x-runtime-token': await deriveProjectRuntimeToken(projectId),
         },
         signal: AbortSignal.timeout(TRIGGER_TIMEOUT_MS),
       })

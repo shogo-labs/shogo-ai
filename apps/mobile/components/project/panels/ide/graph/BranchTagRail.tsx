@@ -38,12 +38,15 @@ function RefPill({ refInfo, isCurrent }: { refInfo: GitRef; isCurrent: boolean }
 
   const isTag = refInfo.type === "tag";
   const isRemote = refInfo.type === "remote";
-  // Publish tags are written by the publish flow as
-  // `publish/<subdomain>/<unix-ts>` (apps/api/src/routes/publish.ts). Render
-  // them as a distinct "Published" badge instead of a generic tag pill.
-  const isPublish = isTag && refInfo.name.startsWith("publish/");
+  // The publish flow writes two kinds of tags (apps/api/src/routes/publish.ts):
+  //   `published/<subdomain>`        stable pointer at the CURRENT live commit
+  //   `publish/<subdomain>/<unix-ts>` immutable per-deploy history entry
+  // Render the live pointer as a prominent green "Live" badge and the history
+  // entries as muted "deploy" pills so the current deploy stands out.
+  const isLivePointer = isTag && refInfo.name.startsWith("published/");
+  const isPublishHistory = isTag && refInfo.name.startsWith("publish/");
 
-  if (isPublish) {
+  if (isLivePointer) {
     return (
       <span
         className="flex items-center gap-1 rounded px-1.5 h-[18px] max-w-[160px] border text-[11px]"
@@ -55,7 +58,24 @@ function RefPill({ refInfo, isCurrent }: { refInfo: GitRef; isCurrent: boolean }
         title={refInfo.name}
       >
         <Rocket size={10} className="shrink-0" style={{ color: "var(--ide-success, #10b981)" }} />
-        <span className="truncate">Published: {publishSubdomain(refInfo.name)}</span>
+        <span className="truncate">Live: {tagSubdomain(refInfo.name)}</span>
+      </span>
+    );
+  }
+
+  if (isPublishHistory) {
+    return (
+      <span
+        className="flex items-center gap-1 rounded px-1.5 h-[18px] max-w-[140px] border text-[11px]"
+        style={{
+          background: "var(--ide-surface)",
+          borderColor: "var(--ide-border-strong)",
+          color: "var(--ide-muted)",
+        }}
+        title={refInfo.name}
+      >
+        <Rocket size={10} className="shrink-0 text-[color:var(--ide-muted)]" />
+        <span className="truncate">deploy</span>
       </span>
     );
   }
@@ -92,8 +112,8 @@ function shortName(name: string): string {
   return name;
 }
 
-function publishSubdomain(tagName: string): string {
-  // publish/<subdomain>/<unix-ts> -> <subdomain>
+function tagSubdomain(tagName: string): string {
+  // published/<subdomain> or publish/<subdomain>/<unix-ts> -> <subdomain>
   const parts = tagName.split("/");
   return parts[1] ?? tagName;
 }

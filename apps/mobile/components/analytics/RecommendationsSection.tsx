@@ -23,7 +23,11 @@ import { formatDollarCost, getModelColor, getModelDisplayName, getModelTextColor
 export interface CostRecommendation {
   agentType: string
   currentModel: string
+  /** Server-resolved display label for `currentModel` (falls back to client resolution). */
+  currentModelLabel?: string
   recommendedModel: string
+  /** Server-resolved display label for `recommendedModel` (falls back to client resolution). */
+  recommendedModelLabel?: string
   reason: string
   estimatedSavingsPercent: number
   estimatedMonthlySavings: number
@@ -141,13 +145,13 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
                     <View className="flex-row items-center gap-1.5 mb-2 flex-wrap">
                       <View className={cn('px-1.5 py-0.5 rounded border', getModelColor(rec.currentModel))}>
                         <Text className={cn('text-[10px] font-medium', getModelTextColor(rec.currentModel))}>
-                          {getModelDisplayName(rec.currentModel)}
+                          {rec.currentModelLabel ?? getModelDisplayName(rec.currentModel)}
                         </Text>
                       </View>
                       <ArrowRightLeft size={10} className="text-muted-foreground" />
                       <View className={cn('px-1.5 py-0.5 rounded border', getModelColor(rec.recommendedModel))}>
                         <Text className={cn('text-[10px] font-medium', getModelTextColor(rec.recommendedModel))}>
-                          {getModelDisplayName(rec.recommendedModel)}
+                          {rec.recommendedModelLabel ?? getModelDisplayName(rec.recommendedModel)}
                         </Text>
                       </View>
                       {isSavings && (
@@ -194,7 +198,7 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
                       </View>
                       {rec.evidence.evalAnchor && (
                         <Text className="text-[9px] text-muted-foreground mt-1">
-                          Eval anchor: <Text className="font-medium text-foreground">{rec.evidence.evalAnchor.model}</Text> · <Text className="font-medium text-foreground">{Math.round(rec.evidence.evalAnchor.passRate * 100)}%</Text> pass · <Text className="font-medium">{rec.evidence.evalAnchor.suite}</Text>
+                          Eval anchor: <Text className="font-medium text-foreground">{getModelDisplayName(rec.evidence.evalAnchor.model)}</Text> · <Text className="font-medium text-foreground">{Math.round(rec.evidence.evalAnchor.passRate * 100)}%</Text> pass · <Text className="font-medium">{rec.evidence.evalAnchor.suite}</Text>
                         </Text>
                       )}
                     </View>
@@ -228,8 +232,8 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
                             wasApplied ? 'text-foreground' : 'text-primary-foreground',
                           )}>
                             {wasApplied
-                              ? `Applied · ${rec.agentType} → ${getModelDisplayName(rec.recommendedModel)}`
-                              : isApplying ? 'Applying…' : `Set workspace default for ${rec.agentType} to ${getModelDisplayName(rec.recommendedModel)}`}
+                              ? `Applied · ${rec.agentType} → ${rec.recommendedModelLabel ?? getModelDisplayName(rec.recommendedModel)}`
+                              : isApplying ? 'Applying…' : `Set workspace default for ${rec.agentType} to ${rec.recommendedModelLabel ?? getModelDisplayName(rec.recommendedModel)}`}
                           </Text>
                         </View>
                       </Button>

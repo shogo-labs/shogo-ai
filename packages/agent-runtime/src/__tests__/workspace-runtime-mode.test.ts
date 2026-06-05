@@ -77,6 +77,10 @@ describe('renderWorkspaceManifestMarkdown', () => {
     expect(md).toContain('workspace `ws-1`')
     expect(md).toContain('`p1/` — **alpha-api**')
     expect(md).toContain('`p2/` — **beta-web**')
+    // Ownership clarification: keeps the agent from treating the sibling
+    // folders as other users' projects and refusing them on privacy grounds.
+    expect(md).toContain('belong to the current user')
+    expect(md).toContain("NOT other users' projects")
   })
   it('handles the empty case', () => {
     expect(renderWorkspaceManifestMarkdown('ws-1', [])).toContain('_No projects attached._')

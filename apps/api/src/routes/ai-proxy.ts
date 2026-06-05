@@ -636,13 +636,21 @@ export function wrapSseForErrorVisibility(
     code: StreamErrorCode,
     message: string,
   ): StreamErrorPayload {
+    const retryable = code !== 'upstream_error'
+    // Embed a stable, machine-readable marker so the retryable flag + code
+    // survive transport through the provider SDK into pi-ai's `errorMessage`,
+    // where the agent-runtime's retry classifier can read them deterministically
+    // instead of guessing from prose. Kept in sync with
+    // `packages/agent/src/retry-classifier.ts` (parseStreamErrorMarker) and
+    // stripped from user-facing text by `formatErrorMessage`.
+    const taggedMessage = `${message} [shogo:retryable=${retryable};code=${code}]`
     return {
       type: 'error',
       error: {
         type: 'stream_error',
         code,
-        retryable: code !== 'upstream_error',
-        message,
+        retryable,
+        message: taggedMessage,
         meta: {
           chunks: chunkCount,
           bytes: totalBytes,

@@ -63,6 +63,28 @@ variable "cloudflare_account_id" {
 }
 
 # -----------------------------------------------------------------------------
+# Custom domains (Cloudflare for SaaS) — bring-your-own hostnames
+# -----------------------------------------------------------------------------
+# Staging shares the `shogo.one` publish zone with production (staging owns
+# `*.staging.shogo.one`, prod owns `*.shogo.one`). Cloudflare for SaaS's
+# fallback origin + `*/*` worker route are per-zone singletons, so staging
+# CANNOT host custom domains on `shogo.one` without colliding with prod.
+# Instead, point `custom_domains_zone` at a SEPARATE zone dedicated to staging
+# custom hostnames, then flip `enable_custom_domains` on. Left off by default
+# so a plain `terraform apply` is a no-op until the dedicated zone exists.
+variable "enable_custom_domains" {
+  description = "Enable Cloudflare for SaaS custom hostnames for staging. Requires `custom_domains_zone` to be set to a dedicated zone (NOT shogo.one). Defaults to false."
+  type        = bool
+  default     = false
+}
+
+variable "custom_domains_zone" {
+  description = "Dedicated Cloudflare zone NAME for staging custom hostnames (e.g. `staging-apps.example`). MUST be a different zone than the shared `shogo.one` publish zone. Required when `enable_custom_domains` is true."
+  type        = string
+  default     = null
+}
+
+# -----------------------------------------------------------------------------
 # SigNoz (Observability)
 # -----------------------------------------------------------------------------
 

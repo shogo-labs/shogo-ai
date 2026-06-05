@@ -33,9 +33,18 @@ import {
 } from './pi-adapter'
 import { wrapToolsWithOrchestration, type OrchestrationOptions } from './tool-orchestration'
 import { makeStallFallbackStreamFn, resolveStallFallbackOptions, type StallFallbackOptions } from './stall-fallback'
+import { classifyRetryability } from './retry-classifier'
+import {
+  resolveInferenceRetryOptions,
+  detectInferenceFailure,
+  stripTrailingFailedAssistants,
+  type InferenceRetryOptions,
+  type InferenceRetryInfo,
+} from './inference-retry'
 
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { OrchestrationOptions }
+export type { InferenceRetryOptions, InferenceRetryInfo }
 
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
@@ -103,6 +112,26 @@ export interface AgentLoopOptions {
    * `SHOGO_STALL_FALLBACK_WINDOW_MS`.
    */
   stallFallback?: StallFallbackOptions | false
+  /**
+   * Inference reconnect/retry. When a single model call drops mid-generation
+   * with a *retryable* failure (network reset, provider 5xx, idle timeout,
+   * stream truncation before `message_stop`), the failed assistant tail is
+   * stripped and the call is re-issued via `Agent.continue()` — without
+   * re-running any already-executed tools. Capped + backed off; user aborts
+   * and definitive errors (auth, content policy, billing, invalid request) are
+   * never retried. Defaults to enabled (2 retries). Pass `false` to disable,
+   * or a config object to tune. Can also be disabled via
+   * `SHOGO_INFERENCE_RETRY=0` and tuned via
+   * `SHOGO_INFERENCE_RETRY_MAX_ATTEMPTS` / `SHOGO_INFERENCE_RETRY_BASE_MS`.
+   */
+  inferenceRetry?: InferenceRetryOptions | false
+  /**
+   * Called just before each inference retry re-issues the dropped model call.
+   * The gateway uses this to emit a `data-inference-retry` frame and reset the
+   * in-progress UI step so the client discards the failed step's partial
+   * deltas instead of concatenating the regenerated output.
+   */
+  onInferenceRetry?: (info: InferenceRetryInfo) => void
   /** Tool orchestration config. Pass false to disable wrapping (tools run raw parallel). */
   orchestration?: OrchestrationOptions | false
   /** AbortSignal for external cancellation (e.g., user stop). */
@@ -441,6 +470,85 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     signal?.removeEventListener('abort', onAbort)
   }
 
+  // Layer 6: Inference reconnect/retry. When the model call dropped mid-stream
+  // with a *retryable* failure, re-issue the SAME call via Agent.continue()
+  // after stripping the failed assistant tail. Because pi-agent-core executes
+  // tools only after a complete assistant message, a call that died mid-stream
+  // never ran that step's tools — so re-issuing is idempotent w.r.t. side
+  // effects, and earlier completed tool results are preserved in the transcript.
+  const inferenceRetry = resolveInferenceRetryOptions(options.inferenceRetry)
+  // Billing policy for retries: the provider (and therefore Shogo's AI proxy
+  // billing session) charges for tokens actually consumed on each call — even
+  // a dropped/partial one. The proxy accumulates those into the per-session
+  // bucket that `closeSession` bills, so the user is charged for the failed
+  // partial attempt as the provider charged us. We strip the failed assistant
+  // message from the transcript (so it isn't replayed to the model), but we
+  // keep its usage here and fold it back into the loop's reported totals so the
+  // surfaced usage stays consistent with what was actually billed. Retries are
+  // capped (default 2) so cost amplification is bounded.
+  const discardedUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  if (inferenceRetry && !abortTriggered) {
+    let retryAttempt = 0
+    while (retryAttempt < inferenceRetry.maxAttempts) {
+      if (abortTriggered || signal?.aborted) break
+
+      const failure = detectInferenceFailure(agent.state.messages, promptError)
+      if (!failure) break
+
+      const classification = classifyRetryability({
+        message: failure.errorText,
+        stopReason: failure.stopReason,
+        aborted: abortTriggered || signal?.aborted,
+      })
+      if (!classification.retryable) break
+
+      // Strip the failed assistant tail so continue() resumes from the last
+      // user/tool-result message. When the call rejected before pi appended any
+      // assistant message (e.g. a synchronous stream throw on the very first
+      // call), there's nothing to strip and the transcript already ends on a
+      // user/tool-result message — continue() can re-issue directly.
+      const trimmed = stripTrailingFailedAssistants(agent.state.messages) ?? agent.state.messages
+      const last = trimmed[trimmed.length - 1]
+      // Can't continue from a clean assistant tail (continue() rejects) — bail.
+      if (!last || last.role === 'assistant') break
+      if (trimmed !== agent.state.messages) {
+        // Preserve the usage of the stripped failed attempt for billing parity.
+        const removedUsage = sumUsage(agent.state.messages.slice(trimmed.length))
+        discardedUsage.input += removedUsage.input
+        discardedUsage.output += removedUsage.output
+        discardedUsage.cacheRead += removedUsage.cacheRead
+        discardedUsage.cacheWrite += removedUsage.cacheWrite
+        agent.state.messages = trimmed
+      }
+
+      retryAttempt++
+      const delayMs = inferenceRetry.computeDelayMs(retryAttempt)
+      try {
+        options.onInferenceRetry?.({
+          attempt: retryAttempt,
+          maxAttempts: inferenceRetry.maxAttempts,
+          reason: classification.reason,
+          delayMs,
+          error: failure.errorText,
+        })
+      } catch { /* listener must not break the loop */ }
+      console.warn(
+        `[AgentLoop] INFERENCE_RETRY attempt=${retryAttempt}/${inferenceRetry.maxAttempts} ` +
+          `reason=${classification.reason} delayMs=${delayMs} error=${failure.errorText.slice(0, 160)}`,
+      )
+
+      promptError = undefined
+      if (delayMs > 0) await inferenceRetry.sleep(delayMs)
+      if (abortTriggered || signal?.aborted) break
+
+      try {
+        await agent.continue()
+      } catch (err: any) {
+        promptError = err
+      }
+    }
+  }
+
   let allMessages = agent.state.messages
   let newMessages = allMessages.slice(history.length)
   let finalText = extractFinalText(newMessages)
@@ -605,10 +713,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       : finalText,
     toolCalls,
     iterations,
-    inputTokens: usage.input,
-    outputTokens: usage.output,
-    cacheReadTokens: usage.cacheRead,
-    cacheWriteTokens: usage.cacheWrite,
+    inputTokens: usage.input + discardedUsage.input,
+    outputTokens: usage.output + discardedUsage.output,
+    cacheReadTokens: usage.cacheRead + discardedUsage.cacheRead,
+    cacheWriteTokens: usage.cacheWrite + discardedUsage.cacheWrite,
     newMessages,
     loopBreak,
     error: promptError || implicitError,

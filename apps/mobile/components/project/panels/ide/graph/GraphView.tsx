@@ -10,21 +10,26 @@
 import {
   AlertTriangle,
   BookmarkPlus,
+  ExternalLink,
   GitBranch,
   Loader2,
   RefreshCw,
+  Rocket,
   Search,
+  UploadCloud,
 } from "lucide-react-native";
-import { Platform } from "react-native";
+import { Linking, Platform } from "react-native";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   useCheckpoints,
   useGitGraph,
+  usePublishState,
   type GitCommitDetail,
 } from "@shogo/shared-app/hooks";
-import { API_URL } from "../../../../../lib/api";
+import { API_URL, api } from "../../../../../lib/api";
 import { authClient } from "../../../../../lib/auth-client";
+import { useDomainHttp } from "../../../../../contexts/domain";
 import { CreateCheckpointModal } from "../../CheckpointModals";
 import { buildDisplayRows } from "./displayRows";
 import { BranchTagRail } from "./BranchTagRail";
@@ -32,6 +37,8 @@ import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import { CommitDetailPanel } from "./CommitDetailPanel";
 import { relativeTime } from "./gitAvatar";
 import { ROW_HEIGHT, type DisplayRow } from "./types";
+
+const PUBLISH_DOMAIN = "shogo.one";
 
 type Selection = { kind: "wip" } | { kind: "commit"; sha: string } | null;
 
@@ -51,7 +58,9 @@ export function GraphView({
     };
   }, []);
 
+  const http = useDomainHttp();
   const graph = useGitGraph(projectId, { baseUrl: API_URL, credentials, headers: nativeHeaders });
+  const publish = usePublishState(projectId, { baseUrl: API_URL, credentials, headers: nativeHeaders });
   const {
     checkpoints,
     rollback,
@@ -70,6 +79,7 @@ export function GraphView({
   const [detail, setDetail] = useState<GitCommitDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [isRepublishing, setIsRepublishing] = useState(false);
 
   const checkpointBySha = useMemo(() => {
     const m = new Map<string, string>();
@@ -77,11 +87,29 @@ export function GraphView({
     return m;
   }, [checkpoints]);
 
+  // Resolve the live commit git-natively: find the commit carrying the stable
+  // `published/<subdomain>` pointer tag. Fall back to the recorded
+  // publishedCommitSha only when that tag isn't in the loaded page.
+  const livePointerTag = publish.subdomain ? `published/${publish.subdomain}` : null;
+  const liveSha = useMemo(() => {
+    if (!publish.isPublished) return null;
+    if (livePointerTag) {
+      const byTag = graph.commits.find((c) =>
+        c.refs.some((r) => r.type === "tag" && r.name === livePointerTag),
+      );
+      if (byTag) return byTag.sha;
+    }
+    return publish.publishedCommitSha ?? null;
+  }, [publish.isPublished, publish.publishedCommitSha, livePointerTag, graph.commits]);
+
+  // Live and HEAD differ => the working branch has moved past what's deployed.
+  const aheadOfLive = !!liveSha && !!graph.head && graph.head !== liveSha;
+
   // Build aligned display rows (+ a WIP row when the working tree is dirty).
   const { rows, maxLanes } = useMemo(() => {
     const checkpointShas = new Set(checkpointBySha.keys());
-    return buildDisplayRows(graph.commits, graph.workingStatus, checkpointShas);
-  }, [graph.commits, graph.workingStatus, checkpointBySha]);
+    return buildDisplayRows(graph.commits, graph.workingStatus, checkpointShas, liveSha);
+  }, [graph.commits, graph.workingStatus, checkpointBySha, liveSha]);
 
   // Default selection: WIP if present, else the head commit.
   useEffect(() => {
@@ -135,6 +163,29 @@ export function GraphView({
     [createCheckpoint, graph, refetchCheckpoints],
   );
 
+  const liveUrl = publish.subdomain ? `https://${publish.subdomain}.${PUBLISH_DOMAIN}` : null;
+
+  const handleViewLive = useCallback(() => {
+    if (liveUrl) Linking.openURL(liveUrl);
+  }, [liveUrl]);
+
+  // Re-deploy the current HEAD to the same subdomain (rebuild + re-tag), then
+  // refresh the graph so the live marker jumps to the new commit.
+  const handleRepublish = useCallback(async () => {
+    if (isRepublishing) return;
+    setIsRepublishing(true);
+    try {
+      await api.republishProject(http, projectId);
+      publish.refetch();
+      graph.refetch();
+      refetchCheckpoints();
+    } catch (err) {
+      console.error("[GraphView] republish failed:", err);
+    } finally {
+      setIsRepublishing(false);
+    }
+  }, [isRepublishing, http, projectId, publish, graph, refetchCheckpoints]);
+
   const canCreate = !graph.disabledForExternalMode && !checkpointsDisabled;
 
   const lowerQuery = query.trim().toLowerCase();
@@ -169,6 +220,18 @@ export function GraphView({
           canCreate={canCreate}
           onCreate={() => setShowCreate(true)}
         />
+
+        {!graph.disabledForExternalMode && (
+          <PublishStrip
+            isPublished={publish.isPublished}
+            subdomain={publish.subdomain}
+            liveUrl={liveUrl}
+            aheadOfLive={aheadOfLive}
+            isRepublishing={isRepublishing}
+            onRepublish={handleRepublish}
+            onViewLive={handleViewLive}
+          />
+        )}
 
         {graph.disabledForExternalMode ? (
           <ExternalModeState />
@@ -235,6 +298,10 @@ export function GraphView({
           isWip={selection?.kind === "wip"}
           workingStatus={graph.workingStatus}
           checkpointId={selectedCheckpointId}
+          isLive={!!selectedSha && selectedSha === liveSha}
+          liveUrl={liveUrl}
+          publishedAt={publish.publishedAt}
+          onViewLive={handleViewLive}
           isRollingBack={isMutating}
           onRollback={handleRollback}
           onOpenFile={(p) => onOpenFile?.(p)}
@@ -308,6 +375,67 @@ function Header({
       >
         {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
       </button>
+    </div>
+  );
+}
+
+function PublishStrip({
+  isPublished,
+  subdomain,
+  liveUrl,
+  aheadOfLive,
+  isRepublishing,
+  onRepublish,
+  onViewLive,
+}: {
+  isPublished: boolean;
+  subdomain: string | null;
+  liveUrl: string | null;
+  aheadOfLive: boolean;
+  isRepublishing: boolean;
+  onRepublish: () => void;
+  onViewLive: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[color:var(--ide-border)] text-[12px]">
+      <Rocket
+        size={13}
+        className="shrink-0"
+        style={{ color: isPublished ? "var(--ide-success, #10b981)" : "var(--ide-muted)" }}
+      />
+      {isPublished && subdomain && liveUrl ? (
+        <>
+          <span className="text-[color:var(--ide-muted)]">Live</span>
+          <button
+            onClick={onViewLive}
+            title="Open the live site"
+            className="flex items-center gap-1 font-medium text-[color:var(--ide-text-strong)] hover:underline"
+          >
+            {subdomain}.{PUBLISH_DOMAIN}
+            <ExternalLink size={11} className="text-[color:var(--ide-muted)]" />
+          </button>
+          <span className="flex-1" />
+          {aheadOfLive ? (
+            <>
+              <span className="text-[color:var(--ide-warning)]">New changes since last publish</span>
+              <button
+                onClick={onRepublish}
+                disabled={isRepublishing}
+                title="Rebuild and deploy the latest commit"
+                className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-60"
+                style={{ background: "var(--ide-success, #10b981)" }}
+              >
+                {isRepublishing ? <Loader2 size={12} className="animate-spin" /> : <UploadCloud size={12} />}
+                Publish latest
+              </button>
+            </>
+          ) : (
+            <span className="text-[color:var(--ide-muted)]">Up to date</span>
+          )}
+        </>
+      ) : (
+        <span className="text-[color:var(--ide-muted)]">Not published</span>
+      )}
     </div>
   );
 }

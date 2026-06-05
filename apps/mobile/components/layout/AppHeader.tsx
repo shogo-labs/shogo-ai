@@ -10,7 +10,7 @@
 import { View, Text, Pressable, useWindowDimensions } from 'react-native'
 import { usePathname } from 'expo-router'
 import { Menu } from 'lucide-react-native'
-import { cn } from '@shogo/shared-ui/primitives'
+import { NotificationBell } from '../notifications/NotificationBell'
 
 function getTitleFromPathname(pathname: string): string {
   if (pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index') {
@@ -51,6 +51,8 @@ export function AppHeader({ onMenuPress }: AppHeaderProps) {
         <Menu size={22} className="text-foreground" />
       </Pressable>
       <Text className="text-base font-semibold text-foreground">{title}</Text>
+      <View className="flex-1" />
+      <NotificationBell />
     </View>
   )
 }

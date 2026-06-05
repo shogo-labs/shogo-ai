@@ -181,6 +181,25 @@ export async function createTagLocal(
   return getHeadSha(workspaceDir)
 }
 
+/**
+ * Delete a tag in the pod's repo. Used by the publish flow to move/remove the
+ * stable `published/<subdomain>` pointer (on subdomain change / unpublish).
+ * Idempotent: deleting a tag that doesn't exist is NOT an error — returns
+ * `false` rather than throwing. The caller re-persists `.git` afterward.
+ */
+export async function deleteTagLocal(workspaceDir: string, name: string): Promise<boolean> {
+  if (!existsSync(join(workspaceDir, '.git'))) return false
+  const tagRe = /^[0-9a-zA-Z][0-9a-zA-Z._/-]{0,199}$/
+  if (!tagRe.test(name)) throw new Error(`Invalid tag name: ${name}`)
+  try {
+    await run('git', ['tag', '-d', name], { cwd: workspaceDir })
+    return true
+  } catch {
+    // Missing tag (git exits non-zero) — fine for an idempotent delete.
+    return false
+  }
+}
+
 /** Build a {@link RepoStoreConfig} from the runtime env, or null when unset. */
 export function repoStoreConfigFromEnv(logger?: Logger): RepoStoreConfig | null {
   const bucket = process.env.S3_WORKSPACES_BUCKET
@@ -209,10 +228,18 @@ export async function repoExistsInStore(cfg: RepoStoreConfig): Promise<boolean> 
 /**
  * Persist `<workspaceDir>/.git` to object storage. Called after each
  * local commit and at shutdown. No-op when `.git` is absent.
+ *
+ * In Git LFS mode the large object bytes live in their own object-storage
+ * namespace (`<projectId>/lfs/objects/...`, uploaded via `git lfs push`), so
+ * pass `excludeLfsObjects: true` to keep the local `.git/lfs/objects` cache
+ * OUT of the tarball and stop it bloating every hydrate. Callers should only
+ * set this once the LFS push has succeeded — otherwise the bytes would exist
+ * nowhere durable, so the safe fallback is to leave them in the tarball.
  */
 export async function persistRepoToStore(
   workspaceDir: string,
   cfg: RepoStoreConfig,
+  opts: { excludeLfsObjects?: boolean } = {},
 ): Promise<{ ok: boolean; changed: boolean; reason?: string }> {
   const logger = cfg.logger ?? console
   if (!existsSync(join(workspaceDir, '.git'))) {
@@ -221,7 +248,12 @@ export async function persistRepoToStore(
   const client = makeClient(cfg)
   const tmpFile = join(tmpdir(), `repo-${cfg.projectId}-${randomUUID()}.tar.gz`)
   try {
-    await run('tar', ['-czf', tmpFile, '-C', workspaceDir, '.git'])
+    // `--exclude` must precede the `.git` operand. Paths are matched as they
+    // appear in the archive (`.git/lfs/objects/...`).
+    const tarArgs = ['-czf', tmpFile, '-C', workspaceDir]
+    if (opts.excludeLfsObjects) tarArgs.push('--exclude=.git/lfs/objects')
+    tarArgs.push('.git')
+    await run('tar', tarArgs)
     await client.send(
       new PutObjectCommand({
         Bucket: cfg.bucket,

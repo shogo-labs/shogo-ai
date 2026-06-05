@@ -25,7 +25,7 @@ import {
   decryptZip,
   ZipPasswordError,
 } from '../lib/zip-encryption'
-import { deriveRuntimeToken } from '../lib/runtime-token'
+import { deriveProjectRuntimeToken } from '../lib/project-runtime-token'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
@@ -992,7 +992,7 @@ export function projectExportImportRoutes() {
         // HEARTBEAT.md / MEMORY.md — the "Context Files").
         const agent = new AgentClient({
           baseUrl: podUrl,
-          headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+          headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
         })
         const bundle: WorkspaceBundle = await agent.getWorkspaceBundle()
         const bundleFiles =

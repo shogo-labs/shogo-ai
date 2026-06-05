@@ -259,6 +259,16 @@ jobs:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Custom domains (Cloudflare for SaaS). Declared only on production-us
+          # (+ staging); other envs ignore them with a harmless "undeclared
+          # variable" warning, same as TF_VAR_github_token below. Set the
+          # `ENABLE_CUSTOM_DOMAINS` + `CUSTOM_DOMAINS_ZONE` GH vars on the
+          # target environment to enable. `|| 'false'` keeps the bool parse
+          # valid when the var is unset. `custom_domains_zone` MUST be a
+          # dedicated zone (the module precondition rejects empty / the publish
+          # zone). See docs/custom-domains.md.
+          TF_VAR_enable_custom_domains: ${{ vars.ENABLE_CUSTOM_DOMAINS || 'false' }}
+          TF_VAR_custom_domains_zone: ${{ vars.CUSTOM_DOMAINS_ZONE }}
           # edge-global only — releases.shogo.ai resolver GitHub token
           # (optional; falls through to anonymous 60/hr quota if unset).
           TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
@@ -283,6 +293,9 @@ jobs:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Custom domains (Cloudflare for SaaS) — see the plan step above.
+          TF_VAR_enable_custom_domains: ${{ vars.ENABLE_CUSTOM_DOMAINS || 'false' }}
+          TF_VAR_custom_domains_zone: ${{ vars.CUSTOM_DOMAINS_ZONE }}
           TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'

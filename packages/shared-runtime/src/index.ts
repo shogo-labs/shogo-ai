@@ -29,6 +29,7 @@ export {
   restoreRepoFromStore,
   seedRepoIfAbsent,
   createTagLocal,
+  deleteTagLocal,
   getHeadSha,
   repoExistsInStore,
   repoStoreConfigFromEnv,
@@ -46,9 +47,28 @@ export {
   restoreLargeFiles,
   largeFileThreshold,
   largeFileSyncConfigFromEnv,
+  hasManagedExclude,
+  clearManagedExclude,
   DEFAULT_LARGE_FILE_BYTES,
   type LargeFileSyncConfig,
 } from './large-file-sync'
+
+export {
+  lfsKeyPrefix,
+  isValidLfsOid,
+  lfsObjectKey,
+  buildLfsEndpointUrl,
+  buildManagedAttributesBlock,
+  writeManagedGitAttributes,
+  ensureLfsRepoSetup,
+  autoTrackLargeFiles,
+  lfsPushAll,
+  lfsPull,
+  lfsRemoteConfigFromEnv,
+  migrateOffloadedAssetsToLfs,
+  DEFAULT_LFS_EXTENSIONS,
+  type LfsRemoteConfig,
+} from './lfs'
 
 export {
   initializePostgresBackup,

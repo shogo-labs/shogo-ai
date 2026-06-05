@@ -977,6 +977,19 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     }
   }
 
+  /**
+   * Whether the spawned runtime for `projectId` should defer its own
+   * S3Sync + checkpoint inserts to the worker's cloud sync (sets
+   * `SHOGO_CLOUD_SYNC=1`). True only when auto-pull is enabled AND this
+   * project was actually pulled (so a watcher is running for it) — a
+   * pre-seeded / operator-pinned / template-seeded project keeps the
+   * runtime's own sync. Public so the wiring is unit-testable without
+   * spawning a runtime.
+   */
+  shouldDeferToCloudSync(projectId: string): boolean {
+    return !!this.opts.autoPull?.enabled && this.pulledProjects.has(projectId);
+  }
+
   status(projectId: string): RuntimeStatusInfo | null {
     const r = this.runtimes.get(projectId);
     return r ? this.snapshot(r) : null;
@@ -1295,7 +1308,14 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     // already running a CloudFileTransport watcher against this WORKSPACE_DIR.
     // Without this both sides upload the same files and the watcher loops on
     // its own writes.
-    if (this.opts.autoPull?.enabled) {
+    //
+    // Gate on whether THIS project was actually auto-pulled, not just on the
+    // global `autoPull.enabled` flag: a worker can serve a pre-pulled or
+    // operator-pinned `projectDir` that auto-pull skipped (line 777), and a
+    // desktop-style embed enables auto-pull globally but still seeds some
+    // projects from a local template. Those projects have no watcher, so they
+    // must keep the runtime's own S3Sync/checkpoint behavior.
+    if (this.shouldDeferToCloudSync(slot.projectId)) {
       env.SHOGO_CLOUD_SYNC = '1';
     }
     if (cfg.aiProxyUrl) env.AI_PROXY_URL = cfg.aiProxyUrl;

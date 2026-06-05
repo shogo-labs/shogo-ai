@@ -31,14 +31,21 @@
 import { prisma } from '../lib/prisma'
 import { decryptSecret } from '../lib/secret-crypto'
 import { setDbModelPricingProvider } from '../lib/db-model-pricing'
-import {
-  MODEL_CATALOG,
-  type ModelEntry,
-  type BillingModel,
-  type ModelTier,
-  type ModelFamily,
-  type ModelGeneration,
+import * as modelCatalog from '@shogo/model-catalog'
+import type {
+  ModelEntry,
+  BillingModel,
+  ModelTier,
+  ModelFamily,
+  ModelGeneration,
 } from '@shogo/model-catalog'
+
+// Namespace import + fallback so a partial test mock of the (large) catalog
+// module that omits `MODEL_CATALOG` degrades to an empty catalog (DB-only /
+// identity resolution) instead of failing the ESM import link. In production
+// the real export is always present.
+const MODEL_CATALOG: Record<string, ModelEntry> =
+  (modelCatalog as { MODEL_CATALOG?: Record<string, ModelEntry> }).MODEL_CATALOG ?? {}
 
 const CACHE_TTL_MS = 30_000
 
@@ -294,6 +301,75 @@ export function getMergedModelEntrySync(id: string): ModelEntry | undefined {
   refreshIfStaleInBackground()
   const canonical = snapshot.aliasToId.get(id) ?? id
   return snapshot.merged.get(canonical)
+}
+
+const LABEL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Pick a human label off a merged/DB entry: short name → full name → api slug. */
+function entryLabel(
+  e: { shortDisplayName?: string | null; displayName?: string | null; apiModel?: string | null } | undefined,
+): string | undefined {
+  return e?.shortDisplayName || e?.displayName || e?.apiModel || undefined
+}
+
+/**
+ * Synchronous best-effort label for a model id (canonical UUID, alias slug, or
+ * static-catalog id): `shortDisplayName` → `displayName` → `apiModel` → raw id.
+ * Reads the in-memory snapshot (background-refreshes when stale). For batch use
+ * on freshness-critical surfaces (analytics) prefer the async `resolveModelLabels`.
+ */
+export function resolveModelLabelSync(id: string): string {
+  if (!id) return id
+  return entryLabel(getMergedModelEntrySync(id)) ?? id
+}
+
+/**
+ * Batch-resolve model ids to human display labels. Awaits a registry refresh
+ * when the snapshot is stale (so models added since the last load resolve),
+ * then does one targeted `model_definitions` lookup for any UUID-shaped ids
+ * still unresolved — e.g. admin-disabled rows excluded from the enabled-only
+ * snapshot. Unknown ids map to themselves so callers can blindly use the map.
+ */
+export async function resolveModelLabels(ids: Iterable<string>): Promise<Map<string, string>> {
+  const unique = [...new Set(
+    [...ids].filter((id): id is string => typeof id === 'string' && id.length > 0),
+  )]
+  const out = new Map<string, string>()
+  if (unique.length === 0) return out
+
+  if (isStale()) await refresh()
+
+  const stillUnresolved: string[] = []
+  for (const id of unique) {
+    const label = entryLabel(getMergedModelEntrySync(id))
+    if (label) out.set(id, label)
+    else if (LABEL_UUID_RE.test(id)) stillUnresolved.push(id)
+    else out.set(id, id)
+  }
+
+  if (stillUnresolved.length > 0) {
+    try {
+      const rows = (await (prisma as any).modelDefinition.findMany({
+        where: { id: { in: stillUnresolved } },
+        select: { id: true, shortDisplayName: true, displayName: true, apiModel: true },
+      })) as Array<{ id: string; shortDisplayName: string | null; displayName: string | null; apiModel: string | null }>
+      for (const r of rows) out.set(r.id, entryLabel(r) ?? r.id)
+    } catch {
+      // Table absent on a schema variant / transient DB error — fall through to
+      // the raw-id fallback below rather than failing the whole analytics call.
+    }
+  }
+
+  for (const id of unique) {
+    if (!out.has(id)) out.set(id, id)
+  }
+  return out
+}
+
+/** Convenience single-id async label resolver (awaits freshness). */
+export async function resolveModelLabel(id: string): Promise<string> {
+  if (!id) return id
+  return (await resolveModelLabels([id])).get(id) ?? id
 }
 
 /**

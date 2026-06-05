@@ -83,6 +83,8 @@ interface SubagentOverride {
   projectId: string | null
   agentType: string
   model: string
+  /** Server-resolved display label for `model` (falls back to client resolution). */
+  modelLabel?: string
   provider: string | null
   updatedBy: string | null
   createdAt: string
@@ -203,6 +205,9 @@ export function SubAgentModelsSection({
       {BUILTIN_SUBAGENTS.map((agent) => {
         const override = overrideFor(agent.agentType)
         const effectiveModel = override?.model ?? agent.defaultModel
+        // Prefer the server-resolved label for overrides (handles UUID model ids);
+        // built-in defaults are slugs that resolve client-side.
+        const effectiveModelLabel = override?.modelLabel ?? getModelDisplayName(effectiveModel)
         const isCustom = !!override
         const isOpen = openDropdown === agent.agentType
         const isPending = pendingAgentType === agent.agentType
@@ -241,7 +246,7 @@ export function SubAgentModelsSection({
                 <View className="flex-row items-center gap-2">
                   <View className={cn('px-1.5 py-0.5 rounded border', getModelColor(effectiveModel))}>
                     <Text className={cn('text-[10px] font-medium', getModelTextColor(effectiveModel))}>
-                      {getModelDisplayName(effectiveModel)}
+                      {effectiveModelLabel}
                     </Text>
                   </View>
                   {isCustom ? (
@@ -315,7 +320,7 @@ export function SubAgentModelsSection({
                   <View className="flex-row items-center gap-2">
                     <View className={cn('px-1.5 py-0.5 rounded border', getModelColor(o.model))}>
                       <Text className={cn('text-[10px] font-medium', getModelTextColor(o.model))}>
-                        {getModelDisplayName(o.model)}
+                        {o.modelLabel ?? getModelDisplayName(o.model)}
                       </Text>
                     </View>
                     <Button variant="outline" onPress={() => handleReset(o.agentType)}>

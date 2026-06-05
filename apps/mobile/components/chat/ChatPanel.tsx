@@ -66,12 +66,14 @@ import {
   rollbackProjectToCheckpoint,
   type PrecedingCheckpointResult,
 } from "@shogo/shared-app/chat"
-import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession } from "@shogo/shared-app/domain"
+import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession, useProjectCollection } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
-import { probeChatTurnStatus, shouldAttachLiveStream } from "./probe-turn-status"
+import { probeChatTurnStatus, shouldAttachLiveStream, type ChatTurnStatus } from "./probe-turn-status"
+import { decideRetryAction, lastAssistantHasResumableWork } from "./retry-triage"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import { workspaceProjectFilter } from "../../lib/project-load"
 import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } from "../../lib/ai-consent"
 
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
@@ -85,6 +87,8 @@ import {
   DEFAULT_MODEL_FREE,
   type InteractionMode,
   type FileAttachment,
+  type ChatReference,
+  type ProjectMentionOption,
   type RestoreDraftRequest,
 } from "./ChatInput"
 import {
@@ -102,6 +106,7 @@ import {
   loadModelPreference,
   saveModelPreference,
 } from "../../lib/agent-mode-preference"
+import { useReconcileStaleModelSelection } from "../../lib/visible-models"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
@@ -182,6 +187,7 @@ export type QueuedMessage = {
   content: string
   files?: FileAttachment[]
   selectedModel?: string
+  references?: ChatReference[]
 }
 
 function buildOptimisticUserMessage(input: OptimisticUserInput, id = "optimistic-user-pending"): UIMessage {
@@ -737,6 +743,42 @@ export const ChatPanel = observer(function ChatPanel({
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
 
+  // Sibling projects (same workspace, excluding the current one) for the
+  // composer's "@" mention menu. Tagging one mounts it into the chat runtime
+  // so the agent can read its files. AppSidebar already loads the collection
+  // app-wide; we loadAll() defensively in case the panel mounts first.
+  const projectCollection = useProjectCollection()
+  useEffect(() => {
+    projectCollection.loadAll(workspaceProjectFilter(workspaceId)).catch(() => {})
+  }, [projectCollection, workspaceId])
+  // The current project's workspace: prefer the workspace-scope prop, else
+  // recover it from the loaded collection so we only offer true siblings.
+  const currentWorkspaceId =
+    workspaceId ??
+    projectCollection.all.find((p: any) => p.id === projectId)?.workspaceId
+  const projectMentionSignature = projectCollection.all
+    .filter(
+      (p: any) =>
+        p.id !== projectId &&
+        (!currentWorkspaceId || p.workspaceId === currentWorkspaceId)
+    )
+    .map((p: any) => `${p.id}:${p.name}`)
+    .join("|")
+  const projectMentionOptions = useMemo<ProjectMentionOption[]>(
+    () =>
+      projectCollection.all
+        .filter(
+          (p: any) =>
+            p.id !== projectId &&
+            (!currentWorkspaceId || p.workspaceId === currentWorkspaceId)
+        )
+        .map((p: any) => ({ id: p.id, name: p.name })),
+    // Signature keeps the array referentially stable across token-by-token
+    // streaming re-renders (matters because ChatInput is memoized).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectMentionSignature]
+  )
+
   const platformFeatures = legacyDomains?.platformFeatures
   const componentBuilder = legacyDomains?.componentBuilder
 
@@ -990,6 +1032,11 @@ export const ChatPanel = observer(function ChatPanel({
   const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
   const isModelControlled = controlledSelectedModel !== undefined
+  // Gate reconciliation until the persisted preference has loaded, so the
+  // reconciler never runs against the initial slug default (not a catalog UUID
+  // id) and persist-clobbers the user's saved choice. See the home screen /
+  // project layout for the same guard.
+  const [modelPrefLoaded, setModelPrefLoaded] = useState(false)
 
   useEffect(() => {
     if (isModelControlled) return
@@ -999,6 +1046,7 @@ export const ChatPanel = observer(function ChatPanel({
       } else if (hasAdvancedModelAccess) {
         setInternalSelectedModel(DEFAULT_MODEL_PRO)
       }
+      setModelPrefLoaded(true)
     })
   }, [hasAdvancedModelAccess, isModelControlled, projectId])
 
@@ -1012,6 +1060,17 @@ export const ChatPanel = observer(function ChatPanel({
       saveModelPreference(modelId, projectId)
     }
   }, [controlledOnModelChange, projectId])
+
+  // Reset a pre-UUID stored selection (an old slug that's now only a server
+  // alias, so the picker can't label it) to the tier default once the catalog
+  // loads. Only when uncontrolled — a controlling parent owns and reconciles
+  // its own selection.
+  useReconcileStaleModelSelection(
+    internalSelectedModel,
+    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    handleModelChange,
+    !isModelControlled && modelPrefLoaded,
+  )
 
   const [interactionMode, setInteractionMode] = useState<InteractionMode>(
     () => initialInteractionMode ?? "agent"
@@ -1339,6 +1398,32 @@ export const ChatPanel = observer(function ChatPanel({
       // still trip on a long pre-Anthropic warm-up even after we see
       // bytes. Cheap, safe, and orthogonal to message rendering.
       bumpChatProgress()
+
+      // The runtime re-issued a model call that dropped mid-generation. Drop
+      // the failed step's partial text/reasoning from the in-progress assistant
+      // message so the regenerated output replaces it instead of rendering
+      // twice. Completed tool calls (and any text committed before them) are
+      // preserved — a failed inference step never executed tools.
+      if (dataPart.type === "data-inference-retry") {
+        setMessages((prev) => {
+          if (prev.length === 0) return prev
+          const lastIdx = prev.length - 1
+          const last = prev[lastIdx]
+          if (last.role !== "assistant" || !Array.isArray(last.parts)) return prev
+          const parts = [...last.parts]
+          while (parts.length > 0) {
+            const p = parts[parts.length - 1] as any
+            if (p?.type === "text" || p?.type === "reasoning") {
+              parts.pop()
+              continue
+            }
+            break
+          }
+          if (parts.length === last.parts.length) return prev
+          return prev.map((m, i) => (i === lastIdx ? { ...m, parts } : m))
+        })
+        return
+      }
 
       // Handle virtual tool events
       if (dataPart.type === "data-virtual-tool") {
@@ -3350,7 +3435,13 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Internal function that actually sends a message (used by queue processor)
   const sendMessageInternal = useCallback(
-    async (content: string, files?: FileAttachment[], perMsgModel?: string) => {
+    async (
+      content: string,
+      files?: FileAttachment[],
+      perMsgModel?: string,
+      extraBody?: Record<string, unknown>,
+      references?: ChatReference[]
+    ) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
@@ -3502,6 +3593,15 @@ export const ChatPanel = observer(function ChatPanel({
           bodyExtra.interactionMode = "agent"
           confirmedPlanRef.current = null
         }
+        if (references && references.length > 0) {
+          // The runtime resolves these into real context (file contents +
+          // workspace summaries) before the model runs. Passed through the
+          // API proxy untouched, so it also works in direct-to-runtime mode.
+          bodyExtra.references = references
+        }
+        if (extraBody) {
+          Object.assign(bodyExtra, extraBody)
+        }
         console.log("[ChatPanel][send] bodyExtra — interactionMode:", bodyExtra.interactionMode, "agentMode:", bodyExtra.agentMode, "hasConfirmedPlan:", !!bodyExtra.confirmedPlan, "text:", trimmedContent.slice(0, 80))
         await sendMessage(messagePayload, { body: bodyExtra })
       } catch (err) {
@@ -3581,7 +3681,9 @@ export const ChatPanel = observer(function ChatPanel({
       await sendMessageInternal(
         nextMessage.content,
         nextMessage.files,
-        nextMessage.selectedModel
+        nextMessage.selectedModel,
+        undefined,
+        nextMessage.references
       )
     } catch (err) {
       console.error("[ChatPanel] Error processing queued message:", err)
@@ -3787,13 +3889,22 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Handle message submission
   const handleSendMessage = useCallback(
-    async (content: string, files?: FileAttachment[], perMsgModel?: string) => {
+    async (
+      content: string,
+      files?: FileAttachment[],
+      perMsgModel?: string,
+      references?: ChatReference[]
+    ) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
       }
 
-      if (!content.trim() && (!files || files.length === 0)) {
+      if (
+        !content.trim() &&
+        (!files || files.length === 0) &&
+        (!references || references.length === 0)
+      ) {
         return
       }
 
@@ -3807,20 +3918,26 @@ export const ChatPanel = observer(function ChatPanel({
             content: trimmedContent,
             files,
             selectedModel: perMsgModel,
+            references,
           },
         ])
         return
       }
 
-      await sendMessageInternal(trimmedContent, files, perMsgModel)
+      await sendMessageInternal(trimmedContent, files, perMsgModel, undefined, references)
     },
     [isStreaming, sendMessageInternal, currentSessionId]
   )
 
   // Handle form submit from ChatInput
   const handleInputSubmit = useCallback(
-    (content: string, files?: FileAttachment[], perMsgModel?: string) => {
-      handleSendMessage(content, files, perMsgModel)
+    (
+      content: string,
+      files?: FileAttachment[],
+      perMsgModel?: string,
+      references?: ChatReference[]
+    ) => {
+      handleSendMessage(content, files, perMsgModel, references)
     },
     [handleSendMessage]
   )
@@ -3966,41 +4083,107 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [isCollapsed, setIsCollapsed, onCollapsedChange])
 
-  // Error retry handler
+  // Error retry handler.
+  //
+  // Non-destructive triage (see retry-triage.ts). The old behavior truncated
+  // the conversation (`setMessages(messages.slice(0, lastUserIdx))`) and
+  // re-sent the original user message, throwing away the interrupted turn's
+  // completed tool calls + partial answer. Instead we probe the runtime:
+  //
+  //   - turn still `active` (transport drop, agent still running) -> reconnect
+  //     to the live buffered stream. No re-send, nothing truncated.
+  //   - terminal but the last assistant turn has resumable work -> ask the
+  //     server to continue from the preserved session context (continue:true).
+  //   - nothing resumable -> re-send the original user message (last resort),
+  //     still WITHOUT truncating any rendered work.
   const handleRetry = useCallback(() => {
-    if (messages.length > 0) {
-      const lastUserMsg = [...messages].reverse().find((m) => m.role === "user")
-      if (lastUserMsg) {
-        const parts = ((lastUserMsg as any).parts ?? []) as any[]
-        const textPart = parts.find((p: any) => p.type === "text")
-        const content = textPart?.text || ""
+    if (messages.length === 0) return
 
-        // Preserve file attachments on retry — previously dropped, so images/
-        // PDFs/etc. were lost and the model got a text-only prompt.
-        const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
-        const cachedFiles = lastUserInputRef.current?.files
-        const filesFromParts: FileAttachment[] = fileParts.map((p: any) => ({
-          dataUrl: p.url,
-          name: p.name ?? p.filename ?? "file",
-          type: p.mediaType ?? extractMediaType(p.url),
-        }))
-        const files: FileAttachment[] | undefined =
-          cachedFiles && cachedFiles.length > 0
-            ? cachedFiles
-            : filesFromParts.length > 0
-              ? filesFromParts
-              : undefined
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === "user")
+    // Extract the original content/files up front for the resend fallback.
+    const parts = ((lastUserMsg as any)?.parts ?? []) as any[]
+    const textPart = parts.find((p: any) => p.type === "text")
+    const content = textPart?.text || ""
+    const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
+    const cachedFiles = lastUserInputRef.current?.files
+    const filesFromParts: FileAttachment[] = fileParts.map((p: any) => ({
+      dataUrl: p.url,
+      name: p.name ?? p.filename ?? "file",
+      type: p.mediaType ?? extractMediaType(p.url),
+    }))
+    const files: FileAttachment[] | undefined =
+      cachedFiles && cachedFiles.length > 0
+        ? cachedFiles
+        : filesFromParts.length > 0
+          ? filesFromParts
+          : undefined
 
-        if (content || (files && files.length > 0)) {
-          const lastUserIdx = messages.lastIndexOf(lastUserMsg)
-          setMessages(messages.slice(0, lastUserIdx))
-          sendMessageInternal(content, files).catch((err) =>
-            console.error("[ChatPanel] Retry failed:", err)
+    void (async () => {
+      // Probe whether the turn is still running on the server. Any failure mode
+      // collapses to 'unknown' (never throws), so this is safe to await.
+      let turnStatus: ChatTurnStatus = "unknown"
+      if (currentSessionId && API_URL) {
+        try {
+          const turnUrl = buildChatTurnUrl(
+            API_URL,
+            projectId,
+            localAgentUrl,
+            currentSessionId,
+            chatWorkspaceId,
           )
+          turnStatus = await probeChatTurnStatus({
+            url: turnUrl,
+            fetch: expoFetch,
+            headers: nativeHeaders ? nativeHeaders() : undefined,
+            credentials: Platform.OS === "web" ? "include" : undefined,
+          })
+        } catch {
+          turnStatus = "unknown"
         }
       }
-    }
-  }, [messages, sendMessageInternal, setMessages])
+
+      const action = decideRetryAction({
+        turnStatus,
+        hasResumableTurn: lastAssistantHasResumableWork(messages as any),
+      })
+
+      if (action === "reconnect") {
+        // Agent is still running and buffering frames — reattach. The rendered
+        // messages (including completed tool calls) stay exactly as they are.
+        void resumeStream()
+        return
+      }
+
+      if (action === "continue") {
+        // Continue from preserved server-side context. The `continue` flag
+        // tells the runtime to craft a continuation instruction and reuse the
+        // interrupted turn's persisted tool calls instead of restarting.
+        sendMessageInternal("Continue", undefined, undefined, { continue: true }).catch(
+          (err) => console.error("[ChatPanel] Retry continue failed:", err),
+        )
+        return
+      }
+
+      // resend: nothing to resume/continue. Re-send the original message — but
+      // do NOT truncate any already-rendered work.
+      if (content || (files && files.length > 0)) {
+        sendMessageInternal(content, files).catch((err) =>
+          console.error("[ChatPanel] Retry resend failed:", err),
+        )
+      }
+    })()
+  }, [
+    messages,
+    sendMessageInternal,
+    resumeStream,
+    currentSessionId,
+    projectId,
+    localAgentUrl,
+    chatWorkspaceId,
+    expoFetch,
+    nativeHeaders,
+    extractMediaType,
+  ])
 
   const handleRetryRef = useRef<(() => void) | null>(null)
   handleRetryRef.current = handleRetry
@@ -4895,6 +5078,8 @@ export const ChatPanel = observer(function ChatPanel({
               quickActions={quickActions}
               onQuickActionClick={handleQuickActionClick}
               restoreDraftRequest={restoreDraftRequest}
+              projectId={projectId}
+              projects={projectMentionOptions}
             />
           </View>
         </KeyboardAvoidingView>

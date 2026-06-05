@@ -10,6 +10,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { validatePodToken } from '../lib/k8s-auth'
+import { recordCheckpointForCommit } from '../services/checkpoint.service'
 
 const app = new Hono()
 
@@ -589,35 +590,21 @@ app.post('/projects/:projectId/checkpoints/record', async (c) => {
   }
 
   try {
-    const { prisma } = await import('../lib/prisma')
-
-    // Idempotent: a re-delivered record (pod retry, warm-pool race) must not
-    // create a duplicate row for the same commit.
-    const existing = await prisma.projectCheckpoint.findFirst({
-      where: { projectId, commitSha },
-      select: { id: true },
+    // Idempotent on (projectId, commitSha) — a re-delivered record (pod retry,
+    // warm-pool race) must not create a duplicate row. Shared with the publish
+    // flow via checkpoint.service so both paths dedupe identically.
+    const result = await recordCheckpointForCommit(projectId, commitSha, {
+      commitMessage: typeof body.commitMessage === 'string' ? body.commitMessage : undefined,
+      branch: typeof body.branch === 'string' ? body.branch : undefined,
+      filesChanged: numberOr(body.filesChanged, 0),
+      additions: numberOr(body.additions, 0),
+      deletions: numberOr(body.deletions, 0),
+      isAutomatic: body.isAutomatic !== false,
     })
-    if (existing) {
-      return c.json({ ok: true, id: existing.id, deduped: true })
+    if (!result) {
+      return c.json({ error: 'Valid commitSha is required' }, 400)
     }
-
-    const row = await prisma.projectCheckpoint.create({
-      data: {
-        projectId,
-        commitSha,
-        commitMessage: typeof body.commitMessage === 'string' && body.commitMessage
-          ? body.commitMessage
-          : '(no message)',
-        branch: typeof body.branch === 'string' && body.branch ? body.branch : 'main',
-        includesDb: false,
-        filesChanged: numberOr(body.filesChanged, 0),
-        additions: numberOr(body.additions, 0),
-        deletions: numberOr(body.deletions, 0),
-        isAutomatic: body.isAutomatic !== false,
-      },
-      select: { id: true },
-    })
-    return c.json({ ok: true, id: row.id })
+    return c.json({ ok: true, id: result.id, ...(result.deduped && { deduped: true }) })
   } catch (err: any) {
     console.error(`[Internal] Failed to record checkpoint for ${projectId}:`, err.message)
     return c.json({ error: 'Failed to record checkpoint' }, 500)

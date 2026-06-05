@@ -36,10 +36,14 @@ WORKDIR /app
 #   bash  -> shell scripts
 #   netcat-openbsd -> entrypoint.sh nc port-wait
 #   ca-certificates -> outbound HTTPS
+#   git   -> routes/git-http.ts spawns `git http-backend` for smart-HTTP
+#            clone/fetch/push and `git.service` runs git for status/graph.
+#            (NOT git-lfs: the LFS batch endpoint only mints presigned URLs,
+#            so the API never shells out to git-lfs — see routes/git-lfs.ts.)
 # Plus Bun (entry point uses `bun run`).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        curl bash unzip ca-certificates netcat-openbsd && \
+        curl bash git unzip ca-certificates netcat-openbsd && \
     curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.9" && \
     rm -rf /root/.bun /var/lib/apt/lists/*
 

@@ -756,6 +756,29 @@ export class KnativeProjectManager {
       console.error(`[KnativeProjectManager] Failed to delete preview DomainMapping for ${projectId}:`, error.message)
     }
 
+    // Best-effort teardown of any bring-your-own custom domains (Cloudflare
+    // for SaaS custom hostnames + Worker KV map). The CustomDomain rows
+    // cascade-delete with the Project, but the external CF resources would
+    // otherwise orphan — so remove them here while the rows are still
+    // readable. Never throws.
+    try {
+      const { prisma } = await import('./prisma')
+      const domains = await prisma.customDomain.findMany({
+        where: { projectId },
+        select: { cfCustomHostnameId: true, hostname: true },
+      })
+      if (domains.length > 0) {
+        const { deleteCustomHostname, deleteHostnameMapping } = await import('./cloudflare-custom-hostnames')
+        for (const d of domains) {
+          if (d.cfCustomHostnameId) await deleteCustomHostname(d.cfCustomHostnameId)
+          await deleteHostnameMapping(d.hostname)
+        }
+        console.log(`[KnativeProjectManager] Tore down ${domains.length} custom domain(s) for ${projectId}`)
+      }
+    } catch (error: any) {
+      console.error(`[KnativeProjectManager] Failed to tear down custom domains for ${projectId}:`, error?.message ?? error)
+    }
+
     // Resolve the actual service name (may be a promoted warm pod)
     const serviceName = await this.resolveServiceName(projectId)
 

@@ -274,8 +274,44 @@ from the pod's durable object store:
 
 ## Large / binary file offload (hybrid)
 
-Git stays small by keeping only text/source. Any file `> LARGE_FILE_BYTES`
-(default 5 MB, env-tunable) is classified as an offloaded asset
+Git stays small by keeping only text/source. There are two strategies; which
+one runs depends on the cloud sync mode.
+
+### Git LFS (`git_only` mode) — versioned
+
+Real Git LFS replaces the legacy offload
+([packages/shared-runtime/src/lfs.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/shared-runtime/src/lfs.ts)):
+
+- On repo setup the pod writes a curated `.gitattributes` (`filter=lfs` for
+  images/video/archives/model weights/…) and `git lfs install --local
+  --skip-smudge`. Before each `git add -A`, any file `> LARGE_FILE_BYTES`
+  (default 5 MB) not already matched is `git lfs track`-ed, preserving the
+  old "anything large" behavior.
+- The LFS **clean filter** commits a tiny pointer blob into the tree (so the
+  file **is** versioned and shows in the git graph/diff) and stores the bytes
+  in a local cache. After the commit, `git lfs push` uploads the bytes to the
+  API **batch endpoint** ([apps/api/src/routes/git-lfs.ts](https://github.com/shogo-ai/shogo-ai/blob/main/apps/api/src/routes/git-lfs.ts)),
+  which mints **presigned OCI URLs** so bytes flow pod→OCI directly under
+  `<projectId>/lfs/objects/<oid>` (content-addressed sha256 → free dedup).
+- `persistRepoToStore` then excludes `.git/lfs/objects` from the `.git`
+  tarball (only when the push succeeded — otherwise the bytes stay in the
+  tarball as a fallback). On cold start, after `.git` is restored, `git lfs
+  pull` materializes the object bytes (smudge is skipped on checkout for
+  speed). The **API hydrate path has no git-lfs**, so its `reset --hard`
+  intentionally leaves pointer files — the graph still lists the files.
+- Auth: every `git lfs` call passes the runtime bearer via
+  `-c http.extraHeader` and the endpoint via `-c lfs.url`, so neither the
+  token nor an env-specific URL is ever persisted into `.git/config`.
+  External (laptop/CI) git-lfs clients are out of scope (no Basic→token).
+- Projects on the legacy offload migrate lazily on pod start
+  (`migrateOffloadedAssetsToLfs`): the managed `.git/info/exclude` block is
+  cleared and the restored assets are LFS-tracked; the next sync commits the
+  pointers and pushes the bytes. **GC:** LFS objects are immutable and never
+  auto-pruned, so a reachability-based retention job is a required follow-up.
+
+### Legacy size-based offload (`dual_shadow` / `s3` modes) — latest-only
+
+Any file `> LARGE_FILE_BYTES` is classified as an offloaded asset
 ([packages/shared-runtime/src/large-file-sync.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/shared-runtime/src/large-file-sync.ts)):
 
 - git-excluded via `.git/info/exclude` (never touches the user's
@@ -288,7 +324,7 @@ Git stays small by keeping only text/source. Any file `> LARGE_FILE_BYTES`
 Semantics (intentional, matches the old S3 tar): offloaded files are
 **latest-only** and don't appear in the git graph/diff. Checkpoints and
 publish tags pin the *source* commit; the asset snapshot is whatever
-object storage holds. True large-file versioning (Git LFS) is deferred.
+object storage holds.
 
 ## Publish as a git tag
 
@@ -422,7 +458,9 @@ noticing.
 | Pod durable repo store (persist/restore/seed/tag) | [packages/shared-runtime/src/repo-store.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/shared-runtime/src/repo-store.ts) |
 | Pod commit-metadata gathering | [packages/shared-runtime/src/checkpoint-record.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/shared-runtime/src/checkpoint-record.ts) |
 | Cold-start bootstrap / seed (`dual_shadow`) | [packages/shared-runtime/src/git-bootstrap.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/shared-runtime/src/git-bootstrap.ts) |
-| Large/binary file offload | [packages/shared-runtime/src/large-file-sync.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/shared-runtime/src/large-file-sync.ts) |
+| Large/binary file offload (legacy, latest-only) | [packages/shared-runtime/src/large-file-sync.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/shared-runtime/src/large-file-sync.ts) |
+| Git LFS pod ops (track/push/pull/migrate) | [packages/shared-runtime/src/lfs.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/shared-runtime/src/lfs.ts) |
+| Git LFS batch + verify API (presigned OCI) | [apps/api/src/routes/git-lfs.ts](https://github.com/shogo-ai/shogo-ai/blob/main/apps/api/src/routes/git-lfs.ts) |
 | API repo store (hydrate-only, ETag-fresh) | [apps/api/src/services/git-repo-store.ts](https://github.com/shogo-ai/shogo-ai/blob/main/apps/api/src/services/git-repo-store.ts) |
 | Internal checkpoint-record endpoint | [apps/api/src/routes/internal.ts](https://github.com/shogo-ai/shogo-ai/blob/main/apps/api/src/routes/internal.ts) (`POST /internal/projects/:id/checkpoints/record`) |
 | Pod → API record POST | `postCheckpointRecord` in [packages/agent-runtime/src/internal-api.ts](https://github.com/shogo-ai/shogo-ai/blob/main/packages/agent-runtime/src/internal-api.ts) |

@@ -25,6 +25,7 @@ import { Motion } from "@legendapp/motion"
 import { cn } from "@shogo/shared-ui/primitives"
 import { subagentStreamStore, type SubagentStreamData } from "../../../lib/subagent-stream-store"
 import { stopSubagent } from "../../../lib/subagent-stop"
+import { resolveShortName } from "../../../lib/visible-models"
 import { teamStore, type TeamData, type MemberData, type TaskData, type MessageData, type ActivityEvent, type AgentTypeInfo } from "../../../lib/team-store"
 import { MarkdownText } from "../../chat/MarkdownText"
 import { ThinkingWidget } from "../../chat/turns/ThinkingWidget"
@@ -162,7 +163,7 @@ function AgentEntry({
         </Text>
         {data.model && (
           <Text className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-muted/60" numberOfLines={1}>
-            {data.model}
+            {resolveShortName(data.model)}
           </Text>
         )}
         <Text className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-muted/60">

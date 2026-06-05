@@ -25,6 +25,7 @@ import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
+import { enrichWorkspaceReferences, enrichProjectReferences } from "../lib/chat-references"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -194,6 +195,43 @@ export async function trackUsageFromStream(
   }
 
   /**
+   * Partial reset on an inference retry. The runtime re-issued a model call
+   * that dropped mid-generation, so the failed step's partial text/reasoning
+   * (and any partially-streamed tool input that never executed) must be
+   * discarded — otherwise the regenerated output gets concatenated onto the
+   * thrown-away partial in the persisted ChatMessage. Earlier COMPLETED steps
+   * (assistant text + executed tool calls) are preserved: pi-agent-core runs
+   * tools only after a complete assistant message, so a failed step never
+   * produced a `tool-input-available` part.
+   */
+  function resetCurrentStepPartials() {
+    if (currentReasoningPart) {
+      const idx = orderedParts.lastIndexOf(currentReasoningPart)
+      if (idx >= 0) orderedParts.splice(idx, 1)
+      currentReasoningPart = null
+      reasoningStartedAt = null
+    }
+    if (currentTextPart) {
+      const idx = orderedParts.lastIndexOf(currentTextPart)
+      if (idx >= 0) orderedParts.splice(idx, 1)
+      currentTextPart = null
+    }
+    // Drop any partially-streamed tool calls from the failed step. A completed
+    // tool from an earlier step reached `tool-input-available` and so has an
+    // entry in `toolPartIndex`; a failed step's tool only ever got a
+    // `tool-input-start` (toolCallMap only) and never executed.
+    for (const id of [...toolCallMap.keys()]) {
+      if (!toolPartIndex.has(id)) toolCallMap.delete(id)
+    }
+    // Recompute the flattened text from the surviving ordered text parts so
+    // `content` reflects only completed output.
+    accumulatedText = orderedParts
+      .filter((p) => p.type === 'text')
+      .map((p) => p.text)
+      .join('')
+  }
+
+  /**
    * Process one SSE line (already \n-split). Updates the closure-scoped
    * accumulator state in place. Tolerant of legacy (`9:`, `e:`, `d:`)
    * data-stream prefixes alongside the modern `data: {json}` SSE format.
@@ -326,6 +364,14 @@ export async function trackUsageFromStream(
         part.output = data.output ?? { success: true }
         part.state = 'output-available'
       }
+    }
+
+    // The runtime emits `data-inference-retry` when it re-issues a model call
+    // that dropped mid-generation. Discard the failed step's partial output so
+    // the persisted message holds the final retried output, not a concatenation.
+    if (type === 'data-inference-retry') {
+      resetCurrentStepPartials()
+      return
     }
 
     // The runtime writes `data-turn-complete` exactly once at the tail
@@ -772,12 +818,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     init?: RequestInit,
   ): Promise<Response> {
     const baseUrl = await getProjectUrl(projectId)
-    const { deriveRuntimeToken } = await import("../lib/runtime-token")
+    const { deriveProjectRuntimeToken } = await import("../lib/project-runtime-token")
     const headers = new Headers(init?.headers)
     if (!headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json")
     }
-    headers.set("x-runtime-token", deriveRuntimeToken(projectId))
+    headers.set("x-runtime-token", await deriveProjectRuntimeToken(projectId))
     return fetch(`${baseUrl}${path}`, { ...init, headers })
   }
 
@@ -912,6 +958,25 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         }
       }
 
+      // Harden "@" references before forwarding. Workspace refs get an
+      // authoritative DB summary; project refs are access-checked + normalized.
+      // File references pass through untouched (resolved by the runtime on
+      // disk). NOTE: a per-project runtime is single-root, so referenced
+      // sibling projects are NOT mounted here — the runtime reports them as
+      // unavailable. Cross-project file context lands on the merged-root
+      // workspace runtime (workspace-chat path).
+      if (Array.isArray(parsedBody?.references) && parsedBody.references.length > 0) {
+        const wsChanged = await enrichWorkspaceReferences(parsedBody, verifiedUserId)
+        const projectRefs = await enrichProjectReferences(
+          parsedBody,
+          verifiedUserId,
+          project.workspaceId,
+        )
+        if (wsChanged || projectRefs.changed) {
+          body = JSON.stringify(parsedBody)
+        }
+      }
+
       // Extract the chat-session id up-front so the billing session can be
       // keyed by `(projectId, chatSessionId)`. The id is on the request
       // body (`parsedBody.chatSessionId`) for follow-up turns and on the
@@ -960,8 +1025,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         "Content-Type": "application/json",
       }
 
-      const { deriveRuntimeToken } = await import('../lib/runtime-token')
-      headers["x-runtime-token"] = deriveRuntimeToken(projectId)
+      const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
+      headers["x-runtime-token"] = await deriveProjectRuntimeToken(projectId, { workspaceId: project.workspaceId })
 
       // Copy relevant headers from original request
       const authHeader = c.req.header("Authorization")

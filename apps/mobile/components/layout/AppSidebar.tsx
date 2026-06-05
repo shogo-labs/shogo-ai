@@ -76,12 +76,14 @@ import {
   Archive,
   ArchiveRestore,
   Pencil,
+  Trash2,
   Loader2,
   SlidersHorizontal,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
 import { CommandPalette, useCommandPalette } from './CommandPalette'
+import { SidebarContextMenu, type SidebarMenuEntry } from './SidebarContextMenu'
 import { useActiveInstance } from '../../contexts/active-instance'
 import { ShogoWordmark } from '../branding/ShogoWordmark'
 import { useAuth } from '../../contexts/auth'
@@ -94,6 +96,7 @@ import {
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { getPlanDisplayName } from '../../lib/billing-config'
 import { CompactUsageWindows } from '../billing/UsageWindows'
+import { NotificationBell } from '../notifications/NotificationBell'
 import { api } from '../../lib/api'
 import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
@@ -220,6 +223,7 @@ function ChatTreeItem({
   onTogglePin,
   onRename,
   onToggleArchive,
+  onRequestDelete,
 }: {
   session: any
   active?: boolean
@@ -229,9 +233,12 @@ function ChatTreeItem({
   onTogglePin: (sessionId: string, next: boolean) => void
   onRename: (sessionId: string, name: string) => void
   onToggleArchive: (sessionId: string, next: boolean) => void
+  onRequestDelete: (sessionId: string) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
+  // Web-only right-click menu anchor (viewport coords).
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
   const startEdit = useCallback(() => {
     setEditValue(chatLabel(session))
@@ -247,6 +254,45 @@ function ChatTreeItem({
   // Swallow the row's select press so tapping an action icon doesn't also
   // open the chat (RN-Web bubbles the nested Pressable's click to the row).
   const stop = (e: GestureResponderEvent) => e.stopPropagation?.()
+
+  const handleContextMenu = useCallback((e: any) => {
+    e?.preventDefault?.()
+    const ne = e?.nativeEvent ?? e
+    setMenu({ x: ne?.clientX ?? 0, y: ne?.clientY ?? 0 })
+  }, [])
+
+  const menuItems: SidebarMenuEntry[] = [
+    {
+      label: 'Rename',
+      icon: <Pencil size={14} className="text-muted-foreground" />,
+      onSelect: startEdit,
+    },
+    {
+      label: session.isPinned ? 'Unpin' : 'Pin',
+      icon: session.isPinned ? (
+        <PinOff size={14} className="text-muted-foreground" />
+      ) : (
+        <Pin size={14} className="text-muted-foreground" />
+      ),
+      onSelect: () => onTogglePin(session.id, !session.isPinned),
+    },
+    {
+      label: session.isArchived ? 'Unarchive' : 'Archive',
+      icon: session.isArchived ? (
+        <ArchiveRestore size={14} className="text-muted-foreground" />
+      ) : (
+        <Archive size={14} className="text-muted-foreground" />
+      ),
+      onSelect: () => onToggleArchive(session.id, !session.isArchived),
+    },
+    { separator: true },
+    {
+      label: 'Delete',
+      danger: true,
+      icon: <Trash2 size={14} className="text-destructive" />,
+      onSelect: () => onRequestDelete(session.id),
+    },
+  ]
 
   if (editing) {
     return (
@@ -270,6 +316,7 @@ function ChatTreeItem({
   }
 
   return (
+    <>
     <Pressable
       onPress={() => onSelect(session.id)}
       role="link"
@@ -279,6 +326,7 @@ function ChatTreeItem({
         'group flex-row items-center gap-1 rounded-md px-1 py-1.5',
         active ? 'bg-accent' : 'active:bg-accent/50',
       )}
+      {...(Platform.OS === 'web' ? ({ onContextMenu: handleContextMenu } as any) : {})}
     >
       {isStreaming ? (
         <Loader2 size={11} className="text-primary animate-spin shrink-0" accessibilityLabel="Chat running" />
@@ -328,6 +376,15 @@ function ChatTreeItem({
         </Pressable>
       </View>
     </Pressable>
+      {menu && (
+        <SidebarContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems}
+          onClose={() => setMenu(null)}
+        />
+      )}
+    </>
   )
 }
 
@@ -375,6 +432,15 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   // workspace (the only one mounted) via the activity event bus.
   const [streamingIds, setStreamingIds] = useState<Set<string>>(new Set())
   const [completedIds, setCompletedIds] = useState<Set<string>>(new Set())
+  // Inline project rename state (mirrors ChatTreeItem's editor).
+  const [editing, setEditing] = useState(false)
+  const [editValue, setEditValue] = useState('')
+  // Web-only right-click menu anchor (viewport coords) for the project row.
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  // Delete confirmation, shared by this project and its chats.
+  const [confirmDelete, setConfirmDelete] = useState<
+    { kind: 'project' | 'chat'; id: string; label: string } | null
+  >(null)
 
   const isActive = pathname.includes(project.id)
   const routeChatId = Array.isArray(params.chatSessionId)
@@ -571,63 +637,170 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
     [actions, refreshChats],
   )
 
+  // Delete a chat: drop it locally first, reconcile on failure. The owning
+  // project handles the confirm flow, so this runs only after confirmation.
+  const handleDeleteChat = useCallback(
+    async (sessionId: string) => {
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId))
+      try {
+        await actions.deleteChatSession(sessionId)
+      } catch (e) {
+        console.error('[AppSidebar] Failed to delete chat:', e)
+        refreshChats()
+      }
+    },
+    [actions, refreshChats],
+  )
+
+  // Inline project rename. The project row is a MobX observer over the project
+  // collection, so updateProject's optimistic write re-renders the new name.
+  const startEditProject = useCallback(() => {
+    setEditValue(project.name || '')
+    setEditing(true)
+  }, [project.name])
+
+  const saveEditProject = useCallback(async () => {
+    const trimmed = editValue.trim()
+    setEditing(false)
+    if (!trimmed || trimmed === (project.name || '')) return
+    try {
+      await actions.updateProject(project.id, { name: trimmed })
+    } catch (e) {
+      console.error('[AppSidebar] Failed to rename project:', e)
+    }
+  }, [editValue, project.id, project.name, actions])
+
+  const handleContextMenu = useCallback((e: any) => {
+    e?.preventDefault?.()
+    const ne = e?.nativeEvent ?? e
+    setMenu({ x: ne?.clientX ?? 0, y: ne?.clientY ?? 0 })
+  }, [])
+
+  // Run the confirmed delete for either the project or one of its chats.
+  const performDelete = useCallback(async () => {
+    const target = confirmDelete
+    setConfirmDelete(null)
+    if (!target) return
+    if (target.kind === 'chat') {
+      await handleDeleteChat(target.id)
+      return
+    }
+    try {
+      await actions.deleteProject(target.id)
+    } catch (e) {
+      console.error('[AppSidebar] Failed to delete project:', e)
+    }
+  }, [confirmDelete, handleDeleteChat, actions])
+
   if (collapsed) {
     return ("")
   }
 
+  const projectMenuItems: SidebarMenuEntry[] = [
+    {
+      label: 'New chat',
+      icon: <Plus size={14} className="text-muted-foreground" />,
+      onSelect: handleCreateChat,
+    },
+    {
+      label: 'Rename',
+      icon: <Pencil size={14} className="text-muted-foreground" />,
+      onSelect: startEditProject,
+    },
+    {
+      label: isPinned ? 'Unpin' : 'Pin',
+      icon: isPinned ? (
+        <PinOff size={14} className="text-muted-foreground" />
+      ) : (
+        <Pin size={14} className="text-muted-foreground" />
+      ),
+      onSelect: () => onTogglePin?.(project.id, !isPinned),
+    },
+    { separator: true },
+    {
+      label: 'Delete',
+      danger: true,
+      icon: <Trash2 size={14} className="text-destructive" />,
+      onSelect: () =>
+        setConfirmDelete({ kind: 'project', id: project.id, label: project.name || 'Untitled' }),
+    },
+  ]
+
   return (
     <View>
-      <View
-        className={cn(
-          'group flex-row items-center gap-1.5 rounded-md pr-1 py-1.5',
-          isActive ? 'bg-accent' : 'active:bg-accent/50',
-        )}
-      >
-
-        <Pressable
-          onPress={openProject}
-          role="link"
-          accessibilityLabel={`Project: ${project.name || 'Untitled'}`}
-          className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70 min-w-0"
-        >
-          <Folder size={12} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
-          <Text
-            className={cn('text-xs flex-1', isActive ? 'text-foreground' : 'text-foreground')}
-            numberOfLines={1}
-          >
-            {project.name || 'Untitled'}
-          </Text>
-        </Pressable>
-        {/* Persistent pin glyph when pinned (hidden while hovering so the
-            hover actions can take its place). */}
-        {isPinned && (
-          <View className="group-hover:hidden pr-1 shrink-0">
-            <Pin size={10} className="text-muted-foreground" />
-          </View>
-        )}
-        {/* Hover-reveal actions (web). Siblings of the project Pressable, so
-            tapping one never triggers the project-open press. */}
-        <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
-          <Pressable
-            onPress={handleCreateChat}
-            className="p-0.5"
-            accessibilityLabel={`New chat in ${project.name || 'Untitled'}`}
-          >
-            <Plus size={12} className="text-muted-foreground" />
+      {editing ? (
+        <View className="flex-row items-center gap-1.5 rounded-md px-2 py-1.5">
+          <Folder size={12} className="text-muted-foreground" />
+          <TextInput
+            value={editValue}
+            onChangeText={setEditValue}
+            onSubmitEditing={saveEditProject}
+            onBlur={saveEditProject}
+            autoFocus
+            selectTextOnFocus
+            className="flex-1 h-6 px-1 text-xs rounded border border-border bg-background text-foreground"
+          />
+          <Pressable onPress={saveEditProject} className="p-0.5" accessibilityLabel="Save name">
+            <Check size={12} className="text-primary" />
           </Pressable>
-          <Pressable
-            onPress={() => onTogglePin?.(project.id, !isPinned)}
-            className="p-0.5"
-            accessibilityLabel={isPinned ? `Unpin ${project.name || 'Untitled'}` : `Pin ${project.name || 'Untitled'}`}
-          >
-            {isPinned ? (
-              <PinOff size={11} className="text-muted-foreground" />
-            ) : (
-              <Pin size={11} className="text-muted-foreground" />
-            )}
+          <Pressable onPress={() => setEditing(false)} className="p-0.5" accessibilityLabel="Cancel rename">
+            <X size={12} className="text-muted-foreground" />
           </Pressable>
         </View>
-      </View>
+      ) : (
+        <View
+          className={cn(
+            'group flex-row items-center gap-1.5 rounded-md pr-1 py-1.5',
+            isActive ? 'bg-accent' : 'active:bg-accent/50',
+          )}
+        >
+
+          <Pressable
+            onPress={openProject}
+            role="link"
+            accessibilityLabel={`Project: ${project.name || 'Untitled'}`}
+            className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70 min-w-0"
+            {...(Platform.OS === 'web' ? ({ onContextMenu: handleContextMenu } as any) : {})}
+          >
+            <Folder size={12} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
+            <Text
+              className={cn('text-xs flex-1', isActive ? 'text-foreground' : 'text-foreground')}
+              numberOfLines={1}
+            >
+              {project.name || 'Untitled'}
+            </Text>
+          </Pressable>
+          {/* Persistent pin glyph when pinned (hidden while hovering so the
+              hover actions can take its place). */}
+          {isPinned && (
+            <View className="group-hover:hidden pr-1 shrink-0">
+              <Pin size={10} className="text-muted-foreground" />
+            </View>
+          )}
+          {/* Hover-reveal actions (web). Siblings of the project Pressable, so
+              tapping one never triggers the project-open press. */}
+          <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
+            <Pressable
+              onPress={handleCreateChat}
+              className="p-0.5"
+              accessibilityLabel={`New chat in ${project.name || 'Untitled'}`}
+            >
+              <Plus size={12} className="text-muted-foreground" />
+            </Pressable>
+            <Pressable
+              onPress={() => onTogglePin?.(project.id, !isPinned)}
+              className="p-0.5"
+              accessibilityLabel={isPinned ? `Unpin ${project.name || 'Untitled'}` : `Pin ${project.name || 'Untitled'}`}
+            >
+              {isPinned ? (
+                <PinOff size={11} className="text-muted-foreground" />
+              ) : (
+                <Pin size={11} className="text-muted-foreground" />
+              )}
+            </Pressable>
+          </View>
+        </View>
+      )}
       {expanded && (() => {
         const activeSessions = sessions
           .filter((s: any) => !s.isArchived)
@@ -660,6 +833,9 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
             onTogglePin={handleTogglePin}
             onRename={handleRename}
             onToggleArchive={handleToggleArchive}
+            onRequestDelete={(id) =>
+              setConfirmDelete({ kind: 'chat', id, label: chatLabel(s) })
+            }
           />
         )
         return (
@@ -716,6 +892,58 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
           </View>
         )
       })()}
+      {menu && (
+        <SidebarContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={projectMenuItems}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      <Modal
+        visible={!!confirmDelete}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirmDelete(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setConfirmDelete(null)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-6 w-80 border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center justify-between mb-1">
+              <Text className="text-base font-semibold text-foreground">
+                {confirmDelete?.kind === 'project' ? 'Delete project' : 'Delete chat'}
+              </Text>
+              <Pressable onPress={() => setConfirmDelete(null)} className="p-1" accessibilityLabel="Close">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+            <Text className="text-sm text-muted-foreground mb-4">
+              {confirmDelete?.kind === 'project'
+                ? `Permanently delete "${confirmDelete?.label}" and all of its chats? This can't be undone.`
+                : `Permanently delete "${confirmDelete?.label}"? This can't be undone.`}
+            </Text>
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setConfirmDelete(null)}
+                className="px-4 py-2 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={performDelete}
+                className="px-4 py-2 rounded-md bg-destructive active:bg-destructive/80"
+              >
+                <Text className="text-sm text-destructive-foreground">Delete</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
 })
@@ -1853,6 +2081,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               localMode={localMode}
             />
           </View>
+
+          {!collapsed && <NotificationBell size={18} />}
 
           {!collapsed && (
             <Pressable

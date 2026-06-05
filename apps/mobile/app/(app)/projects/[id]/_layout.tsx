@@ -67,7 +67,12 @@ import { EzModeChatPanel } from '../../../../components/voice-mode/EzModeChatPan
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
-import { resolveReasoningEffort, resolveProvider, useVisibleModels } from '../../../../lib/visible-models'
+import {
+  resolveReasoningEffort,
+  resolveProvider,
+  useVisibleModels,
+  useReconcileStaleModelSelection,
+} from '../../../../lib/visible-models'
 import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
 import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
@@ -808,6 +813,11 @@ export default observer(function ProjectLayout() {
   const [selectedModel, setSelectedModel] = useState<string>(
     () => hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
   )
+  // Gate stale-selection reconciliation until the persisted preference has
+  // loaded — otherwise the reconciler fires against the initial slug default
+  // (not a catalog UUID id), resets to Auto, and persists that, wiping the
+  // user's saved choice on every cold load.
+  const [modelPrefLoaded, setModelPrefLoaded] = useState(false)
 
   // Tracks whether we've already synced the persisted preference to the
   // runtime for this (project, model). Without this sync, Capabilities shows
@@ -825,6 +835,7 @@ export default observer(function ProjectLayout() {
       if (cancelled) return
       const next = stored ?? (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE)
       setSelectedModel(next)
+      setModelPrefLoaded(true)
       if (!agentUrl) return
       const syncKey = `${projectId}:${next}`
       if (modelPrefSyncedRef.current === syncKey) return
@@ -865,6 +876,17 @@ export default observer(function ProjectLayout() {
       }
     }
   }, [agentUrl, projectId])
+
+  // Reset a pre-UUID stored selection (an old slug that's now only a server
+  // alias, so the picker can't label it) to the tier default once the catalog
+  // loads. Routes through handleModelChange so the corrected id is persisted
+  // and re-synced to the runtime.
+  useReconcileStaleModelSelection(
+    selectedModel,
+    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    handleModelChange,
+    modelPrefLoaded,
+  )
 
   const splitRowRef = useRef<View>(null)
 
@@ -3487,23 +3509,56 @@ function CanvasPanel({
   // Dev server reachable (non-404 root) AND the agent runtime is up.
   const baseReady = !!agentUrl && !!readyCanvasBaseUrl
 
-  const CONNECTION_TIMEOUT_MS = 60_000
-  const [timedOut, setTimedOut] = useState(false)
+  // Two independent fallbacks, deliberately kept separate:
+  //
+  //  - baseTimedOut: the agent runtime / dev server never became reachable
+  //    (a genuine failure) → surface the "Connection timed out" error + Retry.
+  //
+  //  - apiWaitElapsed: the dev server IS up but the API sidecar hasn't reported
+  //    healthy within a bounded window → show the app anyway rather than block.
+  //    This is intentionally NON-RESETTING. On a fresh project the sidecar only
+  //    goes healthy after a cold `bun install` + build + spawn, and during that
+  //    time the dev-server root can flip 404<->200 as `dist/` is rebuilt. The
+  //    previous single timer keyed on `baseReady`, so every flip restarted the
+  //    clock and the gate could hang on "Starting API server…" forever. We
+  //    start this timer once (on first base-ready) and never restart it.
+  const BASE_TIMEOUT_MS = 60_000
+  const API_WAIT_TIMEOUT_MS = 20_000
+  const [baseTimedOut, setBaseTimedOut] = useState(false)
   useEffect(() => {
-    if (baseReady && apiLatched) {
-      setTimedOut(false)
+    if (baseReady) {
+      setBaseTimedOut(false)
       return
     }
-    setTimedOut(false)
-    const timer = setTimeout(() => setTimedOut(true), CONNECTION_TIMEOUT_MS)
+    setBaseTimedOut(false)
+    const timer = setTimeout(() => setBaseTimedOut(true), BASE_TIMEOUT_MS)
     return () => clearTimeout(timer)
-  }, [baseReady, apiLatched])
+  }, [baseReady])
 
-  // Load the canvas once the dev server is reachable AND the sidecar is
-  // healthy. The 60s timeout is a safety net so a sidecar that never reports
-  // healthy (crash loop, template without `/health`) still eventually shows
-  // the app instead of hanging on a spinner forever.
-  const showCanvas = shouldShowCanvas({ baseReady, apiLatched, timedOut })
+  const [apiWaitElapsed, setApiWaitElapsed] = useState(false)
+  const apiWaitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (apiLatched) return
+    if (!baseReady) return
+    // Start exactly once; do NOT restart on baseReady / phase oscillation.
+    if (apiWaitTimerRef.current) return
+    apiWaitTimerRef.current = setTimeout(() => setApiWaitElapsed(true), API_WAIT_TIMEOUT_MS)
+  }, [baseReady, apiLatched])
+  useEffect(
+    () => () => {
+      if (apiWaitTimerRef.current) {
+        clearTimeout(apiWaitTimerRef.current)
+        apiWaitTimerRef.current = null
+      }
+    },
+    [],
+  )
+
+  // Load the canvas once the dev server is reachable AND the sidecar is healthy
+  // (latched). `apiWaitElapsed` is the bounded safety net so a slow cold start
+  // or a sidecar that never reports healthy (crash loop, template without
+  // `/health`) still shows the app within ~20s instead of hanging forever.
+  const showCanvas = shouldShowCanvas({ baseReady, apiLatched, timedOut: apiWaitElapsed })
 
   if (!showCanvas) {
     // `!baseReady` → runtime / dev server not up yet (show its phase, and the
@@ -3518,7 +3573,7 @@ function CanvasPanel({
       : PHASE_LABELS['starting-api']
     return (
       <View className="flex-1 items-center justify-center px-6">
-        {timedOut ? (
+        {baseTimedOut ? (
           <>
             <View className="w-3 h-3 rounded-full mb-3 bg-destructive" />
             <Text className="text-foreground font-semibold mb-1">
