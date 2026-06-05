@@ -1022,6 +1022,11 @@ export const ChatPanel = observer(function ChatPanel({
   const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
   const isModelControlled = controlledSelectedModel !== undefined
+  // Gate reconciliation until the persisted preference has loaded, so the
+  // reconciler never runs against the initial slug default (not a catalog UUID
+  // id) and persist-clobbers the user's saved choice. See the home screen /
+  // project layout for the same guard.
+  const [modelPrefLoaded, setModelPrefLoaded] = useState(false)
 
   useEffect(() => {
     if (isModelControlled) return
@@ -1031,6 +1036,7 @@ export const ChatPanel = observer(function ChatPanel({
       } else if (hasAdvancedModelAccess) {
         setInternalSelectedModel(DEFAULT_MODEL_PRO)
       }
+      setModelPrefLoaded(true)
     })
   }, [hasAdvancedModelAccess, isModelControlled, projectId])
 
@@ -1053,7 +1059,7 @@ export const ChatPanel = observer(function ChatPanel({
     internalSelectedModel,
     hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
     handleModelChange,
-    !isModelControlled,
+    !isModelControlled && modelPrefLoaded,
   )
 
   const [interactionMode, setInteractionMode] = useState<InteractionMode>(
