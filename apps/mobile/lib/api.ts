@@ -120,6 +120,33 @@ export interface BillingInvoice {
   lines: { description: string | null; amount: number }[]
 }
 
+/** One DNS record a user must add to point a custom domain at their app. */
+export interface CustomDomainInstruction {
+  type: 'CNAME' | 'TXT'
+  name: string
+  value: string
+  purpose: 'routing' | 'ssl-validation' | 'ownership-verification'
+}
+
+export interface CustomDomain {
+  id: string
+  hostname: string
+  status: 'pending' | 'verifying' | 'active' | 'failed'
+  sslStatus?: string
+  error?: string
+  verifiedAt?: number
+  /** DNS records still required (returned on add + verify). */
+  instructions?: CustomDomainInstruction[]
+}
+
+export interface CustomDomainsResponse {
+  /** Whether Cloudflare for SaaS is configured on this deployment. */
+  enabled: boolean
+  /** CNAME target the user points their domain at (when enabled). */
+  fallbackOrigin?: string
+  domains: CustomDomain[]
+}
+
 function throwIfBetterAuthErrorPayload(data: unknown): void {
   if (!data || typeof data !== 'object') return
   const err = (data as { error?: { message?: unknown } | null }).error
@@ -540,6 +567,27 @@ export const api = {
 
   async unpublishProject(http: HttpClient, projectId: string) {
     await http.post(`/api/projects/${projectId}/unpublish`)
+  },
+
+  // ─── Custom domains (Cloudflare for SaaS) ────────────────
+
+  async getCustomDomains(http: HttpClient, projectId: string) {
+    const res = await http.get<CustomDomainsResponse>(`/api/projects/${projectId}/domains`)
+    return res.data
+  },
+
+  async addCustomDomain(http: HttpClient, projectId: string, hostname: string) {
+    const res = await http.post<CustomDomain>(`/api/projects/${projectId}/domains`, { hostname })
+    return res.data
+  },
+
+  async verifyCustomDomain(http: HttpClient, projectId: string, domainId: string) {
+    const res = await http.post<CustomDomain>(`/api/projects/${projectId}/domains/${domainId}/verify`)
+    return res.data
+  },
+
+  async removeCustomDomain(http: HttpClient, projectId: string, domainId: string) {
+    await http.delete(`/api/projects/${projectId}/domains/${domainId}`)
   },
 
   // ─── Integrations ────────────────────────────────────────
