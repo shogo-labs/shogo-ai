@@ -46,7 +46,7 @@ export function StatusBar({
   };
 
   return (
-    <div className="flex h-6 items-center justify-between bg-[color:var(--ide-primary)] px-3 text-[12px] text-white">
+    <div className="flex h-6 items-center justify-between bg-[#1e1e1e] px-3 text-[12px] text-[#cccccc]">
       <div className="flex items-center gap-3">
         {git?.isRepo && git.branch ? (
           <>

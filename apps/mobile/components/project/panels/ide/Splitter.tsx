@@ -5,11 +5,13 @@ export function useResizable({
   min,
   max,
   direction,
+  invert = false,
 }: {
   initial: number;
   min: number;
   max: number;
   direction: "horizontal" | "vertical";
+  invert?: boolean;
 }) {
   const [size, setSize] = useState(initial);
   const dragging = useRef(false);
@@ -35,7 +37,7 @@ export function useResizable({
       if (!dragging.current) return;
       const delta =
         (direction === "horizontal" ? e.clientX : e.clientY) - start.current.pos;
-      const next = Math.min(max, Math.max(min, start.current.size + delta));
+      const next = Math.min(max, Math.max(min, start.current.size + (invert ? -delta : delta)));
       setSize(next);
     };
     const onUp = () => {
