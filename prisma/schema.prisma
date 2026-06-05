@@ -274,6 +274,7 @@ model Project {
   attachedSessions       ChatSessionProject[]
   attachments            ProjectAttachment[]     @relation("ProjectAttachmentAnchor")
   attachedTo             ProjectAttachment[]     @relation("ProjectAttachmentTarget")
+  customDomains          CustomDomain[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -319,6 +320,40 @@ model ProjectFolder {
 
   @@index([projectId])
   @@map("project_folders")
+}
+
+/// A bring-your-own custom domain for a published project, served via
+/// Cloudflare for SaaS (Custom Hostnames). The user CNAMEs their hostname
+/// at the Shogo fallback origin (CUSTOM_DOMAIN_FALLBACK_ORIGIN); Cloudflare
+/// then issues + auto-renews a per-hostname DV TLS cert. We create one
+/// Cloudflare `custom_hostname` per row and poll it for ssl/ownership
+/// status. Once active, the API writes a `hostname -> publishedSubdomain`
+/// entry into the Worker's KV map so the *.shogo.one subdomain router can
+/// resolve the custom hostname to the right object-storage prefix.
+/// See apps/api/src/lib/cloudflare-custom-hostnames.ts.
+model CustomDomain {
+  id        String             @id @default(uuid())
+  projectId String
+  /// Fully-qualified custom hostname, lowercased (e.g. "app.acme.com").
+  hostname  String             @unique
+  status    CustomDomainStatus @default(pending)
+  /// Cloudflare custom_hostname id (zone-scoped). Null until the CF record
+  /// is created; used for status polling + teardown.
+  cfCustomHostnameId String?
+  /// Mirror of Cloudflare's `ssl.status` (e.g. pending_validation,
+  /// pending_issuance, active) for display in the publish panel.
+  sslStatus String?
+  /// Last validation error surfaced by Cloudflare; cleared on success.
+  lastError String?
+  /// When the hostname + cert first reached `active`.
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("custom_domains")
 }
 
 /// Per-project sign-in allowlist for users authenticating via the Shogo
@@ -428,6 +463,16 @@ enum PublishStatus {
   configuring
   live
   failed
+}
+
+// Lifecycle of a bring-your-own CustomDomain (Cloudflare for SaaS custom
+// hostname). Updated by apps/api/src/routes/publish.ts as it creates the
+// CF custom hostname and polls its ssl/ownership validation state.
+enum CustomDomainStatus {
+  pending // row + CF custom hostname created; awaiting user DNS + DV
+  verifying // CF reports DNS seen / validation in progress
+  active // CF custom hostname + SSL active; KV hostname map written
+  failed // validation or provisioning failed (see lastError)
 }
 
 enum ProjectCategory {

@@ -1599,6 +1599,49 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
   return router.fetch(newReq)
 })
 
+// Custom domains (Cloudflare for SaaS bring-your-own-domain). List/add and
+// per-domain verify/delete all forward into publishRoutes() like the
+// publish endpoints above.
+app.get('/api/projects/:projectId/domains', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.post('/api/projects/:projectId/domains', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.post('/api/projects/:projectId/domains/:domainId/verify', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains/${c.req.param('domainId')}/verify`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.delete('/api/projects/:projectId/domains/:domainId', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains/${c.req.param('domainId')}`
+  const newReq = new Request(url.toString(), { method: 'DELETE', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
 // =============================================================================
 // Thumbnail routes
 // =============================================================================

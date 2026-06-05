@@ -225,6 +225,7 @@ model Project {
   attachedSessions       ChatSessionProject[]
   attachments            ProjectAttachment[]     @relation("ProjectAttachmentAnchor")
   attachedTo             ProjectAttachment[]     @relation("ProjectAttachmentTarget")
+  customDomains          CustomDomain[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -264,6 +265,29 @@ model ProjectFolder {
 
   @@index([projectId])
   @@map("project_folders")
+}
+
+/// Bring-your-own custom domain for a published project (Cloudflare for
+/// SaaS custom hostname). See prisma/schema.prisma for the canonical
+/// comment. SQLite has no native enum, so `status` is TEXT with the same
+/// allowed values as the PG `CustomDomainStatus` enum: pending, verifying,
+/// active, failed.
+model CustomDomain {
+  id                 String    @id @default(uuid())
+  projectId          String
+  hostname           String    @unique
+  status             String    @default("pending")
+  cfCustomHostnameId String?
+  sslStatus          String?
+  lastError          String?
+  verifiedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("custom_domains")
 }
 
 /// Per-project sign-in allowlist. See prisma/schema.prisma for the

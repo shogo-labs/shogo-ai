@@ -350,6 +350,12 @@ module "publish_hosting" {
   oci_region            = var.region
   tags                  = local.tags
 
+  # Bring-your-own custom hostnames (Cloudflare for SaaS). Disabled until a
+  # dedicated zone (separate from the shared `shogo.one` publish zone) is
+  # supplied — see variables.tf for the zone-collision rationale.
+  enable_custom_domains = var.enable_custom_domains
+  custom_domains_zone   = var.custom_domains_zone
+
   # The PAR (pre-authenticated request) created inside this module is
   # scoped to `shogo-published-apps-${env}`, which the object_storage
   # module creates. Without this depends_on, terraform parallelizes the

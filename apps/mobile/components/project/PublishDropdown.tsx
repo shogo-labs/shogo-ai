@@ -38,6 +38,7 @@ import {
 } from '@/components/ui/popover'
 import { api } from '../../lib/api'
 import { useDomainHttp } from '../../contexts/domain'
+import { CustomDomainsSection } from './CustomDomainsSection'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private'
 
@@ -285,6 +286,9 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
               </View>
             )}
           </View>
+
+          {/* Custom domains — only meaningful once the app is published */}
+          {isPublished && <CustomDomainsSection projectId={projectId} />}
 
           {/* Error */}
           {error && (
