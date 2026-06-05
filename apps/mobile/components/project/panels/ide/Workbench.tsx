@@ -12,6 +12,7 @@ import { GitStatusProvider } from "./git/GitStatusContext";
 import { SourceControlViewlet } from "./scm/SourceControlViewlet";
 import { RunDebugPanel } from "./run/RunDebugPanel";
 import { GraphView } from "./graph/GraphView";
+import { CheckpointListView } from "./CheckpointListView";
 import { attachGitDecorations, maybeAutoStageIfConflictResolved } from "./git/editorIntegration";
 import { MergeEditorModal } from "./git/MergeEditorModal";
 import { getDesktopGitBridge } from "./git/bridge";
@@ -195,6 +196,7 @@ export function Workbench({
   agentUrl,
   fetchImpl,
   isExternalProject = true,
+  folderPath,
 }: {
   agentService: WorkspaceService;
   agentLabel?: string;
@@ -224,6 +226,8 @@ export function Workbench({
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   /** True when the project was opened via "Open folder…" (external/IDE-style). */
   isExternalProject?: boolean;
+  /** Absolute path to the project's primary folder (for external/open-folder projects). */
+  folderPath?: string | null;
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
@@ -1684,12 +1688,22 @@ export function Workbench({
       }
       const r = await fsBridge.resolveWorkspace(projectId);
       if (cancelled) return;
-      setGitWorkspaceRoot(r.ok && r.root ? r.root : null);
+      if (r.ok && r.root) {
+        setGitWorkspaceRoot(r.root);
+        return;
+      }
+      // G2 fallback: for external projects where neither bridge resolved
+      // the root, use the project's primary folder path directly.
+      if (folderPath) {
+        setGitWorkspaceRoot(folderPath);
+        return;
+      }
+      setGitWorkspaceRoot(null);
     })();
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, folderPath]);
   const gitSnapshot = useGitStatus(gitWorkspaceRoot);
 
   // ─── G4: git gutter markers + inline blame + conflict CodeLens ─────
@@ -1783,9 +1797,9 @@ export function Workbench({
                 </div>
               )}
               {activity === "checkpoint" && projectId ? (
-                // Checkpoint tab: the commit graph takes the full main area
-                // and the editor panel is hidden.
-                <GraphView projectId={projectId} onOpenFile={openWorkspaceFile} />
+                // Checkpoint tab: managed projects see a checkpoint-only list;
+                // external (open-folder) projects see the full git commit graph.
+                <CheckpointListView projectId={projectId} />
               ) : (
               groups
                 .map((g, i) => (
