@@ -923,6 +923,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
           if (!hasAdvanced) {
             parsedBody.agentMode = 'claude-haiku-4-5-20251001'
+            // The downgrade target is a native Anthropic model; drop any stale
+            // provider hint for the originally-selected model so the runtime
+            // infers the correct provider from the new id.
+            delete parsedBody.modelProvider
             body = JSON.stringify(parsedBody)
           }
         }
