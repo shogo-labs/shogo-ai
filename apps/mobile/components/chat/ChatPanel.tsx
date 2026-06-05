@@ -106,7 +106,7 @@ import {
   loadModelPreference,
   saveModelPreference,
 } from "../../lib/agent-mode-preference"
-import { useReconcileStaleModelSelection } from "../../lib/visible-models"
+import { useReconcileStaleModelSelection, resolveProvider } from "../../lib/visible-models"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
@@ -3553,6 +3553,14 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       try {
+        const sendModel = perMsgModel || selectedModel
+        // Native provider hint, resolved from the catalog the picker already
+        // holds. Lets the runtime route DB-defined models (addressed by an
+        // opaque UUID) to their real provider's native endpoint instead of
+        // guessing `custom` and falling back to the lossy conversion path.
+        // Undefined for ids the catalog doesn't know — the runtime then infers
+        // from the id as before.
+        const sendModelProvider = sendModel ? resolveProvider(sendModel) : undefined
         const bodyExtra: Record<string, unknown> = {
           featureId,
           phase,
@@ -3560,7 +3568,8 @@ export const ChatPanel = observer(function ChatPanel({
           workspaceId,
           userId,
           projectId,
-          agentMode: perMsgModel || selectedModel,
+          agentMode: sendModel,
+          ...(sendModelProvider ? { modelProvider: sendModelProvider } : {}),
           interactionMode: interactionModeRef.current,
           dualPlan: dualPlanRef.current,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
