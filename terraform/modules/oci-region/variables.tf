@@ -258,6 +258,18 @@ variable "enable_publish_hosting" {
   default     = null
 }
 
+variable "enable_custom_domains" {
+  description = "Forwarded to `publish-hosting-oci`: enable Cloudflare for SaaS bring-your-own custom hostnames. Defaults to false. Requires `custom_domains_zone` to be a DEDICATED zone (distinct from the publish zone, which is shared across environments). Only effective when publish-hosting is enabled for this region."
+  type        = bool
+  default     = false
+}
+
+variable "custom_domains_zone" {
+  description = "Forwarded to `publish-hosting-oci`: dedicated Cloudflare zone NAME for custom hostnames (e.g. a separate domain). MUST differ from the publish domain — the SaaS fallback origin + `*/*` worker route are per-zone singletons and the publish zone is shared. Ignored unless `enable_custom_domains`."
+  type        = string
+  default     = null
+}
+
 # -----------------------------------------------------------------------------
 # Autoscaler IAM
 # -----------------------------------------------------------------------------
