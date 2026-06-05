@@ -22,9 +22,15 @@ import {
 } from "./branches";
 import {
   gitCommit,
+  gitCommitAll,
+  gitCommitAndPush,
+  gitCommitAndSync,
   gitDiscard,
+  gitGenerateCommitMessage,
   gitFileContent,
+  gitNumStat,
   gitStage,
+  gitUndoLastCommit,
   gitUnstage,
 } from "./operations";
 import {
@@ -104,6 +110,12 @@ export function registerGitIpcHandlers(): void {
     "git:unstage",
     "git:discard",
     "git:commit",
+    "git:commitAll",
+    "git:commitAndPush",
+    "git:commitAndSync",
+    "git:undoLastCommit",
+    "git:numStat",
+    "git:generateCommitMessage",
     "git:fileContent",
     "git:branches.list",
     "git:branches.checkout",
@@ -281,6 +293,78 @@ export function registerGitIpcHandlers(): void {
         amend: !!args.amend,
         signoff: !!args.signoff,
       });
+      return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:commitAll",
+    async (_event, args: { workspaceRoot: string; message: string; amend?: boolean; signoff?: boolean }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitCommitAll(g.root, {
+        message: typeof args.message === "string" ? args.message : "",
+        amend: !!args.amend,
+        signoff: !!args.signoff,
+      });
+      return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:commitAndPush",
+    async (_event, args: { workspaceRoot: string; message: string; amend?: boolean; signoff?: boolean }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitCommitAndPush(g.root, {
+        message: typeof args.message === "string" ? args.message : "",
+        amend: !!args.amend,
+        signoff: !!args.signoff,
+      });
+      return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:commitAndSync",
+    async (_event, args: { workspaceRoot: string; message: string; amend?: boolean; signoff?: boolean }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitCommitAndSync(g.root, {
+        message: typeof args.message === "string" ? args.message : "",
+        amend: !!args.amend,
+        signoff: !!args.signoff,
+      });
+      return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:generateCommitMessage",
+    async (_event, args: { workspaceRoot: string; apiUrl: string }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitGenerateCommitMessage(g.root, args.apiUrl);
+      return res.ok ? { ok: true as const, message: res.message } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:numStat",
+    async (_event, args: { workspaceRoot: string; cached?: boolean }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitNumStat(g.root, !!args.cached);
+      return res.ok ? { ok: true as const, stats: res.stats } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:undoLastCommit",
+    async (_event, args: { workspaceRoot: string }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitUndoLastCommit(g.root);
       return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
     },
   );

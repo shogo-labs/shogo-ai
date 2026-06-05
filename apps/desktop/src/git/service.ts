@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 
 import { type FileStatus, parsePorcelainV2, type PorcelainStatus, shortCode } from './porcelain'
+import { gitNumStat } from './operations'
 import { probeGit, runGit } from './repository'
 
 /** Public snapshot pushed to renderers. */
@@ -24,6 +25,10 @@ export interface GitSnapshot {
   behind: number
   /** Map relative-posix-path → short status code. */
   fileStatus: Record<string, ReturnType<typeof shortCode>>
+  /** Map relative-posix-path → short status code (staged only, X column). */
+  stagedStatus: Record<string, ReturnType<typeof shortCode>>
+  /** Per-file change counts (+added/-removed) from git diff --numstat. */
+  fileChanges: Record<string, { added: number; removed: number }>
   /** Conflicted file paths (for SCM viewlet in G2). */
   conflictPaths: string[]
   /** Last refresh timestamp (ms since epoch). */
@@ -58,6 +63,8 @@ class GitWorkspace {
       ahead: 0,
       behind: 0,
       fileStatus: {},
+      stagedStatus: {},
+      fileChanges: {},
       conflictPaths: [],
       refreshedAt: 0,
       error: null,
@@ -151,14 +158,25 @@ class GitWorkspace {
         }
         const parsed = parsePorcelainV2(res.stdout)
         const fileStatus: Record<string, ReturnType<typeof shortCode>> = {}
+        const stagedStatus: Record<string, ReturnType<typeof shortCode>> = {}
         const conflictPaths: string[] = []
         for (const f of parsed.files) {
           // Skip ignored files from the broadcast — they spam the decorator
           // map and the user has no need to see them.
           if (f.index === 'ignored') continue
           fileStatus[f.path] = shortCode(f)
+          if (f.index !== 'unmodified' && !f.isConflict) {
+            stagedStatus[f.path] = shortCode(f)
+          }
           if (f.isConflict) conflictPaths.push(f.path)
         }
+        // Fetch per-file change counts (non-blocking if it fails).
+        let fileChanges: Record<string, { added: number; removed: number }> = {}
+        const numRes = await gitNumStat(this.root)
+        if (numRes.ok) {
+          fileChanges = numRes.stats
+        }
+
         this.update({
           isRepo: true,
           branch: parsed.branch,
@@ -167,6 +185,8 @@ class GitWorkspace {
           ahead: parsed.ahead,
           behind: parsed.behind,
           fileStatus,
+          stagedStatus,
+          fileChanges,
           conflictPaths,
           error: null,
         })

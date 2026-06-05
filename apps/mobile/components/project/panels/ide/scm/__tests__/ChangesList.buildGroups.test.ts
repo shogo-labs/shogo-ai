@@ -34,10 +34,15 @@ function buildGroups(snapshot: GitSnapshot): Group[] {
   for (const path of snapshot.conflictPaths) {
     merge.push({ path, code: snapshot.fileStatus[path] ?? "U" });
   }
+  const stagedPaths = new Set(Object.keys(snapshot.stagedStatus));
   for (const [path, code] of Object.entries(snapshot.fileStatus)) {
     if (snapshot.conflictPaths.includes(path)) continue;
     if (!isCountedGitCode(code)) continue;
-    working.push({ path, code });
+    if (stagedPaths.has(path)) {
+      staged.push({ path, code });
+    } else {
+      working.push({ path, code });
+    }
   }
   const groups: Group[] = [
     { id: "merge", label: "Merge Changes", files: merge, emptyHint: undefined },
@@ -50,10 +55,12 @@ function buildGroups(snapshot: GitSnapshot): Group[] {
 function snap(
   fileStatus: Record<string, GitShortCode>,
   conflictPaths: string[] = [],
+  stagedStatus: Record<string, GitShortCode> = {},
 ): GitSnapshot {
   return {
     isRepo: true,
     fileStatus,
+    stagedStatus,
     conflictPaths,
     ...({} as Partial<GitSnapshot>),
   } as GitSnapshot;
