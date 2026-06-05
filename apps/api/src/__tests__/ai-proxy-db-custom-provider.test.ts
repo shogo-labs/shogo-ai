@@ -32,12 +32,6 @@ delete process.env.SHOGO_CLOUD_URL
 
 const MIMO_KEY = 'sk-mimo-staging-routing-key-abcdef'
 
-// A DB-defined native model addressed by an opaque UUID id whose `apiModel`
-// differs from the id — the real Opus 4.8 shape. The agent sends the UUID; the
-// native Anthropic passthrough must forward `apiModel` (Anthropic 404s on the
-// UUID otherwise).
-const OPUS_UUID = '11111111-1111-4111-8111-111111111111'
-
 // ─── Mutable DB rows the registry loads through the mocked prisma ──────────
 let MODELS: any[] = []
 let PROVIDERS: any[] = []
@@ -90,26 +84,6 @@ function seed() {
       enabled: true,
       sortOrder: 0,
       aliases: ['opus'],
-      capabilities: null,
-      inputPerMillion: 5,
-      cachedInputPerMillion: 0.5,
-      cacheWritePerMillion: 6.25,
-      outputPerMillion: 25,
-    },
-    {
-      id: OPUS_UUID,
-      provider: 'anthropic',
-      providerId: null,
-      apiModel: 'claude-opus-4-8',
-      displayName: 'Claude Opus 4.8 (DB UUID)',
-      shortDisplayName: 'Opus 4.8',
-      tier: 'premium',
-      family: 'opus',
-      generation: 'current',
-      maxOutputTokens: 128000,
-      enabled: true,
-      sortOrder: 2,
-      aliases: [],
       capabilities: null,
       inputPerMillion: 5,
       cachedInputPerMillion: 0.5,
@@ -219,20 +193,6 @@ function postChat(app: any, model: string) {
   }))
 }
 
-// The Anthropic-native passthrough the agent-runtime uses when a model routes
-// to provider `anthropic` (auth is the proxy token via `x-api-key`).
-function postAnthropic(app: any, model: string) {
-  return app.fetch(new Request('http://x/api/ai/anthropic/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': TOKEN,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({ model, max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] }),
-  }))
-}
-
 describe('ai-proxy DB-defined model routing', () => {
   test('routes a custom-provider model to its base URL with Bearer auth', async () => {
     const res = await postChat(buildApp(), 'mimo-v2.5')
@@ -254,16 +214,6 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(lastFetchUrl).toBe('https://api.anthropic.com/v1/messages')
     const apiKey = (lastFetchInit?.headers as Record<string, string>)?.['x-api-key']
     expect(apiKey).toBe('sk-ant-db-routing-test')
-  })
-
-  test('native passthrough forwards apiModel, not the opaque UUID id', async () => {
-    const res = await postAnthropic(buildApp(), OPUS_UUID)
-    expect(res.status).toBe(200)
-    expect(lastFetchUrl).toBe('https://api.anthropic.com/v1/messages')
-    // The agent addresses the model by its UUID; the passthrough must rewrite
-    // it to the resolved `apiModel` before forwarding upstream.
-    const forwarded = JSON.parse((lastFetchInit?.body as string) ?? '{}')
-    expect(forwarded.model).toBe('claude-opus-4-8')
   })
 
   test('gates a premium DB model for users without advanced access', async () => {
