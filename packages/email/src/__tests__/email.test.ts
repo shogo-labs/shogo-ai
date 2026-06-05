@@ -7,6 +7,7 @@
 import { describe, test, expect } from 'bun:test'
 import {
   interpolate,
+  escapeHtml,
   htmlToText,
   EmailTemplateRegistry,
   createTemplateRegistry,
@@ -15,6 +16,7 @@ import {
   invitationTemplate,
   notificationTemplate,
 } from '../templates'
+import { createShogoTemplateRegistry } from '../templates/index'
 import { EmailError, formatEmailAddress } from '../types'
 
 describe('Email Types', () => {
@@ -85,6 +87,28 @@ describe('Template System', () => {
       const result = interpolate('Count: {{count}}', { count: 42 })
       expect(result).toBe('Count: 42')
     })
+
+    test('does not escape values by default', () => {
+      const result = interpolate('Hi {{name}}', { name: '<b>x</b>' })
+      expect(result).toBe('Hi <b>x</b>')
+    })
+
+    test('escapes values when escapeValues is set', () => {
+      const result = interpolate('Hi {{name}}', { name: '<b>x</b>' }, { escapeValues: true })
+      expect(result).toBe('Hi &lt;b&gt;x&lt;/b&gt;')
+    })
+  })
+
+  describe('escapeHtml', () => {
+    test('escapes HTML special characters', () => {
+      expect(escapeHtml(`<a href="x">'&'</a>`)).toBe(
+        '&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;'
+      )
+    })
+
+    test('leaves safe text unchanged', () => {
+      expect(escapeHtml('Alice Smith')).toBe('Alice Smith')
+    })
   })
 
   describe('htmlToText', () => {
@@ -136,6 +160,26 @@ describe('Template System', () => {
       const { subject, html } = registry.render('greeting', { name: 'Alice' })
       expect(subject).toBe('Hello Alice')
       expect(html).toBe('<p>Welcome, Alice!</p>')
+    })
+
+    test('escapes interpolated values in the HTML body (hyperlink injection)', () => {
+      const registry = new EmailTemplateRegistry()
+      registry.register({
+        name: 'greeting',
+        subject: 'Hello {{name}}',
+        html: '<p>Welcome, {{name}}!</p>',
+      })
+
+      const payload = '"><a href="https://evil.com">click</a>'
+      const { subject, html, text } = registry.render('greeting', { name: payload })
+
+      // HTML body must not contain a live anchor tag
+      expect(html).not.toContain('<a href="https://evil.com">')
+      expect(html).toContain('&lt;a href=&quot;https://evil.com&quot;&gt;')
+      // Subject is plain text — not HTML-encoded
+      expect(subject).toBe(`Hello ${payload}`)
+      // Plain-text body is human-readable, not HTML-encoded
+      expect(text).not.toContain('&lt;')
     })
 
     test('merges defaults with provided data', () => {
@@ -217,6 +261,31 @@ describe('Template System', () => {
       })
       expect(subject).toBe('New Message')
       expect(html).toContain('You have a new message')
+    })
+  })
+
+  describe('Shogo Templates (production registry)', () => {
+    const registry = createShogoTemplateRegistry()
+
+    test('welcome template escapes a malicious name', () => {
+      const { html } = registry.render('welcome', {
+        name: '<script>alert(1)</script>',
+      })
+      expect(html).not.toContain('<script>alert(1)</script>')
+      expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+    })
+
+    test('workspace-invite template escapes inviter and workspace names', () => {
+      const { html } = registry.render('workspace-invite', {
+        inviterName: '<img src=x onerror=alert(1)>',
+        workspaceName: '<b>Acme</b>',
+        acceptUrl: 'https://app.example.com/accept',
+      })
+      expect(html).not.toContain('<img src=x onerror=alert(1)>')
+      expect(html).not.toContain('<b>Acme</b>')
+      expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;')
+      // Server-generated URLs remain intact in the href
+      expect(html).toContain('href="https://app.example.com/accept"')
     })
   })
 })
