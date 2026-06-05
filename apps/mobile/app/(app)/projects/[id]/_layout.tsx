@@ -2858,7 +2858,7 @@ export default observer(function ProjectLayout() {
             }
           >
             <PanelErrorBoundary panelName="IDE">
-              <IDEPanel visible={effectiveTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
+              <IDEPanel visible={effectiveTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} isExternalProject={isExternalProject} />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Files">
               <FilesBrowserPanel visible={effectiveTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />

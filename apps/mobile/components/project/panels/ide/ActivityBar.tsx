@@ -68,6 +68,7 @@ export function ActivityBar({
   onSelect,
   onToggleSidebar,
   onToggleTerminal,
+  hiddenItemIds,
 }: {
   active: ActivityId;
   sidebarOpen: boolean;
@@ -76,6 +77,8 @@ export function ActivityBar({
   onSelect: (id: ActivityId) => void;
   onToggleSidebar: () => void;
   onToggleTerminal: () => void;
+  /** When false (managed/blank projects), hides Source Control, Debug, and Checkpoint icons. */
+  hiddenItemIds?: ActivityId[];
 }) {
   const handleSelect = (id: ActivityId) => {
     if (active === id && sidebarOpen) {
@@ -87,10 +90,15 @@ export function ActivityBar({
 
   const badgeFor = (id: ActivityId): BadgeData | undefined => badges?.[id];
 
+  // Hide specific items based on project type (passed from Workbench).
+  const visibleItems = hiddenItemIds && hiddenItemIds.length > 0
+    ? ITEMS.filter(({ id }) => !hiddenItemIds.includes(id))
+    : ITEMS;
+
   return (
     <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between bg-[color:var(--ide-panel)] border-l border-[color:var(--ide-border)] py-2">
       <div className="flex flex-col items-center gap-1">
-        {ITEMS.map(({ id, icon: Icon, label, hint }) => {
+        {visibleItems.map(({ id, icon: Icon, label, hint }) => {
           const isActive = active === id && sidebarOpen;
           const badge = badgeFor(id);
           return (
