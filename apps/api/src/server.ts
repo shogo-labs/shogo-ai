@@ -91,6 +91,7 @@ import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { localProjectsRoutes } from './routes/local-projects'
+import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
@@ -898,6 +899,11 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   // makes sense in local mode" trait — the cloud build doesn't expose
   // a folder picker.
   app.route('/api/local/projects', localProjectsRoutes())
+
+  // Cloud-project picker + content sync (see routes/cloud-projects.ts).
+  // Lets a cloud-signed-in desktop browse/open cloud projects; opening one
+  // pulls its workspace files locally and watches for edits to push back.
+  app.route('/api/local/cloud-projects', cloudProjectsRoutes())
 
   // Auto-download VM images in the background if not present
   setTimeout(() => {

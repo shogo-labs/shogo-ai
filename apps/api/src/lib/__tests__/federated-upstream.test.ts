@@ -32,6 +32,7 @@ const {
   isFederatedEnabled,
   getUpstreamOrigin,
   listCloudInstancesForWorkspace,
+  listCloudProjectsForWorkspace,
   lookupCloudInstance,
   invalidateCloudInstance,
   forwardToUpstream,
@@ -253,6 +254,76 @@ describe('listCloudInstancesForWorkspace', () => {
   test('returns [] when upstream errors (no throw)', async () => {
     installFetch(() => new Response('boom', { status: 500 }))
     expect(await listCloudInstancesForWorkspace('local-ws-7')).toEqual([])
+  })
+})
+
+describe('listCloudProjectsForWorkspace', () => {
+  beforeEach(() => {
+    findUniqueMock.mockImplementation(async ({ where }: any) => {
+      if (where.key === 'SHOGO_KEY_INFO') {
+        return { value: JSON.stringify({ workspace: { id: 'cloud-ws-1' } }) }
+      }
+      return null
+    })
+  })
+
+  test('returns [] without a fetch when federation is off', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    installFetch(() => { throw new Error('should not be called') })
+    expect(await listCloudProjectsForWorkspace()).toEqual([])
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('forwards the CLOUD workspaceId + bearer key and parses { ok, items }', async () => {
+    installFetch(() =>
+      jsonResponse({ ok: true, items: [{ id: 'p1', name: 'One' }, { id: 'p2', name: 'Two' }] }),
+    )
+    const out = await listCloudProjectsForWorkspace()
+    expect(out.map((p) => p.id)).toEqual(['p1', 'p2'])
+    expect(fetchCalls[0].url).toBe('https://cloud.test/api/projects?workspaceId=cloud-ws-1')
+    const auth = new Headers(fetchCalls[0].init?.headers as any).get('authorization')
+    expect(auth).toBe('Bearer shogo_sk_test')
+  })
+
+  test('tolerates the { projects } shape', async () => {
+    installFetch(() => jsonResponse({ projects: [{ id: 'p9', name: 'Nine' }] }))
+    const out = await listCloudProjectsForWorkspace()
+    expect(out.map((p) => p.id)).toEqual(['p9'])
+  })
+
+  test('tolerates a bare array shape', async () => {
+    installFetch(() => jsonResponse([{ id: 'p3' }, { id: 'p4' }]))
+    const out = await listCloudProjectsForWorkspace()
+    expect(out.map((p) => p.id)).toEqual(['p3', 'p4'])
+  })
+
+  test('drops malformed entries without an id', async () => {
+    installFetch(() => jsonResponse({ ok: true, items: [{ id: 'good' }, { name: 'no-id' }, null] }))
+    const out = await listCloudProjectsForWorkspace()
+    expect(out.map((p) => p.id)).toEqual(['good'])
+  })
+
+  test('still queries (no workspaceId param) when no cloud workspace is linked', async () => {
+    findUniqueMock.mockImplementation(async () => null)
+    installFetch(() => jsonResponse({ ok: true, items: [{ id: 'p1' }] }))
+    const out = await listCloudProjectsForWorkspace()
+    expect(out.map((p) => p.id)).toEqual(['p1'])
+    expect(fetchCalls[0].url).toBe('https://cloud.test/api/projects')
+  })
+
+  test('returns [] when the upstream errors', async () => {
+    installFetch(() => new Response('boom', { status: 500 }))
+    expect(await listCloudProjectsForWorkspace()).toEqual([])
+  })
+
+  test('returns [] when the fetch throws (offline)', async () => {
+    installFetch(() => { throw new Error('ECONNREFUSED') })
+    expect(await listCloudProjectsForWorkspace()).toEqual([])
+  })
+
+  test('returns [] on malformed JSON body', async () => {
+    installFetch(() => new Response('not-json{{{', { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    expect(await listCloudProjectsForWorkspace()).toEqual([])
   })
 })
 
