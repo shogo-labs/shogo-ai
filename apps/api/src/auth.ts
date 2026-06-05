@@ -69,17 +69,32 @@ function createAuthDatabase() {
   })
 }
 
+const MAX_NAME_LENGTH = 100
+
 /**
- * Strip HTML tags and angle brackets from user input.
- * Server-side safety net against XSS — even if client-side validation is bypassed,
- * no HTML/script content will be stored in the database.
+ * Sanitize a user-provided display name before it is stored.
+ *
+ * Defends against stored XSS *and* hyperlink/phishing injection (OWASP A03):
+ * stored names are interpolated into transactional email bodies (e.g. the
+ * welcome email), so a name like "https://evil.com" must not survive in a
+ * clickable/auto-linkable form even though emails also HTML-encode values.
+ *
+ * - Strips HTML tags and stray angle brackets
+ * - Removes URL schemes (http, https, javascript:, data:, etc.) and "www."
+ * - Defangs bare "domain.tld" tokens so mail clients won't auto-link them
+ * - Collapses whitespace and caps length
  */
 function sanitizeName(name: string | undefined | null): string {
   if (!name) return ""
   return name
     .replace(/<[^>]*>/g, "")
     .replace(/[<>]/g, "")
+    .replace(/\b(?:https?|ftps?|mailto|javascript|data|vbscript|file):\/*/gi, "")
+    .replace(/\bwww\./gi, "")
+    .replace(/([a-z0-9-]+)\.(?=[a-z]{2,})/gi, "$1 ")
+    .replace(/\s+/g, " ")
     .trim()
+    .slice(0, MAX_NAME_LENGTH)
 }
 
 // Port configuration from environment
