@@ -55,8 +55,8 @@ variable "tags" {
 
 locals {
   # Release branch follows MAJOR.MINOR of the version (e.g. 1.25.0 -> release-1.25).
-  release_branch  = "release-${join(".", slice(split(".", var.operator_version), 0, 2))}"
-  manifest_url    = "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/${local.release_branch}/releases/cnpg-${var.operator_version}.yaml"
+  release_branch = "release-${join(".", slice(split(".", var.operator_version), 0, 2))}"
+  manifest_url   = "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/${local.release_branch}/releases/cnpg-${var.operator_version}.yaml"
 }
 
 # -----------------------------------------------------------------------------

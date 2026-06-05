@@ -127,14 +127,14 @@ variable "tags" {
 # -----------------------------------------------------------------------------
 
 resource "cloudflare_load_balancer_monitor" "health" {
-  account_id     = var.cloudflare_account_id
-  type           = "https"
-  path           = var.health_check_path
-  expected_codes = "200"
-  interval       = var.health_check_interval
-  timeout        = 10
-  retries        = 2
-  method         = "GET"
+  account_id       = var.cloudflare_account_id
+  type             = "https"
+  path             = var.health_check_path
+  expected_codes   = "200"
+  interval         = var.health_check_interval
+  timeout          = 10
+  retries          = 2
+  method           = "GET"
   follow_redirects = true
   allow_insecure   = false
 

@@ -242,5 +242,5 @@ module "drg_from_us" {
 # =============================================================================
 
 output "cluster_endpoint" { value = module.eu.cluster_endpoint }
-output "cluster_id"       { value = module.eu.cluster_id }
-output "ocir_prefix"      { value = module.eu.ocir_prefix }
+output "cluster_id" { value = module.eu.cluster_id }
+output "ocir_prefix" { value = module.eu.ocir_prefix }
