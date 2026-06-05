@@ -1534,11 +1534,11 @@ app.post('/agent/chat', async (c) => {
   }
 
   const modelOverride = (body.agentMode as string | undefined) || undefined
-  // Native provider hint stamped by the API server (it holds the model
-  // registry and resolves the model's provider from its opaque id before
-  // forwarding) so the gateway can route DB models addressed by a UUID to
-  // their real provider's native endpoint instead of inferring `custom` from
-  // the id. Optional — absent requests fall back to id-based inference.
+  // Native provider hint sent by the client (resolved from the catalog it
+  // already holds) so the gateway can route DB models addressed by an opaque
+  // UUID to their real provider's native endpoint instead of inferring
+  // `custom` from the id. Optional — absent requests fall back to id-based
+  // inference.
   const modelProvider = (body.modelProvider as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
