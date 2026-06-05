@@ -44,9 +44,12 @@ import {
   ChevronDown,
   Check,
   Download,
+  Cloud,
 } from 'lucide-react-native'
 import { ProjectImportModal } from '../projects/ProjectImportModal'
+import { CloudProjectPickerModal } from '../projects/CloudProjectPickerModal'
 import { useOpenLocalFolder } from './useOpenLocalFolder'
+import { useOpenCloudProject } from './useOpenCloudProject'
 
 export type ProjectSourceVariant = 'chip' | 'button'
 
@@ -79,6 +82,7 @@ export function ProjectSourceMenu({
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [cloudOpen, setCloudOpen] = useState(false)
 
   const {
     openFolder,
@@ -88,6 +92,10 @@ export function ProjectSourceMenu({
     workspaceId,
     onSuccess: onProjectOpened,
   })
+
+  // "Open from Cloud" is desktop-only and needs a connected cloud key
+  // (mirrors how `canOpenFolder` gates the folder row on Electron).
+  const { isAvailable: canOpenCloud } = useOpenCloudProject()
 
   const handleSelectBlank = useCallback(() => {
     setOpen(false)
@@ -103,6 +111,23 @@ export function ProjectSourceMenu({
     setOpen(false)
     setImportOpen(true)
   }, [])
+
+  const handleSelectCloud = useCallback(() => {
+    setOpen(false)
+    setCloudOpen(true)
+  }, [])
+
+  const handleCloudOpened = useCallback(
+    (project: { id: string; name: string }) => {
+      setCloudOpen(false)
+      if (onProjectOpened) {
+        onProjectOpened(project)
+      } else {
+        router.push({ pathname: '/(app)/projects/[id]', params: { id: project.id } } as any)
+      }
+    },
+    [onProjectOpened, router],
+  )
 
   const handleImportCompleted = useCallback(
     (project: { id: string; name: string }) => {
@@ -206,6 +231,23 @@ export function ProjectSourceMenu({
               </Pressable>
             ) : null}
 
+            {canOpenCloud ? (
+              <Pressable
+                onPress={handleSelectCloud}
+                className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
+              >
+                <View className="w-8 items-center">
+                  <Cloud size={16} className="text-muted-foreground" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-sm font-medium text-foreground">Open from Cloud…</Text>
+                  <Text className="text-[11px] text-muted-foreground">
+                    Sync a cloud project to this machine; edits sync back automatically.
+                  </Text>
+                </View>
+              </Pressable>
+            ) : null}
+
             <Pressable
               onPress={handleSelectImport}
               className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
@@ -231,6 +273,17 @@ export function ProjectSourceMenu({
           onOpenChange={setImportOpen}
           workspaceId={workspaceId}
           onOpenProject={handleImportCompleted}
+        />
+      ) : null}
+
+      {/* Cloud picker — same single-owner pattern. Mounted only when the
+          cloud source is available so web/non-signed-in builds don't carry
+          its list-fetch effect. */}
+      {canOpenCloud ? (
+        <CloudProjectPickerModal
+          open={cloudOpen}
+          onOpenChange={setCloudOpen}
+          onOpenProject={handleCloudOpened}
         />
       ) : null}
     </>

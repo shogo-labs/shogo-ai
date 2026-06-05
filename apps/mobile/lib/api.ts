@@ -147,6 +147,27 @@ export interface CustomDomainsResponse {
   domains: CustomDomain[]
 }
 
+/** Content-sync state for a cloud-linked project (header pill). Mirrors
+ *  `CloudSyncStatus` in `apps/api/src/lib/runtime/cloud-content-sync.ts`. */
+export type CloudSyncState =
+  | 'idle'
+  | 'pulling'
+  | 'watching'
+  | 'pushing'
+  | 'error'
+  | 'offline'
+
+export interface CloudSyncStatusDTO {
+  projectId: string
+  state: CloudSyncState
+  mode?: 'git' | 'files'
+  lastError?: string
+  lastPushAt?: number
+  lastPushCommit?: string
+  conflictWarning?: string
+  updatedAt: number
+}
+
 function throwIfBetterAuthErrorPayload(data: unknown): void {
   if (!data || typeof data !== 'object') return
   const err = (data as { error?: { message?: unknown } | null }).error
@@ -974,6 +995,85 @@ export const api = {
       }
     } catch (err: any) {
       return { error: err?.message ?? 'Browse failed' }
+    }
+  },
+
+  /**
+   * List the cloud projects the connected `SHOGO_API_KEY` can see, each
+   * tagged with whether it's already linked locally. Desktop-only (the
+   * `/api/local/cloud-projects` route is mounted only in
+   * `SHOGO_LOCAL_MODE`). Returns a signed-out empty shape on any failure
+   * so the picker degrades cleanly (mirrors
+   * `listRecentLocalFolderProjects`).
+   */
+  async listCloudProjects(http: HttpClient): Promise<{
+    signedIn: boolean
+    projects: Array<{
+      id: string
+      name?: string
+      cloudLinked?: boolean
+      updatedAt?: string | null
+      thumbnailUrl?: string | null
+    }>
+    linked: string[]
+  }> {
+    try {
+      const res = await http.get<{
+        signedIn?: boolean
+        projects?: Array<{ id: string; name?: string; cloudLinked?: boolean; updatedAt?: string | null; thumbnailUrl?: string | null }>
+        linked?: string[]
+      }>('/api/local/cloud-projects')
+      const d = res.data ?? {}
+      return {
+        signedIn: !!d.signedIn,
+        projects: Array.isArray(d.projects) ? d.projects : [],
+        linked: Array.isArray(d.linked) ? d.linked : [],
+      }
+    } catch {
+      return { signedIn: false, projects: [], linked: [] }
+    }
+  },
+
+  /**
+   * Link + open a cloud project locally — creates/flags a local `Project`
+   * keyed by the cloud project id. The runtime adapter then auto-pulls the
+   * workspace files and starts the push-back watcher on the next start.
+   * Throws on failure so the caller can surface it.
+   */
+  async openCloudProject(
+    http: HttpClient,
+    cloudProjectId: string,
+    name?: string,
+  ): Promise<{
+    project: { id: string; name?: string }
+    cloudLinked: boolean
+    created: boolean
+  }> {
+    const res = await http.post<any>(
+      `/api/local/cloud-projects/${encodeURIComponent(cloudProjectId)}/open`,
+      name ? { name } : {},
+    )
+    return (res.data ?? {}) as any
+  },
+
+  /**
+   * Current content-sync status for a cloud-linked project (drives the
+   * header sync pill). Returns `null` on any failure so the pill can
+   * silently hide. `cloudLinked: false` means the project isn't synced.
+   */
+  async getCloudSyncStatus(
+    http: HttpClient,
+    projectId: string,
+  ): Promise<{ cloudLinked: boolean; status: CloudSyncStatusDTO } | null> {
+    try {
+      const res = await http.get<{ cloudLinked?: boolean; status?: CloudSyncStatusDTO }>(
+        `/api/local/cloud-projects/${encodeURIComponent(projectId)}/sync-status`,
+      )
+      const d = res.data ?? {}
+      if (!d.status) return null
+      return { cloudLinked: !!d.cloudLinked, status: d.status }
+    } catch {
+      return null
     }
   },
 
