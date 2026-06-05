@@ -2926,8 +2926,13 @@ export function aiProxyRoutes() {
         )
       }
 
-      // Replace the model name with the resolved one before forwarding
-      parsed.model = resolvedModel
+      // Replace the model name with the resolved upstream name before
+      // forwarding. DB-defined models are addressed by an opaque id (a UUID),
+      // and Anthropic 404s on that id — so prefer the resolved `apiModel`
+      // (e.g. `claude-opus-4-8`). Falls back to `resolvedModel` when the id
+      // isn't catalog-resolvable, preserving the prior behavior for everything
+      // already addressed by a real Anthropic model name.
+      parsed.model = resolvedModelConfig?.apiModel ?? resolvedModel
 
       // Split system prompt at CACHE_BOUNDARY so Anthropic can cache the stable
       // prefix independently. The agent-runtime embeds <|CACHE_BOUNDARY|> between
