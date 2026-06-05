@@ -189,9 +189,21 @@ data "cloudflare_zone" "custom_domains" {
     # without an explicit dedicated zone would fall back to the publish zone
     # (`shogo.one`) and put a `*/*` route + fallback origin on a zone shared
     # with other environments. Force the operator to name a dedicated zone.
+    # NOTE: `coalesce` (see local.custom_domains_zone_name) skips empty strings
+    # AND nulls, so an empty `custom_domains_zone` (e.g. an unset GH var passed
+    # as "" by the Terraform CI workflow) would silently fall through to the
+    # publish zone. Reject empty explicitly, and reject the resolved publish
+    # zone (publish_zone, else publish_domain) — not just publish_domain — so a
+    # subdomain env (staging owns `staging.shogo.one` on the shared `shogo.one`
+    # zone) can't point custom domains at the shared zone either.
     precondition {
-      condition     = var.custom_domains_zone != null && var.custom_domains_zone != var.publish_domain
-      error_message = "enable_custom_domains=true requires custom_domains_zone to be set to a DEDICATED Cloudflare zone, distinct from the publish domain. The SaaS fallback origin + `*/*` worker route are per-zone singletons and the publish zone is shared across environments. See docs/custom-domains.md."
+      condition = (
+        var.custom_domains_zone != null &&
+        trimspace(var.custom_domains_zone) != "" &&
+        var.custom_domains_zone != var.publish_domain &&
+        var.custom_domains_zone != coalesce(var.publish_zone, var.publish_domain)
+      )
+      error_message = "enable_custom_domains=true requires custom_domains_zone to be set to a DEDICATED Cloudflare zone: non-empty and distinct from BOTH publish_domain and the publish zone (publish_zone, else publish_domain). The SaaS fallback origin + `*/*` worker route are per-zone singletons and the publish zone is shared across environments. See docs/custom-domains.md."
     }
   }
 }

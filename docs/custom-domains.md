@@ -165,11 +165,15 @@ submodule, and `k8s/overlays/production-us/api-service.yaml` carries the same
 inert `custom-domains-config` env block. To enable:
 
 1. Add a dedicated production custom-domains zone to Cloudflare.
-2. Set `enable_custom_domains = true` + `custom_domains_zone = "<that zone>"`
-   on the `production-us` env (tfvars / `TF_VAR_*` GH vars) and run
-   `terraform apply` for `production-us` via the Terraform workflow
-   (`workflow_dispatch`, prod approval required). Terraform is NOT applied by
-   the tag/deploy pipeline.
+2. Set the `ENABLE_CUSTOM_DOMAINS` (`true`) + `CUSTOM_DOMAINS_ZONE`
+   (`<that zone>`) variables on the **`production-us` GitHub Environment**. The
+   Terraform workflow forwards these as `TF_VAR_enable_custom_domains` /
+   `TF_VAR_custom_domains_zone` (unset `ENABLE_CUSTOM_DOMAINS` resolves to
+   `false`, so other envs are unaffected). Then run `terraform apply` for
+   `production-us` via the Terraform workflow (`workflow_dispatch`, prod
+   approval required). Terraform is NOT applied by the tag/deploy pipeline.
+   Leaving `CUSTOM_DOMAINS_ZONE` empty while enabled fails the module
+   precondition by design — it must name a dedicated zone, never `shogo.one`.
 3. Create the `custom-domains-config` secret in `shogo-production-system` from
    the env outputs (`terraform output custom_domains_zone_id`,
    `custom_domains_kv_namespace_id`, `custom_domain_fallback_origin`) + a
