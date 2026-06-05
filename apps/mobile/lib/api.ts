@@ -590,6 +590,15 @@ export const api = {
     await http.post(`/api/projects/${projectId}/unpublish`)
   },
 
+  // Rebuild + re-upload the current commit to the same subdomain (and re-tag
+  // HEAD as the new live commit). Used by the "Publish latest changes" action.
+  async republishProject(http: HttpClient, projectId: string) {
+    const res = await http.post<{ url: string; subdomain: string; publishedAt: number }>(
+      `/api/projects/${projectId}/republish`,
+    )
+    return res.data
+  },
+
   // ─── Custom domains (Cloudflare for SaaS) ────────────────
 
   async getCustomDomains(http: HttpClient, projectId: string) {

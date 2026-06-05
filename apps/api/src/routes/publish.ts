@@ -19,6 +19,7 @@ import { Hono } from "hono"
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
 import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
+import { recordCheckpointForCommit } from "../services/checkpoint.service"
 import {
   getCustomHostnamesConfig,
   createCustomHostname,
@@ -402,8 +403,11 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
  */
 async function flushGitSync(
   projectId: string,
-  opts: { tag?: string; tagMessage?: string } = {},
-): Promise<{ sha: string | null; tag: string | null } | null> {
+  opts: {
+    tags?: Array<{ name: string; message?: string; force?: boolean }>
+    deleteTags?: string[]
+  } = {},
+): Promise<{ sha: string | null } | null> {
   try {
     const { getProjectPodUrl } = await import("../lib/knative-project-manager")
     const podUrl = await getProjectPodUrl(projectId)
@@ -413,16 +417,16 @@ async function flushGitSync(
         'x-runtime-token': await deriveProjectRuntimeToken(projectId),
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ tag: opts.tag, tagMessage: opts.tagMessage }),
+      body: JSON.stringify({ tags: opts.tags, deleteTags: opts.deleteTags }),
       signal: AbortSignal.timeout(PUBLISH_BUILD_TIMEOUT_MS),
     })
     if (!response.ok) {
       console.warn(`[Publish] git-flush returned ${response.status} for ${projectId} (continuing)`)
       return null
     }
-    const result = await response.json().catch(() => ({})) as { sha?: string; tag?: string }
+    const result = await response.json().catch(() => ({})) as { sha?: string }
     console.log(`[Publish] git-flush for ${projectId}:`, result)
-    return { sha: result.sha ?? null, tag: result.tag ?? null }
+    return { sha: result.sha ?? null }
   } catch (err: any) {
     console.warn(`[Publish] git-flush failed for ${projectId} (continuing):`, err?.message ?? err)
     return null
@@ -430,32 +434,56 @@ async function flushGitSync(
 }
 
 /**
- * Mark the published commit with an annotated git tag so the publish is a
- * traceable, immutable point in the project's history (visible in the
- * commit graph as a `tag:` decoration). Records `publishedCommitSha` +
- * `publishedTag` on the Project for the publish panel.
+ * Mark the published commit with git tags so a publish is a traceable point in
+ * the project's history (visible in the commit graph as `tag:` decorations) and
+ * the graph/UI can resolve "what's live" git-natively.
  *
- * Pod-owned model: the pod owns the durable repo, so the tag is created
- * AND persisted by the pod inside `/agent/git-flush` (we pass the tag name
- * and read back the tagged sha). The API just records the result; the tag
- * shows up in the graph on the API's next read-hydrate. Best-effort — a
- * failure here must not fail an otherwise-successful publish.
+ * Two tags are written at HEAD:
+ *   - `publish/<subdomain>/<unix-ts>`  immutable, per-deploy history entry
+ *   - `published/<subdomain>`          stable moving pointer at the LIVE commit
+ *     (force-updated each publish; the graph resolves the live node from this)
+ *
+ * `deletePointerSubdomains` removes stale `published/<old>` pointers in the same
+ * round trip (used when a project changes its subdomain).
+ *
+ * Pod-owned model: the pod owns the durable repo, so tags are created AND
+ * persisted by the pod inside `/agent/git-flush` (we pass the tag names and
+ * read back the resulting HEAD sha). The API just records the result; the tags
+ * show up in the graph on the API's next read-hydrate. Best-effort — a failure
+ * here must not fail an otherwise-successful publish.
  */
 async function tagPublishedCommit(
   projectId: string,
   subdomain: string,
-): Promise<{ sha: string; tag: string } | null> {
+  opts: { deletePointerSubdomains?: string[] } = {},
+): Promise<{ sha: string; tag: string; pointerTag: string } | null> {
   const tag = `publish/${subdomain}/${Math.floor(Date.now() / 1000)}`
+  const pointerTag = `published/${subdomain}`
+  const deleteTags = (opts.deletePointerSubdomains ?? [])
+    .filter((s) => s && s !== subdomain)
+    .map((s) => `published/${s}`)
   const result = await flushGitSync(projectId, {
-    tag,
-    tagMessage: `Published ${subdomain}.${PUBLISH_DOMAIN}`,
+    tags: [
+      { name: tag, message: `Published ${subdomain}.${PUBLISH_DOMAIN}` },
+      { name: pointerTag, message: `Live: ${subdomain}.${PUBLISH_DOMAIN}`, force: true },
+    ],
+    ...(deleteTags.length ? { deleteTags } : {}),
   })
   if (!result?.sha) {
     console.warn(`[Publish] No HEAD to tag for ${projectId} (pod git sync inactive or repo empty?)`)
     return null
   }
-  console.log(`[Publish] Tagged ${projectId} HEAD ${result.sha.slice(0, 8)} as ${tag}`)
-  return { sha: result.sha, tag: result.tag ?? tag }
+  console.log(`[Publish] Tagged ${projectId} HEAD ${result.sha.slice(0, 8)} as ${tag} + ${pointerTag}`)
+  return { sha: result.sha, tag, pointerTag }
+}
+
+/**
+ * Best-effort removal of the stable `published/<subdomain>` pointer tag (the
+ * immutable `publish/<subdomain>/<ts>` history tags are intentionally kept).
+ * Used on unpublish so the graph stops marking any commit as live.
+ */
+async function deletePublishPointer(projectId: string, subdomain: string): Promise<void> {
+  await flushGitSync(projectId, { deleteTags: [`published/${subdomain}`] })
 }
 
 /**
@@ -722,14 +750,18 @@ export function publishRoutes() {
         console.log(`[Publish] Local mode - would publish to ${subdomain}.${PUBLISH_DOMAIN}`)
       }
 
-      // Tag the published commit in the durable git repo. This replaces
-      // the old auto-checkpoint-on-publish, which created the checkpoint
-      // against WORKSPACES_DIR/<id> on the API pod — a path that doesn't
-      // exist in the cloud topology (the workspace lives on the runtime
-      // pod / object storage), so it silently no-op'd for every cloud
-      // publish. Tagging flushes the pod's git sync, hydrates the durable
-      // repo here, and marks HEAD with `publish/<subdomain>/<ts>`.
-      const tagged = await tagPublishedCommit(projectId, subdomain)
+      // Tag the published commit in the durable git repo: a timestamped
+      // history tag plus the stable `published/<subdomain>` pointer the graph
+      // resolves "what's live" from. On a subdomain change we also drop the old
+      // `published/<oldSubdomain>` pointer in the same round trip. Tagging
+      // flushes the pod's git sync and hydrates the durable repo here.
+      const previousSubdomain =
+        project.publishedSubdomain && project.publishedSubdomain !== subdomain
+          ? project.publishedSubdomain
+          : undefined
+      const tagged = await tagPublishedCommit(projectId, subdomain, {
+        deletePointerSubdomains: previousSubdomain ? [previousSubdomain] : [],
+      })
 
       // Update project with publish info
       const publishedAt = new Date()
@@ -747,6 +779,20 @@ export function publishRoutes() {
           ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
         } as any,
       })
+
+      // Record the live commit as a checkpoint so "what's live" is a real,
+      // rollback-able point in history (idempotent on commitSha). Best-effort.
+      if (tagged?.sha) {
+        try {
+          await recordCheckpointForCommit(projectId, tagged.sha, {
+            name: `Published to ${subdomain}`,
+            commitMessage: `Published ${subdomain}.${PUBLISH_DOMAIN}`,
+            isAutomatic: true,
+          })
+        } catch (err: any) {
+          console.warn(`[Publish] Failed to record publish checkpoint for ${projectId}:`, err?.message ?? err)
+        }
+      }
 
       // Point any already-active custom domains at the (possibly new)
       // subdomain prefix in the Worker's routing map.
@@ -821,6 +867,11 @@ export function publishRoutes() {
       // routing via syncCustomDomainKv.
       await clearCustomDomainKv(projectId)
 
+      // Remove the stable `published/<subdomain>` pointer so the graph stops
+      // marking any commit as live. The immutable per-deploy history tags are
+      // intentionally kept. Best-effort.
+      await deletePublishPointer(projectId, project.publishedSubdomain)
+
       // Clear publish info from project
       await prisma.project.update({
         where: { id: projectId },
@@ -833,7 +884,9 @@ export function publishRoutes() {
           accessLevel: "anyone",
           siteTitle: null,
           siteDescription: null,
-        },
+          publishedCommitSha: null,
+          publishedTag: null,
+        } as any,
       })
 
       return c.json({ success: true }, 200)
@@ -925,6 +978,19 @@ export function publishRoutes() {
           ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
         } as any,
       })
+
+      // Record the (new) live commit as a checkpoint, idempotent on commitSha.
+      if (tagged?.sha) {
+        try {
+          await recordCheckpointForCommit(projectId, tagged.sha, {
+            name: `Published to ${subdomain}`,
+            commitMessage: `Published ${subdomain}.${PUBLISH_DOMAIN}`,
+            isAutomatic: true,
+          })
+        } catch (err: any) {
+          console.warn(`[Publish] Failed to record republish checkpoint for ${projectId}:`, err?.message ?? err)
+        }
+      }
 
       // Keep custom-domain routing in sync with the republished content.
       await syncCustomDomainKv(projectId, subdomain)

@@ -52,6 +52,7 @@ import {
   persistRepoToStore,
   seedRepoIfAbsent,
   createTagLocal,
+  deleteTagLocal,
   getHeadSha,
   repoStoreConfigFromEnv,
   gatherCommitMeta,
@@ -4410,15 +4411,36 @@ app.post('/agent/git-flush', async (c) => {
   if (!gitSyncInstance) {
     return c.json({ ok: true, flushed: false, reason: 'git-sync-not-active' })
   }
+  // Legacy single-tag fields (`tag`/`tagMessage`) are still accepted; the
+  // publish flow now sends `tags[]` (timestamped history + stable
+  // `published/<subdomain>` pointer) and `deleteTags[]` (old pointer cleanup
+  // on subdomain change / unpublish).
   let tag: string | undefined
   let tagMessage: string | undefined
+  let tags: Array<{ name: string; message?: string; force?: boolean }> = []
+  let deleteTags: string[] = []
   try {
     const body = await c.req.json().catch(() => ({}))
     tag = typeof body?.tag === 'string' ? body.tag : undefined
     tagMessage = typeof body?.tagMessage === 'string' ? body.tagMessage : undefined
+    if (Array.isArray(body?.tags)) {
+      tags = body.tags
+        .filter((t: any) => t && typeof t.name === 'string')
+        .map((t: any) => ({
+          name: t.name as string,
+          message: typeof t.message === 'string' ? t.message : undefined,
+          force: t.force === true,
+        }))
+    }
+    if (Array.isArray(body?.deleteTags)) {
+      deleteTags = body.deleteTags.filter((t: any) => typeof t === 'string')
+    }
   } catch {
     /* no body */
   }
+  // Fold the legacy single tag into the unified list (force, matching prior behavior).
+  if (tag) tags.push({ name: tag, message: tagMessage, force: true })
+
   try {
     // Legacy size-based offload (skipped under LFS — flush() handles LFS via
     // beforeStage track + afterCommit push).
@@ -4426,16 +4448,28 @@ app.post('/agent/git-flush', async (c) => {
     if (lfCfg && !isLfsActive()) await syncLargeFiles(lfCfg)
     await gitSyncInstance.flush()
 
+    let didTagOp = false
+    for (const name of deleteTags) {
+      try {
+        await deleteTagLocal(WORKSPACE_DIR, name)
+        didTagOp = true
+      } catch (e: any) {
+        console.warn(`[agent-runtime] git-flush: failed to delete tag ${name}:`, e?.message ?? e)
+      }
+    }
     let taggedSha: string | null = null
-    if (tag) {
-      taggedSha = await createTagLocal(WORKSPACE_DIR, tag, { message: tagMessage, force: true })
-      // Re-persist so the durable repo carries the new tag (LFS objects are
+    for (const t of tags) {
+      taggedSha = await createTagLocal(WORKSPACE_DIR, t.name, { message: t.message, force: t.force })
+      didTagOp = true
+    }
+    if (didTagOp) {
+      // Re-persist so the durable repo carries the tag changes (LFS objects are
       // already in OCI from the flush; re-push is a cheap no-op via dedup).
       await persistDurableRepo()
     }
 
     const sha = taggedSha ?? (await getHeadSha(WORKSPACE_DIR))
-    return c.json({ ok: true, flushed: true, sha, tag: tag ?? null })
+    return c.json({ ok: true, flushed: true, sha, tag: tag ?? null, tags: tags.map((t) => t.name) })
   } catch (err: any) {
     console.error('[agent-runtime] /agent/git-flush failed:', err?.message ?? err)
     return c.json({ ok: false, error: err?.message ?? 'git-flush failed' }, 500)

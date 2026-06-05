@@ -181,6 +181,25 @@ export async function createTagLocal(
   return getHeadSha(workspaceDir)
 }
 
+/**
+ * Delete a tag in the pod's repo. Used by the publish flow to move/remove the
+ * stable `published/<subdomain>` pointer (on subdomain change / unpublish).
+ * Idempotent: deleting a tag that doesn't exist is NOT an error — returns
+ * `false` rather than throwing. The caller re-persists `.git` afterward.
+ */
+export async function deleteTagLocal(workspaceDir: string, name: string): Promise<boolean> {
+  if (!existsSync(join(workspaceDir, '.git'))) return false
+  const tagRe = /^[0-9a-zA-Z][0-9a-zA-Z._/-]{0,199}$/
+  if (!tagRe.test(name)) throw new Error(`Invalid tag name: ${name}`)
+  try {
+    await run('git', ['tag', '-d', name], { cwd: workspaceDir })
+    return true
+  } catch {
+    // Missing tag (git exits non-zero) — fine for an idempotent delete.
+    return false
+  }
+}
+
 /** Build a {@link RepoStoreConfig} from the runtime env, or null when unset. */
 export function repoStoreConfigFromEnv(logger?: Logger): RepoStoreConfig | null {
   const bucket = process.env.S3_WORKSPACES_BUCKET

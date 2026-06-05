@@ -6,6 +6,7 @@
 // message, author + co-authors, and the file list with Path / Tree views.
 
 import {
+  ExternalLink,
   FilePlus,
   FilePen,
   FileMinus,
@@ -14,6 +15,7 @@ import {
   GitCommit,
   ListTree,
   Loader2,
+  Rocket,
   RotateCcw,
 } from "lucide-react-native";
 import { useMemo, useState } from "react";
@@ -23,7 +25,7 @@ import type {
   GitCommitDetailFile,
   GitStatus,
 } from "@shogo/shared-app/hooks";
-import { avatarColor, formatDateTime, initials, isAiAuthor } from "./gitAvatar";
+import { avatarColor, formatDateTime, initials, isAiAuthor, relativeTime } from "./gitAvatar";
 
 export function CommitDetailPanel({
   detail,
@@ -31,6 +33,10 @@ export function CommitDetailPanel({
   isWip,
   workingStatus,
   checkpointId,
+  isLive = false,
+  liveUrl,
+  publishedAt,
+  onViewLive,
   isRollingBack,
   onRollback,
   onOpenFile,
@@ -41,6 +47,10 @@ export function CommitDetailPanel({
   isWip: boolean;
   workingStatus: GitStatus | null;
   checkpointId: string | null;
+  isLive?: boolean;
+  liveUrl?: string | null;
+  publishedAt?: number | null;
+  onViewLive?: () => void;
   isRollingBack: boolean;
   onRollback: (checkpointId: string) => void;
   onOpenFile: (path: string) => void;
@@ -73,6 +83,18 @@ export function CommitDetailPanel({
         <span className="text-[12px] text-[color:var(--ide-muted)]">
           commit <span className="font-mono text-[color:var(--ide-text-strong)]">{detail.shortSha}</span>
         </span>
+        {isLive && (
+          <span
+            className="flex items-center gap-1 rounded px-1.5 h-[18px] border text-[11px]"
+            style={{
+              background: "color-mix(in srgb, var(--ide-success, #10b981) 18%, transparent)",
+              borderColor: "var(--ide-success, #10b981)",
+              color: "var(--ide-text-strong)",
+            }}
+          >
+            <Rocket size={10} style={{ color: "var(--ide-success, #10b981)" }} /> Live
+          </span>
+        )}
       </div>
 
       <div className="flex-1 overflow-auto">
@@ -86,6 +108,29 @@ export function CommitDetailPanel({
             </div>
           )}
         </div>
+
+        {isLive && liveUrl && (
+          <div className="px-4 pb-3 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-[12px] text-[color:var(--ide-text-strong)] truncate">
+                Live at {liveUrl.replace(/^https?:\/\//, "")}
+              </div>
+              {typeof publishedAt === "number" && (
+                <div className="text-[11px] text-[color:var(--ide-muted)]">
+                  published {relativeTime(new Date(publishedAt).toISOString())}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => onViewLive?.()}
+              title="Open the live site"
+              className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium text-white shrink-0"
+              style={{ background: "var(--ide-success, #10b981)" }}
+            >
+              <ExternalLink size={12} /> View live
+            </button>
+          </div>
+        )}
 
         <div className="px-4 py-3 border-t border-[color:var(--ide-border)]">
           <div className="flex items-start justify-between gap-2">

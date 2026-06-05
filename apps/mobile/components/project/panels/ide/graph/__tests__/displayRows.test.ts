@@ -49,6 +49,21 @@ describe("buildDisplayRows", () => {
     expect(rows.every((r) => !r.isCheckpoint)).toBe(true);
   });
 
+  it("flags only the live commit when a liveSha is given", () => {
+    const commits = [commit("c", ["b"]), commit("b", ["a"]), commit("a", [])];
+    const { rows } = buildDisplayRows(commits, cleanStatus, new Set(["b"]), "b");
+
+    expect(rows.map((r) => r.isLive)).toEqual([false, true, false]);
+    // Live + checkpoint are independent flags that can co-exist on one commit.
+    expect(rows.find((r) => r.sha === "b")?.isCheckpoint).toBe(true);
+  });
+
+  it("marks no rows live when liveSha is absent", () => {
+    const commits = [commit("c", ["b"]), commit("b", [])];
+    const { rows } = buildDisplayRows(commits, cleanStatus, new Set(["c"]));
+    expect(rows.every((r) => !r.isLive)).toBe(true);
+  });
+
   it("prepends a non-checkpoint WIP row when the working tree is dirty", () => {
     const commits = [commit("c", ["b"]), commit("b", [])];
     const dirty: GitStatus = {

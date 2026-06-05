@@ -141,21 +141,25 @@ function GraphNode({
   const ai = isAiAuthor(commit.author, commit.authorEmail);
   const bg = ai ? "#e0457b" : avatarColor(commit.authorEmail || commit.author);
   const isCp = row.isCheckpoint;
+  const isLive = row.isLive;
 
-  // Checkpoint commits get a distinct amber ring so they stand out from
-  // ordinary commits in the graph (matches the amber rollback accent used
-  // elsewhere in the checkpoint UI). Selection ring stacks on top.
-  const boxShadow = [
+  // Concentric rings, innermost first (box-shadows listed earlier paint on
+  // top): selection -> checkpoint (amber) -> live (green). Checkpoints match
+  // the amber rollback accent; the live ring marks the currently-published
+  // commit so it's obvious at a glance which commit is deployed.
+  const rings: string[] = [
     selected ? `0 0 0 2px var(--ide-active-ring)` : `0 0 0 1px rgba(0,0,0,0.4)`,
-    isCp ? `0 0 0 ${selected ? 4 : 2.5}px #f59e0b` : null,
-  ]
-    .filter(Boolean)
-    .join(", ");
+  ];
+  if (isCp) rings.push(`0 0 0 ${selected ? 4 : 2.5}px #f59e0b`);
+  if (isLive) {
+    rings.push(`0 0 0 ${isCp ? (selected ? 6 : 4.5) : selected ? 4 : 2.5}px #10b981`);
+  }
+  const boxShadow = rings.join(", ");
 
   return (
     <div
       {...common}
-      title={`${commit.author} · ${commit.shortSha}${isCp ? " · checkpoint" : ""}`}
+      title={`${commit.author} · ${commit.shortSha}${isCp ? " · checkpoint" : ""}${isLive ? " · live" : ""}`}
       className="flex items-center justify-center rounded-full cursor-pointer select-none"
       style={{
         ...common.style,
