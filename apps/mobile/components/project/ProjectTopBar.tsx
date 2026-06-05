@@ -76,6 +76,7 @@ import type { UsageWindows } from '@shogo/shared-app/hooks'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
 import { CompactUsageWindows } from '../billing/UsageWindows'
 import { PublishDropdown } from './PublishDropdown'
+import { CloudSyncStatusPill } from './CloudSyncStatusPill'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 import { api } from '../../lib/api'
@@ -705,6 +706,10 @@ export function ProjectTopBar({
               </PopoverBody>
             </PopoverContent>
           </Popover>
+
+          {/* Cloud content-sync status (desktop + cloud-linked only; the
+              pill self-gates and renders nothing otherwise). */}
+          <CloudSyncStatusPill projectId={projectId} />
         </View>
 
         <View className="flex-1" />
