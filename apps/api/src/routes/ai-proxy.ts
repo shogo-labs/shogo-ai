@@ -90,7 +90,10 @@ interface ChatCompletionContentBlock {
 export interface ChatCompletionRequest {
   model: string
   messages: Array<{
-    role: 'system' | 'user' | 'assistant' | 'tool'
+    // `developer` is OpenAI's reasoning-model alias for the system prompt;
+    // accept it here so callers routed through the OpenAI chat-completions
+    // shape (pi-ai's openai-completions provider) don't trip the converter.
+    role: 'system' | 'developer' | 'user' | 'assistant' | 'tool'
     content: string | Array<ChatCompletionContentBlock>
     name?: string
     tool_call_id?: string
@@ -838,7 +841,9 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
   const messages: Array<{ role: string; content: string | Array<any> }> = []
 
   for (const msg of request.messages) {
-    if (msg.role === 'system') {
+    // Anthropic has no `developer` role — OpenAI reasoning models use it as the
+    // system-prompt channel — so fold `developer` into the `system` parameter.
+    if (msg.role === 'system' || msg.role === 'developer') {
       const text = typeof msg.content === 'string'
         ? msg.content
         : msg.content.map(p => p.text || '').join('\n')
@@ -878,17 +883,17 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
         const last = blocks[blocks.length - 1] as { cache_control?: AnthropicCacheControl }
         if (!last.cache_control) last.cache_control = msgCC
       }
-      messages.push({ role: msg.role === 'tool' ? 'user' : msg.role, content: blocks })
+      messages.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content: blocks })
     } else if (typeof msg.content === 'string' && msgCC) {
       // Coerce string content to a single text block so cache_control has a home.
       messages.push({
-        role: msg.role === 'tool' ? 'user' : msg.role,
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
         content: [{ type: 'text', text: msg.content, cache_control: msgCC }],
       })
     } else {
       // No cache metadata on this message — pass through unchanged.
       messages.push({
-        role: msg.role === 'tool' ? 'user' : msg.role,
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
         content: msg.content,
       })
     }
