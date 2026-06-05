@@ -21,7 +21,8 @@ import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
-import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
+import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
+import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded } from '@shogo-ai/sdk/generators'
 import {
   commitBuildOutputAsync,
   cleanupStagingOutput,
@@ -1170,8 +1171,99 @@ export class PreviewManager {
    * Returns false on any failure; the error message is exposed via
    * `apiLastGenerateError` for the caller to surface to the agent.
    */
+  /**
+   * Guard the protected `prisma/schema.prisma` header against a stray
+   * `write_file` that downgrades it — most damagingly an agent rewriting the
+   * whole schema from a Prisma-5/6 memory and re-introducing
+   * `url = env("DATABASE_URL")` in the datasource (a hard `P1012` error on
+   * Prisma 7) or the legacy `prisma-client-js` generator. Runs immediately
+   * before the schema is consumed by `shogo generate` / `prisma db push`, so a
+   * downgrade never reaches Prisma. The agent's models are preserved; only the
+   * generator/datasource header is restored (and re-wrapped in SHOGO:CUSTOM
+   * markers). No-op when the header is already Prisma-7-correct.
+   */
+  private healSchemaHeader(): boolean {
+    const schemaPath = join(this.bundlerCwd, 'prisma', 'schema.prisma')
+    if (!existsSync(schemaPath)) return false
+    let schema: string
+    try {
+      schema = readFileSync(schemaPath, 'utf-8')
+    } catch {
+      return false
+    }
+    if (!headerIsDowngraded(schema)) return false
+
+    let repaired: string
+    try {
+      repaired = enforceSchemaHeader(schema)
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] schema-header guard failed: ${err?.message ?? err}`)
+      return false
+    }
+    if (repaired === schema) return false
+
+    try {
+      writeFileSync(schemaPath, repaired, 'utf-8')
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] schema-header guard write failed: ${err?.message ?? err}`)
+      return false
+    }
+    // Keep the watcher from treating our own corrective write as a new edit.
+    this.lastSchemaHash = createHash('sha1').update(repaired, 'utf-8').digest('hex')
+    console.warn(
+      `[${LOG_PREFIX}] Restored protected prisma/schema.prisma header ` +
+        `(stripped datasource url / legacy generator provider that would break Prisma 7).`,
+    )
+    return true
+  }
+
+  /**
+   * Sibling of {@link healSchemaHeader} for `prisma.config.ts`. When a stray
+   * write dropped the Prisma-7-required `datasource.url` (e.g. moved it under a
+   * `migrate`/`async url()` resolver — the shape weaker models produce), restore
+   * the canonical config so `prisma db push` / `generate` can resolve the
+   * datasource URL. `prisma.config.ts` isn't watched, so no hash bookkeeping is
+   * needed; the heal is idempotent and only writes when the config is broken.
+   */
+  private healPrismaConfig(): boolean {
+    const configPath = join(this.bundlerCwd, 'prisma.config.ts')
+    if (!existsSync(configPath)) return false
+    let config: string
+    try {
+      config = readFileSync(configPath, 'utf-8')
+    } catch {
+      return false
+    }
+    if (!configIsDowngraded(config)) return false
+
+    let repaired: string
+    try {
+      repaired = enforcePrismaConfig(config)
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] prisma-config guard failed: ${err?.message ?? err}`)
+      return false
+    }
+    if (repaired === config) return false
+
+    try {
+      writeFileSync(configPath, repaired, 'utf-8')
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] prisma-config guard write failed: ${err?.message ?? err}`)
+      return false
+    }
+    console.warn(
+      `[${LOG_PREFIX}] Restored prisma.config.ts datasource.url ` +
+        `(agent wrote a config without datasource.url; prisma db push would fail).`,
+    )
+    return true
+  }
+
   private async runShogoGenerate(): Promise<boolean> {
     const cwd = this.bundlerCwd
+    // Protect the generator+datasource header before the codegen pipeline
+    // (which runs `prisma generate`) reads the schema.
+    this.healSchemaHeader()
+    this.healPrismaConfig()
     const pkgJsonPath = join(cwd, 'package.json')
     if (!existsSync(pkgJsonPath)) return false
 
@@ -1283,7 +1375,12 @@ export class PreviewManager {
     }
     console.log(`[${LOG_PREFIX}] Running ${cmdLabel} at ${cwd}...`)
 
-    return await new Promise<boolean>((resolveResult) => {
+    // Preserve any SHOGO:CUSTOM regions in server.tsx (e.g. custom tenant
+    // middleware) across this regeneration. Captured before the overwrite,
+    // re-applied after a successful generate. No-op when there are none.
+    const preservedRegions = captureServerCustomRegions(cwd)
+
+    const generateOk = await new Promise<boolean>((resolveResult) => {
       // Use async spawn rather than execSync. The runtime's startup path
       // already drives a vite watcher, an LSP server, and the agent
       // gateway concurrently — blocking the event loop with execSync
@@ -1339,6 +1436,9 @@ export class PreviewManager {
         }
       })
     })
+
+    if (generateOk) reapplyServerCustomRegions(preservedRegions)
+    return generateOk
   }
 
   /**
@@ -1937,6 +2037,12 @@ export class PreviewManager {
     const cwd = this.bundlerCwd
     const prismaSchema = join(cwd, 'prisma', 'schema.prisma')
     if (!existsSync(prismaSchema)) return
+
+    // Restore the protected header before any Prisma CLI reads the schema, so a
+    // stray write_file that re-added a Prisma-6 datasource url can't break
+    // `prisma generate` / `db push`. Same for prisma.config.ts (datasource.url).
+    this.healSchemaHeader()
+    this.healPrismaConfig()
 
     const prismaClientExists = this.prismaClientDirCandidates(cwd).some((p) => existsSync(p))
     if (prismaClientExists) {

@@ -94,6 +94,7 @@ import {
   previewBuildLogPath,
   previewConsoleLogPath,
 } from './runtime-log-paths'
+import { shouldInjectPreviewUrl, buildPreviewUrlBlock } from './preview-url-context'
 
 const QUICK_ACTION_GUIDE = `## Quick Actions
 
@@ -2330,7 +2331,7 @@ export class AgentGateway {
         ? { 'x-chat-session-id': sessionId }
         : undefined
 
-      const result = await runAgentLoop({
+      const loopOptions: Parameters<typeof runAgentLoop>[0] = {
         provider,
         model: modelId,
         system: systemPrompt,
@@ -2578,7 +2579,51 @@ export class AgentGateway {
             })
           )
         },
-      })
+      }
+
+      let result = await runAgentLoop(loopOptions)
+
+      // Auto-continue across the iteration ceiling (ported from teammate-loop's
+      // MAX_TEAMMATE_CONTINUATIONS). A long task that exhausts maxIterations
+      // should keep going a bounded number of times and end with a real model
+      // summary, instead of stalling on a blank/boilerplate "ran out of steps"
+      // turn. Synthetic continuation prompts accumulate into history so message
+      // alternation stays valid; usage is folded forward for accurate billing.
+      const maxAutoContinuations = parseInt(process.env.AGENT_MAX_AUTO_CONTINUATIONS || '3', 10)
+      let autoContinuations = 0
+      const accumulatedNewMessages = [...result.newMessages]
+      while (
+        result.maxIterationsExhausted &&
+        !result.loopBreak &&
+        !result.error &&
+        !turnAbort.signal.aborted &&
+        autoContinuations < maxAutoContinuations
+      ) {
+        autoContinuations++
+        console.warn(
+          `${this.logPrefix} Auto-continuing after iteration ceiling (pass ${autoContinuations}/${maxAutoContinuations}) for session ${sessionId}`,
+        )
+        const contHistory = [...history, ...accumulatedNewMessages]
+        const contPrompt =
+          'Continue — you ran out of steps before finishing. Pick up exactly where you left off and complete the remaining work. ' +
+          'When everything is done, end with a short summary of what you changed; if you are still not finished, say what remains.'
+        const contResult = await runAgentLoop({
+          ...loopOptions,
+          history: contHistory,
+          prompt: contPrompt,
+          images: undefined,
+        })
+        accumulatedNewMessages.push(...contResult.newMessages)
+        // Fold prior usage/iterations/tool calls forward so the whole turn is billed.
+        contResult.inputTokens += result.inputTokens
+        contResult.outputTokens += result.outputTokens
+        contResult.cacheReadTokens += result.cacheReadTokens
+        contResult.cacheWriteTokens += result.cacheWriteTokens
+        contResult.iterations += result.iterations
+        contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
+        result = contResult
+      }
+      result.newMessages = accumulatedNewMessages
 
       // Persist messages to session FIRST — before any uiWriter calls that
       // could throw due to client disconnect.  This ensures "continue" after
@@ -3110,12 +3155,18 @@ export class AgentGateway {
 
     // APP_MODE_DISABLED: app template context injection removed (was reading .app-template)
 
-    // 7c. Runtime build + console log tails (canvas mode only — Vite preview pipeline)
-    if (activeMode === 'canvas') {
+    // 7c. Preview URL — inject whenever the runtime can serve the app, so the
+    // agent always has the real public URL (not just in canvas mode). See
+    // shouldInjectPreviewUrl(); this closes the "shared a localhost URL" gap.
+    if (shouldInjectPreviewUrl(activeMode)) {
       const previewUrl = this.buildPreviewUrlContext()
       if (previewUrl) {
         pushDynamic('preview-url', previewUrl)
       }
+    }
+
+    // Runtime build + console log tails (canvas mode only — Vite preview pipeline)
+    if (activeMode === 'canvas') {
       const runtimeLogs = this.buildRuntimeLogsContext()
       if (runtimeLogs) {
         pushDynamic('runtime-logs', runtimeLogs)
@@ -3232,11 +3283,6 @@ export class AgentGateway {
    * agent about a URL that won't load.
    */
   private buildPreviewUrlContext(): string | null {
-    const publicUrl = process.env.PUBLIC_PREVIEW_URL?.trim() || ''
-
-    const runtimePort = parseInt(process.env.PORT || '8080', 10)
-    const internalUrl = `http://localhost:${runtimePort}/`
-
     // dist/ may live at either workspaceDir/project/dist (k8s layout, where
     // the project lives in a /project subdir) or workspaceDir/dist (local
     // RuntimeManager layout, where workspaceDir === projectDir).
@@ -3244,24 +3290,11 @@ export class AgentGateway {
       existsSync(join(this.workspaceDir, 'project', 'dist', 'index.html')) ||
       existsSync(join(this.workspaceDir, 'dist', 'index.html'))
 
-    if (publicUrl.length === 0 && !hasDist) return null
-
-    const externalUrl = publicUrl.length > 0 ? publicUrl : internalUrl
-    const hasDistinctPublic = publicUrl.length > 0 && publicUrl !== internalUrl
-
-    const lines: string[] = [
-      '## Running App Preview',
-      '',
-      `The user's app is running and reachable at **${externalUrl}**.`,
-    ]
-    if (hasDistinctPublic) {
-      lines.push(`Internal (from inside this runtime): \`${internalUrl}\`.`)
-    }
-    lines.push(
-      '',
-      'When the user asks you to QA / test / try the app, spawn the **browser_qa** subagent and pass this URL as the target. This block is the single source of truth for the preview URL — do not read it from `vite.config.ts`, `package.json`, or any other file; those values are overridden by the launcher.',
-    )
-    return lines.join('\n')
+    return buildPreviewUrlBlock({
+      publicUrl: process.env.PUBLIC_PREVIEW_URL,
+      runtimePort: parseInt(process.env.PORT || '8080', 10),
+      hasDist,
+    })
   }
 
   /**

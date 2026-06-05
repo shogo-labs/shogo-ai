@@ -139,6 +139,21 @@ function isRedacted(key: string): boolean {
   return REDACTED_ENV_PATTERNS.some((p) => p.test(key))
 }
 
+/**
+ * DATABASE_URL / PROJECTS_DATABASE_URL are redacted because in production they
+ * are Postgres/MySQL connection strings carrying credentials. The local
+ * sandbox/preview database, however, is a plain sqlite file URL
+ * (`file:.../dev.db`) — not a secret — and the agent legitimately needs it to
+ * run `prisma db push` / `shogo generate` directly (otherwise the push is
+ * skipped and the schema never reaches the DB). Treat ONLY file:-scheme values
+ * as non-secret; anything else (postgres://, mysql://, libsql://, …) stays
+ * redacted. Value-aware, so a stray real credential is never let through.
+ */
+function isNonSecretDbUrl(key: string, value: string | undefined): boolean {
+  if (!/^(DATABASE_URL|PROJECTS_DATABASE_URL)$/i.test(key)) return false
+  return typeof value === 'string' && /^file:/i.test(value.trim())
+}
+
 // Keys to capture into JS variables then delete from process.env.
 // After purgeSecretsFromEnv() runs, these are no longer visible to
 // child processes, `env`, `printenv`, or `echo $VAR`.
@@ -172,14 +187,16 @@ const capturedSecrets = new Map<string, string>()
 export function purgeSecretsFromEnv(): void {
   for (const key of PURGE_KEYS) {
     const val = process.env[key]
-    if (val !== undefined) {
+    // Keep non-secret sqlite file: DB URLs visible (see isNonSecretDbUrl) so
+    // the agent can run prisma against the local preview DB.
+    if (val !== undefined && !isNonSecretDbUrl(key, val)) {
       capturedSecrets.set(key, val)
       delete process.env[key]
     }
   }
   // Also purge any remaining env vars that match the broad patterns
   for (const key of Object.keys(process.env)) {
-    if (isRedacted(key)) {
+    if (isRedacted(key) && !isNonSecretDbUrl(key, process.env[key])) {
       if (!capturedSecrets.has(key) && process.env[key] !== undefined) {
         capturedSecrets.set(key, process.env[key]!)
       }
@@ -196,7 +213,7 @@ export function getCapturedSecret(key: string): string | undefined {
 export function getSanitizedEnv(): NodeJS.ProcessEnv {
   const clean: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(process.env)) {
-    if (!isRedacted(key)) {
+    if (!isRedacted(key) || isNonSecretDbUrl(key, value)) {
       clean[key] = value
     }
   }

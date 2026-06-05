@@ -10,7 +10,7 @@
  * Usage: pass --vm to run-eval.ts to use VM isolation.
  */
 
-import { existsSync, mkdirSync, rmSync, readFileSync, chmodSync } from 'fs'
+import { existsSync, mkdirSync, rmSync, readFileSync, chmodSync, cpSync, mkdtempSync } from 'fs'
 import { resolve, join } from 'path'
 import { tmpdir } from 'os'
 import { type DockerWorker, REPO_ROOT } from './docker-worker'
@@ -103,6 +103,45 @@ function ensureVMBundle(): Record<string, Buffer> {
     { cwd: REPO_ROOT, stdio: 'pipe' },
   )
 
+  // Inject the runtime-template SOURCE (no node_modules) into the seed bundle.
+  // The template is normally baked into the VM image at /app/templates/, but
+  // rootfs-provisioned images can ship without it (the bake step doesn't always
+  // persist) — which makes every workspace seed fail with "runtime-template not
+  // found in any candidate path". Shipping the source here (cloud-init extracts
+  // it at boot) makes the eval self-sufficient regardless of the image; deps are
+  // handled separately by ensureWorkspaceDeps. Mirrors the image-build staging:
+  // materialize the `@shogo-ai/sdk: workspace:*` sentinel so an in-VM install can
+  // resolve outside the monorepo.
+  try {
+    console.log('  Staging runtime-template source for VM...')
+    const stageRoot = mkdtempSync(join(tmpdir(), 'shogo-rt-stage-'))
+    const stagedTemplate = join(stageRoot, 'runtime-template')
+    const srcTemplate = resolve(REPO_ROOT, 'templates/runtime-template')
+    const skipTop = new Set(['node_modules', '.git', 'bun.lock', '.DS_Store'])
+    cpSync(srcTemplate, stagedTemplate, {
+      recursive: true,
+      filter: (src) => {
+        const rel = src.slice(srcTemplate.length + 1)
+        return rel ? !skipTop.has(rel.split('/')[0]) : true
+      },
+    })
+    const rtPkg = join(stagedTemplate, 'package.json')
+    if (existsSync(rtPkg) && readFileSync(rtPkg, 'utf-8').includes('"workspace:')) {
+      try {
+        execSync(`bun run "${resolve(REPO_ROOT, 'scripts/materialize-runtime-template.ts')}" "${rtPkg}"`, {
+          cwd: REPO_ROOT,
+          stdio: 'pipe',
+        })
+      } catch (err: any) {
+        console.warn(`  (runtime-template materialize skipped: ${err?.message ?? err})`)
+      }
+    }
+    execSync(`tar -czf "${join(dir, 'runtime-template.tar.gz')}" -C "${stageRoot}" runtime-template`, { stdio: 'pipe' })
+    rmSync(stageRoot, { recursive: true, force: true })
+  } catch (err: any) {
+    console.warn(`  (runtime-template staging failed — VM will rely on baked image: ${err?.message ?? err})`)
+  }
+
   const readBuf = (f: string) => {
     const p = join(dir, f)
     return existsSync(p) ? readFileSync(p) : Buffer.alloc(0)
@@ -111,6 +150,8 @@ function ensureVMBundle(): Record<string, Buffer> {
     'server.js': readBuf('server.js'),
     'shogo.js': readBuf('shogo.js'),
   }
+  const rtTar = readBuf('runtime-template.tar.gz')
+  if (rtTar.length > 0) bundleFiles['runtime-template.tar.gz'] = rtTar
 
   const bundleMod = getPrepareBundleModule()
   const wasmBuf = bundleMod.getTreeSitterWasmBuffer(REPO_ROOT)
@@ -190,6 +231,18 @@ export async function startVMWorker(
     // Legacy alias retained for any not-yet-rebundled code that still
     // looks for SKILL_SERVER_PORT; harmless when ignored.
     SKILL_SERVER_PORT: '4100',
+    // Prisma 7.8 resolves `datasource.url` from prisma.config.ts at config
+    // load time and HARD-ERRORS ("The datasource.url property is required in
+    // your Prisma config file when using prisma db push.") when it can't —
+    // i.e. when DATABASE_URL is unset. The desktop runtime always pins this
+    // per spawn (preview-manager resolveApiServerEnv / runPrismaIfNeeded),
+    // but the eval agent routinely runs `prisma db push` / `prisma generate`
+    // straight from its exec shell, which inherits the gateway's process.env
+    // (pty-session buildEnv) — so without seeding it here every direct push
+    // fails and the app never reaches the DB. Pin the same workspace sqlite
+    // file the runtime uses (/workspace is the in-VM project root). Listed
+    // before envOverrides so a caller can still override it.
+    DATABASE_URL: 'file:/workspace/prisma/dev.db',
     ...config.envOverrides,
   }
   if (process.env.ANTHROPIC_API_KEY && !vmEnv.ANTHROPIC_API_KEY) vmEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY

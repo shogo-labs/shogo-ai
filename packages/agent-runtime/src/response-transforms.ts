@@ -95,10 +95,50 @@ const LARGE_STRING_FIELDS = new Set([
 const MAX_STRING_FIELD_CHARS = 500
 
 /**
+ * Byte budget reserved for the `_truncation` + `_meta` signal objects so adding
+ * them after fitting the payload doesn't blow past `maxChars`.
+ */
+const TRUNCATION_SIGNAL_BUDGET = 600
+
+export interface TruncationSignal {
+  truncated: true
+  /** Named string fields whose contents were cut. */
+  omittedFields: string[]
+  /** Present when an array was sliced. */
+  totalItems?: number
+  showing?: number
+  /** Machine + human readable instruction on how to recover the full value. */
+  hint: string
+}
+
+/**
+ * Build the top-level truncation signal. This is the unmissable, structured
+ * marker the agent must see — the old inline "[N chars omitted]" hint was
+ * routinely missed, so the model answered from partial content.
+ */
+function buildTruncationSignal(
+  omittedFields: string[],
+  arr?: { totalItems: number; showing: number },
+): TruncationSignal {
+  return {
+    truncated: true,
+    omittedFields: [...new Set(omittedFields)],
+    ...(arr ? { totalItems: arr.totalItems, showing: arr.showing } : {}),
+    hint:
+      'This payload was TRUNCATED to fit the context budget — it is incomplete. ' +
+      'Do not answer as if you have the whole thing. To recover the full value, ' +
+      're-fetch it from the source directly: for a Google Doc use ' +
+      'GOOGLEDRIVE_DOWNLOAD_FILE / export the file; for a long list, page through ' +
+      'it with a smaller range; for a file on disk, read it in chunks.',
+  }
+}
+
+/**
  * JSON-aware truncation that preserves structure instead of cutting raw strings.
  * 1. Limits array items to fit within budget
  * 2. Strips large string fields (body, description, etc.)
- * 3. Adds _meta with counts of what was omitted
+ * 3. Adds a structured top-level `_truncation` signal describing what was cut
+ *    and how to recover it (plus `_meta` counts for array slicing).
  */
 export function smartTruncateJson(data: unknown, maxChars: number = 12000): { result: string; truncated: boolean } {
   const full = JSON.stringify(data)
@@ -113,7 +153,10 @@ export function smartTruncateJson(data: unknown, maxChars: number = 12000): { re
 
   const afterStrip = JSON.stringify(cloned)
   if (afterStrip.length <= maxChars) {
-    return { result: afterStrip, truncated: true }
+    if (cloned && typeof cloned === 'object' && !Array.isArray(cloned)) {
+      cloned._truncation = buildTruncationSignal(omittedFields)
+    }
+    return { result: JSON.stringify(cloned), truncated: true }
   }
 
   const mainArray = findLargestArray(cloned)
@@ -122,6 +165,8 @@ export function smartTruncateJson(data: unknown, maxChars: number = 12000): { re
     const arr = obj[key] as unknown[]
     const totalItems = arr.length
 
+    // Leave room for the signal objects we attach after fitting.
+    const target = maxChars - TRUNCATION_SIGNAL_BUDGET
     let lo = 1
     let hi = arr.length
     let best = 1
@@ -129,7 +174,7 @@ export function smartTruncateJson(data: unknown, maxChars: number = 12000): { re
       const mid = Math.floor((lo + hi) / 2)
       obj[key] = arr.slice(0, mid)
       const size = JSON.stringify(cloned).length
-      if (size <= maxChars - 100) {
+      if (size <= target) {
         best = mid
         lo = mid + 1
       } else {
@@ -144,6 +189,9 @@ export function smartTruncateJson(data: unknown, maxChars: number = 12000): { re
     if (omittedFields.length > 0) {
       cloned._meta.truncatedFields = [...new Set(omittedFields)]
     }
+    if (cloned && typeof cloned === 'object' && !Array.isArray(cloned)) {
+      cloned._truncation = buildTruncationSignal(omittedFields, { totalItems, showing: best })
+    }
 
     const result = JSON.stringify(cloned)
     if (result.length <= maxChars) {
@@ -151,13 +199,9 @@ export function smartTruncateJson(data: unknown, maxChars: number = 12000): { re
     }
   }
 
-  // Last resort: raw truncation with valid JSON hint
+  // Last resort: raw truncation with a valid-JSON truncation signal appended.
   const headSize = Math.floor(maxChars * 0.8)
-  const meta = JSON.stringify({
-    _truncated: true,
-    _originalSize: full.length,
-    _omittedFields: [...new Set(omittedFields)],
-  })
+  const meta = JSON.stringify({ _truncation: buildTruncationSignal(omittedFields), _originalSize: full.length })
   const truncated = full.substring(0, headSize) + `\n\n[... ${full.length - headSize} chars truncated. Original size: ${full.length} chars ...]\n\n${meta}`
   return { result: truncated.substring(0, maxChars), truncated: true }
 }
