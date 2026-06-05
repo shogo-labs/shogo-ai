@@ -21,6 +21,7 @@ import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing.service"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
+import { stampModelProvider } from "../lib/stamp-model-provider"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
@@ -923,9 +924,15 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
           if (!hasAdvanced) {
             parsedBody.agentMode = 'claude-haiku-4-5-20251001'
-            body = JSON.stringify(parsedBody)
           }
         }
+        // Resolve the model's native provider from the registry and stamp it on
+        // the forwarded body. Runs after any tier-downgrade so the provider
+        // reflects the model that will actually run. Lets a UUID-addressed DB
+        // model route to its native provider instead of being inferred as
+        // `custom` by the runtime.
+        stampModelProvider(parsedBody)
+        body = JSON.stringify(parsedBody)
       }
 
       // Track the user who initiated this chat so AI proxy requests from the
