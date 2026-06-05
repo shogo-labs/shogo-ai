@@ -21,6 +21,7 @@ import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing.service"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
+import { getMergedModelEntrySync } from "../services/model-registry.service"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
@@ -923,13 +924,18 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
           if (!hasAdvanced) {
             parsedBody.agentMode = 'claude-haiku-4-5-20251001'
-            // The downgrade target is a native Anthropic model; drop any stale
-            // provider hint for the originally-selected model so the runtime
-            // infers the correct provider from the new id.
-            delete parsedBody.modelProvider
-            body = JSON.stringify(parsedBody)
           }
         }
+        // Tell the runtime the model's native provider. DB-defined models are
+        // addressed by an opaque UUID the runtime can't classify (it would
+        // infer `custom` and route through the lossy OpenAI-compat conversion
+        // path); the API server holds the model registry, so resolve the
+        // provider here from the final (post-downgrade) id. Unknown ids leave
+        // `modelProvider` unset → the runtime infers from the id as before.
+        const provider = getMergedModelEntrySync(resolveModelId(parsedBody.agentMode))?.provider
+        if (provider) parsedBody.modelProvider = provider
+        else delete parsedBody.modelProvider
+        body = JSON.stringify(parsedBody)
       }
 
       // Track the user who initiated this chat so AI proxy requests from the

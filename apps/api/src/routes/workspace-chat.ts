@@ -25,6 +25,7 @@ import type { IRuntimeManager } from '../lib/runtime'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing.service'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
+import { getMergedModelEntrySync } from '../services/model-registry.service'
 import { hasWorkspaceAccess } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
 import {
@@ -570,13 +571,16 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       if (getModelTier(resolvedModel) !== 'economy') {
         if (!(await billingService.hasAdvancedModelAccess(workspaceId))) {
           parsedBody.agentMode = 'claude-haiku-4-5-20251001'
-          // The downgrade target is a native Anthropic model; drop any stale
-          // provider hint for the originally-selected model so the runtime
-          // infers the correct provider from the new id.
-          delete parsedBody.modelProvider
-          body = JSON.stringify(parsedBody)
         }
       }
+      // Tell the runtime the model's native provider (resolved server-side from
+      // the DB registry on the final, post-downgrade id) so a UUID-addressed
+      // native model routes through the native path instead of being inferred
+      // as `custom`. Unknown ids leave it unset → runtime infers from the id.
+      const provider = getMergedModelEntrySync(resolveModelId(parsedBody.agentMode))?.provider
+      if (provider) parsedBody.modelProvider = provider
+      else delete parsedBody.modelProvider
+      body = JSON.stringify(parsedBody)
     }
 
     // Harden "@" references before forwarding to the runtime:
