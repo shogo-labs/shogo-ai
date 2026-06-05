@@ -345,7 +345,7 @@ export function Workbench({
     broadcastEditorFontChange(settings.fontFamily);
   }, [settings.fontFamily]);
 
-  const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal" });
+  const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal", invert: true });
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
