@@ -1216,6 +1216,9 @@ export class AgentGateway {
         const channelDef = this.config.channels.find(c => c.type === message.channelType)
         const model = channelDef?.model
         session.modelOverride = (model === 'basic' || model === 'advanced') ? model : 'basic'
+        // Channel models carry no provider hint; clear any stale one so the
+        // provider is inferred from this id.
+        session.modelProvider = undefined
       }
 
       try {
@@ -1363,6 +1366,11 @@ export class AgentGateway {
     writer: { write(chunk: Record<string, any>): void },
     options?: {
       modelOverride?: string
+      /** Native provider hint from the API server (resolved from the model
+       *  registry), paired with `modelOverride`. Lets a DB model addressed by
+       *  an opaque UUID route to its real provider (e.g. `anthropic`) instead
+       *  of being inferred as `custom`. Absent → id-based inference. */
+      modelProvider?: string
       fileParts?: FilePart[]
       userId?: string
       interactionMode?: 'agent' | 'plan' | 'ask'
@@ -1386,6 +1394,10 @@ export class AgentGateway {
     if (options?.modelOverride) {
       const session = this.sessionManager.getOrCreate(sessionId)
       session.modelOverride = options.modelOverride
+      // Keep the provider hint paired with the override. Assigned even when
+      // undefined so a previously-hinted model can't leave a stale provider
+      // behind once the selection changes.
+      session.modelProvider = options.modelProvider
     }
 
     if (options?.userId) {
@@ -1481,6 +1493,9 @@ export class AgentGateway {
       reloadConfig: () => this.reloadConfig(),
       setModelOverride: (model: string) => {
         session.modelOverride = model
+        // Slash-command/programmatic override carries no provider hint; clear
+        // any stale one so the provider is inferred from this id.
+        session.modelProvider = undefined
       },
       getStatus: () => this.getStatus(),
     }
@@ -1639,9 +1654,15 @@ export class AgentGateway {
       }
     } else {
       const effectiveAlias = modelAlias
-      provider = inferProviderFromModel(effectiveAlias, this.config.model.provider)
+      // Honor the API server's native provider hint when present (it's paired
+      // with the model override); otherwise infer from the id as before. This
+      // routes a DB model addressed by an opaque UUID to its real provider
+      // (anthropic → native passthrough) instead of falling back to `custom`
+      // and the lossy OpenAI-compat conversion path. For every id the catalog
+      // already classifies the way inference does, the hint is a no-op.
+      provider = session.modelProvider ?? inferProviderFromModel(effectiveAlias, this.config.model.provider)
       modelId = resolveModelAlias(effectiveAlias)
-      console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
+      console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider}${session.modelProvider ? ' (hint)' : ''} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
     }
 
     // Reset per-turn state and wire/clear the SSE writer for permission requests.

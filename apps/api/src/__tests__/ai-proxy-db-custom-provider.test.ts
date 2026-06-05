@@ -6,6 +6,7 @@ process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-
 // A real 32-byte master key so the registry can decrypt the custom provider key.
 process.env.SECRETS_ENCRYPTION_KEY = Buffer.from('0123456789abcdef0123456789abcdef').toString('base64')
 process.env.ANTHROPIC_API_KEY = 'sk-ant-db-routing-test'
+process.env.OPENAI_API_KEY = 'sk-openai-db-routing-test'
 
 /**
  * AI Proxy — DB-defined model routing (the model-registry → ai-proxy seam).
@@ -31,6 +32,13 @@ delete process.env.SHOGO_API_KEY
 delete process.env.SHOGO_CLOUD_URL
 
 const MIMO_KEY = 'sk-mimo-staging-routing-key-abcdef'
+
+// Opaque UUIDs are how DB models are really addressed in production (the slug
+// lives in `apiModel`/`aliases`, not the id). The prior native-routing
+// attempt's test used the slug as the id and so never exercised the
+// UUID → apiModel rewrite that actually 404s upstream.
+const OPUS_UUID = '11111111-2222-3333-4444-555555555555'
+const GPT_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 
 // ─── Mutable DB rows the registry loads through the mocked prisma ──────────
 let MODELS: any[] = []
@@ -89,6 +97,49 @@ function seed() {
       cachedInputPerMillion: 0.5,
       cacheWritePerMillion: 6.25,
       outputPerMillion: 25,
+    },
+    // UUID-addressed Opus: id is an opaque UUID, the real Anthropic slug lives
+    // in apiModel. This is the production addressing the routing must honor.
+    {
+      id: OPUS_UUID,
+      provider: 'anthropic',
+      providerId: null,
+      apiModel: 'claude-opus-4-8',
+      displayName: 'Claude Opus 4.8 (DB)',
+      shortDisplayName: 'Opus 4.8',
+      tier: 'premium',
+      family: 'opus',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 2,
+      aliases: [],
+      capabilities: null,
+      inputPerMillion: 5,
+      cachedInputPerMillion: 0.5,
+      cacheWritePerMillion: 6.25,
+      outputPerMillion: 25,
+    },
+    // UUID-addressed GPT: native OpenAI, routed through the Responses API.
+    {
+      id: GPT_UUID,
+      provider: 'openai',
+      providerId: null,
+      apiModel: 'gpt-5.5',
+      displayName: 'GPT 5.5 (DB)',
+      shortDisplayName: 'GPT 5.5',
+      tier: 'standard',
+      family: 'gpt',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 3,
+      aliases: [],
+      capabilities: null,
+      inputPerMillion: 2,
+      cachedInputPerMillion: 0.2,
+      cacheWritePerMillion: 2.5,
+      outputPerMillion: 10,
     },
   ]
 }
@@ -193,6 +244,37 @@ function postChat(app: any, model: string) {
   }))
 }
 
+// The runtime speaks the native Anthropic Messages API for `provider:anthropic`
+// models — this is the endpoint a UUID-addressed Opus turn actually hits.
+function postAnthropic(app: any, model: string) {
+  return app.fetch(new Request('http://x/api/ai/anthropic/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': TOKEN },
+    body: JSON.stringify({ model, max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] }),
+  }))
+}
+
+// The runtime speaks the OpenAI Responses API for native `provider:openai`
+// models — the endpoint a UUID-addressed GPT turn hits.
+function postResponses(app: any, model: string) {
+  return app.fetch(new Request('http://x/api/ai/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+    body: JSON.stringify({ model, input: 'hi' }),
+  }))
+}
+
+/** Parse the `model` field off the body of the last captured upstream fetch. */
+function lastForwardedModel(): string | undefined {
+  const raw = lastFetchInit?.body
+  if (typeof raw !== 'string') return undefined
+  try {
+    return JSON.parse(raw).model
+  } catch {
+    return undefined
+  }
+}
+
 describe('ai-proxy DB-defined model routing', () => {
   test('routes a custom-provider model to its base URL with Bearer auth', async () => {
     const res = await postChat(buildApp(), 'mimo-v2.5')
@@ -231,5 +313,29 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(res.status).toBe(400)
     const data = await res.json() as any
     expect(data.error.code).toBe('model_not_found')
+  })
+
+  // ── UUID-addressed native models (the actual production bug) ──────────────
+  // The runtime, given a provider hint, routes these through the native
+  // endpoints. The proxy must rewrite the opaque UUID to the upstream
+  // `apiModel` or the provider 404s on the unknown id.
+
+  test('Anthropic passthrough rewrites a UUID-addressed Opus to its apiModel', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID)
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://api.anthropic.com/v1/messages')
+    // The bug: forwarding the raw UUID 404s upstream. Must send the slug.
+    expect(lastForwardedModel()).toBe('claude-opus-4-8')
+    const apiKey = (lastFetchInit?.headers as Record<string, string>)?.['x-api-key']
+    expect(apiKey).toBe('sk-ant-db-routing-test')
+  })
+
+  test('Responses API rewrites a UUID-addressed GPT to its apiModel', async () => {
+    const res = await postResponses(buildApp(), GPT_UUID)
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://api.openai.com/v1/responses')
+    expect(lastForwardedModel()).toBe('gpt-5.5')
+    const auth = (lastFetchInit?.headers as Record<string, string>)?.['Authorization']
+    expect(auth).toBe('Bearer sk-openai-db-routing-test')
   })
 })
