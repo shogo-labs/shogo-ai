@@ -118,6 +118,26 @@ output "file_system_export_path" {
 }
 
 # -----------------------------------------------------------------------------
+# Custom domains (Cloudflare for SaaS) — null unless enabled. `one()` collapses
+# the counted publish_hosting submodule to its single instance (or null).
+# -----------------------------------------------------------------------------
+
+output "custom_domains_zone_id" {
+  description = "Dedicated custom-domains zone id (null when disabled). Wire into the api ksvc as CF_CUSTOM_DOMAIN_ZONE_ID."
+  value       = one(module.publish_hosting[*].custom_domains_zone_id)
+}
+
+output "custom_domains_kv_namespace_id" {
+  description = "Workers KV namespace id for the custom-domain routing map (null when disabled). Wire into the api ksvc as CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID."
+  value       = one(module.publish_hosting[*].custom_domains_kv_namespace_id)
+}
+
+output "custom_domain_fallback_origin" {
+  description = "Fallback-origin hostname customers CNAME at (null when disabled). Wire into the api ksvc as CUSTOM_DOMAIN_FALLBACK_ORIGIN."
+  value       = one(module.publish_hosting[*].custom_domain_fallback_origin)
+}
+
+# -----------------------------------------------------------------------------
 # Database connection info
 # For Tier 1: local CNPG (configured separately via K8s manifests)
 # For Tier 2: points to the primary region's database
