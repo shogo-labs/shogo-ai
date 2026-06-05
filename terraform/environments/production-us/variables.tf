@@ -38,6 +38,24 @@ variable "cloudflare_account_id" {
   type = string
 }
 
+# Custom domains (Cloudflare for SaaS). Left off by default: production owns
+# `shogo.one`, but the SaaS fallback origin + `*/*` worker route are per-zone
+# singletons and a `*/*` route on `shogo.one` would intercept every published
+# app + the apex. Enabling requires a DEDICATED zone (the module precondition
+# rejects `custom_domains_zone == shogo.one`). Set both, `terraform apply`, then
+# create the `custom-domains-config` secret from the outputs.
+variable "enable_custom_domains" {
+  description = "Enable Cloudflare for SaaS custom hostnames for production-us. Requires `custom_domains_zone` set to a dedicated zone (NOT shogo.one). Defaults to false."
+  type        = bool
+  default     = false
+}
+
+variable "custom_domains_zone" {
+  description = "Dedicated Cloudflare zone NAME for production custom hostnames. MUST differ from the shared `shogo.one` publish zone. Required when `enable_custom_domains` is true."
+  type        = string
+  default     = null
+}
+
 variable "signoz_endpoint" {
   type    = string
   default = "ingest.us.signoz.cloud:443"

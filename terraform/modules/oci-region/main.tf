@@ -232,6 +232,12 @@ module "publish_hosting" {
   oci_region            = var.region
   tags                  = local.region_tags
 
+  # Bring-your-own custom hostnames (Cloudflare for SaaS). Gated + defaulted
+  # off; when enabled, requires a dedicated zone distinct from the (shared)
+  # publish zone — see the submodule for the per-zone-singleton rationale.
+  enable_custom_domains = var.enable_custom_domains
+  custom_domains_zone   = var.custom_domains_zone
+
   # OCI Object Storage's PAR API has eventual consistency against bucket
   # creation. Without this depends_on, terraform parallelizes the
   # published_apps bucket creation and the PAR creation, and the PAR

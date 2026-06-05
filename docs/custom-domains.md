@@ -154,12 +154,30 @@ the feature on for staging:
 
 ### Production
 
-Production owns `shogo.one` outright but the same per-zone-singleton rule
-applies: pick a dedicated `custom_domains_zone` for production (it may be
-`shogo.one` itself only if production is the *sole* owner of that zone's SaaS
-config) and wire `production-us` the same way. The composite `oci-region`
-module does not yet forward `enable_custom_domains`; either call
-`publish-hosting-oci` directly or add the passthrough when enabling prod.
+Production owns `shogo.one` outright, but the same per-zone-singleton rule
+applies — and the module precondition **rejects** `custom_domains_zone ==
+shogo.one`, because a `*/*` route there would hijack every `*.shogo.one`
+published app plus the apex. So production also needs a dedicated zone.
+
+`production-us` is wired (gated, off by default): the `oci-region` composite
+forwards `enable_custom_domains` + `custom_domains_zone` to the publish
+submodule, and `k8s/overlays/production-us/api-service.yaml` carries the same
+inert `custom-domains-config` env block. To enable:
+
+1. Add a dedicated production custom-domains zone to Cloudflare.
+2. Set `enable_custom_domains = true` + `custom_domains_zone = "<that zone>"`
+   on the `production-us` env (tfvars / `TF_VAR_*` GH vars) and run
+   `terraform apply` for `production-us` via the Terraform workflow
+   (`workflow_dispatch`, prod approval required). Terraform is NOT applied by
+   the tag/deploy pipeline.
+3. Create the `custom-domains-config` secret in `shogo-production-system` from
+   the env outputs (`terraform output custom_domains_zone_id`,
+   `custom_domains_kv_namespace_id`, `custom_domain_fallback_origin`) + a
+   SaaS-scoped token, then restart the api.
+
+A `v*` tag only ships the (inert) code and runs the `custom_domains` migration;
+it does not enable the feature. EU/India serve published apps via the US
+worker, so custom domains run through production-us only.
 
 ## Notes & limits
 
