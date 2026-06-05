@@ -6,11 +6,12 @@
  *
  * Modeled on components/project/panels/ide/ContextMenu.tsx but styled with the
  * app's semantic NativeWind tokens (popover / accent / destructive). It renders
- * a fixed-position DOM node, so it is web-only; callers gate the trigger behind
- * `Platform.OS === 'web'` (right-click / `onContextMenu`).
+ * a fixed-position DOM node portaled to <body>, so it is web-only; callers gate
+ * the trigger behind `Platform.OS === 'web'` (right-click / `onContextMenu`).
  */
 import { useEffect, useRef, type ReactNode } from 'react'
 import { Platform } from 'react-native'
+import { createPortal } from 'react-dom'
 import { cn } from '@shogo/shared-ui/primitives'
 
 export interface SidebarMenuItem {
@@ -57,17 +58,29 @@ export function SidebarContextMenu({
     }
   }, [onClose])
 
-  if (Platform.OS !== 'web') return null
+  if (Platform.OS !== 'web' || typeof document === 'undefined') return null
 
   // Keep the menu inside the viewport.
   const maxX = typeof window !== 'undefined' ? window.innerWidth - MENU_WIDTH - 8 : x
   const maxY =
     typeof window !== 'undefined' ? window.innerHeight - items.length * ITEM_HEIGHT - 16 : y
 
-  return (
+  // Portal to <body> so the menu escapes the sidebar's scroll/overflow and any
+  // transformed ancestor (RNW wraps Views in transforms, which trap `position:
+  // fixed` and confine z-index to that ancestor's stacking context). At the body
+  // level the menu is genuinely top-most and intercepts its own pointer events,
+  // so rows beneath no longer receive the hover/click. `stopPropagation` below
+  // also blocks React-tree bubbling, which a portal otherwise preserves.
+  return createPortal(
     <div
       ref={ref}
       role="menu"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+      }}
       style={{
         position: 'fixed',
         left: Math.max(8, Math.min(x, maxX)),
@@ -107,6 +120,7 @@ export function SidebarContextMenu({
           </button>
         ),
       )}
-    </div>
+    </div>,
+    document.body,
   )
 }
