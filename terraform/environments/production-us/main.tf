@@ -222,6 +222,11 @@ module "us" {
   # publish zone by name so no explicit zone_id is needed.
   enable_publish_hosting = true
   publish_zone           = null # defaults to publish_domain="shogo.one"
+
+  # Bring-your-own custom hostnames (Cloudflare for SaaS). Off until a
+  # DEDICATED zone (separate from shogo.one) is supplied — see variables.tf.
+  enable_custom_domains = var.enable_custom_domains
+  custom_domains_zone   = var.custom_domains_zone
 }
 
 # =============================================================================
@@ -302,3 +307,9 @@ output "rpc_eu_id" {
 output "rpc_india_id" {
   value = var.enable_drg_peering_to_india ? module.drg_to_india[0].rpc_id : null
 }
+
+# Custom domains (null unless enable_custom_domains=true). Feed these into the
+# `custom-domains-config` secret for the production-us api namespace.
+output "custom_domains_zone_id" { value = module.us.custom_domains_zone_id }
+output "custom_domains_kv_namespace_id" { value = module.us.custom_domains_kv_namespace_id }
+output "custom_domain_fallback_origin" { value = module.us.custom_domain_fallback_origin }
