@@ -34,6 +34,10 @@ import {
   useBottomPanelState,
 } from "../../../../lib/ide-bottom-panel-store";
 import {
+  consumePendingIdeActivity,
+  subscribeIdeActivity,
+} from "../../../../lib/ide-activity-bus";
+import {
   DEFAULT_SETTINGS,
   type ActivityId,
   type EditorGroup,
@@ -221,6 +225,29 @@ export function Workbench({
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
   const [graphOpen, setGraphOpen] = useState<boolean>(false);
+
+  // Deep-link: let surfaces outside the Workbench (e.g. the top-bar Publish
+  // popover's "View history" link) switch the active activity — notably
+  // "checkpoint" to reveal the commit graph. Consume any pending request on
+  // mount (covers the case where the request fired before we mounted), then
+  // subscribe for subsequent live requests.
+  useEffect(() => {
+    const KNOWN: ReadonlySet<string> = new Set([
+      "files",
+      "search",
+      "outline",
+      "git",
+      "checkpoint",
+      "debug",
+      "settings",
+    ]);
+    const apply = (id: string) => {
+      if (KNOWN.has(id)) setActivity(id as ActivityId);
+    };
+    const pendingActivity = consumePendingIdeActivity();
+    if (pendingActivity) apply(pendingActivity);
+    return subscribeIdeActivity(apply);
+  }, []);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
     try {
       const raw = localStorage.getItem("shogo.ide.sidebarOpen");

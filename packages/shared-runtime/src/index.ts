@@ -29,6 +29,7 @@ export {
   restoreRepoFromStore,
   seedRepoIfAbsent,
   createTagLocal,
+  deleteTagLocal,
   getHeadSha,
   repoExistsInStore,
   repoStoreConfigFromEnv,
