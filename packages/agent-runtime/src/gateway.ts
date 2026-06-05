@@ -1366,11 +1366,10 @@ export class AgentGateway {
     writer: { write(chunk: Record<string, any>): void },
     options?: {
       modelOverride?: string
-      /** Native provider hint stamped by the API server (resolved from the
-       *  model registry), paired with `modelOverride`. Lets a DB model
-       *  addressed by an opaque UUID route to its real provider (e.g.
-       *  `anthropic`) instead of being inferred as `custom`. Absent → id-based
-       *  inference (today's behavior). */
+      /** Native provider hint from the client (resolved from the catalog),
+       *  paired with `modelOverride`. Lets a DB model addressed by an opaque
+       *  UUID route to its real provider (e.g. `anthropic`) instead of being
+       *  inferred as `custom`. Absent → id-based inference (today's behavior). */
       modelProvider?: string
       fileParts?: FilePart[]
       userId?: string
@@ -1655,12 +1654,12 @@ export class AgentGateway {
       }
     } else {
       const effectiveAlias = modelAlias
-      // Honor the API server's native provider hint when present (it's paired
-      // with the model override); otherwise infer from the id as before. This
-      // is what routes a DB model addressed by an opaque UUID to its real
-      // provider (anthropic → native passthrough) instead of falling back to
-      // `custom` and the lossy OpenAI-compat conversion path. For every id the
-      // catalog already classifies the way inference does, the hint is a no-op.
+      // Honor the client's native provider hint when present (it's paired with
+      // the model override); otherwise infer from the id as before. This is
+      // what routes a DB model addressed by an opaque UUID to its real provider
+      // (anthropic → native passthrough) instead of falling back to `custom`
+      // and the lossy OpenAI-compat conversion path. For every id the catalog
+      // already classifies the way inference does, the hint is a no-op.
       provider = session.modelProvider ?? inferProviderFromModel(effectiveAlias, this.config.model.provider)
       modelId = resolveModelAlias(effectiveAlias)
       console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider}${session.modelProvider ? ' (hint)' : ''} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
