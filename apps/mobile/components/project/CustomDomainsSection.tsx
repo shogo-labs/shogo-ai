@@ -13,12 +13,15 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, TextInput, Pressable, ActivityIndicator, ScrollView } from 'react-native'
+import { View, Text, TextInput, Pressable, ActivityIndicator, ScrollView, Linking } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
-import { CheckCircle, Copy, Trash2, RefreshCw, AlertTriangle, Globe } from 'lucide-react-native'
+import { CheckCircle, Copy, Trash2, RefreshCw, AlertTriangle, Globe, ExternalLink } from 'lucide-react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { cn } from '@shogo/shared-ui/primitives'
 import { api, type CustomDomain, type CustomDomainInstruction } from '../../lib/api'
+
+/** Customer-facing setup guide (Docusaurus, docs.shogo.ai). */
+const SETUP_GUIDE_URL = 'https://docs.shogo.ai/features/custom-domains'
 
 interface CustomDomainsSectionProps {
   projectId: string
@@ -194,9 +197,17 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
           Custom domain
         </Text>
       </View>
-      <Text className="text-[11px] text-muted-foreground mb-2">
-        Serve this app from a domain you own.
+      <Text className="text-[11px] text-muted-foreground mb-1.5">
+        Serve this app from a domain you own, like <Text className="font-mono">app.example.com</Text>.
       </Text>
+      <Pressable
+        onPress={() => Linking.openURL(SETUP_GUIDE_URL)}
+        hitSlop={6}
+        className="flex-row items-center gap-1 mb-2 self-start"
+      >
+        <Text className="text-[11px] font-medium text-primary">Read the setup guide</Text>
+        <ExternalLink size={11} className="text-primary" />
+      </Pressable>
     </>
   )
 
@@ -218,6 +229,29 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
   const body = (
     <>
       {header}
+
+      {/* Fuller guidance only in the standalone settings pane; the publish
+          dropdown stays compact and links out to the guide instead. */}
+      {!embedded && (
+        <View className="mb-3 p-3 rounded-lg bg-muted/50 border border-border gap-1.5">
+          <Text className="text-[11px] font-medium text-foreground">How it works</Text>
+          <Text className="text-[11px] text-muted-foreground">
+            1. Add your domain below — use a subdomain like{' '}
+            <Text className="font-mono">app.example.com</Text>.
+          </Text>
+          <Text className="text-[11px] text-muted-foreground">
+            2. Create the DNS records we show you at your domain provider.
+          </Text>
+          <Text className="text-[11px] text-muted-foreground">
+            3. Press Check status. Your domain goes live once DNS and SSL verify.
+          </Text>
+          <Text className="text-[11px] text-muted-foreground mt-0.5">
+            SSL is issued and renewed automatically. DNS changes can take a few minutes to a few
+            hours. Root domains (example.com) need CNAME flattening or ALIAS support at your
+            provider.
+          </Text>
+        </View>
+      )}
 
       {/* Existing domains */}
       {domains.map((d) => (
