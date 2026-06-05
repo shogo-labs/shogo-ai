@@ -19,6 +19,8 @@
     ".": "./src/cli.ts",
     "./tunnel": "./src/lib/tunnel.ts",
     "./runtime-manager": "./src/lib/runtime-manager.ts",
+    "./cloud-sync-watcher": "./src/lib/cloud-sync-watcher.ts",
+    "./git-cloner": "./src/lib/git-cloner.ts",
     "./runtime-resolver": "./src/lib/runtime-resolver.ts",
     "./runtime-install": "./src/lib/runtime-install.ts",
     "./cloud-login": "./src/lib/cloud-login.ts",

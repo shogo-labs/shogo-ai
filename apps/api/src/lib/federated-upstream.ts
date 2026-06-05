@@ -393,6 +393,50 @@ export function invalidateCloudInstance(id: string): void {
   instanceCache.delete(id)
 }
 
+// ─── Cloud project listing ──────────────────────────────────────────────────
+
+export interface CloudProject {
+  id: string
+  name?: string
+  workspaceId?: string
+  status?: string
+  updatedAt?: string | null
+  createdAt?: string | null
+  thumbnailUrl?: string | null
+  [k: string]: unknown
+}
+
+/**
+ * GET the cloud's project list scoped to the cloud workspace the local
+ * SHOGO_API_KEY is bound to. Returns `[]` when federation is off, no cloud
+ * workspace is linked, or the upstream rejects/errors.
+ *
+ * The cloud's project-list CRUD route answers with `{ ok, items }` (see
+ * `packages/domain-stores/src/project.collection.ts`); we tolerate the older
+ * `{ projects }` shape and a bare array too so a backend skew can't blank the
+ * desktop's cloud-project picker.
+ */
+export async function listCloudProjectsForWorkspace(): Promise<CloudProject[]> {
+  if (!(await isFederatedEnabled())) return []
+
+  const cloudWorkspaceId = await getUpstreamWorkspaceId()
+  const search = cloudWorkspaceId ? `?workspaceId=${encodeURIComponent(cloudWorkspaceId)}` : ''
+
+  try {
+    const resp = await fetchUpstream('/api/projects', { method: 'GET', search })
+    if (!resp.ok) return []
+    const body = (await resp.json().catch(() => null)) as
+      | { items?: CloudProject[]; projects?: CloudProject[] }
+      | CloudProject[]
+      | null
+    if (!body) return []
+    const list = Array.isArray(body) ? body : body.items ?? body.projects ?? []
+    return list.filter((p): p is CloudProject => !!p && typeof (p as CloudProject).id === 'string')
+  } catch {
+    return []
+  }
+}
+
 // ─── Visible-models passthrough ─────────────────────────────────────────────
 
 const VISIBLE_MODELS_TTL_MS = 30 * 60_000
