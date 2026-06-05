@@ -101,7 +101,7 @@ provider "helm" {
 module "india" {
   source = "../../modules/oci-region"
 
-  tier        = "light"                # <-- the key difference
+  tier        = "light" # <-- the key difference
   region      = "ap-mumbai-1"
   region_key  = "in"
   environment = "production"
@@ -134,9 +134,9 @@ module "india" {
   # match the live floor: GitHub Actions variable NODE_POOL_MIN for
   # environment production-india (consumed by deploy.yml "Deploy Cluster
   # Autoscaler").
-  system_pool_size      = 4
-  system_pool_min       = 3
-  system_pool_max       = 10
+  system_pool_size = 4
+  system_pool_min  = 3
+  system_pool_max  = 10
 
   # 200 GB to match production-us. India is currently LIVE at 100 GB — the
   # same latent exposure that caused the EU 2026-06-02 DiskPressure incident;
@@ -231,5 +231,5 @@ module "drg_from_us" {
 # =============================================================================
 
 output "cluster_endpoint" { value = module.india.cluster_endpoint }
-output "cluster_id"       { value = module.india.cluster_id }
-output "ocir_prefix"      { value = module.india.ocir_prefix }
+output "cluster_id" { value = module.india.cluster_id }
+output "ocir_prefix" { value = module.india.ocir_prefix }
