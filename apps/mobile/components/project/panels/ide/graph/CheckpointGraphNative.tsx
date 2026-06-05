@@ -19,11 +19,13 @@ import {
   BookmarkPlus,
   GitBranch,
   RefreshCw,
+  Rocket,
 } from 'lucide-react-native'
 
 import {
   useCheckpoints,
   useGitGraph,
+  usePublishState,
   type Checkpoint,
 } from '@shogo/shared-app/hooks'
 import { API_URL } from '../../../../../lib/api'
@@ -40,6 +42,7 @@ import { avatarColor, initials, isAiAuthor, relativeTime } from './gitAvatar'
 import { CreateCheckpointModal, RollbackConfirmModal } from '../../CheckpointModals'
 
 const CHECKPOINT_RING = '#f59e0b'
+const LIVE_RING = '#10b981'
 
 export function CheckpointGraphNative({ projectId }: { projectId: string }) {
   const nativeHeaders = useMemo(
@@ -52,6 +55,7 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
   )
 
   const graph = useGitGraph(projectId, { baseUrl: API_URL, headers: nativeHeaders })
+  const publish = usePublishState(projectId, { baseUrl: API_URL, headers: nativeHeaders })
   const {
     checkpoints,
     rollback,
@@ -73,10 +77,24 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
     return m
   }, [checkpoints])
 
+  // Resolve the live commit from the stable `published/<subdomain>` pointer tag
+  // (falling back to the recorded sha). Mirrors the web GraphView.
+  const livePointerTag = publish.subdomain ? `published/${publish.subdomain}` : null
+  const liveSha = useMemo(() => {
+    if (!publish.isPublished) return null
+    if (livePointerTag) {
+      const byTag = graph.commits.find((c) =>
+        c.refs.some((r) => r.type === 'tag' && r.name === livePointerTag),
+      )
+      if (byTag) return byTag.sha
+    }
+    return publish.publishedCommitSha ?? null
+  }, [publish.isPublished, publish.publishedCommitSha, livePointerTag, graph.commits])
+
   const { rows, maxLanes } = useMemo(() => {
     const checkpointShas = new Set(checkpointBySha.keys())
-    return buildDisplayRows(graph.commits, graph.workingStatus, checkpointShas)
-  }, [graph.commits, graph.workingStatus, checkpointBySha])
+    return buildDisplayRows(graph.commits, graph.workingStatus, checkpointShas, liveSha)
+  }, [graph.commits, graph.workingStatus, checkpointBySha, liveSha])
 
   const handleRowPress = useCallback(
     (row: DisplayRow) => {
@@ -304,6 +322,16 @@ function GraphSvg({
         const bg = ai ? '#e0457b' : avatarColor(commit.authorEmail || commit.author)
         return (
           <G key={`n-${row.sha}`}>
+            {row.isLive && (
+              <Circle
+                cx={cx}
+                cy={cy}
+                r={NODE_RADIUS + (row.isCheckpoint ? 4.5 : 2.5)}
+                fill="transparent"
+                stroke={LIVE_RING}
+                strokeWidth={2}
+              />
+            )}
             {row.isCheckpoint && (
               <Circle
                 cx={cx}
@@ -364,6 +392,7 @@ function MessageRow({
           </>
         ) : (
           <>
+            {row.isLive && <Rocket size={11} color={LIVE_RING} />}
             {row.isCheckpoint && (
               <BookmarkPlus size={11} color={CHECKPOINT_RING} />
             )}

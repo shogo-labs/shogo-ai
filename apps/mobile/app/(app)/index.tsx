@@ -30,6 +30,7 @@ import {
   saveInteractionModePreference,
 } from '../../lib/interaction-mode-preference'
 import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
+import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { workspaceProjectFilter } from '../../lib/project-load'
@@ -232,6 +233,11 @@ const HomeScreen = observer(function HomeScreen() {
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
+  // Gate stale-selection reconciliation until the persisted preference has
+  // loaded. Otherwise the reconciler runs against the initial slug default
+  // (which isn't a catalog UUID id), resets to Auto, and persists that — which
+  // clobbers the user's saved choice on every cold load.
+  const [modelPrefLoaded, setModelPrefLoaded] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
 
   /**
@@ -320,6 +326,7 @@ const HomeScreen = observer(function HomeScreen() {
       } else if (hasAdvancedModelAccess) {
         setSelectedModel(DEFAULT_MODEL_PRO)
       }
+      setModelPrefLoaded(true)
     })
   }, [hasAdvancedModelAccess])
 
@@ -374,6 +381,16 @@ const HomeScreen = observer(function HomeScreen() {
     setSelectedModel(modelId)
     void saveModelPreference(modelId)
   }, [])
+
+  // Reset a pre-UUID stored selection (an old slug that's now only a server
+  // alias, so the picker can't label it) to the tier default once the catalog
+  // loads.
+  useReconcileStaleModelSelection(
+    selectedModel,
+    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    handleHomeModelChange,
+    modelPrefLoaded,
+  )
 
   const homeComposerPlaceholder =
     interactionMode === 'plan'

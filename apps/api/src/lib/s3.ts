@@ -29,6 +29,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 // Lazy-initialized S3 clients
 let s3Client: S3Client | null = null
 let s3PublicClient: S3Client | null = null
+let s3LfsClient: S3Client | null = null
 
 /**
  * Get or create the S3 client for internal operations.
@@ -97,11 +98,47 @@ export function getS3PublicClient(): S3Client {
 }
 
 /**
+ * Get or create the S3 client used to mint presigned URLs for Git LFS
+ * objects.
+ *
+ * Unlike {@link getS3PublicClient} (which targets the browser-facing
+ * `S3_PUBLIC_ENDPOINT`), LFS transfers run pod<->OCI, so the presigned host
+ * must be the endpoint pods can actually reach AND the one used to compute
+ * the SigV4 signature. We default to `S3_LFS_ENDPOINT` then `S3_ENDPOINT`
+ * (the internal/compat endpoint), never the public browser endpoint.
+ */
+export function getLfsS3Client(): S3Client {
+  if (!s3LfsClient) {
+    const region = process.env.S3_REGION || process.env.AWS_REGION || 'us-east-1'
+    const endpoint = process.env.S3_LFS_ENDPOINT || process.env.S3_ENDPOINT
+    const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === 'true'
+
+    const config: ConstructorParameters<typeof S3Client>[0] = {
+      region,
+      ...(endpoint && {
+        endpoint,
+        forcePathStyle: forcePathStyle || !!endpoint,
+      }),
+      ...(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && {
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        },
+      }),
+    }
+
+    s3LfsClient = new S3Client(config)
+  }
+  return s3LfsClient
+}
+
+/**
  * Reset the S3 clients (useful for testing with different configs).
  */
 export function resetS3Client(): void {
   s3Client = null
   s3PublicClient = null
+  s3LfsClient = null
 }
 
 /**
@@ -312,6 +349,71 @@ export async function getPresignedWriteUrl(
   })
 
   return getSignedUrl(client, command, { expiresIn })
+}
+
+// ============================================================================
+// Git LFS object helpers
+// ============================================================================
+
+/**
+ * Bucket for Git LFS objects. Defaults to the workspaces bucket (LFS objects
+ * live under `<projectId>/lfs/objects/...` there) unless `S3_LFS_BUCKET`
+ * points at a dedicated bucket.
+ */
+export function getLfsBucket(): string {
+  const bucket = process.env.S3_LFS_BUCKET || process.env.S3_WORKSPACES_BUCKET
+  if (!bucket) {
+    throw new Error('S3_LFS_BUCKET or S3_WORKSPACES_BUCKET is required for Git LFS')
+  }
+  return bucket
+}
+
+/**
+ * Presigned GET for an LFS object download. Bound to the pod-reachable LFS
+ * client/bucket (see {@link getLfsS3Client}).
+ */
+export async function getLfsPresignedReadUrl(
+  key: string,
+  options: PresignOptions = {},
+): Promise<string> {
+  const client = getLfsS3Client()
+  const bucket = options.bucket || getLfsBucket()
+  const expiresIn = options.expiresIn || 3600
+  const command = new GetObjectCommand({ Bucket: bucket, Key: key })
+  return getSignedUrl(client, command, { expiresIn })
+}
+
+/**
+ * Presigned PUT for an LFS object upload. We deliberately do NOT sign a
+ * Content-Type so the git-lfs basic transfer agent can PUT the raw bytes
+ * with any (or no) content-type header without breaking the signature.
+ */
+export async function getLfsPresignedWriteUrl(
+  key: string,
+  options: PresignOptions = {},
+): Promise<string> {
+  const client = getLfsS3Client()
+  const bucket = options.bucket || getLfsBucket()
+  const expiresIn = options.expiresIn || 3600
+  const command = new PutObjectCommand({ Bucket: bucket, Key: key })
+  return getSignedUrl(client, command, { expiresIn })
+}
+
+/**
+ * HEAD an LFS object. Returns its size when present, or null when absent.
+ * Used by the batch endpoint for download existence + upload dedup.
+ */
+export async function headLfsObject(key: string, bucket?: string): Promise<{ size: number } | null> {
+  const client = getLfsS3Client()
+  try {
+    const res = await client.send(new HeadObjectCommand({
+      Bucket: bucket || getLfsBucket(),
+      Key: key,
+    }))
+    return { size: res.ContentLength ?? 0 }
+  } catch {
+    return null
+  }
 }
 
 /**

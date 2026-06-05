@@ -110,6 +110,61 @@ export class CheckpointsDisabledError extends Error {
   }
 }
 
+/**
+ * Idempotently record a `ProjectCheckpoint` row for an ALREADY-EXISTING commit
+ * (identified by SHA) WITHOUT performing any git operations. This is the
+ * lightweight counterpart to {@link createCheckpoint} for callers that already
+ * hold a durable commit and just need the metadata row:
+ *   - the runtime pod after a local commit (internal `checkpoints/record` API)
+ *   - the publish flow after it tags the deployed HEAD
+ *
+ * Dedupes on `(projectId, commitSha)` so pod retries / re-publishes never
+ * create duplicate rows. Returns the row id (and whether it already existed),
+ * or null when `commitSha` is not a plausible git object id.
+ */
+export async function recordCheckpointForCommit(
+  projectId: string,
+  commitSha: string,
+  opts: {
+    name?: string | null;
+    commitMessage?: string;
+    branch?: string;
+    filesChanged?: number;
+    additions?: number;
+    deletions?: number;
+    includesDb?: boolean;
+    isAutomatic?: boolean;
+    createdBy?: string | null;
+  } = {},
+): Promise<{ id: string; deduped: boolean } | null> {
+  if (!/^[0-9a-f]{7,64}$/i.test(commitSha)) return null;
+
+  const existing = await prisma.projectCheckpoint.findFirst({
+    where: { projectId, commitSha },
+    select: { id: true },
+  });
+  if (existing) return { id: existing.id, deduped: true };
+
+  const row = await prisma.projectCheckpoint.create({
+    data: {
+      projectId,
+      name: opts.name ?? null,
+      commitSha,
+      commitMessage:
+        opts.commitMessage && opts.commitMessage.trim() ? opts.commitMessage : '(no message)',
+      branch: opts.branch && opts.branch.trim() ? opts.branch : 'main',
+      includesDb: opts.includesDb ?? false,
+      filesChanged: opts.filesChanged ?? 0,
+      additions: opts.additions ?? 0,
+      deletions: opts.deletions ?? 0,
+      isAutomatic: opts.isAutomatic ?? true,
+      createdBy: opts.createdBy ?? null,
+    },
+    select: { id: true },
+  });
+  return { id: row.id, deduped: false };
+}
+
 export async function createCheckpoint(
   options: CreateCheckpointOptions
 ): Promise<CheckpointResult> {

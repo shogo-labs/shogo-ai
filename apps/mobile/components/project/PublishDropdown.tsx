@@ -28,6 +28,8 @@ import {
   CheckCircle,
   XCircle,
   ChevronDown,
+  History,
+  UploadCloud,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -38,6 +40,7 @@ import {
 } from '@/components/ui/popover'
 import { api } from '../../lib/api'
 import { useDomainHttp } from '../../contexts/domain'
+import { CustomDomainsSection } from './CustomDomainsSection'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private'
 
@@ -52,9 +55,11 @@ const ACCESS_OPTIONS: { value: AccessLevel; label: string; Icon: any }[] = [
 interface PublishDropdownProps {
   projectId: string
   projectName: string
+  /** Cross-link to the commit graph / checkpoints (IDE Checkpoint activity). */
+  onViewHistory?: () => void
 }
 
-export function PublishDropdown({ projectId, projectName }: PublishDropdownProps) {
+export function PublishDropdown({ projectId, projectName, onViewHistory }: PublishDropdownProps) {
   const http = useDomainHttp()
   const [isOpen, setIsOpen] = useState(false)
   const [subdomain, setSubdomain] = useState(
@@ -67,6 +72,7 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
   const [publishedCommitSha, setPublishedCommitSha] = useState<string | null>(null)
   const [isPublishing, setIsPublishing] = useState(false)
   const [isUnpublishing, setIsUnpublishing] = useState(false)
+  const [isRepublishing, setIsRepublishing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showAccessPicker, setShowAccessPicker] = useState(false)
 
@@ -148,6 +154,24 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
     }
   }
 
+  // Re-deploy the current HEAD to the SAME subdomain (rebuild + re-tag). Unlike
+  // "Update URL" (which re-publishes to a changed subdomain), this is the
+  // affordance for shipping new changes once the subdomain is settled.
+  const handleRepublish = async () => {
+    setIsRepublishing(true)
+    setError(null)
+    try {
+      const data = await api.republishProject(http, projectId)
+      setPublishedAt(data.publishedAt)
+      // HEAD moved — refresh the recorded live commit sha.
+      await loadPublishState()
+    } catch (err: any) {
+      setError(err.message || 'Failed to publish latest changes')
+    } finally {
+      setIsRepublishing(false)
+    }
+  }
+
   const handleViewPublished = () => {
     if (publishedSubdomain) {
       Linking.openURL(`https://${publishedSubdomain}.${PUBLISH_DOMAIN}`)
@@ -213,6 +237,17 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
                 </Text>
               )}
             </View>
+          )}
+
+          {/* Cross-link into the commit graph (history + checkpoints + live) */}
+          {isPublished && onViewHistory && (
+            <Pressable
+              onPress={() => { setIsOpen(false); onViewHistory() }}
+              className="flex-row items-center gap-1.5 mb-4 -mt-1"
+            >
+              <History size={13} className="text-primary" />
+              <Text className="text-xs text-primary">View deploy history & checkpoints</Text>
+            </Pressable>
           )}
 
           {/* Subdomain input */}
@@ -286,6 +321,9 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
             )}
           </View>
 
+          {/* Custom domains — only meaningful once the app is published */}
+          {isPublished && <CustomDomainsSection projectId={projectId} />}
+
           {/* Error */}
           {error && (
             <View className="p-3 bg-destructive/10 rounded-lg border border-destructive/20 mb-4">
@@ -306,7 +344,7 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
                     {isUnpublishing ? 'Unpublishing...' : 'Unpublish'}
                   </Text>
                 </Pressable>
-                {subdomain !== publishedSubdomain && (
+                {subdomain !== publishedSubdomain ? (
                   <Pressable
                     onPress={handlePublish}
                     disabled={!canPublish}
@@ -314,6 +352,24 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
                   >
                     <Text className={cn('text-sm font-medium', canPublish ? 'text-primary-foreground' : 'text-muted-foreground')}>
                       {isPublishing ? 'Updating...' : 'Update URL'}
+                    </Text>
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    onPress={handleRepublish}
+                    disabled={isRepublishing}
+                    className={cn('flex-1 h-10 rounded-lg items-center justify-center flex-row gap-1.5', isRepublishing ? 'bg-muted' : 'bg-primary')}
+                  >
+                    {isRepublishing ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <UploadCloud size={14} className="text-primary-foreground" />
+                    )}
+                    <Text
+                      numberOfLines={1}
+                      className={cn('text-sm font-medium', isRepublishing ? 'text-muted-foreground' : 'text-primary-foreground')}
+                    >
+                      {isRepublishing ? 'Publishing...' : 'Publish latest'}
                     </Text>
                   </Pressable>
                 )}

@@ -26,10 +26,13 @@ import * as nodeMetricsService from './services/node-metrics.service'
 import * as affiliateService from './services/affiliate.service'
 import { INSTANCE_SIZES, INSTANCE_SIZE_ORDER, getInstanceDisplayPrice, type InstanceSizeName } from './config/instance-sizes'
 import {
-  sendPlanUpgradedEmail, sendPaymentReceiptEmail, sendPaymentFailedEmail,
+  sendPlanUpgradedEmail,
   sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail,
   sendMemberJoinedEmail, sendMemberRemovedEmail, sendAccountDeletedEmail,
 } from './services/email.service'
+import { getUnreadNotificationCount } from './services/notification.service'
+import { notifyPaymentReceipt, notifyPaymentFailed } from './services/billing-alerts.service'
+import { STRIPE_API_VERSION, resolveInvoiceSubscriptionId } from './lib/stripe-helpers'
 import * as workspaceService from './services/workspace.service'
 import * as workspaceModelsService from './services/workspace-models.service'
 import { publishRoutes } from './routes/publish'
@@ -45,6 +48,7 @@ import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { gitHttpRoutes } from './routes/git-http'
+import { gitLfsRoutes } from './routes/git-lfs'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
@@ -87,6 +91,7 @@ import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { localProjectsRoutes } from './routes/local-projects'
+import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
@@ -895,6 +900,11 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   // a folder picker.
   app.route('/api/local/projects', localProjectsRoutes())
 
+  // Cloud-project picker + content sync (see routes/cloud-projects.ts).
+  // Lets a cloud-signed-in desktop browse/open cloud projects; opening one
+  // pulls its workspace files locally and watches for edits to push back.
+  app.route('/api/local/cloud-projects', cloudProjectsRoutes())
+
   // Auto-download VM images in the background if not present
   setTimeout(() => {
     triggerVMImageDownload().catch((err) =>
@@ -1592,6 +1602,62 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
     headers: c.req.raw.headers,
     body: c.req.raw.body,
   })
+  return router.fetch(newReq)
+})
+
+// Republish a project (rebuild + re-upload to the same subdomain, re-tag HEAD)
+app.post('/api/projects/:projectId/republish', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/republish`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// Custom domains (Cloudflare for SaaS bring-your-own-domain). List/add and
+// per-domain verify/delete all forward into publishRoutes() like the
+// publish endpoints above.
+app.get('/api/projects/:projectId/domains', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.post('/api/projects/:projectId/domains', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.post('/api/projects/:projectId/domains/:domainId/verify', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains/${c.req.param('domainId')}/verify`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.delete('/api/projects/:projectId/domains/:domainId', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains/${c.req.param('domainId')}`
+  const newReq = new Request(url.toString(), { method: 'DELETE', headers: c.req.raw.headers })
   return router.fetch(newReq)
 })
 
@@ -2344,8 +2410,14 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // transport.
   const contentType = c.req.header('content-type')
   const accept = c.req.header('accept')
-  const { deriveRuntimeToken } = await import('./lib/runtime-token')
-  const runtimeToken = deriveRuntimeToken(projectId)
+  // Under SHOGO_WORKSPACE_RUNTIME the project is served by a merged-root
+  // "unified" runtime that authenticates with the WORKSPACE token, not the
+  // project token — sending the project token here 401s every proxied call
+  // (config, quick-actions, workspace tree/search, chat). The resolver picks
+  // the right token type for the active topology. `authedWorkspaceId` is set
+  // for all non-webchat paths; webchat falls back to a (cached) lookup.
+  const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
+  const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId: authedWorkspaceId })
 
   // Read the chat-session id from the client. The billing-session map is
   // keyed by `(projectId, chatSessionId)` so concurrent chat sessions on
@@ -3012,14 +3084,14 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
     // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
       const podUrl = await getProjectPodUrl(projectId)
       const targetUrl = `${podUrl}/terminal/commands`
       
       console.log(`[TerminalProxy] Proxying commands list to ${targetUrl}`)
       
       const response = await fetch(targetUrl, {
-        headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+        headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
       })
       
       // Handle non-OK responses with proper JSON errors
@@ -3139,13 +3211,13 @@ async function resolveRuntimeBaseUrl(projectId: string): Promise<string> {
  * stays a one-liner.
  */
 async function ptyPodRestDeps() {
-  const [{ deriveRuntimeToken }, { proxyTerminalSessionsToPod }] = await Promise.all([
-    import('./lib/runtime-token'),
+  const [{ deriveProjectRuntimeToken }, { proxyTerminalSessionsToPod }] = await Promise.all([
+    import('./lib/project-runtime-token'),
     import('./lib/pty-pod-rest-proxy'),
   ])
   return {
     proxyTerminalSessionsToPod,
-    deps: { resolvePodUrl: resolveRuntimeBaseUrl, deriveRuntimeToken, isSafeProjectId },
+    deps: { resolvePodUrl: resolveRuntimeBaseUrl, deriveRuntimeToken: deriveProjectRuntimeToken, isSafeProjectId },
   }
 }
 
@@ -3274,14 +3346,14 @@ app.get('/api/projects/:projectId/diagnostics', async (c) => {
   if (isKubernetes()) {
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
       const podUrl = await raceAbort(getProjectPodUrl(projectId), c.req.raw.signal)
       // Forward the original query string verbatim (?source=, ?since=).
       const inUrl = new URL(c.req.url)
       const target = new URL(`${podUrl}/diagnostics`)
       inUrl.searchParams.forEach((v, k) => target.searchParams.set(k, v))
       const response = await fetch(target, {
-        headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+        headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
         signal: c.req.raw.signal,
       })
       return forwardDiagnosticsResponse(c, response, 'GET /diagnostics')
@@ -3343,14 +3415,14 @@ app.post('/api/projects/:projectId/diagnostics/refresh', async (c) => {
   if (isKubernetes()) {
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
       const podUrl = await raceAbort(getProjectPodUrl(projectId), c.req.raw.signal)
       const target = `${podUrl}/diagnostics/refresh`
       const body = await c.req.text()
       const response = await fetch(target, {
         method: 'POST',
         headers: {
-          'x-runtime-token': deriveRuntimeToken(projectId),
+          'x-runtime-token': await deriveProjectRuntimeToken(projectId),
           'content-type': c.req.header('content-type') ?? 'application/json',
         },
         body,
@@ -4252,6 +4324,12 @@ app.route('/api', checkpointRouter)
 const gitHttpRouter = gitHttpRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', gitHttpRouter)
 
+// Mount the Git LFS batch API (presigned OCI URLs for large-file objects).
+// See routes/git-lfs.ts. Object bytes flow pod<->OCI directly; the API only
+// mints the batch response, so no git-lfs binary is needed here.
+const gitLfsRouter = gitLfsRoutes({ workspacesDir: workspacesDirResolved })
+app.route('/api', gitLfsRouter)
+
 // Mount GitHub routes
 const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', githubRouter)
@@ -4303,7 +4381,13 @@ app.get('/api/projects/:projectId/heartbeat', async (c) => {
     return c.json({ error: 'Agent config not found' }, 404)
   }
 
-  return c.json(config)
+  // modelName is an opaque UUID for DB models post catalog-uuid migration; attach
+  // a display label (id kept intact for any model picker).
+  const { resolveModelLabel } = await import('./services/model-registry.service')
+  return c.json({
+    ...config,
+    modelLabel: config.modelName ? await resolveModelLabel(config.modelName) : null,
+  })
 })
 
 app.patch('/api/projects/:projectId/heartbeat', async (c) => {
@@ -4366,7 +4450,11 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
     },
   })
 
-  return c.json(updated)
+  const { resolveModelLabel } = await import('./services/model-registry.service')
+  return c.json({
+    ...updated,
+    modelLabel: updated.modelName ? await resolveModelLabel(updated.modelName) : null,
+  })
 })
 
 // Sync heartbeat config from runtime config.json to DB (local mode).
@@ -4522,12 +4610,12 @@ app.post('/api/projects/:projectId/agent/tool-mocks', async (c) => {
   }
 
   try {
-    const { deriveRuntimeToken } = await import('./lib/runtime-token')
+    const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
     const resp = await fetch(`${baseUrl}/agent/tool-mocks`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-runtime-token': deriveRuntimeToken(projectId),
+        'x-runtime-token': await deriveProjectRuntimeToken(projectId),
       },
       body,
     })
@@ -4553,10 +4641,10 @@ app.delete('/api/projects/:projectId/agent/tool-mocks', async (c) => {
   }
 
   try {
-    const { deriveRuntimeToken } = await import('./lib/runtime-token')
+    const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
     const resp = await fetch(`${baseUrl}/agent/tool-mocks`, {
       method: 'DELETE',
-      headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+      headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
     })
     const text = await resp.text()
     return new Response(text, {
@@ -5525,9 +5613,10 @@ app.post('/api/chat', async (c) => {
 // =============================================================================
 // Billing routes (simplified - accepts workspaceId in body)
 // =============================================================================
-// Only initialize Stripe if the API key is set
+// Only initialize Stripe if the API key is set. Pin the API version so the
+// webhook payload shape and our request shapes stay stable across SDK bumps.
 const stripe = process.env.STRIPE_SECRET_KEY
-  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION })
   : null
 
 /**
@@ -6043,6 +6132,63 @@ app.post('/api/billing/portal', async (c) => {
     return c.json({ url: session.url }, 200)
   } catch (error: any) {
     console.error('[Billing] Portal error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+// In-app billing history: recent Stripe invoices for a workspace, sanitized
+// for the client. Lets users see what they were charged (and grab the hosted
+// invoice / PDF) without leaving the app or opening the Stripe portal.
+app.get('/api/billing/invoices', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const url = new URL(c.req.url)
+    const workspaceId = url.searchParams.get('workspaceId')
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+
+    const limitParam = parseInt(url.searchParams.get('limit') || '12', 10)
+    const limit = Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 12, 1), 50)
+
+    // Resolve the Stripe customer from our subscription record. No customer yet
+    // → return an empty list (clean "no history" state) rather than a 404.
+    const subscription = await billingService.getSubscription(workspaceId)
+    const customerId = subscription?.stripeCustomerId
+    if (!customerId) {
+      return c.json({ ok: true, invoices: [] }, 200)
+    }
+
+    const list = await stripe.invoices.list({ customer: customerId, limit })
+    const invoices = list.data.map((inv) => ({
+      id: inv.id,
+      number: inv.number ?? null,
+      status: inv.status ?? null,
+      total: (inv.total ?? 0) / 100,
+      amountPaid: (inv.amount_paid ?? 0) / 100,
+      amountDue: (inv.amount_due ?? 0) / 100,
+      currency: (inv.currency ?? 'usd').toUpperCase(),
+      created: inv.created ? inv.created * 1000 : null,
+      periodStart: inv.period_start ? inv.period_start * 1000 : null,
+      periodEnd: inv.period_end ? inv.period_end * 1000 : null,
+      hostedInvoiceUrl: inv.hosted_invoice_url ?? null,
+      invoicePdf: inv.invoice_pdf ?? null,
+      description: inv.description ?? null,
+      lines: (inv.lines?.data ?? []).map((line) => ({
+        description: line.description ?? null,
+        amount: (line.amount ?? 0) / 100,
+      })),
+    }))
+
+    return c.json({ ok: true, invoices }, 200)
+  } catch (error: any) {
+    console.error('[Billing] invoices error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
   }
 })
@@ -6641,11 +6787,16 @@ app.post('/api/webhooks/stripe', async (c) => {
         break
       }
       case 'invoice.payment_succeeded': {
-        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null; billing_reason?: string }
+        const invoice = event.data.object as Stripe.Invoice & { billing_reason?: string }
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
-        if (customerId && invoice.subscription) {
+        // Resolve the subscription id across Stripe API versions: it moved from
+        // `invoice.subscription` to `invoice.parent.subscription_details` in
+        // 2025+. The old code only read the legacy field (null on the current
+        // version), so this entire receipt + monthly-refill path never ran.
+        const subscriptionId = resolveInvoiceSubscriptionId(invoice)
+        if (customerId && subscriptionId) {
           try {
-            const sub = await stripe!.subscriptions.retrieve(invoice.subscription)
+            const sub = await stripe!.subscriptions.retrieve(subscriptionId)
             const wsId = sub.metadata?.workspaceId
             const planId = sub.metadata?.planId
             if (wsId && planId) {
@@ -6663,20 +6814,17 @@ app.post('/api/webhooks/stripe', async (c) => {
                   console.error('[Webhook] Failed to refill monthly included USD:', allocErr.message)
                 }
               }
-              const workspace = await prisma.workspace.findUnique({ where: { id: wsId }, include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } } })
-              const ownerEmail = workspace?.members?.[0]?.user?.email
-              if (ownerEmail) {
-                const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
-                sendPaymentReceiptEmail({
-                  to: ownerEmail,
-                  workspaceName: workspace!.name,
-                  planName: planLabel,
-                  amount: ((invoice.amount_paid || 0) / 100).toFixed(2),
-                  currency: (invoice.currency || 'usd') === 'usd' ? '$' : invoice.currency?.toUpperCase() || '$',
-                  invoiceDate: new Date((invoice.created || 0) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-                  ...(invoice.hosted_invoice_url ? { invoiceUrl: invoice.hosted_invoice_url } : {}),
-                }).catch((err) => console.error('[Webhook] payment-receipt email failed:', err))
-              }
+              // Receipt: in-app notification + email to all billing admins,
+              // deduped on the invoice id so Stripe webhook retries can't
+              // double-send. Fire-and-forget (already inside the webhook 200).
+              const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
+              void notifyPaymentReceipt(wsId, {
+                planName: planLabel,
+                amountUsd: (invoice.amount_paid || 0) / 100,
+                invoiceDate: new Date((invoice.created || 0) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+                invoiceId: invoice.id,
+                invoiceUrl: invoice.hosted_invoice_url ?? undefined,
+              })
             }
           } catch (err: any) {
             console.error('[Webhook] payment-receipt lookup failed:', err.message)
@@ -6720,27 +6868,22 @@ app.post('/api/webhooks/stripe', async (c) => {
         break
       }
       case 'invoice.payment_failed': {
-        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null }
+        const invoice = event.data.object as Stripe.Invoice
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
-        if (customerId && invoice.subscription) {
+        const subscriptionId = resolveInvoiceSubscriptionId(invoice)
+        if (customerId && subscriptionId) {
           try {
-            const sub = await stripe!.subscriptions.retrieve(invoice.subscription)
+            const sub = await stripe!.subscriptions.retrieve(subscriptionId)
             const wsId = sub.metadata?.workspaceId
             if (wsId) {
-              const workspace = await prisma.workspace.findUnique({ where: { id: wsId }, include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } } })
-              const ownerEmail = workspace?.members?.[0]?.user?.email
-              if (ownerEmail) {
-                const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
-                const baseUrl = getFrontendUrl()
-                sendPaymentFailedEmail({
-                  to: ownerEmail,
-                  workspaceName: workspace!.name,
-                  planName: planLabel,
-                  amount: ((invoice.amount_due || 0) / 100).toFixed(2),
-                  currency: (invoice.currency || 'usd') === 'usd' ? '$' : invoice.currency?.toUpperCase() || '$',
-                  retryUrl: `${baseUrl}/billing`,
-                }).catch((err) => console.error('[Webhook] payment-failed email failed:', err))
-              }
+              // In-app notification + payment-failed email to all billing
+              // admins, deduped on the invoice id.
+              const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
+              void notifyPaymentFailed(wsId, {
+                planName: planLabel,
+                amountUsd: (invoice.amount_due || 0) / 100,
+                invoiceId: invoice.id,
+              })
             }
           } catch (err: any) {
             console.error('[Webhook] payment-failed lookup failed:', err.message)
@@ -7416,6 +7559,18 @@ app.get('/api/invite-links/:token/info', async (c) => {
 // to the generated `/:id` PATCH/DELETE handlers in chat-message.routes.ts.
 app.route('/api/chat-messages', createChatMessageEditRoutes())
 
+// Unread notification count for the in-app inbox bell/badge. MUST be mounted
+// BEFORE the generated routes so Hono matches `/notifications/unread-count`
+// here instead of the generated `/notifications/:id` GET handler.
+app.get('/api/notifications/unread-count', async (c) => {
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const count = await getUnreadNotificationCount(userId)
+  return c.json({ ok: true, count }, 200)
+})
+
 // Mount generated routes at /api
 const generatedRoutes = createGeneratedRoutes({
   prisma,
@@ -7685,13 +7840,13 @@ export default {
           return new Response('Invalid id', { status: 400 })
         }
         try {
-          const { deriveRuntimeToken } = await import('./lib/runtime-token')
+          const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
           const podUrl = await resolveRuntimeBaseUrl(projectId)
           const data: PtyPodBridgeData = buildPtyPodBridgeData({
             podUrl,
             sessionId,
             since,
-            runtimeToken: deriveRuntimeToken(projectId),
+            runtimeToken: await deriveProjectRuntimeToken(projectId),
           })
           const upgraded = server.upgrade(req, { data })
           if (upgraded) return undefined

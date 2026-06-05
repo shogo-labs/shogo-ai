@@ -119,12 +119,12 @@ module "oke" {
   node_pool_min  = var.system_pool_min
   node_pool_max  = var.system_pool_max
 
-  enable_workload_pool      = var.enable_workload_pool
-  workload_node_ocpus       = var.workload_node_ocpus
-  workload_node_memory_gb   = var.workload_node_memory_gb
-  workload_pool_size        = var.workload_pool_size
-  workload_pool_min         = var.workload_pool_min
-  workload_pool_max         = var.workload_pool_max
+  enable_workload_pool    = var.enable_workload_pool
+  workload_node_ocpus     = var.workload_node_ocpus
+  workload_node_memory_gb = var.workload_node_memory_gb
+  workload_pool_size      = var.workload_pool_size
+  workload_pool_min       = var.workload_pool_min
+  workload_pool_max       = var.workload_pool_max
 
   main_node_pool_name_override = var.oke_main_node_pool_name_override
   main_node_pool_max_pods      = var.oke_main_node_pool_max_pods
@@ -231,6 +231,12 @@ module "publish_hosting" {
   cloudflare_account_id = var.cloudflare_account_id
   oci_region            = var.region
   tags                  = local.region_tags
+
+  # Bring-your-own custom hostnames (Cloudflare for SaaS). Gated + defaulted
+  # off; when enabled, requires a dedicated zone distinct from the (shared)
+  # publish zone — see the submodule for the per-zone-singleton rationale.
+  enable_custom_domains = var.enable_custom_domains
+  custom_domains_zone   = var.custom_domains_zone
 
   # OCI Object Storage's PAR API has eventual consistency against bucket
   # creation. Without this depends_on, terraform parallelizes the

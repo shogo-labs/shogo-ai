@@ -18,7 +18,17 @@
 import { Hono } from "hono"
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
-import { deriveRuntimeToken } from "../lib/runtime-token"
+import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
+import { recordCheckpointForCommit } from "../services/checkpoint.service"
+import {
+  getCustomHostnamesConfig,
+  createCustomHostname,
+  getCustomHostname,
+  deleteCustomHostname,
+  putHostnameMapping,
+  deleteHostnameMapping,
+  type CustomHostnameState,
+} from "../lib/cloudflare-custom-hostnames"
 
 // S3 configuration. `PUBLISH_BUCKET` must be set explicitly in every K8s
 // overlay (k8s/overlays/{staging,production-*}/api-service.yaml) — the
@@ -101,6 +111,119 @@ function validateSubdomain(subdomain: string): { valid: boolean; reason?: string
     return { valid: false, reason: "This subdomain is reserved" }
   }
   return { valid: true }
+}
+
+// A custom domain may not live under a Shogo-operated zone — those are
+// served by our own wildcards/Workers and pointing one here would either
+// be a no-op or hijack platform routing. Compared case-insensitively as a
+// suffix so `foo.shogo.ai` and `shogo.one` are both rejected.
+const RESERVED_DOMAIN_SUFFIXES = ["shogo.ai", "shogo.one", "shogo.app", "shogo.dev"]
+
+// RFC 1123 hostname: 1-63 char labels, alphanumeric + hyphen (not at the
+// ends), at least two labels (must be a FQDN, not a bare label).
+const HOSTNAME_PATTERN =
+  /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/
+
+/**
+ * Validate a user-supplied custom hostname (e.g. "app.acme.com"). Returns a
+ * normalised (lowercased, trimmed, no trailing dot) hostname on success.
+ */
+function validateCustomHostname(
+  raw: string,
+): { valid: true; hostname: string } | { valid: false; reason: string } {
+  const hostname = raw.trim().toLowerCase().replace(/\.$/, "")
+  if (!hostname) {
+    return { valid: false, reason: "Domain is required" }
+  }
+  if (hostname.length > 253) {
+    return { valid: false, reason: "Domain is too long" }
+  }
+  if (hostname.startsWith("*.")) {
+    return { valid: false, reason: "Wildcard domains are not supported" }
+  }
+  if (!HOSTNAME_PATTERN.test(hostname)) {
+    return { valid: false, reason: "Enter a valid domain like app.example.com" }
+  }
+  if (
+    RESERVED_DOMAIN_SUFFIXES.some(
+      (s) => hostname === s || hostname.endsWith(`.${s}`),
+    )
+  ) {
+    return { valid: false, reason: "This domain is managed by Shogo" }
+  }
+  return { valid: true, hostname }
+}
+
+// Map a Cloudflare custom-hostname state to our DB status enum value.
+function cfStateToStatus(
+  state: CustomHostnameState,
+): "pending" | "verifying" | "active" | "failed" {
+  if (state.active) return "active"
+  if (state.errors.length > 0) return "failed"
+  // CF reports `pending` until the CNAME/DV records are seen, then moves
+  // the cert through `pending_validation` -> `pending_issuance`.
+  if (state.sslStatus && state.sslStatus !== "pending_validation") {
+    return "verifying"
+  }
+  return "pending"
+}
+
+/**
+ * Serialise a CustomDomain row (+ optional live CF state) for the API.
+ */
+function serializeDomain(
+  row: { id: string; hostname: string; status: string; sslStatus: string | null; lastError: string | null; verifiedAt: Date | null },
+  state?: CustomHostnameState | null,
+) {
+  return {
+    id: row.id,
+    hostname: row.hostname,
+    status: row.status,
+    sslStatus: row.sslStatus ?? undefined,
+    error: row.lastError ?? undefined,
+    verifiedAt: row.verifiedAt ? row.verifiedAt.getTime() : undefined,
+    instructions: state?.instructions ?? undefined,
+  }
+}
+
+/**
+ * (Re)write the Worker KV `hostname -> subdomain` map for every ACTIVE
+ * custom domain of a project. Called after publish/republish so a subdomain
+ * change is reflected for custom domains too. Best-effort — never throws.
+ */
+async function syncCustomDomainKv(projectId: string, subdomain: string): Promise<void> {
+  if (!getCustomHostnamesConfig()) return
+  try {
+    const domains = await prisma.customDomain.findMany({
+      where: { projectId, status: "active" },
+      select: { hostname: true },
+    })
+    for (const d of domains) {
+      await putHostnameMapping(d.hostname, subdomain)
+    }
+  } catch (err: any) {
+    console.warn(`[Publish] syncCustomDomainKv(${projectId}) failed:`, err?.message ?? err)
+  }
+}
+
+/**
+ * Remove the Worker KV mappings for all of a project's custom domains so
+ * they stop serving once the project is unpublished. CF custom hostnames +
+ * DB rows are kept so a later republish restores routing. Best-effort.
+ */
+async function clearCustomDomainKv(projectId: string): Promise<void> {
+  if (!getCustomHostnamesConfig()) return
+  try {
+    const domains = await prisma.customDomain.findMany({
+      where: { projectId },
+      select: { hostname: true },
+    })
+    for (const d of domains) {
+      await deleteHostnameMapping(d.hostname)
+    }
+  } catch (err: any) {
+    console.warn(`[Publish] clearCustomDomainKv(${projectId}) failed:`, err?.message ?? err)
+  }
 }
 
 /**
@@ -252,7 +375,7 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
   // publish before this fix either got a bare 404 (proxy's no-port branch)
   // or the user app's SPA fallback HTML (which then failed JSON parsing).
   const response = await fetch(`${podUrl}/agent/dist-files`, {
-    headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+    headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
     signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
   })
 
@@ -280,27 +403,30 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
  */
 async function flushGitSync(
   projectId: string,
-  opts: { tag?: string; tagMessage?: string } = {},
-): Promise<{ sha: string | null; tag: string | null } | null> {
+  opts: {
+    tags?: Array<{ name: string; message?: string; force?: boolean }>
+    deleteTags?: string[]
+  } = {},
+): Promise<{ sha: string | null } | null> {
   try {
     const { getProjectPodUrl } = await import("../lib/knative-project-manager")
     const podUrl = await getProjectPodUrl(projectId)
     const response = await fetch(`${podUrl}/agent/git-flush`, {
       method: 'POST',
       headers: {
-        'x-runtime-token': deriveRuntimeToken(projectId),
+        'x-runtime-token': await deriveProjectRuntimeToken(projectId),
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ tag: opts.tag, tagMessage: opts.tagMessage }),
+      body: JSON.stringify({ tags: opts.tags, deleteTags: opts.deleteTags }),
       signal: AbortSignal.timeout(PUBLISH_BUILD_TIMEOUT_MS),
     })
     if (!response.ok) {
       console.warn(`[Publish] git-flush returned ${response.status} for ${projectId} (continuing)`)
       return null
     }
-    const result = await response.json().catch(() => ({})) as { sha?: string; tag?: string }
+    const result = await response.json().catch(() => ({})) as { sha?: string }
     console.log(`[Publish] git-flush for ${projectId}:`, result)
-    return { sha: result.sha ?? null, tag: result.tag ?? null }
+    return { sha: result.sha ?? null }
   } catch (err: any) {
     console.warn(`[Publish] git-flush failed for ${projectId} (continuing):`, err?.message ?? err)
     return null
@@ -308,32 +434,56 @@ async function flushGitSync(
 }
 
 /**
- * Mark the published commit with an annotated git tag so the publish is a
- * traceable, immutable point in the project's history (visible in the
- * commit graph as a `tag:` decoration). Records `publishedCommitSha` +
- * `publishedTag` on the Project for the publish panel.
+ * Mark the published commit with git tags so a publish is a traceable point in
+ * the project's history (visible in the commit graph as `tag:` decorations) and
+ * the graph/UI can resolve "what's live" git-natively.
  *
- * Pod-owned model: the pod owns the durable repo, so the tag is created
- * AND persisted by the pod inside `/agent/git-flush` (we pass the tag name
- * and read back the tagged sha). The API just records the result; the tag
- * shows up in the graph on the API's next read-hydrate. Best-effort — a
- * failure here must not fail an otherwise-successful publish.
+ * Two tags are written at HEAD:
+ *   - `publish/<subdomain>/<unix-ts>`  immutable, per-deploy history entry
+ *   - `published/<subdomain>`          stable moving pointer at the LIVE commit
+ *     (force-updated each publish; the graph resolves the live node from this)
+ *
+ * `deletePointerSubdomains` removes stale `published/<old>` pointers in the same
+ * round trip (used when a project changes its subdomain).
+ *
+ * Pod-owned model: the pod owns the durable repo, so tags are created AND
+ * persisted by the pod inside `/agent/git-flush` (we pass the tag names and
+ * read back the resulting HEAD sha). The API just records the result; the tags
+ * show up in the graph on the API's next read-hydrate. Best-effort — a failure
+ * here must not fail an otherwise-successful publish.
  */
 async function tagPublishedCommit(
   projectId: string,
   subdomain: string,
-): Promise<{ sha: string; tag: string } | null> {
+  opts: { deletePointerSubdomains?: string[] } = {},
+): Promise<{ sha: string; tag: string; pointerTag: string } | null> {
   const tag = `publish/${subdomain}/${Math.floor(Date.now() / 1000)}`
+  const pointerTag = `published/${subdomain}`
+  const deleteTags = (opts.deletePointerSubdomains ?? [])
+    .filter((s) => s && s !== subdomain)
+    .map((s) => `published/${s}`)
   const result = await flushGitSync(projectId, {
-    tag,
-    tagMessage: `Published ${subdomain}.${PUBLISH_DOMAIN}`,
+    tags: [
+      { name: tag, message: `Published ${subdomain}.${PUBLISH_DOMAIN}` },
+      { name: pointerTag, message: `Live: ${subdomain}.${PUBLISH_DOMAIN}`, force: true },
+    ],
+    ...(deleteTags.length ? { deleteTags } : {}),
   })
   if (!result?.sha) {
     console.warn(`[Publish] No HEAD to tag for ${projectId} (pod git sync inactive or repo empty?)`)
     return null
   }
-  console.log(`[Publish] Tagged ${projectId} HEAD ${result.sha.slice(0, 8)} as ${tag}`)
-  return { sha: result.sha, tag: result.tag ?? tag }
+  console.log(`[Publish] Tagged ${projectId} HEAD ${result.sha.slice(0, 8)} as ${tag} + ${pointerTag}`)
+  return { sha: result.sha, tag, pointerTag }
+}
+
+/**
+ * Best-effort removal of the stable `published/<subdomain>` pointer tag (the
+ * immutable `publish/<subdomain>/<ts>` history tags are intentionally kept).
+ * Used on unpublish so the graph stops marking any commit as live.
+ */
+async function deletePublishPointer(projectId: string, subdomain: string): Promise<void> {
+  await flushGitSync(projectId, { deleteTags: [`published/${subdomain}`] })
 }
 
 /**
@@ -600,14 +750,18 @@ export function publishRoutes() {
         console.log(`[Publish] Local mode - would publish to ${subdomain}.${PUBLISH_DOMAIN}`)
       }
 
-      // Tag the published commit in the durable git repo. This replaces
-      // the old auto-checkpoint-on-publish, which created the checkpoint
-      // against WORKSPACES_DIR/<id> on the API pod — a path that doesn't
-      // exist in the cloud topology (the workspace lives on the runtime
-      // pod / object storage), so it silently no-op'd for every cloud
-      // publish. Tagging flushes the pod's git sync, hydrates the durable
-      // repo here, and marks HEAD with `publish/<subdomain>/<ts>`.
-      const tagged = await tagPublishedCommit(projectId, subdomain)
+      // Tag the published commit in the durable git repo: a timestamped
+      // history tag plus the stable `published/<subdomain>` pointer the graph
+      // resolves "what's live" from. On a subdomain change we also drop the old
+      // `published/<oldSubdomain>` pointer in the same round trip. Tagging
+      // flushes the pod's git sync and hydrates the durable repo here.
+      const previousSubdomain =
+        project.publishedSubdomain && project.publishedSubdomain !== subdomain
+          ? project.publishedSubdomain
+          : undefined
+      const tagged = await tagPublishedCommit(projectId, subdomain, {
+        deletePointerSubdomains: previousSubdomain ? [previousSubdomain] : [],
+      })
 
       // Update project with publish info
       const publishedAt = new Date()
@@ -625,6 +779,24 @@ export function publishRoutes() {
           ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
         } as any,
       })
+
+      // Record the live commit as a checkpoint so "what's live" is a real,
+      // rollback-able point in history (idempotent on commitSha). Best-effort.
+      if (tagged?.sha) {
+        try {
+          await recordCheckpointForCommit(projectId, tagged.sha, {
+            name: `Published to ${subdomain}`,
+            commitMessage: `Published ${subdomain}.${PUBLISH_DOMAIN}`,
+            isAutomatic: true,
+          })
+        } catch (err: any) {
+          console.warn(`[Publish] Failed to record publish checkpoint for ${projectId}:`, err?.message ?? err)
+        }
+      }
+
+      // Point any already-active custom domains at the (possibly new)
+      // subdomain prefix in the Worker's routing map.
+      await syncCustomDomainKv(projectId, subdomain)
 
       // Auto-capture thumbnail after publish (fire-and-forget, delayed to let CDN propagate)
       setTimeout(() => {
@@ -690,6 +862,16 @@ export function publishRoutes() {
         }
       }
 
+      // Stop serving any custom domains (their content is gone). The CF
+      // custom hostnames + DB rows are kept so a later republish restores
+      // routing via syncCustomDomainKv.
+      await clearCustomDomainKv(projectId)
+
+      // Remove the stable `published/<subdomain>` pointer so the graph stops
+      // marking any commit as live. The immutable per-deploy history tags are
+      // intentionally kept. Best-effort.
+      await deletePublishPointer(projectId, project.publishedSubdomain)
+
       // Clear publish info from project
       await prisma.project.update({
         where: { id: projectId },
@@ -702,7 +884,9 @@ export function publishRoutes() {
           accessLevel: "anyone",
           siteTitle: null,
           siteDescription: null,
-        },
+          publishedCommitSha: null,
+          publishedTag: null,
+        } as any,
       })
 
       return c.json({ success: true }, 200)
@@ -795,6 +979,22 @@ export function publishRoutes() {
         } as any,
       })
 
+      // Record the (new) live commit as a checkpoint, idempotent on commitSha.
+      if (tagged?.sha) {
+        try {
+          await recordCheckpointForCommit(projectId, tagged.sha, {
+            name: `Published to ${subdomain}`,
+            commitMessage: `Published ${subdomain}.${PUBLISH_DOMAIN}`,
+            isAutomatic: true,
+          })
+        } catch (err: any) {
+          console.warn(`[Publish] Failed to record republish checkpoint for ${projectId}:`, err?.message ?? err)
+        }
+      }
+
+      // Keep custom-domain routing in sync with the republished content.
+      await syncCustomDomainKv(projectId, subdomain)
+
       return c.json({
         url: `https://${subdomain}.${PUBLISH_DOMAIN}`,
         subdomain,
@@ -860,6 +1060,179 @@ export function publishRoutes() {
     } catch (error: any) {
       console.error("[Publish] Update publish settings error:", error)
       return c.json({ error: { code: "update_failed", message: error.message } }, 500)
+    }
+  })
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Custom domains (Cloudflare for SaaS — bring-your-own domain)
+  // ───────────────────────────────────────────────────────────────────────
+
+  /**
+   * GET /projects/:projectId/domains - List a project's custom domains.
+   * `enabled` reflects whether Cloudflare for SaaS is configured on this
+   * deployment; `fallbackOrigin` is the CNAME target shown to the user.
+   */
+  router.get("/projects/:projectId/domains", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      const cfg = getCustomHostnamesConfig()
+      const domains = await prisma.customDomain.findMany({
+        where: { projectId },
+        orderBy: { createdAt: "asc" },
+      })
+      return c.json({
+        enabled: !!cfg,
+        fallbackOrigin: cfg?.fallbackOrigin,
+        domains: domains.map((d) => serializeDomain(d)),
+      }, 200)
+    } catch (error: any) {
+      console.error("[Publish] List custom domains error:", error)
+      return c.json({ error: { code: "list_domains_failed", message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/domains - Attach a custom domain. Registers a
+   * Cloudflare custom hostname and returns the DNS records the user must add.
+   */
+  router.post("/projects/:projectId/domains", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+
+      if (!getCustomHostnamesConfig()) {
+        return c.json({ error: { code: "not_enabled", message: "Custom domains are not enabled on this deployment" } }, 501)
+      }
+
+      const body = await c.req.json<{ hostname?: string }>()
+      const validation = validateCustomHostname(body.hostname ?? "")
+      if (!validation.valid) {
+        return c.json({ error: { code: "invalid_hostname", message: validation.reason } }, 400)
+      }
+      const { hostname } = validation
+
+      const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } })
+      if (!project) {
+        return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
+      }
+
+      // Hostnames are globally unique (one app per domain).
+      const existing = await prisma.customDomain.findUnique({ where: { hostname }, select: { projectId: true } })
+      if (existing) {
+        const mine = existing.projectId === projectId
+        return c.json({
+          error: {
+            code: mine ? "already_added" : "hostname_taken",
+            message: mine ? "This domain is already attached to this project" : "This domain is already in use",
+          },
+        }, 409)
+      }
+
+      let state: CustomHostnameState
+      try {
+        state = await createCustomHostname(hostname)
+      } catch (err: any) {
+        console.error("[Publish] createCustomHostname failed:", err?.message ?? err)
+        return c.json({ error: { code: "cloudflare_error", message: err?.message || "Failed to register custom hostname" } }, 502)
+      }
+
+      const row = await prisma.customDomain.create({
+        data: {
+          projectId,
+          hostname,
+          status: cfStateToStatus(state),
+          cfCustomHostnameId: state.id,
+          sslStatus: state.sslStatus,
+          lastError: state.errors[0] ?? null,
+        },
+      })
+
+      return c.json(serializeDomain(row, state), 201)
+    } catch (error: any) {
+      console.error("[Publish] Add custom domain error:", error)
+      return c.json({ error: { code: "add_domain_failed", message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/domains/:domainId/verify - Re-poll Cloudflare
+   * for the hostname's validation/SSL status, persist it, and (once active)
+   * write the Worker KV `hostname -> subdomain` map so the domain serves.
+   */
+  router.post("/projects/:projectId/domains/:domainId/verify", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      const domainId = c.req.param("domainId")
+
+      const row = await prisma.customDomain.findUnique({ where: { id: domainId } })
+      if (!row || row.projectId !== projectId) {
+        return c.json({ error: { code: "domain_not_found", message: "Custom domain not found" } }, 404)
+      }
+      if (!getCustomHostnamesConfig()) {
+        return c.json({ error: { code: "not_enabled", message: "Custom domains are not enabled on this deployment" } }, 501)
+      }
+      if (!row.cfCustomHostnameId) {
+        return c.json({ error: { code: "not_registered", message: "Custom hostname was never registered with Cloudflare" } }, 409)
+      }
+
+      const state = await getCustomHostname(row.cfCustomHostnameId)
+      if (!state) {
+        return c.json({ error: { code: "cloudflare_error", message: "Could not read custom hostname status" } }, 502)
+      }
+
+      const status = cfStateToStatus(state)
+      const becameActive = status === "active" && row.status !== "active"
+
+      // Write the routing map only once we're active AND the project has a
+      // published subdomain (the object-storage prefix the Worker reads).
+      if (status === "active") {
+        const project = await prisma.project.findUnique({ where: { id: projectId }, select: { publishedSubdomain: true } })
+        if (project?.publishedSubdomain) {
+          await putHostnameMapping(row.hostname, project.publishedSubdomain)
+        }
+      }
+
+      const updated = await prisma.customDomain.update({
+        where: { id: row.id },
+        data: {
+          status,
+          sslStatus: state.sslStatus,
+          lastError: state.errors[0] ?? null,
+          ...(becameActive && { verifiedAt: new Date() }),
+        },
+      })
+
+      return c.json(serializeDomain(updated, state), 200)
+    } catch (error: any) {
+      console.error("[Publish] Verify custom domain error:", error)
+      return c.json({ error: { code: "verify_domain_failed", message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * DELETE /projects/:projectId/domains/:domainId - Detach a custom domain:
+   * remove the Cloudflare custom hostname (+ managed cert), the KV mapping,
+   * and the DB row.
+   */
+  router.delete("/projects/:projectId/domains/:domainId", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      const domainId = c.req.param("domainId")
+
+      const row = await prisma.customDomain.findUnique({ where: { id: domainId } })
+      if (!row || row.projectId !== projectId) {
+        return c.json({ error: { code: "domain_not_found", message: "Custom domain not found" } }, 404)
+      }
+
+      if (row.cfCustomHostnameId) {
+        await deleteCustomHostname(row.cfCustomHostnameId)
+      }
+      await deleteHostnameMapping(row.hostname)
+      await prisma.customDomain.delete({ where: { id: row.id } })
+
+      return c.json({ success: true }, 200)
+    } catch (error: any) {
+      console.error("[Publish] Delete custom domain error:", error)
+      return c.json({ error: { code: "delete_domain_failed", message: error.message } }, 500)
     }
   })
 

@@ -20,11 +20,13 @@ export interface BuiltDisplayRows {
  * @param commits - commits in display (date/topo) order, newest first
  * @param workingStatus - working-tree status used to decide the WIP row
  * @param checkpointShas - SHAs that correspond to a checkpoint commit
+ * @param liveSha - SHA of the currently-published/live commit, or null
  */
 export function buildDisplayRows(
   commits: GitGraphCommit[],
   workingStatus: GitStatus | null,
   checkpointShas: Set<string>,
+  liveSha?: string | null,
 ): BuiltDisplayRows {
   const layout = computeGraphLayout(
     commits.map((c) => ({ sha: c.sha, parents: c.parents })),
@@ -39,6 +41,7 @@ export function buildDisplayRows(
     edges: r.edges,
     refs: commits[i].refs,
     isCheckpoint: checkpointShas.has(commits[i].sha),
+    isLive: !!liveSha && commits[i].sha === liveSha,
   }));
 
   const ws = workingStatus as (GitStatus & { modified?: string[] }) | null;
@@ -59,6 +62,7 @@ export function buildDisplayRows(
       edges: [{ fromLane: headLane, toLane: commitRows[0].lane, color: commitRows[0].color }],
       refs: [],
       isCheckpoint: false,
+      isLive: false,
       wipCount,
     };
     return { rows: [wip, ...commitRows], maxLanes: layout.maxLanes };

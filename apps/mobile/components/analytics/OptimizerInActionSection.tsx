@@ -30,6 +30,8 @@ export interface OptimizerInActionData {
     projectId: string | null
     fromModel: string | null
     toModel: string
+    /** Server-resolved display label for `toModel`. */
+    toModelLabel?: string
     appliedAt: string
     updatedBy: string | null
     avgCostBefore: number | null
@@ -42,6 +44,8 @@ export interface OptimizerInActionData {
   evalScores: Array<{
     agentType: string
     model: string
+    /** Server-resolved display label for `model`. */
+    modelLabel?: string
     suite: string
     passRate: number
     totalCases: number
@@ -52,7 +56,11 @@ export interface OptimizerInActionData {
     name: string
     agentType: string
     modelA: string
+    /** Server-resolved display label for `modelA`. */
+    modelALabel?: string
     modelB: string
+    /** Server-resolved display label for `modelB`. */
+    modelBLabel?: string
     status: string
     expectedEndAt: string | null
     runsA: number
@@ -192,7 +200,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
                       </Text>
                     </View>
                     <Text className={`text-sm ${getModelTextColor(ov.toModel)}`}>
-                      → {getModelDisplayName(ov.toModel)}
+                      → {ov.toModelLabel ?? getModelDisplayName(ov.toModel)}
                     </Text>
                   </View>
 
@@ -239,7 +247,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
                   <View className="flex-1">
                     <Text className="text-foreground font-medium">{exp.name}</Text>
                     <Text className="text-muted-foreground text-xs mt-0.5">
-                      {exp.modelA} ({exp.runsA} runs) vs {exp.modelB} ({exp.runsB} runs)
+                      {exp.modelALabel ?? getModelDisplayName(exp.modelA)} ({exp.runsA} runs) vs {exp.modelBLabel ?? getModelDisplayName(exp.modelB)} ({exp.runsB} runs)
                       {' · '}
                       {exp.status}
                       {exp.expectedEndAt ? ` · ends ${formatRelative(exp.expectedEndAt)}` : ''}
@@ -251,7 +259,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
                         'bg-muted px-2 py-1 rounded-md'
                   }>
                     <Text className="text-xs font-semibold text-foreground">
-                      Verdict: {exp.verdict === 'B' ? `→ ${exp.modelB}` : exp.verdict === 'A' ? `keep ${exp.modelA}` : exp.verdict}
+                      Verdict: {exp.verdict === 'B' ? `→ ${exp.modelBLabel ?? getModelDisplayName(exp.modelB)}` : exp.verdict === 'A' ? `keep ${exp.modelALabel ?? getModelDisplayName(exp.modelA)}` : exp.verdict}
                     </Text>
                   </View>
                 </View>
@@ -286,7 +294,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
                   {rows.map((r) => (
                     <View key={`${r.agentType}::${r.model}`} className="flex-row justify-between">
                       <Text className={`text-sm ${getModelTextColor(r.model)}`}>
-                        {getModelDisplayName(r.model)}
+                        {r.modelLabel ?? getModelDisplayName(r.model)}
                       </Text>
                       <Text className="text-foreground text-sm">
                         {(r.passRate * 100).toFixed(1)}% ({r.totalCases} cases · {formatRelative(r.capturedAt)})

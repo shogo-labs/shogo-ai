@@ -36,6 +36,8 @@ const JSON_OBJECT_FIELDS = new Set([
   'tokens', 'phaseScores', 'criteria', 'antiPatterns',
   'workspaceSnapshot', 'metadata', 'settings', 'channels',
   'actionMetadata', 'transcript', 'examples',
+  // UsageWallet per-period alert dedupe ledger (Json? on PG, String? on SQLite)
+  'alertsSentThisPeriod',
   'baselineManifest', 'auditFindings',
   // ModelDefinition capability ratings (Json? on PG, String? JSON on SQLite)
   'capabilities',

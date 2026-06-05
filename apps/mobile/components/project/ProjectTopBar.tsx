@@ -76,9 +76,11 @@ import type { UsageWindows } from '@shogo/shared-app/hooks'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
 import { CompactUsageWindows } from '../billing/UsageWindows'
 import { PublishDropdown } from './PublishDropdown'
+import { CloudSyncStatusPill } from './CloudSyncStatusPill'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 import { api } from '../../lib/api'
+import { requestIdeActivity } from '../../lib/ide-activity-bus'
 import { ProjectExportModal } from './ProjectExportModal'
 
 /** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
@@ -705,6 +707,10 @@ export function ProjectTopBar({
               </PopoverBody>
             </PopoverContent>
           </Popover>
+
+          {/* Cloud content-sync status (desktop + cloud-linked only; the
+              pill self-gates and renders nothing otherwise). */}
+          <CloudSyncStatusPill projectId={projectId} />
         </View>
 
         <View className="flex-1" />
@@ -865,7 +871,18 @@ export function ProjectTopBar({
             />
           )}
           {isCanvasActive && (
-            <PublishDropdown projectId={projectId} projectName={projectName} />
+            <PublishDropdown
+              projectId={projectId}
+              projectName={projectName}
+              onViewHistory={
+                Platform.OS === 'web'
+                  ? () => {
+                      onTabChange?.('ide')
+                      requestIdeActivity('checkpoint')
+                    }
+                  : undefined
+              }
+            />
           )}
           {!hasActiveSubscription && (
             <Pressable

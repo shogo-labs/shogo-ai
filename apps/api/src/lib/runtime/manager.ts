@@ -25,6 +25,12 @@ import type {
 } from './types'
 import { getShogoCloudUrl, buildAiProxyUrl, buildToolsProxyUrl } from '../cloud-urls'
 import { buildWorkspaceEnv } from './build-workspace-env'
+import {
+  isProjectCloudLinked,
+  isCloudSyncActive,
+  syncCloudProjectIntoDir,
+  stopAllCloudSyncWatchers,
+} from './cloud-content-sync'
 
 /** Get the directory where this module is located */
 const __filename = fileURLToPath(import.meta.url)
@@ -855,6 +861,46 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       mkdirSync(workspacesDir, { recursive: true })
     }
 
+    // ── Cloud-linked project: pull workspace CONTENTS from cloud ─────────────
+    //
+    // Opening a cloud project materializes its files into `projectDir` (git
+    // clone over smart-HTTP, or the Files API as a fallback) and starts a
+    // watcher to push local edits back. This reuses the worker's content-sync
+    // building blocks (see `lib/runtime/cloud-content-sync.ts`).
+    //
+    // This is the desktop's equivalent of the CLI worker's `maybeAutoPull`.
+    // The worker flips an `autoPull` flag and leaves `projectDir` unset so its
+    // own clone runs; the desktop can't do that — it always needs `projectDir`
+    // for the merged-root / preview / dependency-install pipeline below — so we
+    // drive the same clone + watch here and keep the rest of the pipeline
+    // intact. The clone replaces the local-template seed for cloud projects;
+    // local-only projects are untouched.
+    const cloudLinked = await isProjectCloudLinked(projectId)
+    let cloudPulled = false
+    if (cloudLinked) {
+      const res = await syncCloudProjectIntoDir({
+        projectId,
+        projectDir,
+        cloudUrl: getShogoCloudUrl(),
+        apiKey: process.env.SHOGO_API_KEY || '',
+        logger: console,
+      }).catch((err: any) => {
+        console.warn(`[RuntimeManager] cloud content pull errored for ${projectId}: ${err?.message ?? err}`)
+        return { pulled: false, mode: null } as const
+      })
+      cloudPulled = res.pulled
+      if (cloudPulled) {
+        log('cloud-pull:done', { mode: res.mode })
+      } else {
+        // Offline / failed: we DON'T seed an apps/api template (see needsSeed
+        // below) and `syncCloudProjectIntoDir` did NOT start a watcher — so we
+        // never push a local fallback up over the real cloud copy. The runtime
+        // opens against whatever is local (the agent-runtime seeds defaults
+        // into an empty dir) and the pull retries on the next open.
+        log('cloud-pull:soft-fail', {})
+      }
+    }
+
     // Template copy filter:
     //   - exclude `bun.lock` so `bun install` does a fresh platform-appropriate
     //     resolution (a Mac-generated lockfile causes incomplete installs on Windows)
@@ -870,7 +916,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       !src.endsWith('bun.lock') &&
       !src.endsWith('bun.lockb')
 
-    const needsSeed = !existsSync(projectDir) || !existsSync(join(projectDir, 'package.json'))
+    // Cloud-linked projects are seeded from cloud, never from a local
+    // template: a successful pull IS the content, and on a failed pull we
+    // leave the dir for the agent-runtime to seed defaults (and no watcher is
+    // running, so a local fallback can never be pushed up over the cloud copy).
+    const needsSeed =
+      !cloudLinked && (!existsSync(projectDir) || !existsSync(join(projectDir, 'package.json')))
 
     // Stacks owned by agent-runtime's `seedTechStack` rather than the
     // bundled Vite template. Driven by `seedsOwnTemplate` in the shared
@@ -963,6 +1014,15 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // completeness there.
     if (stackHandlesOwnSeed) {
       log('done:stack-handles-own-seed', { techStackId, projectDir })
+      return projectDir
+    }
+
+    // A cloud-linked workspace with no package.json (a non-JS project, or a
+    // pull that soft-failed and left the dir empty) has no deps for apps/api
+    // to install — the runtime/agent owns its own toolchain and seeds an empty
+    // dir. Skip the install path so we don't throw on a missing manifest.
+    if (cloudLinked && !existsSync(join(projectDir, 'package.json'))) {
+      log('done:cloud-no-package-json', { projectDir, cloudPulled })
       return projectDir
     }
 
@@ -1662,6 +1722,16 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         runtimeEnv.DATABASE_URL = process.env.PROJECTS_DATABASE_URL
       }
 
+      // When the anchor project's contents are cloud-synced, our
+      // CloudSyncWatcher owns the push back to cloud. Tell the agent-runtime
+      // to skip its own S3Sync + checkpoint inserts (the cloud's post-receive
+      // hook writes checkpoints) so the two don't fight. Local-only runtimes
+      // keep their normal checkpoint behavior. (Mixed merged roots gate on the
+      // anchor; per-member gating is a follow-up.)
+      if (spec.anchorProjectId && isCloudSyncActive(spec.anchorProjectId)) {
+        runtimeEnv.SHOGO_CLOUD_SYNC = '1'
+      }
+
       const spawnConfig: ProjectSpawnConfig = {
         cloudUrl: getShogoCloudUrl(),
         apiKey: process.env.SHOGO_API_KEY || '',
@@ -2215,6 +2285,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // `RUNTIME_AUTH_SECRET` (desktop) overrides the worker's
         // bare-hex default, and PUBLIC_PREVIEW_URL / SECURITY_POLICY /
         // AI_PROXY_TOKEN reach the runtime untouched.
+        // Cloud-synced projects defer S3Sync + checkpoint inserts to the
+        // CloudSyncWatcher + cloud post-receive hook (see the merged-root
+        // path); local-only projects keep their own checkpoint behavior.
+        if (isCloudSyncActive(projectId)) {
+          runtimeEnv.SHOGO_CLOUD_SYNC = '1'
+        }
+
         const spawnConfig: ProjectSpawnConfig = {
           cloudUrl: getShogoCloudUrl(),
           apiKey: process.env.SHOGO_API_KEY || '',
@@ -2843,6 +2920,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       )
     )
     await Promise.all(stopPromises)
+    // Stop cloud-content-sync watchers last so their final debounced flush
+    // gets a chance to PUT/commit the user's last edits before shutdown.
+    await stopAllCloudSyncWatchers().catch((err) =>
+      console.error('[RuntimeManager] Failed to stop cloud sync watchers:', err)
+    )
   }
 
   getActiveProjects(): string[] {

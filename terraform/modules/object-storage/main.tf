@@ -107,6 +107,13 @@ resource "oci_objectstorage_bucket" "schemas" {
 # -----------------------------------------------------------------------------
 # Workspaces Sync Bucket (project file persistence)
 # -----------------------------------------------------------------------------
+# NOTE (Git LFS): git_only-mode pods store Git LFS objects in THIS bucket
+# under `<projectId>/lfs/objects/<oid>` (content-addressed
+# sha256), alongside repo.git.tar.gz and the legacy assets/ namespace. LFS
+# objects are immutable and never overwritten, so usage grows monotonically:
+# a reachability-based GC job (enumerate live pointer oids per project, delete
+# unreferenced objects) is a required follow-up before this is load-bearing.
+# Set S3_LFS_BUCKET on the app to split LFS into a dedicated bucket instead.
 resource "oci_objectstorage_bucket" "workspaces" {
   compartment_id = coalesce(var.workspaces_compartment_id, var.compartment_id)
   namespace      = local.namespace
@@ -154,8 +161,8 @@ resource "oci_identity_policy" "lifecycle_service_principal" {
   # service principal (`objectstorage-<region>`). Include region in the
   # policy name so multiple regions can coexist at the tenancy level
   # without a name collision.
-  name           = "objectstorage-lifecycle-service-principal-${var.environment}-${var.region}"
-  description    = "Grant the Object Storage service principal permission to execute lifecycle rules against buckets in this ${var.lifecycle_service_policy_scope}. Required for oci_objectstorage_object_lifecycle_policy resources."
+  name        = "objectstorage-lifecycle-service-principal-${var.environment}-${var.region}"
+  description = "Grant the Object Storage service principal permission to execute lifecycle rules against buckets in this ${var.lifecycle_service_policy_scope}. Required for oci_objectstorage_object_lifecycle_policy resources."
 
   statements = [
     "Allow service objectstorage-${var.region} to manage object-family in ${var.lifecycle_service_policy_scope}",

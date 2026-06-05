@@ -269,6 +269,55 @@ export async function sendPaymentFailedEmail(params: {
 }
 
 /**
+ * Send an on-demand usage (overage) charged email. Fired when a mid-cycle
+ * overage block is invoiced so the charge never arrives unannounced.
+ */
+export async function sendOverageChargedEmail(params: {
+  to: string
+  workspaceName: string
+  amount: string
+  currency?: string
+  periodOverageUsd: string
+  invoiceUrl?: string
+  manageUrl: string
+}): Promise<{ success: boolean; error?: string }> {
+  return sendTemplateEmail('usage-overage-charged', params.to, {
+    workspaceName: params.workspaceName,
+    amount: params.amount,
+    currency: params.currency || '$',
+    periodOverageUsd: params.periodOverageUsd,
+    manageUrl: params.manageUrl,
+    ...(params.invoiceUrl ? { invoiceUrl: params.invoiceUrl } : {}),
+  })
+}
+
+/**
+ * Send a proactive "approaching usage limit" email (included usage nearly
+ * exhausted, or nearing the configured spend cap). `limitLabel` selects the
+ * wording, e.g. 'included usage' or 'spending cap'.
+ */
+export async function sendApproachingLimitEmail(params: {
+  to: string
+  workspaceName: string
+  currency?: string
+  usedUsd: string
+  limitUsd: string
+  limitLabel: string
+  percentUsed: string
+  manageUrl: string
+}): Promise<{ success: boolean; error?: string }> {
+  return sendTemplateEmail('usage-approaching-limit', params.to, {
+    workspaceName: params.workspaceName,
+    currency: params.currency || '$',
+    usedUsd: params.usedUsd,
+    limitUsd: params.limitUsd,
+    limitLabel: params.limitLabel,
+    percentUsed: params.percentUsed,
+    manageUrl: params.manageUrl,
+  })
+}
+
+/**
  * Send a member joined notification email
  */
 export async function sendMemberJoinedEmail(params: {

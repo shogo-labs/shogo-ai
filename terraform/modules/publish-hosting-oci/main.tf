@@ -55,6 +55,24 @@ variable "cloudflare_account_id" {
   type        = string
 }
 
+variable "enable_custom_domains" {
+  description = "Turn on Cloudflare for SaaS (bring-your-own custom hostnames). Defaults to false. When true, the module creates the KV map, fallback origin, fallback DNS record and a `*/*` worker route IN `custom_domains_zone` (NOT the publish zone). These are zone-level singletons, so exactly one environment may own a given zone — see `custom_domains_zone`."
+  type        = bool
+  default     = false
+}
+
+variable "custom_domains_zone" {
+  description = "Cloudflare zone NAME that hosts bring-your-own custom hostnames (Cloudflare for SaaS). MUST be distinct from the shared publish zone when multiple environments share it: the SaaS fallback origin and the `*/*` worker route are per-zone singletons, so e.g. staging (`*.staging.shogo.one`) and production (`*.shogo.one`) — which share the `shogo.one` publish zone — each need their own dedicated custom-domains zone. Defaults to null, which falls back to the publish zone (only safe for the single env that solely owns that zone). Ignored unless `enable_custom_domains`."
+  type        = string
+  default     = null
+}
+
+variable "custom_domain_fallback_hostname" {
+  description = "Cloudflare for SaaS fallback-origin hostname that bring-your-own custom domains CNAME at. Defaults to `cname.<custom_domains_zone>`. Must resolve within `custom_domains_zone`."
+  type        = string
+  default     = null
+}
+
 variable "oci_region" {
   description = "OCI region (e.g. us-ashburn-1)"
   type        = string
@@ -123,6 +141,85 @@ resource "oci_objectstorage_preauthrequest" "published_apps" {
 locals {
   # The PAR gives us a base URL that Cloudflare Worker can use as origin
   par_base_url = "https://objectstorage.${var.oci_region}.oraclecloud.com${oci_objectstorage_preauthrequest.published_apps.access_uri}"
+
+  # Cloudflare for SaaS lives in its OWN zone, distinct from the publish zone.
+  # The SaaS primitives below (fallback origin + the `*/*` worker route that
+  # catches custom-hostname traffic) are zone-level SINGLETONS. The publish
+  # zone (`shogo.one`) is shared — staging owns `*.staging.shogo.one` and
+  # production owns `*.shogo.one` against the same zone — so putting a `*/*`
+  # route or fallback origin there would collide across environments and one
+  # env's Worker would intercept the other's traffic. Each env that enables
+  # custom domains therefore points `custom_domains_zone` at a dedicated zone
+  # (falling back to the publish zone only for an env that solely owns it).
+  custom_domains_zone_name = var.enable_custom_domains ? coalesce(
+    var.custom_domains_zone,
+    var.publish_zone,
+    var.publish_domain,
+  ) : null
+
+  # Fallback-origin hostname that bring-your-own custom domains CNAME at
+  # (Cloudflare for SaaS). Defaults to `cname.<custom_domains_zone>`. The API
+  # surfaces this to users as the CNAME target (CUSTOM_DOMAIN_FALLBACK_ORIGIN),
+  # so keep them in sync.
+  custom_domain_fallback_hostname = var.enable_custom_domains ? coalesce(
+    var.custom_domain_fallback_hostname,
+    "cname.${local.custom_domains_zone_name}",
+  ) : null
+
+  # Relative record name for the fallback origin within the custom-domains
+  # zone. The default fallback hostname is `cname.<zone>`, so this resolves to
+  # `cname`; trimsuffix keeps it correct if the hostname is overridden to a
+  # deeper label under the same zone.
+  fallback_record_name = var.enable_custom_domains ? trimsuffix(
+    local.custom_domain_fallback_hostname,
+    ".${local.custom_domains_zone_name}",
+  ) : null
+}
+
+# The dedicated Cloudflare zone that hosts bring-your-own custom hostnames.
+# See the locals note above for why this is kept separate from the publish
+# zone. Only looked up when custom domains are enabled. The tf token needs
+# `Zone:Read` + `SSL and Certificates:Edit` + `Workers Routes:Edit` here.
+data "cloudflare_zone" "custom_domains" {
+  count = var.enable_custom_domains ? 1 : 0
+  name  = local.custom_domains_zone_name
+
+  lifecycle {
+    # Hard stop against the shared-zone footgun: enabling custom domains
+    # without an explicit dedicated zone would fall back to the publish zone
+    # (`shogo.one`) and put a `*/*` route + fallback origin on a zone shared
+    # with other environments. Force the operator to name a dedicated zone.
+    # NOTE: `coalesce` (see local.custom_domains_zone_name) skips empty strings
+    # AND nulls, so an empty `custom_domains_zone` (e.g. an unset GH var passed
+    # as "" by the Terraform CI workflow) would silently fall through to the
+    # publish zone. Reject empty explicitly, and reject the resolved publish
+    # zone (publish_zone, else publish_domain) — not just publish_domain — so a
+    # subdomain env (staging owns `staging.shogo.one` on the shared `shogo.one`
+    # zone) can't point custom domains at the shared zone either.
+    precondition {
+      condition = (
+        var.custom_domains_zone != null &&
+        trimspace(var.custom_domains_zone) != "" &&
+        var.custom_domains_zone != var.publish_domain &&
+        var.custom_domains_zone != coalesce(var.publish_zone, var.publish_domain)
+      )
+      error_message = "enable_custom_domains=true requires custom_domains_zone to be set to a DEDICATED Cloudflare zone: non-empty and distinct from BOTH publish_domain and the publish zone (publish_zone, else publish_domain). The SaaS fallback origin + `*/*` worker route are per-zone singletons and the publish zone is shared across environments. See docs/custom-domains.md."
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Workers KV — custom-domain routing map
+# -----------------------------------------------------------------------------
+# Maps a bring-your-own hostname (e.g. `app.acme.com`) to the published
+# subdomain prefix it should serve from Object Storage. Written by the API
+# (apps/api/src/lib/cloudflare-custom-hostnames.ts) once a custom hostname's
+# cert goes active, read by the subdomain-router Worker below. The namespace
+# id is exported so the api ksvc env can be wired to it.
+resource "cloudflare_workers_kv_namespace" "custom_domains" {
+  count      = var.enable_custom_domains ? 1 : 0
+  account_id = var.cloudflare_account_id
+  title      = "shogo-custom-domains-${var.environment}"
 }
 
 # -----------------------------------------------------------------------------
@@ -139,6 +236,18 @@ resource "cloudflare_worker_script" "subdomain_router" {
   # and rejects the file with "Uncaught SyntaxError: Unexpected token
   # 'export'" at deploy time.
   module = true
+
+  # Bind the custom-domain KV map so the Worker can resolve a bring-your-own
+  # hostname to its published subdomain prefix. Only present when custom
+  # domains are enabled; the Worker guards on `env.CUSTOM_DOMAINS` so the
+  # script content is identical whether or not the binding exists.
+  dynamic "kv_namespace_binding" {
+    for_each = var.enable_custom_domains ? [1] : []
+    content {
+      name         = "CUSTOM_DOMAINS"
+      namespace_id = cloudflare_workers_kv_namespace.custom_domains[0].id
+    }
+  }
   # The OCI PAR `access_uri` returned by the provider ends in `/o/`
   # (verified via OCI CLI on the live PAR; matches OCI docs). The
   # original implementation built `originUrl = par_base_url + path`
@@ -169,8 +278,20 @@ resource "cloudflare_worker_script" "subdomain_router" {
       return ORIGIN_BASE + cleanPath;
     }
 
+    const PUBLISH_DOMAIN = '${var.publish_domain}';
+
+    // Apps published under the platform domain serve from their first DNS
+    // label (`myapp.shogo.one` -> `myapp`). Returns null for anything else
+    // (a bring-your-own custom domain), which we then resolve via KV.
+    function platformSubdomain(hostname) {
+      if (hostname === PUBLISH_DOMAIN || hostname.endsWith('.' + PUBLISH_DOMAIN)) {
+        return hostname.split('.')[0];
+      }
+      return null;
+    }
+
     export default {
-      async fetch(request) {
+      async fetch(request, env) {
         const url = new URL(request.url);
         // Strip an optional leading `www.` so `www.<app>.shogo.one`
         // serves the same app as `<app>.shogo.one`. NOTE: this only
@@ -181,8 +302,25 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // `*.<app>.shogo.one`, or Total TLS over a proxied `www.<app>`
         // DNS record). Without that cert the TLS handshake fails before
         // this Worker ever runs.
-        const hostname = url.hostname.replace(/^www\./, '');
-        const subdomain = hostname.split('.')[0];
+        const rawHost = url.hostname;
+        const hostname = rawHost.replace(/^www\./, '');
+
+        // Platform subdomain first; otherwise treat the host as a custom
+        // domain and look up its published prefix in the KV map the API
+        // writes when the hostname's cert goes active. Custom domains are
+        // registered verbatim (a user may add `www.acme.com`), so try the
+        // exact host first, then the www-stripped form. Unknown hosts 404
+        // rather than guessing a (wrong) prefix from the first label.
+        let subdomain = platformSubdomain(hostname);
+        if (!subdomain && env.CUSTOM_DOMAINS) {
+          subdomain = await env.CUSTOM_DOMAINS.get(rawHost);
+          if (!subdomain && rawHost !== hostname) {
+            subdomain = await env.CUSTOM_DOMAINS.get(hostname);
+          }
+        }
+        if (!subdomain) {
+          return new Response('Not found: no published app for ' + rawHost, { status: 404 });
+        }
 
         const originUrl = buildOriginUrl(subdomain, url.pathname);
         const response = await fetch(originUrl, {
@@ -218,6 +356,58 @@ resource "cloudflare_worker_script" "subdomain_router" {
 resource "cloudflare_worker_route" "published_apps" {
   zone_id     = data.cloudflare_zone.publish.id
   pattern     = "*.${var.publish_domain}/*"
+  script_name = cloudflare_worker_script.subdomain_router.name
+}
+
+# -----------------------------------------------------------------------------
+# Cloudflare for SaaS — bring-your-own custom domains (DEDICATED zone)
+# -----------------------------------------------------------------------------
+# Everything below lives in `custom_domains_zone`, NOT the publish zone, and is
+# created only when `enable_custom_domains` is set. Customer domains (e.g.
+# app.acme.com) CNAME at the fallback origin. Like the publish wildcard it
+# points at a documentation IP because the Worker intercepts before any origin
+# fetch.
+resource "cloudflare_record" "custom_domain_fallback" {
+  count           = var.enable_custom_domains ? 1 : 0
+  zone_id         = data.cloudflare_zone.custom_domains[0].id
+  name            = local.fallback_record_name
+  content         = "192.0.2.1"
+  type            = "A"
+  proxied         = true
+  allow_overwrite = true
+}
+
+# Designate the record above as the Cloudflare for SaaS fallback origin: all
+# custom-hostname traffic enters the custom-domains zone and is routed per this
+# origin. Each customer hostname is registered as a custom_hostname by the API
+# (cloudflare-custom-hostnames.ts), which also issues + auto-renews its cert.
+resource "cloudflare_custom_hostname_fallback_origin" "publish" {
+  count   = var.enable_custom_domains ? 1 : 0
+  zone_id = data.cloudflare_zone.custom_domains[0].id
+  origin  = local.custom_domain_fallback_hostname
+
+  depends_on = [cloudflare_record.custom_domain_fallback]
+}
+
+# Run the subdomain-router Worker for ALL traffic in the DEDICATED custom-domains
+# zone. A `*/*` pattern is REQUIRED for Cloudflare for SaaS: per Cloudflare's
+# routing matrix only `*/*` matches custom hostnames regardless of the
+# customer's orange/grey cloud setting (a narrow fallback-origin route only
+# matches orange-cloud). This is safe precisely because the zone is dedicated
+# to custom hostnames — it does not overlap the publish zone's
+# `*.${var.publish_domain}/*` route (a different zone), so platform subdomains
+# and other environments sharing the publish zone are untouched. The Worker
+# sees the original custom hostname and resolves it via the CUSTOM_DOMAINS KV
+# map. See docs/custom-domains.md.
+#
+# NOTE: because the Worker intercepts every path, custom-hostname certs use
+# TXT (DNS) DV validation (CF_CUSTOM_HOSTNAME_SSL_METHOD defaults to `txt`) so
+# issuance does not depend on an HTTP `.well-known` challenge the Worker would
+# otherwise swallow.
+resource "cloudflare_worker_route" "custom_domains" {
+  count       = var.enable_custom_domains ? 1 : 0
+  zone_id     = data.cloudflare_zone.custom_domains[0].id
+  pattern     = "*/*"
   script_name = cloudflare_worker_script.subdomain_router.name
 }
 
@@ -274,4 +464,24 @@ output "publish_domain" {
 output "worker_name" {
   description = "Cloudflare Worker name"
   value       = cloudflare_worker_script.subdomain_router.name
+}
+
+output "custom_domains_enabled" {
+  description = "Whether Cloudflare for SaaS custom domains are provisioned for this environment."
+  value       = var.enable_custom_domains
+}
+
+output "custom_domains_zone_id" {
+  description = "Zone id of the dedicated custom-domains zone (null when disabled). Wire into the api ksvc as CF_CUSTOM_DOMAIN_ZONE_ID."
+  value       = var.enable_custom_domains ? data.cloudflare_zone.custom_domains[0].id : null
+}
+
+output "custom_domains_kv_namespace_id" {
+  description = "Workers KV namespace id for the custom-domain routing map (null when disabled). Wire this into the api ksvc as CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID."
+  value       = var.enable_custom_domains ? cloudflare_workers_kv_namespace.custom_domains[0].id : null
+}
+
+output "custom_domain_fallback_origin" {
+  description = "Fallback-origin hostname that customers CNAME their domains at (null when disabled). Wire into the api ksvc as CUSTOM_DOMAIN_FALLBACK_ORIGIN."
+  value       = local.custom_domain_fallback_hostname
 }

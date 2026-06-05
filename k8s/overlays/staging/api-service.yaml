@@ -186,6 +186,47 @@ spec:
               value: "shogo-published-apps-staging"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
+            # --- Custom domains (Cloudflare for SaaS) ----------------------
+            # Bring-your-own hostnames for published apps. INERT until the
+            # `custom-domains-config` secret is populated: the helper
+            # (cloudflare-custom-hostnames.ts) returns null config when the
+            # token/zone are missing, so the API reports the feature disabled
+            # and the UI hides the panel. Populate the secret from the
+            # publish-hosting-oci terraform outputs AFTER applying staging with
+            # `enable_custom_domains = true` + a DEDICATED `custom_domains_zone`
+            # (NOT shogo.one — see docs/custom-domains.md for the zone-sharing
+            # rationale). Token needs SSL+Certificates:Edit on that zone and
+            # Workers KV Storage:Edit on the account.
+            - name: CF_CUSTOM_HOSTNAMES_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_CUSTOM_HOSTNAMES_TOKEN
+                  optional: true
+            - name: CF_CUSTOM_DOMAIN_ZONE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_CUSTOM_DOMAIN_ZONE_ID
+                  optional: true
+            - name: CF_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_ACCOUNT_ID
+                  optional: true
+            - name: CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID
+                  optional: true
+            - name: CUSTOM_DOMAIN_FALLBACK_ORIGIN
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CUSTOM_DOMAIN_FALLBACK_ORIGIN
+                  optional: true
             - name: BETTER_AUTH_URL
               value: "https://studio.staging.shogo.ai"
             - name: SHOGO_PUBLIC_API_URL
