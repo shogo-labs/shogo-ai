@@ -27,7 +27,7 @@
   },
   "files": [
     "bin",
-    "dist",
+    "dist/cli.mjs",
     "src",
     "README.md"
   ],
