@@ -11,6 +11,26 @@ import type { EmailTemplate, TemplateRegistry } from './types.js'
 import { EmailError } from './types.js'
 
 /**
+ * Escape HTML special characters in a string.
+ *
+ * Used to encode user-controlled values before they are inserted into an HTML
+ * email body, preventing HTML/hyperlink injection (OWASP A03). Without this,
+ * a value such as a registration name could inject markup or links into a
+ * trusted, automated email.
+ *
+ * @param value - Raw string to encode
+ * @returns HTML-safe string
+ */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+/**
  * Interpolate variables into a template string.
  *
  * Replaces {{variableName}} with the corresponding value from data.
@@ -18,15 +38,20 @@ import { EmailError } from './types.js'
  *
  * @param template - Template string with {{variable}} placeholders
  * @param data - Data object with values to interpolate
+ * @param options - When `escapeValues` is true, interpolated values are
+ *   HTML-encoded (use for HTML bodies; leave off for plain-text subject/text)
  * @returns Interpolated string
  */
 export function interpolate(
   template: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  options: { escapeValues?: boolean } = {}
 ): string {
   return template.replace(/\{\{(\w+(?:\.\w+)*)\}\}/g, (match, path) => {
     const value = getNestedValue(data, path)
-    return value !== undefined ? String(value) : match
+    if (value === undefined) return match
+    const str = String(value)
+    return options.escapeValues ? escapeHtml(str) : str
   })
 }
 
@@ -134,11 +159,14 @@ export class EmailTemplateRegistry {
       currentYear: new Date().getFullYear(),
     }
 
+    // Only the HTML body escapes interpolated values; subject and plain-text
+    // parts stay raw. Plain text is derived from the UNescaped HTML so it does
+    // not show double-encoded artifacts (e.g. "&amp;").
     const subject = interpolate(template.subject, allData)
-    const html = interpolate(template.html, allData)
+    const html = interpolate(template.html, allData, { escapeValues: true })
     const text = template.text
       ? interpolate(template.text, allData)
-      : htmlToText(html)
+      : htmlToText(interpolate(template.html, allData))
 
     return { subject, html, text }
   }
