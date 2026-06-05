@@ -501,6 +501,49 @@ export function getRuntimeTemplatePath(): string | null {
   return null
 }
 
+// Files the runtime-template must ALWAYS provide, even when the full seed is
+// skipped because the workspace already has a package.json. A workspace that
+// has app code but no Prisma scaffold otherwise forces the agent to hand-roll
+// `prisma/schema.prisma` and `prisma.config.ts` from scratch — which is
+// error-prone: weaker models write a `migrate: { url() }` config (wrong shape)
+// instead of `datasource: { url }`, so `prisma db push` fails with
+// "datasource.url property is required" no matter how DATABASE_URL is set.
+// Restoring the canonical template files closes that gap. Never overwrite an
+// existing file — only fill genuine holes.
+const RUNTIME_TEMPLATE_CRITICAL_FILES = [
+  'prisma/schema.prisma',
+  'prisma.config.ts',
+]
+
+/**
+ * Copy the always-required runtime-template files into `dir` when they're
+ * missing. Idempotent and non-destructive: files that already exist are left
+ * untouched. Returns the list of files that were restored.
+ *
+ * Called both from the full {@link seedRuntimeTemplate} path (where it's a
+ * no-op, since the full copy already placed them) and when that path is skipped
+ * because a `package.json` is present — the latter is the case that actually
+ * needs it (a pre-existing workspace missing only its Prisma scaffold).
+ */
+export function restoreMissingRuntimeTemplateFiles(dir: string): string[] {
+  const templatePath = getRuntimeTemplatePath()
+  if (!templatePath) return []
+  const restored: string[] = []
+  for (const rel of RUNTIME_TEMPLATE_CRITICAL_FILES) {
+    const dest = join(dir, rel)
+    if (existsSync(dest)) continue
+    const src = join(templatePath, rel)
+    if (!existsSync(src)) continue
+    mkdirSync(dirname(dest), { recursive: true })
+    copyFileSync(src, dest)
+    restored.push(rel)
+  }
+  if (restored.length > 0) {
+    console.log(`[workspace-defaults] Restored missing runtime-template files: ${restored.join(', ')}`)
+  }
+  return restored
+}
+
 /**
  * Copy runtime-template source files into a workspace so it's a working
  * Vite + React project out of the box. Excludes node_modules (platform-specific)
@@ -511,7 +554,13 @@ export function getRuntimeTemplatePath(): string | null {
  * or workspace already has a package.json.
  */
 export function seedRuntimeTemplate(dir: string): boolean {
-  if (existsSync(join(dir, 'package.json'))) return false
+  if (existsSync(join(dir, 'package.json'))) {
+    // Full seed was already done (or the workspace pre-exists). Still ensure
+    // the critical Prisma scaffold is present so the agent never has to invent
+    // prisma.config.ts / schema.prisma from scratch.
+    restoreMissingRuntimeTemplateFiles(dir)
+    return false
+  }
 
   const templatePath = getRuntimeTemplatePath()
   if (!templatePath) {

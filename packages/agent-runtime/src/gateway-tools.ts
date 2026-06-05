@@ -19,6 +19,7 @@ import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
+import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
 import { CommandRegistry, type CommandEntry } from './command-registry'
 import {
   resolveRunDir as resolveScreenshotRunDir,
@@ -405,6 +406,16 @@ function createExecTool(ctx: ToolContext): AgentTool {
 
       if (isBlockedCommand(command)) {
         return textResult({ error: `Blocked command: ${command}` })
+      }
+
+      // Stop the agent from killing the runtime that hosts its own tools. A
+      // broad `pkill -f`/`killall` in the agent's shell otherwise reaches the
+      // gateway process (same environment), SIGTERMs it, and takes the whole
+      // session/VM down mid-task. Only commands that would actually signal the
+      // gateway are refused — specific dev-server/port kills still work.
+      const gatewayGuard = commandTargetsGateway(command)
+      if (gatewayGuard.blocked) {
+        return textResult({ error: gatewayKillRefusal(gatewayGuard.reason ?? 'kill targets the runtime') })
       }
 
       let currentCwd = ctx.shellState?.getCwd() || ctx.workspaceDir

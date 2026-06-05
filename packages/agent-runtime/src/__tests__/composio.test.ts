@@ -444,7 +444,8 @@ describe('registerToolkitProxyTools', () => {
     await registerToolkitProxyTools(mgr, 'xkit-big')
     const tool = mgr.calls[0].tools[0]
     const res = await tool.execute('tc', {})
-    expect(res.content?.[0]?.text).toContain('[Response was truncated')
+    expect(res.content?.[0]?.text).toContain('TRUNCATED')
+    expect(res.content?.[0]?.text).toContain('INCOMPLETE')
   })
 
   it('proxy tool execute() returns error payload when SDK reports unsuccessful', async () => {

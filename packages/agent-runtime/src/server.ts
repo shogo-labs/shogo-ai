@@ -3902,7 +3902,7 @@ app.post('/agent/skill-server/sync', async (c) => {
 
 app.post('/agent/runtime-checks', async (c) => {
   const { runRuntimeChecks } = await import('./evals/runtime-checks')
-  const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean }>()
+  const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean; tenantProbe?: { route: string } }>()
   // Use the PreviewManager's configured port directly; `getSkillServerPort()`
   // also falls through to the same value via the shim, but reading it from
   // the manager keeps the source-of-truth obvious. Never falls back to the
@@ -3917,6 +3917,8 @@ app.post('/agent/runtime-checks', async (c) => {
       canvasExpectedPort: body.canvasExpectedPort ?? skillServerPort,
       evalId: body.evalId,
       verbose: body.verbose,
+      runtimePort: parseInt(process.env.PORT || '8080', 10),
+      tenantProbe: body.tenantProbe,
     })
     return c.json({ ok: true, results })
   } catch (err: any) {
