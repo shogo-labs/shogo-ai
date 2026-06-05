@@ -107,9 +107,9 @@ locals {
 resource "oci_objectstorage_replication_policy" "main" {
   for_each = local.enabled_buckets
 
-  namespace  = local.namespace
-  bucket     = each.value.name
-  name       = "${each.key}-to-${var.destination_region}"
+  namespace = local.namespace
+  bucket    = each.value.name
+  name      = "${each.key}-to-${var.destination_region}"
 
   destination_bucket_name = each.value.dest_name
   destination_region_name = var.destination_region
@@ -123,10 +123,10 @@ output "replication_policies" {
   description = "Map of bucket key → replication policy details"
   value = {
     for k, v in oci_objectstorage_replication_policy.main : k => {
-      id                = v.id
-      source_bucket     = local.enabled_buckets[k].name
-      destination       = "${var.destination_region}/${local.enabled_buckets[k].dest_name}"
-      status            = v.status
+      id            = v.id
+      source_bucket = local.enabled_buckets[k].name
+      destination   = "${var.destination_region}/${local.enabled_buckets[k].dest_name}"
+      status        = v.status
     }
   }
 }

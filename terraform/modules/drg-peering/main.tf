@@ -101,12 +101,12 @@ resource "oci_core_drg_attachment" "vcn" {
 # -----------------------------------------------------------------------------
 
 resource "oci_core_remote_peering_connection" "main" {
-  compartment_id = var.compartment_id
-  drg_id         = oci_core_drg.main.id
-  display_name   = "${var.name}-rpc-to-${var.peer_region}"
-  peer_id        = var.peer_rpc_id != "" ? var.peer_rpc_id : null
+  compartment_id   = var.compartment_id
+  drg_id           = oci_core_drg.main.id
+  display_name     = "${var.name}-rpc-to-${var.peer_region}"
+  peer_id          = var.peer_rpc_id != "" ? var.peer_rpc_id : null
   peer_region_name = var.peer_rpc_id != "" ? var.peer_region : null
-  freeform_tags  = var.tags
+  freeform_tags    = var.tags
 }
 
 # -----------------------------------------------------------------------------
