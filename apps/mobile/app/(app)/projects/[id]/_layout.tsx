@@ -813,6 +813,11 @@ export default observer(function ProjectLayout() {
   const [selectedModel, setSelectedModel] = useState<string>(
     () => hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
   )
+  // Gate stale-selection reconciliation until the persisted preference has
+  // loaded — otherwise the reconciler fires against the initial slug default
+  // (not a catalog UUID id), resets to Auto, and persists that, wiping the
+  // user's saved choice on every cold load.
+  const [modelPrefLoaded, setModelPrefLoaded] = useState(false)
 
   // Tracks whether we've already synced the persisted preference to the
   // runtime for this (project, model). Without this sync, Capabilities shows
@@ -830,6 +835,7 @@ export default observer(function ProjectLayout() {
       if (cancelled) return
       const next = stored ?? (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE)
       setSelectedModel(next)
+      setModelPrefLoaded(true)
       if (!agentUrl) return
       const syncKey = `${projectId}:${next}`
       if (modelPrefSyncedRef.current === syncKey) return
@@ -879,6 +885,7 @@ export default observer(function ProjectLayout() {
     selectedModel,
     hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
     handleModelChange,
+    modelPrefLoaded,
   )
 
   const splitRowRef = useRef<View>(null)

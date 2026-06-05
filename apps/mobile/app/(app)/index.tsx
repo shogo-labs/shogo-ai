@@ -233,6 +233,11 @@ const HomeScreen = observer(function HomeScreen() {
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
+  // Gate stale-selection reconciliation until the persisted preference has
+  // loaded. Otherwise the reconciler runs against the initial slug default
+  // (which isn't a catalog UUID id), resets to Auto, and persists that — which
+  // clobbers the user's saved choice on every cold load.
+  const [modelPrefLoaded, setModelPrefLoaded] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
 
   /**
@@ -321,6 +326,7 @@ const HomeScreen = observer(function HomeScreen() {
       } else if (hasAdvancedModelAccess) {
         setSelectedModel(DEFAULT_MODEL_PRO)
       }
+      setModelPrefLoaded(true)
     })
   }, [hasAdvancedModelAccess])
 
@@ -383,6 +389,7 @@ const HomeScreen = observer(function HomeScreen() {
     selectedModel,
     hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
     handleHomeModelChange,
+    modelPrefLoaded,
   )
 
   const homeComposerPlaceholder =
