@@ -312,6 +312,18 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('git:discard', { workspaceRoot, paths }),
     commit: (workspaceRoot: string, message: string, opts?: { amend?: boolean; signoff?: boolean }): Promise<{ ok: boolean; reason?: string; error?: string }> =>
       ipcRenderer.invoke('git:commit', { workspaceRoot, message, amend: opts?.amend, signoff: opts?.signoff }),
+    commitAll: (workspaceRoot: string, message: string, opts?: { amend?: boolean; signoff?: boolean }): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:commitAll', { workspaceRoot, message, amend: opts?.amend, signoff: opts?.signoff }),
+    commitAndPush: (workspaceRoot: string, message: string, opts?: { amend?: boolean; signoff?: boolean }): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:commitAndPush', { workspaceRoot, message, amend: opts?.amend, signoff: opts?.signoff }),
+    commitAndSync: (workspaceRoot: string, message: string, opts?: { amend?: boolean; signoff?: boolean }): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:commitAndSync', { workspaceRoot, message, amend: opts?.amend, signoff: opts?.signoff }),
+    generateCommitMessage: (workspaceRoot: string, apiUrl: string): Promise<{ ok: boolean; message?: string; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:generateCommitMessage', { workspaceRoot, apiUrl }),
+    numStat: (workspaceRoot: string, cached?: boolean): Promise<{ ok: boolean; stats?: Record<string, { added: number; removed: number }>; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:numStat', { workspaceRoot, cached }),
+    undoLastCommit: (workspaceRoot: string): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:undoLastCommit', { workspaceRoot }),
     fileContent: (workspaceRoot: string, path: string, ref: string): Promise<{ ok: boolean; content?: string; reason?: string; error?: string }> =>
       ipcRenderer.invoke('git:fileContent', { workspaceRoot, path, ref }),
     // G3 — branches.

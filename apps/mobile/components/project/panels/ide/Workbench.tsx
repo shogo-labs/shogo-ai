@@ -1960,13 +1960,14 @@ export function Workbench({
                   <div className="flex-1 min-h-0">
                 <SourceControlViewlet
                   workspaceRoot={gitWorkspaceRoot}
+                  onOpenFile={openWorkspaceFile}
                   onOpenDiff={(path, group) => {
-                    // G4.5: clicking a Merge row opens the 3-way merge
-                    // editor. Other groups still fall through to the
-                    // (forthcoming) Monaco diff view — tracked as G2.5
-                    // polish.
                     if (group === "merge" && gitWorkspaceRoot) {
+                      // Merge conflicts open the 3-way merge editor
                       setMergePath(path);
+                    } else if (gitWorkspaceRoot) {
+                      // Staged/changes: open Monaco diff tab
+                      openWorkspaceFile(path);
                     }
                   }}
                   // Checkpoint now lives on its own activity bar entry

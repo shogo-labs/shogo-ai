@@ -20,12 +20,14 @@ export function SourceControlViewlet({
   workspaceRoot,
   fallback,
   onOpenDiff,
+  onOpenFile,
 }: {
   workspaceRoot: string | null;
   /** Rendered when no git context is available (no repo, web/mobile, etc.). */
   fallback?: React.ReactNode;
   /** Wired by Workbench to open a Monaco diff tab. */
   onOpenDiff: (path: string, group: "staged" | "changes" | "merge") => void;
+  onOpenFile: (path: string) => void;
 }) {
   const { snapshot } = useGitStatusContext();
   const actions = useScmActions(workspaceRoot);
@@ -54,9 +56,7 @@ export function SourceControlViewlet({
     );
   }
 
-  const stagedCount = 0; // pure-snapshot staged count needs richer porcelain
-                         // tracking — wired in G2.5. The commit button still
-                         // enables when the user types a message.
+  const stagedCount = Object.keys(snapshot.stagedStatus).length;
 
   return (
     <div className="flex flex-col h-full">
@@ -73,6 +73,12 @@ export function SourceControlViewlet({
         </button>
         {snapshot.upstream && (
           <span className="text-[11px] text-[color:var(--ide-muted)] truncate">{snapshot.upstream}</span>
+        )}
+        {snapshot.ahead > 0 && (
+          <span className="text-[11px] text-emerald-400 font-medium" title={`${snapshot.ahead} commit${snapshot.ahead !== 1 ? "s" : ""} to push`}>↑{snapshot.ahead}</span>
+        )}
+        {snapshot.behind > 0 && (
+          <span className="text-[11px] text-amber-400 font-medium" title={`${snapshot.behind} commit${snapshot.behind !== 1 ? "s" : ""} to pull`}>↓{snapshot.behind}</span>
         )}
         <span className="flex-1" />
         <button
@@ -101,15 +107,37 @@ export function SourceControlViewlet({
       </div>
       <CommitInput
         stagedCount={stagedCount}
+        totalCount={Object.keys(snapshot.fileStatus).length - snapshot.conflictPaths.length}
         onCommit={async (message, opts) => {
           const r = await actions.commit(message, opts)
           return { ok: r.ok, error: r.ok ? undefined : r.error }
         }}
+        onCommitAll={async (message, opts) => {
+          const r = await actions.commitAll(message, opts)
+          return { ok: r.ok, error: r.ok ? undefined : r.error }
+        }}
+        onCommitAndPush={async (message, opts) => {
+          const r = await actions.commitAndPush(message, opts)
+          return { ok: r.ok, error: r.ok ? undefined : r.error }
+        }}
+        onCommitAndSync={async (message, opts) => {
+          const r = await actions.commitAndSync(message, opts)
+          return { ok: r.ok, error: r.ok ? undefined : r.error }
+        }}
+        onUndoLastCommit={async () => {
+          const r = await actions.undoLastCommit()
+          return { ok: r.ok, error: r.ok ? undefined : r.error }
+        }}
+        onGenerateMessage={actions.available ? async () => {
+          const r = await actions.generateCommitMessage()
+          return { ok: r.ok, message: r.ok ? r.message : undefined, error: r.ok ? undefined : r.error }
+        } : undefined}
       />
       <div className="flex-1 overflow-auto">
         <ChangesList
           snapshot={snapshot}
           onOpenDiff={onOpenDiff}
+          onOpenFile={onOpenFile}
           onStage={(paths) => { void actions.stage(paths); }}
           onUnstage={(paths) => { void actions.unstage(paths); }}
           onDiscard={(paths) => { void actions.discard(paths); }}

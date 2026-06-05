@@ -22,6 +22,10 @@ export interface GitSnapshot {
   ahead: number
   behind: number
   fileStatus: Record<string, GitShortCode>
+  /** Files staged in the index (X column). */
+  stagedStatus: Record<string, GitShortCode>
+  /** Per-file change counts (+added/-removed) from git diff --numstat. */
+  fileChanges: Record<string, { added: number; removed: number }>
   conflictPaths: string[]
   refreshedAt: number
   error: string | null
@@ -133,6 +137,12 @@ export interface DesktopGitBridge {
   unstage(workspaceRoot: string, paths: string[]): Promise<GitOpResult>
   discard(workspaceRoot: string, paths: string[]): Promise<GitOpResult>
   commit(workspaceRoot: string, message: string, opts?: CommitOptions): Promise<GitOpResult>
+  commitAll(workspaceRoot: string, message: string, opts?: CommitOptions): Promise<GitOpResult>
+  commitAndPush(workspaceRoot: string, message: string, opts?: CommitOptions): Promise<GitOpResult>
+  commitAndSync(workspaceRoot: string, message: string, opts?: CommitOptions): Promise<GitOpResult>
+  generateCommitMessage(workspaceRoot: string, apiUrl: string): Promise<{ ok: boolean; message?: string; error?: string }>
+  numStat(workspaceRoot: string, cached?: boolean): Promise<{ ok: boolean; stats?: Record<string, { added: number; removed: number }>; error?: string }>
+  undoLastCommit(workspaceRoot: string): Promise<GitOpResult>
   fileContent(workspaceRoot: string, path: string, ref: string): Promise<{ ok: boolean; content?: string; reason?: string; error?: string }>
   // G3 — sub-objects.
   branches: BranchesBridge
@@ -163,7 +173,7 @@ export function getDesktopGitBridge(): DesktopGitBridge | null {
   for (const m of [
     'probe', 'subscribe', 'unsubscribe', 'refresh', 'current',
     'setProjectRoot', 'unsetProjectRoot', 'resolveProjectRoot',
-    'stage', 'unstage', 'discard', 'commit', 'fileContent',
+    'stage', 'unstage', 'discard', 'commit', 'commitAll', 'commitAndPush', 'commitAndSync', 'generateCommitMessage', 'numStat', 'undoLastCommit', 'fileContent',
     'diffMarkers', 'blame',
     'mergeStages', 'revertHunk', 'fetchStreaming', 'pullStreaming', 'pushStreaming',
   ] as const) {
