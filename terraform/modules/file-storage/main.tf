@@ -85,8 +85,8 @@ resource "oci_file_storage_mount_target" "main" {
 # Export (makes the file system accessible via the mount target)
 # -----------------------------------------------------------------------------
 resource "oci_file_storage_export_set" "main" {
-  mount_target_id  = oci_file_storage_mount_target.main.id
-  display_name     = "${var.name}-export-set"
+  mount_target_id   = oci_file_storage_mount_target.main.id
+  display_name      = "${var.name}-export-set"
   max_fs_stat_bytes = 0 # unlimited
 
   lifecycle {

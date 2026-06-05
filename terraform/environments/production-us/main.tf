@@ -298,9 +298,9 @@ module "replication_to_eu" {
 # =============================================================================
 
 output "cluster_endpoint" { value = module.us.cluster_endpoint }
-output "cluster_id"       { value = module.us.cluster_id }
-output "ocir_prefix"      { value = module.us.ocir_prefix }
-output "s3_endpoint"      { value = module.us.s3_endpoint }
+output "cluster_id" { value = module.us.cluster_id }
+output "ocir_prefix" { value = module.us.ocir_prefix }
+output "s3_endpoint" { value = module.us.s3_endpoint }
 output "rpc_eu_id" {
   value = var.enable_drg_peering_to_eu ? module.drg_to_eu[0].rpc_id : null
 }

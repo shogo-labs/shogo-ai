@@ -119,12 +119,12 @@ module "oke" {
   node_pool_min  = var.system_pool_min
   node_pool_max  = var.system_pool_max
 
-  enable_workload_pool      = var.enable_workload_pool
-  workload_node_ocpus       = var.workload_node_ocpus
-  workload_node_memory_gb   = var.workload_node_memory_gb
-  workload_pool_size        = var.workload_pool_size
-  workload_pool_min         = var.workload_pool_min
-  workload_pool_max         = var.workload_pool_max
+  enable_workload_pool    = var.enable_workload_pool
+  workload_node_ocpus     = var.workload_node_ocpus
+  workload_node_memory_gb = var.workload_node_memory_gb
+  workload_pool_size      = var.workload_pool_size
+  workload_pool_min       = var.workload_pool_min
+  workload_pool_max       = var.workload_pool_max
 
   main_node_pool_name_override = var.oke_main_node_pool_name_override
   main_node_pool_max_pods      = var.oke_main_node_pool_max_pods

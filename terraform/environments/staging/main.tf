@@ -281,11 +281,11 @@ module "knative" {
 module "signoz" {
   source = "../../modules/signoz"
 
-  cluster_name      = local.cluster_name
-  environment       = local.environment
-  signoz_endpoint   = var.signoz_endpoint
+  cluster_name         = local.cluster_name
+  environment          = local.environment
+  signoz_endpoint      = var.signoz_endpoint
   signoz_ingestion_key = var.signoz_ingestion_key
-  tags              = local.tags
+  tags                 = local.tags
 }
 
 # =============================================================================
