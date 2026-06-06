@@ -410,3 +410,44 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(auth).toBe('Bearer sk-openai-db-routing-test')
   })
 })
+
+// ── Cloud-proxy forwarding for the Responses API (GPT reasoning) ────────────
+// GPT-5.x reasoning models route through the Responses API, and that endpoint
+// was the only LLM path with no cloud-forwarding branch. In cloud-proxy mode
+// the local instance has no OpenAI key, so the request must be forwarded to the
+// cloud (which resolves the model id and holds the key) — exactly like
+// chat-completions and anthropic-messages. Without it GPT reasoning never
+// reaches the client in cloud-proxy mode.
+describe('ai-proxy Responses API — cloud-proxy forwarding', () => {
+  const ORIG = {
+    localMode: process.env.SHOGO_LOCAL_MODE,
+    apiKey: process.env.SHOGO_API_KEY,
+    cloudUrl: process.env.SHOGO_CLOUD_URL,
+  }
+
+  beforeAll(() => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    process.env.SHOGO_API_KEY = 'shogo_sk_cloud_test'
+    process.env.SHOGO_CLOUD_URL = 'https://cloud.test'
+  })
+
+  afterAll(() => {
+    if (ORIG.localMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+    else process.env.SHOGO_LOCAL_MODE = ORIG.localMode
+    if (ORIG.apiKey === undefined) delete process.env.SHOGO_API_KEY
+    else process.env.SHOGO_API_KEY = ORIG.apiKey
+    if (ORIG.cloudUrl === undefined) delete process.env.SHOGO_CLOUD_URL
+    else process.env.SHOGO_CLOUD_URL = ORIG.cloudUrl
+  })
+
+  test('forwards a Responses request to the cloud instead of OpenAI', async () => {
+    const res = await postResponses(buildApp(), GPT_UUID)
+    expect(res.status).toBe(200)
+    // Cloud endpoint, not api.openai.com — the cloud resolves the UUID + key.
+    expect(lastFetchUrl).toBe('https://cloud.test/api/ai/v1/responses')
+    const auth = (lastFetchInit?.headers as Record<string, string>)?.['Authorization']
+    expect(auth).toBe('Bearer shogo_sk_cloud_test')
+    // Body passes through unresolved (the cloud owns model resolution).
+    expect(lastForwardedModel()).toBe(GPT_UUID)
+  })
+})
