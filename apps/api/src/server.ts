@@ -5086,13 +5086,34 @@ app.patch('/api/admin/settings/infrastructure', async (c) => {
 app.get('/api/admin/settings/agent-models', async (c) => {
   try {
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['agent-model.basic', 'agent-model.advanced', 'agent-model.default-mode'] } },
+      where: {
+        key: {
+          in: [
+            'agent-model.basic',
+            'agent-model.advanced',
+            'agent-model.default-mode',
+            'agent-model.auto-economy',
+            'agent-model.auto-standard',
+            'agent-model.auto-premium',
+          ],
+        },
+      },
     })
-    const overrides: Record<string, string | null> = { basic: null, advanced: null, defaultMode: null }
+    const overrides: Record<string, string | null> = {
+      basic: null,
+      advanced: null,
+      defaultMode: null,
+      autoEconomy: null,
+      autoStandard: null,
+      autoPremium: null,
+    }
     for (const row of rows) {
       if (row.key === 'agent-model.basic') overrides.basic = row.value
       if (row.key === 'agent-model.advanced') overrides.advanced = row.value
       if (row.key === 'agent-model.default-mode') overrides.defaultMode = row.value
+      if (row.key === 'agent-model.auto-economy') overrides.autoEconomy = row.value
+      if (row.key === 'agent-model.auto-standard') overrides.autoStandard = row.value
+      if (row.key === 'agent-model.auto-premium') overrides.autoPremium = row.value
     }
     return c.json(overrides)
   } catch (err: any) {
@@ -5107,7 +5128,7 @@ app.put('/api/admin/settings/agent-models', async (c) => {
     const auth = c.get('auth') as any
     const userId = auth?.user?.id || 'unknown'
 
-    const { setAgentModeOverrides } = await import('@shogo/model-catalog')
+    const { setAgentModeOverrides, setAutoTierOverrides } = await import('@shogo/model-catalog')
     const overrides: Partial<Record<string, string>> = {}
 
     for (const mode of ['basic', 'advanced'] as const) {
@@ -5122,6 +5143,31 @@ app.put('/api/admin/settings/agent-models', async (c) => {
           update: { value: String(value), updatedBy: userId },
         })
         overrides[mode] = String(value)
+      }
+    }
+
+    // Auto-mode tier overrides (economy/standard/premium → model id, which may
+    // be a public alias like `hoshi-1.0`). Persisted under agent-model.auto-*
+    // and held in memory so the runtime env builder can resolve + inject them.
+    const autoTierKeys: Record<string, 'economy' | 'standard' | 'premium'> = {
+      autoEconomy: 'economy',
+      autoStandard: 'standard',
+      autoPremium: 'premium',
+    }
+    const autoTierOverrides: Partial<Record<'economy' | 'standard' | 'premium', string>> = {}
+    for (const [bodyKey, tier] of Object.entries(autoTierKeys)) {
+      if (body[bodyKey] === undefined) continue
+      const value = body[bodyKey]
+      const settingKey = `agent-model.auto-${tier}`
+      if (value === null || value === '') {
+        await prisma.platformSetting.deleteMany({ where: { key: settingKey } })
+      } else {
+        await prisma.platformSetting.upsert({
+          where: { key: settingKey },
+          create: { key: settingKey, value: String(value), updatedBy: userId },
+          update: { value: String(value), updatedBy: userId },
+        })
+        autoTierOverrides[tier] = String(value)
       }
     }
 
@@ -5140,7 +5186,19 @@ app.put('/api/admin/settings/agent-models', async (c) => {
     }
 
     setAgentModeOverrides(overrides)
-    return c.json({ ok: true, overrides })
+    // Reload the full auto-tier override set from DB so partial updates and
+    // deletions both take effect in memory immediately.
+    const autoRows = await prisma.platformSetting.findMany({
+      where: { key: { in: ['agent-model.auto-economy', 'agent-model.auto-standard', 'agent-model.auto-premium'] } },
+    })
+    const liveAutoTiers: Partial<Record<'economy' | 'standard' | 'premium', string>> = {}
+    for (const row of autoRows) {
+      if (row.key === 'agent-model.auto-economy') liveAutoTiers.economy = row.value
+      if (row.key === 'agent-model.auto-standard') liveAutoTiers.standard = row.value
+      if (row.key === 'agent-model.auto-premium') liveAutoTiers.premium = row.value
+    }
+    setAutoTierOverrides(liveAutoTiers)
+    return c.json({ ok: true, overrides, autoTierOverrides })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
@@ -7743,19 +7801,35 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 // This allows resolveModelId('basic'/'advanced') to return admin-chosen models.
 await (async () => {
   try {
-    const { setAgentModeOverrides } = await import('@shogo/model-catalog')
+    const { setAgentModeOverrides, setAutoTierOverrides } = await import('@shogo/model-catalog')
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['agent-model.basic', 'agent-model.advanced', 'agent-model.default-mode'] } },
+      where: {
+        key: {
+          in: [
+            'agent-model.basic',
+            'agent-model.advanced',
+            'agent-model.default-mode',
+            'agent-model.auto-economy',
+            'agent-model.auto-standard',
+            'agent-model.auto-premium',
+          ],
+        },
+      },
     })
     if (rows.length > 0) {
       const overrides: Record<string, string> = {}
+      const autoTiers: Partial<Record<'economy' | 'standard' | 'premium', string>> = {}
       for (const row of rows) {
         if (row.key === 'agent-model.basic') overrides.basic = row.value
         if (row.key === 'agent-model.advanced') overrides.advanced = row.value
+        if (row.key === 'agent-model.auto-economy') autoTiers.economy = row.value
+        if (row.key === 'agent-model.auto-standard') autoTiers.standard = row.value
+        if (row.key === 'agent-model.auto-premium') autoTiers.premium = row.value
       }
       setAgentModeOverrides(overrides)
+      setAutoTierOverrides(autoTiers)
       const defaultMode = rows.find(r => r.key === 'agent-model.default-mode')?.value
-      console.log('[AgentModels] Loaded admin model overrides:', overrides, defaultMode ? `defaultMode=${defaultMode}` : '')
+      console.log('[AgentModels] Loaded admin model overrides:', overrides, Object.keys(autoTiers).length ? `autoTiers=${JSON.stringify(autoTiers)}` : '', defaultMode ? `defaultMode=${defaultMode}` : '')
     }
   } catch (err: any) {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)

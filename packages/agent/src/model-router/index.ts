@@ -76,6 +76,41 @@ export interface ModelTierMap {
   premium: string
 }
 
+/**
+ * A single Auto-tier override entry: the resolved model id plus an optional
+ * provider hint. The hint is set when the id needs a provider that
+ * `inferProviderFromModel` can't derive (e.g. a DB/custom-backed model such as
+ * Hoshi resolved from the `hoshi-1.0` public alias).
+ */
+export interface AutoTierEntry {
+  id: string
+  provider?: string
+}
+
+/** Per-tier Auto override map, injected from admin config into the runtime. */
+export type AutoTierOverride = Partial<Record<keyof ModelTierMap, AutoTierEntry>>
+
+/** Extract just the model-id overrides for `buildAutoTierMap()`. */
+export function autoTierIds(override?: AutoTierOverride): Partial<ModelTierMap> | undefined {
+  if (!override) return undefined
+  const ids: Partial<ModelTierMap> = {}
+  if (override.economy?.id) ids.economy = override.economy.id
+  if (override.standard?.id) ids.standard = override.standard.id
+  if (override.premium?.id) ids.premium = override.premium.id
+  return ids
+}
+
+/** Build a `modelId -> provider` hint lookup from an Auto override. */
+export function autoTierProviderHints(override?: AutoTierOverride): Record<string, string> {
+  const hints: Record<string, string> = {}
+  if (!override) return hints
+  for (const tier of ['economy', 'standard', 'premium'] as const) {
+    const entry = override[tier]
+    if (entry?.id && entry.provider) hints[entry.id] = entry.provider
+  }
+  return hints
+}
+
 // ---------------------------------------------------------------------------
 // Signal weights (tuned for spawn-time task classification)
 // ---------------------------------------------------------------------------
@@ -360,12 +395,22 @@ export function escalateModel(
  *   simple   -> GPT-5.4 Nano  ($0.20/$1.25 per MTok)
  *   moderate -> Claude Haiku   ($0.80/$4.00 per MTok)
  *   complex  -> Claude Sonnet  ($3.00/$15.00 per MTok)
+ *
+ * An optional `override` (sourced from admin config injected into the runtime
+ * env) replaces any tier whose value is a non-empty string. Unset/empty tiers
+ * keep the hardcoded default, so a partial override is safe.
  */
-export function buildAutoTierMap(): ModelTierMap {
-  return {
+export function buildAutoTierMap(override?: Partial<ModelTierMap>): ModelTierMap {
+  const defaults: ModelTierMap = {
     economy: 'gpt-5.4-nano',
     standard: 'claude-haiku-4-5-20251001',
     premium: 'claude-sonnet-4-6',
+  }
+  if (!override) return defaults
+  return {
+    economy: override.economy?.trim() || defaults.economy,
+    standard: override.standard?.trim() || defaults.standard,
+    premium: override.premium?.trim() || defaults.premium,
   }
 }
 

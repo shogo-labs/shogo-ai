@@ -62,7 +62,15 @@ import {
   isAutoModel,
   AUTO_MODEL_ID,
 } from '@shogo/model-catalog'
-import { selectModelForSpawn, buildAutoTierMap, formatRoutingLog, type SpawnClassificationInput } from './model-router'
+import {
+  selectModelForSpawn,
+  buildAutoTierMap,
+  formatRoutingLog,
+  autoTierIds,
+  autoTierProviderHints,
+  type SpawnClassificationInput,
+  type AutoTierOverride,
+} from './model-router'
 import { CODE_AGENT_GENERAL_GUIDE, OUTPUT_CONTRACT_GUIDE } from './code-agent-prompt'
 import { SHOGO_SDK_GUIDE } from './shogo-sdk-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
@@ -129,6 +137,37 @@ function hasErrorInResult(result: unknown): boolean {
  */
 function inferProviderFromModel(modelId: string, configProvider: string): string {
   return catalogInferProvider(modelId, configProvider)
+}
+
+/**
+ * Parse the admin-injected `AGENT_AUTO_TIER_MAP` env var into an
+ * `AutoTierOverride`. The API server resolves each configured tier id
+ * (including public aliases like `hoshi-1.0`) to a runtime-resolvable model id
+ * plus an optional provider hint before serializing this JSON. Returns
+ * undefined when unset or malformed so Auto falls back to the hardcoded
+ * defaults in `buildAutoTierMap()`.
+ */
+function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | undefined {
+  if (!raw) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined
+  const src = parsed as Record<string, unknown>
+  const out: AutoTierOverride = {}
+  for (const tier of ['economy', 'standard', 'premium'] as const) {
+    const entry = src[tier]
+    if (!entry || typeof entry !== 'object') continue
+    const e = entry as Record<string, unknown>
+    const id = typeof e.id === 'string' ? e.id.trim() : ''
+    if (!id) continue
+    const provider = typeof e.provider === 'string' && e.provider.trim() ? e.provider.trim() : undefined
+    out[tier] = { id, provider }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 /**
@@ -419,6 +458,11 @@ export class AgentGateway {
   private shellCwd = new Map<string, string>()
   /** Per-session backgrounded command registry — soft-timed-out exec runs */
   private commandRegistries = new Map<string, import('./command-registry').CommandRegistry>()
+  /**
+   * Admin-configured Auto-mode tier overrides, parsed once from the injected
+   * `AGENT_AUTO_TIER_MAP` env var. Undefined keeps the hardcoded defaults.
+   */
+  private autoTierOverride?: AutoTierOverride
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -434,6 +478,14 @@ export class AgentGateway {
     if (process.env.AGENT_ADVANCED_MODEL) envOverrides.advanced = process.env.AGENT_ADVANCED_MODEL
     if (Object.keys(envOverrides).length > 0) {
       setAgentModeOverrides(envOverrides)
+    }
+
+    // Parse admin-configured Auto-mode tier overrides (resolved model id +
+    // provider hint per tier) so the spawn router can route Auto to models
+    // like Hoshi that the hardcoded default map omits.
+    this.autoTierOverride = parseAutoTierOverride(process.env.AGENT_AUTO_TIER_MAP)
+    if (this.autoTierOverride) {
+      console.log(`[AgentGateway] Auto tier override active: ${JSON.stringify(this.autoTierOverride)}`)
     }
 
     // Initialize permission engine in local mode
@@ -1634,7 +1686,8 @@ export class AgentGateway {
     let modelId: string
 
     if (autoRouting) {
-      const autoTiers = buildAutoTierMap()
+      const autoTiers = buildAutoTierMap(autoTierIds(this.autoTierOverride))
+      const providerHints = autoTierProviderHints(this.autoTierOverride)
       const estimatedTokens = this.sessionManager.estimateTokens(session)
       const classInput: SpawnClassificationInput = {
         prompt,
@@ -1647,7 +1700,10 @@ export class AgentGateway {
         availableModels: autoTiers,
       })
       modelId = routingDecision.selectedModel
-      provider = inferProviderFromModel(modelId, this.config.model.provider)
+      // Prefer the admin-supplied provider hint for the routed model (set when
+      // the tier resolves to a DB/custom-backed model whose provider can't be
+      // inferred from the id, e.g. Hoshi); otherwise infer from the id.
+      provider = providerHints[modelId] ?? inferProviderFromModel(modelId, this.config.model.provider)
       console.log(`${this.logPrefix} ${formatRoutingLog(routingDecision, prompt)}`)
       if (uiWriter) {
         uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
@@ -1713,6 +1769,7 @@ export class AgentGateway {
       workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
       autoRouting,
+      autoTierOverride: this.autoTierOverride,
       dualPlan,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,

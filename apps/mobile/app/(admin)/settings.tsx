@@ -37,6 +37,7 @@ import {
   PlatformApi,
   type ModelProvider,
   type ModelProviderInput,
+  type PublicModel,
 } from '@shogo-ai/sdk'
 import { createHttpClient } from '../../lib/api'
 import { usePlatformConfig } from '../../lib/platform-config'
@@ -148,6 +149,8 @@ function CloudModelSettingsPage() {
           onDefaultModeChange={setDefaultMode}
         />
 
+        <AutoTierModelsCard platform={platform} />
+
         <TitleGenerationModelCard platform={platform} />
 
         <CustomProvidersCard platform={platform} />
@@ -222,7 +225,14 @@ function LocalSettingsPage() {
         platform.getLlmConfig(),
         platform.getProviderKeyMasks(),
         platform.getShogoKeyStatus(),
-        platform.getAgentModelDefaults().catch(() => ({ basic: null, advanced: null, defaultMode: null })),
+        platform.getAgentModelDefaults().catch(() => ({
+          basic: null,
+          advanced: null,
+          defaultMode: null,
+          autoEconomy: null,
+          autoStandard: null,
+          autoPremium: null,
+        })),
       ])
 
       setCloudBasicModel(agentModels.basic || '')
@@ -419,6 +429,8 @@ function LocalSettingsPage() {
                   onDefaultModeChange={setCloudDefaultMode}
                 />
 
+                <AutoTierModelsCard platform={platform} />
+
                 <TitleGenerationModelCard platform={platform} />
               </>
             ) : (
@@ -433,6 +445,8 @@ function LocalSettingsPage() {
                   onAdvancedChange={setCloudAdvancedModel}
                   onDefaultModeChange={setCloudDefaultMode}
                 />
+
+                <AutoTierModelsCard platform={platform} />
 
                 <TitleGenerationModelCard platform={platform} />
 
@@ -455,6 +469,8 @@ function LocalSettingsPage() {
               onAdvancedChange={setCloudAdvancedModel}
               onDefaultModeChange={setCloudDefaultMode}
             />
+
+            <AutoTierModelsCard platform={platform} />
 
             <TitleGenerationModelCard platform={platform} />
 
@@ -750,6 +766,177 @@ function TitleGenerationModelCard({ platform }: { platform: PlatformApi }) {
             </View>
           )}
         </View>
+      </View>
+    </View>
+  )
+}
+
+// =============================================================================
+// Auto-mode Tier Models Card — super-admin selectable model per Auto router
+// tier (economy / standard / premium). When unset, the runtime falls back to
+// its hardcoded defaults (Nano / Haiku / Sonnet). Selecting a public alias such
+// as `hoshi-1.0` is resolved to its backing model when injected into runtimes.
+// Self-contained: loads + saves its own values via the PlatformApi. Only the
+// auto-* fields are written, so it never clobbers the basic/advanced defaults.
+// =============================================================================
+
+const AUTO_TIER_ROWS = [
+  { key: 'economy' as const, field: 'autoEconomy' as const, label: 'Economy', hint: 'Simple tasks', defaultLabel: 'Default (GPT-5.4 Nano)' },
+  { key: 'standard' as const, field: 'autoStandard' as const, label: 'Standard', hint: 'Moderate tasks', defaultLabel: 'Default (Claude Haiku)' },
+  { key: 'premium' as const, field: 'autoPremium' as const, label: 'Premium', hint: 'Complex tasks', defaultLabel: 'Default (Claude Sonnet)' },
+]
+
+type AutoTierKey = (typeof AUTO_TIER_ROWS)[number]['key']
+
+function AutoTierModelsCard({ platform }: { platform: PlatformApi }) {
+  const models = useModelPickerList()
+  const [publicModels, setPublicModels] = useState<PublicModel[]>([])
+  const [values, setValues] = useState<Record<AutoTierKey, string>>({ economy: '', standard: '', premium: '' })
+  const [openTier, setOpenTier] = useState<AutoTierKey | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    Promise.all([
+      platform.getAgentModelDefaults().catch(() => null),
+      platform.getPublicModels().catch(() => [] as PublicModel[]),
+    ])
+      .then(([d, pub]) => {
+        if (d) {
+          setValues({
+            economy: d.autoEconomy || '',
+            standard: d.autoStandard || '',
+            premium: d.autoPremium || '',
+          })
+        }
+        setPublicModels(pub || [])
+      })
+      .finally(() => setIsLoading(false))
+    return () => { if (statusTimerRef.current) clearTimeout(statusTimerRef.current) }
+  }, [platform])
+
+  // Selectable models = visible catalog/picker models plus enabled public
+  // aliases (e.g. hoshi-1.0), so admins can route Auto tiers at Hoshi.
+  const options = useMemo(() => {
+    const opts: { id: string; label: string }[] = models.map((m) => ({ id: m.id, label: m.displayName }))
+    for (const p of publicModels) {
+      if (p.enabled === false) continue
+      if (opts.some((o) => o.id === p.publicId)) continue
+      opts.push({ id: p.publicId, label: `${p.displayName} (public)` })
+    }
+    return opts
+  }, [models, publicModels])
+
+  const save = useCallback(
+    async (tier: AutoTierKey, field: string, value: string) => {
+      setValues((v) => ({ ...v, [tier]: value }))
+      setOpenTier(null)
+      setSaveStatus('saving')
+      try {
+        await platform.putAgentModelDefaults({ [field]: value || null })
+        setSaveStatus('saved')
+      } catch {
+        setSaveStatus('error')
+      }
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
+      statusTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000)
+    },
+    [platform],
+  )
+
+  const labelFor = useCallback(
+    (tier: AutoTierKey) => {
+      const v = values[tier]
+      if (!v) return AUTO_TIER_ROWS.find((r) => r.key === tier)!.defaultLabel
+      return options.find((o) => o.id === v)?.label || v
+    },
+    [values, options],
+  )
+
+  return (
+    <View
+      className="bg-card border border-border rounded-xl"
+      style={{ position: 'relative', zIndex: openTier ? 50 : undefined }}
+    >
+      <View className="px-5 py-4 border-b border-border">
+        <View className="flex-row items-center justify-between mb-1">
+          <View className="flex-row items-center gap-2.5">
+            <BrainCircuit size={16} className="text-foreground" />
+            <Text className="text-base font-semibold text-foreground">Auto Mode Tier Models</Text>
+          </View>
+          <AutoSaveIndicator status={saveStatus} />
+        </View>
+        <Text className="text-xs text-muted-foreground">
+          Which model the Auto router uses for each complexity tier. Leave a tier on Default to use the
+          built-in model. Public aliases (e.g. Hoshi) resolve to their backing model at runtime.
+        </Text>
+      </View>
+
+      <View className="px-5 py-4 gap-4" style={{ zIndex: 10 }}>
+        {AUTO_TIER_ROWS.map((row, idx) => {
+          const open = openTier === row.key
+          return (
+            <View
+              key={row.key}
+              style={{ position: 'relative', zIndex: open ? 100 : AUTO_TIER_ROWS.length - idx }}
+            >
+              <View className="flex-row items-center gap-1.5 mb-1">
+                <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {row.label}
+                </Text>
+                <Text className="text-[11px] text-muted-foreground">· {row.hint}</Text>
+              </View>
+              <Pressable
+                onPress={() => setOpenTier((t) => (t === row.key ? null : row.key))}
+                disabled={isLoading}
+                className="flex-row items-center justify-between bg-background border border-border rounded-lg px-3 py-2.5"
+              >
+                <Text className="text-sm text-foreground">{isLoading ? 'Loading…' : labelFor(row.key)}</Text>
+                <ChevronDown size={14} className="text-muted-foreground" />
+              </Pressable>
+
+              {open && (
+                <View
+                  className="bg-card border border-border rounded-lg shadow-lg max-h-64 overflow-hidden"
+                  style={{ position: 'absolute', top: 70, left: 0, right: 0, zIndex: 999 }}
+                >
+                  <ScrollView nestedScrollEnabled>
+                    <Pressable
+                      onPress={() => save(row.key, row.field, '')}
+                      className={cn(
+                        'px-3 py-2.5 border-b border-border/50 active:bg-muted',
+                        values[row.key] === '' && 'bg-primary/5',
+                      )}
+                    >
+                      <Text className="text-sm font-medium text-foreground">{row.defaultLabel}</Text>
+                      <Text className="text-[11px] text-muted-foreground">Use the built-in tier model</Text>
+                    </Pressable>
+                    {options.map((o) => (
+                      <Pressable
+                        key={o.id}
+                        onPress={() => save(row.key, row.field, o.id)}
+                        className={cn(
+                          'px-3 py-2.5 border-b border-border/50 active:bg-muted',
+                          values[row.key] === o.id && 'bg-primary/5',
+                        )}
+                      >
+                        <Text className="text-sm text-foreground">{o.label}</Text>
+                      </Pressable>
+                    ))}
+                    {options.length === 0 && (
+                      <View className="px-3 py-2.5">
+                        <Text className="text-xs text-muted-foreground italic">
+                          No models available. Add or enable models above first.
+                        </Text>
+                      </View>
+                    )}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+          )
+        })}
       </View>
     </View>
   )

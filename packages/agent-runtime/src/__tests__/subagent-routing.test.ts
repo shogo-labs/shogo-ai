@@ -14,8 +14,11 @@ import {
   selectModelForSpawn,
   escalateModel,
   buildAutoTierMap,
+  autoTierIds,
+  autoTierProviderHints,
   type ModelRouterOptions,
   type SpawnClassificationInput,
+  type AutoTierOverride,
 } from '../model-router'
 import { inferProviderFromModel } from '@shogo/model-catalog'
 
@@ -223,5 +226,58 @@ describe('main agent auto routing', () => {
     expect(d1.selectedModel).toBe(d2.selectedModel)
     expect(d1.classifiedTier).toBe(d2.classifiedTier)
     expect(d1.confidence).toBe(d2.confidence)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Admin Auto-tier override (e.g. routing every tier at Hoshi)
+// ---------------------------------------------------------------------------
+
+describe('auto routing — admin tier override', () => {
+  // Mirrors AGENT_AUTO_TIER_MAP after the API resolves `hoshi-1.0` to its
+  // backing model id + provider for every tier.
+  const hoshiOverride: AutoTierOverride = {
+    economy: { id: 'mimo-v2.5', provider: 'custom' },
+    standard: { id: 'mimo-v2.5', provider: 'custom' },
+    premium: { id: 'mimo-v2.5', provider: 'custom' },
+  }
+  const overriddenTiers = buildAutoTierMap(autoTierIds(hoshiOverride))
+  const overriddenOpts: ModelRouterOptions = {
+    ceilingModel: overriddenTiers.premium,
+    availableModels: overriddenTiers,
+  }
+  const providerHints = autoTierProviderHints(hoshiOverride)
+
+  test('routes a simple task to the overridden model instead of Nano', () => {
+    const decision = selectModelForSpawn({
+      prompt: 'list my files',
+      subagentType: 'main-agent',
+      toolNames: [],
+      contextTokens: 2000,
+    }, overriddenOpts)
+
+    expect(decision.classifiedTier).toBe('simple')
+    expect(decision.selectedModel).toBe('mimo-v2.5')
+    // The admin provider hint wins over the inferred provider for custom models.
+    expect(providerHints[decision.selectedModel] ?? inferProviderFromModel(decision.selectedModel)).toBe('custom')
+  })
+
+  test('routes a complex task to the overridden premium model', () => {
+    const decision = selectModelForSpawn({
+      prompt: 'please refactor the entire authentication module and design a new strategy pattern for providers',
+      subagentType: 'main-agent',
+      toolNames: [],
+      contextTokens: 30000,
+    }, overriddenOpts)
+
+    expect(decision.classifiedTier).toBe('complex')
+    expect(decision.selectedModel).toBe('mimo-v2.5')
+  })
+
+  test('a partial override only replaces the configured tier', () => {
+    const tiers = buildAutoTierMap(autoTierIds({ premium: { id: 'mimo-v2.5', provider: 'custom' } }))
+    expect(tiers.economy).toBe('gpt-5.4-nano')
+    expect(tiers.standard).toBe('claude-haiku-4-5-20251001')
+    expect(tiers.premium).toBe('mimo-v2.5')
   })
 })

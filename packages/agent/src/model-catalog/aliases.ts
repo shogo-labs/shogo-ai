@@ -54,3 +54,22 @@ export function getAgentModeOverrides(): Partial<Record<AgentMode, string>> {
 export function resolveAgentModeDefault(mode: AgentMode): string {
   return _agentModeOverrides[mode] || AGENT_MODE_DEFAULTS[mode]
 }
+
+// ---------------------------------------------------------------------------
+// Auto-mode tier overrides (admin-configured model per complexity tier)
+// ---------------------------------------------------------------------------
+
+/** Complexity tiers used by the Auto-mode spawn router. */
+export type AutoTier = 'economy' | 'standard' | 'premium'
+
+// Raw admin-configured tier → model id (may be a public alias like
+// `hoshi-1.0`, resolved to a backing id when injected into the runtime env).
+let _autoTierOverrides: Partial<Record<AutoTier, string>> = {}
+
+export function setAutoTierOverrides(overrides: Partial<Record<AutoTier, string>>): void {
+  _autoTierOverrides = { ...overrides }
+}
+
+export function getAutoTierOverrides(): Partial<Record<AutoTier, string>> {
+  return { ..._autoTierOverrides }
+}
