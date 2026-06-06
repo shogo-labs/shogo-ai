@@ -207,6 +207,12 @@ jobs:
           # the rest of us just append files.
           tag_name: ${{ steps.version.outputs.tag }}
           prerelease: ${{ steps.version.outputs.channel != 'stable' }}
+          # Keep the release a DRAFT while the desktop-release-{macos,windows}
+          # and publish-shogo-worker workflows finish uploading their assets to
+          # the same tag. finalize-release.yml publishes (draft -> false) only
+          # after all four runs for this commit succeed, so the release never
+          # goes public missing assets.
+          draft: true
           # `body` is appended only on first creation; on subsequent
           # workflow runs against the same tag softprops leaves the
           # release notes untouched. The desktop workflow currently
