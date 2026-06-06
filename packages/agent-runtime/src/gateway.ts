@@ -62,7 +62,15 @@ import {
   isAutoModel,
   AUTO_MODEL_ID,
 } from '@shogo/model-catalog'
-import { selectModelForSpawn, buildAutoTierMap, formatRoutingLog, type SpawnClassificationInput } from './model-router'
+import {
+  selectModelForSpawn,
+  buildAutoTierMap,
+  formatRoutingLog,
+  autoTierIds,
+  autoTierProviderHints,
+  type SpawnClassificationInput,
+  type AutoTierOverride,
+} from './model-router'
 import { CODE_AGENT_GENERAL_GUIDE, OUTPUT_CONTRACT_GUIDE } from './code-agent-prompt'
 import { SHOGO_SDK_GUIDE } from './shogo-sdk-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
@@ -94,6 +102,7 @@ import {
   previewBuildLogPath,
   previewConsoleLogPath,
 } from './runtime-log-paths'
+import { shouldInjectPreviewUrl, buildPreviewUrlBlock } from './preview-url-context'
 
 const QUICK_ACTION_GUIDE = `## Quick Actions
 
@@ -128,6 +137,37 @@ function hasErrorInResult(result: unknown): boolean {
  */
 function inferProviderFromModel(modelId: string, configProvider: string): string {
   return catalogInferProvider(modelId, configProvider)
+}
+
+/**
+ * Parse the admin-injected `AGENT_AUTO_TIER_MAP` env var into an
+ * `AutoTierOverride`. The API server resolves each configured tier id
+ * (including public aliases like `hoshi-1.0`) to a runtime-resolvable model id
+ * plus an optional provider hint before serializing this JSON. Returns
+ * undefined when unset or malformed so Auto falls back to the hardcoded
+ * defaults in `buildAutoTierMap()`.
+ */
+function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | undefined {
+  if (!raw) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined
+  const src = parsed as Record<string, unknown>
+  const out: AutoTierOverride = {}
+  for (const tier of ['economy', 'standard', 'premium'] as const) {
+    const entry = src[tier]
+    if (!entry || typeof entry !== 'object') continue
+    const e = entry as Record<string, unknown>
+    const id = typeof e.id === 'string' ? e.id.trim() : ''
+    if (!id) continue
+    const provider = typeof e.provider === 'string' && e.provider.trim() ? e.provider.trim() : undefined
+    out[tier] = { id, provider }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 /**
@@ -418,6 +458,11 @@ export class AgentGateway {
   private shellCwd = new Map<string, string>()
   /** Per-session backgrounded command registry — soft-timed-out exec runs */
   private commandRegistries = new Map<string, import('./command-registry').CommandRegistry>()
+  /**
+   * Admin-configured Auto-mode tier overrides, parsed once from the injected
+   * `AGENT_AUTO_TIER_MAP` env var. Undefined keeps the hardcoded defaults.
+   */
+  private autoTierOverride?: AutoTierOverride
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -433,6 +478,14 @@ export class AgentGateway {
     if (process.env.AGENT_ADVANCED_MODEL) envOverrides.advanced = process.env.AGENT_ADVANCED_MODEL
     if (Object.keys(envOverrides).length > 0) {
       setAgentModeOverrides(envOverrides)
+    }
+
+    // Parse admin-configured Auto-mode tier overrides (resolved model id +
+    // provider hint per tier) so the spawn router can route Auto to models
+    // like Hoshi that the hardcoded default map omits.
+    this.autoTierOverride = parseAutoTierOverride(process.env.AGENT_AUTO_TIER_MAP)
+    if (this.autoTierOverride) {
+      console.log(`[AgentGateway] Auto tier override active: ${JSON.stringify(this.autoTierOverride)}`)
     }
 
     // Initialize permission engine in local mode
@@ -1215,6 +1268,9 @@ export class AgentGateway {
         const channelDef = this.config.channels.find(c => c.type === message.channelType)
         const model = channelDef?.model
         session.modelOverride = (model === 'basic' || model === 'advanced') ? model : 'basic'
+        // Channel models carry no provider hint; clear any stale one so the
+        // provider is inferred from this id.
+        session.modelProvider = undefined
       }
 
       try {
@@ -1362,6 +1418,11 @@ export class AgentGateway {
     writer: { write(chunk: Record<string, any>): void },
     options?: {
       modelOverride?: string
+      /** Native provider hint from the API server (resolved from the model
+       *  registry), paired with `modelOverride`. Lets a DB model addressed by
+       *  an opaque UUID route to its real provider (e.g. `anthropic`) instead
+       *  of being inferred as `custom`. Absent → id-based inference. */
+      modelProvider?: string
       fileParts?: FilePart[]
       userId?: string
       interactionMode?: 'agent' | 'plan' | 'ask'
@@ -1385,6 +1446,10 @@ export class AgentGateway {
     if (options?.modelOverride) {
       const session = this.sessionManager.getOrCreate(sessionId)
       session.modelOverride = options.modelOverride
+      // Keep the provider hint paired with the override. Assigned even when
+      // undefined so a previously-hinted model can't leave a stale provider
+      // behind once the selection changes.
+      session.modelProvider = options.modelProvider
     }
 
     if (options?.userId) {
@@ -1480,6 +1545,9 @@ export class AgentGateway {
       reloadConfig: () => this.reloadConfig(),
       setModelOverride: (model: string) => {
         session.modelOverride = model
+        // Slash-command/programmatic override carries no provider hint; clear
+        // any stale one so the provider is inferred from this id.
+        session.modelProvider = undefined
       },
       getStatus: () => this.getStatus(),
     }
@@ -1618,7 +1686,8 @@ export class AgentGateway {
     let modelId: string
 
     if (autoRouting) {
-      const autoTiers = buildAutoTierMap()
+      const autoTiers = buildAutoTierMap(autoTierIds(this.autoTierOverride))
+      const providerHints = autoTierProviderHints(this.autoTierOverride)
       const estimatedTokens = this.sessionManager.estimateTokens(session)
       const classInput: SpawnClassificationInput = {
         prompt,
@@ -1631,16 +1700,25 @@ export class AgentGateway {
         availableModels: autoTiers,
       })
       modelId = routingDecision.selectedModel
-      provider = inferProviderFromModel(modelId, this.config.model.provider)
+      // Prefer the admin-supplied provider hint for the routed model (set when
+      // the tier resolves to a DB/custom-backed model whose provider can't be
+      // inferred from the id, e.g. Hoshi); otherwise infer from the id.
+      provider = providerHints[modelId] ?? inferProviderFromModel(modelId, this.config.model.provider)
       console.log(`${this.logPrefix} ${formatRoutingLog(routingDecision, prompt)}`)
       if (uiWriter) {
         uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
       }
     } else {
       const effectiveAlias = modelAlias
-      provider = inferProviderFromModel(effectiveAlias, this.config.model.provider)
+      // Honor the API server's native provider hint when present (it's paired
+      // with the model override); otherwise infer from the id as before. This
+      // routes a DB model addressed by an opaque UUID to its real provider
+      // (anthropic → native passthrough) instead of falling back to `custom`
+      // and the lossy OpenAI-compat conversion path. For every id the catalog
+      // already classifies the way inference does, the hint is a no-op.
+      provider = session.modelProvider ?? inferProviderFromModel(effectiveAlias, this.config.model.provider)
       modelId = resolveModelAlias(effectiveAlias)
-      console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
+      console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider}${session.modelProvider ? ' (hint)' : ''} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
     }
 
     // Reset per-turn state and wire/clear the SSE writer for permission requests.
@@ -1691,6 +1769,7 @@ export class AgentGateway {
       workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
       autoRouting,
+      autoTierOverride: this.autoTierOverride,
       dualPlan,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,
@@ -2355,7 +2434,7 @@ export class AgentGateway {
         ? { 'x-chat-session-id': sessionId }
         : undefined
 
-      const result = await runAgentLoop({
+      const loopOptions: Parameters<typeof runAgentLoop>[0] = {
         provider,
         model: modelId,
         system: systemPrompt,
@@ -2603,7 +2682,51 @@ export class AgentGateway {
             })
           )
         },
-      })
+      }
+
+      let result = await runAgentLoop(loopOptions)
+
+      // Auto-continue across the iteration ceiling (ported from teammate-loop's
+      // MAX_TEAMMATE_CONTINUATIONS). A long task that exhausts maxIterations
+      // should keep going a bounded number of times and end with a real model
+      // summary, instead of stalling on a blank/boilerplate "ran out of steps"
+      // turn. Synthetic continuation prompts accumulate into history so message
+      // alternation stays valid; usage is folded forward for accurate billing.
+      const maxAutoContinuations = parseInt(process.env.AGENT_MAX_AUTO_CONTINUATIONS || '3', 10)
+      let autoContinuations = 0
+      const accumulatedNewMessages = [...result.newMessages]
+      while (
+        result.maxIterationsExhausted &&
+        !result.loopBreak &&
+        !result.error &&
+        !turnAbort.signal.aborted &&
+        autoContinuations < maxAutoContinuations
+      ) {
+        autoContinuations++
+        console.warn(
+          `${this.logPrefix} Auto-continuing after iteration ceiling (pass ${autoContinuations}/${maxAutoContinuations}) for session ${sessionId}`,
+        )
+        const contHistory = [...history, ...accumulatedNewMessages]
+        const contPrompt =
+          'Continue — you ran out of steps before finishing. Pick up exactly where you left off and complete the remaining work. ' +
+          'When everything is done, end with a short summary of what you changed; if you are still not finished, say what remains.'
+        const contResult = await runAgentLoop({
+          ...loopOptions,
+          history: contHistory,
+          prompt: contPrompt,
+          images: undefined,
+        })
+        accumulatedNewMessages.push(...contResult.newMessages)
+        // Fold prior usage/iterations/tool calls forward so the whole turn is billed.
+        contResult.inputTokens += result.inputTokens
+        contResult.outputTokens += result.outputTokens
+        contResult.cacheReadTokens += result.cacheReadTokens
+        contResult.cacheWriteTokens += result.cacheWriteTokens
+        contResult.iterations += result.iterations
+        contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
+        result = contResult
+      }
+      result.newMessages = accumulatedNewMessages
 
       // Persist messages to session FIRST — before any uiWriter calls that
       // could throw due to client disconnect.  This ensures "continue" after
@@ -3153,12 +3276,18 @@ export class AgentGateway {
 
     // APP_MODE_DISABLED: app template context injection removed (was reading .app-template)
 
-    // 7c. Runtime build + console log tails (canvas mode only — Vite preview pipeline)
-    if (activeMode === 'canvas') {
+    // 7c. Preview URL — inject whenever the runtime can serve the app, so the
+    // agent always has the real public URL (not just in canvas mode). See
+    // shouldInjectPreviewUrl(); this closes the "shared a localhost URL" gap.
+    if (shouldInjectPreviewUrl(activeMode)) {
       const previewUrl = this.buildPreviewUrlContext()
       if (previewUrl) {
         pushDynamic('preview-url', previewUrl)
       }
+    }
+
+    // Runtime build + console log tails (canvas mode only — Vite preview pipeline)
+    if (activeMode === 'canvas') {
       const runtimeLogs = this.buildRuntimeLogsContext()
       if (runtimeLogs) {
         pushDynamic('runtime-logs', runtimeLogs)
@@ -3275,11 +3404,6 @@ export class AgentGateway {
    * agent about a URL that won't load.
    */
   private buildPreviewUrlContext(): string | null {
-    const publicUrl = process.env.PUBLIC_PREVIEW_URL?.trim() || ''
-
-    const runtimePort = parseInt(process.env.PORT || '8080', 10)
-    const internalUrl = `http://localhost:${runtimePort}/`
-
     // dist/ may live at either workspaceDir/project/dist (k8s layout, where
     // the project lives in a /project subdir) or workspaceDir/dist (local
     // RuntimeManager layout, where workspaceDir === projectDir).
@@ -3287,24 +3411,11 @@ export class AgentGateway {
       existsSync(join(this.workspaceDir, 'project', 'dist', 'index.html')) ||
       existsSync(join(this.workspaceDir, 'dist', 'index.html'))
 
-    if (publicUrl.length === 0 && !hasDist) return null
-
-    const externalUrl = publicUrl.length > 0 ? publicUrl : internalUrl
-    const hasDistinctPublic = publicUrl.length > 0 && publicUrl !== internalUrl
-
-    const lines: string[] = [
-      '## Running App Preview',
-      '',
-      `The user's app is running and reachable at **${externalUrl}**.`,
-    ]
-    if (hasDistinctPublic) {
-      lines.push(`Internal (from inside this runtime): \`${internalUrl}\`.`)
-    }
-    lines.push(
-      '',
-      'When the user asks you to QA / test / try the app, spawn the **browser_qa** subagent and pass this URL as the target. This block is the single source of truth for the preview URL — do not read it from `vite.config.ts`, `package.json`, or any other file; those values are overridden by the launcher.',
-    )
-    return lines.join('\n')
+    return buildPreviewUrlBlock({
+      publicUrl: process.env.PUBLIC_PREVIEW_URL,
+      runtimePort: parseInt(process.env.PORT || '8080', 10),
+      hasDist,
+    })
   }
 
   /**

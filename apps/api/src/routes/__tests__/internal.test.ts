@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, test, mock } from 'bun:test'
 const store = {
   podIdentity: null as null | { serviceAccountName: string; namespace: string },
   runtimeVerify: null as null | { ok: boolean; reason?: string; projectId?: string; format?: string },
+  workspaceVerify: null as null | { ok: boolean; reason?: string; workspaceId?: string },
+  resolvedWorkspaceId: null as null | string,
   previewVerify: null as null | { projectId: string; exp: number },
   warmPoolEnv: { foo: 'bar' } as any,
   warmPoolThrow: null as null | Error,
@@ -45,6 +47,15 @@ mock.module('../../lib/runtime-token', () => ({
     if (store.runtimeVerifyThrow) throw store.runtimeVerifyThrow
     return store.runtimeVerify ?? { ok: false, reason: 'bad' }
   },
+}))
+
+mock.module('../../lib/workspace-runtime-token', () => ({
+  verifyWorkspaceRuntimeToken: (_t: string) =>
+    store.workspaceVerify ?? { ok: false, reason: 'malformed' },
+}))
+
+mock.module('../../lib/project-runtime-token', () => ({
+  resolveProjectWorkspaceId: async (_p: string) => store.resolvedWorkspaceId,
 }))
 
 mock.module('../../lib/preview-token', () => ({
@@ -119,6 +130,8 @@ const app = (await import('../internal')).default
 beforeEach(() => {
   store.podIdentity = { serviceAccountName: 'runtime', namespace: 'shogo' }
   store.runtimeVerify = { ok: true, projectId: 'proj-1', format: 'v1' }
+  store.workspaceVerify = null
+  store.resolvedWorkspaceId = null
   store.previewVerify = { projectId: 'proj-1', exp: 1700000000 }
   store.warmPoolEnv = { foo: 'bar' }
   store.warmPoolThrow = null
@@ -868,5 +881,88 @@ describe('validateAuth: local mode with no runtime token header', () => {
       body: JSON.stringify({ token: 't' }),
     })
     expect(res.status).toBe(401)
+  })
+})
+
+// ─── validateAuth: workspace (merged-root) runtime tokens ───────────────────
+//
+// Workspace runtimes present a `wrt_v1_*` token, which `verifyRuntimeToken`
+// rejects as malformed. The local-mode branch must fall back to
+// `verifyWorkspaceRuntimeToken` and enforce project→workspace membership for
+// project-scoped routes (regression: pod→API 401s for checkpoints, heartbeat,
+// cost metrics, etc.).
+describe('validateAuth: workspace runtime token (local mode)', () => {
+  const SHA = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0'
+  const body = { commitSha: SHA, commitMessage: 'auto', branch: 'main', filesChanged: 0, additions: 0, deletions: 0 }
+
+  test('200 when workspace token is valid and the project belongs to that workspace', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    store.resolvedWorkspaceId = 'ws-1'
+    const res = await app.request('/projects/proj-x/checkpoints/record', {
+      method: 'POST', headers: { 'x-runtime-token': 'wrt', ...JSON_H }, body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, id: 'cp-new' })
+  })
+
+  test('401 when workspace token is valid but the project is in a different workspace', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    store.resolvedWorkspaceId = 'ws-other'
+    const res = await app.request('/projects/proj-x/checkpoints/record', {
+      method: 'POST', headers: { 'x-runtime-token': 'wrt', ...JSON_H }, body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test('401 when the project has no workspace mapping', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    store.resolvedWorkspaceId = null
+    const res = await app.request('/projects/proj-x/checkpoints/record', {
+      method: 'POST', headers: { 'x-runtime-token': 'wrt', ...JSON_H }, body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test('401 when the workspace token fails verification (bad hmac)', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: false, reason: 'bad_hmac' }
+    const res = await app.request('/projects/proj-x/checkpoints/record', {
+      method: 'POST', headers: { 'x-runtime-token': 'wrt', ...JSON_H }, body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test('200 for a route without projectId when the workspace token is valid', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    store.previewVerify = { projectId: 'p1', exp: 1700000000 }
+    const res = await app.request('/validate-preview-token', {
+      method: 'POST', headers: { 'x-runtime-token': 'wrt', ...JSON_H }, body: JSON.stringify({ token: 't' }),
+    })
+    expect(res.status).toBe(200)
+  })
+
+  test('project token still authenticates (regression) without consulting the workspace verifier', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: true, projectId: 'proj-x' }
+    store.workspaceVerify = { ok: false, reason: 'malformed' }
+    const res = await app.request('/projects/proj-x/checkpoints/record', {
+      method: 'POST', headers: { 'x-runtime-token': 'rt', ...JSON_H }, body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(200)
   })
 })

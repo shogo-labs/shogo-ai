@@ -238,3 +238,7 @@ apps/*/coverage/
 config.json
 apps/mobile/dist.stale-*/
 .github/pr-*.md
+
+apps/desktop/scripts/build-vm-image/.work/aarch64/
+
+apps/desktop/scripts/build-vm-image/output/aarch64/

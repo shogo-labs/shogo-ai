@@ -46,6 +46,7 @@ const sidebars: SidebarsConfig = {
           items: [
             "features/workspaces-and-members",
             "features/sharing-projects",
+            "features/custom-domains",
           ],
         },
         {

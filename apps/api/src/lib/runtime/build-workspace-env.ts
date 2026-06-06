@@ -35,6 +35,7 @@
 
 import { generateProxyToken } from '../ai-proxy-token'
 import { getAgentModeOverrides } from '@shogo/model-catalog'
+import { buildAutoTierMapEnv } from './auto-tier-env'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 
 export interface BuildWorkspaceEnvOpts {
@@ -226,6 +227,9 @@ export async function buildWorkspaceEnv(
   const modelOverrides = getAgentModeOverrides()
   if (modelOverrides.basic) env.AGENT_BASIC_MODEL = modelOverrides.basic
   if (modelOverrides.advanced) env.AGENT_ADVANCED_MODEL = modelOverrides.advanced
+
+  const autoTierMapEnv = buildAutoTierMapEnv()
+  if (autoTierMapEnv) env.AGENT_AUTO_TIER_MAP = autoTierMapEnv
 
   if (process.env.S3_WORKSPACES_BUCKET) {
     env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET

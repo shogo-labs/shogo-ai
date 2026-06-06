@@ -25,6 +25,7 @@ import type { IRuntimeManager } from '../lib/runtime'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing.service'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
+import { stampModelProvider } from '../lib/stamp-model-provider'
 import { hasWorkspaceAccess } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
 import {
@@ -570,9 +571,13 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       if (getModelTier(resolvedModel) !== 'economy') {
         if (!(await billingService.hasAdvancedModelAccess(workspaceId))) {
           parsedBody.agentMode = 'claude-haiku-4-5-20251001'
-          body = JSON.stringify(parsedBody)
         }
       }
+      // Resolve the model's native provider from the registry and stamp it on
+      // the forwarded body (after any tier-downgrade) so a UUID-addressed DB
+      // model routes natively instead of being inferred as `custom`.
+      stampModelProvider(parsedBody)
+      body = JSON.stringify(parsedBody)
     }
 
     // Harden "@" references before forwarding to the runtime:

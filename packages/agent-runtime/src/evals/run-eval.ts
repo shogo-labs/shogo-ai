@@ -108,6 +108,14 @@ import { KNOWLEDGE_GRAPH_EVALS } from './test-cases-knowledge-graph'
 import { TOKEN_BUDGET_EVALS } from './test-cases-token-budget'
 import { PLAN_EVALS } from './test-cases-plans'
 import { WORKSPACE_ATTACHMENT_EVALS } from './test-cases-workspace-attachments'
+// Agent-hardening tracks — P0/P1 regression reproductions from the Subliminal analysis.
+import { PREVIEW_URL_EVALS } from './test-cases-preview-url'
+import { TRUNCATION_EVALS } from './test-cases-truncation'
+import { CODEGEN_SAFETY_EVALS } from './test-cases-codegen-safety'
+import { VERIFICATION_EVALS } from './test-cases-verification'
+import { LOOPS_EVALS } from './test-cases-loops'
+import { LONG_TASK_EVALS } from './test-cases-long-task'
+import { TEST_HYGIENE_EVALS } from './test-cases-test-hygiene'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary, ResourceSummary, RuntimeCheckResults, ToolCallRecord } from './types'
 import { runRuntimeChecks } from './runtime-checks'
@@ -236,6 +244,17 @@ function getWorkerBaseUrl(worker: DockerWorker): string {
   return `http://localhost:${worker.port}`
 }
 
+// Umbrella for all P0/P1 agent-hardening reproductions (Subliminal analysis).
+const AGENT_HARDENING_EVALS: AgentEval[] = [
+  ...PREVIEW_URL_EVALS,
+  ...TRUNCATION_EVALS,
+  ...CODEGEN_SAFETY_EVALS,
+  ...VERIFICATION_EVALS,
+  ...LOOPS_EVALS,
+  ...LONG_TASK_EVALS,
+  ...TEST_HYGIENE_EVALS,
+]
+
 function getEvals(track: string): AgentEval[] {
   switch (track) {
     case 'canvas': return CANVAS_V2_EVALS
@@ -286,16 +305,24 @@ function getEvals(track: string): AgentEval[] {
     case 'token-budget': return TOKEN_BUDGET_EVALS
     case 'plan': return PLAN_EVALS
     case 'workspace-attachments': return WORKSPACE_ATTACHMENT_EVALS
+    case 'preview-url': return PREVIEW_URL_EVALS
+    case 'truncation': return TRUNCATION_EVALS
+    case 'codegen-safety': return CODEGEN_SAFETY_EVALS
+    case 'verification': return VERIFICATION_EVALS
+    case 'loops': return LOOPS_EVALS
+    case 'long-task': return LONG_TASK_EVALS
+    case 'test-hygiene': return TEST_HYGIENE_EVALS
+    case 'agent-hardening': return AGENT_HARDENING_EVALS
     case 'persona': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     case 'agentic': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS]
     // Everything in `all` minus the `agentic` persona/coordination tracks.
     // Useful when you've already scored a model on the agentic suite and
     // want to fill in the rest of the matrix without re-running the
     // expensive long-pipeline persona evals.
-    case 'non-agentic': return [...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_SMOKE_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS]
-    case 'all': return [...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
+    case 'non-agentic': return [...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_SMOKE_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...AGENT_HARDENING_EVALS]
+    case 'all': return [...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...AGENT_HARDENING_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, plan, workspace-attachments, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, plan, workspace-attachments, preview-url, truncation, codegen-safety, verification, loops, long-task, test-hygiene, agent-hardening, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
       process.exit(1)
   }
 }
@@ -888,13 +915,21 @@ async function runEvalOnWorker(
       // / src/generated / @prisma/client only exist inside the
       // container/VM, so on-host filesystem checks would always
       // report "missing" and pollute the result with false positives.
+      // Tenant-isolation probe is opt-in per eval via a `tenant-probe:<route>` tag.
+      const tenantProbe = (() => {
+        const tag = ev.tags?.find(t => t.startsWith('tenant-probe:'))
+        if (!tag) return undefined
+        const route = tag.slice('tenant-probe:'.length).trim()
+        return route ? { route } : undefined
+      })()
+
       const useRemoteChecks = k8sFlag || vmFlag
       if (useRemoteChecks) {
         try {
           const res = await fetch(`${getWorkerBaseUrl(worker)}/agent/runtime-checks`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ canvasExpectedPort: CONTAINER_SKILL_PORT, evalId: ev.id, verbose: verboseFlag }),
+            body: JSON.stringify({ canvasExpectedPort: CONTAINER_SKILL_PORT, evalId: ev.id, verbose: verboseFlag, tenantProbe }),
             signal: AbortSignal.timeout(120_000),
           })
           const body = await res.json() as { ok: boolean; results: RuntimeCheckResults | null; error?: string }
@@ -918,6 +953,8 @@ async function runEvalOnWorker(
           canvasExpectedPort: canvasExpected,
           evalId: ev.id,
           verbose: verboseFlag,
+          runtimePort: worker.port,
+          tenantProbe,
         })
       }
       if (runtimeResults) {
@@ -956,6 +993,36 @@ async function runEvalOnWorker(
             skip: runtimeResults.canvasCompiles === null,
           },
         ]
+
+        // Opt-in hardening checks, gated by eval tags so existing evals are
+        // unaffected. These power the agent-hardening reproductions.
+        if (ev.tags?.includes('expect-preview-reachable')) {
+          runtimeCriteria.push({
+            id: 'runtime-preview-reachable',
+            desc: 'Preview/runtime port answers GET /',
+            pts: 2,
+            passed: runtimeResults.previewReachable === true,
+            skip: runtimeResults.previewReachable == null,
+          })
+        }
+        if (ev.tags?.includes('expect-no-residual')) {
+          runtimeCriteria.push({
+            id: 'runtime-no-residual-rows',
+            desc: 'Agent left no residual DB rows (clean test teardown)',
+            pts: 3,
+            passed: (runtimeResults.residualRecordCount ?? 0) === 0,
+            skip: runtimeResults.serverHealthy !== true,
+          })
+        }
+        if (ev.tags?.includes('expect-tenant-isolation')) {
+          runtimeCriteria.push({
+            id: 'runtime-tenant-isolation',
+            desc: 'Unauthenticated request is rejected (tenant middleware intact)',
+            pts: 3,
+            passed: runtimeResults.tenantIsolationOk === true,
+            skip: runtimeResults.tenantIsolationOk == null,
+          })
+        }
 
         let runtimeBonus = 0
         let runtimeMaxBonus = 0
@@ -1155,6 +1222,14 @@ async function main() {
       // over the same `<prefix>-<id>.qcow2` filenames.
       skillBasePort: SKILL_SERVER_BASE_PORT,
       overlayDir: process.env.EVAL_OVERLAY_DIR,
+      // Per-track env overrides for hardening evals:
+      //  - EVAL_PUBLIC_PREVIEW_URL reproduces the cloud preview case (the VM
+      //    normally leaves PUBLIC_PREVIEW_URL unset → localhost).
+      //  - EVAL_AGENT_MAX_ITERATIONS lets the long-task eval force the ceiling.
+      envOverrides: {
+        ...(process.env.EVAL_PUBLIC_PREVIEW_URL ? { PUBLIC_PREVIEW_URL: process.env.EVAL_PUBLIC_PREVIEW_URL } : {}),
+        ...(process.env.EVAL_AGENT_MAX_ITERATIONS ? { AGENT_MAX_ITERATIONS: process.env.EVAL_AGENT_MAX_ITERATIONS } : {}),
+      },
     }
   } else if (localFlag) {
     localWorkerConfig = {
@@ -1287,11 +1362,19 @@ async function main() {
       if (verboseFlag) console.log(`      [lifecycle] Worker ${worker.id} unhealthy, restarting...`)
       stopWorker(worker)
       await Bun.sleep(500)
+      // Mirror the initial start branching (k8s → vm → local → docker). The VM
+      // branch was missing here, so a VM worker that went unhealthy fell through
+      // to startDockerWorker(dockerWorkerConfig!) — which is `undefined` in VM
+      // mode — and crashed with "config.baseHostPort is not an object", taking
+      // the whole run down (worst in single-worker runs where one bad restart
+      // poisons every remaining work item).
       const fresh = k8sFlag
         ? await startK8sWorker(worker.id, k8sWorkerConfig!)
-        : localFlag
-          ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
-          : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
+        : vmFlag
+          ? await startVMWorker(worker.id, vmWorkerConfig!, { workspaceDir: worker.dir })
+          : localFlag
+            ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
+            : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
       Object.assign(worker, fresh)
     }
   }

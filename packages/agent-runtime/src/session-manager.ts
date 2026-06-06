@@ -36,6 +36,10 @@ export interface SerializedSession {
   totalMessages: number
   compactionCount: number
   modelOverride?: string
+  /** Native provider hint paired with `modelOverride` (e.g. `anthropic`).
+   *  Persisted so a reloaded session keeps native routing; older sessions
+   *  simply lack it and fall back to id-based inference. */
+  modelProvider?: string
   metadata: Record<string, any>
 }
 
@@ -99,6 +103,8 @@ export interface ManagedSession {
   /** Number of compactions performed */
   compactionCount: number
   modelOverride?: string
+  /** Native provider hint paired with `modelOverride` (see SerializedSession). */
+  modelProvider?: string
   stopRequested: boolean
   metadata: Record<string, any>
 }

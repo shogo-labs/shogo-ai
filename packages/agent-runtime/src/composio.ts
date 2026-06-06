@@ -501,7 +501,12 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
 
         let annotation = ''
         if (truncated) {
-          annotation = `\n\n[Response was truncated from ${JSON.stringify(result.data).length} to ${raw.length} chars. For large datasets, use the skill server pattern: create a Prisma schema in .shogo/server/schema.prisma, ingest the data via a script, then query and display with canvas code.]`
+          const slug = schema.slug.toUpperCase()
+          const isGoogleDoc = slug.includes('GOOGLEDOCS') || slug.includes('GOOGLE_DOCS')
+          const docHint = isGoogleDoc
+            ? ` This is a Google Doc: to read the COMPLETE document (including its ending/conclusion), export it via GOOGLEDRIVE_DOWNLOAD_FILE or GOOGLEDRIVE_EXPORT_FILE using the same document id — that returns the full body. Do NOT summarize the document's decision or conclusion from this truncated copy.`
+            : ''
+          annotation = `\n\n[⚠️ TRUNCATED — this response was cut from ${JSON.stringify(result.data).length} to ${raw.length} chars and is INCOMPLETE. Do not treat it as the whole result or answer as if you have seen the end. To get the full value, re-fetch the source directly: page through with a smaller range, or export/download the underlying file.${docHint} For large datasets, use the skill server pattern: create a Prisma schema in .shogo/server/schema.prisma, ingest the data via a script, then query and display with canvas code.]`
         }
 
         return textResult(raw + annotation)

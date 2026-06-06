@@ -114,6 +114,33 @@ export function wroteEnvFile(result: EvalResult, key: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Gateway quality signals (loop / iteration ceiling / empty response)
+// ---------------------------------------------------------------------------
+
+/**
+ * True if the agent's turn ended in a detected loop. Reads the gateway signal
+ * captured from the `data-usage` frame, with a fallback to the `[LOOP DETECTED]`
+ * marker the agent loop injects into the final text.
+ */
+export function hitLoop(result: EvalResult): boolean {
+  return result.loopDetected === true || result.responseText.includes('[LOOP DETECTED]')
+}
+
+/** True if the agent hit the per-turn iteration ceiling (maxIterationsExhausted). */
+export function hitMaxTurns(result: EvalResult): boolean {
+  return result.hitMaxTurns === true
+}
+
+/**
+ * True if the final assistant message was empty/blank. Prefers the gateway
+ * signal but falls back to a trimmed-text check for robustness.
+ */
+export function responseWasEmpty(result: EvalResult): boolean {
+  if (result.responseEmpty === true) return true
+  return result.responseText.trim().length === 0
+}
+
+// ---------------------------------------------------------------------------
 // Skill server exec validation
 // ---------------------------------------------------------------------------
 

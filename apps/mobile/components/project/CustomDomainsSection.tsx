@@ -13,15 +13,32 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, TextInput, Pressable, ActivityIndicator } from 'react-native'
+import { View, Text, TextInput, Pressable, ActivityIndicator, ScrollView, Linking } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
-import { CheckCircle, Copy, Trash2, RefreshCw, AlertTriangle, Globe } from 'lucide-react-native'
+import { CheckCircle, Copy, Trash2, RefreshCw, AlertTriangle, Globe, ExternalLink } from 'lucide-react-native'
+import type { HttpClient } from '@shogo-ai/sdk'
 import { cn } from '@shogo/shared-ui/primitives'
 import { api, type CustomDomain, type CustomDomainInstruction } from '../../lib/api'
-import { useDomainHttp } from '../../contexts/domain'
+
+/** Customer-facing setup guide (Docusaurus, docs.shogo.ai). */
+const SETUP_GUIDE_URL = 'https://docs.shogo.ai/features/custom-domains'
 
 interface CustomDomainsSectionProps {
   projectId: string
+  /**
+   * HTTP client supplied by the caller. This section is rendered inside the
+   * publish Popover, whose gluestack overlay teleports content to a root host
+   * *outside* the SDKDomainProvider — so calling useDomainHttp() here throws
+   * "must be used within SDKDomainProvider" (RootErrorBoundary crash). Callers
+   * live in the provider tree and pass their resolved client down instead.
+   */
+  http: HttpClient
+  /**
+   * Compact variant for the publish dropdown (default). When false, renders a
+   * standalone, scrollable settings pane with a visible empty/disabled state
+   * instead of collapsing to null.
+   */
+  embedded?: boolean
 }
 
 const PURPOSE_LABEL: Record<CustomDomainInstruction['purpose'], string> = {
@@ -85,8 +102,7 @@ function Field({
   )
 }
 
-export function CustomDomainsSection({ projectId }: CustomDomainsSectionProps) {
-  const http = useDomainHttp()
+export function CustomDomainsSection({ projectId, http, embedded = true }: CustomDomainsSectionProps) {
   const [loading, setLoading] = useState(true)
   const [enabled, setEnabled] = useState(false)
   const [domains, setDomains] = useState<CustomDomain[]>([])
@@ -167,24 +183,75 @@ export function CustomDomainsSection({ projectId }: CustomDomainsSectionProps) {
 
   if (loading) {
     return (
-      <View className="py-3 items-center">
+      <View className={cn('items-center', embedded ? 'py-3' : 'flex-1 justify-center')}>
         <ActivityIndicator size="small" />
       </View>
     )
   }
 
-  // Feature flag off for this deployment: keep the panel clean.
-  if (!enabled) return null
-
-  return (
-    <View className="mb-4 pt-4 border-t border-border">
+  const header = (
+    <>
       <View className="flex-row items-center gap-1.5 mb-1">
-        <Globe size={13} className="text-muted-foreground" />
-        <Text className="text-xs font-medium text-foreground">Custom domain</Text>
+        <Globe size={embedded ? 13 : 15} className="text-muted-foreground" />
+        <Text className={cn('font-medium text-foreground', embedded ? 'text-xs' : 'text-sm')}>
+          Custom domain
+        </Text>
       </View>
-      <Text className="text-[11px] text-muted-foreground mb-2">
-        Serve this app from a domain you own.
+      <Text className="text-[11px] text-muted-foreground mb-1.5">
+        Serve this app from a domain you own, like <Text className="font-mono">app.example.com</Text>.
       </Text>
+      <Pressable
+        onPress={() => Linking.openURL(SETUP_GUIDE_URL)}
+        hitSlop={6}
+        className="flex-row items-center gap-1 mb-2 self-start"
+      >
+        <Text className="text-[11px] font-medium text-primary">Read the setup guide</Text>
+        <ExternalLink size={11} className="text-primary" />
+      </Pressable>
+    </>
+  )
+
+  // Feature flag off for this deployment. The publish dropdown hides the
+  // section entirely (keep it clean); the standalone settings pane explains
+  // the empty state instead of rendering nothing.
+  if (!enabled) {
+    if (embedded) return null
+    return (
+      <ScrollView className="flex-1 bg-background" contentContainerStyle={{ padding: 16 }}>
+        {header}
+        <Text className="text-[11px] text-muted-foreground">
+          Custom domains aren&apos;t available on this deployment yet.
+        </Text>
+      </ScrollView>
+    )
+  }
+
+  const body = (
+    <>
+      {header}
+
+      {/* Fuller guidance only in the standalone settings pane; the publish
+          dropdown stays compact and links out to the guide instead. */}
+      {!embedded && (
+        <View className="mb-3 p-3 rounded-lg bg-muted/50 border border-border gap-1.5">
+          <Text className="text-[11px] font-medium text-foreground">How it works</Text>
+          <Text className="text-[11px] text-muted-foreground">
+            1. Add your domain below — use a subdomain like{' '}
+            <Text className="font-mono">app.example.com</Text>.
+          </Text>
+          <Text className="text-[11px] text-muted-foreground">
+            2. Create the DNS records we show you at your domain provider.
+          </Text>
+          <Text className="text-[11px] text-muted-foreground">
+            3. Press Check status. Your domain goes live once DNS and SSL verify.
+          </Text>
+          <Text className="text-[11px] text-muted-foreground mt-0.5">
+            SSL is issued and renewed automatically. DNS changes can take a few minutes to a few
+            hours. Root domains (example.com) need CNAME flattening or ALIAS support at your
+            provider.
+          </Text>
+        </View>
+      )}
 
       {/* Existing domains */}
       {domains.map((d) => (
@@ -286,6 +353,16 @@ export function CustomDomainsSection({ projectId }: CustomDomainsSectionProps) {
       </View>
 
       {error && <Text className="text-[11px] text-destructive mt-1.5">{error}</Text>}
-    </View>
+    </>
   )
+
+  if (!embedded) {
+    return (
+      <ScrollView className="flex-1 bg-background" contentContainerStyle={{ padding: 16 }}>
+        {body}
+      </ScrollView>
+    )
+  }
+
+  return <View className="mb-4 pt-4 border-t border-border">{body}</View>
 }

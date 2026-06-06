@@ -379,6 +379,46 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     expect(existsSync(join(dir, 'src', 'generated'))).toBe(false)
     expect(existsSync(join(dir, 'src', 'real.ts'))).toBe(true)
   })
+
+  test('restores the prisma scaffold even when package.json already exists', () => {
+    // Regression: a pre-existing workspace (has package.json, so the full seed
+    // is skipped) that lacks its Prisma scaffold previously got nothing back —
+    // forcing the agent to hand-roll prisma.config.ts (wrong `migrate.url`
+    // shape), so `db push` failed with "datasource.url property is required".
+    const tplDir = makeTmp()
+    writeFileSync(join(tplDir, 'package.json'), '{}')
+    mkdirSync(join(tplDir, 'prisma'), { recursive: true })
+    writeFileSync(join(tplDir, 'prisma', 'schema.prisma'), 'datasource db { provider = "sqlite" }')
+    writeFileSync(join(tplDir, 'prisma.config.ts'), 'export default {}')
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+
+    const dir = makeTmp()
+    writeFileSync(join(dir, 'package.json'), '{"name":"existing"}')
+    expect(existsSync(join(dir, 'prisma', 'schema.prisma'))).toBe(false)
+
+    expect(wd.seedRuntimeTemplate(dir)).toBe(false) // full seed still skipped…
+    // …but the critical Prisma files were restored from the template.
+    expect(existsSync(join(dir, 'prisma', 'schema.prisma'))).toBe(true)
+    expect(existsSync(join(dir, 'prisma.config.ts'))).toBe(true)
+  })
+
+  test('restoreMissingRuntimeTemplateFiles never overwrites existing files', () => {
+    const tplDir = makeTmp()
+    writeFileSync(join(tplDir, 'package.json'), '{}')
+    mkdirSync(join(tplDir, 'prisma'), { recursive: true })
+    writeFileSync(join(tplDir, 'prisma', 'schema.prisma'), 'TEMPLATE schema')
+    writeFileSync(join(tplDir, 'prisma.config.ts'), 'TEMPLATE config')
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+
+    const dir = makeTmp()
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    writeFileSync(join(dir, 'prisma', 'schema.prisma'), 'USER schema')
+    writeFileSync(join(dir, 'prisma.config.ts'), 'USER config')
+
+    expect(wd.restoreMissingRuntimeTemplateFiles(dir)).toEqual([])
+    expect(readFileSync(join(dir, 'prisma', 'schema.prisma'), 'utf-8')).toBe('USER schema')
+    expect(readFileSync(join(dir, 'prisma.config.ts'), 'utf-8')).toBe('USER config')
+  })
 })
 
 // ---------------------------------------------------------------------------
