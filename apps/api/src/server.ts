@@ -6160,7 +6160,7 @@ app.post('/api/billing/portal', async (c) => {
     }
 
     // Get return URL from request body if provided
-    let returnUrl = `${getFrontendUrl()}/app/billing`
+    let returnUrl = `${getFrontendUrl()}/billing`
     try {
       const body = await c.req.json<{ returnUrl?: string }>()
       if (body?.returnUrl) {
@@ -6430,7 +6430,7 @@ app.post('/api/billing/instance-portal', async (c) => {
       }, 404)
     }
 
-    let returnUrl = `${getFrontendUrl()}/app/billing`
+    let returnUrl = `${getFrontendUrl()}/billing`
     try {
       const body = await c.req.json<{ returnUrl?: string }>()
       if (body?.returnUrl) returnUrl = body.returnUrl
