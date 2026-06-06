@@ -246,11 +246,11 @@ function postChat(app: any, model: string) {
 
 // The runtime speaks the native Anthropic Messages API for `provider:anthropic`
 // models — this is the endpoint a UUID-addressed Opus turn actually hits.
-function postAnthropic(app: any, model: string) {
+function postAnthropic(app: any, model: string, extra: Record<string, unknown> = {}) {
   return app.fetch(new Request('http://x/api/ai/anthropic/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': TOKEN },
-    body: JSON.stringify({ model, max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] }),
+    body: JSON.stringify({ model, max_tokens: 64, messages: [{ role: 'user', content: 'hi' }], ...extra }),
   }))
 }
 
@@ -264,15 +264,20 @@ function postResponses(app: any, model: string) {
   }))
 }
 
-/** Parse the `model` field off the body of the last captured upstream fetch. */
-function lastForwardedModel(): string | undefined {
+/** Parse the body of the last captured upstream fetch. */
+function lastForwardedBody(): any {
   const raw = lastFetchInit?.body
   if (typeof raw !== 'string') return undefined
   try {
-    return JSON.parse(raw).model
+    return JSON.parse(raw)
   } catch {
     return undefined
   }
+}
+
+/** Parse the `model` field off the body of the last captured upstream fetch. */
+function lastForwardedModel(): string | undefined {
+  return lastForwardedBody()?.model
 }
 
 describe('ai-proxy DB-defined model routing', () => {
@@ -328,6 +333,45 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(lastForwardedModel()).toBe('claude-opus-4-8')
     const apiKey = (lastFetchInit?.headers as Record<string, string>)?.['x-api-key']
     expect(apiKey).toBe('sk-ant-db-routing-test')
+  })
+
+  // ── Adaptive thinking normalization (the production 400) ──────────────────
+  // A UUID-addressed Opus reaches pi-ai as an opaque id, so it can't detect
+  // adaptive thinking and emits the legacy budget-based `thinking.type:
+  // "enabled"` block. Opus 4.7/4.8 reject that with a 400. The proxy — which
+  // knows the real apiModel — must rewrite it to the adaptive shape.
+
+  test('rewrites budget-based thinking to adaptive for a UUID-addressed Opus', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID, {
+      thinking: { type: 'enabled', budget_tokens: 20000, display: 'summarized' },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.model).toBe('claude-opus-4-8')
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    // effort must live in a separate output_config object, not inside thinking.
+    expect(body.thinking.budget_tokens).toBeUndefined()
+    expect(body.output_config?.effort).toBe('high')
+  })
+
+  test('defaults thinking display to summarized when the source omits it', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID, {
+      thinking: { type: 'enabled', budget_tokens: 8000 },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config?.effort).toBe('medium')
+  })
+
+  test('leaves a disabled thinking block untouched for Opus', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID, {
+      thinking: { type: 'disabled' },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.thinking).toEqual({ type: 'disabled' })
+    expect(body.output_config).toBeUndefined()
   })
 
   test('Responses API rewrites a UUID-addressed GPT to its apiModel', async () => {

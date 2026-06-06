@@ -1672,6 +1672,60 @@ function splitSystemBlocksForCaching(parsed: any): void {
   parsed.system = newSystem
 }
 
+/**
+ * Anthropic model ids (with or without a date suffix) that require the
+ * *adaptive* thinking API (`thinking.type: "adaptive"` + `output_config.effort`)
+ * and reject the legacy budget-based `thinking.type: "enabled"` shape. Mirrors
+ * pi-ai's `supportsAdaptiveThinking`.
+ */
+function apiModelSupportsAdaptiveThinking(apiModel: string): boolean {
+  return (
+    apiModel.includes('opus-4-6') ||
+    apiModel.includes('opus-4.6') ||
+    apiModel.includes('opus-4-7') ||
+    apiModel.includes('opus-4.7') ||
+    apiModel.includes('opus-4-8') ||
+    apiModel.includes('opus-4.8') ||
+    apiModel.includes('sonnet-4-6') ||
+    apiModel.includes('sonnet-4.6')
+  )
+}
+
+/** Map a budget-based thinking allocation to an adaptive effort bucket. */
+function budgetTokensToEffort(budgetTokens: number | undefined): 'low' | 'medium' | 'high' {
+  if (!budgetTokens || budgetTokens < 4096) return 'low'
+  if (budgetTokens < 16000) return 'medium'
+  return 'high'
+}
+
+/**
+ * Normalize the thinking config for the resolved upstream model.
+ *
+ * The agent-runtime addresses DB-defined models by an opaque UUID, so pi-ai
+ * can't substring-match the id against its adaptive-thinking allowlist and
+ * falls back to the legacy budget-based `thinking.type: "enabled"` shape.
+ * Anthropic rejects that shape for Opus 4.6+/Sonnet 4.6 with a 400
+ * ("thinking.type.enabled is not supported for this model"). Since the proxy
+ * is the boundary that knows the real `apiModel`, rewrite the block here into
+ * the adaptive shape it expects. Idempotent: a body that already carries
+ * `thinking.type: "adaptive"` is left untouched.
+ *
+ * Mutates `parsed` in place.
+ */
+function normalizeThinkingForModel(parsed: any, apiModel: string): void {
+  const thinking = parsed?.thinking
+  if (!thinking || typeof thinking !== 'object') return
+  if (!apiModelSupportsAdaptiveThinking(apiModel)) return
+  if (thinking.type !== 'enabled') return
+
+  const effort = budgetTokensToEffort(thinking.budget_tokens)
+  parsed.thinking = {
+    type: 'adaptive',
+    ...(thinking.display ? { display: thinking.display } : { display: 'summarized' }),
+  }
+  parsed.output_config = { ...(parsed.output_config ?? {}), effort }
+}
+
 // =============================================================================
 // Billing
 // =============================================================================
@@ -2933,6 +2987,12 @@ export function aiProxyRoutes() {
       // isn't catalog-resolvable, preserving the prior behavior for everything
       // already addressed by a real Anthropic model name.
       parsed.model = resolvedModelConfig?.apiModel ?? resolvedModel
+
+      // Rewrite the thinking config to the adaptive shape when the resolved
+      // upstream model requires it. DB models reach pi-ai as an opaque UUID, so
+      // it can't detect adaptive thinking and emits the legacy budget-based
+      // `thinking.type: "enabled"` block, which Opus 4.6+/Sonnet 4.6 reject.
+      normalizeThinkingForModel(parsed, parsed.model)
 
       // Split system prompt at CACHE_BOUNDARY so Anthropic can cache the stable
       // prefix independently. The agent-runtime embeds <|CACHE_BOUNDARY|> between
