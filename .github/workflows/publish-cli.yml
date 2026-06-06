@@ -145,6 +145,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          draft: false
+          # Create as a DRAFT so the release stays hidden until every asset has
+          # finished uploading. softprops uploads assets after creating the
+          # release, so a non-draft create would briefly expose an asset-less
+          # release. The publish step below flips it to published once this
+          # action (and thus all uploads) completes.
+          draft: true
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
           body: ${{ steps.notes.outputs.body }}
+
+      - name: Publish release (assets finished uploading)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false

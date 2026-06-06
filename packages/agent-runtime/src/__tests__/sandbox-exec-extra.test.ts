@@ -80,6 +80,43 @@ describe('purgeSecretsFromEnv', () => {
     sandbox.purgeSecretsFromEnv()
     expect(sandbox.getCapturedSecret('STRIPE_SECRET_KEY')).toBeUndefined()
   })
+
+  test('keeps non-secret sqlite file: DATABASE_URL but purges a postgres one', () => {
+    process.env.DATABASE_URL = 'file:/workspace/prisma/dev.db'
+    sandbox.purgeSecretsFromEnv()
+    // sqlite file URL is not a credential — the agent needs it for prisma.
+    expect(process.env.DATABASE_URL).toBe('file:/workspace/prisma/dev.db')
+
+    process.env.DATABASE_URL = 'postgres://user:pw@host:5432/db'
+    sandbox.purgeSecretsFromEnv()
+    expect(process.env.DATABASE_URL).toBeUndefined()
+    expect(sandbox.getCapturedSecret('DATABASE_URL')).toBe('postgres://user:pw@host:5432/db')
+    delete process.env.DATABASE_URL
+  })
+})
+
+describe('getSanitizedEnv — DATABASE_URL value-awareness', () => {
+  afterEach(() => {
+    delete process.env.DATABASE_URL
+    delete process.env.PROJECTS_DATABASE_URL
+  })
+
+  test('lets a sqlite file: DATABASE_URL through to agent commands', () => {
+    process.env.DATABASE_URL = 'file:/workspace/prisma/dev.db'
+    expect(sandbox.getSanitizedEnv().DATABASE_URL).toBe('file:/workspace/prisma/dev.db')
+  })
+
+  test('still redacts a real postgres DATABASE_URL credential', () => {
+    process.env.DATABASE_URL = 'postgres://user:pw@host:5432/db'
+    expect(sandbox.getSanitizedEnv().DATABASE_URL).toBeUndefined()
+  })
+
+  test('redacts non-file PROJECTS_DATABASE_URL but allows file: form', () => {
+    process.env.PROJECTS_DATABASE_URL = 'mysql://root@host/app'
+    expect(sandbox.getSanitizedEnv().PROJECTS_DATABASE_URL).toBeUndefined()
+    process.env.PROJECTS_DATABASE_URL = 'file:./prisma/dev.db'
+    expect(sandbox.getSanitizedEnv().PROJECTS_DATABASE_URL).toBe('file:./prisma/dev.db')
+  })
 })
 
 describe('sandboxExecAsync (non-sandbox)', () => {

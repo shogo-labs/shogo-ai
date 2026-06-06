@@ -32,6 +32,15 @@ function checkRateLimit(projectId: string): boolean {
 /**
  * Validate request auth: tries K8s SA token first, then falls back to
  * runtime-token verification in local mode.
+ *
+ * Two runtime topologies present different `x-runtime-token` types:
+ *   - Legacy single-project runtime → PROJECT token (`rt_v1_<projectId>_…`),
+ *     verified by `verifyRuntimeToken`.
+ *   - Universal workspace (merged-root) runtime → WORKSPACE token
+ *     (`wrt_v1_<workspaceId>_…`), verified by `verifyWorkspaceRuntimeToken`.
+ *     For project-scoped routes we additionally confirm the project belongs
+ *     to the token's workspace so a workspace token can't act on a project
+ *     in another workspace.
  */
 async function validateAuth(c: Context, projectId?: string): Promise<boolean> {
   const authHeader = c.req.header('Authorization')
@@ -45,7 +54,21 @@ async function validateAuth(c: Context, projectId?: string): Promise<boolean> {
     if (runtimeToken) {
       const { verifyRuntimeToken } = await import('../lib/runtime-token')
       const verified = verifyRuntimeToken(runtimeToken, projectId)
-      return verified.ok && (!projectId || verified.projectId === projectId)
+      if (verified.ok && (!projectId || verified.projectId === projectId)) {
+        return true
+      }
+
+      // Workspace (merged-root) runtimes authenticate with a workspace
+      // token instead of a project token. Accept it, enforcing project
+      // membership for project-scoped routes.
+      const { verifyWorkspaceRuntimeToken } = await import('../lib/workspace-runtime-token')
+      const wsVerified = verifyWorkspaceRuntimeToken(runtimeToken)
+      if (wsVerified.ok) {
+        if (!projectId) return true
+        const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
+        const workspaceId = await resolveProjectWorkspaceId(projectId)
+        return workspaceId === wsVerified.workspaceId
+      }
     }
   }
 

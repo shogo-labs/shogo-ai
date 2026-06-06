@@ -23,6 +23,8 @@ import { execSync } from 'child_process'
 import { pkg } from '@shogo-ai/cli/pkg'
 import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '../src/generators/prisma-generator'
 import { ensureFeatureDeps } from '../src/generators/deps-doctor'
+import { enforceSchemaHeader, headerIsDowngraded } from '../src/generators/prisma-schema-guard'
+import { enforcePrismaConfig, configIsDowngraded } from '../src/generators/prisma-config-guard'
 import { 
   transformSchemaFile, 
   detectSchemaProvider,
@@ -939,6 +941,44 @@ async function main() {
     process.exit(1)
   }
 
+  // Schema-header guard: a stray write_file may have downgraded the protected
+  // generator/datasource header — most damagingly re-adding a Prisma-6
+  // `url = env("DATABASE_URL")` that hard-errors on Prisma 7 (P1012), or the
+  // legacy `prisma-client-js` provider. Restore the header before anything
+  // reads the schema (codegen, prisma generate, db push). Models are preserved.
+  try {
+    const rawSchema = readFileSync(schemaPath, 'utf-8')
+    if (headerIsDowngraded(rawSchema)) {
+      const fixedSchema = enforceSchemaHeader(rawSchema)
+      if (fixedSchema !== rawSchema) {
+        writeFileSync(schemaPath, fixedSchema, 'utf-8')
+        console.log('⚠️  Restored protected prisma/schema.prisma header (stripped datasource url / legacy generator that breaks Prisma 7)')
+      }
+    }
+  } catch {
+    // Best-effort guard; fall through to the normal generate path.
+  }
+
+  // Same guard for prisma.config.ts: the agent sometimes drops the Prisma-7
+  // `datasource.url` (e.g. moves it under a `migrate`/`async url()` resolver),
+  // which makes `prisma db push` hard-error ("datasource.url property is
+  // required") regardless of DATABASE_URL. Restore the canonical config first.
+  try {
+    const configPath = resolve(cwd, 'prisma.config.ts')
+    if (existsSync(configPath)) {
+      const rawConfig = readFileSync(configPath, 'utf-8')
+      if (configIsDowngraded(rawConfig)) {
+        const fixedConfig = enforcePrismaConfig(rawConfig)
+        if (fixedConfig !== rawConfig) {
+          writeFileSync(configPath, fixedConfig, 'utf-8')
+          console.log('⚠️  Restored prisma.config.ts datasource.url (config lacked the Prisma-7 datasource URL that db push requires)')
+        }
+      }
+    }
+  } catch {
+    // Best-effort guard; fall through to the normal generate path.
+  }
+
   // Parse model filters
   const models = values.models 
     ? (values.models as string).split(',').map(s => s.trim())
@@ -1032,7 +1072,8 @@ async function main() {
   // Regenerate the Prisma client and push schema changes — but only when the
   // schema actually defines models. A zero-model schema only needs server.tsx.
   const hasPrisma = existsSync(schemaPath)
-  const schemaHasModels = hasPrisma && /^\s*model\s+\w+/m.test(readFileSync(schemaPath, 'utf-8'))
+  const schemaText = hasPrisma ? readFileSync(schemaPath, 'utf-8') : ''
+  const schemaHasModels = hasPrisma && /^\s*model\s+\w+/m.test(schemaText)
 
   if (hasPrisma && schemaHasModels) {
     console.log('🔧 Updating Prisma client and database...')
@@ -1044,18 +1085,36 @@ async function main() {
     } catch (err) {
       console.warn(`   ⚠️ prisma generate failed: ${err instanceof Error ? err.message : err}`)
     }
-    
-    // Push schema to database (only if DATABASE_URL is set)
-    if (process.env.DATABASE_URL) {
+
+    // Push schema to database. DATABASE_URL is intentionally redacted from the
+    // agent's shell as a secret (in prod it's a Postgres/MySQL credential), so
+    // when the agent runs `shogo generate` directly it's usually unset — which
+    // would skip the push and leave the tables uncreated, breaking the app at
+    // runtime. For the sandbox/preview the datasource is sqlite and the DB is
+    // just a workspace file (`prisma/dev.db`) — not a secret — so fall back to
+    // it (matching the runtime, which pins the same path). Never guess a
+    // Postgres/MySQL URL: only default when the datasource is sqlite (or, for a
+    // freshly-scaffolded schema, when no non-sqlite provider is declared).
+    const datasourceProvider = schemaText.match(
+      /datasource\s+\w+\s*\{[^}]*?provider\s*=\s*["']([^"']+)["']/s,
+    )?.[1]
+    const datasourceIsSqlite = !datasourceProvider || datasourceProvider === 'sqlite'
+    const effectiveDbUrl =
+      process.env.DATABASE_URL || (datasourceIsSqlite ? `file:${resolve(cwd, 'prisma', 'dev.db')}` : '')
+    if (effectiveDbUrl) {
       try {
         console.log('   Running prisma db push...')
-        pkg.prismaDbPush(cwd, { acceptDataLoss: true, stdio: values.verbose ? 'inherit' : 'pipe' })
+        pkg.prismaDbPush(cwd, {
+          acceptDataLoss: true,
+          stdio: values.verbose ? 'inherit' : 'pipe',
+          env: { ...process.env, DATABASE_URL: effectiveDbUrl } as NodeJS.ProcessEnv,
+        })
         console.log('   ✓ Database schema synced')
       } catch (err) {
         console.warn(`   ⚠️ prisma db push failed: ${err instanceof Error ? err.message : err}`)
       }
     } else {
-      console.log('   ⊘ Skipping db push (no DATABASE_URL)')
+      console.log('   ⊘ Skipping db push (no DATABASE_URL; non-sqlite datasource)')
     }
     
     console.log('')

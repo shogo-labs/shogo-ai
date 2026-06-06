@@ -68,6 +68,15 @@ mock.module('../services/billing.service', () => ({
   hasAdvancedModelAccess: async () => hasAdvancedModelAccessResult,
 }))
 
+// Model registry: a UUID-addressed DB model resolves to its native provider.
+// stampModelProvider (the real helper) reads this to stamp `modelProvider`
+// on the forwarded body so the runtime routes natively instead of `custom`.
+const OPUS_UUID = '11111111-2222-3333-4444-555555555555'
+mock.module('../services/model-registry.service', () => ({
+  getMergedModelEntrySync: (id: string) =>
+    id === OPUS_UUID ? { provider: 'anthropic' } : undefined,
+}))
+
 mock.module('../services/git.service', () => ({
   isGitAvailable: () => false,
 }))
@@ -227,6 +236,57 @@ describe('POST /projects/:projectId/chat', () => {
     expect(headers.get('x-runtime-token')).toBe('tok-1')
     expect(JSON.parse(String(lastFetchInit?.body)).agentMode).toBe('claude-haiku-4-5-20251001')
     expect(setProjectUserCalls).toEqual([{ projectId: 'p-1', userId: 'user-1' }])
+  })
+
+  test('stamps the resolved native provider onto the forwarded body for a UUID model', async () => {
+    nextFetchResponse = () => new Response('data: ok\n\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatSessionId: 'chat-1',
+        agentMode: OPUS_UUID,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    await res.text()
+    const forwarded = JSON.parse(String(lastFetchInit?.body))
+    // The opaque id is preserved; the registry-resolved provider rides along.
+    expect(forwarded.agentMode).toBe(OPUS_UUID)
+    expect(forwarded.modelProvider).toBe('anthropic')
+  })
+
+  test('drops the provider hint when the model is downgraded to haiku', async () => {
+    // No advanced access → agentMode is rewritten to haiku, which the registry
+    // mock doesn't know, so stampModelProvider clears any stale hint.
+    hasAdvancedModelAccessResult = false
+    nextFetchResponse = () => new Response('data: ok\n\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatSessionId: 'chat-1',
+        agentMode: OPUS_UUID,
+        modelProvider: 'anthropic',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    await res.text()
+    const forwarded = JSON.parse(String(lastFetchInit?.body))
+    expect(forwarded.agentMode).toBe('claude-haiku-4-5-20251001')
+    expect('modelProvider' in forwarded).toBe(false)
   })
 
   test('does not forward X-User-Id when claimed user is not a workspace member', async () => {

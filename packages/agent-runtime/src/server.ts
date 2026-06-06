@@ -1534,10 +1534,15 @@ app.post('/agent/chat', async (c) => {
   }
 
   const modelOverride = (body.agentMode as string | undefined) || undefined
+  // Native provider hint resolved by the API server from its model registry so
+  // the gateway can route a DB model addressed by an opaque UUID to its real
+  // provider's native endpoint instead of inferring `custom` from the id.
+  // Optional — absent requests fall back to id-based inference.
+  const modelProvider = (body.modelProvider as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
-  console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
+  console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, modelProvider: ${modelProvider ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
 
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
@@ -1586,6 +1591,7 @@ app.post('/agent/chat', async (c) => {
         writer.write({ type: 'start-step' })
         await agentGateway!.processChatMessageStream(userText || '', writer, {
           modelOverride,
+          modelProvider,
           fileParts: userFileParts.length > 0 ? userFileParts : undefined,
           userId: chatUserId,
           interactionMode,
@@ -3895,7 +3901,7 @@ app.post('/agent/skill-server/sync', async (c) => {
 
 app.post('/agent/runtime-checks', async (c) => {
   const { runRuntimeChecks } = await import('./evals/runtime-checks')
-  const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean }>()
+  const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean; tenantProbe?: { route: string } }>()
   // Use the PreviewManager's configured port directly; `getSkillServerPort()`
   // also falls through to the same value via the shim, but reading it from
   // the manager keeps the source-of-truth obvious. Never falls back to the
@@ -3910,6 +3916,8 @@ app.post('/agent/runtime-checks', async (c) => {
       canvasExpectedPort: body.canvasExpectedPort ?? skillServerPort,
       evalId: body.evalId,
       verbose: body.verbose,
+      runtimePort: parseInt(process.env.PORT || '8080', 10),
+      tenantProbe: body.tenantProbe,
     })
     return c.json({ ok: true, results })
   } catch (err: any) {

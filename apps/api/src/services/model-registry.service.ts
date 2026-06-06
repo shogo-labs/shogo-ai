@@ -110,6 +110,13 @@ interface RegistrySnapshot {
    *  the static `MODEL_CATALOG`. Lets the visible-models picker reflect only
    *  the admin-managed set while the static catalog stays a routing fallback. */
   dbIds: Set<string>
+  /** Ids mirrored from the connected cloud catalog (cloud-proxy mode only).
+   *  The cloud is authoritative for the catalog when local mode forwards AI
+   *  traffic upstream, so these are merged in for resolution (provider/tier)
+   *  even though this build never seeded them locally. Kept distinct from
+   *  `dbIds` so the local picker / DB-only accessors don't treat them as
+   *  admin-managed local rows. */
+  cloudIds: Set<string>
   /** Routing config keyed by id (DB models only; static handled by proxy). */
   routing: Map<string, ModelRoutingConfig>
   /** Per-token pricing keyed by id (DB models only). */
@@ -132,6 +139,7 @@ function emptySnapshot(): RegistrySnapshot {
   return {
     merged,
     dbIds: new Set(),
+    cloudIds: new Set(),
     routing: new Map(),
     pricing: new Map(),
     aliasToId: new Map(),
@@ -176,6 +184,78 @@ function rowToModelEntry(row: ModelRow): ModelEntry {
 function aliasList(raw: unknown): string[] {
   if (Array.isArray(raw)) return raw.filter((x): x is string => typeof x === 'string')
   return []
+}
+
+/**
+ * Map a cloud `visible-models` catalog entry (the `toVisible` shape served by
+ * the upstream's `/api/platform/visible-models`) to a local `ModelEntry`.
+ *
+ * The cloud payload omits `apiModel` and `aliases` (it's a picker projection),
+ * but in cloud-proxy mode the local API forwards the model id upstream and the
+ * cloud re-resolves it to the real provider slug — so `apiModel` defaulting to
+ * the id is correct for local routing (the cloud does the final rewrite). All
+ * cloud catalog entries are `generation: 'current'` (the upstream filters to
+ * current before returning). Returns null for malformed rows.
+ */
+function cloudCatalogModelToEntry(raw: unknown): ModelEntry | null {
+  if (!raw || typeof raw !== 'object') return null
+  const m = raw as Record<string, unknown>
+  if (typeof m.id !== 'string' || typeof m.provider !== 'string') return null
+  const tier = (typeof m.tier === 'string' ? m.tier : 'standard') as ModelTier
+  const family = (typeof m.family === 'string' ? m.family : 'other') as ModelFamily
+  return {
+    id: m.id,
+    provider: m.provider as ModelEntry['provider'],
+    apiModel: typeof m.apiModel === 'string' ? m.apiModel : m.id,
+    displayName: typeof m.displayName === 'string' ? m.displayName : m.id,
+    shortDisplayName: typeof m.shortDisplayName === 'string' ? m.shortDisplayName : (typeof m.displayName === 'string' ? m.displayName : m.id),
+    tier,
+    family,
+    generation: 'current' as ModelGeneration,
+    billingModel: deriveBillingModel(family, tier),
+    maxOutputTokens: typeof m.maxOutputTokens === 'number' ? m.maxOutputTokens : 8192,
+    ...(typeof m.sortOrder === 'number' ? { sortOrder: m.sortOrder } : {}),
+    ...(typeof m.description === 'string' ? { description: m.description } : {}),
+    ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
+    ...(typeof m.reasoningEffort === 'string' ? { reasoningEffort: m.reasoningEffort as ModelEntry['reasoningEffort'] } : {}),
+  }
+}
+
+/**
+ * In cloud-proxy mode, mirror the connected cloud's catalog into the snapshot
+ * so the local API can resolve cloud-only model ids (provider for routing,
+ * tier for gating, label for analytics) instead of falling through to the
+ * `custom` provider inference. Best-effort: a cloud miss/outage leaves the
+ * local snapshot untouched. Cloud entries never override a local DB row on id
+ * collision (local admin config wins); they're tracked in `cloudIds`.
+ */
+async function mergeCloudCatalog(next: RegistrySnapshot): Promise<void> {
+  // Lazy import so this low-level service carries no static dependency on the
+  // higher-level federation lib (avoids import cycles) and the cloud catalog
+  // module only loads when cloud-proxy mode actually triggers a merge.
+  let cloud: { catalogModels?: unknown[] } | null = null
+  try {
+    const { fetchCloudVisibleModels } = await import('../lib/federated-upstream')
+    cloud = await fetchCloudVisibleModels()
+  } catch {
+    cloud = null
+  }
+  if (!cloud?.catalogModels?.length) return
+
+  let merged = 0
+  for (const raw of cloud.catalogModels) {
+    const entry = cloudCatalogModelToEntry(raw)
+    if (!entry) continue
+    // Local DB rows are explicitly configured here — don't let a cloud entry
+    // clobber one on id collision (rare: cloud ids are UUIDs).
+    if (next.dbIds.has(entry.id)) continue
+    next.merged.set(entry.id, entry)
+    next.cloudIds.add(entry.id)
+    merged++
+  }
+  if (merged > 0) {
+    console.log(`[model-registry] mirrored ${merged} model(s) from cloud catalog (cloud-proxy mode)`)
+  }
 }
 
 /**
@@ -233,6 +313,11 @@ async function refresh(): Promise<void> {
         next.aliasToId.set(alias, row.id)
       }
     }
+
+    // Cloud-proxy mode: augment the local snapshot with the connected cloud's
+    // catalog so cloud-only model ids resolve locally (provider/tier/label).
+    // Best-effort — never discards the DB load on a cloud miss.
+    await mergeCloudCatalog(next)
 
     next.loadedAt = Date.now()
     snapshot = next
@@ -301,6 +386,40 @@ export function getMergedModelEntrySync(id: string): ModelEntry | undefined {
   refreshIfStaleInBackground()
   const canonical = snapshot.aliasToId.get(id) ?? id
   return snapshot.merged.get(canonical)
+}
+
+/**
+ * Diagnostic snapshot summary for debugging model-resolution misses. Returns a
+ * compact, log-friendly view of what the in-memory registry currently holds for
+ * a given id (without forcing a synchronous reload).
+ */
+export function debugRegistrySnapshotForId(id: string): {
+  loadedAtAgeMs: number
+  stale: boolean
+  mergedCount: number
+  dbCount: number
+  cloudCount: number
+  aliasHit: string | null
+  hasMergedForId: boolean
+  hasMergedForCanonical: boolean
+  isCloudMirrored: boolean
+  sampleDbIds: string[]
+  sampleCloudIds: string[]
+} {
+  const canonical = snapshot.aliasToId.get(id) ?? id
+  return {
+    loadedAtAgeMs: Date.now() - snapshot.loadedAt,
+    stale: isStale(),
+    mergedCount: snapshot.merged.size,
+    dbCount: snapshot.dbIds.size,
+    cloudCount: snapshot.cloudIds.size,
+    aliasHit: snapshot.aliasToId.get(id) ?? null,
+    hasMergedForId: snapshot.merged.has(id),
+    hasMergedForCanonical: snapshot.merged.has(canonical),
+    isCloudMirrored: snapshot.cloudIds.has(canonical),
+    sampleDbIds: Array.from(snapshot.dbIds).slice(0, 10),
+    sampleCloudIds: Array.from(snapshot.cloudIds).slice(0, 10),
+  }
 }
 
 const LABEL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

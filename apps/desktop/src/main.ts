@@ -209,10 +209,18 @@ function ensureSingleInstanceLock(): boolean {
   return true
 }
 
-// In-flight sign-in handle so the renderer can cancel via IPC. The
-// handshake itself runs inside @shogo-ai/worker/cloud-login — we just
-// thread an AbortController through to its `abortSignal` option.
-let activeCloudSignIn: { abort: AbortController } | null = null
+// In-flight sign-in handle so the renderer can cancel via IPC and so a
+// fresh sign-in can supersede an earlier one. The handshake itself runs
+// inside @shogo-ai/worker/cloud-login — we just thread an AbortController
+// through to its `abortSignal` option. `done` lets a superseding caller
+// wait for the previous run's cleanup; `superseded` suppresses the
+// previous run's "Cancelled" notification when it was replaced.
+type CloudSignInHandle = {
+  abort: AbortController
+  done: Promise<unknown>
+  superseded: boolean
+}
+let activeCloudSignIn: CloudSignInHandle | null = null
 
 function notifyRendererLoginResult(payload: {
   ok: boolean
@@ -226,13 +234,31 @@ function notifyRendererLoginResult(payload: {
 }
 
 async function runCloudSignIn(opts?: { workspaceId?: string }): Promise<{ ok: boolean; error?: string }> {
+  // A new sign-in transparently supersedes any in-flight one: abort it
+  // and wait for its cleanup (its finally clears the slot) before we
+  // claim ownership. The superseded run's "Cancelled" notification is
+  // suppressed so the user never sees a spurious error.
   if (activeCloudSignIn) {
-    return { ok: false, error: 'A sign-in is already in progress. Cancel it first.' }
+    const prev = activeCloudSignIn
+    prev.superseded = true
+    prev.abort.abort()
+    await prev.done.catch(() => {})
   }
+  const ac = new AbortController()
+  const handle: CloudSignInHandle = { abort: ac, done: Promise.resolve(), superseded: false }
+  activeCloudSignIn = handle
+  const run = performCloudSignIn(opts, ac, handle)
+  handle.done = run
+  return run
+}
+
+async function performCloudSignIn(
+  opts: { workspaceId?: string } | undefined,
+  ac: AbortController,
+  handle: CloudSignInHandle,
+): Promise<{ ok: boolean; error?: string }> {
   const cloudUrl = getCloudUrl()
   const device = getDeviceInfo()
-  const ac = new AbortController()
-  activeCloudSignIn = { abort: ac }
 
   let mintedKey: string
   let mintedEmail: string | null
@@ -258,6 +284,9 @@ async function runCloudSignIn(opts?: { workspaceId?: string }): Promise<{ ok: bo
     mintedEmail = result.email
     mintedWorkspace = result.workspace
   } catch (err) {
+    // Superseded by a newer sign-in: stay silent so the user doesn't see
+    // a "Cancelled" error for the run they intentionally replaced.
+    if (handle.superseded) return { ok: false, error: 'Cancelled' }
     const error =
       err instanceof CloudLoginError
         ? mapCloudLoginError(err)
@@ -266,7 +295,9 @@ async function runCloudSignIn(opts?: { workspaceId?: string }): Promise<{ ok: bo
     notifyRendererLoginResult(out)
     return out
   } finally {
-    activeCloudSignIn = null
+    // Only relinquish the slot if this run still owns it — a superseding
+    // run may have already installed its own handle.
+    if (activeCloudSignIn === handle) activeCloudSignIn = null
   }
 
   // Hand the minted key to the local API. The existing PUT handler

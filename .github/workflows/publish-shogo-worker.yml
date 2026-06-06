@@ -292,6 +292,12 @@ jobs:
           # title and the rest of us just append files.
           tag_name: ${{ steps.version.outputs.tag }}
           prerelease: ${{ steps.version.outputs.channel != 'latest' }}
+          # Keep the release a DRAFT while the desktop-release-{macos,windows}
+          # and publish-agent-runtime workflows finish uploading their assets to
+          # the same tag. finalize-release.yml publishes (draft -> false) only
+          # after all four runs for this commit succeed, so the release never
+          # goes public missing assets.
+          draft: true
           body: |
             Includes prebuilt `shogo` worker binaries (channel: ${{ steps.version.outputs.channel }}, MIT).
 

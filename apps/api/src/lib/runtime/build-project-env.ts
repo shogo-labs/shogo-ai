@@ -9,6 +9,7 @@
 
 import { generateProxyToken } from '../ai-proxy-token'
 import { getAgentModeOverrides } from '@shogo/model-catalog'
+import { buildAutoTierMapEnv } from './auto-tier-env'
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -135,6 +136,11 @@ export async function buildProjectEnv(
   const modelOverrides = getAgentModeOverrides()
   if (modelOverrides.basic) env.AGENT_BASIC_MODEL = modelOverrides.basic
   if (modelOverrides.advanced) env.AGENT_ADVANCED_MODEL = modelOverrides.advanced
+
+  // Inject admin-configured Auto-mode tier overrides (public aliases resolved
+  // to backing model ids) so the spawn router can route Auto to e.g. Hoshi.
+  const autoTierMapEnv = buildAutoTierMapEnv()
+  if (autoTierMapEnv) env.AGENT_AUTO_TIER_MAP = autoTierMapEnv
 
   if (process.env.S3_WORKSPACES_BUCKET) {
     env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET
