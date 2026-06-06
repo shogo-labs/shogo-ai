@@ -14,7 +14,9 @@ import { getMergedModelEntrySync } from "../services/model-registry.service"
  */
 export function stampModelProvider(parsedBody: { agentMode?: unknown; modelProvider?: unknown }): void {
   if (!parsedBody?.agentMode || typeof parsedBody.agentMode !== "string") return
-  const provider = getMergedModelEntrySync(resolveModelId(parsedBody.agentMode))?.provider
+  const agentMode = parsedBody.agentMode
+  const resolvedId = resolveModelId(agentMode)
+  const provider = getMergedModelEntrySync(resolvedId)?.provider
   if (provider) parsedBody.modelProvider = provider
   else delete parsedBody.modelProvider
 }

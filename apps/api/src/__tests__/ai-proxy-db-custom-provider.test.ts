@@ -374,6 +374,33 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(body.output_config).toBeUndefined()
   })
 
+  // ── Adaptive thinking visibility (the Opus-only "no thinking" symptom) ─────
+  // Opus 4.7/4.8 default `display` to "omitted" — an adaptive block without an
+  // explicit display yields empty thinking blocks, so the client renders no
+  // reasoning. (Sonnet 4.6 / Opus 4.6 default to "summarized", which is why the
+  // bug is Opus-only.) The proxy must default display to "summarized".
+
+  test('defaults display to summarized on an adaptive block missing display', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID, {
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'high' },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    // An effort the caller already set is preserved untouched.
+    expect(body.output_config?.effort).toBe('high')
+  })
+
+  test('respects an explicit display: omitted on an adaptive block', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID, {
+      thinking: { type: 'adaptive', display: 'omitted' },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
+  })
+
   test('Responses API rewrites a UUID-addressed GPT to its apiModel', async () => {
     const res = await postResponses(buildApp(), GPT_UUID)
     expect(res.status).toBe(200)

@@ -29,6 +29,17 @@ mock.module('../../lib/prisma', () => ({
   },
 }))
 
+// Cloud catalog the registry mirrors in cloud-proxy mode. Defaults to "no
+// cloud" (null) so non-cloud tests are unaffected; individual tests opt in by
+// pushing entries. Mocked here because the registry lazily imports it.
+let CLOUD_MODELS: any[] = []
+mock.module('../../lib/federated-upstream', () => ({
+  fetchCloudVisibleModels: async () =>
+    CLOUD_MODELS.length
+      ? { catalogIds: null, openrouterModels: [], catalogModels: CLOUD_MODELS }
+      : null,
+}))
+
 const {
   primeModelRegistry,
   invalidateModelRegistry,
@@ -40,6 +51,7 @@ const {
   resolveModelLabelSync,
   resolveModelLabels,
   resolveModelLabel,
+  debugRegistrySnapshotForId,
 } = await import('../model-registry.service')
 
 const MIMO_KEY = 'sk-mimo-staging-key-abcdef'
@@ -102,6 +114,7 @@ function seedMimo() {
 
 describe('model-registry.service', () => {
   beforeEach(async () => {
+    CLOUD_MODELS = []
     seedMimo()
     await primeModelRegistry()
   })
@@ -161,6 +174,62 @@ describe('model-registry.service', () => {
   test('resolves a DB alias to the canonical entry', () => {
     expect(getMergedModelEntrySync('opus')?.id).toBe('claude-opus-4-8')
     expect(getMergedModelEntrySync('mimo')?.id).toBe('mimo-v2.5')
+  })
+
+  // ── Cloud-proxy catalog mirroring (Option C) ──────────────────────────────
+  // In cloud-proxy mode the cloud is authoritative for the catalog. The local
+  // registry mirrors the cloud's resolved entries so a cloud-only UUID id
+  // resolves locally (provider for routing, tier for gating) instead of
+  // falling through to `custom` inference in stampModelProvider.
+
+  const CLOUD_OPUS_UUID = 'aed2d224-7056-4c79-ab14-fb10ca620be4'
+
+  test('mirrors cloud catalog entries so a cloud-only UUID resolves', async () => {
+    CLOUD_MODELS = [
+      {
+        id: CLOUD_OPUS_UUID,
+        provider: 'anthropic',
+        displayName: 'Claude Opus 4.8',
+        shortDisplayName: 'Opus 4.8',
+        tier: 'premium',
+        family: 'opus',
+        maxOutputTokens: 128000,
+      },
+    ]
+    await invalidateModelRegistry()
+
+    const entry = getMergedModelEntrySync(CLOUD_OPUS_UUID)
+    expect(entry).toBeDefined()
+    expect(entry!.provider).toBe('anthropic') // ← what stampModelProvider needs
+    expect(entry!.tier).toBe('premium')
+
+    // Mirrored entries are tracked distinctly from local DB rows.
+    const dbg = debugRegistrySnapshotForId(CLOUD_OPUS_UUID)
+    expect(dbg.isCloudMirrored).toBe(true)
+    expect(new Set(getDbModelEntriesSync().map((m) => m.id)).has(CLOUD_OPUS_UUID)).toBe(false)
+  })
+
+  test('a local DB row is never clobbered by a cloud entry on id collision', async () => {
+    CLOUD_MODELS = [
+      {
+        id: 'claude-opus-4-8', // collides with the local DB row
+        provider: 'openai', // wrong on purpose
+        displayName: 'CLOUD SHADOW',
+        tier: 'standard',
+        family: 'gpt',
+        maxOutputTokens: 1000,
+      },
+    ]
+    await invalidateModelRegistry()
+    const entry = getMergedModelEntrySync('claude-opus-4-8')
+    // Local DB row wins: provider stays anthropic, display unchanged.
+    expect(entry!.provider).toBe('anthropic')
+    expect(entry!.displayName).toBe('Claude Opus 4.8')
+  })
+
+  test('no cloud catalog → snapshot is unchanged (no mirrored ids)', () => {
+    // beforeEach left CLOUD_MODELS empty, so the registry sourced DB-only.
+    expect(debugRegistrySnapshotForId('claude-opus-4-8').cloudCount).toBe(0)
   })
 
   test('custom provider routing decrypts the key and builds the base URL', () => {
