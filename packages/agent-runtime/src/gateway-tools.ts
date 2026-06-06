@@ -340,7 +340,7 @@ function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
 interface BuildExecResultOpts {
   ctx: ToolContext
   entry: CommandEntry
-  finalResult: { exitCode: number; stdout: string; stderr: string; killed: boolean; timedOut: boolean }
+  finalResult: { exitCode: number; stdout: string; stderr: string; killed: boolean }
 }
 
 function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOpts): AgentToolResult<any> {
@@ -360,7 +360,6 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
     sandboxed: entry.handle.sandboxed || undefined,
     cwdReset: meta?.cwdReset || undefined,
     killed: finalResult.killed || undefined,
-    timedOut: finalResult.timedOut || undefined,
     run_id: entry.runId,
   })
 }
@@ -526,6 +525,18 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `Unknown run_id: ${run_id}. The run may have been cleaned up (entries are kept ~10 min after completion).` })
       }
 
+      // Stale entries were restored from a persisted snapshot after a runtime
+      // restart — the underlying OS child is gone and cannot be polled.
+      if (entry.stale) {
+        return textResult({
+          status: 'stale',
+          run_id,
+          command: entry.command,
+          error: 'This process was started before the runtime restarted and can no longer be polled. ' +
+            'It may still be running detached; use exec("kill <pid>") if you need to stop it, or exec_list to review.',
+        })
+      }
+
       // If already done, return final result immediately.
       if (entry.finalResult) {
         return buildCompletedExecResult({ ctx, entry, finalResult: entry.finalResult })
@@ -587,6 +598,28 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
       }
 
       return buildCompletedExecResult({ ctx, entry, finalResult: winner })
+    },
+  }
+}
+
+function createExecListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'exec_list',
+    description:
+      'List the shell commands still running in the background for this thread ' +
+      '(those that returned `status: "running"` from a previous exec call and have ' +
+      'not finished or been killed). Each entry has a run_id, the command, its pid, ' +
+      'and how long it has been running. Use `exec_wait(run_id)` to poll one or ' +
+      '`exec("kill <pid>")` to stop it. Entries flagged `stale: true` were started ' +
+      'before the runtime restarted and can no longer be polled.',
+    label: 'List Running Commands',
+    parameters: Type.Object({}),
+    execute: async () => {
+      const registry = ctx.commandRegistry
+      if (!registry) {
+        return textResult({ error: 'CommandRegistry not available — exec_list requires a sessionId.' })
+      }
+      return textResult({ processes: registry.listRunning() })
     },
   }
 }
@@ -4341,6 +4374,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   const tools: AgentTool[] = [
     g(createExecTool(ctx), 'shell'),
     g(createExecWaitTool(ctx), 'shell'),
+    g(createExecListTool(ctx), 'shell'),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
     g(createEditFileTool(ctx), 'file_write'),

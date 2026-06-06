@@ -413,16 +413,8 @@ function nativeExec(command: string, cwd: string, timeout?: number): SandboxExec
 // in bounded ring buffers so a runaway log producer can't OOM the runtime.
 // ===========================================================================
 
-/** Default absolute kill ceiling for backgrounded runs (10 min). */
-const DEFAULT_HARD_TIMEOUT_MS = 600_000
-
 /** Per-stream buffer cap. When exceeded we keep head + tail and drop the middle. */
 const MAX_STREAM_BUFFER_BYTES = 64 * 1024
-
-function getHardTimeoutMs(): number {
-  const env = parseInt(process.env.SHOGO_EXEC_HARD_TIMEOUT_MS || '', 10)
-  return Number.isFinite(env) && env > 0 ? env : DEFAULT_HARD_TIMEOUT_MS
-}
 
 /**
  * Bounded text buffer that keeps the head and tail of a stream when it
@@ -476,8 +468,8 @@ export interface CommandHandle {
   stdout: () => string
   /** Snapshot accumulated stderr so far. */
   stderr: () => string
-  /** Resolves once the child process has exited (cleanly, killed, or timed out). */
-  done: Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean; timedOut: boolean }>
+  /** Resolves once the child process has exited (cleanly or killed). */
+  done: Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean }>
   /** Send a termination signal. SIGTERM is graceful, SIGKILL is forceful. */
   kill: (signal?: 'SIGTERM' | 'SIGKILL') => void
   /** True once the child has exited. */
@@ -485,14 +477,7 @@ export interface CommandHandle {
   startedAt: number
 }
 
-export interface SandboxExecAsyncOptions extends SandboxExecOptions {
-  /**
-   * Absolute lifetime cap. After this many ms the run is forcibly SIGKILLed
-   * even if no caller has asked for it. Defaults to SHOGO_EXEC_HARD_TIMEOUT_MS
-   * env var or 10 minutes.
-   */
-  hardTimeoutMs?: number
-}
+export type SandboxExecAsyncOptions = SandboxExecOptions
 
 /**
  * Spawn a command and return a CommandHandle. Output is captured into bounded
@@ -504,7 +489,6 @@ export interface SandboxExecAsyncOptions extends SandboxExecOptions {
 export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   const useSandbox = shouldSandbox(opts)
   const startedAt = Date.now()
-  const hardTimeout = opts.hardTimeoutMs ?? getHardTimeoutMs()
 
   const stdoutBuf = new BoundedBuffer()
   const stderrBuf = new BoundedBuffer()
@@ -563,7 +547,6 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   }
 
   let killed = false
-  let timedOut = false
   let exited = false
 
   child.stdout?.setEncoding('utf-8')
@@ -576,14 +559,6 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   child.on('error', (err) => {
     stderrBuf.push(`\n[shogo] spawn error: ${err.message}\n`)
   })
-
-  // Hard ceiling — auto-SIGKILL backgrounded orphans.
-  const hardTimer = setTimeout(() => {
-    if (exited) return
-    timedOut = true
-    sendKill('SIGKILL')
-  }, hardTimeout)
-  hardTimer.unref?.()
 
   function sendKill(signal: 'SIGTERM' | 'SIGKILL'): void {
     killed = true
@@ -614,10 +589,9 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     escalate.unref?.()
   }
 
-  const done = new Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean; timedOut: boolean }>((resolve) => {
+  const done = new Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean }>((resolve) => {
     child.on('exit', (code, signal) => {
       exited = true
-      clearTimeout(hardTimer)
       const exitCode = typeof code === 'number'
         ? code
         : (signal ? 128 + (signalNumber(signal) ?? 0) : 1)
@@ -626,7 +600,6 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
         stdout: stdoutBuf.toString(),
         stderr: stderrBuf.toString(),
         killed,
-        timedOut,
       })
     })
   })

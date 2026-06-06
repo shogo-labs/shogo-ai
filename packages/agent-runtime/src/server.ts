@@ -1115,6 +1115,26 @@ app.get('/agent/sessions/:sessionId/summary', (c) => {
   return c.json(detail)
 })
 
+// List the background shell processes still running for a chat thread. Used by
+// the client to seed its process panel on thread load (live updates arrive via
+// `data-process-update` SSE frames during a turn).
+app.get('/agent/chat/:chatSessionId/processes', (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const processes = agentGateway.listSessionProcesses(c.req.param('chatSessionId'))
+  return c.json({ processes })
+})
+
+// Kill (or dismiss, if stale) one tracked background process for a thread.
+app.post('/agent/chat/:chatSessionId/processes/:runId/kill', (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const killed = agentGateway.killSessionProcess(
+    c.req.param('chatSessionId'),
+    c.req.param('runId'),
+  )
+  if (!killed) return c.json({ error: 'unknown run_id' }, 404)
+  return c.json({ ok: true, processes: agentGateway.listSessionProcesses(c.req.param('chatSessionId')) })
+})
+
 // Read agent config
 app.get('/agent/config', (c) => {
   const configPath = join(WORKSPACE_DIR, 'config.json')

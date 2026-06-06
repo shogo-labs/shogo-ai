@@ -58,10 +58,6 @@ beforeEach(() => {
   execSyncImpl = () => ''
 })
 
-afterEach(() => {
-  delete process.env.SHOGO_EXEC_HARD_TIMEOUT_MS
-})
-
 describe('purgeSecretsFromEnv', () => {
   test('captures + clears known secret keys and pattern-matched keys', () => {
     process.env.OPENAI_API_KEY = 'sk-purge-me'
@@ -139,7 +135,6 @@ describe('sandboxExecAsync (non-sandbox)', () => {
     expect(result.stdout).toContain('hello')
     expect(result.stderr).toContain('warn')
     expect(result.killed).toBe(false)
-    expect(result.timedOut).toBe(false)
     expect(handle.exited()).toBe(true)
     expect(handle.stdout()).toContain('hello')
     expect(handle.stderr()).toContain('warn')
@@ -234,48 +229,6 @@ describe('sandboxExecAsync kill paths', () => {
     call.child.emitExit(137)
     const r = await handle.done
     expect(r.killed).toBe(true)
-  })
-
-  test('hard timeout auto-SIGKILLs and marks timedOut', async () => {
-    process.env.SHOGO_EXEC_HARD_TIMEOUT_MS = '20'
-    const handle = sandbox.sandboxExecAsync({
-      command: 'sleep 99',
-      workspaceDir: '/tmp/ws',
-      sandboxConfig: { enabled: false },
-    })
-    const call = spawnCalls.at(-1)!
-    await new Promise((r) => setTimeout(r, 60))
-    expect(call.child.killSignal).toBe('SIGKILL')
-    call.child.emitExit(137)
-    const r = await handle.done
-    expect(r.timedOut).toBe(true)
-    expect(r.killed).toBe(true)
-  })
-
-  test('explicit hardTimeoutMs option overrides env', async () => {
-    const handle = sandbox.sandboxExecAsync({
-      command: 'sleep 99',
-      workspaceDir: '/tmp/ws',
-      sandboxConfig: { enabled: false },
-      hardTimeoutMs: 15,
-    })
-    const call = spawnCalls.at(-1)!
-    await new Promise((r) => setTimeout(r, 50))
-    expect(call.child.killSignal).toBe('SIGKILL')
-    call.child.emitExit(137)
-    await handle.done
-  })
-
-  test('SHOGO_EXEC_HARD_TIMEOUT_MS=invalid falls back to default', async () => {
-    process.env.SHOGO_EXEC_HARD_TIMEOUT_MS = 'not-a-number'
-    const handle = sandbox.sandboxExecAsync({
-      command: 'true',
-      workspaceDir: '/tmp/ws',
-      sandboxConfig: { enabled: false },
-    })
-    const call = spawnCalls.at(-1)!
-    call.child.emitExit(0)
-    await handle.done
   })
 })
 
