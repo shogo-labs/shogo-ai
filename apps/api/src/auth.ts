@@ -535,7 +535,7 @@ export const auth = betterAuth({
           sendWelcomeEmail({
             to: user.email,
             name: user.name || 'User',
-            loginUrl: `${baseUrl}/login`
+            loginUrl: `${baseUrl}/sign-in`
           }).catch((err) => {
             console.error(`Welcome email failed for ${user.email}:`, err)
           })
