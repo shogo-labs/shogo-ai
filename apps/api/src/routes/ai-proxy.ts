@@ -1701,29 +1701,50 @@ function budgetTokensToEffort(budgetTokens: number | undefined): 'low' | 'medium
 /**
  * Normalize the thinking config for the resolved upstream model.
  *
- * The agent-runtime addresses DB-defined models by an opaque UUID, so pi-ai
- * can't substring-match the id against its adaptive-thinking allowlist and
- * falls back to the legacy budget-based `thinking.type: "enabled"` shape.
- * Anthropic rejects that shape for Opus 4.6+/Sonnet 4.6 with a 400
- * ("thinking.type.enabled is not supported for this model"). Since the proxy
- * is the boundary that knows the real `apiModel`, rewrite the block here into
- * the adaptive shape it expects. Idempotent: a body that already carries
- * `thinking.type: "adaptive"` is left untouched.
+ * Two distinct problems, both rooted in the agent-runtime addressing DB-defined
+ * models by an opaque UUID (so pi-ai can't substring-match the id against its
+ * adaptive-thinking allowlist):
  *
- * Mutates `parsed` in place.
+ *  1. Legacy shape rejected. When pi-ai treats the model as non-adaptive it
+ *     emits the budget-based `thinking.type: "enabled"` block, which Opus
+ *     4.6+/Sonnet 4.6 reject with a 400 ("thinking.type.enabled is not
+ *     supported for this model"). We rewrite it to `type: "adaptive"` +
+ *     `output_config.effort`.
+ *
+ *  2. Thinking invisible. When an adaptive block arrives *without* a `display`
+ *     field, Opus 4.7/4.8 (and Mythos) default `display` to `"omitted"` — the
+ *     model still thinks (and bills) but returns empty thinking blocks, so the
+ *     client shows no reasoning. Opus 4.6 / Sonnet 4.6 default to `"summarized"`
+ *     so they look fine, which is why the symptom is Opus-only. We default the
+ *     display to `"summarized"` so reasoning is surfaced, matching the product's
+ *     pre-adaptive behavior. An explicit `display` (incl. `"omitted"`) is
+ *     respected.
+ *
+ * Since the proxy is the boundary that knows the real `apiModel`, both fixes
+ * live here. Idempotent. Mutates `parsed` in place.
  */
 function normalizeThinkingForModel(parsed: any, apiModel: string): void {
   const thinking = parsed?.thinking
   if (!thinking || typeof thinking !== 'object') return
   if (!apiModelSupportsAdaptiveThinking(apiModel)) return
-  if (thinking.type !== 'enabled') return
 
-  const effort = budgetTokensToEffort(thinking.budget_tokens)
-  parsed.thinking = {
-    type: 'adaptive',
-    ...(thinking.display ? { display: thinking.display } : { display: 'summarized' }),
+  if (thinking.type === 'enabled') {
+    const effort = budgetTokensToEffort(thinking.budget_tokens)
+    parsed.thinking = {
+      type: 'adaptive',
+      display: thinking.display ?? 'summarized',
+    }
+    parsed.output_config = { ...(parsed.output_config ?? {}), effort }
+    return
   }
-  parsed.output_config = { ...(parsed.output_config ?? {}), effort }
+
+  if (thinking.type === 'adaptive') {
+    // Surface summarized reasoning unless the caller explicitly chose a mode.
+    // Without this, Opus 4.7/4.8 omit thinking content by default.
+    if (thinking.display === undefined) {
+      parsed.thinking = { ...thinking, display: 'summarized' }
+    }
+  }
 }
 
 // =============================================================================
