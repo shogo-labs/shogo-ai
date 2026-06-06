@@ -20,6 +20,10 @@ export interface ScmActions {
   commitAndSync(message: string, opts?: { amend?: boolean; signoff?: boolean }): Promise<{ ok: boolean; error?: string }>;
   undoLastCommit(): Promise<{ ok: boolean; error?: string }>;
   generateCommitMessage(): Promise<{ ok: boolean; message?: string; error?: string }>;
+  fetchRemote(): Promise<{ ok: boolean; error?: string }>;
+  pullRemote(): Promise<{ ok: boolean; error?: string }>;
+  pushRemote(): Promise<{ ok: boolean; error?: string }>;
+  syncRemote(): Promise<{ ok: boolean; error?: string }>;
   fileContent(path: string, ref: string): Promise<{ ok: boolean; content?: string; error?: string }>;
   refresh(): Promise<void>;
 }
@@ -104,5 +108,29 @@ export function useScmActions(workspaceRoot: string | null): ScmActions {
     await bridge.refresh(workspaceRoot);
   }, [bridge, workspaceRoot]);
 
-  return { available, stage, unstage, discard, commit, commitAll, commitAndPush, commitAndSync, undoLastCommit, generateCommitMessage, fileContent, refresh };
+  const fetchRemote = useCallback(async () => {
+    if (!bridge || !workspaceRoot) return { ok: false, error: "unavailable" as const };
+    const r = await bridge.remotes.fetch(workspaceRoot);
+    return r.ok ? { ok: true as const } : { ok: false as const, error: r.error };
+  }, [bridge, workspaceRoot]);
+
+  const pullRemote = useCallback(async () => {
+    if (!bridge || !workspaceRoot) return { ok: false, error: "unavailable" as const };
+    const r = await bridge.remotes.pull(workspaceRoot, { rebase: true });
+    return r.ok ? { ok: true as const } : { ok: false as const, error: r.error };
+  }, [bridge, workspaceRoot]);
+
+  const pushRemote = useCallback(async () => {
+    if (!bridge || !workspaceRoot) return { ok: false, error: "unavailable" as const };
+    const r = await bridge.remotes.push(workspaceRoot);
+    return r.ok ? { ok: true as const } : { ok: false as const, error: r.error };
+  }, [bridge, workspaceRoot]);
+
+  const syncRemote = useCallback(async () => {
+    if (!bridge || !workspaceRoot) return { ok: false, error: "unavailable" as const };
+    const r = await bridge.remotes.sync(workspaceRoot);
+    return r.ok ? { ok: true as const } : { ok: false as const, error: r.error };
+  }, [bridge, workspaceRoot]);
+
+  return { available, stage, unstage, discard, commit, commitAll, commitAndPush, commitAndSync, undoLastCommit, generateCommitMessage, fetchRemote, pullRemote, pushRemote, syncRemote, fileContent, refresh };
 }

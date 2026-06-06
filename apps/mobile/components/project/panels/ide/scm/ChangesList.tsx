@@ -69,6 +69,7 @@ function getFilesForSection(snapshot: GitSnapshot, section: "staged" | "changes"
 export function ChangesList({
   snapshot,
   section,
+  viewMode = "list",
   onOpenDiff,
   onStage,
   onUnstage,
@@ -77,6 +78,7 @@ export function ChangesList({
 }: {
   snapshot: GitSnapshot;
   section: "staged" | "changes";
+  viewMode?: "list" | "tree";
   onOpenDiff: (path: string, group: "staged" | "changes") => void;
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
