@@ -2256,6 +2256,54 @@ export function aiProxyRoutes() {
   }
 
   /**
+   * Forward an OpenAI Responses-API request to the Shogo Cloud proxy.
+   *
+   * GPT-5.x reasoning models route through the Responses API (pi-ai sets
+   * `api: 'openai-responses'`), and reasoning summaries only stream over this
+   * endpoint. In cloud-proxy mode the local instance has no provider key, so —
+   * exactly like chat-completions and anthropic-messages — the request must be
+   * forwarded to the cloud, which holds the OpenAI key and resolves the model
+   * id. Without this the Responses path 503s (or bypasses the cloud), and GPT
+   * reasoning never reaches the client.
+   */
+  async function forwardResponsesToCloud(c: any, request: any, signal?: AbortSignal): Promise<Response> {
+    const cloudUrl = getShogoCloudUrl()
+    const shogoKey = process.env.SHOGO_API_KEY!
+
+    const response = await fetch(`${cloudUrl}/api/ai/v1/responses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${shogoKey}`,
+      },
+      body: JSON.stringify(request),
+      signal,
+    })
+
+    // Self-heal on revoked / superseded device key.
+    if (response.status === 401) {
+      void wipeCloudKey('AI proxy responses got 401 from Shogo Cloud')
+    }
+
+    if (request?.stream) {
+      if (!response.body) {
+        return c.json({ error: { message: 'Cloud proxy returned no stream body', type: 'server_error' } }, 502)
+      }
+      return new Response(response.body, {
+        status: response.status,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'X-Proxy-Provider': 'shogo-cloud',
+        },
+      })
+    }
+
+    const data = await response.json()
+    return c.json(data, response.status as any)
+  }
+
+  /**
    * Forward an Anthropic-native request to the Shogo Cloud proxy.
    */
   async function forwardAnthropicToCloud(c: any, body: string, headers: Record<string, string>, signal?: AbortSignal): Promise<Response> {
@@ -2533,6 +2581,21 @@ export function aiProxyRoutes() {
         { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
         401
       )
+    }
+
+    // When a Shogo Cloud key is configured, forward to the cloud — the local
+    // instance has no OpenAI key and the cloud resolves the model id. Mirrors
+    // the chat-completions / anthropic-messages cloud paths; required for GPT
+    // reasoning (Responses API) to work in cloud-proxy mode.
+    if (isShogoCloudForwarding()) {
+      try {
+        const request = await c.req.json()
+        console.log(`[AI Proxy] Forwarding Responses API to Shogo Cloud: ${request?.model} (stream: ${!!request?.stream})`)
+        return await forwardResponsesToCloud(c, request, c.req.raw.signal)
+      } catch (error: any) {
+        console.error('[AI Proxy] Cloud forwarding error (responses):', error.message)
+        return c.json({ error: { message: `Cloud proxy error: ${error.message}`, type: 'server_error', code: 'cloud_proxy_error' } }, 502)
+      }
     }
 
     if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
