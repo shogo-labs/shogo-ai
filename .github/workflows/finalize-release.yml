@@ -1,0 +1,105 @@
+# =============================================================================
+# Finalize Release (publish the draft once all assets are uploaded)
+# =============================================================================
+# A single `v*` tag push fans out to FOUR independent workflows that each
+# append assets to the SAME GitHub Release:
+#
+#   - desktop-release-macos.yml      (.dmg / .zip / .nupkg / RELEASES)
+#   - desktop-release-windows.yml    (Shogo-Setup.exe / .nupkg / RELEASES)
+#   - publish-agent-runtime.yml      (shogo-agent-runtime-*.tar.gz + .sha256)
+#   - publish-shogo-worker.yml       (shogo-*.tar.gz + .sha256)
+#
+# All four create/append with `draft: true` so the release stays hidden while
+# they upload (GitHub Actions has no native way for one workflow to wait on
+# another). This coordinator runs on the same tag push, waits for all four
+# runs on this exact commit to COMPLETE, and only then flips the release from
+# draft to published. If ANY of the four fails, we deliberately leave the
+# release as a draft so a broken / partial release never goes public.
+#
+# Note: `workflow_dispatch` re-runs of publish-agent-runtime / publish-shogo-
+# worker against an existing tag append assets as a draft but do NOT trigger
+# this push-only finalizer. In that case publish the draft manually
+# (`gh release edit <tag> --draft=false`) once the re-run finishes.
+# =============================================================================
+
+name: Finalize Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: write # to publish (un-draft) the release
+  actions: read # to read sibling workflow run status
+
+concurrency:
+  group: finalize-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish-draft:
+    name: Publish draft once all assets uploaded
+    runs-on: ubuntu-latest
+    # The macOS build + Intel boot-smoke test is the long pole; give the wait
+    # loop plenty of headroom over that worst case.
+    timeout-minutes: 120
+    steps:
+      - name: Wait for all asset-producing workflows, then publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # The four workflows (by file name) that upload assets to this tag.
+          WORKFLOWS=(
+            desktop-release-macos.yml
+            desktop-release-windows.yml
+            publish-agent-runtime.yml
+            publish-shogo-worker.yml
+          )
+
+          # Hard ceiling slightly under the job timeout so we exit with a clear
+          # error instead of being killed mid-step.
+          deadline=$(( $(date +%s) + 7000 ))
+
+          while :; do
+            all_done=true
+            for wf in "${WORKFLOWS[@]}"; do
+              run=$(gh run list --workflow "$wf" --commit "$SHA" \
+                      --json status,conclusion --limit 1)
+              status=$(jq -r '.[0].status // "missing"' <<<"$run")
+              concl=$(jq -r '.[0].conclusion // ""' <<<"$run")
+
+              if [ "$status" != "completed" ]; then
+                echo "  $wf: status=$status (waiting)"
+                all_done=false
+                continue
+              fi
+              if [ "$concl" != "success" ]; then
+                echo "::error::$wf concluded '$concl' for $SHA — leaving release $TAG as a draft."
+                exit 1
+              fi
+              echo "  $wf: success"
+            done
+
+            if $all_done; then
+              echo "All asset-producing workflows succeeded."
+              break
+            fi
+
+            if [ "$(date +%s)" -gt "$deadline" ]; then
+              echo "::error::Timed out waiting for asset-producing workflows — leaving release $TAG as a draft."
+              exit 1
+            fi
+            sleep 30
+          done
+
+          echo "Publishing release $TAG (draft -> published)..."
+          # Only flips the draft bit; the prerelease flag set by the writers
+          # (for -beta / -nightly tags) is preserved.
+          gh release edit "$TAG" --draft=false
+          echo "Release $TAG is now published."
