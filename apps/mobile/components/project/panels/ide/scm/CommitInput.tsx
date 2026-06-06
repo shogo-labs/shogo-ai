@@ -170,7 +170,7 @@ export function CommitInput({
           rows={1}
           disabled={busy}
           onKeyDown={handleKeyDown}
-          className="w-full resize-none rounded bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] px-2 pr-7 py-[5px] text-[12px] text-[color:var(--ide-text-strong)] placeholder-[color:var(--ide-muted)] focus:outline-none focus:border-[color:var(--ide-primary)]"
+          className="shogo-commit-input w-full resize-none rounded bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] px-2 pr-7 py-[5px] text-[12px] text-[color:var(--ide-text-strong)] placeholder-[color:var(--ide-muted)] focus:outline-none focus:border-[color:var(--ide-primary)]"
           style={{ minHeight: 32, fontFamily: "var(--ide-font, system-ui)" }}
         />
         {/* AI sparkle */}
