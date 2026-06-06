@@ -700,16 +700,47 @@ export class PlatformApi {
   // Admin: Agent Model Defaults
   // ===========================================================================
 
-  /** Get admin-configured overrides for basic/advanced agent mode models and default mode. */
-  async getAgentModelDefaults(): Promise<{ basic: string | null; advanced: string | null; defaultMode: string | null }> {
-    const res = await this.http.get<{ basic: string | null; advanced: string | null; defaultMode: string | null }>(
-      '/api/admin/settings/agent-models',
+  /** Get admin-configured overrides for basic/advanced agent mode models, the
+   *  default mode, and the Auto-mode tier models (economy/standard/premium). */
+  async getAgentModelDefaults(): Promise<{
+    basic: string | null
+    advanced: string | null
+    defaultMode: string | null
+    autoEconomy: string | null
+    autoStandard: string | null
+    autoPremium: string | null
+  }> {
+    const res = await this.http.get<{
+      basic: string | null
+      advanced: string | null
+      defaultMode: string | null
+      autoEconomy: string | null
+      autoStandard: string | null
+      autoPremium: string | null
+    }>('/api/admin/settings/agent-models')
+    return (
+      res.data ?? {
+        basic: null,
+        advanced: null,
+        defaultMode: null,
+        autoEconomy: null,
+        autoStandard: null,
+        autoPremium: null,
+      }
     )
-    return res.data ?? { basic: null, advanced: null, defaultMode: null }
   }
 
-  /** Set which models the basic/advanced agent modes resolve to and the default mode. Pass null to reset to platform default. */
-  async putAgentModelDefaults(overrides: { basic?: string | null; advanced?: string | null; defaultMode?: string | null }): Promise<void> {
+  /** Set which models the basic/advanced agent modes resolve to, the default
+   *  mode, and the per-tier Auto-mode models. Pass null to reset to platform
+   *  default. Auto-tier values may be a public alias (e.g. `hoshi-1.0`). */
+  async putAgentModelDefaults(overrides: {
+    basic?: string | null
+    advanced?: string | null
+    defaultMode?: string | null
+    autoEconomy?: string | null
+    autoStandard?: string | null
+    autoPremium?: string | null
+  }): Promise<void> {
     await this.http.request('/api/admin/settings/agent-models', { method: 'PUT', body: overrides })
   }
 

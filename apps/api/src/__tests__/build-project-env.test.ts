@@ -47,8 +47,30 @@ mock.module('../lib/project-user-context', () => ({
 }))
 
 const getAgentModeOverridesMock = mock(() => ({}) as { basic?: string; advanced?: string })
+const getAutoTierOverridesMock = mock(
+  () => ({}) as { economy?: string; standard?: string; premium?: string },
+)
+// Real-enough provider inference for the env builder: custom for mimo-*, else openai/anthropic.
+const inferProviderFromModelMock = mock((id: string, fallback = 'custom') => {
+  if (id.startsWith('gpt')) return 'openai'
+  if (id.startsWith('claude')) return 'anthropic'
+  if (id.startsWith('mimo')) return 'custom'
+  return fallback
+})
 mock.module('@shogo/model-catalog', () => ({
   getAgentModeOverrides: getAgentModeOverridesMock,
+  getAutoTierOverrides: getAutoTierOverridesMock,
+  inferProviderFromModel: inferProviderFromModelMock,
+}))
+
+// Public-model alias registry: only `hoshi-1.0` resolves, to its backing id.
+const resolvePublicModelSyncMock = mock((publicId: string) =>
+  publicId === 'hoshi-1.0'
+    ? { publicId, displayName: 'Hoshi 1.0', backingModelId: 'mimo-v2.5', enabled: true }
+    : null,
+)
+mock.module('../services/public-models.service', () => ({
+  resolvePublicModelSync: resolvePublicModelSyncMock,
 }))
 
 const getAgentTemplateByIdMock = mock((_id: string) => null as { techStack?: string } | null)
@@ -91,6 +113,10 @@ beforeEach(() => {
   getProjectOwnerUserIdMock.mockImplementation(async () => 'owner-user-id')
   getAgentModeOverridesMock.mockReset()
   getAgentModeOverridesMock.mockImplementation(() => ({}))
+  getAutoTierOverridesMock.mockReset()
+  getAutoTierOverridesMock.mockImplementation(() => ({}))
+  inferProviderFromModelMock.mockClear()
+  resolvePublicModelSyncMock.mockClear()
   getAgentTemplateByIdMock.mockReset()
   getAgentTemplateByIdMock.mockImplementation(() => null)
 })
@@ -360,6 +386,39 @@ describe('buildProjectEnv — agent model overrides', () => {
     const env = await buildProjectEnv('proj-mo-both')
     expect(env.AGENT_BASIC_MODEL).toBe('claude-haiku-4-5')
     expect(env.AGENT_ADVANCED_MODEL).toBe('claude-sonnet-4-5')
+  })
+})
+
+// ─── auto-mode tier overrides ─────────────────────────────────────────────
+
+describe('buildProjectEnv — auto tier overrides', () => {
+  test('omits AGENT_AUTO_TIER_MAP when no tiers are configured', async () => {
+    getAutoTierOverridesMock.mockImplementation(() => ({}))
+    const env = await buildProjectEnv('proj-auto-empty')
+    expect(env.AGENT_AUTO_TIER_MAP).toBeUndefined()
+  })
+
+  test('resolves a public alias (hoshi-1.0) to its backing id + provider for all tiers', async () => {
+    getAutoTierOverridesMock.mockImplementation(() => ({
+      economy: 'hoshi-1.0',
+      standard: 'hoshi-1.0',
+      premium: 'hoshi-1.0',
+    }))
+    const env = await buildProjectEnv('proj-auto-hoshi')
+    expect(env.AGENT_AUTO_TIER_MAP).toBeDefined()
+    expect(JSON.parse(env.AGENT_AUTO_TIER_MAP!)).toEqual({
+      economy: { id: 'mimo-v2.5', provider: 'custom' },
+      standard: { id: 'mimo-v2.5', provider: 'custom' },
+      premium: { id: 'mimo-v2.5', provider: 'custom' },
+    })
+  })
+
+  test('passes a non-alias id through unchanged with an inferred provider', async () => {
+    getAutoTierOverridesMock.mockImplementation(() => ({ premium: 'claude-opus-4-7' }))
+    const env = await buildProjectEnv('proj-auto-passthrough')
+    expect(JSON.parse(env.AGENT_AUTO_TIER_MAP!)).toEqual({
+      premium: { id: 'claude-opus-4-7', provider: 'anthropic' },
+    })
   })
 })
 

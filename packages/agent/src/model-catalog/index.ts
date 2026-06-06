@@ -40,6 +40,9 @@ export {
   setAgentModeOverrides,
   getAgentModeOverrides,
   resolveAgentModeDefault,
+  setAutoTierOverrides,
+  getAutoTierOverrides,
+  type AutoTier,
 } from './aliases'
 
 export {

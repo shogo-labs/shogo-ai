@@ -152,6 +152,10 @@ export interface ToolContext {
   effectiveModel?: string
   /** When true, Auto mode is active — sub-agents should use the spawn-time model router */
   autoRouting?: boolean
+  /** Admin-configured Auto-mode tier overrides (resolved model id + provider
+   *  hint per tier), threaded to sub-agent spawn routing so it matches the
+   *  main agent's Auto model selection. */
+  autoTierOverride?: import('./model-router').AutoTierOverride
   /** When true, create_plan/update_plan additionally generate a stakeholder
    *  translation of the technical plan using the fast-tier model and emit it via
    *  the `data-plan-summary` stream event. Persistent per-user preference. */
