@@ -104,6 +104,8 @@ function snap(
     fileChanges: opts?.fileChanges ?? {},
     conflictPaths: opts?.conflictPaths ?? [],
     error: null,
+    workspaceRoot: "/",
+    refreshedAt: Date.now(),
   };
 }
 

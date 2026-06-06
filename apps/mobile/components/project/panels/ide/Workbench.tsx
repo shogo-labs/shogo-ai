@@ -1948,15 +1948,6 @@ export function Workbench({
               )}
               {activity === "git" && (
                 <div className="flex flex-col h-full">
-                  {projectId && (
-                    <button
-                      onClick={() => setGraphOpen(true)}
-                      className="flex items-center gap-1.5 mx-2 mt-2 mb-1 px-2 py-1.5 rounded text-[12px] border border-[color:var(--ide-border-strong)] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
-                    >
-                      <GitBranch size={13} className="text-[color:var(--ide-muted)]" />
-                      Open Commit Graph
-                    </button>
-                  )}
                   <div className="flex-1 min-h-0">
                 <SourceControlViewlet
                   workspaceRoot={gitWorkspaceRoot}

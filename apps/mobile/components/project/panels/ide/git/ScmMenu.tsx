@@ -6,7 +6,7 @@
 // portal) so positioning is dead simple and there's no z-index war.
 
 import { ArrowDown, ArrowUp, Loader2, RefreshCw, X } from "lucide-react-native";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getDesktopGitBridge } from "./bridge";
 
@@ -20,7 +20,50 @@ interface ScmMenuProps {
 
 export function ScmMenu({ workspaceRoot, onClose, onAfterAction, onOpenBranchPicker, onOpenStashList }: ScmMenuProps) {
   const bridge = getDesktopGitBridge();
+  const menuRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  // ── Dismiss: outside click ──
+  useEffect(() => {
+    const handlePointerDown = (e: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    // Use mousedown (fires before focus moves) with a micro-delay to avoid
+    // the click that OPENED the menu from immediately closing it.
+    const timer = setTimeout(() => {
+      document.addEventListener("pointerdown", handlePointerDown, true);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+    };
+  }, [onClose]);
+
+  // ── Dismiss: Escape key ──
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, [onClose]);
+
+  // ── Dismiss: focus loss ──
+  useEffect(() => {
+    const handleFocusIn = (e: FocusEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener("focusin", handleFocusIn, true);
+    return () => document.removeEventListener("focusin", handleFocusIn, true);
+  }, [onClose]);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ phase: string; percent: number | null } | null>(null);
 
@@ -57,7 +100,7 @@ export function ScmMenu({ workspaceRoot, onClose, onAfterAction, onOpenBranchPic
   ];
 
   return (
-    <div className="absolute right-2 top-9 z-[1000] w-[260px] rounded-md bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] shadow-2xl py-1 text-[13px]">
+    <div ref={menuRef} className="absolute right-2 top-9 z-[1000] w-[260px] rounded-md bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] shadow-2xl py-1 text-[13px]">
       <MenuHeader>Remote</MenuHeader>
       {items.map((it) => (
         <button
