@@ -1185,7 +1185,11 @@ function folderDisplayName(p: string): string {
 // but the simpler test is "does this client have JsonValue?". A bare
 // object is the safe fallback.
 function jsonField(value: Record<string, unknown>): any {
-  if (process.env.DATABASE_URL?.startsWith('file:')) {
+  // Desktop carries the app DB as SHOGO_APP_DATABASE_URL (not bare DATABASE_URL);
+  // SHOGO_LOCAL_MODE is always sqlite. Check both so the file:/sqlite encoding
+  // path stays correct after the app-DB env var rename.
+  const dbUrl = process.env.SHOGO_APP_DATABASE_URL ?? process.env.DATABASE_URL
+  if (process.env.SHOGO_LOCAL_MODE === 'true' || dbUrl?.startsWith('file:')) {
     return JSON.stringify(value)
   }
   return value

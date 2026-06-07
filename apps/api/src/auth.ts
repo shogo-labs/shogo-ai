@@ -49,8 +49,16 @@ export function parseCookieHeader(header: string, name: string): string | null {
   return null
 }
 
+// The app DB connection string. Prefer the Shogo-specific name (set by the
+// desktop app) over the generic `DATABASE_URL` so Better Auth never resolves
+// to whatever a project agent might leave in the ambient env. See
+// apps/api/src/lib/prisma.ts (appDatabaseUrl) for the rationale.
+function appDbUrl(): string | undefined {
+  return process.env.SHOGO_APP_DATABASE_URL ?? process.env.DATABASE_URL
+}
+
 function getSqliteDbPath(): string {
-  const url = process.env.DATABASE_URL
+  const url = appDbUrl()
   if (!url || url.startsWith('postgres')) return './shogo.db'
   return url.replace(/^file:/, '')
 }
@@ -62,7 +70,7 @@ function createAuthDatabase() {
   }
   const { Pool } = require('pg')
   return new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: appDbUrl(),
     max: parseInt(process.env.AUTH_POOL_SIZE || '60', 10),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 15_000,
