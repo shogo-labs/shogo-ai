@@ -13,7 +13,7 @@
 
 import { execSync, spawn, type ChildProcess } from 'child_process'
 import { readFileSync, existsSync } from 'fs'
-import { join } from 'path'
+import { join, isAbsolute, resolve, sep } from 'path'
 import { randomBytes } from 'crypto'
 import type { SandboxConfig } from './types'
 
@@ -210,14 +210,91 @@ export function getCapturedSecret(key: string): string | undefined {
   return capturedSecrets.get(key)
 }
 
+// Database connection strings that must NEVER be inherited by an agent shell,
+// regardless of scheme. The agent only ever sees a project-scoped DATABASE_URL
+// injected explicitly by buildExecEnv() — pinned to the project's own sqlite —
+// so a `prisma migrate reset` / `db push` it runs can't reach the desktop app
+// database (SHOGO_APP_DATABASE_URL), a provisioned project DB
+// (PROJECTS_DATABASE_URL), or whatever the parent process happened to carry as
+// DATABASE_URL. This closes the env-bleed that let an agent re-schema the main
+// Shogo DB. The old "pass file: URLs through because they're not secret"
+// exception is exactly what made that possible, so it is gone here.
+const INHERITED_DB_ENV_KEYS = new Set([
+  'DATABASE_URL',
+  'PROJECTS_DATABASE_URL',
+  'SHOGO_APP_DATABASE_URL',
+])
+
 export function getSanitizedEnv(): NodeJS.ProcessEnv {
   const clean: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(process.env)) {
-    if (!isRedacted(key) || isNonSecretDbUrl(key, value)) {
+    if (INHERITED_DB_ENV_KEYS.has(key.toUpperCase())) continue
+    if (!isRedacted(key)) {
       clean[key] = value
     }
   }
   return clean
+}
+
+/**
+ * Resolve the one DATABASE_URL an agent shell is allowed to see. It is ALWAYS
+ * scoped to the project's own working directory:
+ *
+ *   - default: `file:<workspaceDir>/prisma/dev.db` (matches PreviewManager's
+ *     per-subfolder sqlite default in `resolveSidecarDatabaseUrl`).
+ *   - a DATABASE_URL the user saved in the workspace `.env` is honored ONLY
+ *     when it is a non-file URL (their own remote DB — their choice) or a
+ *     `file:` URL that resolves INSIDE the workspace. A `file:` URL pointing
+ *     outside the workspace is refused and replaced with the project default.
+ *
+ * `containerWorkspace` (e.g. `/workspace`) re-bases the path for docker-sandbox
+ * runs where the host workspace dir is bind-mounted at a fixed container path.
+ */
+export function projectScopedDatabaseUrl(
+  workspaceDir: string,
+  workspaceEnvUrl: string | undefined,
+  containerWorkspace?: string,
+): string {
+  const rootForDefault = containerWorkspace ?? resolve(workspaceDir)
+  const projectDefault = `file:${join(rootForDefault, 'prisma', 'dev.db')}`
+  const raw = workspaceEnvUrl?.trim()
+  if (!raw) return projectDefault
+  // A non-file scheme (postgres://, mysql://, libsql://, …) is a remote DB the
+  // user explicitly configured for THIS project — leave it untouched.
+  if (!/^file:/i.test(raw)) return raw
+  // A file: URL is only allowed when it resolves inside the workspace root.
+  const filePath = raw.replace(/^file:(\/\/)?/i, '')
+  const hostRoot = resolve(workspaceDir)
+  const abs = isAbsolute(filePath) ? resolve(filePath) : resolve(workspaceDir, filePath)
+  if (abs === hostRoot || abs.startsWith(hostRoot + sep)) {
+    if (!containerWorkspace) return `file:${abs}`
+    const rel = abs.slice(hostRoot.length + 1)
+    return `file:${join(containerWorkspace, rel)}`
+  }
+  // Out-of-workspace file: target (e.g. the desktop app DB) — refuse it.
+  return projectDefault
+}
+
+/**
+ * Build the environment for an agent-spawned shell command. Starts from the
+ * sanitized parent env (which already excludes every inherited DB URL),
+ * overlays the workspace `.env`, then pins a single project-scoped
+ * `DATABASE_URL`. This is the only place an agent shell gets a database URL.
+ */
+export function buildExecEnv(
+  workspaceDir: string,
+  opts: { containerWorkspace?: string } = {},
+): NodeJS.ProcessEnv {
+  const base = stripRuntimeVars(getSanitizedEnv())
+  const workspaceEnv = loadWorkspaceEnv(workspaceDir)
+  const merged: NodeJS.ProcessEnv = { ...base, ...workspaceEnv }
+  delete merged.PROJECTS_DATABASE_URL
+  merged.DATABASE_URL = projectScopedDatabaseUrl(
+    workspaceDir,
+    workspaceEnv.DATABASE_URL,
+    opts.containerWorkspace,
+  )
+  return merged
 }
 
 /**
@@ -357,8 +434,14 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
 
   const workspaceEnv = loadWorkspaceEnv(opts.workspaceDir)
   for (const [key, val] of Object.entries(workspaceEnv)) {
+    // DATABASE_URL is injected below, clamped to the project (container path).
+    if (/^(DATABASE_URL|PROJECTS_DATABASE_URL)$/i.test(key)) continue
     dockerArgs.push('-e', `${key}=${val}`)
   }
+  dockerArgs.push(
+    '-e',
+    `DATABASE_URL=${projectScopedDatabaseUrl(opts.workspaceDir, workspaceEnv.DATABASE_URL, '/workspace')}`,
+  )
 
   dockerArgs.push(config.image, 'bash', '-c', opts.command)
 
@@ -384,13 +467,12 @@ function nativeExec(command: string, cwd: string, timeout?: number): SandboxExec
   const shell = resolveShell()
   const finalCommand = rewriteBunxOnWindows(command)
   try {
-    const baseEnv = stripRuntimeVars(getSanitizedEnv())
     const stdout = execSync(finalCommand, {
       cwd,
       timeout: timeout || 300_000,
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
-      env: { ...baseEnv, ...loadWorkspaceEnv(cwd) },
+      env: buildExecEnv(cwd),
       ...(shell ? { shell } : {}),
     })
     return { stdout: stdout.trim(), stderr: '', exitCode: 0, sandboxed: false }
@@ -516,8 +598,14 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     }
     const workspaceEnv = loadWorkspaceEnv(opts.workspaceDir)
     for (const [key, val] of Object.entries(workspaceEnv)) {
+      // DATABASE_URL is injected below, clamped to the project (container path).
+      if (/^(DATABASE_URL|PROJECTS_DATABASE_URL)$/i.test(key)) continue
       dockerArgs.push('-e', `${key}=${val}`)
     }
+    dockerArgs.push(
+      '-e',
+      `DATABASE_URL=${projectScopedDatabaseUrl(opts.workspaceDir, workspaceEnv.DATABASE_URL, '/workspace')}`,
+    )
     dockerArgs.push(config.image, 'bash', '-c', opts.command)
 
     child = spawn('docker', dockerArgs, {
@@ -526,8 +614,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     })
   } else {
     const shell = resolveShell()
-    const baseEnv = stripRuntimeVars(getSanitizedEnv())
-    const env = { ...baseEnv, ...loadWorkspaceEnv(opts.workspaceDir) }
+    const env = buildExecEnv(opts.workspaceDir)
     const finalCommand = rewriteBunxOnWindows(opts.command)
 
     if (shell) {
