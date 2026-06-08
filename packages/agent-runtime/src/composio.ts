@@ -420,15 +420,55 @@ const COMPOSIO_PERMISSION_PATTERNS = [
 ]
 const COMPOSIO_NOTFOUND_PATTERNS = [
   '404', 'not found', 'unable to retrieve tool', 'tool not found',
-  'does not exist',
+  'toolnotfound', 'does not exist',
 ]
 const COMPOSIO_VALIDATION_PATTERNS = [
   'validation failed', 'invalid request data', 'must have required',
   'required propert', 'value error', 'invalid arguments', 'invalid value',
   'invalid format',
 ]
+// The integration was never connected for this user/toolkit (distinct from an
+// expired OAuth session). Composio returns ActionExecute_ConnectedAccountNotFound.
+const COMPOSIO_NOTCONNECTED_PATTERNS = [
+  'no connected account', 'connectedaccountnotfound', 'no active connection',
+  'connect your', 'connect the', 'initiate_connection',
+]
 
-type ComposioErrorKind = 'auth' | 'permission' | 'notfound' | 'validation' | 'unknown'
+type ComposioErrorKind = 'auth' | 'permission' | 'notfound' | 'validation' | 'notconnected' | 'unknown'
+
+/**
+ * The Composio SDK (>=0.6) throws ComposioToolExecutionError on failure with a
+ * GENERIC top-level message ("Error executing the tool X"). The actionable cause
+ * (ConnectedAccountNotFound, 401/403, validation detail, suggested_fix) lives in
+ * err.cause.message / err.cause.error. Surface the deepest signal so the agent
+ * can self-correct instead of seeing an opaque error. Verified against live
+ * Composio responses (GITHUB_LIST_COMMITS w/o connected account -> code 1810).
+ */
+export function extractComposioErrorDetail(err: unknown): string {
+  if (err == null) return ''
+  if (typeof err === 'string') return err
+  const e = err as any
+  const parts: string[] = []
+  const push = (v: unknown) => { if (typeof v === 'string' && v) parts.push(v) }
+  const fromBody = (body: any) => {
+    const inner = body?.error ?? body
+    push(inner?.slug)
+    push(inner?.message)
+    push(inner?.suggested_fix)
+  }
+  // Top-level message (generic but harmless to include).
+  push(e?.message)
+  // SDK wraps the HTTP error in .cause; the body is on cause.error / cause.message.
+  const cause = e?.cause
+  if (cause) {
+    push(cause?.message)
+    fromBody(cause?.error)
+  }
+  // Some shapes expose the parsed body directly.
+  fromBody(e?.error)
+  fromBody(e?.response?.data)
+  return parts.join(' | ')
+}
 
 interface ComposioErrorClass {
   kind: ComposioErrorKind
@@ -440,13 +480,25 @@ interface ComposioErrorClass {
 
 export function classifyComposioError(raw: string): ComposioErrorClass {
   const l = (raw || '').toLowerCase()
-  const has = (pats: string[]) => pats.some(p => l.includes(p))
+  // Bare numeric patterns (HTTP codes) must match on word boundaries — otherwise
+  // '401' spuriously matches inside an error code like 2401. Verified: a live
+  // Tool_ToolNotFound 404 payload carries "code":2401 and was misclassified auth.
+  const matches = (p: string) =>
+    /^\d+$/.test(p) ? new RegExp(`\\b${p}\\b`).test(l) : l.includes(p)
+  const has = (pats: string[]) => pats.some(matches)
   // Most-specific first: validation/not-found before the broad auth keywords.
   if (has(COMPOSIO_VALIDATION_PATTERNS)) {
     return {
       kind: 'validation',
       needsArgFix: true,
       hint: "Arguments were rejected. Re-read this tool's required parameters and retry with corrected arguments — never pass an OAuth token, API key, or a guessed value where a resource id/handle is expected.",
+    }
+  }
+  if (has(COMPOSIO_NOTCONNECTED_PATTERNS)) {
+    return {
+      kind: 'notconnected',
+      authExpired: true,
+      hint: 'This integration is not connected for the user yet. Initiate the connection flow (connect / COMPOSIO_INITIATE_CONNECTION) for this toolkit and wait for the user to authorize, then retry. Do not repeat the call until the account is connected.',
     }
   }
   if (has(COMPOSIO_AUTH_PATTERNS)) {
@@ -571,7 +623,7 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
         recordTiming(schema.slug, elapsed)
 
         if (!result.successful) {
-          const errMsg = result.error || `Tool ${schema.slug} returned an error`
+          const errMsg = extractComposioErrorDetail(result) || result.error || `Tool ${schema.slug} returned an error`
           return textResult(buildComposioErrorResult(errMsg, schema.slug))
         }
 
@@ -592,7 +644,10 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
 
         return textResult(raw + annotation)
       } catch (err: any) {
-        const errMsg = `Tool "${schema.slug}" failed: ${err.message}`
+        // The SDK throws with a generic top-level message; the real cause
+        // (ConnectedAccountNotFound, 401/403, validation) is nested in err.cause.
+        const detail = extractComposioErrorDetail(err) || err?.message || 'unknown error'
+        const errMsg = `Tool "${schema.slug}" failed: ${detail}`
         return textResult(buildComposioErrorResult(errMsg, schema.slug))
       }
     },
