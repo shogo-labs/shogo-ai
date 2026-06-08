@@ -25,7 +25,6 @@ import { stampModelProvider } from "../lib/stamp-model-provider"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
-import { redactSecretsInText } from "../lib/crypto-util"
 import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
 import { enrichWorkspaceReferences, enrichProjectReferences } from "../lib/chat-references"
 
@@ -695,11 +694,8 @@ export async function trackUsageFromStream(
             chatSessionId,
             messageId: assistantMessageId || '',
             toolName: tc.toolName,
-            // Scrub token-shaped secrets (e.g. a GITHUB_TOKEN passed in
-            // connect args) before persistence — these rows are read by
-            // analytics/diagnostics and must not store live credentials.
-            args: tc.args != null ? redactSecretsInText(JSON.stringify(tc.args)) : undefined,
-            result: tc.result != null ? redactSecretsInText(JSON.stringify(tc.result)) : undefined,
+            args: tc.args != null ? JSON.stringify(tc.args) : undefined,
+            result: tc.result != null ? JSON.stringify(tc.result) : undefined,
             duration: tc.duration,
             status: tc.error ? ('error' as const) : ('complete' as const),
           })),

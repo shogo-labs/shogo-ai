@@ -122,41 +122,6 @@ export function redactSensitiveHeaders(
 }
 
 /**
- * Token-shaped secret patterns we never want persisted in plaintext
- * (e.g. into `tool_call_logs.args`/`result`). Each match is replaced with
- * a non-reversible fingerprint so the row stays useful for debugging
- * ("did the same token appear twice?") without leaking the credential.
- *
- * Covers provider tokens (GitHub ghp_/gho_/ghs_/github_pat_, Slack xox*,
- * Stripe sk_/rk_, Google ya29., OpenAI/Anthropic sk-..., generic Bearer).
- */
-const SECRET_VALUE_PATTERNS: RegExp[] = [
-  /\bgh[opsu]_[A-Za-z0-9]{20,}\b/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
-  /\bxox[abposr]-[A-Za-z0-9-]{10,}\b/g,
-  /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}\b/g,
-  /\bya29\.[A-Za-z0-9._-]{20,}\b/g,
-  /\bsk-(?:proj-|ant-)?[A-Za-z0-9-]{20,}\b/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, // JWT
-  /\bBearer\s+[A-Za-z0-9._-]{20,}\b/gi,
-]
-
-/**
- * Scrub token-shaped secrets out of an already-serialized string. Safe to
- * run on JSON-stringified tool-call args/results before persistence. Returns
- * the input unchanged when nothing matches (cheap on the happy path).
- */
-export function redactSecretsInText(text: string): string {
-  if (!text) return text
-  let out = text
-  for (const re of SECRET_VALUE_PATTERNS) {
-    out = out.replace(re, (m) => `[redacted:${fingerprintSecret(m)}]`)
-  }
-  return out
-}
-
-/**
  * Turn a secret into a non-reversible fingerprint for log lines.
  * Format: `"<len>c:<first4>…"`. Avoids printing any substring that
  * would help an attacker brute-force the remainder.
