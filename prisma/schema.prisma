@@ -350,14 +350,43 @@ model CustomDomain {
   sslStatus String?
   /// Last validation error surfaced by Cloudflare; cleared on success.
   lastError String?
+  /// Links an apex domain to its `www` companion (and vice versa) so the
+  /// two are listed, verified, and deleted as one unit. Null for a
+  /// standalone domain (e.g. a deeper subdomain like `app.acme.com`).
+  groupId String?
+  /// Within a group, exactly one row is the canonical (primary) hostname;
+  /// the other 308-redirects to it at the edge. Standalone domains are
+  /// trivially their own primary.
+  primary Boolean @default(true)
   /// When the hostname + cert first reached `active`.
   verifiedAt DateTime?
+  /// Issuing CA Cloudflare assigned (`google` | `lets_encrypt` | `ssl_com`).
+  /// Surfaced in the panel and used to spot a slow CA (SSL.com has wedged
+  /// `processing` for >30m, which the re-trigger path heals).
+  certAuthority String?
+  /// When the reconciler last polled Cloudflare + checked DNS for this row.
+  /// Drives "stale" opportunistic refreshes on read.
+  lastCheckedAt DateTime?
+  /// When validation/issuance was last re-triggered (manual button or the
+  /// reconciler's auto-heal). Gates cooldowns + auto-retrigger backoff.
+  lastRetriggerAt DateTime?
+  /// How many times issuance has been re-triggered (auto-heal is capped).
+  retriggerCount Int @default(0)
+  /// Last server-side DNS check verdict: the customer's CNAME + DCV TXT are
+  /// all correct. Gates the manual "Retrigger" button + auto-heal.
+  dnsOk Boolean?
+  /// Compact JSON snapshot of the latest status detail (validation records,
+  /// DNS check, DNS instructions, cert authority) so reads are DB-only and
+  /// always informative without re-hitting Cloudflare. Stored as a JSON
+  /// string for SQLite (desktop) parity.
+  diagnostics String?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
+  @@index([groupId])
   @@map("custom_domains")
 }
 
@@ -715,6 +744,9 @@ enum NotificationType {
   overage_charged
   usage_threshold
   spend_limit_reached
+  // Fires when a bring-your-own custom domain finishes DNS + SSL
+  // validation and goes live (written by the poll-custom-domains cron).
+  custom_domain_live
 }
 
 // =============================================================================

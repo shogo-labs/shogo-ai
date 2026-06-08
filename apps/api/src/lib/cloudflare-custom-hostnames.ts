@@ -80,6 +80,16 @@ export interface DnsInstruction {
   purpose: 'routing' | 'ssl-validation' | 'ownership-verification'
 }
 
+/** One SSL DV validation record, with its current per-record CF status. */
+export interface ValidationRecordState {
+  /** TXT record name Cloudflare polls (e.g. `_acme-challenge.www.acme.com`). */
+  name: string
+  /** Expected TXT value (the DCV token). */
+  value: string
+  /** Per-record CF status: `pending` | `processing` | `active` | ... */
+  status: string
+}
+
 /** Normalised view of a Cloudflare custom hostname for our DB + UI. */
 export interface CustomHostnameState {
   id: string
@@ -94,6 +104,16 @@ export interface CustomHostnameState {
   instructions: DnsInstruction[]
   /** Combined validation / verification errors, if any. */
   errors: string[]
+  /**
+   * Issuing certificate authority Cloudflare assigned (`google` |
+   * `lets_encrypt` | `ssl_com`). Surfaced so the panel can explain who is
+   * issuing the cert and operators can spot a slow CA (SSL.com has wedged
+   * `processing` for >30m in the wild — the re-trigger path exists for
+   * exactly that).
+   */
+  certAuthority: string | null
+  /** Per-record SSL DV validation status (so the UI can show ✓/… per TXT). */
+  validation: ValidationRecordState[]
 }
 
 let cachedConfig: CustomHostnamesConfig | null | undefined
@@ -148,6 +168,8 @@ interface CfValidationRecord {
   txt_value?: string
   http_url?: string
   http_body?: string
+  /** Per-record DV status: `pending` | `processing` | `active` | ... */
+  status?: string
 }
 
 interface CfCustomHostname {
@@ -157,6 +179,7 @@ interface CfCustomHostname {
   ssl?: {
     status?: string
     method?: string
+    certificate_authority?: string
     validation_records?: CfValidationRecord[]
     validation_errors?: Array<{ message: string }>
   }
@@ -235,6 +258,13 @@ function normalize(
     ...(rec.verification_errors ?? []),
     ...((rec.ssl?.validation_errors ?? []).map(e => e.message)),
   ].filter(Boolean)
+  const validation: ValidationRecordState[] = (rec.ssl?.validation_records ?? [])
+    .filter((v): v is CfValidationRecord & { txt_name: string } => Boolean(v.txt_name))
+    .map(v => ({
+      name: v.txt_name!,
+      value: v.txt_value ?? '',
+      status: v.status ?? 'pending',
+    }))
   return {
     id: rec.id,
     hostname: rec.hostname,
@@ -243,6 +273,8 @@ function normalize(
     active: rec.status === 'active' && sslStatus === 'active',
     instructions: buildInstructions(cfg, rec),
     errors,
+    certAuthority: rec.ssl?.certificate_authority ?? null,
+    validation,
   }
 }
 
@@ -295,6 +327,46 @@ export async function getCustomHostname(
   return normalize(cfg, env.result)
 }
 
+/**
+ * Re-trigger DV validation / certificate issuance for an existing custom
+ * hostname WITHOUT regenerating the validation tokens. This PATCHes the SSL
+ * config with the SAME method + DV type + CA, which re-queues Cloudflare's
+ * validation + issuance against the customer's existing `_acme-challenge`
+ * records (verified empirically: the TXT tokens are preserved, so the
+ * customer never has to touch DNS again).
+ *
+ * Used by the manual "Retrigger" button and the reconciler's auto-heal for
+ * the case where a domain's DNS is correct but the CA (e.g. SSL.com) wedges
+ * in `processing` past the normal issuance window. Throws on API failure so
+ * the route can surface a structured error; the cron wraps it in try/catch.
+ */
+export async function retriggerCustomHostname(
+  id: string,
+): Promise<CustomHostnameState | null> {
+  const cfg = getCustomHostnamesConfig()
+  if (!cfg) return null
+
+  const env = await cfFetch<CfCustomHostname>(
+    cfg,
+    `/zones/${cfg.zoneId}/custom_hostnames/${id}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({
+        ssl: {
+          method: cfg.sslMethod,
+          type: 'dv',
+          settings: { min_tls_version: '1.2' },
+          bundle_method: 'ubiquitous',
+        },
+      }),
+    },
+  )
+  if (!env.success || !env.result) {
+    throw new Error(`Cloudflare re-trigger failed: ${envelopeError(env)}`)
+  }
+  return normalize(cfg, env.result)
+}
+
 /** Find an existing custom hostname by name (idempotency / reconciliation). */
 export async function findCustomHostnameByName(
   hostname: string,
@@ -339,15 +411,25 @@ export async function deleteCustomHostname(id: string): Promise<boolean> {
 }
 
 /**
- * Write the `hostname -> subdomain` mapping the Worker reads to route a
- * custom domain to its object-storage prefix. Best-effort + separately
- * gated on KV config: a missing namespace just means the Worker can't
- * resolve the hostname yet (surfaced as a 404 to the visitor), which is
- * preferable to failing the whole verify flow.
+ * Write the `hostname -> {subdomain, canonical}` mapping the Worker reads to
+ * route a custom domain to its object-storage prefix. The value is JSON:
+ *
+ *   { "s": "<publishedSubdomain>", "c": "<canonicalHostname>" }
+ *
+ * `c` is the primary hostname of the apex/www pair; when a visitor's host
+ * differs from `c` the Worker 308-redirects to it (so `acme.com` ->
+ * `www.acme.com`, or vice versa). For a standalone domain `c` equals the
+ * hostname itself, so no redirect fires. `canonicalHostname` defaults to
+ * `hostname` for that self-canonical case.
+ *
+ * Best-effort + separately gated on KV config: a missing namespace just
+ * means the Worker can't resolve the hostname yet (surfaced as a 404 to the
+ * visitor), which is preferable to failing the whole verify flow.
  */
 export async function putHostnameMapping(
   hostname: string,
   subdomain: string,
+  canonicalHostname: string = hostname,
 ): Promise<boolean> {
   const cfg = getCustomHostnamesConfig()
   if (!cfg?.accountId || !cfg.kvNamespaceId) return false
@@ -362,7 +444,7 @@ export async function putHostnameMapping(
           Authorization: `Bearer ${cfg.apiToken}`,
           'Content-Type': 'text/plain',
         },
-        body: subdomain,
+        body: JSON.stringify({ s: subdomain, c: canonicalHostname }),
       },
     )
     if (!res.ok) {
