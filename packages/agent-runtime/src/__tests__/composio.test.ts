@@ -57,6 +57,8 @@ import {
   buildLegacyComposioUserId,
   registerToolkitProxyTools,
   checkComposioAuth,
+  classifyComposioError,
+  extractComposioErrorDetail,
 } from '../composio'
 
 const ENV_KEYS = [
@@ -698,6 +700,90 @@ describe('checkComposioAuth', () => {
     }
     await checkComposioAuth('github')
     expect(sawAuthConfigs).toBe(true)
+  })
+})
+
+describe('classifyComposioError', () => {
+  it('classifies expired/invalid OAuth as auth (authExpired)', () => {
+    const c = classifyComposioError('401 unauthorized: token expired')
+    expect(c.kind).toBe('auth')
+    expect(c.authExpired).toBe(true)
+  })
+
+  it('classifies a YouTube 403 as permission (needsScope), not auth', () => {
+    const c = classifyComposioError('{"error":{"code":403,"message":"The request is not properly authorized.","reason":"forbidden"}}')
+    expect(c.kind).toBe('permission')
+    expect(c.needsScope).toBe(true)
+    expect(c.authExpired).toBeUndefined()
+  })
+
+  it('classifies a Shopify 404 "Not Found" as notfound', () => {
+    const c = classifyComposioError('Not Found')
+    expect(c.kind).toBe('notfound')
+    expect(c.hint).toMatch(/verify the id|do not guess/i)
+  })
+
+  it('classifies arg validation errors as validation (needsArgFix)', () => {
+    const c = classifyComposioError('Validation failed: id must have required properties id')
+    expect(c.kind).toBe('validation')
+    expect(c.needsArgFix).toBe(true)
+  })
+
+  it('classifies the token-as-channel-id error as validation', () => {
+    const c = classifyComposioError("Invalid request data provided - Value error, Invalid YouTube channel ID format")
+    expect(c.kind).toBe('validation')
+  })
+
+  it('classifies an unbound/invalid slug as notfound', () => {
+    const c = classifyComposioError('Unable to retrieve tool with slug SHOPIFY_GET_PRODUCTS_COUNT')
+    expect(c.kind).toBe('notfound')
+  })
+
+  it('leaves an unknown error unclassified', () => {
+    const c = classifyComposioError('the upstream service hiccuped')
+    expect(c.kind).toBe('unknown')
+    expect(c.authExpired).toBeUndefined()
+    expect(c.needsScope).toBeUndefined()
+  })
+
+  // Regression: live Composio returns ActionExecute_ConnectedAccountNotFound
+  // (code 1810) when a tool is called for an unconnected integration. This is the
+  // single most common real failure and must be actionable, not 'unknown'.
+  it('classifies "no connected account" as notconnected (connect flow)', () => {
+    const raw = 'Error executing the tool GITHUB_LIST_COMMITS | 400 {"message":"No connected account found for user ID x for toolkit github","slug":"ActionExecute_ConnectedAccountNotFound","suggested_fix":"Connect your github account first"}'
+    const c = classifyComposioError(raw)
+    expect(c.kind).toBe('notconnected')
+    expect(c.authExpired).toBe(true)
+    expect(c.hint).toMatch(/connect|initiate/i)
+  })
+
+  // Regression: '401' must not match inside a larger number. A live
+  // Tool_ToolNotFound payload carries "code":2401 and was misclassified as auth.
+  it('does not treat error code 2401 as a 401 auth error', () => {
+    const raw = 'Unable to retrieve tool with slug GITHUB_FAKE | 404 {"code":2401,"slug":"Tool_ToolNotFound","status":404}'
+    const c = classifyComposioError(raw)
+    expect(c.kind).toBe('notfound')
+  })
+})
+
+describe('extractComposioErrorDetail', () => {
+  // The SDK throws with a generic top-level message; the actionable cause lives
+  // in err.cause.message / err.cause.error. Verified against live responses.
+  it('digs the real cause out of err.cause', () => {
+    const err: any = new Error('Error executing the tool GITHUB_LIST_COMMITS')
+    err.cause = {
+      message: '400 {"error":{"slug":"ActionExecute_ConnectedAccountNotFound"}}',
+      error: { error: { slug: 'ActionExecute_ConnectedAccountNotFound', message: 'No connected account found', suggested_fix: 'Connect your github account first' } },
+    }
+    const detail = extractComposioErrorDetail(err)
+    expect(detail).toMatch(/no connected account/i)
+    expect(detail).toMatch(/connect your github/i)
+    expect(classifyComposioError(detail).kind).toBe('notconnected')
+  })
+
+  it('passes through a plain string and tolerates null', () => {
+    expect(extractComposioErrorDetail('boom')).toBe('boom')
+    expect(extractComposioErrorDetail(null)).toBe('')
   })
 })
 

@@ -64,7 +64,7 @@ interface ComposioToolsResponse {
  */
 export async function fetchComposioToolSchemas(
   toolkitSlug: string,
-  options?: { apiKey?: string; important?: boolean; limit?: number },
+  options?: { apiKey?: string; important?: boolean; limit?: number; maxTools?: number },
 ): Promise<ComposioToolSchema[]> {
   const directKey = options?.apiKey || process.env.COMPOSIO_API_KEY
   const proxyUrl = process.env.TOOLS_PROXY_URL
@@ -77,25 +77,42 @@ export async function fetchComposioToolSchemas(
     ? 'https://backend.composio.dev'
     : `${proxyUrl}/composio`
 
-  const params = new URLSearchParams({
-    toolkit_slug: toolkitSlug,
-    limit: String(options?.limit || 100),
-  })
-  if (options?.important) params.set('important', 'true')
+  // Page through the full action set. A single page (limit 100) silently
+  // dropped later actions for large toolkits — that's why GitHub read tools
+  // (list_commits/blame/search/list_prs), YOUTUBE_UPLOAD_VIDEO and
+  // SHOPIFY_GET_CUSTOMERS never bound and the agent hit "Tool not found".
+  const pageLimit = options?.limit || 100
+  const maxTools = options?.maxTools ?? 2000
+  const MAX_PAGES = 50
 
   const t0 = performance.now()
-  const res = await fetch(`${baseUrl}/api/v3/tools?${params}`, {
-    headers: { 'x-api-key': authKey },
-    signal: AbortSignal.timeout(15_000),
-  })
+  const all: ComposioToolSchema[] = []
+  let cursor: string | null | undefined
+  let pages = 0
+  do {
+    const params = new URLSearchParams({
+      toolkit_slug: toolkitSlug,
+      limit: String(pageLimit),
+    })
+    if (options?.important) params.set('important', 'true')
+    if (cursor) params.set('cursor', cursor)
 
-  if (!res.ok) {
-    throw new Error(`Composio API error: ${res.status} ${res.statusText}`)
-  }
+    const res = await fetch(`${baseUrl}/api/v3/tools?${params}`, {
+      headers: { 'x-api-key': authKey },
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) {
+      throw new Error(`Composio API error: ${res.status} ${res.statusText}`)
+    }
 
-  const data = await res.json() as ComposioToolsResponse
-  const items = data.items || []
+    const data = await res.json() as ComposioToolsResponse
+    all.push(...(data.items || []))
+    cursor = data.next_cursor
+    pages++
+  } while (cursor && all.length < maxTools && pages < MAX_PAGES)
+
+  const items = all.slice(0, maxTools)
   const elapsed = performance.now() - t0
-  console.log(`[Composio] [Timing] fetchSchemas(${toolkitSlug}): ${elapsed.toFixed(0)}ms (${items.length} tools)`)
+  console.log(`[Composio] [Timing] fetchSchemas(${toolkitSlug}): ${elapsed.toFixed(0)}ms (${items.length} tools, ${pages} page(s))`)
   return items
 }
