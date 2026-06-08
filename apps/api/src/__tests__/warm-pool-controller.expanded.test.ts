@@ -1403,6 +1403,41 @@ describe('discoverExistingPods()', () => {
     expect((controller.deleteWarmPodService as any).mock.calls.length).toBeGreaterThanOrEqual(3)
   })
 
+  test('marks a pod hot from its ready Revision actualReplicas, never the Service status', async () => {
+    // Regression for the prod-us/prod-india incident (2026-06-08): a Knative
+    // Service status has no `actualReplicas` field — it lives on the Revision.
+    // The controller previously read it off the Service, so `hot` was always
+    // false and every running warm pod looked cold.
+    const controller = new WarmPoolController({ namespace: 'expand-ns' }) as any
+    const now = new Date().toISOString()
+    customListItems.services = [
+      // Genuinely hot: Ready + its ready Revision reports 1 running replica.
+      {
+        metadata: { name: 'wp-hot', labels: { 'shogo.io/warm-pool-status': 'available' }, creationTimestamp: now },
+        status: { conditions: [{ type: 'Ready', status: 'True' }], latestReadyRevisionName: 'wp-hot-00001' },
+      },
+      // Scaled to zero: Ready but its ready Revision has 0 replicas. The bug
+      // repro is the bogus `actualReplicas: 5` planted on the SERVICE status —
+      // it must be ignored, so this pod stays cold.
+      {
+        metadata: { name: 'wp-cold', labels: { 'shogo.io/warm-pool-status': 'available' }, creationTimestamp: now },
+        status: { conditions: [{ type: 'Ready', status: 'True' }], latestReadyRevisionName: 'wp-cold-00001', actualReplicas: 5 },
+      },
+    ]
+    customListItems.revisions = [
+      { metadata: { name: 'wp-hot-00001' }, status: { actualReplicas: 1 } },
+      { metadata: { name: 'wp-cold-00001' }, status: { actualReplicas: 0 } },
+    ]
+
+    await controller.discoverExistingPods()
+
+    expect(controller.available.get('wp-hot')?.hot).toBe(true)
+    expect(controller.available.get('wp-cold')?.hot).toBe(false)
+    expect(controller.available.get('wp-cold')?.ready).toBe(true)
+
+    delete customListItems.revisions
+  })
+
   test('pod-list error is non-fatal; service discovery still works', async () => {
     const controller = new WarmPoolController({ namespace: 'expand-ns' }) as any
     nsListErrorByNs['expand-ns'] = true
