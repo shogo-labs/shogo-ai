@@ -10,6 +10,7 @@ import {
   renderWorkspaceManifestMarkdown,
   shouldSkipManagedSeeding,
   shouldEnforceProjectIdSanity,
+  shouldRunGitWorkspaceSync,
   parseWorkspacePreviewPath,
   buildWorkspacePreviewPath,
   isAttachedProjectId,
@@ -108,6 +109,35 @@ describe('shouldEnforceProjectIdSanity', () => {
 })
 
 describe('parseWorkspacePreviewPath', () => {
+describe('shouldRunGitWorkspaceSync', () => {
+  it('runs for managed projects when git sync is wanted and no worker owns sync', () => {
+    expect(
+      shouldRunGitWorkspaceSync({ workingMode: 'managed', workerOwnsSync: false, wantGitSync: true }),
+    ).toBe(true)
+  })
+
+  it('NEVER runs for external projects — the user owns their repo/git workflow', () => {
+    // This is the regression guard: cloudSyncMode defaults to git_only
+    // (incl. on desktop), so without the external check, opening a folder
+    // would auto-commit `auto: <ts>` into the user's working tree.
+    expect(
+      shouldRunGitWorkspaceSync({ workingMode: 'external', workerOwnsSync: false, wantGitSync: true }),
+    ).toBe(false)
+  })
+
+  it('does not run when a paired worker owns sync (SHOGO_CLOUD_SYNC=1)', () => {
+    expect(
+      shouldRunGitWorkspaceSync({ workingMode: 'managed', workerOwnsSync: true, wantGitSync: true }),
+    ).toBe(false)
+  })
+
+  it('does not run in non-git sync modes (wantGitSync=false, e.g. plain s3)', () => {
+    expect(
+      shouldRunGitWorkspaceSync({ workingMode: 'managed', workerOwnsSync: false, wantGitSync: false }),
+    ).toBe(false)
+  })
+})
+
   it('parses the project root with no trailing slash', () => {
     expect(parseWorkspacePreviewPath('/p/abc')).toEqual({ projectId: 'abc', rest: '/' })
   })

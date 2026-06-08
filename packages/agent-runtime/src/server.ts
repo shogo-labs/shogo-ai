@@ -96,6 +96,7 @@ import {
   renderWorkspaceManifestMarkdown,
   shouldSkipManagedSeeding,
   shouldEnforceProjectIdSanity,
+  shouldRunGitWorkspaceSync,
   parseWorkspacePreviewPath,
   buildWorkspacePreviewPath,
   parseWorkspacePreviewUrls,
@@ -4811,7 +4812,13 @@ async function initializeEssentials(): Promise<void> {
   // consecutive git pushes fail we re-enable S3 Layer 2 for the rest
   // of the session. On recovery we re-suppress (only in git_only mode;
   // dual_shadow always keeps S3 Layer 2 active).
-  if (!skipInternalSync && wantGitSync) {
+  //
+  // EXTERNAL projects are excluded: the workspace is the user's own repo
+  // and they own their git workflow. With cloudSyncMode defaulting to
+  // git_only (incl. on desktop), an unguarded path would `git add -A &&
+  // git commit` into their working tree every turn and `seedRepoIfAbsent`
+  // a `.git` into folders we don't own. See shouldRunGitWorkspaceSync.
+  if (shouldRunGitWorkspaceSync({ workingMode: WORKING_MODE, workerOwnsSync: skipInternalSync, wantGitSync })) {
     // Cold-start git lifecycle. The pod owns the repo: before the per-turn
     // committer can run, the working tree must be a git repo with the durable
     // history present.
