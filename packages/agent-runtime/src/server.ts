@@ -2340,6 +2340,29 @@ app.post('/preview/stop', (c) => {
   return c.json({ ok: true })
 })
 
+// Alias for `/preview/restart`. The code-agent prompt and older SDK/template
+// scripts call `/preview/rebuild`; without this they hit the SPA catch-all
+// and 404. Keep it a thin alias so existing callers just work.
+app.post('/preview/rebuild', async (c) => {
+  const pm = getPreviewManager()
+  const result = await pm.restart()
+  return c.json(result)
+})
+
+// Watcher pause/resume — used by `shogo push` to run prisma generate + db
+// push without racing the schema watcher's own restart (avoids EADDRINUSE).
+app.post('/preview/watch/pause', (c) => {
+  const pm = getPreviewManager()
+  pm.pauseWatchers()
+  return c.json({ ok: true, paused: true })
+})
+
+app.post('/preview/watch/resume', (c) => {
+  const pm = getPreviewManager()
+  pm.resumeWatchers()
+  return c.json({ ok: true, paused: false })
+})
+
 /**
  * Metro / Expo device-preview metadata.
  *

@@ -14,6 +14,7 @@ import {
   safeTokenEqual,
   safeBufferEqual,
   redactSensitiveHeaders,
+  redactSecretsInText,
   fingerprintSecret,
 } from '../crypto-util'
 
@@ -140,6 +141,37 @@ describe('redactSensitiveHeaders', () => {
 
   test('ignores undefined input', () => {
     expect(redactSensitiveHeaders(undefined)).toEqual({})
+  })
+})
+
+describe('redactSecretsInText', () => {
+  test('redacts a GitHub token embedded in serialized connect args', () => {
+    const json = JSON.stringify({ name: 'github', env: { GITHUB_TOKEN: 'ghp_' + 'a'.repeat(36) } })
+    const out = redactSecretsInText(json)
+    expect(out).not.toContain('ghp_' + 'a'.repeat(36))
+    expect(out).toContain('[redacted:')
+  })
+
+  test('redacts Slack, Stripe, Google, and Bearer tokens', () => {
+    // Build secret-shaped strings at runtime so no literal credential pattern
+    // sits in source (avoids tripping push-protection secret scanners).
+    const slack = 'xox' + 'b-' + '1'.repeat(12) + '-' + 'a'.repeat(15)
+    const stripe = 'sk_' + 'live_' + 'A'.repeat(24)
+    const google = 'ya29.' + 'A'.repeat(40)
+    const bearer = 'Authorization: ' + 'Bearer ' + 'z'.repeat(40)
+    expect(redactSecretsInText(slack)).toContain('[redacted:')
+    expect(redactSecretsInText(stripe)).toContain('[redacted:')
+    expect(redactSecretsInText(google)).toContain('[redacted:')
+    expect(redactSecretsInText(bearer)).toContain('[redacted:')
+  })
+
+  test('leaves benign text untouched', () => {
+    const benign = JSON.stringify({ toolName: 'read_file', path: 'src/App.tsx', ok: true })
+    expect(redactSecretsInText(benign)).toBe(benign)
+  })
+
+  test('handles empty input', () => {
+    expect(redactSecretsInText('')).toBe('')
   })
 })
 
