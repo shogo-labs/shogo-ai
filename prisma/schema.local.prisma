@@ -2054,6 +2054,7 @@ model Affiliate {
   pendingPayoutCents       Int       @default(0)
   totalPaidOutCents        Int       @default(0)
   commissionRateBps        Int?
+  contentCpmCents          Int?
   termsAcceptedAt          DateTime?
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt

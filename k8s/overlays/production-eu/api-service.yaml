@@ -201,6 +201,49 @@ spec:
               value: "shogo-published-apps-production"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
+            # --- Custom domains (Cloudflare for SaaS) ----------------------
+            # EU intentionally REUSES the production-us dedicated custom-
+            # domains zone + KV namespace (it does NOT provision its own).
+            # Custom-hostname HTTP traffic is always served by the single US
+            # worker bound to the US published-apps bucket via the `*/*` route
+            # on the dedicated zone, so EU only needs the control plane
+            # (add/verify/delete) enabled here. The `custom-domains-config`
+            # secret in this cluster MUST hold the SAME values as US
+            # (CF_CUSTOM_DOMAIN_ZONE_ID, CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID,
+            # CF_ACCOUNT_ID, CUSTOM_DOMAIN_FALLBACK_ORIGIN=cname.shogo.online,
+            # and a token with SSL+Certificates:Edit on that zone +
+            # Workers KV Storage:Edit on the account). Inert until the secret
+            # exists. See docs/custom-domains.md.
+            - name: CF_CUSTOM_HOSTNAMES_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_CUSTOM_HOSTNAMES_TOKEN
+                  optional: true
+            - name: CF_CUSTOM_DOMAIN_ZONE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_CUSTOM_DOMAIN_ZONE_ID
+                  optional: true
+            - name: CF_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_ACCOUNT_ID
+                  optional: true
+            - name: CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID
+                  optional: true
+            - name: CUSTOM_DOMAIN_FALLBACK_ORIGIN
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CUSTOM_DOMAIN_FALLBACK_ORIGIN
+                  optional: true
             - name: BETTER_AUTH_URL
               value: "https://studio.shogo.ai"
             # User-browser-reachable frontend URL used to build links in
@@ -400,20 +443,12 @@ spec:
                   key: SHOGO_INTERNAL_SECRET
                   optional: true
             # --- Affiliate content-CPM (Instagram / TikTok view tracking) ---
-            # Sub-flag; requires SHOGO_AFFILIATES_NATIVE=true above. Flip to
-            # "true" to let affiliates connect handles and start the hourly
-            # poll + CPM accrual cron. Safe rollback to "false".
-            - name: SHOGO_AFFILIATE_CONTENT_CPM
-              value: "false"
-            - name: SHOGO_SOCIAL_CONTENT_PROVIDER
-              value: "ensembledata"
-            - name: SHOGO_AFFILIATE_CONTENT_CPM_CENTS
-              value: "100"
-            - name: SHOGO_AFFILIATE_CONTENT_HOLD_DAYS
-              value: "7"
-            # EnsembleData API token. Prefer the encrypted PlatformSetting
-            # provider-key.ensembledata (set via super-admin); this env is a
-            # fallback. Stored in api-secrets by the deploy workflow.
+            # Optional, DB-controlled feature. The master toggle, provider,
+            # CPM rate, hold days, and caps are all super-admin PlatformSetting
+            # rows (`affiliate.content.*`), NOT env vars — see Admin → Affiliate
+            # CPM. The only env here is the EnsembleData token (a secret); the
+            # encrypted PlatformSetting provider-key.ensembledata (set via the
+            # admin UI) is preferred, this secretKeyRef is a fallback.
             - name: ENSEMBLEDATA_API_TOKEN
               valueFrom:
                 secretKeyRef:

@@ -14,9 +14,10 @@
  * delta and could double-snapshot / double-pay. Exactly one region wins
  * the lock per tick.
  *
- * Feature-flag gated: short-circuits unless BOTH `SHOGO_AFFILIATES_NATIVE`
- * and `SHOGO_AFFILIATE_CONTENT_CPM` are 'true', so stacks without the
- * content rollout never call the data provider or touch the DB.
+ * Feature-gated: short-circuits unless the affiliate program env flag
+ * `SHOGO_AFFILIATES_NATIVE` is 'true' AND the super-admin DB master toggle
+ * `affiliate.content.enabled` is set (see isContentCpmEnabled), so stacks
+ * without the content rollout never call the data provider or accrue.
  */
 
 import { withGlobalJobLock } from '../lib/global-job-lock'
@@ -34,7 +35,7 @@ export interface PollAffiliateContentSummary extends Partial<PollAllSummary> {
 export async function runPollAffiliateContent(
   opts: { now?: Date } = {},
 ): Promise<PollAffiliateContentSummary> {
-  if (!isContentCpmEnabled()) {
+  if (!(await isContentCpmEnabled())) {
     return { flagDisabled: true }
   }
   const now = opts.now ?? new Date()

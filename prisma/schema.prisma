@@ -2773,6 +2773,12 @@ model Affiliate {
   /// step-down are ignored at L1. Null = use the tier rate (default).
   /// Only affects level 1; deeper upline levels always use tier rates.
   commissionRateBps     Int?
+  /// Optional per-creator content-CPM override (cents paid per 1,000 NEW
+  /// views). When set, it replaces the platform/per-platform CPM for THIS
+  /// affiliate's content earnings — the content analogue of
+  /// `commissionRateBps`. Null = use the platform `affiliate.content.*`
+  /// PlatformSetting (default).
+  contentCpmCents       Int?
   /// Set when the user accepted the affiliate terms during enroll.
   termsAcceptedAt       DateTime?
   createdAt             DateTime        @default(now())

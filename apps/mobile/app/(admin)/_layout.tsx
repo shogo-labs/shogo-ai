@@ -36,6 +36,7 @@ import {
   Store,
   KeyRound,
   Sparkles,
+  Clapperboard,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -69,6 +70,7 @@ const BASE_NAV_ITEMS: readonly AdminNavItem[] = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics', scope: 'analytics:read' },
   { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scope: 'creators:read' },
+  { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM' },
   { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
   { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
@@ -404,6 +406,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('analytics')) return 'Analytics'
   if (pathname.includes('creators')) return 'Creators'
+  if (pathname.includes('affiliate-content')) return 'Affiliate CPM'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
   if (pathname.includes('heartbeats')) return 'Heartbeats'
   if (pathname.startsWith('/evals/')) return 'Eval Detail'

@@ -471,8 +471,9 @@ export function affiliateRoutes(): Hono {
   // --------------------------------------------------------------------------
   // Content-CPM: social handles + view dashboard
   // --------------------------------------------------------------------------
-  // Gated on the content sub-flag (SHOGO_AFFILIATE_CONTENT_CPM) in addition
-  // to the master affiliate flag. These all require an enrolled affiliate.
+  // Gated on the super-admin DB content toggle (affiliate.content.enabled) in
+  // addition to the master affiliate flag. These all require an enrolled
+  // affiliate.
 
   /** Resolve the caller's affiliate id, or null. */
   async function callerAffiliateId(c: any): Promise<string | null> {
@@ -486,8 +487,8 @@ export function affiliateRoutes(): Hono {
     return affiliate?.id ?? null
   }
 
-  function contentEnabledOr503(c: any): Response | null {
-    if (!isFlagOn() || !isContentCpmEnabled()) {
+  async function contentEnabledOr503(c: any): Promise<Response | null> {
+    if (!isFlagOn() || !(await isContentCpmEnabled())) {
       return c.json({ ok: false, error: { code: 'feature_disabled' } }, 503)
     }
     return null
@@ -495,7 +496,7 @@ export function affiliateRoutes(): Hono {
 
   /** GET /api/affiliates/me/social-accounts — list connected handles. */
   router.get('/affiliates/me/social-accounts', async (c) => {
-    const blocked = contentEnabledOr503(c)
+    const blocked = await contentEnabledOr503(c)
     if (blocked) return blocked
     const affiliateId = await callerAffiliateId(c)
     if (!affiliateId) return c.json({ ok: true, accounts: [] })
@@ -509,7 +510,7 @@ export function affiliateRoutes(): Hono {
    * affiliate must place in their bio before posts start earning.
    */
   router.post('/affiliates/me/social-accounts', async (c) => {
-    const blocked = contentEnabledOr503(c)
+    const blocked = await contentEnabledOr503(c)
     if (blocked) return blocked
     const affiliateId = await callerAffiliateId(c)
     if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
@@ -541,7 +542,7 @@ export function affiliateRoutes(): Hono {
    * for the verification code and mark the account verified on success.
    */
   router.post('/affiliates/me/social-accounts/:id/verify', async (c) => {
-    const blocked = contentEnabledOr503(c)
+    const blocked = await contentEnabledOr503(c)
     if (blocked) return blocked
     const affiliateId = await callerAffiliateId(c)
     if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
@@ -560,7 +561,7 @@ export function affiliateRoutes(): Hono {
 
   /** DELETE /api/affiliates/me/social-accounts/:id — disconnect a handle. */
   router.delete('/affiliates/me/social-accounts/:id', async (c) => {
-    const blocked = contentEnabledOr503(c)
+    const blocked = await contentEnabledOr503(c)
     if (blocked) return blocked
     const affiliateId = await callerAffiliateId(c)
     if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
@@ -582,7 +583,7 @@ export function affiliateRoutes(): Hono {
    * view counts, and content-CPM earning totals for the dashboard.
    */
   router.get('/affiliates/me/content', async (c) => {
-    const blocked = contentEnabledOr503(c)
+    const blocked = await contentEnabledOr503(c)
     if (blocked) return blocked
     const affiliateId = await callerAffiliateId(c)
     if (!affiliateId) {
