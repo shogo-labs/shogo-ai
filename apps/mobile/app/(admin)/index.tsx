@@ -685,31 +685,56 @@ export default function AdminDashboard() {
     loading: true,
   })
 
+  // Infrastructure + GC are super_admin-only. Partial admins (analytics:read)
+  // see the usage/growth half of the dashboard; the infra half is hidden so
+  // the page doesn't render empty cards backed by 403 responses.
+  const [isSuperAdmin, setIsSuperAdmin] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_URL}/api/me`, { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (!cancelled) setIsSuperAdmin(j?.data?.role === 'super_admin') })
+      .catch(() => { if (!cancelled) setIsSuperAdmin(false) })
+    return () => { cancelled = true }
+  }, [])
+
   const loadData = useCallback(async () => {
     setOverview((s) => ({ ...s, loading: true }))
     setActiveUsers((s) => ({ ...s, loading: true }))
     setGrowth((s) => ({ ...s, loading: true }))
-    setInfra((s) => ({ ...s, loading: true }))
-    setInfraHistory((s) => ({ ...s, loading: true }))
     setUsage((s) => ({ ...s, loading: true }))
 
-    const [overviewData, activeData, growthData, infraData, infraHistoryData, usageData] =
+    const canSeeInfra = isSuperAdmin === true
+    if (canSeeInfra) {
+      setInfra((s) => ({ ...s, loading: true }))
+      setInfraHistory((s) => ({ ...s, loading: true }))
+    } else {
+      setInfra({ data: null, loading: false })
+      setInfraHistory({ data: null, loading: false })
+    }
+
+    const [overviewData, activeData, growthData, usageData, infraData, infraHistoryData] =
       await Promise.all([
         fetchAdminJson<OverviewData>('/analytics/overview'),
         fetchAdminJson<ActiveUsersData>('/analytics/active-users', { period }),
         fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', { period }),
-        fetchAdminJson<InfraLiveData>('/analytics/infra-current'),
-        fetchAdminJson<InfraHistoryPoint[]>('/analytics/infra-history', { period: '24h' }),
         fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { period }),
+        canSeeInfra ? fetchAdminJson<InfraLiveData>('/analytics/infra-current') : Promise.resolve(null),
+        canSeeInfra
+          ? fetchAdminJson<InfraHistoryPoint[]>('/analytics/infra-history', { period: '24h' })
+          : Promise.resolve(null),
       ])
 
     setOverview({ data: overviewData, loading: false })
     setActiveUsers({ data: activeData, loading: false })
     setGrowth({ data: growthData, loading: false })
-    setInfra({ data: infraData, loading: false })
-    setInfraHistory({ data: infraHistoryData, loading: false })
     setUsage({ data: usageData, loading: false })
-  }, [period])
+    if (canSeeInfra) {
+      setInfra({ data: infraData, loading: false })
+      setInfraHistory({ data: infraHistoryData, loading: false })
+    }
+  }, [period, isSuperAdmin])
 
   useEffect(() => {
     loadData()
@@ -794,33 +819,39 @@ export default function AdminDashboard() {
             accent="bg-orange-500/10"
             iconColor="text-orange-500"
           />
-          <StatCard
-            label="Cluster Nodes"
-            value={infraSource?.totalNodes}
-            icon={Server}
-            subtitle={infraSource ? `${infraSource.asgDesired} / ${infraSource.asgMax} ASG` : undefined}
-            accent="bg-cyan-500/10"
-            iconColor="text-cyan-500"
-          />
-          <StatCard
-            label="Warm Pool"
-            value={warmTgt > 0 ? `${warmAvail} / ${warmTgt}` : warmAvail}
-            icon={Box}
-            subtitle={warmTgt > 0 ? `${Math.round((warmAvail / warmTgt) * 100)}% available` : undefined}
-            accent="bg-amber-500/10"
-            iconColor="text-amber-500"
-          />
+          {isSuperAdmin && (
+            <>
+              <StatCard
+                label="Cluster Nodes"
+                value={infraSource?.totalNodes}
+                icon={Server}
+                subtitle={infraSource ? `${infraSource.asgDesired} / ${infraSource.asgMax} ASG` : undefined}
+                accent="bg-cyan-500/10"
+                iconColor="text-cyan-500"
+              />
+              <StatCard
+                label="Warm Pool"
+                value={warmTgt > 0 ? `${warmAvail} / ${warmTgt}` : warmAvail}
+                icon={Box}
+                subtitle={warmTgt > 0 ? `${Math.round((warmAvail / warmTgt) * 100)}% available` : undefined}
+                accent="bg-amber-500/10"
+                iconColor="text-amber-500"
+              />
+            </>
+          )}
         </View>
       )}
 
-      {/* Row 2: Active Users + System Health */}
+      {/* Row 2: Active Users + System Health (health is super-admin only) */}
       <View className={cn('gap-4 mb-6', isWide ? 'flex-row' : '')}>
         <View className={isWide ? 'flex-1' : ''}>
           <ActiveUsersCard data={activeUsers.data} loading={activeUsers.loading} />
         </View>
-        <View className={isWide ? 'flex-1' : ''}>
-          <SystemHealthCard data={infra.data} loading={infra.loading} />
-        </View>
+        {isSuperAdmin && (
+          <View className={isWide ? 'flex-1' : ''}>
+            <SystemHealthCard data={infra.data} loading={infra.loading} />
+          </View>
+        )}
       </View>
 
       {/* Row 3: Growth Trends + AI Usage */}
@@ -833,15 +864,17 @@ export default function AdminDashboard() {
         </View>
       </View>
 
-      {/* Row 4: Infra history chart */}
-      <View className="mb-6">
-        <InfraHistoryChart data={infraHistory.data} loading={infraHistory.loading} />
-      </View>
-
-      {/* Row 5: Quick actions */}
-      <View className="mb-6">
-        <QuickActionsRow />
-      </View>
+      {/* Row 4 + 5: Infra history + quick actions (super-admin only) */}
+      {isSuperAdmin && (
+        <>
+          <View className="mb-6">
+            <InfraHistoryChart data={infraHistory.data} loading={infraHistory.loading} />
+          </View>
+          <View className="mb-6">
+            <QuickActionsRow />
+          </View>
+        </>
+      )}
     </ScrollView>
   )
 }

@@ -34,6 +34,11 @@ model User {
   emailVerified       Boolean  @default(false)
   image               String?
   role                UserRole @default(user)
+  // Granular admin permission scopes (e.g. "analytics:read", "creators:read").
+  // Layered on top of `role`: a super_admin implicitly holds every scope, so
+  // this list only matters for non-super_admin users granted partial admin
+  // access. Validated against the catalog in apps/api/src/lib/admin-scopes.ts.
+  adminScopes         String[] @default([])
   onboardingCompleted Boolean  @default(false)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt

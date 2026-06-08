@@ -17,6 +17,10 @@ const mockPrisma = {
   user: {
     findMany: mock(() => Promise.resolve([])),
     count: mock(() => Promise.resolve(0)),
+    // Used by the real requireAdminScope middleware (getAdminAccess) which
+    // now gates the analytics endpoints. Resolves role/adminScopes for the
+    // current test user.
+    findUnique: mock(() => Promise.resolve({ role: currentUser.role, adminScopes: [] as string[] })),
   },
   project: {
     groupBy: mock(() => Promise.resolve([])),
@@ -42,6 +46,7 @@ mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
 mock.module('../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
     c.set('user', currentUser)
+    c.set('auth', { userId: currentUser.id, isAuthenticated: true })
     c.set('session', { id: 'sess-1' })
     await next()
   },
@@ -84,6 +89,9 @@ beforeEach(() => {
   }])
   mockPrisma.user.findMany.mockResolvedValue([])
   mockPrisma.user.count.mockResolvedValue(0)
+  mockPrisma.user.findUnique.mockImplementation(() =>
+    Promise.resolve({ role: currentUser.role, adminScopes: [] as string[] }),
+  )
   mockPrisma.analyticsDigest.findFirst.mockResolvedValue(null)
   mockPrisma.analyticsDigest.findMany.mockResolvedValue([])
 })

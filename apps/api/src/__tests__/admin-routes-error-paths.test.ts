@@ -32,6 +32,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test'
 mock.module('../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
     c.set('user', { id: 'user-1' })
+    c.set('auth', { userId: 'user-1', isAuthenticated: true })
     await next()
   },
   requireAuth: async (_c: any, next: any) => next(),
@@ -117,6 +118,12 @@ const prismaThrower = (label: string) =>
   })
 
 const prisma = {
+  // Must SUCCEED (not throw): the real requireAdminScope resolves admin access
+  // via getAdminAccess before the handler runs. A super_admin passes every
+  // scope gate so the request reaches the handler's throwing analytics call.
+  user: {
+    findUnique: mock(async () => ({ role: 'super_admin', adminScopes: [] as string[] })),
+  },
   infraSnapshot: {
     findFirst: prismaThrower('infraSnapshot.findFirst'),
     findMany: prismaThrower('infraSnapshot.findMany'),
