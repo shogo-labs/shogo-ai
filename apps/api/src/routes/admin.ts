@@ -154,11 +154,115 @@ export function adminRoutes(): Hono {
    */
   router.get('/analytics/usage-summary', async (c) => {
     try {
-      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-      const data = await analytics.getUsageSummary({}, period)
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const page = parseInt(url.searchParams.get('page') || '1', 10)
+      const limit = parseInt(url.searchParams.get('limit') || '25', 10)
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await analytics.getUsageSummary({}, period, { page, limit, excludeInternal })
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Usage summary error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/spend-timeseries - Daily consumption grouped by
+   * model / workspace / user / source (stacked-area chart).
+   */
+  router.get('/analytics/spend-timeseries', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const fromIso = url.searchParams.get('from') || undefined
+      const toIso = url.searchParams.get('to') || undefined
+      const groupBy = (url.searchParams.get('groupBy') || 'model') as 'model' | 'workspace' | 'user' | 'source'
+      const metric = (url.searchParams.get('metric') || 'spend') as 'spend' | 'tokens' | 'requests'
+      const topN = parseInt(url.searchParams.get('topN') || '8', 10)
+
+      const data = await analytics.getSpendTimeseries({}, period, { fromIso, toIso, groupBy, metric, topN })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Spend timeseries error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/activity-timeseries - Combined daily activity metrics
+   * (new users / workspaces / projects, messages, sessions, tool calls).
+   */
+  router.get('/analytics/activity-timeseries', async (c) => {
+    try {
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+      const data = await analytics.getActivityTimeseries({}, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Activity timeseries error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/active-users-timeseries - Daily rolling DAU/WAU/MAU.
+   */
+  router.get('/analytics/active-users-timeseries', async (c) => {
+    try {
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+      const data = await analytics.getActiveUsersTimeseries({}, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Active users timeseries error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/quality-timeseries - Daily cache hit ratio, unit economics,
+   * and agent quality rates.
+   */
+  router.get('/analytics/quality-timeseries', async (c) => {
+    try {
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+      const data = await analytics.getQualityTimeseries({}, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Quality timeseries error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/tool-calls - Tool-call usage and success-rate analytics.
+   */
+  router.get('/analytics/tool-calls', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await analytics.getToolCallAnalytics({}, period, { excludeInternal })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Tool calls analytics error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/workspace-activity - Paginated per-workspace activity table.
+   */
+  router.get('/analytics/workspace-activity', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const page = parseInt(url.searchParams.get('page') || '1', 10)
+      const limit = parseInt(url.searchParams.get('limit') || '20', 10)
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await analytics.getWorkspaceActivityTable(period, { page, limit, excludeInternal })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Workspace activity error:', error)
       return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
     }
   })

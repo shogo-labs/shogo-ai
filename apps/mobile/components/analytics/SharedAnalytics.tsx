@@ -36,6 +36,12 @@ import {
   type ModelFamily,
 } from '@shogo/model-catalog'
 import { resolveShortName, resolveFamily } from '../../lib/visible-models'
+import {
+  StackedAreaChart,
+  STACKED_PALETTE,
+  type StackedSeries,
+  type StackedDay,
+} from './StackedAreaChart'
 
 // =============================================================================
 // Types
@@ -82,6 +88,10 @@ export interface UsageSummaryData {
     uniqueUsers: number
     uniqueModels: number
   }
+  /** Total number of aggregated rows across all pages (server-paginated). */
+  total?: number
+  page?: number
+  limit?: number
 }
 
 export interface UsageLogEntry {
@@ -363,7 +373,17 @@ export function ChatAnalyticsSection({ data, loading }: { data: ChatAnalyticsDat
 
 type SortKey = 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'totalBilledUsd' | 'totalRawUsd'
 
-export function UsageSummaryView({ data, isLocalMode }: { data: UsageSummaryData; isLocalMode?: boolean }) {
+export function UsageSummaryView({
+  data,
+  isLocalMode,
+  onPageChange,
+  currentPage,
+}: {
+  data: UsageSummaryData
+  isLocalMode?: boolean
+  onPageChange?: (p: number) => void
+  currentPage?: number
+}) {
   const [sortKey, setSortKey] = useState<SortKey>('totalTokens')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -484,6 +504,35 @@ export function UsageSummaryView({ data, isLocalMode }: { data: UsageSummaryData
           ))}
         </View>
       )}
+
+      {/* Server-side pagination (the aggregated list can get long in prod) */}
+      {onPageChange && data.total != null && data.limit != null && data.total > data.limit && (() => {
+        const page = currentPage ?? data.page ?? 1
+        const totalPages = Math.max(1, Math.ceil(data.total / data.limit))
+        return (
+          <View className="flex-row items-center justify-between mt-3">
+            <Text className="text-xs text-muted-foreground">
+              Page {page} of {totalPages} · {data.total.toLocaleString()} rows
+            </Text>
+            <View className="flex-row items-center gap-1">
+              <Pressable
+                onPress={() => onPageChange(page - 1)}
+                disabled={page <= 1}
+                className={cn('p-1.5 rounded-md border border-border', page <= 1 && 'opacity-30')}
+              >
+                <ChevronLeft size={14} className="text-foreground" />
+              </Pressable>
+              <Pressable
+                onPress={() => onPageChange(page + 1)}
+                disabled={page >= totalPages}
+                className={cn('p-1.5 rounded-md border border-border', page >= totalPages && 'opacity-30')}
+              >
+                <ChevronRight size={14} className="text-foreground" />
+              </Pressable>
+            </View>
+          </View>
+        )
+      })()}
     </View>
   )
 }
@@ -608,6 +657,8 @@ export function UsageTableSection({
   logLoading,
   onLogPageChange,
   logPage,
+  onSummaryPageChange,
+  summaryPage,
   title,
   isLocalMode,
 }: {
@@ -617,6 +668,8 @@ export function UsageTableSection({
   logLoading: boolean
   onLogPageChange: (p: number) => void
   logPage: number
+  onSummaryPageChange?: (p: number) => void
+  summaryPage?: number
   title?: string
   isLocalMode?: boolean
 }) {
@@ -666,7 +719,12 @@ export function UsageTableSection({
         summaryLoading ? (
           <View className="items-center py-8"><ActivityIndicator /></View>
         ) : summaryData ? (
-          <UsageSummaryView data={summaryData} isLocalMode={isLocalMode} />
+          <UsageSummaryView
+            data={summaryData}
+            isLocalMode={isLocalMode}
+            onPageChange={onSummaryPageChange}
+            currentPage={summaryPage}
+          />
         ) : (
           <View className="py-8 items-center">
             <Text className="text-sm text-muted-foreground">No usage data available</Text>
@@ -783,6 +841,8 @@ export interface UserActivityEntry {
 export interface UserActivityData {
   users: UserActivityEntry[]
   total: number
+  page?: number
+  limit?: number
 }
 
 const SOURCE_COLORS: Record<string, string> = {
@@ -872,20 +932,23 @@ export function UserActivityTable({
       ))}
 
       {/* Pagination */}
-      {onPageChange && data.total > 20 && (
-        <View className="flex-row items-center justify-center gap-4 mt-3">
-          <Pressable onPress={() => onPageChange(Math.max(1, page - 1))} disabled={page <= 1}>
-            <ChevronLeft size={16} className={page <= 1 ? 'text-muted' : 'text-foreground'} />
-          </Pressable>
-          <Text className="text-xs text-muted-foreground">Page {page}</Text>
-          <Pressable
-            onPress={() => onPageChange(page + 1)}
-            disabled={page * 20 >= data.total}
-          >
-            <ChevronRight size={16} className={page * 20 >= data.total ? 'text-muted' : 'text-foreground'} />
-          </Pressable>
-        </View>
-      )}
+      {onPageChange && data.limit != null && data.total > data.limit && (() => {
+        const totalPages = Math.max(1, Math.ceil(data.total / data.limit))
+        return (
+          <View className="flex-row items-center justify-center gap-4 mt-3">
+            <Pressable onPress={() => onPageChange(Math.max(1, page - 1))} disabled={page <= 1}>
+              <ChevronLeft size={16} className={page <= 1 ? 'text-muted' : 'text-foreground'} />
+            </Pressable>
+            <Text className="text-xs text-muted-foreground">Page {page} of {totalPages}</Text>
+            <Pressable
+              onPress={() => onPageChange(page + 1)}
+              disabled={page >= totalPages}
+            >
+              <ChevronRight size={16} className={page >= totalPages ? 'text-muted' : 'text-foreground'} />
+            </Pressable>
+          </View>
+        )
+      })()}
     </View>
   )
 }
@@ -1222,6 +1285,689 @@ export function AIInsightsPanel({
               ))}
             </View>
           )}
+        </View>
+      )}
+    </View>
+  )
+}
+
+// =============================================================================
+// Timeseries charts — shared by workspace settings + super admin
+// =============================================================================
+
+export type SpendGroupBy = 'model' | 'workspace' | 'user' | 'source'
+export type SpendMetric = 'spend' | 'tokens' | 'requests'
+
+export interface SpendTimeseriesData {
+  days: { date: string; byModel: Record<string, number>; total: number }[]
+  totals: {
+    totalSpendUsd: number
+    totalIncludedUsd: number
+    totalOnDemandUsd: number
+    uniqueModels: number
+  }
+  models: string[]
+  groupBy: SpendGroupBy
+  metric: SpendMetric
+}
+
+const GROUP_BY_LABELS: Record<SpendGroupBy, string> = {
+  model: 'Model',
+  workspace: 'Workspace',
+  user: 'User',
+  source: 'Source',
+}
+
+const METRIC_LABELS: Record<SpendMetric, string> = {
+  spend: 'Spend',
+  tokens: 'Tokens',
+  requests: 'Requests',
+}
+
+function chartUsd(n: number): string {
+  if (n === 0) return '$0.00'
+  if (n < 0.01) return `$${n.toFixed(4)}`
+  if (n < 1000) return `$${n.toFixed(2)}`
+  return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+}
+
+/** Generic dropdown used by the timeseries chart controls. */
+function ChartDropdown<T extends string>({
+  value,
+  prefix,
+  options,
+  labels,
+  onChange,
+}: {
+  value: T
+  prefix: string
+  options: readonly T[]
+  labels: Record<T, string>
+  onChange: (v: T) => void
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <View style={{ zIndex: 100 }}>
+      <Pressable
+        onPress={() => setOpen((o) => !o)}
+        className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background"
+      >
+        <Text className="text-xs text-foreground">{prefix}: {labels[value]}</Text>
+        <ChevronDown size={12} className="text-muted-foreground" />
+      </Pressable>
+      {open && (
+        <View
+          style={{ zIndex: 100 }}
+          className="absolute top-9 right-0 z-50 min-w-[160px] rounded-md border border-border bg-popover shadow-md"
+        >
+          {options.map((v) => (
+            <Pressable
+              key={v}
+              onPress={() => { onChange(v); setOpen(false) }}
+              className={cn('px-3 py-2', v === value && 'bg-muted')}
+            >
+              <Text className="text-xs text-foreground">{prefix}: {labels[v]}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+    </View>
+  )
+}
+
+export function GroupBySelect({
+  value,
+  onChange,
+  options = ['model', 'workspace', 'user', 'source'],
+}: {
+  value: SpendGroupBy
+  onChange: (v: SpendGroupBy) => void
+  options?: readonly SpendGroupBy[]
+}) {
+  return (
+    <ChartDropdown
+      value={value}
+      prefix="Group by"
+      options={options}
+      labels={GROUP_BY_LABELS}
+      onChange={onChange}
+    />
+  )
+}
+
+export function MetricSelect({
+  value,
+  onChange,
+}: {
+  value: SpendMetric
+  onChange: (v: SpendMetric) => void
+}) {
+  return (
+    <ChartDropdown
+      value={value}
+      prefix="Metric"
+      options={['spend', 'tokens', 'requests']}
+      labels={METRIC_LABELS}
+      onChange={onChange}
+    />
+  )
+}
+
+/** Pill-style toggle for picking which single series a trend chart displays. */
+export function MetricToggle<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T
+  onChange: (v: T) => void
+  options: { id: T; label: string }[]
+}) {
+  return (
+    <View className="flex-row flex-wrap items-center rounded-lg border border-border overflow-hidden">
+      {options.map((o, i) => (
+        <Pressable
+          key={o.id}
+          onPress={() => onChange(o.id)}
+          className={cn('px-2.5 py-1.5', value === o.id ? 'bg-primary' : '', i > 0 && 'border-l border-border')}
+        >
+          <Text className={cn('text-[11px]', value === o.id ? 'text-primary-foreground' : 'text-muted-foreground')}>
+            {o.label}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+  )
+}
+
+function buildSpendSeries(data: SpendTimeseriesData | null): StackedSeries[] {
+  if (!data) return []
+  return data.models.map((m, i) => ({
+    id: m,
+    label: data.groupBy === 'model' ? resolveShortName(m) : m,
+    color: STACKED_PALETTE[i % STACKED_PALETTE.length],
+  }))
+}
+
+/**
+ * Daily consumption stacked-area chart with group-by + metric controls.
+ * Shared by the workspace Usage tab and the super-admin analytics page.
+ */
+export function UsageTimeseriesChart({
+  data,
+  loading,
+  groupBy,
+  metric,
+  onGroupByChange,
+  onMetricChange,
+  isLocalMode,
+  title = 'Usage Over Time',
+  subtitle = 'Daily usage grouped by series',
+  groupByOptions,
+  height = 260,
+  showTotals = true,
+}: {
+  data: SpendTimeseriesData | null
+  loading?: boolean
+  groupBy: SpendGroupBy
+  metric: SpendMetric
+  onGroupByChange: (v: SpendGroupBy) => void
+  onMetricChange: (v: SpendMetric) => void
+  isLocalMode?: boolean
+  title?: string
+  subtitle?: string
+  groupByOptions?: readonly SpendGroupBy[]
+  height?: number
+  showTotals?: boolean
+}) {
+  const series = buildSpendSeries(data)
+  const chartDays: StackedDay[] = (data?.days ?? []).map((d) => ({ date: d.date, values: d.byModel }))
+
+  return (
+    <View className="rounded-xl border border-border bg-card p-4 gap-3">
+      <View className="flex-row items-center justify-between flex-wrap gap-2">
+        <View className="flex-1 min-w-[140px]">
+          <Text className="text-sm font-semibold text-foreground">{title}</Text>
+          <Text className="text-xs text-muted-foreground">{subtitle}</Text>
+        </View>
+        <View className="flex-row items-center gap-2">
+          <GroupBySelect value={groupBy} onChange={onGroupByChange} options={groupByOptions} />
+          <MetricSelect value={metric} onChange={onMetricChange} />
+        </View>
+      </View>
+
+      {showTotals && metric === 'spend' && data && (
+        <View className="flex-row flex-wrap gap-2">
+          <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
+            <Text className="text-[10px] text-muted-foreground mb-0.5">Total {isLocalMode ? 'cost' : 'spend'}</Text>
+            <Text className="text-base font-bold text-foreground">{chartUsd(data.totals.totalSpendUsd)}</Text>
+          </View>
+          <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
+            <Text className="text-[10px] text-muted-foreground mb-0.5">Included</Text>
+            <Text className="text-base font-bold text-foreground">{chartUsd(data.totals.totalIncludedUsd)}</Text>
+          </View>
+          <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
+            <Text className="text-[10px] text-muted-foreground mb-0.5">On-demand</Text>
+            <Text className="text-base font-bold text-foreground">{chartUsd(data.totals.totalOnDemandUsd)}</Text>
+          </View>
+        </View>
+      )}
+
+      {loading ? (
+        <View style={{ height }} className="items-center justify-center"><ActivityIndicator /></View>
+      ) : chartDays.length === 0 || series.length === 0 ? (
+        <View style={{ height }} className="items-center justify-center">
+          <Text className="text-sm text-muted-foreground">No usage data for this period</Text>
+        </View>
+      ) : (
+        <StackedAreaChart
+          days={chartDays}
+          series={series}
+          height={height}
+          formatY={(n) =>
+            metric === 'spend'
+              ? chartUsd(n)
+              : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(Math.round(n))
+          }
+          formatTooltip={(n) => (metric === 'spend' ? chartUsd(n) : n.toLocaleString())}
+        />
+      )}
+    </View>
+  )
+}
+
+// =============================================================================
+// Generic single-metric trend chart (reused by activity / active-users / quality)
+// =============================================================================
+
+export interface TrendMetricOption {
+  id: string
+  label: string
+  color?: string
+  /** Format used for both the Y axis and the tooltip. */
+  format?: (n: number) => string
+}
+
+export function MetricTrendChart({
+  title,
+  subtitle,
+  loading,
+  days,
+  metrics,
+  height = 240,
+}: {
+  title: string
+  subtitle?: string
+  loading?: boolean
+  days: StackedDay[]
+  metrics: TrendMetricOption[]
+  height?: number
+}) {
+  const [selected, setSelected] = useState<string>(metrics[0]?.id ?? '')
+  const metric = metrics.find((m) => m.id === selected) ?? metrics[0]
+  const series: StackedSeries[] = metric
+    ? [{ id: metric.id, label: metric.label, color: metric.color ?? STACKED_PALETTE[0] }]
+    : []
+  const fmt = metric?.format ?? ((n: number) => formatNumber(n))
+
+  return (
+    <View className="rounded-xl border border-border bg-card p-4 gap-3">
+      <View className="flex-row items-center justify-between flex-wrap gap-2">
+        <View className="flex-1 min-w-[140px]">
+          <Text className="text-sm font-semibold text-foreground">{title}</Text>
+          {subtitle ? <Text className="text-xs text-muted-foreground">{subtitle}</Text> : null}
+        </View>
+        <MetricToggle
+          value={selected}
+          onChange={setSelected}
+          options={metrics.map((m) => ({ id: m.id, label: m.label }))}
+        />
+      </View>
+
+      {loading ? (
+        <View style={{ height }} className="items-center justify-center"><ActivityIndicator /></View>
+      ) : days.length === 0 ? (
+        <View style={{ height }} className="items-center justify-center">
+          <Text className="text-sm text-muted-foreground">No data for this period</Text>
+        </View>
+      ) : (
+        <StackedAreaChart
+          days={days}
+          series={series}
+          height={height}
+          formatY={fmt}
+          formatTooltip={fmt}
+        />
+      )}
+    </View>
+  )
+}
+
+// =============================================================================
+// Activity trends (new users / messages / projects per day)
+// =============================================================================
+
+export interface ActivityTimeseriesPoint {
+  date: string
+  newUsers: number
+  newWorkspaces: number
+  newProjects: number
+  messages: number
+  sessions: number
+  toolCalls: number
+}
+
+const PCT = (n: number) => `${n.toFixed(n < 10 ? 1 : 0)}%`
+
+export function ActivityTrendsChart({
+  data,
+  loading,
+  title = 'Activity Trends',
+}: {
+  data: ActivityTimeseriesPoint[] | null
+  loading?: boolean
+  title?: string
+}) {
+  const days: StackedDay[] = (data ?? []).map((d) => ({
+    date: d.date,
+    values: {
+      newUsers: d.newUsers,
+      messages: d.messages,
+      newProjects: d.newProjects,
+      sessions: d.sessions,
+      toolCalls: d.toolCalls,
+      newWorkspaces: d.newWorkspaces,
+    },
+  }))
+  const metrics: TrendMetricOption[] = [
+    { id: 'newUsers', label: 'New users', color: STACKED_PALETTE[1], format: formatNumber },
+    { id: 'messages', label: 'Messages', color: STACKED_PALETTE[0], format: formatNumber },
+    { id: 'newProjects', label: 'Projects', color: STACKED_PALETTE[2], format: formatNumber },
+    { id: 'sessions', label: 'Sessions', color: STACKED_PALETTE[3], format: formatNumber },
+    { id: 'toolCalls', label: 'Tool calls', color: STACKED_PALETTE[5], format: formatNumber },
+    { id: 'newWorkspaces', label: 'Workspaces', color: STACKED_PALETTE[4], format: formatNumber },
+  ]
+  return (
+    <MetricTrendChart
+      title={title}
+      subtitle="Daily new entities and engagement"
+      loading={loading}
+      days={days}
+      metrics={metrics}
+    />
+  )
+}
+
+// =============================================================================
+// Active users trend (DAU / WAU / MAU over time)
+// =============================================================================
+
+export interface ActiveUsersTimeseriesPoint {
+  date: string
+  dau: number
+  wau: number
+  mau: number
+}
+
+export function ActiveUsersTrendChart({
+  data,
+  loading,
+}: {
+  data: ActiveUsersTimeseriesPoint[] | null
+  loading?: boolean
+}) {
+  const days: StackedDay[] = (data ?? []).map((d) => ({
+    date: d.date,
+    values: { dau: d.dau, wau: d.wau, mau: d.mau },
+  }))
+  const metrics: TrendMetricOption[] = [
+    { id: 'dau', label: 'Daily', color: STACKED_PALETTE[1], format: formatNumber },
+    { id: 'wau', label: 'Weekly', color: STACKED_PALETTE[0], format: formatNumber },
+    { id: 'mau', label: 'Monthly', color: STACKED_PALETTE[3], format: formatNumber },
+  ]
+  return (
+    <MetricTrendChart
+      title="Active Users"
+      subtitle="Rolling DAU / WAU / MAU over time"
+      loading={loading}
+      days={days}
+      metrics={metrics}
+    />
+  )
+}
+
+// =============================================================================
+// Quality & efficiency trend (cache hit, unit economics, agent quality)
+// =============================================================================
+
+export interface QualityTimeseriesPoint {
+  date: string
+  cacheHitRatio: number
+  costPerMessage: number
+  costPerActiveUser: number
+  agentEscalatedRate: number
+  agentLoopRate: number
+  agentMaxTurnsRate: number
+}
+
+export function QualityTimeseriesChart({
+  data,
+  loading,
+}: {
+  data: QualityTimeseriesPoint[] | null
+  loading?: boolean
+}) {
+  const days: StackedDay[] = (data ?? []).map((d) => ({
+    date: d.date,
+    values: {
+      cacheHitRatio: d.cacheHitRatio,
+      costPerMessage: d.costPerMessage,
+      costPerActiveUser: d.costPerActiveUser,
+      agentEscalatedRate: d.agentEscalatedRate,
+      agentLoopRate: d.agentLoopRate,
+      agentMaxTurnsRate: d.agentMaxTurnsRate,
+    },
+  }))
+  const metrics: TrendMetricOption[] = [
+    { id: 'cacheHitRatio', label: 'Cache hit', color: STACKED_PALETTE[0], format: PCT },
+    { id: 'costPerMessage', label: '$/msg', color: STACKED_PALETTE[2], format: formatDollarCost },
+    { id: 'costPerActiveUser', label: '$/active user', color: STACKED_PALETTE[1], format: formatDollarCost },
+    { id: 'agentEscalatedRate', label: 'Escalated', color: STACKED_PALETTE[5], format: PCT },
+    { id: 'agentLoopRate', label: 'Loop', color: STACKED_PALETTE[6], format: PCT },
+    { id: 'agentMaxTurnsRate', label: 'Max turns', color: STACKED_PALETTE[7], format: PCT },
+  ]
+  return (
+    <MetricTrendChart
+      title="Quality & Efficiency"
+      subtitle="Daily cache hit ratio, unit economics, and agent quality"
+      loading={loading}
+      days={days}
+      metrics={metrics}
+    />
+  )
+}
+
+// =============================================================================
+// Tool Call Analytics
+// =============================================================================
+
+export interface ToolCallStat {
+  toolName: string
+  total: number
+  errors: number
+  successRate: number
+  avgDurationMs: number
+}
+
+export interface ToolCallAnalyticsData {
+  tools: ToolCallStat[]
+  totals: {
+    totalCalls: number
+    totalErrors: number
+    successRate: number
+  }
+  daily: { date: string; calls: number; errors: number; successRate: number }[]
+}
+
+export function ToolCallAnalyticsPanel({
+  data,
+  loading,
+}: {
+  data: ToolCallAnalyticsData | null
+  loading?: boolean
+}) {
+  if (loading) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <View className="h-4 w-28 bg-muted rounded mb-3" />
+        <View className="h-40 bg-muted/50 rounded" />
+      </View>
+    )
+  }
+
+  if (!data || !data.tools?.length) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <Text className="text-sm font-semibold text-foreground mb-3">Tool Calls</Text>
+        <View className="py-8 items-center">
+          <Text className="text-sm text-muted-foreground">No tool calls for this period</Text>
+        </View>
+      </View>
+    )
+  }
+
+  const maxCalls = Math.max(...data.tools.map((t) => t.total), 1)
+  const days: StackedDay[] = (data.daily ?? []).map((d) => ({
+    date: d.date,
+    values: { successRate: d.successRate, calls: d.calls, errors: d.errors },
+  }))
+  const trendMetrics: TrendMetricOption[] = [
+    { id: 'successRate', label: 'Success %', color: STACKED_PALETTE[0], format: PCT },
+    { id: 'calls', label: 'Calls', color: STACKED_PALETTE[1], format: formatNumber },
+    { id: 'errors', label: 'Errors', color: STACKED_PALETTE[6], format: formatNumber },
+  ]
+
+  const successColor = (rate: number) =>
+    rate >= 95 ? 'text-emerald-500' : rate >= 80 ? 'text-yellow-500' : 'text-red-500'
+  const barColor = (rate: number) =>
+    rate >= 95 ? 'bg-emerald-500' : rate >= 80 ? 'bg-yellow-500' : 'bg-red-500'
+
+  return (
+    <View className="gap-4">
+      <View className="rounded-xl border border-border bg-card p-4">
+        <Text className="text-sm font-semibold text-foreground mb-3">Tool Calls</Text>
+
+        {/* Totals */}
+        <View className="flex-row flex-wrap gap-2 mb-4">
+          <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
+            <Text className="text-[10px] text-muted-foreground mb-0.5">Total calls</Text>
+            <Text className="text-base font-bold text-foreground">{formatNumber(data.totals.totalCalls)}</Text>
+          </View>
+          <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
+            <Text className="text-[10px] text-muted-foreground mb-0.5">Errors</Text>
+            <Text className="text-base font-bold text-foreground">{formatNumber(data.totals.totalErrors)}</Text>
+          </View>
+          <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
+            <Text className="text-[10px] text-muted-foreground mb-0.5">Success rate</Text>
+            <Text className={cn('text-base font-bold', successColor(data.totals.successRate))}>
+              {data.totals.successRate.toFixed(1)}%
+            </Text>
+          </View>
+        </View>
+
+        {/* Header */}
+        <View className="flex-row items-center py-1.5 border-b border-border">
+          <Text className="flex-1 text-[10px] font-medium text-muted-foreground">Tool</Text>
+          <Text className="w-16 text-[10px] font-medium text-muted-foreground text-right">Calls</Text>
+          <Text className="w-14 text-[10px] font-medium text-muted-foreground text-right">Errors</Text>
+          <Text className="w-24 text-[10px] font-medium text-muted-foreground text-right">Success</Text>
+          <Text className="w-14 text-[10px] font-medium text-muted-foreground text-right">Avg</Text>
+        </View>
+
+        {/* Rows */}
+        {data.tools.map((t) => (
+          <View key={t.toolName} className="flex-row items-center py-2 border-b border-border/50">
+            <View className="flex-1 pr-2">
+              <Text className="text-xs font-medium text-foreground" numberOfLines={1}>{t.toolName}</Text>
+              <View className="h-1.5 mt-1 bg-muted rounded-full overflow-hidden">
+                <View className="h-full rounded-full bg-primary/60" style={{ width: `${Math.max((t.total / maxCalls) * 100, 3)}%` }} />
+              </View>
+            </View>
+            <Text className="w-16 text-right text-[11px] font-mono text-foreground">{formatNumber(t.total)}</Text>
+            <Text className="w-14 text-right text-[11px] font-mono text-muted-foreground">{formatNumber(t.errors)}</Text>
+            <View className="w-24 flex-row items-center justify-end gap-1.5">
+              <View className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden max-w-[48px]">
+                <View className={cn('h-full rounded-full', barColor(t.successRate))} style={{ width: `${t.successRate}%` }} />
+              </View>
+              <Text className={cn('text-[11px] font-mono', successColor(t.successRate))}>{t.successRate.toFixed(0)}%</Text>
+            </View>
+            <Text className="w-14 text-right text-[10px] text-muted-foreground">{formatDuration(t.avgDurationMs)}</Text>
+          </View>
+        ))}
+      </View>
+
+      <MetricTrendChart
+        title="Tool Call Trend"
+        subtitle="Daily success rate and volume"
+        days={days}
+        metrics={trendMetrics}
+        height={200}
+      />
+    </View>
+  )
+}
+
+// =============================================================================
+// Workspace Activity Table
+// =============================================================================
+
+export interface WorkspaceActivityEntry {
+  workspaceId: string
+  name: string
+  projects: number
+  members: number
+  messages: number
+  toolCalls: number
+  spendUsd: number
+}
+
+export interface WorkspaceActivityData {
+  workspaces: WorkspaceActivityEntry[]
+  total: number
+  page?: number
+  limit?: number
+}
+
+export function WorkspaceActivityTable({
+  data,
+  loading,
+  page = 1,
+  onPageChange,
+}: {
+  data: WorkspaceActivityData | null
+  loading: boolean
+  page?: number
+  onPageChange?: (page: number) => void
+}) {
+  if (loading) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <View className="h-4 w-28 bg-muted rounded mb-3" />
+        <View className="h-40 bg-muted/50 rounded" />
+      </View>
+    )
+  }
+
+  if (!data || !data.workspaces?.length) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <Text className="text-sm font-semibold text-foreground mb-3">Workspace Activity</Text>
+        <View className="py-8 items-center">
+          <Text className="text-sm text-muted-foreground">No workspace data</Text>
+        </View>
+      </View>
+    )
+  }
+
+  const totalPages = data.limit != null ? Math.max(1, Math.ceil(data.total / data.limit)) : 1
+
+  return (
+    <View className="rounded-xl border border-border bg-card p-4">
+      <View className="flex-row items-center justify-between mb-3">
+        <Text className="text-sm font-semibold text-foreground">Workspace Activity</Text>
+        <Text className="text-[10px] text-muted-foreground">{data.total} workspaces</Text>
+      </View>
+
+      {/* Header */}
+      <View className="flex-row items-center py-1.5 border-b border-border">
+        <Text className="flex-[2] text-[10px] font-medium text-muted-foreground">Workspace</Text>
+        <Text className="w-14 text-[10px] font-medium text-muted-foreground text-right">Projects</Text>
+        <Text className="w-14 text-[10px] font-medium text-muted-foreground text-right">Members</Text>
+        <Text className="w-14 text-[10px] font-medium text-muted-foreground text-right">Msgs</Text>
+        <Text className="w-16 text-[10px] font-medium text-muted-foreground text-right">Spend</Text>
+      </View>
+
+      {/* Rows */}
+      {data.workspaces.map((w) => (
+        <View key={w.workspaceId} className="flex-row items-center py-2 border-b border-border/50">
+          <Text className="flex-[2] text-xs font-medium text-foreground" numberOfLines={1}>{w.name || '—'}</Text>
+          <Text className="w-14 text-xs text-foreground text-right">{w.projects}</Text>
+          <Text className="w-14 text-xs text-foreground text-right">{w.members}</Text>
+          <Text className="w-14 text-xs text-foreground text-right">{formatNumber(w.messages)}</Text>
+          <Text className="w-16 text-xs text-foreground text-right">{formatDollarCost(w.spendUsd)}</Text>
+        </View>
+      ))}
+
+      {/* Pagination */}
+      {onPageChange && data.limit != null && data.total > data.limit && (
+        <View className="flex-row items-center justify-center gap-4 mt-3">
+          <Pressable onPress={() => onPageChange(Math.max(1, page - 1))} disabled={page <= 1}>
+            <ChevronLeft size={16} className={page <= 1 ? 'text-muted' : 'text-foreground'} />
+          </Pressable>
+          <Text className="text-xs text-muted-foreground">Page {page} of {totalPages}</Text>
+          <Pressable onPress={() => onPageChange(page + 1)} disabled={page >= totalPages}>
+            <ChevronRight size={16} className={page >= totalPages ? 'text-muted' : 'text-foreground'} />
+          </Pressable>
         </View>
       )}
     </View>

@@ -139,6 +139,8 @@ export async function trackUsageFromStream(
     result: any
     startedAt: number
     duration: number | null
+    /** Set when the runtime reports the tool errored, so we persist status='error'. */
+    error?: boolean
   }
   let toolCallMap = new Map<string, ToolCallRecord>()
 
@@ -359,11 +361,35 @@ export async function trackUsageFromStream(
       if (record) {
         record.result = data.output ?? null
         record.duration = Date.now() - record.startedAt
+        // Detect failure markers in the output so we can persist status='error'.
+        const out: any = data.output
+        if (
+          out &&
+          typeof out === 'object' &&
+          (out.success === false || out.isError === true || out.error != null)
+        ) {
+          record.error = true
+        }
       }
       const part = toolPartIndex.get(toolCallId)
       if (part) {
         part.output = data.output ?? { success: true }
         part.state = 'output-available'
+      }
+    }
+
+    if (type === 'tool-output-error') {
+      const toolCallId = data.toolCallId || ''
+      const record = toolCallMap.get(toolCallId)
+      if (record) {
+        record.error = true
+        record.result = { error: data.errorText ?? data.error ?? 'tool error' }
+        record.duration = Date.now() - record.startedAt
+      }
+      const part = toolPartIndex.get(toolCallId)
+      if (part) {
+        part.output = { error: data.errorText ?? data.error ?? 'tool error' }
+        part.state = 'output-error'
       }
     }
 
@@ -671,7 +697,7 @@ export async function trackUsageFromStream(
             args: tc.args != null ? JSON.stringify(tc.args) : undefined,
             result: tc.result != null ? JSON.stringify(tc.result) : undefined,
             duration: tc.duration,
-            status: 'complete' as const,
+            status: tc.error ? ('error' as const) : ('complete' as const),
           })),
         })
         console.log(`[ProjectChat] 🔧 Logged ${toolCallMap.size} tool calls for session ${chatSessionId}`)
