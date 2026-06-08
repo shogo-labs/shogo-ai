@@ -3,9 +3,12 @@
 /**
  * Factory + token resolution for the content-CPM data provider.
  *
- * Provider selection: `SHOGO_SOCIAL_CONTENT_PROVIDER` (default
- * `ensembledata`). The `official` value wires the (currently skeleton)
- * IG Graph / TikTok Display provider.
+ * Provider selection: the super-admin-controlled `PlatformSetting`
+ * `affiliate.content.provider` (default `ensembledata`). The `official`
+ * value wires the (currently skeleton) IG Graph / TikTok Display provider.
+ * (Canonical key list lives in affiliate-content-settings.service.ts; the
+ * key string is duplicated here to keep this module free of a settings-service
+ * import, which would create an import cycle.)
  *
  * Token resolution mirrors the native-provider-keys pattern
  * (provider-credentials.service.ts): an admin-stored, encrypted
@@ -26,14 +29,25 @@ import { type SocialContentProvider, SocialProviderError } from './provider'
 
 export * from './provider'
 
-const ENSEMBLEDATA_SETTING_KEY = 'provider-key.ensembledata'
+export const ENSEMBLEDATA_SETTING_KEY = 'provider-key.ensembledata'
+const PROVIDER_SETTING_KEY = 'affiliate.content.provider'
 const CACHE_TTL_MS = 60_000
 
 let cached: { provider: SocialContentProvider; loadedAt: number } | null = null
 
-/** Provider id from env, defaulting to the unofficial EnsembleData path. */
-export function getConfiguredProviderName(): string {
-  return (process.env.SHOGO_SOCIAL_CONTENT_PROVIDER || 'ensembledata').trim().toLowerCase()
+/** Provider id from the DB setting, defaulting to the unofficial EnsembleData path. */
+export async function getConfiguredProviderName(): Promise<string> {
+  try {
+    const row = (await prisma.platformSetting.findUnique({
+      where: { key: PROVIDER_SETTING_KEY },
+      select: { value: true },
+    })) as { value: string } | null
+    const v = (row?.value || '').trim().toLowerCase()
+    if (v) return v
+  } catch (err) {
+    console.error('[social-content] provider setting lookup failed; defaulting to ensembledata:', (err as Error).message)
+  }
+  return 'ensembledata'
 }
 
 /**
@@ -70,7 +84,7 @@ export async function getSocialContentProvider(opts: { force?: boolean } = {}): 
     return cached.provider
   }
 
-  const name = getConfiguredProviderName()
+  const name = await getConfiguredProviderName()
   let provider: SocialContentProvider
 
   if (name === 'official') {
@@ -89,7 +103,7 @@ export async function getSocialContentProvider(opts: { force?: boolean } = {}): 
       baseUrl: process.env.ENSEMBLEDATA_BASE_URL || undefined,
     })
   } else {
-    throw new SocialProviderError('not_configured', `Unknown SHOGO_SOCIAL_CONTENT_PROVIDER: "${name}"`)
+    throw new SocialProviderError('not_configured', `Unknown affiliate.content.provider setting: "${name}"`)
   }
 
   cached = { provider, loadedAt: Date.now() }

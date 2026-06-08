@@ -35,14 +35,18 @@
  *   - A refund/fraud hold (`eligibleAt`) defers approval, same as
  *     referral commissions.
  *
- * Master flags: `SHOGO_AFFILIATES_NATIVE` AND `SHOGO_AFFILIATE_CONTENT_CPM`
- * must both be 'true'. Callers check `isContentCpmEnabled()`.
+ * Master toggle: the affiliate program env flag `SHOGO_AFFILIATES_NATIVE`
+ * must be on AND the super-admin DB toggle `affiliate.content.enabled` must
+ * be true. Callers check `isContentCpmEnabled()` (async). All other knobs
+ * (provider, CPM, hold, caps) are DB-backed PlatformSetting rows managed by a
+ * super admin — see affiliate-content-settings.service.ts. The per-creator
+ * CPM override lives on `Affiliate.contentCpmCents`.
  */
 
 import { randomBytes } from 'node:crypto'
 
 import { prisma } from '../lib/prisma'
-import { getRefundHoldDays } from './affiliate.service'
+import { getContentSettings, resolveCpmCents } from './affiliate-content-settings.service'
 import {
   getSocialContentProvider,
   type SocialPlatform,
@@ -53,70 +57,34 @@ import {
 // Config
 // ============================================================================
 
-export const DEFAULT_CONTENT_CPM_CENTS = 100 // $1.00 per 1,000 views
-export const DEFAULT_CONTENT_HOLD_DAYS = 7
-export const DEFAULT_POSTS_PER_ACCOUNT = 30
-export const DEFAULT_MAX_VIEWS_PER_POST_PER_RUN = 5_000_000
-
 const SUPPORTED_PLATFORMS: readonly SocialPlatform[] = ['instagram', 'tiktok']
 // Handles: letters/digits/dot/underscore, 1-30 chars (covers IG + TikTok).
 const HANDLE_PATTERN = /^[a-z0-9._]{1,30}$/
 
-/** Both the affiliate master flag and the content sub-flag must be on. */
-export function isContentCpmEnabled(): boolean {
-  return (
-    process.env.SHOGO_AFFILIATES_NATIVE === 'true' &&
-    process.env.SHOGO_AFFILIATE_CONTENT_CPM === 'true'
-  )
-}
-
-function intFromEnv(name: string, fallback: number, min = 0): number {
-  const raw = process.env[name]
-  const n = raw ? parseInt(raw, 10) : fallback
-  return Number.isFinite(n) && n >= min ? n : fallback
-}
-
-export function getContentHoldDays(): number {
-  return intFromEnv('SHOGO_AFFILIATE_CONTENT_HOLD_DAYS', DEFAULT_CONTENT_HOLD_DAYS)
-}
-
-export function getPostsPerAccount(): number {
-  return intFromEnv('SHOGO_AFFILIATE_CONTENT_POSTS_PER_ACCOUNT', DEFAULT_POSTS_PER_ACCOUNT, 1)
-}
-
-export function getMaxViewsPerPostPerRun(): number {
-  return intFromEnv(
-    'SHOGO_AFFILIATE_CONTENT_MAX_VIEWS_PER_POST_PER_RUN',
-    DEFAULT_MAX_VIEWS_PER_POST_PER_RUN,
-    1,
-  )
+/**
+ * Whether content-CPM is live: the affiliate program must be enabled at the
+ * deploy level (`SHOGO_AFFILIATES_NATIVE` — content commissions ride the
+ * affiliate payout machinery), AND a super admin must have flipped the DB
+ * master toggle `affiliate.content.enabled`. Defaults off, so deployments
+ * that never seed the row never run the cron or expose the endpoints.
+ */
+export async function isContentCpmEnabled(): Promise<boolean> {
+  if (process.env.SHOGO_AFFILIATES_NATIVE !== 'true') return false
+  const settings = await getContentSettings()
+  return settings.enabled
 }
 
 /**
- * Resolve the CPM rate (cents per 1,000 views) for a platform. Precedence:
- *   1. PlatformSetting `affiliate.content.<platform>.cpmCents` (per-platform)
- *   2. PlatformSetting `affiliate.content.cpmCents` (global)
- *   3. env `SHOGO_AFFILIATE_CONTENT_CPM_CENTS`
- *   4. DEFAULT_CONTENT_CPM_CENTS
+ * Resolve the CPM rate (cents per 1,000 views) for a platform, optionally
+ * honoring a per-creator override. Precedence (see `resolveCpmCents`):
+ * creator override → per-platform setting → global setting → default.
  */
-export async function getContentCpmCents(platform: SocialPlatform): Promise<number> {
-  const keys = [`affiliate.content.${platform}.cpmCents`, 'affiliate.content.cpmCents']
-  try {
-    const rows = (await prisma.platformSetting.findMany({
-      where: { key: { in: keys } },
-    })) as Array<{ key: string; value: string }>
-    const byKey = new Map(rows.map((r) => [r.key, r.value]))
-    for (const k of keys) {
-      const v = byKey.get(k)
-      if (v != null) {
-        const n = parseInt(v, 10)
-        if (Number.isFinite(n) && n >= 0) return n
-      }
-    }
-  } catch (err) {
-    console.error('[affiliate-content] cpm setting lookup failed; using env/default:', (err as Error).message)
-  }
-  return intFromEnv('SHOGO_AFFILIATE_CONTENT_CPM_CENTS', DEFAULT_CONTENT_CPM_CENTS)
+export async function getContentCpmCents(
+  platform: SocialPlatform,
+  creatorOverrideCents?: number | null,
+): Promise<number> {
+  const settings = await getContentSettings()
+  return resolveCpmCents(settings, platform, creatorOverrideCents)
 }
 
 // ============================================================================
@@ -331,12 +299,14 @@ export async function pollAccount(account: any, now: Date = new Date()): Promise
 
   const affiliate = await prisma.affiliate.findUnique({
     where: { id: account.affiliateId },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, contentCpmCents: true },
   })
   if (!affiliate) {
     result.error = 'affiliate_not_found'
     return result
   }
+
+  const settings = await getContentSettings()
 
   let provider
   try {
@@ -348,7 +318,7 @@ export async function pollAccount(account: any, now: Date = new Date()): Promise
 
   let posts
   try {
-    posts = await provider.listRecentPosts(platform, account.handle, getPostsPerAccount())
+    posts = await provider.listRecentPosts(platform, account.handle, settings.postsPerAccount)
   } catch (err) {
     const msg = err instanceof SocialProviderError ? err.message : String(err)
     result.error = msg
@@ -359,9 +329,9 @@ export async function pollAccount(account: any, now: Date = new Date()): Promise
     return result
   }
 
-  const cpmCents = await getContentCpmCents(platform)
-  const maxViewsPerRun = getMaxViewsPerPostPerRun()
-  const holdDays = getContentHoldDays()
+  const cpmCents = resolveCpmCents(settings, platform, affiliate.contentCpmCents)
+  const maxViewsPerRun = settings.maxViewsPerPostPerRun
+  const holdDays = settings.holdDays
   const eligibleAt = new Date(now.getTime() + holdDays * 24 * 60 * 60 * 1000)
 
   for (const np of posts) {
@@ -600,15 +570,18 @@ export async function getContentSummary(affiliateId: string): Promise<ContentSum
       })
     : []
 
-  const [contentStats, igCpm, ttCpm] = await Promise.all([
+  const [contentStats, affiliate, settings] = await Promise.all([
     prisma.affiliateCommission.groupBy({
       by: ['status'],
       where: { affiliateId, source: 'content' },
       _sum: { amountCents: true },
     }),
-    getContentCpmCents('instagram'),
-    getContentCpmCents('tiktok'),
+    prisma.affiliate.findUnique({ where: { id: affiliateId }, select: { contentCpmCents: true } }),
+    getContentSettings(),
   ])
+  const override = affiliate?.contentCpmCents ?? null
+  const igCpm = resolveCpmCents(settings, 'instagram', override)
+  const ttCpm = resolveCpmCents(settings, 'tiktok', override)
 
   const byStatus: Record<string, number> = {}
   for (const row of contentStats as any[]) byStatus[row.status] = row._sum?.amountCents ?? 0

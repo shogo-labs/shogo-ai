@@ -149,7 +149,8 @@ const prisma = {
       userId: 'user-9',
       code: 'creator',
       status: 'active',
-      commissionRateBps: data.commissionRateBps,
+      commissionRateBps: 'commissionRateBps' in data ? data.commissionRateBps : null,
+      contentCpmCents: 'contentCpmCents' in data ? data.contentCpmCents : null,
     })),
   },
 }
@@ -439,6 +440,26 @@ describe('PATCH /affiliates/:id — per-affiliate commission-rate override', () 
     expect((await patch('aff-1', { commissionRateBps: -1 })).status).toBe(400)
     expect((await patch('aff-1', { commissionRateBps: 12.5 })).status).toBe(400)
     expect((await patch('aff-1', { commissionRateBps: 'lots' })).status).toBe(400)
+  })
+
+  test('sets a per-creator content CPM override', async () => {
+    const res = await patch('aff-1', { contentCpmCents: 250 })
+    expect(res.status).toBe(200)
+    const body = await json(res)
+    expect(body.affiliate.contentCpmCents).toBe(250)
+    expect(prisma.affiliate.update.mock.calls.at(-1)![0].data).toEqual({ contentCpmCents: 250 })
+  })
+
+  test('clears the content CPM override when passed null', async () => {
+    const res = await patch('aff-1', { contentCpmCents: null })
+    expect(res.status).toBe(200)
+    expect(prisma.affiliate.update.mock.calls.at(-1)![0].data).toEqual({ contentCpmCents: null })
+  })
+
+  test('rejects an invalid content CPM and an empty patch', async () => {
+    expect((await patch('aff-1', { contentCpmCents: -1 })).status).toBe(400)
+    expect((await patch('aff-1', { contentCpmCents: 1.5 })).status).toBe(400)
+    expect((await patch('aff-1', {})).status).toBe(400)
   })
 
   test('returns 404 for an unknown affiliate', async () => {

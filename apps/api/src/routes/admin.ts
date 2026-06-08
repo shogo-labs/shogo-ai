@@ -18,6 +18,13 @@ import { authMiddleware, requireAuth } from '../middleware/auth'
 import * as analytics from '../services/analytics.service'
 import type { AnalyticsPeriod } from '../services/analytics.service'
 import { resolveModelLabel, resolveModelLabels } from '../services/model-registry.service'
+import {
+  getContentSettings,
+  setContentSettings,
+  getEnsembleDataTokenInfo,
+  setEnsembleDataToken,
+  type ContentSettingsPatch,
+} from '../services/affiliate-content-settings.service'
 import { prisma } from '../lib/prisma'
 
 // ============================================================================
@@ -43,6 +50,7 @@ export function adminRoutes(): Hono {
   router.use('/heartbeats', requireSuperAdmin)
   router.use('/heartbeats/*', requireSuperAdmin)
   router.use('/affiliates/*', requireSuperAdmin)
+  router.use('/affiliate-content/*', requireSuperAdmin)
 
   // Assigning admin scopes to a user is itself a privileged action — keep it
   // super_admin-only so partial admins cannot escalate their own access.
@@ -879,18 +887,57 @@ export function adminRoutes(): Hono {
       return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
     }
 
-    const raw = body?.commissionRateBps
-    let commissionRateBps: number | null
-    if (raw === null) {
-      commissionRateBps = null
-    } else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= 10000) {
-      commissionRateBps = raw
-    } else {
+    // Both overrides are optional; only the fields present in the body are
+    // touched. `commissionRateBps` is the referral-commission override (bps,
+    // 0..10000); `contentCpmCents` is the per-creator content-CPM override
+    // (cents per 1,000 views, >= 0). Pass null on either to clear it and fall
+    // back to the platform default.
+    const data: { commissionRateBps?: number | null; contentCpmCents?: number | null } = {}
+
+    if ('commissionRateBps' in body) {
+      const raw = body.commissionRateBps
+      if (raw === null) {
+        data.commissionRateBps = null
+      } else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= 10000) {
+        data.commissionRateBps = raw
+      } else {
+        return c.json(
+          {
+            error: {
+              code: 'invalid_rate',
+              message: 'commissionRateBps must be null or an integer between 0 and 10000 (basis points)',
+            },
+          },
+          400,
+        )
+      }
+    }
+
+    if ('contentCpmCents' in body) {
+      const raw = body.contentCpmCents
+      if (raw === null) {
+        data.contentCpmCents = null
+      } else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0) {
+        data.contentCpmCents = raw
+      } else {
+        return c.json(
+          {
+            error: {
+              code: 'invalid_cpm',
+              message: 'contentCpmCents must be null or a non-negative integer (cents per 1,000 views)',
+            },
+          },
+          400,
+        )
+      }
+    }
+
+    if (Object.keys(data).length === 0) {
       return c.json(
         {
           error: {
-            code: 'invalid_rate',
-            message: 'commissionRateBps must be null or an integer between 0 and 10000 (basis points)',
+            code: 'bad_request',
+            message: 'Provide commissionRateBps and/or contentCpmCents (number or null).',
           },
         },
         400,
@@ -904,13 +951,94 @@ export function adminRoutes(): Hono {
       }
       const updated = await prisma.affiliate.update({
         where: { id },
-        data: { commissionRateBps },
-        select: { id: true, userId: true, code: true, status: true, commissionRateBps: true },
+        data,
+        select: {
+          id: true,
+          userId: true,
+          code: true,
+          status: true,
+          commissionRateBps: true,
+          contentCpmCents: true,
+        },
       })
       return c.json({ ok: true, affiliate: updated })
     } catch (error: any) {
       console.error('[Admin] Affiliate rate patch error:', error)
       return c.json({ error: { code: 'affiliate_update_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // Affiliate content-CPM settings (super-admin; gated by /affiliate-content/*)
+  //
+  // The whole content-CPM feature (Instagram / TikTok view tracking) is
+  // optional and DB-controlled here rather than via env vars. `enabled` is the
+  // master toggle; the rest are the polling/payout knobs. The EnsembleData API
+  // token is a secret, stored encrypted and surfaced only as a configured/mask
+  // flag.
+  // --------------------------------------------------------------------------
+
+  /** GET /affiliate-content/settings — current settings + token status. */
+  router.get('/affiliate-content/settings', async (c) => {
+    const [settings, token] = await Promise.all([
+      getContentSettings({ force: true }),
+      getEnsembleDataTokenInfo(),
+    ])
+    return c.json({ ok: true, settings, ensembleDataToken: token })
+  })
+
+  /**
+   * PUT /affiliate-content/settings — update any subset of the settings.
+   * Numeric fields accept null to clear (revert to default). `ensembleDataToken`
+   * (when present) is stored encrypted; pass '' or null to clear it.
+   */
+  router.put('/affiliate-content/settings', async (c) => {
+    const auth = c.get('auth')
+    const userId = auth?.userId || 'unknown'
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    if (body?.provider !== undefined && body.provider !== 'ensembledata' && body.provider !== 'official') {
+      return c.json(
+        { error: { code: 'invalid_provider', message: "provider must be 'ensembledata' or 'official'" } },
+        400,
+      )
+    }
+    if (body?.enabled !== undefined && typeof body.enabled !== 'boolean') {
+      return c.json({ error: { code: 'invalid_enabled', message: 'enabled must be a boolean' } }, 400)
+    }
+
+    const patch: ContentSettingsPatch = {}
+    if (body?.enabled !== undefined) patch.enabled = body.enabled
+    if (body?.provider !== undefined) patch.provider = body.provider
+    for (const field of [
+      'cpmCents',
+      'cpmCentsInstagram',
+      'cpmCentsTiktok',
+      'holdDays',
+      'postsPerAccount',
+      'maxViewsPerPostPerRun',
+    ] as const) {
+      if (body?.[field] !== undefined) patch[field] = body[field]
+    }
+
+    try {
+      const settings = await setContentSettings(patch, userId)
+      if (body?.ensembleDataToken !== undefined) {
+        await setEnsembleDataToken(
+          typeof body.ensembleDataToken === 'string' ? body.ensembleDataToken : null,
+          userId,
+        )
+      }
+      const token = await getEnsembleDataTokenInfo()
+      return c.json({ ok: true, settings, ensembleDataToken: token })
+    } catch (error: any) {
+      console.error('[Admin] Affiliate content settings update error:', error)
+      return c.json({ error: { code: 'settings_update_failed', message: error.message } }, 400)
     }
   })
 

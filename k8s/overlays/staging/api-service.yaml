@@ -421,20 +421,12 @@ spec:
                   key: SHOGO_INTERNAL_SECRET
                   optional: true
             # --- Affiliate content-CPM (Instagram / TikTok view tracking) ---
-            # Sub-flag; requires SHOGO_AFFILIATES_NATIVE=true above. Flip to
-            # "true" to let affiliates connect handles and start the hourly
-            # poll + CPM accrual cron. Safe rollback to "false".
-            - name: SHOGO_AFFILIATE_CONTENT_CPM
-              value: "false"
-            - name: SHOGO_SOCIAL_CONTENT_PROVIDER
-              value: "ensembledata"
-            - name: SHOGO_AFFILIATE_CONTENT_CPM_CENTS
-              value: "100"
-            - name: SHOGO_AFFILIATE_CONTENT_HOLD_DAYS
-              value: "7"
-            # EnsembleData API token. Prefer the encrypted PlatformSetting
-            # provider-key.ensembledata (set via super-admin); this env is a
-            # fallback. Stored in api-secrets by the deploy workflow.
+            # Optional, DB-controlled feature. The master toggle, provider,
+            # CPM rate, hold days, and caps are all super-admin PlatformSetting
+            # rows (`affiliate.content.*`), NOT env vars — see Admin → Affiliate
+            # CPM. The only env here is the EnsembleData token (a secret); the
+            # encrypted PlatformSetting provider-key.ensembledata (set via the
+            # admin UI) is preferred, this secretKeyRef is a fallback.
             - name: ENSEMBLEDATA_API_TOKEN
               valueFrom:
                 secretKeyRef:

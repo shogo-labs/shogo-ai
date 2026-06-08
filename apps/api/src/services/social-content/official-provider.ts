@@ -6,8 +6,8 @@
  * TikTok Display API).
  *
  * It implements the same `SocialContentProvider` interface as the
- * EnsembleData provider so flipping `SHOGO_SOCIAL_CONTENT_PROVIDER` to
- * `official` is the only change required downstream. Unlike the
+ * EnsembleData provider so setting the `affiliate.content.provider` DB
+ * setting to `official` is the only change required downstream. Unlike the
  * handle-based unofficial path, the official APIs require each affiliate
  * to OAuth-connect a Business/Creator account; that token exchange and
  * storage are intentionally out of scope here and will hang off the
@@ -34,7 +34,7 @@ export class OfficialApiProvider implements SocialContentProvider {
     throw new SocialProviderError(
       'not_configured',
       'Official IG Graph / TikTok Display provider is not implemented yet. ' +
-        'Set SHOGO_SOCIAL_CONTENT_PROVIDER=ensembledata.',
+        'Set the affiliate.content.provider setting to ensembledata.',
     )
   }
 
@@ -43,7 +43,7 @@ export class OfficialApiProvider implements SocialContentProvider {
     throw new SocialProviderError(
       'not_configured',
       'Official IG Graph / TikTok Display provider is not implemented yet. ' +
-        'Set SHOGO_SOCIAL_CONTENT_PROVIDER=ensembledata.',
+        'Set the affiliate.content.provider setting to ensembledata.',
     )
   }
 }

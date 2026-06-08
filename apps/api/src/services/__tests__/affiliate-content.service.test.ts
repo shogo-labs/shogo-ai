@@ -28,6 +28,8 @@ let posts: Row[]
 let snapshots: Row[]
 let commissions: Row[]
 let affiliates: Map<string, Row>
+// In-memory PlatformSetting rows backing the DB-driven content config.
+let settingsStore: Map<string, string>
 
 let nextId = 0
 function genId(prefix = 'id'): string {
@@ -43,8 +45,26 @@ function p2002() {
 const prismaStub: any = {
   $transaction: async (fn: any) => fn(prismaStub),
   platformSetting: {
-    findMany: async () => [] as Row[],
-    findUnique: async () => null,
+    findMany: async ({ where }: any = {}) => {
+      let entries = [...settingsStore.entries()]
+      if (where?.key?.startsWith) entries = entries.filter(([k]) => k.startsWith(where.key.startsWith))
+      if (where?.key?.in) entries = entries.filter(([k]) => where.key.in.includes(k))
+      return entries.map(([key, value]) => ({ key, value }))
+    },
+    findUnique: async ({ where }: any) => {
+      const value = settingsStore.get(where.key)
+      return value != null ? { key: where.key, value } : null
+    },
+    upsert: async ({ where, create, update }: any) => {
+      const existed = settingsStore.has(where.key)
+      const value = String((existed ? update : create).value)
+      settingsStore.set(where.key, value)
+      return { key: where.key, value }
+    },
+    deleteMany: async ({ where }: any) => {
+      if (where?.key) settingsStore.delete(where.key)
+      return {}
+    },
   },
   affiliate: {
     findUnique: async ({ where, select }: any) => {
@@ -207,6 +227,9 @@ const fakeProvider = {
 mock.module('../../lib/prisma', () => withPrismaExports({ prisma: prismaStub }))
 mock.module('../social-content', () => ({
   getSocialContentProvider: async () => fakeProvider,
+  getConfiguredProviderName: async () => 'ensembledata',
+  invalidateSocialContentProvider: () => {},
+  ENSEMBLEDATA_SETTING_KEY: 'provider-key.ensembledata',
   SocialProviderError: FakeProviderError,
 }))
 mock.module('../../lib/global-job-lock', () => ({
@@ -216,7 +239,14 @@ mock.module('../../lib/global-job-lock', () => ({
 }))
 
 const svc = await import('../affiliate-content.service')
+const settingsSvc = await import('../affiliate-content-settings.service')
 const job = await import('../../jobs/poll-affiliate-content')
+
+/** Set a content PlatformSetting row and drop the settings cache. */
+function setContentSetting(key: string, value: string | number) {
+  settingsStore.set(key, String(value))
+  settingsSvc.invalidateContentSettings()
+}
 
 function makePost(overrides: Partial<Row> = {}): Row {
   return {
@@ -237,22 +267,24 @@ beforeEach(() => {
   posts = []
   snapshots = []
   commissions = []
-  affiliates = new Map([['aff-1', { id: 'aff-1', userId: 'user-1', pendingPayoutCents: 0 }]])
+  affiliates = new Map([['aff-1', { id: 'aff-1', userId: 'user-1', pendingPayoutCents: 0, contentCpmCents: null }]])
   nextId = 0
   fakeProvider.profile = { providerUserId: 'puid-1', bio: '', displayName: 'Tester' }
   fakeProvider.postsToReturn = []
   fakeProvider.throwOnList = null
+  // The affiliate program flag stays an env var; everything else is DB-driven.
   process.env.SHOGO_AFFILIATES_NATIVE = 'true'
-  process.env.SHOGO_AFFILIATE_CONTENT_CPM = 'true'
-  process.env.SHOGO_AFFILIATE_CONTENT_CPM_CENTS = '100' // $1.00 / 1k views
-  delete process.env.SHOGO_AFFILIATE_CONTENT_MAX_VIEWS_PER_POST_PER_RUN
-  delete process.env.SHOGO_AFFILIATE_CONTENT_HOLD_DAYS
+  // Default content config: feature on, $1.00 / 1k views. Other knobs default.
+  settingsStore = new Map([
+    ['affiliate.content.enabled', 'true'],
+    ['affiliate.content.cpmCents', '100'],
+  ])
+  settingsSvc.invalidateContentSettings()
 })
 
 afterEach(() => {
   delete process.env.SHOGO_AFFILIATES_NATIVE
-  delete process.env.SHOGO_AFFILIATE_CONTENT_CPM
-  delete process.env.SHOGO_AFFILIATE_CONTENT_CPM_CENTS
+  settingsSvc.invalidateContentSettings()
 })
 
 async function connectVerified(platform = 'tiktok', handle = 'creator') {
@@ -357,7 +389,7 @@ describe('pollAccount — CPM math', () => {
   })
 
   test('caps views paid per post per run; remainder paid next run', async () => {
-    process.env.SHOGO_AFFILIATE_CONTENT_MAX_VIEWS_PER_POST_PER_RUN = '1000'
+    setContentSetting('affiliate.content.maxViewsPerPostPerRun', 1000)
     const account = await connectVerified()
     fakeProvider.postsToReturn = [makePost({ views: 10000 })]
     const res1 = await svc.pollAccount(account)
@@ -376,6 +408,23 @@ describe('pollAccount — CPM math', () => {
     expect(res.newCommissionCents).toBe(0)
     expect(posts[0].paidViews).toBe(0)
     expect(commissions).toHaveLength(0)
+  })
+
+  test('per-creator contentCpmCents override beats the platform rate', async () => {
+    affiliates.get('aff-1')!.contentCpmCents = 250 // $2.50 / 1k for this creator
+    const account = await connectVerified()
+    fakeProvider.postsToReturn = [makePost({ views: 1000 })]
+    const res = await svc.pollAccount(account)
+    expect(res.newCommissionCents).toBe(250) // 1000/1000 * 250c (not the 100c global)
+    expect(commissions[0]).toMatchObject({ rateBps: 250 })
+  })
+
+  test('per-platform CPM setting beats the global rate', async () => {
+    setContentSetting('affiliate.content.tiktok.cpmCents', 300)
+    const account = await connectVerified('tiktok', 'creator')
+    fakeProvider.postsToReturn = [makePost({ views: 1000 })]
+    const res = await svc.pollAccount(account)
+    expect(res.newCommissionCents).toBe(300)
   })
 
   test('provider failure is isolated and recorded', async () => {
@@ -403,8 +452,14 @@ describe('getContentSummary', () => {
 })
 
 describe('poll-affiliate-content cron', () => {
-  test('short-circuits when the content flag is off', async () => {
-    process.env.SHOGO_AFFILIATE_CONTENT_CPM = 'false'
+  test('short-circuits when the content toggle is off', async () => {
+    setContentSetting('affiliate.content.enabled', 'false')
+    const res = await job.runPollAffiliateContent()
+    expect(res).toMatchObject({ flagDisabled: true })
+  })
+
+  test('short-circuits when the affiliate program env flag is off', async () => {
+    delete process.env.SHOGO_AFFILIATES_NATIVE
     const res = await job.runPollAffiliateContent()
     expect(res).toMatchObject({ flagDisabled: true })
   })
