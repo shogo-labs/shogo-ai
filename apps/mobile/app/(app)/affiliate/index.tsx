@@ -20,7 +20,7 @@ import * as Clipboard from 'expo-clipboard'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
-  ArrowLeft, Copy, Share2, Wallet, Users, ChevronRight, AlertTriangle,
+  ArrowLeft, Copy, Share2, Wallet, Users, ChevronRight, AlertTriangle, Video,
 } from 'lucide-react-native'
 import { Card, CardContent, Button, Badge } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
@@ -151,6 +151,12 @@ export default observer(function AffiliateDashboard() {
                 title="Downline"
                 subtitle="See who you've referred"
                 onPress={() => router.push('/(app)/affiliate/downline')}
+              />
+              <NavRow
+                icon={<Video size={18} className="text-foreground" />}
+                title="Content earnings"
+                subtitle="Connect Instagram / TikTok, earn per view"
+                onPress={() => router.push('/(app)/affiliate/content')}
               />
             </View>
 

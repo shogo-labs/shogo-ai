@@ -2706,6 +2706,32 @@ enum PayoutBatchStatus {
   failed
 }
 
+/// Social platform an affiliate can connect for content-CPM tracking.
+enum SocialPlatform {
+  instagram
+  tiktok
+}
+
+/// Ownership-verification state of a connected social handle. An account
+/// must reach `verified` (the affiliate proved control by placing the
+/// one-time `verificationCode` in their bio) before any of its posts
+/// accrue CPM commissions.
+enum SocialAccountVerificationStatus {
+  pending
+  verified
+  rejected
+}
+
+/// Discriminates how an `AffiliateCommission` was earned: `referral` is
+/// the original MLM subscription-referral path; `content` is the
+/// view-based CPM path driven by the social-content poller. Defaults to
+/// `referral` so every pre-existing row and the entire referral engine
+/// keep their original semantics untouched.
+enum CommissionSource {
+  referral
+  content
+}
+
 /// One per user who has opted into the affiliate program. The self-relation
 /// (`parent` / `children`) builds the upline tree. `depth` is denormalized
 /// (root = 1) so payout-time tree walks stay fast without recursive joins
@@ -2750,10 +2776,11 @@ model Affiliate {
   user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   parent       Affiliate?             @relation("AffiliateUpline", fields: [parentAffiliateId], references: [id], onDelete: SetNull)
   children     Affiliate[]            @relation("AffiliateUpline")
-  clicks       AffiliateClick[]
-  attributions AffiliateAttribution[]
-  commissions  AffiliateCommission[]
-  payouts      AffiliatePayout[]
+  clicks         AffiliateClick[]
+  attributions   AffiliateAttribution[]
+  commissions    AffiliateCommission[]
+  payouts        AffiliatePayout[]
+  socialAccounts AffiliateSocialAccount[]
 
   @@index([parentAffiliateId])
   @@index([status])
@@ -2836,11 +2863,28 @@ model AffiliateCommission {
   stripeInvoiceId     String?
   stripeChargeId      String?
   /// 1 = direct (L1), 2 = parent (L2), 3 = grandparent (L3)…
+  /// Always 1 for `content` commissions (CPM is paid to the connecting
+  /// affiliate directly; there is no upline for content earnings).
   level               Int
+  /// For `referral`: invoice subtotal eligible for commission, in cents.
+  /// For `content`: the number of NEW views paid on in this run (the
+  /// view delta) — informational, the CPM math already produced
+  /// `amountCents`.
   basisCents          Int
   rateBps             Int
   amountCents         Int
   status              CommissionStatus @default(pending)
+  /// Earning channel. `referral` (default) preserves every existing row
+  /// and the subscription-referral engine; `content` rows are minted by
+  /// the social-content poller.
+  source              CommissionSource @default(referral)
+  /// Idempotency key for `content` commissions (null for `referral`).
+  /// Set to the originating `AffiliatePostSnapshot.id` so a re-run that
+  /// re-observes the same snapshot can never double-pay. The
+  /// `(source, contentRunId, affiliateId)` unique index enforces it;
+  /// Postgres treats the null `contentRunId` on referral rows as
+  /// distinct, so referral inserts are unaffected.
+  contentRunId        String?
   /// `createdAt + SHOGO_AFFILIATE_REFUND_HOLD_DAYS`. The nightly
   /// `approveEligibleCommissions` job flips rows whose `eligibleAt <= now`
   /// from pending to approved.
@@ -2852,6 +2896,7 @@ model AffiliateCommission {
   payout    AffiliatePayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@unique([stripeInvoiceId, affiliateId, level])
+  @@unique([source, contentRunId, affiliateId])
   @@index([affiliateId, status])
   @@index([eligibleAt, status])
   @@index([stripeChargeId])
@@ -2904,4 +2949,97 @@ model AffiliateCommissionTier {
   label        String?
 
   @@map("affiliate_commission_tiers")
+}
+
+/// A social handle an affiliate has connected for content-CPM tracking.
+/// Ownership is proven out-of-band: on creation we mint a one-time
+/// `verificationCode`; `verifyAccount` fetches the public profile via the
+/// content provider and confirms the code is present in the bio before
+/// flipping `verificationStatus` to `verified`. Only verified accounts
+/// are polled and only their posts accrue commissions — this is the
+/// anti-fraud gate (a public-data provider can read any handle's views
+/// but cannot prove who owns it).
+///
+/// `(platform, handle)` is unique so two affiliates can't both claim the
+/// same handle and double-bill its views.
+model AffiliateSocialAccount {
+  id                 String                          @id @default(cuid())
+  affiliateId        String
+  platform           SocialPlatform
+  /// Stored normalized (lowercased, leading `@` stripped).
+  handle             String
+  /// Provider-side stable user id, captured at verification time so
+  /// later polls survive a handle rename.
+  providerUserId     String?
+  verificationStatus SocialAccountVerificationStatus @default(pending)
+  /// One-time token the affiliate places in their bio to prove ownership.
+  verificationCode   String
+  verifiedAt         DateTime?
+  lastPolledAt       DateTime?
+  /// Set when a poll fails so the dashboard can surface "needs attention".
+  lastError          String?
+  createdAt          DateTime                        @default(now())
+  updatedAt          DateTime                        @updatedAt
+
+  affiliate Affiliate       @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  posts     AffiliatePost[]
+
+  @@unique([platform, handle])
+  @@index([affiliateId])
+  @@index([verificationStatus])
+  @@map("affiliate_social_accounts")
+}
+
+/// One row per discovered video/post on a connected account. `lastViews`
+/// is the most-recent cumulative view count; `paidViews` is the running
+/// total we have ALREADY paid CPM on. Each poll pays on
+/// `max(0, lastViews - paidViews)` then advances `paidViews`, so view
+/// counts revised downward never claw back and re-polls never double-pay.
+///
+/// `(platform, providerPostId)` is unique — the same video is one row
+/// even if the provider returns it across multiple pages.
+model AffiliatePost {
+  id              String         @id @default(cuid())
+  socialAccountId String
+  platform        SocialPlatform
+  providerPostId  String
+  url             String?
+  caption         String?
+  postedAt        DateTime?
+  /// Most recent cumulative view count observed.
+  lastViews       Int            @default(0)
+  /// Cumulative views already paid CPM on (the high-water mark).
+  paidViews       Int            @default(0)
+  lastLikes       Int            @default(0)
+  lastComments    Int            @default(0)
+  lastShares      Int            @default(0)
+  lastPolledAt    DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  socialAccount AffiliateSocialAccount  @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  snapshots     AffiliatePostSnapshot[]
+
+  @@unique([platform, providerPostId])
+  @@index([socialAccountId])
+  @@map("affiliate_posts")
+}
+
+/// Append-only hourly metric history for a post. Powers the dashboard
+/// trend charts and is the audit trail behind every content commission
+/// (each commission's `contentRunId` points back at the snapshot id that
+/// minted it).
+model AffiliatePostSnapshot {
+  id         String   @id @default(cuid())
+  postId     String
+  views      Int      @default(0)
+  likes      Int      @default(0)
+  comments   Int      @default(0)
+  shares     Int      @default(0)
+  capturedAt DateTime @default(now())
+
+  post AffiliatePost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, capturedAt])
+  @@map("affiliate_post_snapshots")
 }
