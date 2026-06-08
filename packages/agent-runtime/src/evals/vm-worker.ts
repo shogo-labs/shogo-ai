@@ -250,6 +250,12 @@ export async function startVMWorker(
   if (process.env.GOOGLE_API_KEY && !vmEnv.GOOGLE_API_KEY) vmEnv.GOOGLE_API_KEY = process.env.GOOGLE_API_KEY
   if (process.env.OPENROUTER_API_KEY && !vmEnv.OPENROUTER_API_KEY) vmEnv.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY
   if (process.env.OPENROUTER_BASE_URL && !vmEnv.OPENROUTER_BASE_URL) vmEnv.OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL
+  // Forward provider base-URL overrides so custom OpenAI-/Anthropic-compatible
+  // endpoints (e.g. Hoshi/MiMo via OPENAI_BASE_URL) are reachable in VM mode —
+  // resolveModel('custom') routes through the openai-completions path at
+  // OPENAI_BASE_URL, which otherwise defaults to api.openai.com inside the guest.
+  if (process.env.OPENAI_BASE_URL && !vmEnv.OPENAI_BASE_URL) vmEnv.OPENAI_BASE_URL = process.env.OPENAI_BASE_URL
+  if (process.env.ANTHROPIC_BASE_URL && !vmEnv.ANTHROPIC_BASE_URL) vmEnv.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL
 
   const handle = await manager.startVM({
     workspaceDir: dir,
