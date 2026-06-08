@@ -720,6 +720,12 @@ export class PreviewManager {
   private hasApiServer: boolean | null = null
   private regenerating = false
   private pendingSchemaChange = false
+  // When true, the schema watcher defers regen instead of acting on a
+  // change. Used by `shogo push` (SDK) to run prisma generate + db push
+  // itself without racing a concurrent watcher-driven restart (the classic
+  // EADDRINUSE source). Resumed via resumeWatchers(), which flushes any
+  // change that landed while paused.
+  private watchersPaused = false
   private lastGenerateError: string | null = null
   // Surfaced via getStatus() so external observers (the API's import
   // bootstrap bridge, debug UIs, etc.) can tell "install/prisma succeeded"
@@ -1479,7 +1485,8 @@ export class PreviewManager {
     try {
       this.schemaWatcher = watch(prismaDir, (_event, filename) => {
         if (filename !== 'schema.prisma') return
-        if (this.regenerating) {
+        if (this.regenerating || this.watchersPaused) {
+          // Defer: resumeWatchers() (or the end of regen) will flush it.
           this.pendingSchemaChange = true
           return
         }
@@ -1507,6 +1514,34 @@ export class PreviewManager {
     if (this.schemaWatcher) {
       this.schemaWatcher.close()
       this.schemaWatcher = null
+    }
+  }
+
+  /**
+   * Pause watcher-driven regeneration/restart. Used by `shogo push` so an
+   * external prisma generate + db push doesn't race a concurrent
+   * watcher-triggered restart (which leaks the API port → EADDRINUSE).
+   */
+  pauseWatchers(): void {
+    this.watchersPaused = true
+    if (this.schemaTimer) {
+      clearTimeout(this.schemaTimer)
+      this.schemaTimer = null
+    }
+  }
+
+  /**
+   * Resume watcher-driven regeneration. If a schema change landed while
+   * paused, flush it now (re-baselining first so an unchanged file is a
+   * no-op).
+   */
+  resumeWatchers(): void {
+    if (!this.watchersPaused) return
+    this.watchersPaused = false
+    if (this.pendingSchemaChange && !this.regenerating) {
+      this.pendingSchemaChange = false
+      this.lastSchemaHash = this.computeSchemaHash()
+      void this.handleSchemaChange()
     }
   }
 
@@ -2601,8 +2636,19 @@ export class PreviewManager {
 
     // Make sure the port is actually free before we spawn — a previous
     // run may have leaked a process or had its EADDRINUSE handler skip
-    // cleanup. `forceKillPort()` no-ops when nothing is listening.
-    await this.waitForPortRelease()
+    // cleanup. The schema-change and sync() restart paths reach us via
+    // startApiServer() WITHOUT a preceding forceKillPort() (unlike
+    // restartApiServerOnly/handleCrash), so if the old sidecar is slow to
+    // release the port we'd otherwise spawn straight into EADDRINUSE and
+    // bounce through the crash handler — surfacing as sustained /api/* 503s.
+    // Escalate to a force-kill instead of waiting-then-spawning blindly.
+    if (!(await this.isPortFree())) {
+      await this.waitForPortRelease()
+      if (!(await this.isPortFree())) {
+        await this.forceKillPort()
+        await this.waitForPortRelease()
+      }
+    }
 
     // Each fresh spawn is also a fresh chance to recover from a crash
     // loop; the running counter only matters across consecutive failures

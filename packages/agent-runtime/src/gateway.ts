@@ -1807,6 +1807,7 @@ export class AgentGateway {
       // workspace singleton; no downside to making it always-on.
       canvasFileWatcher: this.canvasFileWatcher,
       lspManager: this.lspManager ?? undefined,
+      getLspManager: () => this.lspManager,
       fileStateCache: this.fileStateCache,
       agentManager: this.agentManager,
       skillServerManager: this.skillServerManager,
