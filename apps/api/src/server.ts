@@ -94,6 +94,7 @@ import { localProjectsRoutes } from './routes/local-projects'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
+import { normalizeAdminScopes } from './lib/admin-scopes'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
 import { getNativeProviderApiKeySync } from './services/provider-credentials.service'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
@@ -7170,6 +7171,7 @@ app.get('/api/me', authMiddleware, requireAuth, async (c) => {
       emailVerified: true,
       image: true,
       role: true,
+      adminScopes: true,
       onboardingCompleted: true,
       createdAt: true,
       updatedAt: true,
@@ -7178,7 +7180,10 @@ app.get('/api/me', authMiddleware, requireAuth, async (c) => {
   if (!user) {
     return c.json({ error: { code: 'not_found', message: 'User not found' } }, 404)
   }
-  return c.json({ ok: true, data: user })
+  return c.json({
+    ok: true,
+    data: { ...user, adminScopes: normalizeAdminScopes(user.adminScopes) },
+  })
 })
 
 // =============================================================================

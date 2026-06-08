@@ -35,6 +35,7 @@ import {
   Heart,
   Store,
   KeyRound,
+  Sparkles,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -44,22 +45,45 @@ import { usePlatformConfig } from '../../lib/platform-config'
 
 type UserRole = 'user' | 'super_admin'
 
-const BASE_NAV_ITEMS = [
-  { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard' },
+/**
+ * Nav item access markers:
+ *   - `scope`     → visible to super admins OR holders of that admin scope
+ *   - `anyAdmin`  → visible to anyone with *some* admin access (e.g. Dashboard)
+ *   - neither     → super_admin only
+ */
+type AdminNavItem = {
+  href: string
+  icon: any
+  label: string
+  scope?: string
+  anyAdmin?: boolean
+}
+
+const BASE_NAV_ITEMS: readonly AdminNavItem[] = [
+  { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard', scope: 'analytics:read' },
   { href: '/(admin)/users', icon: Users, label: 'Users' },
   { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
   { href: '/(admin)/grants', icon: Gift, label: 'Credit grants' },
   { href: '/(admin)/license-keys', icon: KeyRound, label: 'License keys' },
   { href: '/(admin)/marketplace', icon: Store, label: 'Marketplace' },
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
-  { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
+  { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics', scope: 'analytics:read' },
+  { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scope: 'creators:read' },
   { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
   { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
   { href: '/(admin)/general', icon: Settings, label: 'General' },
-] as const
+]
 
-const AI_NAV_ITEM = { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' }
+const AI_NAV_ITEM: AdminNavItem = { href: '/(admin)/settings', icon: BrainCircuit, label: 'AI' }
+
+/** Can the current user see this nav item / access this admin surface? */
+function canSeeNavItem(item: AdminNavItem, isSuperAdmin: boolean, scopes: string[]): boolean {
+  if (isSuperAdmin) return true
+  if (item.anyAdmin) return true
+  if (item.scope) return scopes.includes(item.scope)
+  return false
+}
 
 const LOCAL_MAIN_ITEMS = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
@@ -80,6 +104,7 @@ function useAdminCheck() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
   const http = useDomainHttp()
   const [role, setRole] = useState<UserRole | null>(null)
+  const [scopes, setScopes] = useState<string[]>([])
   const [checking, setChecking] = useState(true)
 
   useEffect(() => {
@@ -94,6 +119,7 @@ function useAdminCheck() {
       .then((data) => {
         if (!cancelled && data.ok && data.data?.role) {
           setRole(data.data.role as UserRole)
+          setScopes(Array.isArray(data.data.adminScopes) ? data.data.adminScopes : [])
         }
       })
       .catch((e) => console.error('[AdminLayout] Failed to verify admin role:', e))
@@ -103,8 +129,13 @@ function useAdminCheck() {
     return () => { cancelled = true }
   }, [http, isAuthenticated, authLoading, user?.id])
 
+  const isSuperAdmin = role === 'super_admin'
+
   return {
-    isSuperAdmin: role === 'super_admin',
+    isSuperAdmin,
+    scopes,
+    // Portal access: full super admins OR users granted at least one scope.
+    hasAdminAccess: isSuperAdmin || scopes.length > 0,
     isPending: authLoading || checking,
     isAuthenticated,
     userEmail: user?.email,
@@ -167,17 +198,26 @@ function AdminSidebar({
   isDrawer,
   onClose,
   infraHealth = 'unknown',
+  isSuperAdmin = true,
+  scopes = [],
 }: {
   userName?: string | null
   userEmail?: string | null
   isDrawer?: boolean
   onClose?: () => void
   infraHealth?: HealthStatus
+  isSuperAdmin?: boolean
+  scopes?: string[]
 }) {
   const router = useRouter()
   const pathname = usePathname()
   const { features, localMode } = usePlatformConfig()
-  const NAV_ITEMS = localMode ? LOCAL_MAIN_ITEMS : [...BASE_NAV_ITEMS, AI_NAV_ITEM]
+  // Local mode promotes everyone to super_admin, so its nav is unfiltered.
+  const NAV_ITEMS = localMode
+    ? LOCAL_MAIN_ITEMS
+    : [...BASE_NAV_ITEMS, AI_NAV_ITEM].filter((item) =>
+        canSeeNavItem(item, isSuperAdmin, scopes),
+      )
 
   const handleNav = useCallback((href: string) => {
     router.push(href as any)
@@ -198,7 +238,9 @@ function AdminSidebar({
             </View>
             <View>
               <Text className="text-sm font-bold text-foreground">Admin</Text>
-              <Text className="text-[10px] text-muted-foreground">Super Admin Portal</Text>
+              <Text className="text-[10px] text-muted-foreground">
+                {isSuperAdmin ? 'Super Admin Portal' : 'Admin Portal'}
+              </Text>
             </View>
           </View>
           {isDrawer && (
@@ -361,6 +403,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/projects/')) return 'Project Detail'
   if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('analytics')) return 'Analytics'
+  if (pathname.includes('creators')) return 'Creators'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
   if (pathname.includes('heartbeats')) return 'Heartbeats'
   if (pathname.startsWith('/evals/')) return 'Eval Detail'
@@ -386,25 +429,40 @@ function AdminLayoutInner() {
   const pathname = usePathname()
   const { width } = useWindowDimensions()
   const isWide = width >= 900
-  const { isSuperAdmin, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
+  const { isSuperAdmin, scopes, hasAdminAccess, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
   const { localMode } = usePlatformConfig()
   const infraHealth = useInfraHealth(isSuperAdmin)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
+  // Portal entry: must be authenticated AND have some admin access.
   useEffect(() => {
-    if (!isPending && (!isAuthenticated || !isSuperAdmin)) {
+    if (!isPending && (!isAuthenticated || !hasAdminAccess)) {
       router.replace('/(app)')
     }
-  }, [isPending, isAuthenticated, isSuperAdmin, router])
+  }, [isPending, isAuthenticated, hasAdminAccess, router])
+
+  // Per-route guard: a partial admin who deep-links to a page they lack
+  // permission for is bounced to their first permitted page (the backend
+  // also 403s those endpoints — this is the matching UX).
+  useEffect(() => {
+    if (isPending || !isAuthenticated || !hasAdminAccess || isSuperAdmin || localMode) return
+    const permitted = [...BASE_NAV_ITEMS, AI_NAV_ITEM].filter((item) =>
+      canSeeNavItem(item, isSuperAdmin, scopes),
+    )
+    const onPermitted = permitted.some((item) => isNavActive(pathname, item.href))
+    if (!onPermitted && permitted.length > 0) {
+      router.replace(permitted[0].href as any)
+    }
+  }, [isPending, isAuthenticated, hasAdminAccess, isSuperAdmin, localMode, scopes, pathname, router])
 
   useEffect(() => {
-    if (localMode && !isPending && isSuperAdmin) {
+    if (localMode && !isPending && hasAdminAccess) {
       const p = pathname
       if (p === '/' || p === '' || p === '/(admin)' || p === '/index') {
         router.replace('/(admin)/projects' as any)
       }
     }
-  }, [localMode, isPending, isSuperAdmin, pathname, router])
+  }, [localMode, isPending, hasAdminAccess, pathname, router])
 
   useEffect(() => {
     if (isWide) setDrawerOpen(false)
@@ -423,13 +481,19 @@ function AdminLayoutInner() {
     )
   }
 
-  if (!isAuthenticated || !isSuperAdmin) return null
+  if (!isAuthenticated || !hasAdminAccess) return null
 
   return (
     <SafeAreaView className="flex-1 bg-background">
       <View className="flex-1 flex-row">
         {isWide && (
-          <AdminSidebar userName={userName} userEmail={userEmail} infraHealth={infraHealth} />
+          <AdminSidebar
+            userName={userName}
+            userEmail={userEmail}
+            infraHealth={infraHealth}
+            isSuperAdmin={isSuperAdmin}
+            scopes={scopes}
+          />
         )}
 
         <View className="flex-1">
@@ -452,6 +516,8 @@ function AdminLayoutInner() {
           isDrawer
           onClose={() => setDrawerOpen(false)}
           infraHealth={infraHealth}
+          isSuperAdmin={isSuperAdmin}
+          scopes={scopes}
         />
       )}
     </SafeAreaView>

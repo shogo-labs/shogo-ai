@@ -61,6 +61,33 @@ export function createHttpClient(baseUrl?: string): HttpClient {
 // that aren't covered by the domain stores. They use the SDK HttpClient
 // available via `useDomainHttp()`.
 
+/** An assignable admin permission scope (mirror of apps/api/src/lib/admin-scopes.ts). */
+export interface AdminScopeDef {
+  id: string
+  label: string
+  description: string
+}
+
+/** A marketplace creator's admin stats: marketplace metrics + platform spend. */
+export interface AdminCreatorStat {
+  userId: string
+  displayName: string
+  name: string | null
+  email: string
+  creatorTier: string
+  reputationScore: number
+  verified: boolean
+  totalAgentsPublished: number
+  totalInstalls: number
+  averageAgentRating: number
+  totalVersionsShipped: number
+  followerCount: number
+  totalEarningsUsd: number
+  pendingPayoutUsd: number
+  totalPaidOutUsd: number
+  spendUsd: number
+}
+
 export interface CheckoutParams {
   workspaceId: string
   planId: string
@@ -1314,8 +1341,31 @@ export const api = {
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {
-    const res = await http.get<{ ok: boolean; data?: { role?: string; onboardingCompleted?: boolean } }>('/api/me')
+    const res = await http.get<{ ok: boolean; data?: { role?: string; adminScopes?: string[]; onboardingCompleted?: boolean } }>('/api/me')
     return res.data
+  },
+
+  // ─── Admin: scoped access ─────────────────────────────────
+
+  /** The catalog of assignable admin scopes (super_admin only). */
+  async getAdminScopeCatalog(http: HttpClient) {
+    const res = await http.get<{ ok: boolean; data?: AdminScopeDef[] }>('/api/admin/admin-scopes')
+    return res.data?.data ?? []
+  },
+
+  /** Set a user's granular admin scopes (super_admin only). */
+  async setUserAdminAccess(http: HttpClient, userId: string, scopes: string[]) {
+    const res = await http.patch<{
+      ok: boolean
+      data?: { id: string; role: string; adminScopes: string[] }
+    }>(`/api/admin/users/${encodeURIComponent(userId)}/admin-access`, { scopes })
+    return res.data?.data ?? null
+  },
+
+  /** Marketplace creators with marketplace metrics + per-creator platform spend. */
+  async getAdminCreators(http: HttpClient) {
+    const res = await http.get<{ ok: boolean; data?: AdminCreatorStat[] }>('/api/admin/creators')
+    return res.data?.data ?? []
   },
 
   async completeOnboarding(http: HttpClient) {

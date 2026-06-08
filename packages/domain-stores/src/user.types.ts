@@ -15,6 +15,7 @@ export interface UserType {
   emailVerified: boolean
   image?: string
   role: UserRole
+  adminScopes: string
   onboardingCompleted: boolean
   createdAt: Date
   updatedAt: Date
@@ -26,6 +27,7 @@ export interface UserCreateInput {
   emailVerified?: boolean
   image?: string
   role?: UserRole
+  adminScopes?: string
   onboardingCompleted?: boolean
 }
 
@@ -35,5 +37,6 @@ export interface UserUpdateInput {
   emailVerified?: boolean
   image?: string
   role?: UserRole
+  adminScopes?: string
   onboardingCompleted?: boolean
 }

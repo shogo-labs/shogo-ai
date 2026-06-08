@@ -29,6 +29,9 @@ model User {
   emailVerified       Boolean  @default(false)
   image               String?
   role                String   @default("user")
+  // See prisma/schema.prisma for the canonical comment. SQLite has no native
+  // String[] so adminScopes is stored as JSON-encoded TEXT (`["analytics:read"]`).
+  adminScopes         String   @default("[]")
   onboardingCompleted Boolean  @default(false)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt

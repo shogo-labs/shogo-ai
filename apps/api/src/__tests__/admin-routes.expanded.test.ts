@@ -19,6 +19,7 @@ const scheduler = {
 mock.module('../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
     c.set('user', { id: 'user-1' })
+    c.set('auth', { userId: 'user-1', isAuthenticated: true })
     await next()
   },
   requireAuth: async (_c: any, next: any) => next(),
@@ -76,6 +77,11 @@ mock.module('../lib/analytics-digest-collector', () => ({
 }))
 
 const prisma = {
+  // getAdminAccess (via the real requireAdminScope gating the analytics
+  // routes) resolves this; super_admin implicitly holds every scope.
+  user: {
+    findUnique: mock(async () => ({ role: 'super_admin', adminScopes: [] as string[] })),
+  },
   infraSnapshot: {
     findFirst: mock(async () => ({ id: 'snapshot-1' })),
     findMany: mock(async () => [{ timestamp: new Date('2026-01-01T00:00:00Z') }]),

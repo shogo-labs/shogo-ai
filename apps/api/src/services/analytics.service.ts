@@ -2479,3 +2479,92 @@ export function deriveSourceTag(data: {
   return 'direct'
 }
 
+// ============================================================================
+// Creator Stats (admin: marketplace metrics + per-creator platform usage)
+// ============================================================================
+
+export interface CreatorStat {
+  userId: string
+  displayName: string
+  name: string | null
+  email: string
+  creatorTier: string
+  reputationScore: number
+  verified: boolean
+  totalAgentsPublished: number
+  totalInstalls: number
+  averageAgentRating: number
+  totalVersionsShipped: number
+  followerCount: number
+  /** Lifetime marketplace earnings, in USD (converted from cents). */
+  totalEarningsUsd: number
+  pendingPayoutUsd: number
+  totalPaidOutUsd: number
+  /** Lifetime Shogo platform spend by this creator's account, in USD. */
+  spendUsd: number
+}
+
+/**
+ * Admin creator stats: every marketplace creator with their denormalized
+ * marketplace metrics joined to their lifetime platform usage spend.
+ *
+ * Platform spend is attributed by walking `CreatorProfile.userId -> Member ->
+ * UsageEvent.memberId` and summing `billedUsd`, since usage is metered per
+ * workspace member, not per creator.
+ */
+export async function getCreatorStats(): Promise<CreatorStat[]> {
+  const creators = await prisma.creatorProfile.findMany({
+    orderBy: { totalInstalls: 'desc' },
+    include: {
+      user: { select: { id: true, name: true, email: true } },
+    },
+  })
+
+  if (creators.length === 0) return []
+
+  const userIds = creators.map((c) => c.userId)
+
+  // Map each member row owned by a creator back to its creator userId, so we
+  // can attribute usage_events (keyed by memberId) to the right creator.
+  const members = await prisma.member.findMany({
+    where: { userId: { in: userIds } },
+    select: { id: true, userId: true },
+  })
+  const memberToUser = new Map<string, string>(
+    members.map((m) => [m.id, m.userId])
+  )
+  const memberIds = members.map((m) => m.id)
+
+  const spendByUser = new Map<string, number>()
+  if (memberIds.length > 0) {
+    const events = await prisma.usageEvent.findMany({
+      where: { memberId: { in: memberIds } },
+      select: { memberId: true, billedUsd: true },
+    })
+    for (const ev of events) {
+      const uid = memberToUser.get(ev.memberId)
+      if (!uid) continue
+      spendByUser.set(uid, (spendByUser.get(uid) ?? 0) + (ev.billedUsd ?? 0))
+    }
+  }
+
+  return creators.map((c) => ({
+    userId: c.userId,
+    displayName: c.displayName,
+    name: c.user?.name ?? null,
+    email: c.user?.email ?? '',
+    creatorTier: String(c.creatorTier),
+    reputationScore: c.reputationScore,
+    verified: c.verified,
+    totalAgentsPublished: c.totalAgentsPublished,
+    totalInstalls: c.totalInstalls,
+    averageAgentRating: c.averageAgentRating,
+    totalVersionsShipped: c.totalVersionsShipped,
+    followerCount: c.followerCount,
+    totalEarningsUsd: c.totalEarningsInCents / 100,
+    pendingPayoutUsd: c.pendingPayoutInCents / 100,
+    totalPaidOutUsd: c.totalPaidOutInCents / 100,
+    spendUsd: spendByUser.get(c.userId) ?? 0,
+  }))
+}
+
