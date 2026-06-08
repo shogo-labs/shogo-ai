@@ -18,7 +18,8 @@ You'll need:
 
 - A **published** app — custom domains attach to an app that's already live.
 - A domain you control, with access to its **DNS settings** at your registrar or DNS provider (for example Cloudflare, Namecheap, GoDaddy, or Route 53).
-- A **subdomain** to point at your app, such as `app.acme.com` or `www.acme.com`. See [Apex vs. subdomains](#apex-vs-subdomains) below.
+
+Just bring the domain itself — your root domain like `acme.com` is fine. You don't need to invent a subdomain. When you add a root domain, Shogo automatically sets up the `www` version too (and a redirect between them), so visitors reach your app either way.
 
 ## Step 1 — Publish your app
 
@@ -39,17 +40,17 @@ You can manage custom domains from either place:
 
 Then:
 
-1. Type the domain you want to use, e.g. `app.acme.com`.
+1. Type your domain, e.g. `acme.com`.
 2. Click **Add**.
 
-Shogo registers the domain and shows you the exact **DNS records** to create.
+Shogo registers `acme.com` **and** `www.acme.com` as a linked pair and shows you the DNS records to create. One of the two is the **primary** (canonical) address and the other redirects to it — `www` is primary by default. You can switch which one is primary anytime with **Make primary**.
 
 ## Step 3 — Create the DNS records
 
-Shogo shows one or more records to add at your DNS provider. Each record has a **Name** and a **Value** with a copy button. You'll usually see:
+Shogo shows the records to add for each hostname at your DNS provider. Each record has a **Name** and a **Value** with a copy button. You'll usually see:
 
-- A **CNAME** record — routes your domain's traffic to Shogo.
-- A **TXT** record — confirms you own the domain and validates your SSL certificate.
+- A **CNAME** record — points your domain to your app.
+- A **TXT** record — confirms you own the domain and verifies your SSL certificate.
 
 Copy each value exactly and add it at your DNS provider. Where you do this varies by provider — look for a section called **DNS**, **Records**, or **Advanced DNS**.
 
@@ -57,38 +58,54 @@ Copy each value exactly and add it at your DNS provider. Where you do this varie
 Copy the values straight from Shogo instead of typing them. A single wrong character will stop verification.
 :::
 
-## Step 4 — Check status
+## Step 4 — Wait for it to go live (automatic)
 
-Back in Shogo, click **Check status**. Shogo re-checks your DNS records and SSL certificate, and the status updates as it goes:
+That's it — there's nothing else to click. Shogo checks your DNS and SSL automatically and your domain goes live on its own, usually within a few minutes of the records propagating. A small **timeline** shows exactly where things are — *Add records → Validate DNS → Issue certificate → Live* — and each DNS record shows a **Found / Not detected yet / Wrong target** tick so you can see at a glance which records are in place. The status moves through these stages:
 
 | Status | What it means |
 | --- | --- |
-| **Awaiting DNS** | The records haven't been detected yet. Add them and check again. |
-| **Verifying** | Records were found; your SSL certificate is being issued. |
+| **Awaiting DNS** | The records haven't been detected yet. Once you've added them, just wait. |
+| **Validating DNS** | Your records were found and are being validated. |
+| **Issuing certificate** | Validation passed; your SSL certificate is being issued (you'll see which certificate authority is issuing it). |
 | **Live** | Your domain is active and serving your app over HTTPS. |
-| **Failed** | Something needs attention — read the message shown, fix it, and check again. |
+| **Taking longer than usual** | Your DNS looks correct but the certificate is taking a while (occasionally a certificate authority is slow). After about 30 minutes a **Retry certificate** button appears — see below. |
+| **Action needed** | Something needs attention — read the message shown and fix it; we'll pick it up on the next check. |
 
-Once the status is **Live**, open `https://app.acme.com` and your app will load on your own domain.
+Once the status is **Live**, open `https://acme.com` (or `https://www.acme.com`) and your app loads on your own domain, redirecting to whichever you chose as primary.
 
-DNS changes can take anywhere from a few minutes to a few hours to take effect, so it's normal to check back a little later. You don't have to manage SSL yourself — certificates are issued and renewed automatically.
+DNS changes can take anywhere from a few minutes to a few hours to take effect. There's a **Check now** button if you'd like to re-check immediately, but you don't have to — Shogo keeps checking in the background. SSL certificates are issued and renewed automatically.
 
-## Apex vs. subdomains
+### If it's taking longer than usual
 
-We recommend using a **subdomain** such as `app.acme.com` or `www.acme.com`.
+Certificates are normally issued within a few minutes, but every so often the certificate authority is slow and a domain can sit in **Issuing certificate** longer than expected. When your DNS records are confirmed correct and it's been more than ~30 minutes, a **Retry certificate** button appears. Click it to nudge the certificate authority to try again — you don't need to change any DNS records. Shogo also retries automatically in the background, so the button is just there if you'd like to give it a push.
 
-A root/apex domain (`acme.com` with nothing in front) can't always use the required CNAME record. It only works if your DNS provider supports **CNAME flattening** or **ALIAS** records — Cloudflare, for example, does. If yours doesn't, use a subdomain instead.
+## Primary domain (www vs. root)
+
+When you add a root domain we set up both `acme.com` and `www.acme.com`. One is the **primary** address visitors are redirected to; the other forwards to it with a permanent (308) redirect. Keeping a single primary address is good for SEO and avoids sign-in/OAuth issues from having two URLs.
+
+By default `www.acme.com` is primary. To flip it, click **Make primary** next to the other hostname — the redirect direction switches right away.
+
+## Using a different subdomain
+
+You can also point a specific subdomain like `app.acme.com` or `docs.acme.com` at your app. Subdomains are added on their own (no automatic `www` pairing) and use a single CNAME record.
+
+## Advanced: root domains and CNAME flattening
+
+The root record Shogo gives you is a CNAME. Most DNS providers don't allow a plain CNAME at the root of a domain, but many — including **Cloudflare** and **Route 53** — support **CNAME flattening** (or **ALIAS**) records that make it work. If your provider supports that, the root domain works directly with the CNAME we provide. If it doesn't, simply use `www.acme.com` as your primary (the default), which always works.
 
 ## Remove a domain
 
-To stop serving your app from a custom domain, open the **Custom domain** section and click the trash icon next to it. You can add it back later if you change your mind.
+To stop serving your app from a custom domain, open the **Custom domain** section and click the trash icon next to it. This removes both the root and `www` halves of the pair. You can add it back later if you change your mind.
 
 ## Troubleshooting
 
-**Status stuck on "Awaiting DNS."** The records aren't visible to Shogo yet. Double-check that the Name and Value match exactly, confirm they're saved at your provider, and give DNS time to propagate before checking again.
+**Status stuck on "Awaiting DNS."** The records aren't visible to Shogo yet. Double-check that the Name and Value match exactly, confirm they're saved at your provider, and give DNS time to propagate — Shogo keeps checking automatically.
 
-**Status shows "Failed."** Read the message next to the domain. The most common causes are a typo in a record or a conflicting record already on the same name (such as an old A or CNAME record). Fix it, then click **Check status**.
+**Status shows "Action needed."** Read the message next to the domain. The most common causes are a typo in a record or a conflicting record already on the same name (such as an old A or CNAME record). Fix it at your provider; Shogo re-checks on its own.
 
 **The page loads but shows a security warning.** Your SSL certificate is still being issued. Wait a few minutes after the records verify, then reload.
+
+**Status says "Taking longer than usual."** Your DNS is correct but the certificate authority is slow. Shogo keeps retrying automatically; once it's been ~30 minutes you can also click **Retry certificate** to nudge it along. No DNS changes are needed.
 
 ## Related
 

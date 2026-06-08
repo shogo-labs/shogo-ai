@@ -155,6 +155,34 @@ export interface CustomDomainInstruction {
   purpose: 'routing' | 'ssl-validation' | 'ownership-verification'
 }
 
+/** Coarse, user-facing provisioning stage (mirrors the API's `CustomDomainStage`). */
+export type CustomDomainStage =
+  | 'awaiting_dns'
+  | 'validating'
+  | 'issuing'
+  | 'active'
+  | 'failed'
+  | 'stalled'
+
+/** Per-record SSL DV validation status for the panel's ✓/… ticks. */
+export interface CustomDomainValidationRecord {
+  name: string
+  value: string
+  /** `pending` | `processing` | `active` | ... */
+  status: string
+}
+
+/** Server-side DNS verdict for the customer's routing + DCV records. */
+export interface CustomDomainDnsCheck {
+  cname: 'ok' | 'wrong' | 'missing'
+  txt: 'ok' | 'partial' | 'missing'
+  ok: boolean
+  cnameTarget?: string
+  txtFound: number
+  txtExpected: number
+  checkedAt: number
+}
+
 export interface CustomDomain {
   id: string
   hostname: string
@@ -164,6 +192,38 @@ export interface CustomDomain {
   verifiedAt?: number
   /** DNS records still required (returned on add + verify). */
   instructions?: CustomDomainInstruction[]
+  /** Links an apex domain to its `www` companion (undefined for standalone). */
+  groupId?: string
+  /** True when this is the canonical hostname of its group; the other
+   *  variant 308-redirects to it. Standalone domains are always primary. */
+  primary?: boolean
+  /** Hostname visitors are redirected to (the group's primary). Equals
+   *  `hostname` for a standalone/primary domain. */
+  canonicalHostname?: string
+  /** Coarse lifecycle stage for the status timeline. */
+  stage?: CustomDomainStage
+  /** Human-readable explanation of what's happening right now. */
+  message?: string
+  /** Per-record SSL DV validation state (drives green/amber ticks). */
+  validation?: CustomDomainValidationRecord[]
+  /** Latest server-side DNS check (CNAME + `_acme-challenge` TXT). */
+  dns?: CustomDomainDnsCheck
+  /** Issuing CA slug (`google` | `lets_encrypt` | `ssl_com`). */
+  certAuthority?: string
+  /** Friendly CA name for display (e.g. "SSL.com"). */
+  certAuthorityLabel?: string
+  /** When the domain was first added (epoch ms). */
+  createdAt?: number
+  /** When status was last reconciled with Cloudflare (epoch ms). */
+  lastCheckedAt?: number
+  /** When issuance was last re-triggered (epoch ms). */
+  lastRetriggerAt?: number
+  /** How many times issuance has been re-triggered. */
+  retriggerCount?: number
+  /** Server-computed: is the manual "Retrigger" button currently allowed? */
+  canRetrigger?: boolean
+  /** ms the user must wait before a (re)trigger is allowed (cooldown / age). */
+  retriggerCooldownMs?: number
 }
 
 export interface CustomDomainsResponse {
@@ -633,18 +693,38 @@ export const api = {
     return res.data
   },
 
+  /** Add a domain. Returns the whole group: the typed hostname plus its
+   *  auto-created apex/www companion when applicable. */
   async addCustomDomain(http: HttpClient, projectId: string, hostname: string) {
-    const res = await http.post<CustomDomain>(`/api/projects/${projectId}/domains`, { hostname })
-    return res.data
+    const res = await http.post<{ domains: CustomDomain[] }>(`/api/projects/${projectId}/domains`, { hostname })
+    return res.data.domains
   },
 
+  /** Re-check the whole apex/www group's DNS + SSL status. */
   async verifyCustomDomain(http: HttpClient, projectId: string, domainId: string) {
-    const res = await http.post<CustomDomain>(`/api/projects/${projectId}/domains/${domainId}/verify`)
-    return res.data
+    const res = await http.post<{ domains: CustomDomain[] }>(`/api/projects/${projectId}/domains/${domainId}/verify`)
+    return res.data.domains
   },
 
+  /** Manually re-trigger DV validation / cert issuance for a stalled domain
+   *  (DNS correct, past ~30m). Gated server-side; throws on 409/429/502 with
+   *  a friendly message. Returns the updated group. */
+  async retriggerCustomDomain(http: HttpClient, projectId: string, domainId: string) {
+    const res = await http.post<{ domains: CustomDomain[] }>(`/api/projects/${projectId}/domains/${domainId}/retrigger`)
+    return res.data.domains
+  },
+
+  /** Make this hostname the canonical (primary) one for its group; the
+   *  other variant redirects to it. Returns the updated group. */
+  async setPrimaryDomain(http: HttpClient, projectId: string, domainId: string) {
+    const res = await http.patch<{ domains: CustomDomain[] }>(`/api/projects/${projectId}/domains/${domainId}/primary`)
+    return res.data.domains
+  },
+
+  /** Remove a domain (and its apex/www companion). Returns removed ids. */
   async removeCustomDomain(http: HttpClient, projectId: string, domainId: string) {
-    await http.delete(`/api/projects/${projectId}/domains/${domainId}`)
+    const res = await http.delete<{ success: boolean; removedIds: string[] }>(`/api/projects/${projectId}/domains/${domainId}`)
+    return res.data?.removedIds ?? []
   },
 
   // ─── Integrations ────────────────────────────────────────

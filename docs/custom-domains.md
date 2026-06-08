@@ -21,15 +21,34 @@ object-storage prefix.
 ## How it works
 
 ```
-Browser ── app.acme.com (CNAME → cname.<custom-domains-zone>) ──▶ Cloudflare edge
-   │                                                              (Custom Hostname TLS)
+Browser ── acme.com / www.acme.com (CNAME → cname.<custom-domains-zone>) ──▶ Cloudflare edge
+   │                                                                         (Custom Hostname TLS)
    ▼
 shogo-subdomain-router Worker  (runs via a */* route on the DEDICATED zone)
    │  hostname under the publish domain?  → first label is the subdomain
-   │  otherwise (custom domain)           → CUSTOM_DOMAINS KV: hostname → subdomain
+   │  otherwise (custom domain)           → CUSTOM_DOMAINS KV: hostname → { s: subdomain, c: canonical }
+   │      host !== canonical (c)?         → 308 redirect to https://<canonical><path>
+   │      else                            → serve subdomain (s)
    ▼
 OCI Object Storage: <subdomain>/index.html
 ```
+
+### Apex / www pairing + canonical redirect
+
+A user only enters their domain (`acme.com`). The add endpoint registers
+**both** `acme.com` and `www.acme.com` as Cloudflare custom hostnames and
+links the two `CustomDomain` rows with a shared `groupId`. One row is
+`primary` (canonical) — `www` by default; the user can flip it. The KV value
+is JSON `{ "s": "<subdomain>", "c": "<canonicalHostname>" }`; when a visitor's
+host differs from `c` the Worker issues a 308 to the canonical, preserving
+path + query. This keeps a single canonical URL (SEO + auth origin
+consistency) without needing Cloudflare apex proxying — apex still rides the
+user's CNAME flattening / ALIAS, and `www` is the reliable default.
+
+Legacy KV entries (a bare subdomain string) are still understood by the
+Worker and serve with no redirect, so the JSON change is backward compatible.
+
+Deeper subdomains (`app.acme.com`) are added standalone (no `www` companion).
 
 ### Dedicated zone (important)
 
@@ -66,25 +85,114 @@ Control plane (all in `apps/api`):
 
 - **Helper**: `apps/api/src/lib/cloudflare-custom-hostnames.ts` — create /
   get / find / delete a Cloudflare custom hostname, and put / delete the
-  `hostname → subdomain` entry in the Worker's KV namespace.
+  `hostname → { s, c }` JSON entry in the Worker's KV namespace.
+- **Service**: `apps/api/src/services/custom-domain.service.ts` — shared
+  apex/www pairing (`domainCompanion`), canonical resolution
+  (`canonicalForRow`), CF→DB status mapping, and the `refreshCustomDomain`
+  poll-and-activate routine used by **both** the verify route and the
+  reconciler cron.
 - **Routes**: `apps/api/src/routes/publish.ts` (forwarded from
   `apps/api/src/server.ts`):
-  - `GET    /api/projects/:id/domains` — list + `{ enabled, fallbackOrigin }`
-  - `POST   /api/projects/:id/domains` — `{ hostname }`, registers the CF
-    custom hostname, returns the DNS records to add
-  - `POST   /api/projects/:id/domains/:domainId/verify` — re-polls CF, and
-    once active writes the KV map
-  - `DELETE /api/projects/:id/domains/:domainId` — removes CF hostname + KV +
-    row
+  - `GET    /api/projects/:id/domains` — list + `{ enabled, fallbackOrigin }`;
+    each domain carries `groupId`, `primary`, `canonicalHostname`
+  - `POST   /api/projects/:id/domains` — `{ hostname }`; registers the CF
+    custom hostname **and** its apex/www companion, returns
+    `{ domains: [...] }` (the group) with the DNS records to add
+  - `POST   /api/projects/:id/domains/:domainId/verify` — re-polls the whole
+    group, writes the KV map for active members, returns `{ domains: [...] }`
+  - `POST   /api/projects/:id/domains/:domainId/retrigger` — manual re-kick of
+    DV validation / issuance for a **stalled** domain (DNS correct, past the
+    30m threshold, outside cooldown). Gated server-side; returns 409
+    (`already_active`/`dns_not_ready`/`too_early`), 429 (`cooldown`), or 502
+    (`cloudflare_error`). See "Status lifecycle" below
+  - `PATCH  /api/projects/:id/domains/:domainId/primary` — make this hostname
+    canonical; rewrites the group's KV so the redirect flips
+  - `DELETE /api/projects/:id/domains/:domainId` — removes the whole group's
+    CF hostnames + KV + rows; returns `{ success, removedIds }`
+- **Reconciler cron**: `apps/api/src/jobs/poll-custom-domains.ts` — every 60s
+  (`withGlobalJobLock('poll-custom-domains')`) polls every non-active hostname,
+  persists status + the server-side DNS verdict, writes KV on activation,
+  notifies the project owner (`custom_domain_live` notification), and
+  **auto-heals stalled domains** (re-triggers issuance when DNS is correct but
+  the cert has stalled past the threshold — see "Status lifecycle" below).
+  This is what makes a domain go live without the user pressing anything. The
+  mobile UI also auto-polls verify every 30s while the panel is open.
+  **Poll backoff** (`isDueForPoll`): a domain is polled every tick (~60s) for
+  its first ~30 checks (`CUSTOM_DOMAIN_SLOW_POLL_AFTER_MS`, 30m), then drops to
+  one poll per `CUSTOM_DOMAIN_SLOW_POLL_INTERVAL_MS` (10m) — by then it's
+  almost always a slow CA we're already auto-retriggering, so a CF GET every
+  minute adds nothing. Rows are ordered `updatedAt asc` so recently-checked
+  (not-yet-due) rows never starve due rows out of the batch.
+- **DNS check**: `apps/api/src/lib/custom-domain-dns-check.ts` — an
+  independent, authoritative resolve of the routing CNAME (+ apex flattening)
+  and the `_acme-challenge` DCV TXT, so we can tell the user precisely what's
+  missing and gate re-triggers on "DNS is actually correct".
 - **Data**: `CustomDomain` model (`prisma/schema.prisma` +
-  `schema.local.prisma`); migration `20260605010501_add_custom_domains`.
+  `schema.local.prisma`) with `groupId` + `primary`, plus the retrigger/status
+  bookkeeping (`certAuthority`, `lastCheckedAt`, `lastRetriggerAt`,
+  `retriggerCount`, `dnsOk`, `diagnostics`); migrations
+  `20260605010501_add_custom_domains`, `20260608221528_add_custom_domain_grouping`,
+  and `20260608224146_add_custom_domain_retrigger_state`.
 - **UI**: `apps/mobile/components/project/CustomDomainsSection.tsx`, embedded
-  in `PublishDropdown` once a project is published.
+  in `PublishDropdown` once a project is published. Renders apex/www as one
+  grouped card with a primary toggle and per-hostname DNS records.
 
-Lifecycle: publish/republish re-point active domains' KV entries at the
-current subdomain; unpublish removes the KV entries (CF hostnames + rows kept
-so republish restores routing); project delete tears down CF hostnames + KV
-(`KnativeProjectManager.deleteProject`).
+Lifecycle: publish/republish re-point active domains' KV entries (with their
+canonical) at the current subdomain; unpublish removes the KV entries (CF
+hostnames + rows kept so republish restores routing); project delete tears
+down CF hostnames + KV (`KnativeProjectManager.deleteProject`).
+
+## Status lifecycle, auto-heal & manual re-trigger
+
+The panel and API surface a coarse, user-facing **stage** (`deriveStage` in
+`custom-domain.service.ts`) derived from the CF status + the server-side DNS
+verdict + the row's age:
+
+```
+awaiting_dns ─▶ validating ─▶ issuing (CA) ─▶ active
+       │             │             │
+       └─────────────┴─────────────┴─▶ stalled (DNS correct, past 30m)
+                     │
+                     └─▶ failed (bad records / CF error)
+```
+
+- **awaiting_dns** — records not yet detected. The panel shows the CNAME + TXT
+  with per-record "Found / Not detected yet / Wrong target" ticks driven by
+  the DNS check.
+- **validating / issuing** — records found; CF is validating DV and minting
+  the cert. We surface the issuing **CA** (`certAuthority`: `google` /
+  `lets_encrypt` / `ssl_com`) because it explains timing.
+- **stalled** — `pending`/`verifying` with **correct DNS** but past
+  `CUSTOM_DOMAIN_STALL_THRESHOLD_MS` (default 30m). This is the only state
+  where a re-trigger is offered. The common cause is a slow CA — **SSL.com has
+  been observed wedged in `processing` for >30m**; a non-destructive PATCH of
+  the SSL block (same DV method, tokens preserved) re-queues issuance.
+- **active** — hostname + cert live; KV written; owner notified.
+- **failed** — surfaced with the CF error; the user fixes DNS and the next
+  poll recovers automatically.
+
+**Re-trigger** (`retriggerCustomHostname`) PATCHes
+`/custom_hostnames/:id` with just the `ssl` block — it does **not** send
+`hostname`, so Cloudflare keeps the existing `_acme-challenge` tokens and the
+user never touches DNS again. Two paths use it:
+
+- **Auto-heal (reconciler, leader-only):** `shouldAutoRetrigger` fires when a
+  row is `pending`/`verifying`, `dnsOk`, past the stall threshold, under
+  `CUSTOM_DOMAIN_MAX_RETRIGGERS` (default 6), and beyond
+  `CUSTOM_DOMAIN_AUTO_RETRIGGER_INTERVAL_MS` (default 30m) since the last
+  retrigger — i.e. capped exponential-ish backoff. Leader-only via the
+  existing advisory lock so two regions never double-kick.
+- **Manual button (`POST .../retrigger`):** same gate via `evaluateRetrigger`
+  with a tighter `CUSTOM_DOMAIN_RETRIGGER_COOLDOWN_MS` (default 5m) cooldown.
+  Works from **any** region (CF is global). The panel only shows the button
+  when the server reports `canRetrigger`.
+
+Reads are DB-only but always informative: `refreshCustomDomain` persists a
+compact `diagnostics` JSON snapshot (DNS instructions + per-record validation
++ DNS verdict + CA) so `GET /domains` can render the full status without
+re-hitting Cloudflare. `GET /domains` also opportunistically refreshes a
+non-active row whose `lastCheckedAt` is stale (>`CUSTOM_DOMAIN_STALE_READ_MS`,
+default 20s) so the panel is live between cron ticks.
 
 ## Configuration
 
@@ -101,6 +209,13 @@ are present; KV writes additionally require `CF_ACCOUNT_ID` +
 | `CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID` | for KV | `terraform output custom_domains_kv_namespace_id` from `publish-hosting-oci`. |
 | `CUSTOM_DOMAIN_FALLBACK_ORIGIN` | yes (effectively) | `terraform output custom_domain_fallback_origin` (e.g. `cname.<custom-domains-zone>`). Shown to users as the CNAME target. The `cname.${PUBLISH_DOMAIN}` default is wrong for the dedicated-zone model, so always set this explicitly. |
 | `CF_CUSTOM_HOSTNAME_SSL_METHOD` | optional | `txt` (default) or `http`. Keep `txt` — the `*/*` Worker route swallows HTTP `.well-known` challenges. |
+| `CUSTOM_DOMAIN_STALL_THRESHOLD_MS` | optional | When a DNS-correct domain is considered "stalled" and eligible for re-trigger / auto-heal. Default `1800000` (30m). |
+| `CUSTOM_DOMAIN_RETRIGGER_COOLDOWN_MS` | optional | Min gap between **manual** re-triggers. Default `300000` (5m). |
+| `CUSTOM_DOMAIN_AUTO_RETRIGGER_INTERVAL_MS` | optional | Min gap between **auto** re-triggers in the reconciler (backoff). Default `1800000` (30m). |
+| `CUSTOM_DOMAIN_MAX_RETRIGGERS` | optional | Hard cap on auto re-triggers per domain. Default `6`. |
+| `CUSTOM_DOMAIN_STALE_READ_MS` | optional | Age after which `GET /domains` opportunistically refreshes a non-active row. Default `20000` (20s). |
+| `CUSTOM_DOMAIN_SLOW_POLL_AFTER_MS` | optional | Age after which the reconciler backs off from per-tick (~60s) polling to the slow cadence below (~30 checks). Default `1800000` (30m). |
+| `CUSTOM_DOMAIN_SLOW_POLL_INTERVAL_MS` | optional | Slow-cadence poll interval once a domain is past the backoff age. Default `600000` (10m). |
 
 Staging already has these wired as **optional** `secretKeyRef`s against a
 `custom-domains-config` secret (`k8s/overlays/staging/api-service.yaml`), so the
@@ -179,15 +294,23 @@ inert `custom-domains-config` env block. To enable:
    `custom_domains_kv_namespace_id`, `custom_domain_fallback_origin`) + a
    SaaS-scoped token, then restart the api.
 
-A `v*` tag only ships the (inert) code and runs the `custom_domains` migration;
-it does not enable the feature. EU/India serve published apps via the US
-worker, so custom domains run through production-us only.
+A `v*` tag only ships the (inert) code and runs the `custom_domains` migrations;
+it does not enable the feature. EU/India serve published-app *traffic* via the
+US worker + dedicated zone, but the **control plane** (add / verify / manual
+retrigger) is enabled in every region that carries the `custom-domains-config`
+secret — Cloudflare's API is global, so a manual retrigger works from any
+region. The **auto-heal** reconciler stays leader-only (one region per tick)
+via `withGlobalJobLock('poll-custom-domains')`, so the multiple regions never
+double-kick or double-notify.
 
 ## Notes & limits
 
 - Apex domains (`acme.com`) cannot CNAME at a provider that lacks CNAME
-  flattening / ALIAS; prefer a subdomain (`app.acme.com`) or use the
-  provider's flattening.
+  flattening / ALIAS. The UI/docs lead with `www` as the canonical default
+  (which always works) and treat direct-apex via flattening as an advanced
+  option, rather than asking the user to invent a subdomain. True bare-apex
+  via an `A` record would require Cloudflare Enterprise "apex proxying"
+  (dedicated IPs) — not used here.
 - Access control (`accessLevel` anyone/authenticated/private) is **not**
   enforced on the static Worker path today; custom domains inherit that.
 - Cloudflare for SaaS custom hostnames have per-plan quotas; monitor usage if

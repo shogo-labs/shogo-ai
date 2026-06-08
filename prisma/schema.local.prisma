@@ -283,13 +283,22 @@ model CustomDomain {
   cfCustomHostnameId String?
   sslStatus          String?
   lastError          String?
+  groupId            String?
+  primary            Boolean   @default(true)
   verifiedAt         DateTime?
+  certAuthority      String?
+  lastCheckedAt      DateTime?
+  lastRetriggerAt    DateTime?
+  retriggerCount     Int       @default(0)
+  dnsOk              Boolean?
+  diagnostics        String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
+  @@index([groupId])
   @@map("custom_domains")
 }
 

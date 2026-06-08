@@ -1620,8 +1620,8 @@ app.post('/api/projects/:projectId/republish', async (c) => {
 })
 
 // Custom domains (Cloudflare for SaaS bring-your-own-domain). List/add and
-// per-domain verify/delete all forward into publishRoutes() like the
-// publish endpoints above.
+// per-domain verify/retrigger/primary/delete all forward into publishRoutes()
+// like the publish endpoints above.
 app.get('/api/projects/:projectId/domains', async (c) => {
   const router = publishRoutes()
   const url = new URL(c.req.url)
@@ -1651,6 +1651,22 @@ app.post('/api/projects/:projectId/domains/:domainId/verify', async (c) => {
     headers: c.req.raw.headers,
     body: c.req.raw.body,
   })
+  return router.fetch(newReq)
+})
+
+app.post('/api/projects/:projectId/domains/:domainId/retrigger', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains/${c.req.param('domainId')}/retrigger`
+  const newReq = new Request(url.toString(), { method: 'POST', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.patch('/api/projects/:projectId/domains/:domainId/primary', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains/${c.req.param('domainId')}/primary`
+  const newReq = new Request(url.toString(), { method: 'PATCH', headers: c.req.raw.headers })
   return router.fetch(newReq)
 })
 
@@ -8209,6 +8225,27 @@ if (isKubernetes()) {
     } catch (err: any) {
       console.error(
         '[Affiliate] failed to schedule cron jobs (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Custom-domain reconciler — polls Cloudflare for SaaS custom hostnames that
+// haven't gone live yet and writes the Worker KV route once active, so a
+// bring-your-own domain activates on its own (no manual "Check status").
+// No-op when custom domains aren't configured for this deployment, and
+// wrapped in withGlobalJobLock so only one region reconciles per tick.
+{
+  ;(async () => {
+    try {
+      const { startPollCustomDomainsCron } = await import(
+        './jobs/poll-custom-domains'
+      )
+      startPollCustomDomainsCron()
+    } catch (err: any) {
+      console.error(
+        '[PollCustomDomains] failed to schedule reconciler (non-fatal):',
         err?.message ?? err,
       )
     }
