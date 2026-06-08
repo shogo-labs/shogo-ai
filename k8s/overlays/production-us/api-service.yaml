@@ -439,6 +439,27 @@ spec:
                   name: api-secrets
                   key: SHOGO_INTERNAL_SECRET
                   optional: true
+            # --- Affiliate content-CPM (Instagram / TikTok view tracking) ---
+            # Sub-flag; requires SHOGO_AFFILIATES_NATIVE=true above. Flip to
+            # "true" to let affiliates connect handles and start the hourly
+            # poll + CPM accrual cron. Safe rollback to "false".
+            - name: SHOGO_AFFILIATE_CONTENT_CPM
+              value: "false"
+            - name: SHOGO_SOCIAL_CONTENT_PROVIDER
+              value: "ensembledata"
+            - name: SHOGO_AFFILIATE_CONTENT_CPM_CENTS
+              value: "100"
+            - name: SHOGO_AFFILIATE_CONTENT_HOLD_DAYS
+              value: "7"
+            # EnsembleData API token. Prefer the encrypted PlatformSetting
+            # provider-key.ensembledata (set via super-admin); this env is a
+            # fallback. Stored in api-secrets by the deploy workflow.
+            - name: ENSEMBLEDATA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ENSEMBLEDATA_API_TOKEN
+                  optional: true
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "https://ingest.us.signoz.cloud:443"
             - name: OTEL_SERVICE_NAME

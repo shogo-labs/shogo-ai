@@ -8194,9 +8194,13 @@ if (isKubernetes()) {
       const { startAffiliateInvoiceReconciliationCron } = await import(
         './jobs/affiliate-invoice-reconciliation'
       )
+      const { startPollAffiliateContentCron } = await import(
+        './jobs/poll-affiliate-content'
+      )
       startApproveEligibleCommissionsCron()
       startAffiliatePayoutsCron()
       startAffiliateInvoiceReconciliationCron()
+      startPollAffiliateContentCron()
     } catch (err: any) {
       console.error(
         '[Affiliate] failed to schedule cron jobs (non-fatal):',

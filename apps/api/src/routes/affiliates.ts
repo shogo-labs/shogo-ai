@@ -37,6 +37,16 @@ import {
   getAffiliateSummary,
   recordClick,
 } from '../services/affiliate.service'
+import {
+  ContentAffiliateError,
+  addSocialAccount,
+  contentErrorStatus,
+  getContentSummary,
+  isContentCpmEnabled,
+  listSocialAccounts,
+  removeSocialAccount,
+  verifyAccount,
+} from '../services/affiliate-content.service'
 
 function isFlagOn(): boolean {
   return process.env.SHOGO_AFFILIATES_NATIVE === 'true'
@@ -84,6 +94,12 @@ const clickSchema = z.object({
 })
 
 // Browser-facing visit recorder (no internal secret). Minimal surface:
+// Content-CPM: connect a social handle for view-based earnings.
+const socialAccountSchema = z.object({
+  platform: z.enum(['instagram', 'tiktok']),
+  handle: z.string().trim().min(1).max(64),
+})
+
 // just the code + a client-generated visitor id. Used by the in-app
 // `/r/<code>` route (apps/mobile/app/r/[code].tsx).
 const visitSchema = z.object({
@@ -450,6 +466,135 @@ export function affiliateRoutes(): Hono {
       console.error('[Affiliate connect details] failed', err)
       return c.json({ ok: false, error: { code: 'server_error', message: err?.message } }, 500)
     }
+  })
+
+  // --------------------------------------------------------------------------
+  // Content-CPM: social handles + view dashboard
+  // --------------------------------------------------------------------------
+  // Gated on the content sub-flag (SHOGO_AFFILIATE_CONTENT_CPM) in addition
+  // to the master affiliate flag. These all require an enrolled affiliate.
+
+  /** Resolve the caller's affiliate id, or null. */
+  async function callerAffiliateId(c: any): Promise<string | null> {
+    const auth = c.get('auth') as { userId?: string } | undefined
+    const userId = auth?.userId
+    if (!userId) return null
+    const affiliate = await prisma.affiliate.findUnique({
+      where: { userId },
+      select: { id: true },
+    })
+    return affiliate?.id ?? null
+  }
+
+  function contentEnabledOr503(c: any): Response | null {
+    if (!isFlagOn() || !isContentCpmEnabled()) {
+      return c.json({ ok: false, error: { code: 'feature_disabled' } }, 503)
+    }
+    return null
+  }
+
+  /** GET /api/affiliates/me/social-accounts — list connected handles. */
+  router.get('/affiliates/me/social-accounts', async (c) => {
+    const blocked = contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: true, accounts: [] })
+    const accounts = await listSocialAccounts(affiliateId)
+    return c.json({ ok: true, accounts })
+  })
+
+  /**
+   * POST /api/affiliates/me/social-accounts — connect a handle.
+   * Returns the row including the one-time `verificationCode` the
+   * affiliate must place in their bio before posts start earning.
+   */
+  router.post('/affiliates/me/social-accounts', async (c) => {
+    const blocked = contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
+
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ ok: false, error: { code: 'bad_request' } }, 400)
+    }
+    const parsed = socialAccountSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json({ ok: false, error: { code: 'invalid_request', issues: parsed.error.issues } }, 400)
+    }
+    try {
+      const account = await addSocialAccount(affiliateId, parsed.data.platform, parsed.data.handle)
+      return c.json({ ok: true, account })
+    } catch (err) {
+      if (err instanceof ContentAffiliateError) {
+        return c.json({ ok: false, error: { code: err.code, message: err.message } }, contentErrorStatus(err.code))
+      }
+      console.error('[Affiliate content connect] failed', err)
+      return c.json({ ok: false, error: { code: 'server_error' } }, 500)
+    }
+  })
+
+  /**
+   * POST /api/affiliates/me/social-accounts/:id/verify — check the bio
+   * for the verification code and mark the account verified on success.
+   */
+  router.post('/affiliates/me/social-accounts/:id/verify', async (c) => {
+    const blocked = contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
+    const id = c.req.param('id')
+    try {
+      const { verified, account } = await verifyAccount(affiliateId, id)
+      return c.json({ ok: true, verified, account })
+    } catch (err) {
+      if (err instanceof ContentAffiliateError) {
+        return c.json({ ok: false, error: { code: err.code, message: err.message } }, contentErrorStatus(err.code))
+      }
+      console.error('[Affiliate content verify] failed', err)
+      return c.json({ ok: false, error: { code: 'server_error' } }, 500)
+    }
+  })
+
+  /** DELETE /api/affiliates/me/social-accounts/:id — disconnect a handle. */
+  router.delete('/affiliates/me/social-accounts/:id', async (c) => {
+    const blocked = contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
+    const id = c.req.param('id')
+    try {
+      await removeSocialAccount(affiliateId, id)
+      return c.json({ ok: true })
+    } catch (err) {
+      if (err instanceof ContentAffiliateError) {
+        return c.json({ ok: false, error: { code: err.code, message: err.message } }, contentErrorStatus(err.code))
+      }
+      console.error('[Affiliate content remove] failed', err)
+      return c.json({ ok: false, error: { code: 'server_error' } }, 500)
+    }
+  })
+
+  /**
+   * GET /api/affiliates/me/content — connected accounts, tracked posts +
+   * view counts, and content-CPM earning totals for the dashboard.
+   */
+  router.get('/affiliates/me/content', async (c) => {
+    const blocked = contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) {
+      return c.json({
+        ok: true,
+        accounts: [],
+        posts: [],
+        totals: { posts: 0, lifetimeViews: 0, paidViews: 0, pendingCents: 0, approvedCents: 0, paidCents: 0 },
+      })
+    }
+    const summary = await getContentSummary(affiliateId)
+    return c.json({ ok: true, ...summary })
   })
 
   return router
