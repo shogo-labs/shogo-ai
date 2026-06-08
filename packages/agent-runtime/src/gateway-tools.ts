@@ -130,6 +130,10 @@ export interface ToolContext {
   }) => Promise<void>
   /** Multi-language LSP manager for read_lints diagnostics */
   lspManager?: import('@shogo/shared-runtime').WorkspaceLSPManager
+  /** Live LSP accessor — the manager starts asynchronously after a deferred
+   *  warmup, so `lspManager` may be a stale undefined snapshot taken before
+   *  startup. read_lints prefers this getter to resolve the current manager. */
+  getLspManager?: () => import('@shogo/shared-runtime').WorkspaceLSPManager | null
   /** Tracks which files the agent has read, their mtimes, and line counts */
   fileStateCache?: FileStateCache
   /** Dynamic sub-agent registry and lifecycle manager */
@@ -3293,6 +3297,11 @@ function renderAgentDirectUsageBlock(toolkitName: string, toolNames: string[]): 
     `Each tool returns { ok: boolean, data: <result>, error?: string }. For`,
     `list-style endpoints, items often live under \`data.values\` (Jira) or`,
     `\`data.items\` (Google) or similar — index in once and check the shape.`,
+    ``,
+    `Only call tool names from the bound \`tools\` list returned by this`,
+    `connect — do NOT invent or guess slugs (a made-up slug fails with`,
+    `"tool not found"). Pass real resource ids/handles for id parameters;`,
+    `never pass an OAuth token or API key where an id is expected.`,
   ].join('\n')
 }
 
@@ -4625,13 +4634,19 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
             mainSessionIds: ctx.mainSessionIds,
           })
 
+          const clip = (s: string | undefined, max: number): string => {
+            const v = s || ''
+            if (v.length <= max) return v
+            // Signpost the cut instead of silently dropping the tail.
+            return `${v.substring(0, max)}\n... [${v.length - max} chars truncated — re-run filtering output (head/tail/grep) to see the rest]`
+          }
           return textResult({
             skill: skillName,
             script,
             runtime,
             exitCode: result.exitCode,
-            stdout: result.stdout?.substring(0, 8000) || '',
-            stderr: result.stderr?.substring(0, 4000) || '',
+            stdout: clip(result.stdout, 8000),
+            stderr: clip(result.stderr, 4000),
           })
         } catch (err: any) {
           return textResult({ error: `Script execution failed: ${err.message}` })
@@ -6197,7 +6212,18 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       path: Type.Optional(Type.String({ description: 'File to check (e.g. src/App.tsx or scripts/main.py). Rarely needed — omit to auto-lint the files you just edited this turn.' })),
     }),
     execute: async (_toolCallId, params) => {
-      const lsp = ctx.lspManager
+      // The LSP starts asynchronously (deferred warmup + node_modules wait),
+      // so an early read_lints call used to fail-fast with "not available"
+      // even though the server was seconds from ready. Resolve the live
+      // manager and poll briefly for readiness before giving up.
+      const resolveLsp = () => ctx.getLspManager?.() ?? ctx.lspManager ?? null
+      const LSP_READY_TIMEOUT_MS = Number(process.env.SHOGO_READ_LINTS_WAIT_MS) || 10_000
+      const deadline = Date.now() + LSP_READY_TIMEOUT_MS
+      let lsp = resolveLsp()
+      while ((!lsp || !lsp.isRunning()) && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 250))
+        lsp = resolveLsp()
+      }
       if (!lsp || !lsp.isRunning()) {
         const runtimeErrors = getCanvasRuntimeErrors()
         if (runtimeErrors.length > 0) {
@@ -6205,7 +6231,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
           clearCanvasRuntimeErrors()
           return textResult({ ok: false, error: 'Language server not available.', runtimeErrors: errors })
         }
-        return textResult({ ok: false, error: 'Language server not available. Try again shortly.' })
+        return textResult({ ok: false, error: 'Language server still starting after waiting; type-checking unavailable this turn. Verify with `exec` running `bunx tsc --noEmit` (or the project build) instead, then retry read_lints shortly.' })
       }
 
       const { path: filePath } = params as { path?: string }

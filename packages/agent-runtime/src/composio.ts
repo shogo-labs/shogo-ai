@@ -403,16 +403,96 @@ export function buildLegacyComposioUserId(userId: string, projectId: string): st
 // Proxy tool registration
 // ---------------------------------------------------------------------------
 
-const COMPOSIO_AUTH_ERROR_PATTERNS = [
-  'unauthorized', 'forbidden', 'not_authed', 'invalid_auth',
-  'token expired', 'refresh token', 'invalid_grant', 'expired',
-  'revoked', 'auth_expired', 'credentials', 'oauth',
-  'access denied', 'authentication failed',
+// Distinguish failure classes so the agent reacts correctly instead of
+// retrying blindly or surfacing an opaque error:
+//   auth       -> OAuth session expired/invalid -> reconnect
+//   permission -> connected but missing scope (e.g. YouTube 403) -> reconnect w/ scope
+//   notfound   -> resource id wrong OR slug not in catalog -> verify id / discover slug
+//   validation -> bad arguments (e.g. token passed as channel id) -> fix args
+const COMPOSIO_AUTH_PATTERNS = [
+  'not_authed', 'invalid_auth', 'token expired', 'refresh token',
+  'invalid_grant', 'revoked', 'auth_expired', 'oauth', '401',
+  'unauthorized', 'authentication failed', 'credentials',
+]
+const COMPOSIO_PERMISSION_PATTERNS = [
+  'forbidden', '403', 'access denied', 'not properly authorized',
+  'insufficient scope', 'insufficient permission', 'permission denied',
+]
+const COMPOSIO_NOTFOUND_PATTERNS = [
+  '404', 'not found', 'unable to retrieve tool', 'tool not found',
+  'does not exist',
+]
+const COMPOSIO_VALIDATION_PATTERNS = [
+  'validation failed', 'invalid request data', 'must have required',
+  'required propert', 'value error', 'invalid arguments', 'invalid value',
+  'invalid format',
 ]
 
-function isComposioAuthError(raw: string): boolean {
-  const l = raw.toLowerCase()
-  return COMPOSIO_AUTH_ERROR_PATTERNS.some(p => l.includes(p))
+type ComposioErrorKind = 'auth' | 'permission' | 'notfound' | 'validation' | 'unknown'
+
+interface ComposioErrorClass {
+  kind: ComposioErrorKind
+  authExpired?: boolean
+  needsScope?: boolean
+  needsArgFix?: boolean
+  hint?: string
+}
+
+export function classifyComposioError(raw: string): ComposioErrorClass {
+  const l = (raw || '').toLowerCase()
+  const has = (pats: string[]) => pats.some(p => l.includes(p))
+  // Most-specific first: validation/not-found before the broad auth keywords.
+  if (has(COMPOSIO_VALIDATION_PATTERNS)) {
+    return {
+      kind: 'validation',
+      needsArgFix: true,
+      hint: "Arguments were rejected. Re-read this tool's required parameters and retry with corrected arguments — never pass an OAuth token, API key, or a guessed value where a resource id/handle is expected.",
+    }
+  }
+  if (has(COMPOSIO_AUTH_PATTERNS)) {
+    return {
+      kind: 'auth',
+      authExpired: true,
+      hint: "The integration's OAuth session is expired or invalid. Ask the user to reconnect the integration, then retry.",
+    }
+  }
+  if (has(COMPOSIO_PERMISSION_PATTERNS)) {
+    return {
+      kind: 'permission',
+      needsScope: true,
+      hint: 'The integration is connected but lacks the scope/permission for this action. Ask the user to reconnect granting the required scope (e.g. repo for GitHub, youtube.* for YouTube), then retry. Do not repeat the call unchanged.',
+    }
+  }
+  if (has(COMPOSIO_NOTFOUND_PATTERNS)) {
+    return {
+      kind: 'notfound',
+      hint: 'The target resource was not found, or the tool slug is not available. Verify the id/handle (do not guess ids), or use search_integrations/connect to find the correct tool. Do not repeat the same call unchanged.',
+    }
+  }
+  return { kind: 'unknown' }
+}
+
+/** Build the structured error payload the agent sees, optionally enriched
+ *  with the valid bound slugs for this toolkit (helps the agent self-correct
+ *  when it invents or mis-types a slug). */
+function buildComposioErrorResult(errMsg: string, slug: string) {
+  const c = classifyComposioError(errMsg)
+  let hint = c.hint
+  if (c.kind === 'notfound' && /retrieve tool with slug|tool .*not found|not found/i.test(errMsg)) {
+    const prefix = `${slug.split('_')[0]}_`
+    const available = [...registeredProxyToolNames].filter(n => n.startsWith(prefix)).slice(0, 40)
+    if (available.length > 0) {
+      hint = `${hint ?? ''} Valid bound tools for this integration: ${available.join(', ')}.`.trim()
+    }
+  }
+  return {
+    error: errMsg,
+    errorKind: c.kind,
+    ...(c.authExpired && { authExpired: true }),
+    ...(c.needsScope && { needsScope: true }),
+    ...(c.needsArgFix && { needsArgFix: true }),
+    ...(hint && { hint }),
+  }
 }
 
 function textResult(data: any): AgentToolResult<any> {
@@ -492,11 +572,12 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
 
         if (!result.successful) {
           const errMsg = result.error || `Tool ${schema.slug} returned an error`
-          const authExpired = isComposioAuthError(errMsg)
-          return textResult({ error: errMsg, ...(authExpired && { authExpired: true }) })
+          return textResult(buildComposioErrorResult(errMsg, schema.slug))
         }
 
-        const MAX_CHARS = 25000
+        // Configurable so large integration payloads (e.g. Shopify product
+        // catalogs) aren't always clipped at the legacy 25k default.
+        const MAX_CHARS = Math.max(4000, Number(process.env.COMPOSIO_MAX_RESULT_CHARS) || 25000)
         const { result: raw, truncated } = smartTruncateJson(result.data, MAX_CHARS)
 
         let annotation = ''
@@ -512,8 +593,7 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
         return textResult(raw + annotation)
       } catch (err: any) {
         const errMsg = `Tool "${schema.slug}" failed: ${err.message}`
-        const authExpired = isComposioAuthError(err.message)
-        return textResult({ error: errMsg, ...(authExpired && { authExpired: true }) })
+        return textResult(buildComposioErrorResult(errMsg, schema.slug))
       }
     },
   } as AgentTool

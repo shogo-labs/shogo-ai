@@ -57,6 +57,7 @@ import {
   buildLegacyComposioUserId,
   registerToolkitProxyTools,
   checkComposioAuth,
+  classifyComposioError,
 } from '../composio'
 
 const ENV_KEYS = [
@@ -698,6 +699,50 @@ describe('checkComposioAuth', () => {
     }
     await checkComposioAuth('github')
     expect(sawAuthConfigs).toBe(true)
+  })
+})
+
+describe('classifyComposioError', () => {
+  it('classifies expired/invalid OAuth as auth (authExpired)', () => {
+    const c = classifyComposioError('401 unauthorized: token expired')
+    expect(c.kind).toBe('auth')
+    expect(c.authExpired).toBe(true)
+  })
+
+  it('classifies a YouTube 403 as permission (needsScope), not auth', () => {
+    const c = classifyComposioError('{"error":{"code":403,"message":"The request is not properly authorized.","reason":"forbidden"}}')
+    expect(c.kind).toBe('permission')
+    expect(c.needsScope).toBe(true)
+    expect(c.authExpired).toBeUndefined()
+  })
+
+  it('classifies a Shopify 404 "Not Found" as notfound', () => {
+    const c = classifyComposioError('Not Found')
+    expect(c.kind).toBe('notfound')
+    expect(c.hint).toMatch(/verify the id|do not guess/i)
+  })
+
+  it('classifies arg validation errors as validation (needsArgFix)', () => {
+    const c = classifyComposioError('Validation failed: id must have required properties id')
+    expect(c.kind).toBe('validation')
+    expect(c.needsArgFix).toBe(true)
+  })
+
+  it('classifies the token-as-channel-id error as validation', () => {
+    const c = classifyComposioError("Invalid request data provided - Value error, Invalid YouTube channel ID format")
+    expect(c.kind).toBe('validation')
+  })
+
+  it('classifies an unbound/invalid slug as notfound', () => {
+    const c = classifyComposioError('Unable to retrieve tool with slug SHOPIFY_GET_PRODUCTS_COUNT')
+    expect(c.kind).toBe('notfound')
+  })
+
+  it('leaves an unknown error unclassified', () => {
+    const c = classifyComposioError('the upstream service hiccuped')
+    expect(c.kind).toBe('unknown')
+    expect(c.authExpired).toBeUndefined()
+    expect(c.needsScope).toBeUndefined()
   })
 })
 
