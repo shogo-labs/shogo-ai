@@ -11,6 +11,9 @@ import {
   Plus,
   X,
   ChevronDown,
+  Terminal as TerminalIcon,
+  Circle,
+  SquareSplitHorizontal,
 } from "lucide-react-native";
 import { API_URL } from "../../../../lib/api";
 import { agentFetch } from "../../../../lib/agent-fetch";
@@ -51,7 +54,7 @@ import {
   type SplitNode,
 } from "./terminal/split-tree";
 import { TerminalHeader } from "./terminal/TerminalHeader";
-import { useShellName } from "./terminal/useShellName";
+import { useShellName, type ShellName } from "./terminal/useShellName";
 import {
   AUTO_REPLY_STORAGE_KEY,
   defaultRuleTemplates,
@@ -185,11 +188,27 @@ function wsBaseFromApi(apiBase: string): string {
   return apiBase;
 }
 
+export interface TerminalToolbarControls {
+  shellName: string;
+  running: boolean;
+  clearDisabled: boolean;
+  onNew: () => void;
+  onSplitRight: () => void;
+  onKillActive: () => void;
+  onStop: () => void;
+  onClear: () => void;
+  onFind: () => void;
+  onPickProfile: (name: ShellName) => void;
+  onConfigure: () => void;
+  onRunRecent: () => void;
+}
+
 export function Terminal({
   projectId,
   visible,
   newSessionNonce,
   onRequestClose,
+  onControlsChange,
 }: {
   projectId: string | null | undefined;
   visible: boolean;
@@ -200,6 +219,11 @@ export function Terminal({
    * parent should hide the bottom panel in response.
    */
   onRequestClose?: () => void;
+  /**
+   * Called whenever active terminal session info changes — BottomPanel
+   * uses this to show the toolbar in the VS Code-style panel header row.
+   */
+  onControlsChange?: (controls: TerminalToolbarControls | null) => void;
 }) {
   const [commands, setCommands] = useState<Record<string, PresetCommandDto[]>>({});
   const [loading, setLoading] = useState(false);
@@ -909,6 +933,31 @@ export function Terminal({
     commands: commands[cat] ?? [],
   }));
 
+  const { shellName, setShellName } = useShellName(active?.id ?? "");
+  const running = active?.status === "ready";
+
+  useEffect(() => {
+    if (!onControlsChange) return;
+    onControlsChange({
+      shellName,
+      running,
+      clearDisabled: !active?.client,
+      onNew: addSession,
+      onSplitRight: () => splitSession("row"),
+      onKillActive: () => closeSession(active?.id ?? ""),
+      onStop: stop,
+      onClear: clear,
+      onFind: openFind,
+      onPickProfile: setShellName,
+      onConfigure: () => setTerminalSettingsOpen(true),
+      onRunRecent: openRecent,
+    });
+  }, [shellName, running, active?.id, active?.client, onControlsChange]);
+
+  useEffect(() => {
+    return () => { onControlsChange?.(null); };
+  }, []);
+
   return (
     <div className="relative flex h-full min-h-0 flex-col bg-[#1e1e1e]">
       <SessionTabs
@@ -945,6 +994,7 @@ export function Terminal({
         presetsError={loadError}
         onRetryPresets={() => void loadCommands()}
         onRunPreset={(cmd) => runCommand(cmd, false)}
+        hideTabStrip
       />
       <div
         ref={panelRef}
@@ -992,15 +1042,21 @@ export function Terminal({
                   onMovePane={movePaneToTarget}
                 />
               </div>
-              {isSplit && (
-                <TerminalSplitList
-                  sessions={groupSessions}
-                  labels={labels}
-                  activeId={active?.id ?? ""}
-                  onSelect={setActiveId}
-                  onClose={closeSession}
-                />
-              )}
+              <TerminalAllInstanceList
+                groups={groupIds}
+                sessions={sessions}
+                labels={labels}
+                activeId={active?.id ?? ""}
+                activeGroupId={activeGroupId}
+                onSelectGroup={(gid) => {
+                  const g = sessionsInGroup(sessionsRef.current, gid);
+                  const t = g.find((s) => s.id === activeIdRef.current) ?? g[0];
+                  if (t) setActiveId(t.id);
+                }}
+                onSelectSession={setActiveId}
+                onCloseSession={closeSession}
+                onSplitSession={() => splitSession("row")}
+              />
             </div>
           );
         })}
@@ -1028,69 +1084,164 @@ export function Terminal({
   );
 }
 
-function TerminalSplitList({
+/**
+ * VS Code-style terminal instance list — always visible on the right side.
+ * Shows every terminal group and their splits (panes) in a tree structure.
+ * Clicking any row focuses that group/pane. On hover shows split + kill buttons.
+ */
+function TerminalAllInstanceList({
+  groups,
   sessions,
   labels,
   activeId,
-  onSelect,
-  onClose,
+  activeGroupId,
+  onSelectGroup,
+  onSelectSession,
+  onCloseSession,
+  onSplitSession,
 }: {
+  groups: string[];
   sessions: Session[];
   labels: Map<string, string>;
   activeId: string;
-  onSelect: (id: string) => void;
-  onClose: (id: string) => void;
-}) {
+  activeGroupId: string;
+  onSelectGroup: (groupId: string) => void;
+  onSelectSession: (sessionId: string) => void;
+  onCloseSession: (sessionId: string) => void;
+  onSplitSession: () => void;
+}): React.ReactElement | null {
+  if (groups.length === 0) return null;
+
+  type InstanceRow =
+    | { kind: "group"; groupId: string; label: string; isActive: boolean }
+    | { kind: "split"; sessionId: string; groupId: string; label: string; isLast: boolean; isActive: boolean };
+
+  const rows: InstanceRow[] = [];
+  for (const gid of groups) {
+    const groupSessions = sessions.filter((s) => s.groupId === gid);
+    const isActiveGroup = gid === activeGroupId;
+
+    if (groupSessions.length === 1) {
+      const s = groupSessions[0]!;
+      rows.push({
+        kind: "group",
+        groupId: gid,
+        label: labels.get(s.id) ?? "zsh",
+        isActive: isActiveGroup && s.id === activeId,
+      });
+    } else {
+      groupSessions.forEach((s, idx) => {
+        if (idx === 0) {
+          rows.push({
+            kind: "group",
+            groupId: gid,
+            label: labels.get(s.id) ?? "zsh",
+            isActive: isActiveGroup && s.id === activeId,
+          });
+        } else {
+          rows.push({
+            kind: "split",
+            sessionId: s.id,
+            groupId: gid,
+            label: labels.get(s.id) ?? "zsh",
+            isLast: idx === groupSessions.length - 1,
+            isActive: isActiveGroup && s.id === activeId,
+          });
+        }
+      });
+    }
+  }
+
   return (
     <aside
-      className="w-[148px] shrink-0 border-l border-[#2d2d2d] bg-[#1e1e1e] py-1 text-[12px] text-[#cccccc]"
-      aria-label="Terminal splits"
+      className="flex w-[160px] shrink-0 flex-col border-l border-[#2d2d2d] bg-[#1e1e1e]"
+      aria-label="Terminal instances"
     >
-      {sessions.map((s, index) => {
-        const active = s.id === activeId;
+      {rows.map((row, i) => {
+        const isActive = row.isActive;
+        const baseClass = [
+          "group flex h-[22px] w-full cursor-pointer select-none items-center text-left text-[11px]",
+          isActive
+            ? "bg-[#37373d] text-[#cccccc]"
+            : "text-[#858585] hover:bg-[#2a2d2e] hover:text-[#cccccc]",
+        ].join(" ");
+
+        if (row.kind === "group") {
+          return (
+            <div
+              key={`g-${row.groupId}-${i}`}
+              className={baseClass}
+              onClick={() => onSelectGroup(row.groupId)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelectGroup(row.groupId); }}}
+              title={row.label}
+            >
+              <span className="flex min-w-0 flex-1 items-center gap-[5px] pl-2">
+                <TerminalIcon size={12} className="shrink-0" />
+                <span className="truncate">{row.label}</span>
+              </span>
+              {isActive && (
+                <span className="flex shrink-0 items-center gap-[1px] pr-1 opacity-0 group-hover:opacity-100">
+                  <button
+                    type="button"
+                    title="Split Terminal"
+                    aria-label="Split Terminal"
+                    onClick={(e) => { e.stopPropagation(); onSplitSession(); }}
+                    className="flex items-center justify-center rounded p-[2px] hover:bg-[#3c3c3c]"
+                  >
+                    <SquareSplitHorizontal size={11} />
+                  </button>
+                  <button
+                    type="button"
+                    title="Kill Terminal"
+                    aria-label="Kill Terminal"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const s = sessions.find((x) => x.groupId === row.groupId);
+                      if (s) onCloseSession(s.id);
+                    }}
+                    className="flex items-center justify-center rounded p-[2px] text-[#858585] hover:bg-[#3c3c3c] hover:text-[#f48771]"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </span>
+              )}
+            </div>
+          );
+        }
+
         return (
           <div
-            key={s.id}
-            className={[
-              "group flex h-8 w-full items-center gap-1 px-2 text-left hover:bg-[#2a2d2e]",
-              active ? "bg-[#37373d] text-[#ffffff]" : "text-[#cccccc]",
-            ].join(" ")}
-            aria-current={active ? "true" : undefined}
-            title={labels.get(s.id) ?? `Terminal ${index + 1}`}
+            key={`s-${row.sessionId}-${i}`}
+            className={baseClass}
+            onClick={() => onSelectSession(row.sessionId)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelectSession(row.sessionId); }}}
+            title={row.label}
           >
-            <button
-              type="button"
-              onClick={() => onSelect(s.id)}
-              className="flex min-w-0 flex-1 items-center gap-1 text-left"
-            >
-              <span className="w-4 shrink-0 text-[#858585]">{index === 0 ? "┌" : "└"}</span>
-              <span className="shrink-0 rounded border border-[#858585] px-1 text-[10px] leading-4 text-[#cccccc]">⌁</span>
-              <span className="min-w-0 flex-1 truncate">zsh</span>
-              <span className="max-w-[54px] shrink-0 truncate text-[10px] text-[#858585]">{cwdBasename(s.cwd)}</span>
-            </button>
-            <button
-              type="button"
-              aria-label={`Kill ${labels.get(s.id) ?? `Terminal ${index + 1}`}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose(s.id);
-              }}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[#858585] opacity-0 hover:bg-[#3c3c3c] hover:text-[#f48771] group-hover:opacity-100"
-              title="Kill terminal"
-            >
-              ×
-            </button>
+            <span className="flex min-w-0 flex-1 items-center gap-[5px] pl-3">
+              <span className="shrink-0 text-[#555555]">{row.isLast ? "└" : "├"}</span>
+              <TerminalIcon size={12} className="shrink-0" />
+              <span className="truncate">{row.label}</span>
+            </span>
+            <span className="flex shrink-0 items-center gap-[1px] pr-1 opacity-0 group-hover:opacity-100">
+              <button
+                type="button"
+                title="Kill Split"
+                aria-label="Kill Split"
+                onClick={(e) => { e.stopPropagation(); onCloseSession(row.sessionId); }}
+                className="flex items-center justify-center rounded p-[2px] text-[#858585] hover:bg-[#3c3c3c] hover:text-[#f48771]"
+              >
+                <Trash2 size={11} />
+              </button>
+            </span>
           </div>
         );
       })}
     </aside>
   );
-}
-
-interface PresetGroup {
-  category: string;
-  label: string;
-  commands: PresetCommandDto[];
 }
 
 function SessionTabs({
@@ -1123,6 +1274,7 @@ function SessionTabs({
   presetsError,
   onRetryPresets,
   onRunPreset,
+  hideTabStrip,
 }: {
   sessions: Session[];
   groupIds: string[];
@@ -1153,6 +1305,7 @@ function SessionTabs({
   presetsError: string | null;
   onRetryPresets: () => void;
   onRunPreset: (cmd: PresetCommandDto) => void;
+  hideTabStrip?: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [autoRepliesOpen, setAutoRepliesOpen] = useState(false);
@@ -1218,8 +1371,11 @@ function SessionTabs({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [dragGroupId]);
+
+  if (hideTabStrip) return null;
+
   return (
-    <div className="relative flex shrink-0 items-center justify-between border-b border-[#2a2a2a] bg-[#1e1e1e] pr-2">
+    <div className="relative flex shrink-0 items-center justify-between border-b border-[#2d2d2d] bg-[#252526] pr-1">
       <div role="tablist" aria-label="Terminals" className="flex min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:thin]">
         {groupIds.map((gid) => {
           const groupSessions = sessions.filter((s) => s.groupId === gid);
@@ -1287,11 +1443,16 @@ function SessionTabs({
                   startRename(gid, label);
                 }
               }}
-              style={tabColor ? { borderBottom: `2px solid ${tabColor}` } : undefined}
-              className={`group relative flex shrink-0 cursor-pointer items-center gap-1 border-r border-[#2a2a2a] px-2 py-[6px] text-[11px] ${
+              style={tabColor
+                ? { borderBottom: `2px solid ${tabColor}`, borderTop: active ? '1px solid transparent' : '1px solid transparent' }
+                : active
+                  ? { borderTop: '1px solid #1e90ff' }
+                  : { borderTop: '1px solid transparent' }
+              }
+              className={`group relative flex h-[35px] shrink-0 cursor-pointer items-center gap-[5px] border-r border-[#2d2d2d] px-3 text-[12px] ${
                 active
-                  ? "bg-[#1e1e1e] text-white"
-                  : "bg-[#252526] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
+                  ? "bg-[#1e1e1e] text-[#cccccc]"
+                  : "bg-[#252526] text-[#858585] hover:bg-[#2d2d2d] hover:text-[#cccccc]"
               } ${dragGroupId === gid ? "opacity-50" : ""}`}
             >
               {dropTarget?.gid === gid && (
@@ -1308,11 +1469,11 @@ function SessionTabs({
               ) : rep.status === "error" ? (
                 <AlertTriangle size={10} className="text-[#f48771]" />
               ) : rep.status === "closed" ? (
-                <span className="inline-block h-2 w-2 rounded-full bg-[#858585]/60" />
+                <span className="inline-block h-[8px] w-[8px] shrink-0 rounded-full bg-[#858585]" />
               ) : (
-                <span className="inline-block h-2 w-2 rounded-full bg-[#4ec9b0]/60" />
+                <span className="inline-block h-[8px] w-[8px] shrink-0 rounded-full bg-[#4ec9b0]" />
               )}
-              <span className="flex max-w-[150px] flex-col leading-tight">
+              <span className="flex max-w-[140px] items-center leading-none">
                 {renamingGroupId === gid ? (
                   <input
                     ref={renameInputRef}
@@ -1334,34 +1495,47 @@ function SessionTabs({
                     aria-label={`Rename ${label}`}
                     placeholder="Terminal"
                     maxLength={64}
-                    className="w-[140px] truncate rounded-sm border border-[#0078d4] bg-[#1e1e1e] px-1 text-[11px] text-white outline-none"
+                    className="w-[120px] truncate rounded-sm border border-[#0078d4] bg-[#1e1e1e] px-1 text-[12px] text-white outline-none"
                   />
                 ) : (
-                  <span className="truncate" title="Double-click or F2 to rename">
+                  <span className="truncate text-[12px]" title="Double-click or F2 to rename">
                     {rep.isAgentTerminal ? "∞ " : ""}
                     {label}
                     {paneCount > 1 ? ` (${paneCount})` : ""}
                   </span>
                 )}
-                <span className="truncate text-[9px] text-[#858585]">{cwdBasename(rep.cwd)}</span>
               </span>
-              <button
-                type="button"
-                title={`Change color for ${label}`}
-                aria-label={`Change color for ${label}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setPickerForGroupId((prev) => (prev === gid ? null : gid));
-                }}
-                className={`ml-1 rounded p-[1px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white ${
-                  tabColor || active ? "opacity-100" : "opacity-60 group-hover:opacity-100"
-                }`}
-              >
-                <span
-                  className="inline-block h-2 w-2 rounded-full border border-[#3c3c3c]"
-                  style={{ backgroundColor: tabColor ?? "transparent" }}
-                />
-              </button>
+              {tabColor && (
+                <button
+                  type="button"
+                  title={`Change color for ${label}`}
+                  aria-label={`Change color for ${label}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPickerForGroupId((prev) => (prev === gid ? null : gid));
+                  }}
+                  className="rounded p-[1px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+                >
+                  <span
+                    className="inline-block h-[7px] w-[7px] rounded-full"
+                    style={{ backgroundColor: tabColor }}
+                  />
+                </button>
+              )}
+              {!tabColor && (
+                <button
+                  type="button"
+                  title={`Change color for ${label}`}
+                  aria-label={`Change color for ${label}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPickerForGroupId((prev) => (prev === gid ? null : gid));
+                  }}
+                  className="rounded p-[1px] text-[#858585] opacity-0 hover:bg-[#ffffff1a] hover:text-white group-hover:opacity-60"
+                >
+                  <span className="inline-block h-[7px] w-[7px] rounded-full border border-[#858585]" />
+                </button>
+              )}
               {pickerForGroupId === gid && (
                 <TabColorPicker
                   current={tabColor}
@@ -1380,11 +1554,11 @@ function SessionTabs({
                   e.stopPropagation();
                   onCloseGroup(gid);
                 }}
-                className={`ml-1 rounded p-[1px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white ${
-                  active ? "opacity-100" : "opacity-60 group-hover:opacity-100"
+                className={`ml-[2px] rounded p-[2px] text-[#858585] hover:bg-[#ffffff1a] hover:text-[#cccccc] ${
+                  active ? "opacity-100" : "opacity-0 group-hover:opacity-80"
                 }`}
               >
-                <X size={10} />
+                <X size={11} />
               </button>
             </div>
           );
@@ -1401,12 +1575,12 @@ function SessionTabs({
           aria-label="Preset commands"
           aria-expanded={menuOpen}
           aria-haspopup="menu"
-          className="flex shrink-0 items-center gap-1 px-1 py-[6px] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
+          className="flex h-[35px] shrink-0 items-center gap-1 px-2 text-[#858585] hover:bg-[#2d2d2d] hover:text-[#cccccc]"
         >
-          <ChevronDown size={12} />
+          <ChevronDown size={11} />
         </button>
       </div>
-      <div className="flex shrink-0 items-center gap-2 pr-1">
+      <div className="flex shrink-0 items-center gap-[2px] border-l border-[#2d2d2d] pl-1 pr-1">
         <PhasedTerminalHeader
           activeId={activeId}
           onNew={onAdd}
