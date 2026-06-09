@@ -37,6 +37,7 @@ import {
   KeyRound,
   Sparkles,
   Clapperboard,
+  Activity,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -49,6 +50,7 @@ type UserRole = 'user' | 'super_admin'
 /**
  * Nav item access markers:
  *   - `scope`     → visible to super admins OR holders of that admin scope
+ *   - `scopes`    → visible to super admins OR holders of *any* listed scope
  *   - `anyAdmin`  → visible to anyone with *some* admin access (e.g. Dashboard)
  *   - neither     → super_admin only
  */
@@ -57,6 +59,7 @@ type AdminNavItem = {
   icon: any
   label: string
   scope?: string
+  scopes?: readonly string[]
   anyAdmin?: boolean
 }
 
@@ -74,13 +77,13 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
   {
     title: 'Overview',
     items: [
-      { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard', scope: 'analytics:read' },
+      { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard', scopes: ['analytics:read', 'marketing:read', 'ai:read'] },
     ],
   },
   {
     title: 'Growth & Marketing',
     items: [
-      { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics', scope: 'analytics:read' },
+      { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics', scopes: ['analytics:read', 'marketing:read'] },
       { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scope: 'creators:read' },
       { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM' },
     ],
@@ -116,6 +119,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
   {
     title: 'System',
     items: [
+      { href: '/(admin)/ai-analytics', icon: Activity, label: 'AI Analytics', scopes: ['analytics:read', 'ai:read'] },
       { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
       { href: '/(admin)/general', icon: Settings, label: 'General' },
       { href: '/(admin)/settings', icon: BrainCircuit, label: 'AI' },
@@ -130,13 +134,15 @@ const ALL_NAV_ITEMS: readonly AdminNavItem[] = NAV_SECTIONS.flatMap((s) => s.ite
 function canSeeNavItem(item: AdminNavItem, isSuperAdmin: boolean, scopes: string[]): boolean {
   if (isSuperAdmin) return true
   if (item.anyAdmin) return true
+  if (item.scopes) return item.scopes.some((s) => scopes.includes(s))
   if (item.scope) return scopes.includes(item.scope)
   return false
 }
 
 const LOCAL_MAIN_ITEMS = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
-  { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
+  { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics' },
+  { href: '/(admin)/ai-analytics', icon: Activity, label: 'AI Analytics' },
   { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
 ] as const
@@ -426,7 +432,8 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/marketplace')) return 'Marketplace Review'
   if (pathname.startsWith('/projects/')) return 'Project Detail'
   if (pathname.includes('projects')) return 'Projects'
-  if (pathname.includes('analytics')) return 'Analytics'
+  if (pathname.includes('ai-analytics')) return 'AI Analytics'
+  if (pathname.includes('analytics')) return 'Marketing Analytics'
   if (pathname.startsWith('/creators/')) return 'Creator Profile'
   if (pathname.includes('creators')) return 'Creators'
   if (pathname.includes('affiliate-content')) return 'Affiliate CPM'
