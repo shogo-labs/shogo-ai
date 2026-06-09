@@ -50,7 +50,6 @@ export function adminRoutes(): Hono {
   router.use('/heartbeats', requireSuperAdmin)
   router.use('/heartbeats/*', requireSuperAdmin)
   router.use('/affiliates/*', requireSuperAdmin)
-  router.use('/affiliate-content/*', requireSuperAdmin)
 
   // Assigning admin scopes to a user is itself a privileged action — keep it
   // super_admin-only so partial admins cannot escalate their own access.
@@ -965,6 +964,96 @@ export function adminRoutes(): Hono {
     } catch (error: any) {
       console.error('[Admin] Affiliate rate patch error:', error)
       return c.json({ error: { code: 'affiliate_update_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // Creator Stats (creators:read scope)
+  // --------------------------------------------------------------------------
+
+  // --------------------------------------------------------------------------
+  // Admin access assignment (super_admin only — see gate above)
+  // --------------------------------------------------------------------------
+
+  /**
+   * GET /admin-scopes - The catalog of assignable admin scopes (for building
+   * the assignment UI).
+   */
+  router.get('/admin-scopes', async (c) => {
+    return c.json({ ok: true, data: ADMIN_SCOPES })
+  })
+
+  /**
+   * PATCH /users/:id/admin-access - Set a user's granular admin scopes.
+   * Body: { scopes: string[] }. Scopes are validated against the catalog;
+   * an empty array revokes all partial admin access. A user's platform
+   * `role` (user vs super_admin) is managed separately.
+   */
+  router.patch('/users/:id/admin-access', async (c) => {
+    const id = c.req.param('id')
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    const raw = body?.scopes
+    if (!Array.isArray(raw)) {
+      return c.json(
+        { error: { code: 'invalid_scopes', message: 'scopes must be an array of scope ids' } },
+        400,
+      )
+    }
+    const invalid = raw.filter((s: unknown) => !isAdminScope(s))
+    if (invalid.length > 0) {
+      return c.json(
+        {
+          error: {
+            code: 'invalid_scopes',
+            message: `Unknown scope(s): ${invalid.join(', ')}`,
+          },
+        },
+        400,
+      )
+    }
+    const scopes = [...new Set(raw as AdminScope[])]
+
+    try {
+      const existing = await prisma.user.findUnique({ where: { id }, select: { id: true } })
+      if (!existing) {
+        return c.json({ error: { code: 'user_not_found', message: 'User not found' } }, 404)
+      }
+      const updated = await prisma.user.update({
+        where: { id },
+        data: { adminScopes: scopes },
+        select: { id: true, role: true, adminScopes: true },
+      })
+      return c.json({
+        ok: true,
+        data: {
+          id: updated.id,
+          role: updated.role,
+          adminScopes: normalizeAdminScopes(updated.adminScopes),
+        },
+      })
+    } catch (error: any) {
+      console.error('[Admin] Set admin access error:', error)
+      return c.json({ error: { code: 'admin_access_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /creators - Marketplace creators with denormalized marketplace metrics
+   * joined to their lifetime platform usage spend.
+   */
+  router.get('/creators', async (c) => {
+    try {
+      const data = await analytics.getCreatorStats()
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Creator stats error:', error)
+      return c.json({ error: { code: 'creators_failed', message: error.message } }, 500)
     }
   })
 

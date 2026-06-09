@@ -94,6 +94,7 @@ import { localProjectsRoutes } from './routes/local-projects'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
+import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { normalizeAdminScopes } from './lib/admin-scopes'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
 import { getNativeProviderApiKeySync } from './services/provider-credentials.service'
@@ -7127,11 +7128,17 @@ app.post(
   },
 )
 
-// Generated admin CRUD routes - full model CRUD with pagination/search/sorting
-// Protected by auth + requireSuperAdmin middleware stack
+// Generated admin CRUD routes - full model CRUD with pagination/search/sorting.
+// Protected by auth + super_admin. NOTE: createAdminRoutes applies these as
+// `use("*", …)`, and Hono folds that wildcard into the parent chain for the
+// shared /api/admin prefix — so this gate ALSO runs for the scope-delegated
+// analytics/creators routes served by the adminRoutes() router mounted just
+// below. requireSuperAdminUnlessScoped defers those exact paths so partial
+// admins reach the custom router's requireAdminScope gate; everything else
+// stays super_admin-only. (See isScopeGatedAdminPath in middleware/admin-access.)
 app.route('/api/admin', createAdminRoutes({
   prisma,
-  middleware: [authMiddleware, requireAuth, requireSuperAdmin],
+  middleware: [authMiddleware, requireAuth, requireSuperAdminUnlessScoped],
 }))
 
 // Hand-written admin routes for custom analytics endpoints
