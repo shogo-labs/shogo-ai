@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 // ---- prisma mock ----
 type Profile = {
   id: string
+  userId?: string
   stripeCustomAccountId: string | null
   payoutStatus?: string
   payoutDetailsSubmittedAt?: Date
@@ -14,6 +15,7 @@ const profiles = new Map<string, Profile>()
 
 type Affiliate = {
   id: string
+  userId?: string
   stripeCustomAccountId: string | null
   payoutStatus?: string
   user?: { email: string } | null
@@ -23,7 +25,13 @@ const affiliates = new Map<string, Affiliate>()
 mock.module('../../lib/prisma', () => ({
   prisma: {
     creatorProfile: {
-      findUnique: async ({ where }: any) => profiles.get(where.id) ?? null,
+      findUnique: async ({ where }: any) => {
+        if (where.id != null) return profiles.get(where.id) ?? null
+        if (where.userId != null) {
+          for (const p of profiles.values()) if (p.userId === where.userId) return p
+        }
+        return null
+      },
       findFirst: async ({ where }: any) => {
         for (const p of profiles.values()) {
           if (p.stripeCustomAccountId === where.stripeCustomAccountId) return p
@@ -38,7 +46,19 @@ mock.module('../../lib/prisma', () => ({
       },
     },
     affiliate: {
-      findUnique: async ({ where }: any) => affiliates.get(where.id) ?? null,
+      findUnique: async ({ where }: any) => {
+        if (where.id != null) return affiliates.get(where.id) ?? null
+        if (where.userId != null) {
+          for (const a of affiliates.values()) if (a.userId === where.userId) return a
+        }
+        return null
+      },
+      findFirst: async ({ where }: any) => {
+        for (const a of affiliates.values()) {
+          if (a.stripeCustomAccountId === where.stripeCustomAccountId) return a
+        }
+        return null
+      },
       update: async ({ where, data }: any) => {
         const a = affiliates.get(where.id)
         if (!a) throw new Error('not found')
@@ -65,6 +85,7 @@ let nextSubscriptionCheckout: any = { url: 'https://checkout.stripe.com/c/pay/su
 let nextBalance: any = { available: [{ currency: 'usd', amount: 10000 }] }
 let nextPayout: any = { id: 'po_real' }
 let nextAccountUpdate: any = {}
+let nextAccountLink: any = { url: 'https://connect.stripe.com/setup/e/acct_link' }
 let nextThrow: { method: string; err: any } | null = null
 
 class FakeStripe {
@@ -82,6 +103,12 @@ class FakeStripe {
     retrieve: async (id: string) => {
       stripeCalls.push({ method: 'accounts.retrieve', args: [id] })
       return nextAccountRetrieve
+    },
+  }
+  accountLinks = {
+    create: async (args: any) => {
+      stripeCalls.push({ method: 'accountLinks.create', args: [args] })
+      return nextAccountLink
     },
   }
   checkout = {
@@ -128,6 +155,7 @@ beforeEach(() => {
   nextBalance = { available: [{ currency: 'usd', amount: 10000 }] }
   nextPayout = { id: 'po_real_1' }
   nextAccountUpdate = {}
+  nextAccountLink = { url: 'https://connect.stripe.com/setup/e/acct_link' }
   nextThrow = null
   // Default: Stripe is configured for tests that want the live path
   process.env.STRIPE_SECRET_KEY = 'sk_test_123'
@@ -136,12 +164,6 @@ beforeEach(() => {
 afterEach(() => {
   delete (process.env as any).STRIPE_SECRET_KEY
 })
-
-const baseDetails = {
-  firstName: 'Ada', lastName: 'Lovelace', email: 'ada@x.io',
-  dob: { day: 10, month: 12, year: 1815 },
-  address: { line1: '1 St', city: 'London', state: 'EN', postal_code: 'W1', country: 'GB' },
-}
 
 describe('PLATFORM_FEE_PERCENT', () => {
   it('is exported as 20', () => {
@@ -155,27 +177,28 @@ describe('createCustomAccount', () => {
   })
 
   it('returns existing stripeCustomAccountId when set', async () => {
-    profiles.set('c1', { id: 'c1', stripeCustomAccountId: 'acct_existing' })
+    profiles.set('c1', { id: 'c1', userId: 'u1', stripeCustomAccountId: 'acct_existing' })
     expect(await sc.createCustomAccount('c1', 'a@b.c')).toBe('acct_existing')
     expect(stripeCalls).toHaveLength(0)
   })
 
-  it('creates a Stripe account, persists id, returns it (configured)', async () => {
-    profiles.set('c1', { id: 'c1', stripeCustomAccountId: null })
+  it('creates an Express account, persists id, returns it (configured)', async () => {
+    profiles.set('c1', { id: 'c1', userId: 'u1', stripeCustomAccountId: null })
     nextAccountCreate = { id: 'acct_new' }
     const r = await sc.createCustomAccount('c1', 'me@x.io', 'CA')
     expect(r).toBe('acct_new')
     expect(profiles.get('c1')?.stripeCustomAccountId).toBe('acct_new')
     const args = stripeCalls[0].args[0]
-    expect(args.type).toBe('custom')
+    expect(args.type).toBe('express')
     expect(args.country).toBe('CA')
     expect(args.email).toBe('me@x.io')
     expect(args.capabilities.transfers.requested).toBe(true)
     expect(args.settings.payouts.schedule.interval).toBe('manual')
+    expect(args.metadata).toEqual({ userId: 'u1', kind: 'shared' })
   })
 
   it('uses default country US when not provided', async () => {
-    profiles.set('c1', { id: 'c1', stripeCustomAccountId: null })
+    profiles.set('c1', { id: 'c1', userId: 'u1', stripeCustomAccountId: null })
     nextAccountCreate = { id: 'acct_us' }
     await sc.createCustomAccount('c1', 'e@x.io')
     expect(stripeCalls[0].args[0].country).toBe('US')
@@ -183,59 +206,51 @@ describe('createCustomAccount', () => {
 
   it('returns a mock id and persists when Stripe is NOT configured', async () => {
     delete (process.env as any).STRIPE_SECRET_KEY
-    profiles.set('c1', { id: 'c1', stripeCustomAccountId: null })
+    profiles.set('c1', { id: 'c1', userId: 'u1', stripeCustomAccountId: null })
     const r = await sc.createCustomAccount('c1', 'e@x.io')
     expect(r).toMatch(/^acct_mock_/)
     expect(profiles.get('c1')?.stripeCustomAccountId).toBe(r)
     expect(stripeCalls).toHaveLength(0)
   })
+
+  it('reuses the affiliate account for the same user (shared)', async () => {
+    profiles.set('c1', { id: 'c1', userId: 'u1', stripeCustomAccountId: null })
+    affiliates.set('a1', { id: 'a1', userId: 'u1', stripeCustomAccountId: 'acct_shared' })
+    const r = await sc.createCustomAccount('c1', 'me@x.io')
+    expect(r).toBe('acct_shared')
+    // No new Stripe account created — reused the affiliate's.
+    expect(stripeCalls.some((c) => c.method === 'accounts.create')).toBe(false)
+    expect(profiles.get('c1')?.stripeCustomAccountId).toBe('acct_shared')
+  })
+
+  it('backfills both creator + affiliate rows when creating a new account', async () => {
+    profiles.set('c1', { id: 'c1', userId: 'u1', stripeCustomAccountId: null })
+    affiliates.set('a1', { id: 'a1', userId: 'u1', stripeCustomAccountId: null })
+    nextAccountCreate = { id: 'acct_both' }
+    await sc.createCustomAccount('c1', 'me@x.io')
+    expect(profiles.get('c1')?.stripeCustomAccountId).toBe('acct_both')
+    expect(affiliates.get('a1')?.stripeCustomAccountId).toBe('acct_both')
+    expect(stripeCalls.filter((c) => c.method === 'accounts.create')).toHaveLength(1)
+  })
 })
 
-describe('submitPayoutDetails', () => {
-  it('throws when the creator profile does not exist', async () => {
-    await expect(sc.submitPayoutDetails('nope', baseDetails)).rejects.toThrow(/not found/)
+describe('createCreatorOnboardingLink', () => {
+  it('returns an AccountLink URL for the marketplace return path', async () => {
+    profiles.set('c1', { id: 'c1', userId: 'u1', stripeCustomAccountId: 'acct_x' })
+    nextAccountLink = { url: 'https://connect.stripe.com/setup/e/creator123' }
+    const url = await sc.createCreatorOnboardingLink('c1', 'me@x.io')
+    expect(url).toBe('https://connect.stripe.com/setup/e/creator123')
+    const linkCall = stripeCalls.find((c) => c.method === 'accountLinks.create')!
+    expect(linkCall.args[0]).toMatchObject({ account: 'acct_x', type: 'account_onboarding' })
+    expect(linkCall.args[0].return_url).toMatch(/\/marketplace\/creator\?connect=done$/)
+    expect(linkCall.args[0].refresh_url).toMatch(/\/marketplace\/creator\?connect=refresh$/)
   })
 
-  it('self-heals by creating a Connect account when one is missing', async () => {
-    profiles.set('c1', { id: 'c1', stripeCustomAccountId: null })
-    nextAccountCreate = { id: 'acct_healed' }
-    await sc.submitPayoutDetails('c1', baseDetails)
-    // Account was provisioned, persisted, then updated with payout details.
-    expect(stripeCalls[0].method).toBe('accounts.create')
-    expect(stripeCalls[0].args[0].email).toBe('ada@x.io')
-    expect(stripeCalls[0].args[0].country).toBe('GB')
-    expect(profiles.get('c1')?.stripeCustomAccountId).toBe('acct_healed')
-    const updateCall = stripeCalls.find((c) => c.method === 'accounts.update')!
-    expect(updateCall.args[0]).toBe('acct_healed')
-    expect(profiles.get('c1')?.payoutStatus).toBe('pending_verification')
-  })
-
-  it('updates DB only when Stripe is unconfigured (no API call)', async () => {
+  it('returns an app URL (no Stripe) when unconfigured', async () => {
     delete (process.env as any).STRIPE_SECRET_KEY
-    profiles.set('c1', { id: 'c1', stripeCustomAccountId: 'acct_x' })
-    await sc.submitPayoutDetails('c1', baseDetails)
-    expect(profiles.get('c1')?.payoutStatus).toBe('pending_verification')
-    expect(stripeCalls).toHaveLength(0)
-  })
-
-  it('calls Stripe accounts.update with individual + DB transition', async () => {
-    profiles.set('c1', { id: 'c1', stripeCustomAccountId: 'acct_x' })
-    await sc.submitPayoutDetails('c1', { ...baseDetails, ssnLast4: '1234', bankAccountToken: 'btok_1' })
-    expect(stripeCalls[0].method).toBe('accounts.update')
-    const [id, params] = stripeCalls[0].args
-    expect(id).toBe('acct_x')
-    expect(params.individual.first_name).toBe('Ada')
-    expect(params.individual.ssn_last_4).toBe('1234')
-    expect(params.external_account).toBe('btok_1')
-    expect(profiles.get('c1')?.payoutStatus).toBe('pending_verification')
-  })
-
-  it('omits ssn_last_4 + external_account when not provided', async () => {
-    profiles.set('c1', { id: 'c1', stripeCustomAccountId: 'acct_x' })
-    await sc.submitPayoutDetails('c1', baseDetails)
-    const params = stripeCalls[0].args[1]
-    expect(params.individual.ssn_last_4).toBeUndefined()
-    expect(params.external_account).toBeUndefined()
+    profiles.set('c1', { id: 'c1', userId: 'u1', stripeCustomAccountId: null })
+    const url = await sc.createCreatorOnboardingLink('c1', 'me@x.io')
+    expect(url).toMatch(/\/marketplace\/creator\?connect=mock$/)
   })
 })
 
@@ -338,6 +353,74 @@ describe('handleAccountUpdated', () => {
     nextAccountRetrieve = { requirements: {} }
     await sc.handleAccountUpdated('acct_y')
     expect(profiles.get('c1')?.payoutStatus).toBe('pending_verification')
+  })
+
+  it('updates an Affiliate (not just CreatorProfile) by account id', async () => {
+    affiliates.set('a1', { id: 'a1', stripeCustomAccountId: 'acct_aff' })
+    nextAccountRetrieve = { payouts_enabled: true, details_submitted: true, requirements: {} }
+    await sc.handleAccountUpdated('acct_aff')
+    expect(affiliates.get('a1')?.payoutStatus).toBe('verified')
+  })
+
+  it('no-ops when neither a profile nor an affiliate maps to the account id', async () => {
+    await sc.handleAccountUpdated('acct_orphan')
+    expect(stripeCalls).toHaveLength(0)
+  })
+})
+
+describe('createAffiliateOnboardingLink', () => {
+  it('mock branch: returns an app URL when Stripe is unconfigured', async () => {
+    delete (process.env as any).STRIPE_SECRET_KEY
+    affiliates.set('a1', { id: 'a1', userId: 'u1', stripeCustomAccountId: null, user: { email: 'x@y.io' } })
+    const url = await sc.createAffiliateOnboardingLink('a1')
+    expect(url).toMatch(/\/affiliate\?connect=mock$/)
+    expect(stripeCalls).toHaveLength(0)
+  })
+
+  it('live branch: creates the account then mints an AccountLink URL', async () => {
+    affiliates.set('a2', { id: 'a2', userId: 'u2', stripeCustomAccountId: null, user: { email: 'x@y.io' } })
+    nextAccountCreate = { id: 'acct_link_aff' }
+    nextAccountLink = { url: 'https://connect.stripe.com/setup/e/onboard123' }
+    const url = await sc.createAffiliateOnboardingLink('a2')
+    expect(url).toBe('https://connect.stripe.com/setup/e/onboard123')
+    const linkCall = stripeCalls.find((c) => c.method === 'accountLinks.create')!
+    expect(linkCall.args[0]).toMatchObject({
+      account: 'acct_link_aff',
+      type: 'account_onboarding',
+    })
+    expect(linkCall.args[0].return_url).toMatch(/\/affiliate\?connect=done$/)
+    expect(linkCall.args[0].refresh_url).toMatch(/\/affiliate\?connect=refresh$/)
+  })
+
+  it('live branch: reuses an existing account id when present', async () => {
+    affiliates.set('a3', { id: 'a3', userId: 'u3', stripeCustomAccountId: 'acct_existing_aff', user: { email: 'x@y.io' } })
+    await sc.createAffiliateOnboardingLink('a3')
+    expect(stripeCalls.some((c) => c.method === 'accounts.create')).toBe(false)
+    const linkCall = stripeCalls.find((c) => c.method === 'accountLinks.create')!
+    expect(linkCall.args[0].account).toBe('acct_existing_aff')
+  })
+})
+
+describe('syncAffiliatePayoutStatus', () => {
+  it('throws when affiliate has no Stripe account', async () => {
+    affiliates.set('a1', { id: 'a1', stripeCustomAccountId: null })
+    await expect(sc.syncAffiliatePayoutStatus('a1')).rejects.toThrow(/no Stripe Connect account/)
+  })
+
+  it('returns existing status without calling Stripe when unconfigured', async () => {
+    delete (process.env as any).STRIPE_SECRET_KEY
+    affiliates.set('a2', { id: 'a2', stripeCustomAccountId: 'acct_aff', payoutStatus: 'pending_verification' })
+    expect(await sc.syncAffiliatePayoutStatus('a2')).toBe('pending_verification')
+    expect(stripeCalls).toHaveLength(0)
+  })
+
+  it('retrieves the account, derives and persists verified status', async () => {
+    affiliates.set('a3', { id: 'a3', stripeCustomAccountId: 'acct_aff', payoutStatus: 'pending_verification' })
+    nextAccountRetrieve = { payouts_enabled: true, details_submitted: true, requirements: {} }
+    const status = await sc.syncAffiliatePayoutStatus('a3')
+    expect(status).toBe('verified')
+    expect(affiliates.get('a3')?.payoutStatus).toBe('verified')
+    expect(stripeCalls.find((c) => c.method === 'accounts.retrieve')!.args[0]).toBe('acct_aff')
   })
 })
 
@@ -540,8 +623,8 @@ describe('Stripe configuration', () => {
   })
 })
 
-// ─── createCustomAccountForAffiliate / submitPayoutDetailsForAffiliate ───────
-// Mirrors the creatorProfile pair but writes to the Affiliate table.
+// ─── createCustomAccountForAffiliate ─────────────────────────────────────────
+// Mirrors the creatorProfile account creation but writes to the Affiliate table.
 
 describe('createCustomAccountForAffiliate', () => {
   it('throws when affiliate is missing', async () => {
@@ -549,22 +632,22 @@ describe('createCustomAccountForAffiliate', () => {
   })
 
   it('returns the existing stripeCustomAccountId when set (no Stripe call)', async () => {
-    affiliates.set('a1', { id: 'a1', stripeCustomAccountId: 'acct_existing', user: { email: 'x@y.io' } })
+    affiliates.set('a1', { id: 'a1', userId: 'u1', stripeCustomAccountId: 'acct_existing', user: { email: 'x@y.io' } })
     expect(await sc.createCustomAccountForAffiliate('a1')).toBe('acct_existing')
     expect(stripeCalls).toHaveLength(0)
   })
 
   it('mock branch: writes a deterministic mock acct id when Stripe is not configured', async () => {
     delete (process.env as any).STRIPE_SECRET_KEY
-    affiliates.set('a2', { id: 'a2', stripeCustomAccountId: null, user: { email: 'x@y.io' } })
+    affiliates.set('a2', { id: 'a2', userId: 'u2', stripeCustomAccountId: null, user: { email: 'x@y.io' } })
     const id = await sc.createCustomAccountForAffiliate('a2')
-    expect(id).toMatch(/^acct_mock_aff_/)
+    expect(id).toMatch(/^acct_mock_/)
     expect(affiliates.get('a2')!.stripeCustomAccountId).toBe(id)
     expect(stripeCalls).toHaveLength(0)
   })
 
-  it('live branch: creates a Stripe account, persists id, returns it', async () => {
-    affiliates.set('a3', { id: 'a3', stripeCustomAccountId: null, user: { email: 'ada@x.io' } })
+  it('live branch: creates a shared Express account, persists id, returns it', async () => {
+    affiliates.set('a3', { id: 'a3', userId: 'u3', stripeCustomAccountId: null, user: { email: 'ada@x.io' } })
     nextAccountCreate = { id: 'acct_live_aff' }
     const id = await sc.createCustomAccountForAffiliate('a3')
     expect(id).toBe('acct_live_aff')
@@ -573,72 +656,29 @@ describe('createCustomAccountForAffiliate', () => {
     const call = stripeCalls[0]!
     expect(call.method).toBe('accounts.create')
     expect(call.args[0]).toMatchObject({
-      type: 'custom',
+      type: 'express',
       country: 'US',
       email: 'ada@x.io',
-      metadata: { affiliateId: 'a3', kind: 'affiliate' },
+      metadata: { userId: 'u3', kind: 'shared' },
     })
     expect(call.args[0].capabilities.transfers.requested).toBe(true)
     expect(call.args[0].settings.payouts.schedule.interval).toBe('manual')
   })
 
   it('live branch: falls back to synthetic email when user has no email', async () => {
-    affiliates.set('a4', { id: 'a4', stripeCustomAccountId: null, user: null })
+    affiliates.set('a4', { id: 'a4', userId: 'u4', stripeCustomAccountId: null, user: null })
     nextAccountCreate = { id: 'acct_no_email' }
     await sc.createCustomAccountForAffiliate('a4')
     expect(stripeCalls[0]!.args[0].email).toBe('affiliate+a4@shogo.local')
   })
-})
 
-describe('submitPayoutDetailsForAffiliate', () => {
-  it('throws when affiliate has no Stripe account', async () => {
-    affiliates.set('a5', { id: 'a5', stripeCustomAccountId: null })
-    await expect(sc.submitPayoutDetailsForAffiliate('a5', baseDetails))
-      .rejects.toThrow(/no Stripe Connect account/)
-  })
-
-  it('also throws when affiliate is missing entirely', async () => {
-    await expect(sc.submitPayoutDetailsForAffiliate('nope', baseDetails))
-      .rejects.toThrow(/no Stripe Connect account/)
-  })
-
-  it('mock branch: flips status to pending_verification without calling Stripe', async () => {
-    delete (process.env as any).STRIPE_SECRET_KEY
-    affiliates.set('a6', { id: 'a6', stripeCustomAccountId: 'acct_aff_mock' })
-    const res = await sc.submitPayoutDetailsForAffiliate('a6', baseDetails)
-    expect(res.payoutStatus).toBe('pending_verification')
-    expect(affiliates.get('a6')!.payoutStatus).toBe('pending_verification')
-    expect(stripeCalls).toHaveLength(0)
-  })
-
-  it('live branch: forwards individual fields + optional ssn_last_4 + external_account', async () => {
-    affiliates.set('a7', { id: 'a7', stripeCustomAccountId: 'acct_aff_live' })
-    const res = await sc.submitPayoutDetailsForAffiliate('a7', {
-      ...baseDetails,
-      ssnLast4: '1234',
-      bankAccountToken: 'btok_1',
-    })
-    expect(res.payoutStatus).toBe('pending_verification')
-    const call = stripeCalls.find((c) => c.method === 'accounts.update')!
-    expect(call.args[0]).toBe('acct_aff_live')
-    const params = call.args[1]
-    expect(params.individual).toMatchObject({
-      first_name: 'Ada',
-      last_name: 'Lovelace',
-      email: 'ada@x.io',
-      ssn_last_4: '1234',
-    })
-    expect(params.individual.address).toMatchObject({ line1: '1 St', country: 'GB' })
-    expect(params.external_account).toBe('btok_1')
-  })
-
-  it('live branch: omits ssn_last_4 and external_account when not provided', async () => {
-    affiliates.set('a8', { id: 'a8', stripeCustomAccountId: 'acct_aff_min' })
-    await sc.submitPayoutDetailsForAffiliate('a8', baseDetails)
-    const call = stripeCalls.find((c) => c.method === 'accounts.update')!
-    const params = call.args[1]
-    expect(params.individual.ssn_last_4).toBeUndefined()
-    expect(params.external_account).toBeUndefined()
+  it('reuses the creator account for the same user (shared)', async () => {
+    profiles.set('cShare', { id: 'cShare', userId: 'u5', stripeCustomAccountId: 'acct_creator_shared' })
+    affiliates.set('a5', { id: 'a5', userId: 'u5', stripeCustomAccountId: null, user: { email: 'x@y.io' } })
+    const id = await sc.createCustomAccountForAffiliate('a5')
+    expect(id).toBe('acct_creator_shared')
+    expect(stripeCalls.some((c) => c.method === 'accounts.create')).toBe(false)
+    expect(affiliates.get('a5')!.stripeCustomAccountId).toBe('acct_creator_shared')
   })
 })
 

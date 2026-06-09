@@ -135,11 +135,18 @@ describe('affiliateApi stripe connect helpers', () => {
     })
   })
 
-  test('submitPayoutDetails forwards the body', async () => {
+  test('getConnectStatus GETs the status endpoint', async () => {
     const { http, calls } = makeHttp({
-      'POST /api/affiliates/me/stripe-connect/details': { ok: true },
+      'GET /api/affiliates/me/stripe-connect/status': { payoutStatus: 'verified', onboarded: true },
     })
-    await affiliateApi.submitPayoutDetails(http, { firstName: 'Alice' })
-    expect(calls[0].body).toEqual({ firstName: 'Alice' })
+    const res = await affiliateApi.getConnectStatus(http)
+    expect(res).toEqual({ payoutStatus: 'verified', onboarded: true })
+    expect(calls[0]).toEqual({ method: 'GET', url: '/api/affiliates/me/stripe-connect/status' })
+  })
+
+  test('getConnectStatus falls back when payload is empty', async () => {
+    const { http } = makeHttp({})
+    const res = await affiliateApi.getConnectStatus(http)
+    expect(res).toEqual({ payoutStatus: null, onboarded: false })
   })
 })

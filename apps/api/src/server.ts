@@ -6943,6 +6943,20 @@ app.post('/api/webhooks/stripe', async (c) => {
         }
         break
       }
+      case 'account.updated': {
+        // Connect account lifecycle. As hosted onboarding clears KYC/bank
+        // requirements, this maps the account's payout capability back onto
+        // the owning CreatorProfile or Affiliate's payoutStatus (so the
+        // affiliate payout cron can start paying a now-verified affiliate).
+        const acct = event.data.object as Stripe.Account
+        try {
+          const { handleAccountUpdated } = await import('./services/stripe-connect.service')
+          await handleAccountUpdated(acct.id)
+        } catch (err: any) {
+          console.error('[Webhook] account.updated sync failed:', err?.message ?? err)
+        }
+        break
+      }
       case 'invoice.payment_failed': {
         const invoice = event.data.object as Stripe.Invoice
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id

@@ -409,10 +409,12 @@ export function affiliateRoutes(): Hono {
 
   /**
    * POST /api/affiliates/me/stripe-connect/onboard
-   * Reuses the marketplace stripe-connect.service onboarding helper to
-   * create a Stripe Custom account for the affiliate and return an
-   * onboarding URL. Affiliates and CreatorProfiles deliberately get
-   * separate Connect accounts — tax categorization differs.
+   * Ensures the affiliate has a Stripe Express Connect account and returns a
+   * Stripe-hosted onboarding (AccountLink) URL the client opens in a browser.
+   * Stripe collects KYC/identity + bank details on the hosted page and fires
+   * `account.updated` webhooks that flip Affiliate.payoutStatus to 'verified'.
+   * Affiliates and CreatorProfiles deliberately get separate Connect accounts
+   * — tax categorization differs.
    */
   router.post('/affiliates/me/stripe-connect/onboard', async (c) => {
     if (!isFlagOn()) return c.json({ ok: false, error: { code: 'feature_disabled' } }, 503)
@@ -423,18 +425,14 @@ export function affiliateRoutes(): Hono {
     if (!affiliate) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
 
     try {
-      const { createCustomAccountForAffiliate } = await import('../services/stripe-connect.service')
-      // Marketplace's createCustomAccount is keyed on CreatorProfile id;
-      // affiliates need their own thin wrapper that mirrors the shape
-      // but writes the Connect account id back to Affiliate. The wrapper
-      // is added alongside the existing helpers in stripe-connect.service.
-      const onboardUrl = await (createCustomAccountForAffiliate as any)(affiliate.id)
+      const { createAffiliateOnboardingLink } = await import('../services/stripe-connect.service')
+      const onboardUrl = await (createAffiliateOnboardingLink as any)(affiliate.id)
       return c.json({ ok: true, onboardUrl, payoutStatus: affiliate.payoutStatus })
     } catch (err: any) {
-      // The wrapper may not exist yet on stacks that haven't taken
-      // the latest stripe-connect.service patch. Surface a 501 so
-      // the mobile client can prompt for an app update.
-      if (err?.code === 'ERR_MODULE_NOT_FOUND' || /createCustomAccountForAffiliate/.test(String(err))) {
+      // The helper may not exist yet on stacks that haven't taken the
+      // latest stripe-connect.service patch. Surface a 501 so the mobile
+      // client can prompt for an app update.
+      if (err?.code === 'ERR_MODULE_NOT_FOUND' || /createAffiliateOnboardingLink/.test(String(err))) {
         return c.json({ ok: false, error: { code: 'not_implemented', message: 'Affiliate Connect onboarding not enabled on this deployment' } }, 501)
       }
       console.error('[Affiliate onboard] failed', err)
@@ -442,28 +440,33 @@ export function affiliateRoutes(): Hono {
     }
   })
 
-  /** POST /api/affiliates/me/stripe-connect/details — wraps submitPayoutDetails. */
-  router.post('/affiliates/me/stripe-connect/details', async (c) => {
+  /**
+   * GET /api/affiliates/me/stripe-connect/status
+   * Re-reads the affiliate's Express account from Stripe and persists the
+   * derived payoutStatus, returning it. Lets the app reflect a verified
+   * account immediately on return from hosted onboarding without waiting for
+   * the `account.updated` webhook (which remains the source of truth).
+   */
+  router.get('/affiliates/me/stripe-connect/status', async (c) => {
     if (!isFlagOn()) return c.json({ ok: false, error: { code: 'feature_disabled' } }, 503)
     const auth = c.get('auth') as { userId?: string } | undefined
     const userId = auth?.userId
     if (!userId) return c.json({ ok: false, error: { code: 'unauthorized' } }, 401)
     const affiliate = await prisma.affiliate.findUnique({ where: { userId } })
-    if (!affiliate?.stripeCustomAccountId) {
-      return c.json({ ok: false, error: { code: 'not_onboarded' } }, 400)
+    if (!affiliate) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
+    if (!affiliate.stripeCustomAccountId) {
+      return c.json({ ok: true, payoutStatus: affiliate.payoutStatus ?? null, onboarded: false })
     }
-    let body: unknown
-    try { body = await c.req.json() } catch { return c.json({ ok: false, error: { code: 'bad_request' } }, 400) }
 
     try {
-      const { submitPayoutDetailsForAffiliate } = await import('../services/stripe-connect.service')
-      const result = await (submitPayoutDetailsForAffiliate as any)(affiliate.id, body)
-      return c.json({ ok: true, ...result })
+      const { syncAffiliatePayoutStatus } = await import('../services/stripe-connect.service')
+      const payoutStatus = await (syncAffiliatePayoutStatus as any)(affiliate.id)
+      return c.json({ ok: true, payoutStatus, onboarded: true })
     } catch (err: any) {
-      if (/submitPayoutDetailsForAffiliate/.test(String(err))) {
+      if (/syncAffiliatePayoutStatus/.test(String(err))) {
         return c.json({ ok: false, error: { code: 'not_implemented' } }, 501)
       }
-      console.error('[Affiliate connect details] failed', err)
+      console.error('[Affiliate connect status] failed', err)
       return c.json({ ok: false, error: { code: 'server_error', message: err?.message } }, 500)
     }
   })

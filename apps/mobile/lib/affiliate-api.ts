@@ -164,9 +164,11 @@ export const affiliateApi = {
     return res.data ?? { onboardUrl: '' }
   },
 
-  async submitPayoutDetails(http: HttpClient, body: Record<string, unknown>) {
-    const res = await http.post<any>('/api/affiliates/me/stripe-connect/details', body)
-    return res.data
+  async getConnectStatus(
+    http: HttpClient,
+  ): Promise<{ payoutStatus: string | null; onboarded: boolean }> {
+    const res = await http.get<any>('/api/affiliates/me/stripe-connect/status')
+    return res.data ?? { payoutStatus: null, onboarded: false }
   },
 
   // --- Content-CPM: social handles + view dashboard ------------------------

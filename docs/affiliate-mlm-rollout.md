@@ -183,11 +183,18 @@ rows already written, which become inert until the flag flips back.
 - The mobile downline endpoint iterates `findMany` per level. Once
   affiliate trees grow beyond a few hundred we should swap in a single
   recursive-CTE query on Postgres.
-- Affiliate Connect onboarding currently relies on `createCustomAccount` /
-  `submitPayoutDetails` wrappers added to `stripe-connect.service.ts`.
-  Long-term we'll want a dedicated `affiliate-connect.service.ts` so
-  Stripe-tax categorization for `affiliate` accounts (1099-NEC) can
-  diverge from marketplace creators (1099-K) without further
-  parameterization at every call site.
+- Affiliate Connect onboarding uses Stripe-hosted Express onboarding via
+  `createCustomAccountForAffiliate` (resolves/creates the Express account) +
+  `createAffiliateOnboardingLink` (AccountLink) in
+  `stripe-connect.service.ts`; `account.updated` webhooks drive
+  `handleAccountUpdated` -> `Affiliate.payoutStatus`.
+- A user's affiliate and marketplace-creator roles SHARE a single Stripe
+  Express Connect account. `getOrCreateSharedConnectAccountId` (keyed on
+  `userId`) resolves an existing account from either `CreatorProfile` or
+  `Affiliate` and mirrors the id onto both rows, so onboarding either role
+  onboards the other. Because payouts now flow through one account, affiliate
+  commissions (1099-NEC) and marketplace royalties (1099-K) are reported
+  against the same connected account — accept this consolidated tax posture
+  or split the accounts again before relying on per-role 1099 categorization.
 - Approval cron currently uses `updateMany` without batching. Should
   be fine at <100k pending rows; revisit if backlog grows.
