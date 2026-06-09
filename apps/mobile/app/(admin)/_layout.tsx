@@ -37,6 +37,7 @@ import {
   KeyRound,
   Sparkles,
   Clapperboard,
+  Wallet,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -83,6 +84,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
       { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics', scope: 'analytics:read' },
       { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scope: 'creators:read' },
       { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM' },
+      { href: '/(admin)/affiliate-payouts', icon: Wallet, label: 'Affiliate payouts' },
     ],
   },
   {
@@ -429,6 +431,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.includes('analytics')) return 'Analytics'
   if (pathname.startsWith('/creators/')) return 'Creator Profile'
   if (pathname.includes('creators')) return 'Creators'
+  if (pathname.includes('affiliate-payouts')) return 'Affiliate Payouts'
   if (pathname.includes('affiliate-content')) return 'Affiliate CPM'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
   if (pathname.includes('heartbeats')) return 'Heartbeats'

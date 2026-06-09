@@ -8230,9 +8230,6 @@ if (isKubernetes()) {
       const { startApproveEligibleCommissionsCron } = await import(
         './jobs/approve-eligible-commissions'
       )
-      const { startAffiliatePayoutsCron } = await import(
-        './jobs/run-affiliate-payouts'
-      )
       const { startAffiliateInvoiceReconciliationCron } = await import(
         './jobs/affiliate-invoice-reconciliation'
       )
@@ -8240,7 +8237,12 @@ if (isKubernetes()) {
         './jobs/poll-affiliate-content'
       )
       startApproveEligibleCommissionsCron()
-      startAffiliatePayoutsCron()
+      // NOTE: affiliate/creator payouts are intentionally NOT scheduled.
+      // Payments are never automatic — a super admin manually triggers each
+      // payout from the admin UI (per-creator "Approve & pay" or the payout
+      // queue), which calls `payoutAffiliate`. The `runAffiliatePayouts`
+      // batch helper and `run-affiliate-payouts` cron module remain in the
+      // codebase as a reusable/testable primitive but are not wired here.
       startAffiliateInvoiceReconciliationCron()
       startPollAffiliateContentCron()
     } catch (err: any) {

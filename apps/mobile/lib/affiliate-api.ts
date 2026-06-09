@@ -98,6 +98,8 @@ export interface AffiliateContentPost {
   lastPolledAt: string | null
 }
 
+export type ContentProgramStatus = 'none' | 'pending' | 'approved' | 'rejected'
+
 export interface AffiliateContentSummary {
   accounts: AffiliateSocialAccount[]
   posts: AffiliateContentPost[]
@@ -110,6 +112,13 @@ export interface AffiliateContentSummary {
     paidCents: number
   }
   cpmCents: { instagram: number; tiktok: number }
+  /**
+   * Video-creator program application gate. Earning AND payout of content
+   * commissions require `approved`. Defaults to `none` for older backends.
+   */
+  programStatus: ContentProgramStatus
+  appliedAt: string | null
+  rejectionReason: string | null
 }
 
 export const affiliateApi = {
@@ -207,8 +216,23 @@ export const affiliateApi = {
         posts: [],
         totals: { posts: 0, lifetimeViews: 0, paidViews: 0, pendingCents: 0, approvedCents: 0, paidCents: 0 },
         cpmCents: { instagram: 0, tiktok: 0 },
+        programStatus: 'none',
+        appliedAt: null,
+        rejectionReason: null,
       }
     )
+  },
+
+  /**
+   * Apply to the video-creator (content CPM) program. Requires at least one
+   * connected + verified social handle. Returns the new program status
+   * (`pending` on success) or an error (e.g. `no_verified_account`).
+   */
+  async applyContentProgram(
+    http: HttpClient,
+  ): Promise<{ ok: boolean; programStatus?: ContentProgramStatus; error?: any }> {
+    const res = await http.post<any>('/api/affiliates/me/content/apply', {})
+    return res.data ?? { ok: false }
   },
 }
 

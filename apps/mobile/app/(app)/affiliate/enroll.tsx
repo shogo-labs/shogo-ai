@@ -52,7 +52,7 @@ export default function AffiliateEnrollScreen() {
         code: code.trim() || undefined,
       })
       if (res?.ok) {
-        router.replace('/(app)/affiliate')
+        router.replace('/(app)/creator?tab=refer')
       } else {
         setError(describeError(res?.error?.code ?? 'unknown'))
       }
