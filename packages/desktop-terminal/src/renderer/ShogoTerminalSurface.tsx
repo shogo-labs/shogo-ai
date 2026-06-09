@@ -101,7 +101,6 @@ export interface ShogoTerminalSurfaceProps {
   /**
    * Optional callbacks for context-menu items that need parent state.
    * Items without a callback render as enabled rows that no-op; pass
-   * `disabled` flags via TODO if you want to grey them out per-host.
    */
   onRename?(): void
   onConfigure?(): void
@@ -889,7 +888,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         // panel can auto-inject terminal context into messages.
         terminalContextStore.publish({
             tracker,
-            bridge: bridgeRef.current!,
+            bridge: bridgeRef.current ?? undefined,
             cwd: tracker.snapshot().cwd ?? null,
             publishedAt: Date.now(),
           })
@@ -1006,13 +1005,13 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         setSearchOpen(true)
       },
       openRecent: () => recentCommandPicker.open(),
-      sendCommand: (command: string) => bridgeRef.current!.sendCommand(command),
-      sendCommandBackground: (command: string) => bridgeRef.current!.sendCommandBackground(command),
-      interruptCommand: () => bridgeRef.current!.interruptCommand(),
+      sendCommand: (command: string) => { const b = bridgeRef.current; if (!b) throw new Error("terminal disposed"); return b.sendCommand(command) },
+      sendCommandBackground: (command: string) => { const b = bridgeRef.current; if (!b) throw new Error("terminal disposed"); return b.sendCommandBackground(command) },
+      interruptCommand: () => { const b = bridgeRef.current; if (!b) throw new Error("terminal disposed"); b.interruptCommand() },
       getRecentCommands: (limit = 500) => {
         // Keyboard-tracked (current session, always accurate) come first,
         // then fall back to CommandHistorySource for older/disk commands.
-        const fromSource = bridgeRef.current!.getRecentCommands(limit)
+        const fromSource = bridgeRef.current?.getRecentCommands(limit) ?? []
         const merged: Array<{ command: string }> = []
         const seen = new Set<string>()
         for (const cmd of keyboardHistoryRef.current) {
