@@ -267,13 +267,17 @@ function AddHandleCard({
             </Pressable>
           ))}
         </View>
-        <Input
-          value={handle}
-          onChangeText={setHandle}
-          placeholder="yourhandle"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
+        <View className="flex-row items-center gap-2">
+          <Text className="text-base font-medium text-muted-foreground">@</Text>
+          <Input
+            className="flex-1"
+            value={handle}
+            onChangeText={setHandle}
+            placeholder="yourhandle"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+        </View>
         {addError ? (
           <View className="flex-row items-start gap-2">
             <AlertTriangle size={14} className="text-red-500 mt-0.5" />
@@ -317,7 +321,8 @@ function AccountCard({
         {!verified ? (
           <View className="gap-2">
             <Text className="text-xs text-muted-foreground">
-              Add this code to your {account.platform} bio, then tap Verify:
+              Add this code to your {account.platform} bio, then tap Verify. You
+              can remove it from your bio once you're verified.
             </Text>
             <Pressable onPress={onCopyCode} className="flex-row items-center gap-2 rounded-md border border-border px-3 py-2">
               <Text className="text-foreground text-sm flex-1">{account.verificationCode}</Text>
@@ -337,13 +342,18 @@ function AccountCard({
             </View>
           </View>
         ) : (
-          <View className="flex-row items-center gap-2">
-            <Text className="text-xs text-muted-foreground flex-1">
-              {account.lastPolledAt ? `Last checked ${new Date(account.lastPolledAt).toLocaleDateString()}` : 'Awaiting first check'}
+          <View className="gap-1">
+            <View className="flex-row items-center gap-2">
+              <Text className="text-xs text-muted-foreground flex-1">
+                {account.lastPolledAt ? `Last checked ${new Date(account.lastPolledAt).toLocaleDateString()}` : 'Awaiting first check'}
+              </Text>
+              <Pressable onPress={onRemove} disabled={busy} hitSlop={8}>
+                <Trash2 size={16} className="text-red-500" />
+              </Pressable>
+            </View>
+            <Text className="text-[11px] text-muted-foreground">
+              You're verified — you can now remove the shogo-… code from your {account.platform} bio.
             </Text>
-            <Pressable onPress={onRemove} disabled={busy} hitSlop={8}>
-              <Trash2 size={16} className="text-red-500" />
-            </Pressable>
           </View>
         )}
       </CardContent>

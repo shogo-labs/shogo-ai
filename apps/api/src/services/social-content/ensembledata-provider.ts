@@ -11,10 +11,12 @@
  * GraphQL media node.
  *
  * Endpoints used:
- *   TikTok    GET /tt/user/info            (profile/bio for verification)
- *             GET /tt/user/posts           (recent posts + playCount)
- *   Instagram GET /instagram/user/info     (profile/bio + numeric user id)
- *             GET /instagram/user/posts     (recent posts, needs user_id)
+ *   TikTok    GET /tt/user/info              (profile/bio for verification)
+ *             GET /tt/user/posts             (recent posts + playCount)
+ *   Instagram GET /instagram/user/detailed-info (profile/bio + numeric user
+ *                                              id; the basic /user/info
+ *                                              endpoint omits `biography`)
+ *             GET /instagram/user/posts      (recent posts, needs user_id)
  *             GET /instagram/user/reels      (reels carry view counts)
  *
  * Instagram's posts/reels endpoints key on the NUMERIC user id, not the
@@ -137,7 +139,13 @@ export class EnsembleDataProvider implements SocialContentProvider {
       }
     }
     // instagram
-    const data = await this.request('/instagram/user/info', { username: h })
+    //
+    // Use /instagram/user/detailed-info (NOT /instagram/user/info): the basic
+    // info endpoint returns a minimal profile WITHOUT `biography`, so bio-code
+    // ownership verification could never succeed. detailed-info returns the
+    // user object directly under `data` (no `.user` nesting) and includes
+    // `biography`, `full_name`, and the numeric `id` that listRecentPosts needs.
+    const data = await this.request('/instagram/user/detailed-info', { username: h })
     const u = data?.user ?? data ?? {}
     return {
       providerUserId: strOrNull(u.id ?? u.pk ?? u.fbid),
