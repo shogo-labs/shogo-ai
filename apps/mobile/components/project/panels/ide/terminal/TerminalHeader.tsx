@@ -78,7 +78,7 @@ export interface TerminalHeaderProps {
 }
 
 const ICON_BTN =
-  'flex shrink-0 items-center rounded p-[3px] text-[#cccccc] hover:bg-[#ffffff1a] focus:outline focus:outline-1 focus:outline-[#0078d4]'
+  'flex shrink-0 items-center rounded p-[4px] text-[#cccccc] hover:bg-[#ffffff1a] hover:text-white focus:outline focus:outline-1 focus:outline-[#0078d4] transition-colors'
 
 /** Tiny click-outside dismiss helper for the three dropdowns. */
 function useMenu() {
@@ -114,7 +114,7 @@ export function TerminalHeader(props: TerminalHeaderProps) {
   }
 
   return (
-    <div data-testid="terminal-header" className="flex items-center gap-[2px]">
+    <div data-testid="terminal-header" className="flex h-full items-center gap-[1px] px-[2px]">
       {/* 1. Shell-name dropdown */}
       <div ref={profileMenu.ref} className="relative">
         <button
@@ -123,11 +123,11 @@ export function TerminalHeader(props: TerminalHeaderProps) {
           aria-haspopup="menu"
           aria-expanded={profileMenu.open}
           onClick={() => profileMenu.setOpen((v) => !v)}
-          className="flex shrink-0 items-center gap-[3px] rounded px-[6px] py-[2px] text-[11px] text-[#cccccc] hover:bg-[#ffffff1a]"
+          className="flex shrink-0 items-center gap-[4px] rounded px-[6px] py-[3px] text-[12px] text-[#cccccc] hover:bg-[#ffffff1a] hover:text-white transition-colors"
           title="Select Default Profile"
         >
-          <TerminalIcon size={11} />
-          <span>{props.shellName}</span>
+          <TerminalIcon size={12} />
+          <span className="font-normal">{props.shellName}</span>
           <ChevronDown size={10} className="text-[#858585]" />
         </button>
         {profileMenu.open && (
@@ -163,7 +163,7 @@ export function TerminalHeader(props: TerminalHeaderProps) {
         className={ICON_BTN}
         title="New Terminal  (⌘⇧`)"
       >
-        <Plus size={12} />
+        <Plus size={14} />
       </button>
 
       {/* 3. ▾ new-with-profile menu */}
@@ -177,7 +177,7 @@ export function TerminalHeader(props: TerminalHeaderProps) {
           className={ICON_BTN}
           title="Launch Profile…"
         >
-          <ChevronDown size={10} />
+          <ChevronDown size={11} />
         </button>
         {launchMenu.open && (
           <div
@@ -234,10 +234,10 @@ export function TerminalHeader(props: TerminalHeaderProps) {
         type="button"
         onClick={askKill}
         aria-label="Kill Terminal"
-        className={`${ICON_BTN}${props.running ? ' text-[#f48771]' : ''}`}
+        className={`${ICON_BTN} ${props.running ? 'text-[#f48771] hover:text-[#f48771]' : ''}`}
         title="Kill Terminal"
       >
-        <Trash2 size={12} />
+        <Trash2 size={14} />
       </button>
 
       {/* 6. ⋯ more menu */}
@@ -251,7 +251,7 @@ export function TerminalHeader(props: TerminalHeaderProps) {
           className={ICON_BTN}
           title="Views and More Actions…"
         >
-          <MoreHorizontal size={14} />
+          <MoreHorizontal size={15} />
         </button>
         {moreMenu.open && (
           <div
