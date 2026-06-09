@@ -726,8 +726,20 @@ export async function trackUsageFromStream(
   // chat-turn auto-checkpoint to avoid a second row with the same SHA.
   const workerOwnsSync =
     process.env.SHOGO_CLOUD_SYNC === '1' || process.env.SHOGO_CLOUD_SYNC === 'true'
+  // BETA: per-chat git worktrees. When on, the agent's edits live on the
+  // chat's branch in an isolated worktree (committed + persisted runtime-side),
+  // not in the main working tree. The project-scoped checkpoint here would
+  // either no-op or capture unrelated main state, so skip it entirely.
+  let worktreesEnabled = false
+  try {
+    const p = await prisma.project.findUnique({ where: { id: project.id }, select: { settings: true } as any }) as { settings?: unknown } | null
+    const raw = p?.settings
+    const settings = typeof raw === 'string' ? (() => { try { return JSON.parse(raw) } catch { return null } })() : raw
+    worktreesEnabled = !!(settings && typeof settings === 'object' && (settings as Record<string, unknown>).gitWorktreesEnabled === true)
+  } catch { /* default false */ }
   if (
     !workerOwnsSync &&
+    !worktreesEnabled &&
     hasFileModifyingTools(toolCallMap) &&
     observedTurnComplete &&
     !originalStreamErrored &&

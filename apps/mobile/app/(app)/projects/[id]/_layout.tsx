@@ -454,6 +454,8 @@ export default observer(function ProjectLayout() {
     sdkGuideEnabled: projectSettings.sdkGuideEnabled !== false,
     integrationsEnabled: projectSettings.integrationsEnabled !== false,
     channelsEnabled: projectSettings.channelsEnabled !== false,
+    // Beta, opt-in: off unless explicitly enabled.
+    gitWorktreesEnabled: projectSettings.gitWorktreesEnabled === true,
   }), [projectSettings])
 
   const updateProjectSettings = useCallback(async (patch: Record<string, unknown>) => {

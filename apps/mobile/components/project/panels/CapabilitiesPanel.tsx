@@ -25,6 +25,7 @@ import {
   Layers,
   Settings,
   Package,
+  GitBranch,
 } from 'lucide-react-native'
 import { TextInput } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -55,6 +56,7 @@ export interface CapabilitySettings {
   sdkGuideEnabled: boolean
   integrationsEnabled: boolean
   channelsEnabled: boolean
+  gitWorktreesEnabled: boolean
 }
 
 interface CapabilityDef {
@@ -188,6 +190,20 @@ const CAPABILITIES: CapabilityDef[] = [
     disabledDescription: 'No channel/messaging tools',
     icon: MessageSquare,
     toolNames: ['channel_connect', 'channel_disconnect', 'channel_list', 'send_message'],
+  },
+  {
+    key: 'gitWorktreesEnabled',
+    label: 'Git Worktrees',
+    description: 'Each chat gets its own branch + worktree, merged back on done',
+    detail: 'Gives every chat session an isolated git worktree on its own branch (shogo/chat/<id>) sharing the project\'s history. Agents can work in parallel without stepping on each other, see sibling chats\' branches, and merge back into main when you mark a chat done — auto-resolving conflicts and only asking you when a conflict is genuinely ambiguous. Off by default.',
+    disabledDescription: 'All chats share one working tree',
+    icon: GitBranch,
+    toolNames: ['worktree_list'],
+    badgeLabel: 'Beta',
+    examples: [
+      '"Mark this chat done and merge it into main"',
+      '"What are the other chats working on right now?"',
+    ],
   },
 ]
 
@@ -725,10 +741,16 @@ export function CapabilitiesConfigPane({
                       <View className="flex-1">
                         <View className="flex-row items-center gap-2">
                           <Text className="text-sm font-medium text-foreground">{cap.label}</Text>
-                          <Text className="text-[10px] text-muted-foreground">
-                            {cap.badgeLabel
-                              ?? `${cap.toolNames.length} tool${cap.toolNames.length !== 1 ? 's' : ''}`}
-                          </Text>
+                          {cap.badgeLabel === 'Beta' ? (
+                            <View className="px-1.5 py-0.5 rounded bg-amber-500/15">
+                              <Text className="text-[9px] font-semibold uppercase tracking-wide text-amber-600">Beta</Text>
+                            </View>
+                          ) : (
+                            <Text className="text-[10px] text-muted-foreground">
+                              {cap.badgeLabel
+                                ?? `${cap.toolNames.length} tool${cap.toolNames.length !== 1 ? 's' : ''}`}
+                            </Text>
+                          )}
                         </View>
                         <Text className="text-xs text-muted-foreground mt-0.5">
                           {enabled ? cap.description : cap.disabledDescription}
