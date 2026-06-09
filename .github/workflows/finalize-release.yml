@@ -66,11 +66,32 @@ jobs:
           # error instead of being killed mid-step.
           deadline=$(( $(date +%s) + 7000 ))
 
+          # Query a workflow's latest run for this commit, retrying transient
+          # GitHub API failures (e.g. HTTP 5xx) with a short backoff. Without
+          # this, a single flaky API response would trip `set -e` and abort the
+          # whole wait loop, falsely failing the finalizer.
+          get_run() {
+            local wf="$1" attempt out
+            for attempt in 1 2 3 4 5; do
+              if out=$(gh run list --workflow "$wf" --commit "$SHA" \
+                         --json status,conclusion --limit 1 2>/dev/null); then
+                printf '%s' "$out"
+                return 0
+              fi
+              echo "  $wf: transient error querying run status (attempt $attempt/5) — retrying" >&2
+              sleep $(( attempt * 5 ))
+            done
+            return 1
+          }
+
           while :; do
             all_done=true
             for wf in "${WORKFLOWS[@]}"; do
-              run=$(gh run list --workflow "$wf" --commit "$SHA" \
-                      --json status,conclusion --limit 1)
+              if ! run=$(get_run "$wf"); then
+                echo "  $wf: could not query run status after retries — treating as transient, will retry"
+                all_done=false
+                continue
+              fi
               status=$(jq -r '.[0].status // "missing"' <<<"$run")
               concl=$(jq -r '.[0].conclusion // ""' <<<"$run")
 
