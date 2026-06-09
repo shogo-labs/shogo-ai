@@ -103,7 +103,11 @@ export interface AdminCreatorListing {
 }
 
 /** Affiliate-program 360 for a creator who also enrolled as an affiliate. */
+export type ContentProgramStatus = 'none' | 'pending' | 'approved' | 'rejected'
+
 export interface AdminCreatorAffiliate {
+  /** Affiliate row id — needed for admin content-approval + payout actions. */
+  id: string
   code: string
   status: string
   commissionRateBps: number | null
@@ -111,10 +115,33 @@ export interface AdminCreatorAffiliate {
   totalEarningsUsd: number
   pendingPayoutUsd: number
   totalPaidOutUsd: number
+  /** Approved, unpaid commissions an admin can release right now, in USD. */
+  payableUsd: number
+  /** Stripe Connect payout state: not_setup | pending_verification | verified. */
+  payoutStatus: string
+  /** Video-creator (content CPM) program application gate. */
+  contentProgramStatus: ContentProgramStatus
+  contentAppliedAt: string | null
+  contentReviewedAt: string | null
+  contentReviewedBy: string | null
+  contentRejectionReason: string | null
   referralCount: number
   downlineCount: number
   referralEarningsUsd: number
   contentEarningsUsd: number
+}
+
+/** A creator/affiliate owed an approved-but-unpaid balance (admin queue). */
+export interface AdminAffiliateOwed {
+  affiliateId: string
+  userId: string
+  code: string
+  email: string | null
+  name: string | null
+  payoutStatus: string
+  /** True when Stripe Connect is set up + verified (payout can execute now). */
+  payoutReady: boolean
+  owedCents: number
 }
 
 /** Full per-creator profile returned by GET /api/admin/creators/:userId. */
@@ -1494,6 +1521,49 @@ export const api = {
       `/api/admin/creators/${encodeURIComponent(userId)}`,
     )
     return res.data?.data ?? null
+  },
+
+  /**
+   * Approve or reject a creator's video-creator (content CPM) program
+   * application. Approval is the gate for both earning and payout of content
+   * commissions. Super-admin only.
+   */
+  async reviewContentApplication(
+    http: HttpClient,
+    affiliateId: string,
+    action: 'approve' | 'reject',
+    reason?: string,
+  ) {
+    const res = await http.post<{ ok: boolean; affiliate?: any; error?: any }>(
+      `/api/admin/affiliates/${encodeURIComponent(affiliateId)}/content-application`,
+      { action, reason },
+    )
+    return res.data
+  },
+
+  /**
+   * Affiliates/creators with approved, unpaid commissions an admin can
+   * release. Powers the admin payout queue. Super-admin only.
+   */
+  async getAffiliatePayoutsOwed(http: HttpClient) {
+    const res = await http.get<{ items?: AdminAffiliateOwed[] }>(
+      '/api/admin/affiliates/payouts/owed',
+    )
+    return res.data?.items ?? []
+  },
+
+  /**
+   * Manually release a single affiliate's approved, unpaid commissions via
+   * Stripe Connect. Payouts are never automatic — this is the only trigger.
+   * Super-admin only. Throws a `ShogoError` on failure so callers can map
+   * `.status`/`.code` to a friendly message.
+   */
+  async payoutAffiliate(http: HttpClient, affiliateId: string) {
+    const res = await http.post<{ ok: boolean; paidCents?: number; payoutId?: string }>(
+      `/api/admin/affiliates/${encodeURIComponent(affiliateId)}/payout`,
+      {},
+    )
+    return res.data
   },
 
   async completeOnboarding(http: HttpClient) {

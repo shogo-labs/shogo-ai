@@ -24,6 +24,7 @@ import * as Clipboard from 'expo-clipboard'
 import { useRouter } from 'expo-router'
 import {
   ArrowLeft, AlertTriangle, CheckCircle2, Clock, Copy, Trash2, Eye,
+  ShieldCheck, XCircle, Send,
 } from 'lucide-react-native'
 import { Card, CardContent, Button, Badge, Input } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
@@ -71,6 +72,8 @@ export default function AffiliateContentScreen() {
   const [addError, setAddError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [applying, setApplying] = useState(false)
+  const [applyError, setApplyError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setErrorMsg(null)
@@ -143,6 +146,33 @@ export default function AffiliateContentScreen() {
     setTimeout(() => setCopiedId(null), 1500)
   }, [])
 
+  const applyToProgram = useCallback(async () => {
+    setApplying(true)
+    setApplyError(null)
+    try {
+      const res = await affiliateApi.applyContentProgram(http)
+      if (res?.ok) {
+        await load()
+      } else {
+        const code = res?.error?.code
+        setApplyError(
+          code === 'no_verified_account'
+            ? 'Connect and verify at least one handle before applying.'
+            : (res?.error?.message ?? 'Could not submit your application. Please try again.'),
+        )
+      }
+    } catch (err: any) {
+      const code = err?.body?.error?.code ?? err?.response?.body?.error?.code
+      setApplyError(
+        code === 'no_verified_account'
+          ? 'Connect and verify at least one handle before applying.'
+          : (err?.message ?? 'Could not submit your application. Please try again.'),
+      )
+    } finally {
+      setApplying(false)
+    }
+  }, [http, load])
+
   return (
     <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
@@ -171,6 +201,13 @@ export default function AffiliateContentScreen() {
           </Card>
         ) : summary ? (
           <>
+            <ProgramStatusCard
+              summary={summary}
+              hasVerified={summary.accounts.some((a) => a.verificationStatus === 'verified')}
+              applying={applying}
+              applyError={applyError}
+              onApply={applyToProgram}
+            />
             <EarningsCard summary={summary} />
             <AddHandleCard
               platform={platform}
@@ -210,14 +247,119 @@ export default function AffiliateContentScreen() {
             ) : null}
 
             <Text className="text-[10px] text-muted-foreground text-center px-4 leading-4">
-              You earn a CPM on new views of content you post after connecting a
-              verified handle. Views are checked hourly; earnings are held for a
-              short review window, then paid out with your other commissions.
+              The video-creator program requires approval before you can earn or
+              be paid. Connect and verify a handle, then apply. Once an admin
+              approves you, new views are checked hourly and earnings are paid
+              out manually with your other commissions.
             </Text>
           </>
         ) : null}
       </ScrollView>
     </View>
+  )
+}
+
+function ProgramStatusCard({
+  summary, hasVerified, applying, applyError, onApply,
+}: {
+  summary: AffiliateContentSummary
+  hasVerified: boolean
+  applying: boolean
+  applyError: string | null
+  onApply: () => void
+}) {
+  const status = summary.programStatus ?? 'none'
+
+  if (status === 'approved') {
+    return (
+      <Card>
+        <CardContent className="flex-row items-center gap-3 p-4">
+          <View className="h-9 w-9 rounded-full bg-emerald-500/10 items-center justify-center">
+            <ShieldCheck size={18} className="text-emerald-500" />
+          </View>
+          <View className="flex-1">
+            <Text className="text-sm font-semibold text-foreground">Approved creator</Text>
+            <Text className="text-xs text-muted-foreground">
+              Your handles are earning. Payouts are released manually by an admin.
+            </Text>
+          </View>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (status === 'pending') {
+    return (
+      <Card>
+        <CardContent className="flex-row items-center gap-3 p-4">
+          <View className="h-9 w-9 rounded-full bg-amber-500/10 items-center justify-center">
+            <Clock size={18} className="text-amber-500" />
+          </View>
+          <View className="flex-1">
+            <Text className="text-sm font-semibold text-foreground">Application under review</Text>
+            <Text className="text-xs text-muted-foreground">
+              We're reviewing your creator application. You'll start earning on new
+              views once an admin approves you{summary.appliedAt ? ` (applied ${new Date(summary.appliedAt).toLocaleDateString()})` : ''}.
+            </Text>
+          </View>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // none | rejected → apply / re-apply CTA.
+  const rejected = status === 'rejected'
+  return (
+    <Card>
+      <CardContent className="gap-3 p-4">
+        <View className="flex-row items-center gap-2">
+          {rejected ? (
+            <XCircle size={16} className="text-red-500" />
+          ) : (
+            <ShieldCheck size={16} className="text-primary" />
+          )}
+          <Text className="text-sm font-semibold text-foreground">
+            {rejected ? 'Application not approved' : 'Apply to the video-creator program'}
+          </Text>
+        </View>
+        <Text className="text-xs text-muted-foreground">
+          {rejected
+            ? 'Your previous application was not approved. You can update your handles and re-apply.'
+            : 'Earn a CPM on new views of content you post. Connect and verify at least one handle, then apply — an admin reviews every creator before earning or payouts begin.'}
+        </Text>
+        {rejected && summary.rejectionReason ? (
+          <View className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2">
+            <Text className="text-[11px] text-red-600">Reason: {summary.rejectionReason}</Text>
+          </View>
+        ) : null}
+        {!hasVerified ? (
+          <View className="flex-row items-start gap-2">
+            <AlertTriangle size={14} className="text-yellow-500 mt-0.5" />
+            <Text className="text-xs text-muted-foreground flex-1">
+              Connect and verify a handle below before you can apply.
+            </Text>
+          </View>
+        ) : null}
+        {applyError ? (
+          <View className="flex-row items-start gap-2">
+            <AlertTriangle size={14} className="text-red-500 mt-0.5" />
+            <Text className="text-xs text-foreground flex-1">{applyError}</Text>
+          </View>
+        ) : null}
+        <Button onPress={onApply} disabled={applying || !hasVerified}>
+          {applying ? (
+            <ActivityIndicator />
+          ) : (
+            <View className="flex-row items-center gap-2">
+              <Send size={14} className="text-primary-foreground" />
+              <Text className="text-primary-foreground font-medium">
+                {rejected ? 'Re-apply' : 'Apply to earn'}
+              </Text>
+            </View>
+          )}
+        </Button>
+      </CardContent>
+    </Card>
   )
 }
 

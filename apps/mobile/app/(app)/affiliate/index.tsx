@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Affiliate dashboard — landing screen for the native MLM program.
+ * Affiliate / referral dashboard.
+ *
+ * Now lives inside the unified Creator hub (`/(app)/creator`) as the
+ * "Referrals" tab via the exported {@link AffiliateReferralPanel}. The default
+ * export of this route just redirects into that hub so old links keep working.
  *
  * - Not enrolled  → CTA card linking to /affiliate/enroll
  * - Enrolled      → balance + referral link + 30d stats + entry points
@@ -18,7 +22,7 @@ import {
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import * as WebBrowser from 'expo-web-browser'
-import { useRouter, useLocalSearchParams } from 'expo-router'
+import { Redirect, useRouter, useLocalSearchParams } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft, Copy, Share2, Wallet, Users, ChevronRight, AlertTriangle, Video,
@@ -31,7 +35,24 @@ function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
 }
 
-export default observer(function AffiliateDashboard() {
+/**
+ * Redirect legacy `/(app)/affiliate` into the unified Creator hub's Referrals
+ * tab. The real UI is {@link AffiliateReferralPanel}, embedded by the hub.
+ */
+export default function AffiliateDashboardRedirect() {
+  return <Redirect href="/(app)/creator?tab=refer" />
+}
+
+/**
+ * The referral/affiliate dashboard body. Rendered by the Creator hub
+ * (`embedded`) or standalone. When embedded, the hub supplies the page header
+ * and tab bar, so we drop the local back-header.
+ */
+export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
+  embedded = false,
+}: {
+  embedded?: boolean
+}) {
   const router = useRouter()
   const http = useDomainHttp()
   const params = useLocalSearchParams<{ connect?: string }>()
@@ -110,12 +131,14 @@ export default observer(function AffiliateDashboard() {
 
   return (
     <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
-        <Pressable onPress={() => router.back()} hitSlop={8}>
-          <ArrowLeft size={22} className="text-foreground" />
-        </Pressable>
-        <Text className="text-lg font-semibold text-foreground">Affiliate Program</Text>
-      </View>
+      {!embedded ? (
+        <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
+          <Pressable onPress={() => router.back()} hitSlop={8}>
+            <ArrowLeft size={22} className="text-foreground" />
+          </Pressable>
+          <Text className="text-lg font-semibold text-foreground">Affiliate Program</Text>
+        </View>
+      ) : null}
 
       <ScrollView
         contentContainerStyle={{ padding: 16, gap: 16 }}

@@ -2587,6 +2587,8 @@ export interface CreatorListingSummary {
  * creator never enrolled in the affiliate program.
  */
 export interface CreatorAffiliateSummary {
+  /** Affiliate row id — needed for admin actions (content approval, payout). */
+  id: string
   code: string
   status: string
   /** Per-affiliate L1 commission override in basis points (null = tier rate). */
@@ -2596,6 +2598,16 @@ export interface CreatorAffiliateSummary {
   totalEarningsUsd: number
   pendingPayoutUsd: number
   totalPaidOutUsd: number
+  /** Approved, unpaid commissions an admin can release right now, in USD. */
+  payableUsd: number
+  /** Stripe Connect payout state: not_setup | pending_verification | verified. */
+  payoutStatus: string
+  /** Video-creator (content CPM) program application gate. */
+  contentProgramStatus: 'none' | 'pending' | 'approved' | 'rejected'
+  contentAppliedAt: string | null
+  contentReviewedAt: string | null
+  contentReviewedBy: string | null
+  contentRejectionReason: string | null
   /** Users last-click-attributed to this affiliate. */
   referralCount: number
   /** Direct downline affiliates (children in the upline tree). */
@@ -2668,7 +2680,7 @@ export async function getCreatorProfileDetail(
     where: { userId },
     include: {
       _count: { select: { attributions: true, children: true } },
-      commissions: { select: { source: true, amountCents: true } },
+      commissions: { select: { source: true, amountCents: true, status: true, payoutId: true } },
     },
   })
 
@@ -2676,11 +2688,15 @@ export async function getCreatorProfileDetail(
   if (affiliate) {
     let referralCents = 0
     let contentCents = 0
+    let payableCents = 0
     for (const com of affiliate.commissions) {
       if (String(com.source) === 'content') contentCents += com.amountCents
       else referralCents += com.amountCents
+      // Approved + not yet attached to a payout = releasable now.
+      if (String(com.status) === 'approved' && !com.payoutId) payableCents += com.amountCents
     }
     affiliateSummary = {
+      id: affiliate.id,
       code: affiliate.code,
       status: String(affiliate.status),
       commissionRateBps: affiliate.commissionRateBps,
@@ -2688,6 +2704,17 @@ export async function getCreatorProfileDetail(
       totalEarningsUsd: affiliate.totalEarningsCents / 100,
       pendingPayoutUsd: affiliate.pendingPayoutCents / 100,
       totalPaidOutUsd: affiliate.totalPaidOutCents / 100,
+      payableUsd: payableCents / 100,
+      payoutStatus: String(affiliate.payoutStatus),
+      contentProgramStatus:
+        (String(affiliate.contentProgramStatus) as CreatorAffiliateSummary['contentProgramStatus']) ??
+        'none',
+      contentAppliedAt: affiliate.contentAppliedAt ? affiliate.contentAppliedAt.toISOString() : null,
+      contentReviewedAt: affiliate.contentReviewedAt
+        ? affiliate.contentReviewedAt.toISOString()
+        : null,
+      contentReviewedBy: affiliate.contentReviewedBy ?? null,
+      contentRejectionReason: affiliate.contentRejectionReason ?? null,
       referralCount: affiliate._count.attributions,
       downlineCount: affiliate._count.children,
       referralEarningsUsd: referralCents / 100,

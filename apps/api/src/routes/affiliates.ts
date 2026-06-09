@@ -32,6 +32,12 @@ import { z } from 'zod'
 import { authMiddleware, requireAuth } from '../middleware/auth'
 import { prisma } from '../lib/prisma'
 import {
+  copyResponseHeaders,
+  forwardToUpstream,
+  getUpstreamCredential,
+  isLocalMode,
+} from '../lib/federated-upstream'
+import {
   AffiliateError,
   enrollAffiliate,
   getAffiliateSummary,
@@ -40,6 +46,7 @@ import {
 import {
   ContentAffiliateError,
   addSocialAccount,
+  applyToContentProgram,
   contentErrorStatus,
   getContentSummary,
   isContentCpmEnabled,
@@ -111,6 +118,70 @@ const visitSchema = z.object({
 
 export function affiliateRoutes(): Hono {
   const router = new Hono()
+
+  // --------------------------------------------------------------------------
+  // Local mode: proxy the authenticated per-user surface to Shogo Cloud
+  // --------------------------------------------------------------------------
+  //
+  // The affiliate/referral data model lives in the cloud. In local/desktop
+  // mode (`SHOGO_LOCAL_MODE=true`) there is no native affiliate program, so
+  // the unified Creator hub's "Referrals" panel must read/write the user's
+  // REAL cloud affiliate account using the connected `SHOGO_API_KEY`. We
+  // forward the per-user surface (`/affiliates/me*` and `/affiliates/enroll`)
+  // upstream with that credential. Public/internal hooks (click/visit/lookup)
+  // stay local. Without a connected key, the hub gates these out, but we
+  // still return `cloud_signin_required` defensively.
+  //
+  // Registered first so it runs before the `requireAuth` gates below — the
+  // cloud key, not the local session, is what authenticates upstream.
+  router.use('*', async (c, next) => {
+    if (!isLocalMode()) return next()
+    const path = c.req.path
+    const isUserSurface =
+      path.includes('/affiliates/me') || path.endsWith('/affiliates/enroll')
+    if (!isUserSurface) return next()
+
+    const key = await getUpstreamCredential()
+    if (!key) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'cloud_signin_required',
+            message: 'Sign in to Shogo Cloud to use Creator referral features.',
+          },
+        },
+        503,
+      )
+    }
+
+    try {
+      const upstream = await forwardToUpstream(c)
+      if (upstream.status === 401) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'cloud_signin_required',
+              message: 'Sign in to Shogo Cloud to use Creator referral features.',
+            },
+          },
+          503,
+        )
+      }
+      const headers = copyResponseHeaders(upstream)
+      const buf = await upstream.arrayBuffer()
+      return new Response(buf, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers,
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[affiliates] cloud proxy failed:', msg)
+      return c.json({ ok: false, error: { code: 'cloud_unreachable', message: msg } }, 502)
+    }
+  })
 
   // --------------------------------------------------------------------------
   // Public + internal endpoints — no per-user auth
@@ -599,6 +670,33 @@ export function affiliateRoutes(): Hono {
     }
     const summary = await getContentSummary(affiliateId)
     return c.json({ ok: true, ...summary })
+  })
+
+  /**
+   * POST /api/affiliates/me/content/apply — apply to the video-creator
+   * (content CPM) program. Requires at least one connected AND verified
+   * social handle. Moves the affiliate to `pending`; a super admin then
+   * approves/rejects. Earning + payout of content commissions are blocked
+   * until approval.
+   */
+  router.post('/affiliates/me/content/apply', async (c) => {
+    const blocked = await contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
+    try {
+      const { status } = await applyToContentProgram(affiliateId)
+      return c.json({ ok: true, programStatus: status })
+    } catch (err) {
+      if (err instanceof ContentAffiliateError) {
+        return c.json(
+          { ok: false, error: { code: err.code, message: err.message } },
+          contentErrorStatus(err.code),
+        )
+      }
+      console.error('[Affiliate content apply] failed', err)
+      return c.json({ ok: false, error: { code: 'server_error' } }, 500)
+    }
   })
 
   return router

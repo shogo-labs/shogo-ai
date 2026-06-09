@@ -14,6 +14,8 @@ import {
   ScrollView,
   Pressable,
   RefreshControl,
+  TextInput,
+  ActivityIndicator,
   useWindowDimensions,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
@@ -27,6 +29,10 @@ import {
   Package,
   Network,
   Calendar,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Wallet,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL, type AdminCreatorDetail } from '../../../lib/api'
@@ -135,7 +141,20 @@ function ListingTable({ listings }: { listings: AdminCreatorDetail['listings'] }
   )
 }
 
-function AffiliateCard({ a }: { a: NonNullable<AdminCreatorDetail['affiliate']> }) {
+const CONTENT_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
+  none: { label: 'Not applied', cls: 'text-muted-foreground' },
+  pending: { label: 'Pending review', cls: 'text-amber-600' },
+  approved: { label: 'Approved', cls: 'text-emerald-600' },
+  rejected: { label: 'Rejected', cls: 'text-red-600' },
+}
+
+function AffiliateCard({
+  a,
+  onChanged,
+}: {
+  a: NonNullable<AdminCreatorDetail['affiliate']>
+  onChanged: () => void | Promise<void>
+}) {
   const rate = a.commissionRateBps != null ? `${(a.commissionRateBps / 100).toFixed(2)}%` : 'Tier default'
   const cpm = a.contentCpmCents != null ? `$${(a.contentCpmCents / 100).toFixed(2)} / 1k views` : 'Platform default'
   const rows: { label: string; value: string }[] = [
@@ -148,9 +167,71 @@ function AffiliateCard({ a }: { a: NonNullable<AdminCreatorDetail['affiliate']> 
     { label: 'Referral earnings', value: usd(a.referralEarningsUsd) },
     { label: 'Content earnings', value: usd(a.contentEarningsUsd) },
     { label: 'Lifetime earnings', value: usd(a.totalEarningsUsd) },
-    { label: 'Pending payout', value: usd(a.pendingPayoutUsd) },
     { label: 'Total paid out', value: usd(a.totalPaidOutUsd) },
   ]
+
+  const [busy, setBusy] = useState<null | 'approve' | 'reject' | 'payout'>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionMsg, setActionMsg] = useState<string | null>(null)
+  const [showReject, setShowReject] = useState(false)
+  const [reason, setReason] = useState('')
+
+  const status = a.contentProgramStatus ?? 'none'
+  const statusStyle = CONTENT_STATUS_STYLE[status] ?? CONTENT_STATUS_STYLE.none
+  const payoutReady = a.payoutStatus === 'verified'
+
+  const review = useCallback(
+    async (action: 'approve' | 'reject') => {
+      setBusy(action)
+      setActionError(null)
+      setActionMsg(null)
+      try {
+        const res = await fetch(`${API_BASE}/affiliates/${encodeURIComponent(a.id)}/content-application`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, reason: action === 'reject' ? reason.trim() || undefined : undefined }),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => null)
+          setActionError(body?.error?.message ?? 'Action failed.')
+          return
+        }
+        setShowReject(false)
+        setReason('')
+        await onChanged()
+      } catch {
+        setActionError('Action failed. Please try again.')
+      } finally {
+        setBusy(null)
+      }
+    },
+    [a.id, reason, onChanged],
+  )
+
+  const payout = useCallback(async () => {
+    setBusy('payout')
+    setActionError(null)
+    setActionMsg(null)
+    try {
+      const res = await fetch(`${API_BASE}/affiliates/${encodeURIComponent(a.id)}/payout`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        setActionError(body?.error?.message ?? 'Payout failed.')
+        return
+      }
+      setActionMsg(`Paid ${usd((body?.paidCents ?? 0) / 100)}.`)
+      await onChanged()
+    } catch {
+      setActionError('Payout failed. Please try again.')
+    } finally {
+      setBusy(null)
+    }
+  }, [a.id, onChanged])
+
   return (
     <View className="rounded-xl border border-border bg-card p-4">
       <View className="flex-row items-center gap-2 mb-3">
@@ -164,6 +245,111 @@ function AffiliateCard({ a }: { a: NonNullable<AdminCreatorDetail['affiliate']> 
             <Text className="text-sm text-foreground mt-0.5 capitalize">{r.value}</Text>
           </View>
         ))}
+      </View>
+
+      {/* Video-creator (content CPM) program review */}
+      <View className="border-t border-border mt-3 pt-3 gap-2">
+        <View className="flex-row items-center justify-between">
+          <Text className="text-[11px] text-muted-foreground uppercase tracking-wide">Video-creator program</Text>
+          <Text className={cn('text-xs font-semibold', statusStyle.cls)}>{statusStyle.label}</Text>
+        </View>
+        {status === 'rejected' && a.contentRejectionReason ? (
+          <Text className="text-[11px] text-red-600">Reason: {a.contentRejectionReason}</Text>
+        ) : null}
+        {a.contentAppliedAt ? (
+          <Text className="text-[11px] text-muted-foreground">Applied {fmtDate(a.contentAppliedAt)}</Text>
+        ) : null}
+
+        {status === 'pending' || status === 'rejected' || status === 'approved' ? (
+          <View className="gap-2">
+            {showReject ? (
+              <TextInput
+                value={reason}
+                onChangeText={setReason}
+                placeholder="Reason for rejection (optional)"
+                placeholderTextColor="#9ca3af"
+                className="rounded-md border border-border px-3 py-2 text-sm text-foreground"
+              />
+            ) : null}
+            <View className="flex-row gap-2">
+              {status !== 'approved' ? (
+                <Pressable
+                  onPress={() => review('approve')}
+                  disabled={busy !== null}
+                  className="flex-row items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 active:opacity-80"
+                >
+                  {busy === 'approve' ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <CheckCircle2 size={14} color="#fff" />
+                  )}
+                  <Text className="text-xs font-semibold text-white">Approve</Text>
+                </Pressable>
+              ) : null}
+              {status !== 'rejected' ? (
+                <Pressable
+                  onPress={() => (showReject ? review('reject') : setShowReject(true))}
+                  disabled={busy !== null}
+                  className="flex-row items-center gap-1.5 px-3 py-2 rounded-lg border border-red-500/40 active:opacity-80"
+                >
+                  {busy === 'reject' ? (
+                    <ActivityIndicator size="small" color="#dc2626" />
+                  ) : (
+                    <XCircle size={14} color="#dc2626" />
+                  )}
+                  <Text className="text-xs font-semibold text-red-600">
+                    {showReject ? 'Confirm reject' : 'Reject'}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+        ) : null}
+      </View>
+
+      {/* Manual payout — owed (approved + unpaid) balance */}
+      <View className="border-t border-border mt-3 pt-3 gap-2">
+        <View className="flex-row items-center justify-between">
+          <View>
+            <Text className="text-[11px] text-muted-foreground uppercase tracking-wide">Owed (payable now)</Text>
+            <Text className="text-lg font-bold text-foreground">{usd(a.payableUsd)}</Text>
+          </View>
+          <Pressable
+            onPress={payout}
+            disabled={busy !== null || a.payableUsd <= 0 || !payoutReady}
+            className={cn(
+              'flex-row items-center gap-1.5 px-3 py-2 rounded-lg',
+              a.payableUsd > 0 && payoutReady ? 'bg-primary active:opacity-80' : 'bg-muted',
+            )}
+          >
+            {busy === 'payout' ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Wallet size={14} className={a.payableUsd > 0 && payoutReady ? 'text-primary-foreground' : 'text-muted-foreground'} />
+            )}
+            <Text
+              className={cn(
+                'text-xs font-semibold',
+                a.payableUsd > 0 && payoutReady ? 'text-primary-foreground' : 'text-muted-foreground',
+              )}
+            >
+              Approve &amp; pay
+            </Text>
+          </Pressable>
+        </View>
+        {!payoutReady ? (
+          <View className="flex-row items-center gap-1.5">
+            <Clock size={12} className="text-amber-500" />
+            <Text className="text-[11px] text-muted-foreground">
+              Payout setup not verified ({a.payoutStatus}). Creator must finish Stripe onboarding first.
+            </Text>
+          </View>
+        ) : null}
+        {actionError ? <Text className="text-[11px] text-red-600">{actionError}</Text> : null}
+        {actionMsg ? <Text className="text-[11px] text-emerald-600">{actionMsg}</Text> : null}
+        <Text className="text-[10px] text-muted-foreground">
+          Payouts are never automatic — releasing pays the creator's approved, unpaid commissions via Stripe.
+        </Text>
       </View>
     </View>
   )
@@ -302,7 +488,7 @@ export default function AdminCreatorProfile() {
 
           {/* Affiliate / commissions */}
           {creator.affiliate ? (
-            <AffiliateCard a={creator.affiliate} />
+            <AffiliateCard a={creator.affiliate} onChanged={load} />
           ) : (
             <View className="rounded-xl border border-dashed border-border bg-card/50 p-4">
               <View className="flex-row items-center gap-2">
