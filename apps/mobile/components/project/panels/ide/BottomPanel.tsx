@@ -40,6 +40,7 @@ export function BottomPanel({
   onReveal,
   agentUrl = null,
   messages,
+  onMaximizeChange,
 }: {
   projectId: string | null | undefined;
   newSessionNonce: number;
@@ -50,11 +51,34 @@ export function BottomPanel({
   agentUrl?: string | null;
   /** Chat messages — Output tab folds in chat-derived exec entries. */
   messages?: any[];
+  /**
+   * Called when the user clicks the maximize/restore button. The parent
+   * (Workbench / ProjectLayout) should expand the panel to fill the window
+   * when `maximized` is true, and restore its prior height when false.
+   */
+  onMaximizeChange?: (maximized: boolean) => void;
 }) {
   const tab = useBottomPanelState((s) => s.activeTab);
   const unseenForThisProject = useBottomPanelState((s) =>
     projectId ? (s.unseenErrorsByProject[projectId] ?? 0) : 0,
   );
+
+  // Local nonce incremented by the "New Terminal" panel-header button.
+  const [localNewNonce, setLocalNewNonce] = React.useState(0);
+  const effectiveNewSessionNonce = (newSessionNonce ?? 0) + localNewNonce;
+
+  // Panel maximize — fills window height; hides the editor area.
+  const [isMaximized, setIsMaximized] = React.useState(false);
+  const [panelActionsOpen, setPanelActionsOpen] = React.useState(false);
+  const onMaximizeChangeRef = React.useRef(onMaximizeChange);
+  onMaximizeChangeRef.current = onMaximizeChange;
+  const handleMaximize = React.useCallback(() => {
+    setIsMaximized((v) => {
+      const next = !v;
+      onMaximizeChangeRef.current?.(next);
+      return next;
+    });
+  }, []);
 
   const handleSelect = React.useCallback((next: BottomPanelTab): void => {
     ideBottomPanelStore.setActiveTab(next);
@@ -77,8 +101,11 @@ export function BottomPanel({
       { id: "panel.problems",     key: "m", mod: true, shift: true, run: () => handleSelect("Problems") },
       { id: "panel.output",       key: "u", mod: true, shift: true, run: () => handleSelect("Output") },
       { id: "panel.debugConsole", key: "y", mod: true, shift: true, run: () => handleSelect("Debug Console") },
-      { id: "panel.terminal",     key: "`", mod: true,              run: () => handleSelect("Terminal") },
-    ]), [handleSelect]),
+      // NOTE: Ctrl+` is intentionally NOT bound here — Workbench.tsx owns
+      // the panel toggle (⌘J / view.toggleBottomPanel) and Ctrl+` in
+      // Electron also maps to "Toggle DevTools", causing a conflict.
+      { id: "panel.maximize",     key: "j", mod: true,              run: handleMaximize },
+    ]), [handleSelect, handleMaximize]),
   );
 
   // Per-tab pane wiring. Kept as a small inline table so the JSX below
@@ -92,7 +119,7 @@ export function BottomPanel({
           <Terminal
             projectId={projectId}
             visible={visible}
-            newSessionNonce={newSessionNonce}
+            newSessionNonce={effectiveNewSessionNonce}
             onRequestClose={onClose}
           />
         );
@@ -126,9 +153,37 @@ export function BottomPanel({
         activeTab={tab}
         onSelect={handleSelect}
         badges={{ Output: unseenForThisProject }}
+        onNewTerminal={() => setLocalNewNonce((n) => n + 1)}
+        onMaximize={handleMaximize}
+        isMaximized={isMaximized}
+        onPanelActions={() => setPanelActionsOpen((v) => !v)}
         onHide={onClose}
         onClose={onClose}
       />
+      {panelActionsOpen && (
+        <div
+          role="menu"
+          aria-label="Panel actions"
+          className="absolute right-1 top-7 z-50 w-52 rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl"
+          onMouseLeave={() => setPanelActionsOpen(false)}
+        >
+          <button
+            role="menuitem"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#0078d4]/60"
+            onClick={() => { handleMaximize(); setPanelActionsOpen(false); }}
+          >
+            {isMaximized ? 'Restore Panel Size' : 'Maximize Panel Size'}
+          </button>
+          <div className="my-1 border-t border-[#454545]" />
+          <button
+            role="menuitem"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#0078d4]/60"
+            onClick={() => { onClose?.(); setPanelActionsOpen(false); }}
+          >
+            Close Panel
+          </button>
+        </div>
+      )}
       {/*
         * No `overflow-hidden` here on purpose: the Terminal's kebab/preset
         * menu lives inside a child and opens *upward* with `absolute
