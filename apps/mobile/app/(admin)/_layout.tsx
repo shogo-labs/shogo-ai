@@ -294,12 +294,12 @@ function AdminSidebar({
         role="button"
         accessibilityLabel={item.label}
         className={cn(
-          'flex-row items-center gap-3 px-3 py-2.5 rounded-lg',
-          active ? 'bg-primary/10' : 'active:bg-muted/50',
+          'flex-row items-center gap-2 rounded-md px-2 py-1',
+          active ? 'bg-accent' : 'active:bg-accent/50',
         )}
       >
-        <Icon size={18} className={active ? 'text-primary' : 'text-muted-foreground'} />
-        <Text className={cn('text-sm font-medium flex-1', active ? 'text-primary' : 'text-foreground')}>
+        <Icon size={12} className={active ? 'text-foreground' : 'text-muted-foreground'} />
+        <Text className={cn('text-xs flex-1', active ? 'text-foreground' : 'text-muted-foreground')}>
           {item.label}
         </Text>
         {item.label === 'Infrastructure' && infraHealth !== 'unknown' && (
@@ -311,46 +311,41 @@ function AdminSidebar({
 
   const sidebar = (
     <View className={cn(
-      'bg-card border-r border-border h-full',
-      isDrawer ? 'w-[260px]' : 'w-[240px]',
+      'bg-card border-r border-border h-full w-64',
     )}>
       {/* Header */}
-      <View className="px-4 pt-5 pb-4 border-b border-border">
-        <View className="flex-row items-center justify-between">
-          <View className="flex-row items-center gap-2.5">
-            <View className="h-8 w-8 rounded-lg bg-primary/10 items-center justify-center">
-              <Shield size={16} className="text-primary" />
-            </View>
-            <View>
-              <Text className="text-sm font-bold text-foreground">Admin</Text>
-              <Text className="text-[10px] text-muted-foreground">
-                {isSuperAdmin ? 'Super Admin Portal' : 'Admin Portal'}
-              </Text>
-            </View>
+      <View className="border-b border-border flex-row items-center justify-between px-3 py-2">
+        <View className="flex-row items-center gap-2">
+          <Shield size={12} className="text-primary" />
+          <View>
+            <Text className="text-sm font-semibold text-foreground">Admin</Text>
+            <Text className="text-xs text-muted-foreground">
+              {isSuperAdmin ? 'Super Admin Portal' : 'Admin Portal'}
+            </Text>
           </View>
-          {isDrawer && (
-            <Pressable onPress={onClose} className="p-1.5 rounded-md active:bg-muted">
-              <X size={18} className="text-muted-foreground" />
-            </Pressable>
-          )}
         </View>
+        {isDrawer && (
+          <Pressable onPress={onClose} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
+            <X size={12} className="text-muted-foreground" />
+          </Pressable>
+        )}
       </View>
 
       {/* Nav Items */}
-      <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 12 }} showsVerticalScrollIndicator={false}>
+      <ScrollView className="flex-1 pt-2" contentContainerStyle={{ paddingHorizontal: 8 }} showsVerticalScrollIndicator={false}>
         {localMode ? (
-          <View className="gap-0.5">
+          <View className="gap-0.5 px-2">
             {LOCAL_MAIN_ITEMS.map(renderNavRow)}
-            <View className="mx-3 mt-4 mb-2 border-t border-border" />
-            <Text className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <View className="mx-1 mt-4 mb-2 border-t border-border" />
+            <Text className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Settings
             </Text>
             {LOCAL_SETTINGS_ITEMS.map(renderNavRow)}
           </View>
         ) : (
           visibleSections.map((section, idx) => (
-            <View key={section.title} className={cn('gap-0.5', idx > 0 && 'mt-3')}>
-              <Text className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <View key={section.title} className={cn('gap-0.5 px-2', idx > 0 && 'mt-3')}>
+              <Text className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                 {section.title}
               </Text>
               {section.items.map(renderNavRow)}
@@ -360,32 +355,30 @@ function AdminSidebar({
       </ScrollView>
 
       {/* Footer */}
-      <View className="px-3 pb-4 gap-2">
+      <View className="border-t border-border p-2 gap-0.5">
         <Pressable
           onPress={() => { router.replace('/(app)'); onClose?.() }}
           role="link"
           accessibilityLabel="Back to App"
-          className="flex-row items-center gap-3 px-3 py-2.5 rounded-lg active:bg-muted/50"
+          className="flex-row items-center gap-2 rounded-md px-2 py-1 active:bg-accent/50"
         >
-          <ArrowLeft size={18} className="text-muted-foreground" />
-          <Text className="text-sm font-medium text-muted-foreground">Back to App</Text>
+          <ArrowLeft size={12} className="text-muted-foreground" />
+          <Text className="text-xs text-muted-foreground">Back to App</Text>
         </Pressable>
 
-        <View className="border-t border-border pt-3 px-1">
-          <View className="flex-row items-center gap-2.5">
-            <View className="h-8 w-8 rounded-full bg-primary/10 items-center justify-center">
-              <Text className="text-xs font-semibold text-primary">
-                {userName?.charAt(0)?.toUpperCase() || 'A'}
-              </Text>
-            </View>
-            <View className="flex-1 min-w-0">
-              <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
-                {userName || 'Admin'}
-              </Text>
-              <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-                {userEmail}
-              </Text>
-            </View>
+        <View className="flex-row items-center gap-2 px-2 py-1.5">
+          <View className="h-7 w-7 rounded bg-primary/20 items-center justify-center">
+            <Text className="text-[11px] font-bold text-primary">
+              {userName?.charAt(0)?.toUpperCase() || 'A'}
+            </Text>
+          </View>
+          <View className="flex-1 min-w-0">
+            <Text className="text-sm text-foreground" numberOfLines={1}>
+              {userName || 'Admin'}
+            </Text>
+            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+              {userEmail}
+            </Text>
           </View>
         </View>
       </View>

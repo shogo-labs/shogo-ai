@@ -28,7 +28,6 @@ import {
   TrendingDown,
   Globe,
   Sparkles,
-  LayoutTemplate,
   RefreshCw,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -949,79 +948,6 @@ export function UserActivityTable({
           </View>
         )
       })()}
-    </View>
-  )
-}
-
-// =============================================================================
-// Template Engagement Panel
-// =============================================================================
-
-export interface TemplateStatsEntry {
-  templateId: string
-  projects: number
-  avgMessages: number
-  totalToolCalls: number
-  engagementRate: number
-}
-
-export interface TemplateEngagementData {
-  templates: TemplateStatsEntry[]
-}
-
-export function TemplateEngagementPanel({
-  data,
-  loading,
-}: {
-  data: TemplateEngagementData | null
-  loading: boolean
-}) {
-  if (loading) {
-    return (
-      <View className="rounded-xl border border-border bg-card p-4">
-        <View className="h-4 w-36 bg-muted rounded mb-3" />
-        <View className="gap-2">
-          {[1, 2, 3].map(i => <View key={i} className="h-14 bg-muted/50 rounded-lg" />)}
-        </View>
-      </View>
-    )
-  }
-
-  if (!data || data.templates.length === 0) {
-    return (
-      <View className="rounded-xl border border-border bg-card p-4">
-        <Text className="text-sm font-semibold text-foreground mb-3">Template Engagement</Text>
-        <View className="py-4 items-center">
-          <Text className="text-sm text-muted-foreground">No template data</Text>
-        </View>
-      </View>
-    )
-  }
-
-  const sorted = [...data.templates].sort((a, b) => b.engagementRate - a.engagementRate)
-
-  return (
-    <View className="rounded-xl border border-border bg-card p-4">
-      <View className="flex-row items-center gap-2 mb-3">
-        <LayoutTemplate size={14} className="text-muted-foreground" />
-        <Text className="text-sm font-semibold text-foreground">Template Engagement</Text>
-      </View>
-      <View className="gap-2">
-        {sorted.map(t => (
-          <View key={t.templateId} className="flex-row items-center p-2 rounded-lg bg-muted/50 gap-3">
-            <View className="flex-1">
-              <Text className="text-xs font-medium text-foreground" numberOfLines={1}>{t.templateId}</Text>
-              <Text className="text-[10px] text-muted-foreground">
-                {t.projects} projects · {(t.avgMessages ?? 0).toFixed(1)} avg msgs · {t.totalToolCalls} tools
-              </Text>
-            </View>
-            <View className="items-end">
-              <Text className="text-sm font-bold text-foreground">{t.engagementRate}%</Text>
-              <Text className="text-[10px] text-muted-foreground">engaged</Text>
-            </View>
-          </View>
-        ))}
-      </View>
     </View>
   )
 }

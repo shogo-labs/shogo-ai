@@ -4,8 +4,8 @@
  * Admin Marketing Analytics - growth & acquisition insights.
  *
  * One half of the split analytics surface (see ai-analytics.tsx for the
- * AI / engineering half). Focuses on funnel, acquisition sources, template
- * engagement, per-user activity, and the AI insights digest.
+ * AI / engineering half). Focuses on funnel, acquisition sources, per-user
+ * activity, and the AI insights digest.
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -29,7 +29,6 @@ import {
   type AnalyticsPeriod,
   type FunnelData,
   type UserActivityData,
-  type TemplateEngagementData,
   type SourceBreakdownData,
   type AIDigestData,
   type AIDigestListItem,
@@ -38,7 +37,6 @@ import {
   StatCard,
   FunnelSection,
   UserActivityTable,
-  TemplateEngagementPanel,
   SourceBreakdownPanel,
   AIInsightsPanel,
   ActivityTrendsChart,
@@ -160,7 +158,6 @@ export default function AdminMarketingAnalyticsPage() {
   const [activeUsersTs, setActiveUsersTs] = useState<{ data: ActiveUsersTimeseriesPoint[] | null; loading: boolean }>({ data: null, loading: true })
   const [funnel, setFunnel] = useState<{ data: FunnelData | null; loading: boolean }>({ data: null, loading: true })
   const [userActivity, setUserActivity] = useState<{ data: UserActivityData | null; loading: boolean }>({ data: null, loading: true })
-  const [templateEng, setTemplateEng] = useState<{ data: TemplateEngagementData | null; loading: boolean }>({ data: null, loading: true })
   const [sourceBreakdown, setSourceBreakdown] = useState<{ data: SourceBreakdownData | null; loading: boolean }>({ data: null, loading: true })
   const [aiDigest, setAiDigest] = useState<{ data: AIDigestData | null; loading: boolean }>({ data: null, loading: true })
   const [digestList, setDigestList] = useState<{ data: AIDigestListItem[] | null; loading: boolean }>({ data: null, loading: true })
@@ -176,19 +173,17 @@ export default function AdminMarketingAnalyticsPage() {
     setActiveUsersTs((s) => ({ ...s, loading: true }))
     setFunnel((s) => ({ ...s, loading: true }))
     setUserActivity((s) => ({ ...s, loading: true }))
-    setTemplateEng((s) => ({ ...s, loading: true }))
     setSourceBreakdown((s) => ({ ...s, loading: true }))
     setAiDigest((s) => ({ ...s, loading: true }))
     setDigestList((s) => ({ ...s, loading: true }))
 
-    const [ov, au, act, auTs, fn, ua, te, sb, dig, dl] = await Promise.all([
+    const [ov, au, act, auTs, fn, ua, sb, dig, dl] = await Promise.all([
       fetchAdminJson<OverviewData>('/analytics/overview'),
       fetchAdminJson<ActiveUsersData>('/analytics/active-users', pParams),
       fetchAdminJson<ActivityTimeseriesPoint[]>('/analytics/activity-timeseries', pParams),
       fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', pParams),
       fetchAdminJson<FunnelData>('/analytics/funnel', pParams),
       fetchAdminJson<UserActivityData>('/analytics/user-activity', { ...pParams, page: String(userPage), limit: '20' }),
-      fetchAdminJson<TemplateEngagementData>('/analytics/template-engagement', { excludeInternal: internalParam }),
       fetchAdminJson<SourceBreakdownData>('/analytics/source-breakdown', pParams),
       fetchAdminJson<AIDigestData>('/analytics/ai-digest'),
       fetchAdminJson<AIDigestListItem[]>('/analytics/ai-digest/list', { limit: '14' }),
@@ -200,7 +195,6 @@ export default function AdminMarketingAnalyticsPage() {
     setActiveUsersTs({ data: auTs, loading: false })
     setFunnel({ data: fn, loading: false })
     setUserActivity({ data: ua, loading: false })
-    setTemplateEng({ data: te, loading: false })
     setSourceBreakdown({ data: sb, loading: false })
     setAiDigest({ data: dig, loading: false })
     setDigestList({ data: dl, loading: false })
@@ -297,14 +291,9 @@ export default function AdminMarketingAnalyticsPage() {
         />
       </View>
 
-      {/* Template + Source: side-by-side on desktop */}
-      <View className={cn('gap-4 mb-4', isWide && 'flex-row')}>
-        <View className={cn(isWide && 'flex-1')}>
-          <TemplateEngagementPanel data={templateEng.data} loading={templateEng.loading} />
-        </View>
-        <View className={cn(isWide && 'flex-1')}>
-          <SourceBreakdownPanel data={sourceBreakdown.data} loading={sourceBreakdown.loading} />
-        </View>
+      {/* Source breakdown */}
+      <View className="mb-4">
+        <SourceBreakdownPanel data={sourceBreakdown.data} loading={sourceBreakdown.loading} />
       </View>
 
       {/* AI Insights */}
