@@ -34,8 +34,10 @@ beforeEach(() => {
 })
 
 describe('ADMIN_SCOPES catalog', () => {
-  it('includes the analytics and creators scopes we ship today', () => {
+  it('includes the analytics, marketing, ai, and creators scopes we ship today', () => {
     expect(ADMIN_SCOPE_IDS).toContain('analytics:read')
+    expect(ADMIN_SCOPE_IDS).toContain('marketing:read')
+    expect(ADMIN_SCOPE_IDS).toContain('ai:read')
     expect(ADMIN_SCOPE_IDS).toContain('creators:read')
   })
 
