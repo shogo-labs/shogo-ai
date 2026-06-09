@@ -87,3 +87,13 @@ export function useShellName(_sessionId: string): {
 
   return { shellName, setShellName }
 }
+
+export const SHELL_OPTIONS: ShellName[] = ['zsh', 'bash', 'fish', 'pwsh', 'sh']
+
+export const SHELL_LABELS: Record<string, string> = {
+  zsh: 'zsh',
+  bash: 'bash',
+  fish: 'fish',
+  pwsh: 'PowerShell',
+  sh: 'sh',
+}
