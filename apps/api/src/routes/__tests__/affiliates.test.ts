@@ -32,7 +32,9 @@ mock.module('../../middleware/auth', () => ({
 // ---- mock stripe-connect (only the affiliate helpers we route to) ----
 mock.module('../../services/stripe-connect.service', () => ({
   createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
-  submitPayoutDetailsForAffiliate: async () => ({ payoutStatus: 'pending_verification' }),
+  createAffiliateOnboardingLink: async (affId: string) =>
+    `https://connect.stripe.com/setup/e/${affId}`,
+  syncAffiliatePayoutStatus: async () => 'verified',
   // Re-export every other stripe-connect symbol as undefined so this
   // mock doesn't claim to provide things it doesn't; bun will only
   // intercept the names we declare here, leaving real consumers alone.
@@ -468,7 +470,7 @@ describe('POST /api/affiliates/me/stripe-connect/onboard', () => {
     expect(res.status).toBe(404)
   })
 
-  test('returns onboardUrl for enrolled affiliate', async () => {
+  test('returns a hosted onboarding URL for enrolled affiliate', async () => {
     affiliateRows.set('aff_1', { id: 'aff_1', userId: 'u1', payoutStatus: 'pending_verification' })
     const app = makeApp()
     const res = await app.request('/api/affiliates/me/stripe-connect/onboard', {
@@ -477,7 +479,44 @@ describe('POST /api/affiliates/me/stripe-connect/onboard', () => {
     })
     expect(res.status).toBe(200)
     const json: any = await res.json()
-    expect(json.onboardUrl).toBe('acct_aff_1')
+    expect(json.onboardUrl).toBe('https://connect.stripe.com/setup/e/aff_1')
+  })
+})
+
+// ============================================================================
+// /me/stripe-connect/status
+// ============================================================================
+describe('GET /api/affiliates/me/stripe-connect/status', () => {
+  test('404 when not enrolled', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/status', {
+      headers: { 'x-test-user-id': 'u1' },
+    })
+    expect(res.status).toBe(404)
+  })
+
+  test('returns onboarded=false when affiliate has no Connect account', async () => {
+    affiliateRows.set('aff_1', { id: 'aff_1', userId: 'u1', payoutStatus: 'not_setup', stripeCustomAccountId: null })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/status', {
+      headers: { 'x-test-user-id': 'u1' },
+    })
+    expect(res.status).toBe(200)
+    const json: any = await res.json()
+    expect(json.onboarded).toBe(false)
+    expect(json.payoutStatus).toBe('not_setup')
+  })
+
+  test('syncs and returns payoutStatus when account exists', async () => {
+    affiliateRows.set('aff_1', { id: 'aff_1', userId: 'u1', payoutStatus: 'pending_verification', stripeCustomAccountId: 'acct_x' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/status', {
+      headers: { 'x-test-user-id': 'u1' },
+    })
+    expect(res.status).toBe(200)
+    const json: any = await res.json()
+    expect(json.onboarded).toBe(true)
+    expect(json.payoutStatus).toBe('verified')
   })
 })
 
@@ -806,8 +845,8 @@ describe('POST /api/affiliates/me/stripe-connect/onboard (error branches)', () =
     affiliateRows.set('aff_g', { id: 'aff_g', userId: 'u_g', payoutStatus: 'not_setup' })
     // Override the dynamic-import mock for stripe-connect: make wrapper throw a real error.
     mock.module('../../services/stripe-connect.service', () => ({
-      createCustomAccountForAffiliate: async () => { throw new Error('stripe-down') },
-      submitPayoutDetailsForAffiliate: async () => ({ payoutStatus: 'pending_verification' }),
+      createAffiliateOnboardingLink: async () => { throw new Error('stripe-down') },
+      syncAffiliatePayoutStatus: async () => 'verified',
     }))
     const origErr = console.error
     console.error = () => {}
@@ -825,127 +864,9 @@ describe('POST /api/affiliates/me/stripe-connect/onboard (error branches)', () =
       // Restore the good mock for subsequent tests.
       mock.module('../../services/stripe-connect.service', () => ({
         createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
-        submitPayoutDetailsForAffiliate: async () => ({ payoutStatus: 'pending_verification' }),
-      }))
-    }
-  })
-})
-
-// ============================================================================
-// /me/stripe-connect/details — covers entire endpoint (L355-375)
-// ============================================================================
-describe('POST /api/affiliates/me/stripe-connect/details', () => {
-  test('503 when flag off', async () => {
-    delete process.env.SHOGO_AFFILIATES_NATIVE
-    const app = makeApp()
-    const res = await app.request('/api/affiliates/me/stripe-connect/details', {
-      method: 'POST',
-      headers: { 'x-test-user-id': 'u1' },
-    })
-    expect(res.status).toBe(503)
-  })
-
-  test('400 not_onboarded when affiliate has no stripeCustomAccountId', async () => {
-    affiliateRows.set('aff_d', { id: 'aff_d', userId: 'u_d', stripeCustomAccountId: null })
-    const app = makeApp()
-    const res = await app.request('/api/affiliates/me/stripe-connect/details', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_d' },
-      body: JSON.stringify({}),
-    })
-    expect(res.status).toBe(400)
-    const j: any = await res.json()
-    expect(j.error.code).toBe('not_onboarded')
-  })
-
-  test('400 not_onboarded when user has no affiliate row at all', async () => {
-    const app = makeApp()
-    const res = await app.request('/api/affiliates/me/stripe-connect/details', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_x' },
-      body: JSON.stringify({}),
-    })
-    expect(res.status).toBe(400)
-    const j: any = await res.json()
-    expect(j.error.code).toBe('not_onboarded')
-  })
-
-  test('400 bad_request when body fails to parse', async () => {
-    affiliateRows.set('aff_d', { id: 'aff_d', userId: 'u_d', stripeCustomAccountId: 'acct_x' })
-    const app = makeApp()
-    const res = await app.request('/api/affiliates/me/stripe-connect/details', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_d' },
-      body: '{not-json',
-    })
-    expect(res.status).toBe(400)
-    const j: any = await res.json()
-    expect(j.error.code).toBe('bad_request')
-  })
-
-  test('200 happy: returns wrapper result on success', async () => {
-    affiliateRows.set('aff_d', { id: 'aff_d', userId: 'u_d', stripeCustomAccountId: 'acct_x' })
-    const app = makeApp()
-    const res = await app.request('/api/affiliates/me/stripe-connect/details', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_d' },
-      body: JSON.stringify({ firstName: 'A', lastName: 'B' }),
-    })
-    expect(res.status).toBe(200)
-    const j: any = await res.json()
-    expect(j.ok).toBe(true)
-    expect(j.payoutStatus).toBe('pending_verification')
-  })
-
-  test('500 generic when wrapper throws non-matching error', async () => {
-    affiliateRows.set('aff_d', { id: 'aff_d', userId: 'u_d', stripeCustomAccountId: 'acct_x' })
-    mock.module('../../services/stripe-connect.service', () => ({
-      createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
-      submitPayoutDetailsForAffiliate: async () => { throw new Error('stripe-down') },
-    }))
-    const origErr = console.error
-    console.error = () => {}
-    try {
-      const app = makeApp()
-      const res = await app.request('/api/affiliates/me/stripe-connect/details', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_d' },
-        body: JSON.stringify({ firstName: 'A' }),
-      })
-      expect(res.status).toBe(500)
-      const j: any = await res.json()
-      expect(j.error.code).toBe('server_error')
-    } finally {
-      console.error = origErr
-      mock.module('../../services/stripe-connect.service', () => ({
-        createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
-        submitPayoutDetailsForAffiliate: async () => ({ payoutStatus: 'pending_verification' }),
-      }))
-    }
-  })
-
-  test('501 not_implemented when wrapper rejects with a "submitPayoutDetailsForAffiliate" message', async () => {
-    affiliateRows.set('aff_d', { id: 'aff_d', userId: 'u_d', stripeCustomAccountId: 'acct_x' })
-    mock.module('../../services/stripe-connect.service', () => ({
-      createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
-      submitPayoutDetailsForAffiliate: async () => {
-        throw new Error('submitPayoutDetailsForAffiliate is not implemented')
-      },
-    }))
-    try {
-      const app = makeApp()
-      const res = await app.request('/api/affiliates/me/stripe-connect/details', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-test-user-id': 'u_d' },
-        body: JSON.stringify({ firstName: 'A' }),
-      })
-      expect(res.status).toBe(501)
-      const j: any = await res.json()
-      expect(j.error.code).toBe('not_implemented')
-    } finally {
-      mock.module('../../services/stripe-connect.service', () => ({
-        createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
-        submitPayoutDetailsForAffiliate: async () => ({ payoutStatus: 'pending_verification' }),
+        createAffiliateOnboardingLink: async (affId: string) =>
+          `https://connect.stripe.com/setup/e/${affId}`,
+        syncAffiliatePayoutStatus: async () => 'verified',
       }))
     }
   })

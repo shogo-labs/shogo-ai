@@ -64,10 +64,21 @@ describe('fetchComposioToolSchemas', () => {
     expect(out.properties.successful).toBeDefined()
     expect(out.properties.error).toBeDefined()
 
-    // The list tool should have data.items array
-    const dataProps = (out.properties.data as { properties: Record<string, unknown> }).properties
-    expect(dataProps.items).toBeDefined()
-    expect((dataProps.items as { type?: string }).type).toBe('array')
+    // The `data` wrapper holds the structured response. Newer toolkit versions
+    // (resolved via toolkit_versions=latest) express it as a $ref into $defs
+    // (e.g. EventsListResponse) rather than an inline `{ items: { type: array } }`,
+    // so assert the wrapper is a structured schema rather than a specific shape.
+    const data = out.properties.data as {
+      $ref?: string
+      type?: string
+      properties?: Record<string, unknown>
+    }
+    const isStructured =
+      typeof data.$ref === 'string' ||
+      data.type === 'object' ||
+      data.type === 'array' ||
+      (data.properties != null && Object.keys(data.properties).length > 0)
+    expect(isStructured).toBe(true)
   })
 })
 
@@ -139,5 +150,60 @@ describe('fetchComposioToolSchemas — mocked fetch paths', () => {
       }) as unknown as Response
     const tools = await fetchComposioToolSchemas('sometoolkit', { apiKey: 'test-key' })
     expect(tools).toEqual([])
+  })
+
+  // Regression: a single un-paginated page silently dropped later actions
+  // (YOUTUBE_UPLOAD_VIDEO, SHOPIFY_GET_CUSTOMERS, GitHub reads) for large
+  // toolkits → "Tool not found". fetchComposioToolSchemas must follow
+  // next_cursor and return the union of all pages.
+  test('paginates via next_cursor and unions all pages', async () => {
+    const calls: string[] = []
+    globalThis.fetch = async (url: any) => {
+      const u = String(url)
+      calls.push(u)
+      const cursorMatch = u.match(/[?&]cursor=([^&]+)/)
+      const cursor = cursorMatch ? decodeURIComponent(cursorMatch[1]!) : null
+      if (!cursor) {
+        return {
+          ok: true,
+          json: async () => ({
+            total_items: 3, current_page: 1, total_pages: 2, next_cursor: 'page2',
+            items: [{ slug: 'GITHUB_LIST_COMMITS', name: 'List Commits' }],
+          }),
+        } as unknown as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          total_items: 3, current_page: 2, total_pages: 2, next_cursor: null,
+          items: [
+            { slug: 'YOUTUBE_UPLOAD_VIDEO', name: 'Upload Video' },
+            { slug: 'SHOPIFY_GET_CUSTOMERS', name: 'Get Customers' },
+          ],
+        }),
+      } as unknown as Response
+    }
+    const tools = await fetchComposioToolSchemas('mixed', { apiKey: 'test-key' })
+    const slugs = tools.map(t => t.slug)
+    expect(slugs).toContain('GITHUB_LIST_COMMITS')
+    expect(slugs).toContain('YOUTUBE_UPLOAD_VIDEO')
+    expect(slugs).toContain('SHOPIFY_GET_CUSTOMERS')
+    expect(tools).toHaveLength(3)
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toContain('cursor=page2')
+  })
+
+  test('stops paginating at maxTools cap', async () => {
+    globalThis.fetch = async () =>
+      ({
+        ok: true,
+        json: async () => ({
+          total_items: 999, current_page: 1, total_pages: 999, next_cursor: 'more',
+          items: [{ slug: 'T_A', name: 'A' }, { slug: 'T_B', name: 'B' }],
+        }),
+      }) as unknown as Response
+    const tools = await fetchComposioToolSchemas('huge', { apiKey: 'test-key', maxTools: 3 })
+    // Caps the returned set even though next_cursor keeps advertising more.
+    expect(tools.length).toBeLessThanOrEqual(3)
   })
 })

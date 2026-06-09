@@ -68,7 +68,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Called GitHub list issues tool directly to fetch real issues',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'response-has-real-data',
@@ -416,7 +416,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Called GitHub list issues tool directly to fetch real issues',
         points: 25,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'built-canvas',

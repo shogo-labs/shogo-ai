@@ -419,6 +419,35 @@ export interface InstanceInfo {
   workspaceName: string | null
 }
 
+export interface AffiliateContentSettings {
+  enabled: boolean
+  provider: 'ensembledata' | 'official'
+  cpmCents: number
+  cpmCentsByPlatform: { instagram: number | null; tiktok: number | null }
+  holdDays: number
+  postsPerAccount: number
+  maxViewsPerPostPerRun: number
+}
+
+export interface AffiliateContentSettingsResponse {
+  ok: boolean
+  settings: AffiliateContentSettings
+  ensembleDataToken: { configured: boolean; mask: string; source: 'db' | 'env' | null }
+}
+
+export interface AffiliateContentSettingsPatch {
+  enabled?: boolean
+  provider?: 'ensembledata' | 'official'
+  cpmCents?: number | null
+  cpmCentsInstagram?: number | null
+  cpmCentsTiktok?: number | null
+  holdDays?: number | null
+  postsPerAccount?: number | null
+  maxViewsPerPostPerRun?: number | null
+  /** Plaintext token to store encrypted; `''`/`null` clears it. */
+  ensembleDataToken?: string | null
+}
+
 // =============================================================================
 // PlatformApi
 // =============================================================================
@@ -925,6 +954,59 @@ export class PlatformApi {
       keys: Record<string, { configured: boolean; mask: string; source: 'db' | 'env' | null }>
     }>('/api/admin/settings/provider-keys', { method: 'PUT', body: keys })
     return res.data?.keys ?? {}
+  }
+
+  // ===========================================================================
+  // Admin: Affiliate content-CPM settings (super-admin)
+  // ===========================================================================
+
+  /** Read the DB-backed affiliate content-CPM settings (master toggle,
+   * provider, CPM rates, hold, caps) plus EnsembleData token status. The token
+   * itself is never returned in plaintext. */
+  async getAffiliateContentSettings(): Promise<AffiliateContentSettingsResponse> {
+    const res = await this.http.get<AffiliateContentSettingsResponse>(
+      '/api/admin/affiliate-content/settings',
+    )
+    return (
+      res.data ?? {
+        ok: false,
+        settings: null as unknown as AffiliateContentSettings,
+        ensembleDataToken: { configured: false, mask: '', source: null },
+      }
+    )
+  }
+
+  /** Update any subset of the affiliate content-CPM settings. Numeric fields
+   * accept `null` to clear (revert to default); `ensembleDataToken` is stored
+   * encrypted (`''`/`null` clears it, falling back to the env var). */
+  async putAffiliateContentSettings(
+    patch: AffiliateContentSettingsPatch,
+  ): Promise<AffiliateContentSettingsResponse> {
+    const res = await this.http.request<AffiliateContentSettingsResponse>(
+      '/api/admin/affiliate-content/settings',
+      { method: 'PUT', body: patch },
+    )
+    return (
+      res.data ?? {
+        ok: false,
+        settings: null as unknown as AffiliateContentSettings,
+        ensembleDataToken: { configured: false, mask: '', source: null },
+      }
+    )
+  }
+
+  /** Set or clear an affiliate's per-creator overrides: `commissionRateBps`
+   * (referral %, basis points) and/or `contentCpmCents` (content CPM, cents per
+   * 1,000 views). Pass `null` on either to clear it. */
+  async setAffiliateOverrides(
+    affiliateId: string,
+    overrides: { commissionRateBps?: number | null; contentCpmCents?: number | null },
+  ): Promise<{ ok: boolean; affiliate: Record<string, unknown> }> {
+    const res = await this.http.request<{ ok: boolean; affiliate: Record<string, unknown> }>(
+      `/api/admin/affiliates/${encodeURIComponent(affiliateId)}`,
+      { method: 'PATCH', body: overrides },
+    )
+    return res.data ?? { ok: false, affiliate: {} }
   }
 
   /** Live model list from a native provider (anthropic / openai / openrouter),

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Admin Analytics - Comprehensive platform analytics with usage tables and chat metrics.
+ * Admin Marketing Analytics - growth & acquisition insights.
  *
- * Converted from apps/web/src/components/admin/pages/AdminAnalytics.tsx
- * Charts are replaced with View-based bar displays and stat cards.
+ * One half of the split analytics surface (see ai-analytics.tsx for the
+ * AI / engineering half). Focuses on funnel, acquisition sources, template
+ * engagement, per-user activity, and the AI insights digest.
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -13,7 +14,6 @@ import {
   Text,
   ScrollView,
   RefreshControl,
-  Switch,
   useWindowDimensions,
 } from 'react-native'
 import {
@@ -25,35 +25,29 @@ import {
   CalendarDays,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { API_URL } from '../../lib/api'
 import {
   type AnalyticsPeriod,
-  type UsageSummaryData,
-  type UsageLogData,
-  type ChatAnalyticsData,
-  type UsageBreakdownData,
   type FunnelData,
   type UserActivityData,
   type TemplateEngagementData,
   type SourceBreakdownData,
   type AIDigestData,
   type AIDigestListItem,
-  PeriodSelector,
+  type ActivityTimeseriesPoint,
+  type ActiveUsersTimeseriesPoint,
   StatCard,
-  UsageTableSection,
-  ChatAnalyticsSection,
-  UsageBreakdownSection,
   FunnelSection,
   UserActivityTable,
   TemplateEngagementPanel,
   SourceBreakdownPanel,
   AIInsightsPanel,
+  ActivityTrendsChart,
+  ActiveUsersTrendChart,
 } from '../../components/analytics/SharedAnalytics'
-
-const API_BASE = `${API_URL}/api/admin`
+import { API_BASE, fetchAdminJson, AnalyticsHeader } from './_analytics-shared'
 
 // =============================================================================
-// Admin-specific types
+// Marketing-specific types
 // =============================================================================
 
 interface OverviewData {
@@ -71,31 +65,8 @@ interface ActiveUsersData {
   mau: number
 }
 
-interface GrowthDataPoint {
-  date: string
-  users: number
-  workspaces: number
-  projects: number
-}
-
 // =============================================================================
-// API helpers
-// =============================================================================
-
-async function fetchAdminJson<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-  const qs = params ? '?' + new URLSearchParams(params).toString() : ''
-  try {
-    const res = await fetch(`${API_BASE}${path}${qs}`, { credentials: 'include' })
-    if (!res.ok) return null
-    const json = await res.json()
-    return json.data ?? null
-  } catch {
-    return null
-  }
-}
-
-// =============================================================================
-// Admin-specific components
+// Marketing-specific components
 // =============================================================================
 
 function OverviewCards({ data, loading }: { data: OverviewData | null; loading: boolean }) {
@@ -169,73 +140,15 @@ function ActiveUsersSection({ data, loading }: { data: ActiveUsersData | null; l
   )
 }
 
-function GrowthSection({ data, loading }: { data: GrowthDataPoint[] | null; loading: boolean }) {
-  if (loading) {
-    return (
-      <View className="rounded-xl border border-border bg-card p-4">
-        <View className="h-4 w-28 bg-muted rounded mb-3" />
-        <View className="h-32 bg-muted/50 rounded" />
-      </View>
-    )
-  }
-
-  if (!data || data.length === 0) {
-    return (
-      <View className="rounded-xl border border-border bg-card p-4">
-        <Text className="text-sm font-semibold text-foreground mb-3">Growth Trends</Text>
-        <View className="h-24 items-center justify-center">
-          <Text className="text-sm text-muted-foreground">No data</Text>
-        </View>
-      </View>
-    )
-  }
-
-  const latest = data[data.length - 1]
-  const earliest = data[0]
-  const maxVal = Math.max(latest.users, latest.workspaces, latest.projects, 1)
-  const series = [
-    { label: 'Users', val: latest.users, start: earliest.users, color: 'bg-primary' },
-    { label: 'Workspaces', val: latest.workspaces, start: earliest.workspaces, color: 'bg-blue-500' },
-    { label: 'Projects', val: latest.projects, start: earliest.projects, color: 'bg-green-500' },
-  ]
-
-  return (
-    <View className="rounded-xl border border-border bg-card p-4">
-      <Text className="text-sm font-semibold text-foreground mb-3">Growth Trends</Text>
-      <View className="gap-3">
-        {series.map((s) => {
-          const pct = s.start > 0 ? (((s.val - s.start) / s.start) * 100).toFixed(0) : '—'
-          const barW = Math.max((s.val / maxVal) * 100, 5)
-          return (
-            <View key={s.label} className="gap-1">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-xs font-medium text-foreground">{s.label}</Text>
-                <View className="flex-row items-center gap-2">
-                  <Text className="text-sm font-bold text-foreground">{s.val.toLocaleString()}</Text>
-                  {pct !== '—' && <Text className="text-[10px] text-green-500">+{pct}%</Text>}
-                </View>
-              </View>
-              <View className="h-2 bg-muted rounded-full overflow-hidden">
-                <View className={cn('h-full rounded-full', s.color)} style={{ width: `${barW}%` }} />
-              </View>
-            </View>
-          )
-        })}
-      </View>
-    </View>
-  )
-}
-
 // =============================================================================
 // Main Page
 // =============================================================================
 
-export default function AdminAnalyticsPage() {
+export default function AdminMarketingAnalyticsPage() {
   const { width } = useWindowDimensions()
   const isWide = width >= 900
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
-  const [logPage, setLogPage] = useState(1)
   const [userPage, setUserPage] = useState(1)
   const [refreshing, setRefreshing] = useState(false)
   const [excludeInternal, setExcludeInternal] = useState(true)
@@ -243,11 +156,8 @@ export default function AdminAnalyticsPage() {
 
   const [overview, setOverview] = useState<{ data: OverviewData | null; loading: boolean }>({ data: null, loading: true })
   const [activeUsers, setActiveUsers] = useState<{ data: ActiveUsersData | null; loading: boolean }>({ data: null, loading: true })
-  const [growth, setGrowth] = useState<{ data: GrowthDataPoint[] | null; loading: boolean }>({ data: null, loading: true })
-  const [usage, setUsage] = useState<{ data: UsageBreakdownData | null; loading: boolean }>({ data: null, loading: true })
-  const [usageSummary, setUsageSummary] = useState<{ data: UsageSummaryData | null; loading: boolean }>({ data: null, loading: true })
-  const [usageLog, setUsageLog] = useState<{ data: UsageLogData | null; loading: boolean }>({ data: null, loading: true })
-  const [chatStats, setChatStats] = useState<{ data: ChatAnalyticsData | null; loading: boolean }>({ data: null, loading: true })
+  const [activityTs, setActivityTs] = useState<{ data: ActivityTimeseriesPoint[] | null; loading: boolean }>({ data: null, loading: true })
+  const [activeUsersTs, setActiveUsersTs] = useState<{ data: ActiveUsersTimeseriesPoint[] | null; loading: boolean }>({ data: null, loading: true })
   const [funnel, setFunnel] = useState<{ data: FunnelData | null; loading: boolean }>({ data: null, loading: true })
   const [userActivity, setUserActivity] = useState<{ data: UserActivityData | null; loading: boolean }>({ data: null, loading: true })
   const [templateEng, setTemplateEng] = useState<{ data: TemplateEngagementData | null; loading: boolean }>({ data: null, loading: true })
@@ -262,11 +172,8 @@ export default function AdminAnalyticsPage() {
 
     setOverview((s) => ({ ...s, loading: true }))
     setActiveUsers((s) => ({ ...s, loading: true }))
-    setGrowth((s) => ({ ...s, loading: true }))
-    setUsage((s) => ({ ...s, loading: true }))
-    setUsageSummary((s) => ({ ...s, loading: true }))
-    setUsageLog((s) => ({ ...s, loading: true }))
-    setChatStats((s) => ({ ...s, loading: true }))
+    setActivityTs((s) => ({ ...s, loading: true }))
+    setActiveUsersTs((s) => ({ ...s, loading: true }))
     setFunnel((s) => ({ ...s, loading: true }))
     setUserActivity((s) => ({ ...s, loading: true }))
     setTemplateEng((s) => ({ ...s, loading: true }))
@@ -274,14 +181,11 @@ export default function AdminAnalyticsPage() {
     setAiDigest((s) => ({ ...s, loading: true }))
     setDigestList((s) => ({ ...s, loading: true }))
 
-    const [ov, au, gr, us, uSum, uLog, ch, fn, ua, te, sb, dig, dl] = await Promise.all([
+    const [ov, au, act, auTs, fn, ua, te, sb, dig, dl] = await Promise.all([
       fetchAdminJson<OverviewData>('/analytics/overview'),
       fetchAdminJson<ActiveUsersData>('/analytics/active-users', pParams),
-      fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', pParams),
-      fetchAdminJson<UsageBreakdownData>('/analytics/usage', pParams),
-      fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', pParams),
-      fetchAdminJson<UsageLogData>('/analytics/usage-log', { ...pParams, page: String(logPage), limit: '50' }),
-      fetchAdminJson<ChatAnalyticsData>('/analytics/chat', pParams),
+      fetchAdminJson<ActivityTimeseriesPoint[]>('/analytics/activity-timeseries', pParams),
+      fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', pParams),
       fetchAdminJson<FunnelData>('/analytics/funnel', pParams),
       fetchAdminJson<UserActivityData>('/analytics/user-activity', { ...pParams, page: String(userPage), limit: '20' }),
       fetchAdminJson<TemplateEngagementData>('/analytics/template-engagement', { excludeInternal: internalParam }),
@@ -292,18 +196,15 @@ export default function AdminAnalyticsPage() {
 
     setOverview({ data: ov, loading: false })
     setActiveUsers({ data: au, loading: false })
-    setGrowth({ data: gr, loading: false })
-    setUsage({ data: us, loading: false })
-    setUsageSummary({ data: uSum, loading: false })
-    setUsageLog({ data: uLog, loading: false })
-    setChatStats({ data: ch, loading: false })
+    setActivityTs({ data: act, loading: false })
+    setActiveUsersTs({ data: auTs, loading: false })
     setFunnel({ data: fn, loading: false })
     setUserActivity({ data: ua, loading: false })
     setTemplateEng({ data: te, loading: false })
     setSourceBreakdown({ data: sb, loading: false })
     setAiDigest({ data: dig, loading: false })
     setDigestList({ data: dl, loading: false })
-  }, [period, logPage, userPage, internalParam])
+  }, [period, userPage, internalParam])
 
   const handleGenerateDigest = useCallback(async () => {
     setGenerating(true)
@@ -351,30 +252,15 @@ export default function AdminAnalyticsPage() {
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      {/* Header */}
-      <View className="flex-row items-center justify-between mb-4">
-        <View>
-          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-lg')}>
-            Analytics
-          </Text>
-          <Text className="text-xs text-muted-foreground">
-            Comprehensive platform analytics and insights
-          </Text>
-        </View>
-      </View>
-
-      {/* Period selector + Internal toggle */}
-      <View className="flex-row items-center justify-between mb-4">
-        <PeriodSelector value={period} onChange={setPeriod} />
-        <View className="flex-row items-center gap-2">
-          <Text className="text-[10px] text-muted-foreground">Exclude internal</Text>
-          <Switch
-            value={excludeInternal}
-            onValueChange={setExcludeInternal}
-            trackColor={{ false: '#767577', true: '#6366f1' }}
-          />
-        </View>
-      </View>
+      <AnalyticsHeader
+        title="Marketing Analytics"
+        subtitle="Growth, acquisition, and engagement insights"
+        isWide={isWide}
+        period={period}
+        onPeriodChange={setPeriod}
+        excludeInternal={excludeInternal}
+        onExcludeInternalChange={setExcludeInternal}
+      />
 
       {/* Overview cards */}
       <View className="mb-4">
@@ -389,6 +275,16 @@ export default function AdminAnalyticsPage() {
       {/* Active users */}
       <View className="mb-4">
         <ActiveUsersSection data={activeUsers.data} loading={activeUsers.loading} />
+      </View>
+
+      {/* Activity + active-user trends: side-by-side on desktop */}
+      <View className={cn('gap-4 mb-4', isWide && 'flex-row')}>
+        <View className={cn(isWide && 'flex-1')}>
+          <ActivityTrendsChart data={activityTs.data} loading={activityTs.loading} />
+        </View>
+        <View className={cn(isWide && 'flex-1')}>
+          <ActiveUsersTrendChart data={activeUsersTs.data} loading={activeUsersTs.loading} />
+        </View>
       </View>
 
       {/* User Activity Table */}
@@ -412,7 +308,7 @@ export default function AdminAnalyticsPage() {
       </View>
 
       {/* AI Insights */}
-      <View className="mb-4">
+      <View>
         <AIInsightsPanel
           data={aiDigest.data}
           digestList={digestList.data}
@@ -421,33 +317,6 @@ export default function AdminAnalyticsPage() {
           onGenerate={handleGenerateDigest}
           generating={generating}
         />
-      </View>
-
-      {/* Usage table (summary + event log) */}
-      <View className="mb-4">
-        <UsageTableSection
-          summaryData={usageSummary.data}
-          logData={usageLog.data}
-          summaryLoading={usageSummary.loading}
-          logLoading={usageLog.loading}
-          onLogPageChange={setLogPage}
-          logPage={logPage}
-        />
-      </View>
-
-      {/* Chat analytics */}
-      <View className="mb-4">
-        <ChatAnalyticsSection data={chatStats.data} loading={chatStats.loading} />
-      </View>
-
-      {/* Growth + Usage breakdown: side-by-side on desktop, stacked on mobile */}
-      <View className={cn('gap-4', isWide && 'flex-row')}>
-        <View className={cn(isWide && 'flex-1')}>
-          <GrowthSection data={growth.data} loading={growth.loading} />
-        </View>
-        <View className={cn(isWide && 'flex-1')}>
-          <UsageBreakdownSection data={usage.data} loading={usage.loading} />
-        </View>
       </View>
     </ScrollView>
   )

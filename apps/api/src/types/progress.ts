@@ -28,6 +28,31 @@ export type SubagentProgressEvent =
     }
 
 /**
+ * A single background shell process tracked for a chat thread. Mirrors the
+ * `RunningProcess` shape emitted by the runtime's CommandRegistry.
+ */
+export interface RunningProcess {
+  runId: string
+  command: string
+  pid?: number
+  sandboxed: boolean
+  containerName?: string
+  startedAt: number
+  elapsedMs: number
+  /** True if restored from a snapshot after a runtime restart (state unknown). */
+  stale?: boolean
+}
+
+/**
+ * Process tracking event streamed to the client as a `data-process-update`
+ * SSE part. Carries the full current running list so the client can replace
+ * its view wholesale (no per-event reconciliation needed).
+ */
+export interface ProcessUpdateEvent {
+  processes: RunningProcess[]
+}
+
+/**
  * Virtual Tool event types for client-side execution
  * Task: virtual-tools-domain Phase 0 PoC
  *

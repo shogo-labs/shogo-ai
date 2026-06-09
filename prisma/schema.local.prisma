@@ -29,6 +29,9 @@ model User {
   emailVerified       Boolean  @default(false)
   image               String?
   role                String   @default("user")
+  // See prisma/schema.prisma for the canonical comment. SQLite has no native
+  // String[] so adminScopes is stored as JSON-encoded TEXT (`["analytics:read"]`).
+  adminScopes         String   @default("[]")
   onboardingCompleted Boolean  @default(false)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -280,13 +283,22 @@ model CustomDomain {
   cfCustomHostnameId String?
   sslStatus          String?
   lastError          String?
+  groupId            String?
+  primary            Boolean   @default(true)
   verifiedAt         DateTime?
+  certAuthority      String?
+  lastCheckedAt      DateTime?
+  lastRetriggerAt    DateTime?
+  retriggerCount     Int       @default(0)
+  dnsOk              Boolean?
+  diagnostics        String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
+  @@index([groupId])
   @@map("custom_domains")
 }
 
@@ -2051,17 +2063,24 @@ model Affiliate {
   pendingPayoutCents       Int       @default(0)
   totalPaidOutCents        Int       @default(0)
   commissionRateBps        Int?
+  contentCpmCents          Int?
   termsAcceptedAt          DateTime?
+  contentProgramStatus     String    @default("none")
+  contentAppliedAt         DateTime?
+  contentReviewedAt        DateTime?
+  contentReviewedBy        String?
+  contentRejectionReason   String?
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
 
   user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   parent       Affiliate?             @relation("AffiliateUpline", fields: [parentAffiliateId], references: [id], onDelete: SetNull)
   children     Affiliate[]            @relation("AffiliateUpline")
-  clicks       AffiliateClick[]
-  attributions AffiliateAttribution[]
-  commissions  AffiliateCommission[]
-  payouts      AffiliatePayout[]
+  clicks         AffiliateClick[]
+  attributions   AffiliateAttribution[]
+  commissions    AffiliateCommission[]
+  payouts        AffiliatePayout[]
+  socialAccounts AffiliateSocialAccount[]
 
   @@index([parentAffiliateId])
   @@index([status])
@@ -2120,6 +2139,8 @@ model AffiliateCommission {
   rateBps             Int
   amountCents         Int
   status              String   @default("pending")
+  source              String   @default("referral")
+  contentRunId        String?
   eligibleAt          DateTime
   payoutId            String?
   createdAt           DateTime @default(now())
@@ -2128,6 +2149,7 @@ model AffiliateCommission {
   payout    AffiliatePayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@unique([stripeInvoiceId, affiliateId, level])
+  @@unique([source, contentRunId, affiliateId])
   @@index([affiliateId, status])
   @@index([eligibleAt, status])
   @@index([stripeChargeId])
@@ -2164,4 +2186,67 @@ model AffiliateCommissionTier {
   label        String?
 
   @@map("affiliate_commission_tiers")
+}
+
+model AffiliateSocialAccount {
+  id                 String    @id @default(cuid())
+  affiliateId        String
+  platform           String
+  handle             String
+  providerUserId     String?
+  verificationStatus String    @default("pending")
+  verificationCode   String
+  verifiedAt         DateTime?
+  lastPolledAt       DateTime?
+  lastError          String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  affiliate Affiliate       @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  posts     AffiliatePost[]
+
+  @@unique([platform, handle])
+  @@index([affiliateId])
+  @@index([verificationStatus])
+  @@map("affiliate_social_accounts")
+}
+
+model AffiliatePost {
+  id              String    @id @default(cuid())
+  socialAccountId String
+  platform        String
+  providerPostId  String
+  url             String?
+  caption         String?
+  postedAt        DateTime?
+  lastViews       Int       @default(0)
+  paidViews       Int       @default(0)
+  lastLikes       Int       @default(0)
+  lastComments    Int       @default(0)
+  lastShares      Int       @default(0)
+  lastPolledAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  socialAccount AffiliateSocialAccount  @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  snapshots     AffiliatePostSnapshot[]
+
+  @@unique([platform, providerPostId])
+  @@index([socialAccountId])
+  @@map("affiliate_posts")
+}
+
+model AffiliatePostSnapshot {
+  id         String   @id @default(cuid())
+  postId     String
+  views      Int      @default(0)
+  likes      Int      @default(0)
+  comments   Int      @default(0)
+  shares     Int      @default(0)
+  capturedAt DateTime @default(now())
+
+  post AffiliatePost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, capturedAt])
+  @@map("affiliate_post_snapshots")
 }

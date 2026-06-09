@@ -81,24 +81,21 @@ import {
   type UsageLogData,
   type ChatAnalyticsData,
   type UsageBreakdownData,
+  type SpendGroupBy,
+  type SpendMetric,
   PeriodSelector,
   StatCard,
   UsageTableSection,
   ChatAnalyticsSection,
   UsageBreakdownSection,
+  UsageTimeseriesChart,
 } from '../../components/analytics/SharedAnalytics'
 import { DateRangePills } from '../../components/analytics/DateRangePills'
-import {
-  StackedAreaChart,
-  StackedAreaLegend,
-  STACKED_PALETTE,
-  type StackedSeries,
-} from '../../components/analytics/StackedAreaChart'
 import { UsageLeaderboard } from '../../components/analytics/UsageLeaderboard'
 import { BillingProgressCard } from '../../components/billing/BillingProgressCard'
 import { SetSpendLimitDialog } from '../../components/billing/SetSpendLimitDialog'
 import { CostAnalyticsTab } from '../../components/analytics/CostAnalyticsTab'
-import { resolveShortName, useVisibleModels } from '../../lib/visible-models'
+import { useVisibleModels } from '../../lib/visible-models'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { invitationEvents } from '../../lib/invitation-events'
 import {
@@ -2747,15 +2744,6 @@ function fmtUsd(n: number): string {
   return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
 }
 
-function buildSeries(payload: SpendTimeseriesPayload | null, groupBy: 'model' | 'user' | 'source'): StackedSeries[] {
-  if (!payload) return []
-  return payload.models.map((m, i) => ({
-    id: m,
-    label: groupBy === 'model' ? resolveShortName(m) : m,
-    color: STACKED_PALETTE[i % STACKED_PALETTE.length],
-  }))
-}
-
 function WorkspaceAnalyticsTab() {
   const http = useDomainHttp()
   const router = useRouter()
@@ -2772,8 +2760,8 @@ function WorkspaceAnalyticsTab() {
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('7d')
   const [logPage, setLogPage] = useState(1)
-  const [groupBy, setGroupBy] = useState<'model' | 'user' | 'source'>('model')
-  const [metric, setMetric] = useState<'spend' | 'tokens' | 'requests'>('spend')
+  const [groupBy, setGroupBy] = useState<SpendGroupBy>('model')
+  const [metric, setMetric] = useState<SpendMetric>('spend')
   const [spendLimitOpen, setSpendLimitOpen] = useState(false)
 
   const [usageSummary, setUsageSummary] = useState<{ data: UsageSummaryData | null; loading: boolean }>({ data: null, loading: true })
@@ -2842,12 +2830,6 @@ function WorkspaceAnalyticsTab() {
   const totalSpend = spend.data?.totals.totalSpendUsd ?? 0
   const includedSpend = spend.data?.totals.totalIncludedUsd ?? 0
   const onDemandSpend = spend.data?.totals.totalOnDemandUsd ?? 0
-
-  const series = buildSeries(spend.data, groupBy)
-  const chartDays = (spend.data?.days ?? []).map((d) => ({
-    date: d.date,
-    values: d.byModel,
-  }))
 
   const csvUrl = api.getUsageLogCsvUrl(workspaceId, { period })
   const handleExportCsv = () => {
@@ -2931,47 +2913,19 @@ function WorkspaceAnalyticsTab() {
       </View>
 
       {/* Team Usage chart */}
-      <Card>
-        <CardContent className="p-4 gap-3">
-          <View className="flex-row items-center justify-between flex-wrap gap-2">
-            <View>
-              <Text className="text-sm font-semibold text-foreground">Team Usage</Text>
-              <Text className="text-xs text-muted-foreground">
-                Team usage per day across this billing period
-              </Text>
-            </View>
-            <View className="flex-row items-center gap-2">
-              <GroupBySelect value={groupBy} onChange={setGroupBy} />
-              <MetricSelect value={metric} onChange={setMetric} />
-            </View>
-          </View>
-
-          {spend.loading ? (
-            <View className="h-[260px] items-center justify-center">
-              <ActivityIndicator />
-            </View>
-          ) : (
-            <>
-              <StackedAreaChart
-                days={chartDays}
-                series={series}
-                height={260}
-                formatY={(n) =>
-                  metric === 'spend'
-                    ? fmtUsd(n)
-                    : n >= 1000
-                      ? `${(n / 1000).toFixed(1)}K`
-                      : String(Math.round(n))
-                }
-                formatTooltip={(n) =>
-                  metric === 'spend' ? fmtUsd(n) : n.toLocaleString()
-                }
-              />
-              <StackedAreaLegend series={series} />
-            </>
-          )}
-        </CardContent>
-      </Card>
+      <UsageTimeseriesChart
+        data={spend.data}
+        loading={spend.loading}
+        groupBy={groupBy}
+        metric={metric}
+        onGroupByChange={setGroupBy}
+        onMetricChange={setMetric}
+        isLocalMode={localMode}
+        title="Team Usage"
+        subtitle="Team usage per day across this billing period"
+        groupByOptions={['model', 'user', 'source']}
+        showTotals={false}
+      />
 
       {/* Event log + CSV export */}
       <View className="gap-2">
@@ -3016,90 +2970,6 @@ function WorkspaceAnalyticsTab() {
             refetchUsageWallet()
           }}
         />
-      )}
-    </View>
-  )
-}
-
-function GroupBySelect({
-  value,
-  onChange,
-}: {
-  value: 'model' | 'user' | 'source'
-  onChange: (v: 'model' | 'user' | 'source') => void
-}) {
-  const [open, setOpen] = useState(false)
-  const labels: Record<typeof value, string> = {
-    model: 'Group By: Model',
-    user: 'Group By: User',
-    source: 'Group By: Source',
-  }
-  return (
-    <View style={{ zIndex: 100 }}>
-      <Pressable
-        onPress={() => setOpen((o) => !o)}
-        className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background"
-      >
-        <Text className="text-xs text-foreground">{labels[value]}</Text>
-        <ChevronDown size={12} className="text-muted-foreground" />
-      </Pressable>
-      {open && (
-        <View
-          style={{ zIndex: 100 }}
-          className="absolute top-9 right-0 z-50 min-w-[160px] rounded-md border border-border bg-popover shadow-md"
-        >
-          {(['model', 'user', 'source'] as const).map((v) => (
-            <Pressable
-              key={v}
-              onPress={() => { onChange(v); setOpen(false) }}
-              className={cn('px-3 py-2', v === value && 'bg-muted')}
-            >
-              <Text className="text-xs text-foreground">{labels[v]}</Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-    </View>
-  )
-}
-
-function MetricSelect({
-  value,
-  onChange,
-}: {
-  value: 'spend' | 'tokens' | 'requests'
-  onChange: (v: 'spend' | 'tokens' | 'requests') => void
-}) {
-  const [open, setOpen] = useState(false)
-  const labels: Record<typeof value, string> = {
-    spend: 'Metric: Spend',
-    tokens: 'Metric: Tokens',
-    requests: 'Metric: Requests',
-  }
-  return (
-    <View style={{ zIndex: 100 }}>
-      <Pressable
-        onPress={() => setOpen((o) => !o)}
-        className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background"
-      >
-        <Text className="text-xs text-foreground">{labels[value]}</Text>
-        <ChevronDown size={12} className="text-muted-foreground" />
-      </Pressable>
-      {open && (
-        <View
-          style={{ zIndex: 100 }}
-          className="absolute top-9 right-0 z-50 min-w-[160px] rounded-md border border-border bg-popover shadow-md"
-        >
-          {(['spend', 'tokens', 'requests'] as const).map((v) => (
-            <Pressable
-              key={v}
-              onPress={() => { onChange(v); setOpen(false) }}
-              className={cn('px-3 py-2', v === value && 'bg-muted')}
-            >
-              <Text className="text-xs text-foreground">{labels[v]}</Text>
-            </Pressable>
-          ))}
-        </View>
       )}
     </View>
   )

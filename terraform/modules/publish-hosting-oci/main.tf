@@ -290,6 +290,23 @@ resource "cloudflare_worker_script" "subdomain_router" {
       return null;
     }
 
+    // A custom-domain KV entry. New writes are JSON
+    // { "s": "<publishedSubdomain>", "c": "<canonicalHostname>" }; `c` is the
+    // primary hostname of an apex/www pair (a visitor on the non-canonical
+    // host is 308-redirected to it). Legacy entries are a bare subdomain
+    // string with no canonical (no redirect) — kept for backward compat.
+    function parseCustomDomain(raw) {
+      if (!raw) return null;
+      if (raw.charAt(0) === '{') {
+        try {
+          const o = JSON.parse(raw);
+          if (o && o.s) return { subdomain: o.s, canonical: o.c || null };
+        } catch (e) {}
+        return null;
+      }
+      return { subdomain: raw, canonical: null };
+    }
+
     export default {
       async fetch(request, env) {
         const url = new URL(request.url);
@@ -312,14 +329,30 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // exact host first, then the www-stripped form. Unknown hosts 404
         // rather than guessing a (wrong) prefix from the first label.
         let subdomain = platformSubdomain(hostname);
+        let canonical = null;
         if (!subdomain && env.CUSTOM_DOMAINS) {
-          subdomain = await env.CUSTOM_DOMAINS.get(rawHost);
-          if (!subdomain && rawHost !== hostname) {
-            subdomain = await env.CUSTOM_DOMAINS.get(hostname);
+          let entry = parseCustomDomain(await env.CUSTOM_DOMAINS.get(rawHost));
+          if (!entry && rawHost !== hostname) {
+            entry = parseCustomDomain(await env.CUSTOM_DOMAINS.get(hostname));
+          }
+          if (entry) {
+            subdomain = entry.subdomain;
+            canonical = entry.canonical;
           }
         }
         if (!subdomain) {
           return new Response('Not found: no published app for ' + rawHost, { status: 404 });
+        }
+
+        // Canonical (apex<->www) redirect: if this custom domain belongs to a
+        // pair and the visitor is on the non-primary host, 308 them to the
+        // primary, preserving path + query. Same content, one canonical URL
+        // (keeps SEO/auth origins consistent — see custom-domains docs).
+        if (canonical && rawHost !== canonical) {
+          return Response.redirect(
+            'https://' + canonical + url.pathname + url.search,
+            308,
+          );
         }
 
         const originUrl = buildOriginUrl(subdomain, url.pathname);

@@ -298,7 +298,15 @@ export async function startLocalServer(): Promise<void> {
     HOME: process.env.HOME || process.env.USERPROFILE || os.homedir(),
     SHOGO_LOCAL_MODE: 'true',
     APP_VERSION: app.getVersion(),
-    DATABASE_URL: `file:${getDbPath()}`,
+    // The desktop app database travels under a Shogo-specific name, NOT the
+    // generic `DATABASE_URL` that every user project's Prisma datasource reads.
+    // Sharing the name is what let an agent building a project run
+    // `prisma migrate reset`/`db push` against the main app DB (it inherited
+    // this value through the sanitized exec env) and wipe it. The API reads
+    // this var via apps/api/src/lib/prisma.ts + auth.ts; bare `DATABASE_URL`
+    // is intentionally stripped from this env below so nothing downstream
+    // (agent runtimes, project sidecars, exec'd shells) can inherit it.
+    SHOGO_APP_DATABASE_URL: `file:${getDbPath()}`,
     WORKSPACES_DIR: getWorkspacesDir(),
     S3_ENABLED: 'false',
     API_PORT: String(apiPort),
@@ -355,6 +363,14 @@ export async function startLocalServer(): Promise<void> {
       SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, IS_DEV),
     } : {}),
   }
+
+  // Defense-in-depth for the env-bleed described above: a `DATABASE_URL` (or
+  // `PROJECTS_DATABASE_URL`) inherited from this process's own environment
+  // (e.g. a dev shell that exported one) must not survive into the long-lived
+  // API/agent environment. The app DB is reachable only via
+  // SHOGO_APP_DATABASE_URL; the Prisma CLI gets a scoped copy in runMigrations.
+  delete (env as Record<string, string | undefined>).DATABASE_URL
+  delete (env as Record<string, string | undefined>).PROJECTS_DATABASE_URL
 
   ensureDatabase(bunPath)
   runMigrations(bunPath, env)
@@ -953,6 +969,15 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
   const IS_DEV = !require('electron').app.isPackaged
   const prisma = prismaInvocation(bunPath)
 
+  // Prisma's config (`prisma.config{,.local}.ts`) reads `process.env.DATABASE_URL`,
+  // but the long-lived `env` deliberately no longer carries one (see
+  // startLocalServer — the app DB travels as SHOGO_APP_DATABASE_URL so agents
+  // can't inherit it). Re-derive a scoped DATABASE_URL for the migrate CLI only.
+  const migrateEnv: Record<string, string> = {
+    ...env,
+    DATABASE_URL: env.SHOGO_APP_DATABASE_URL ?? `file:${getDbPath()}`,
+  }
+
   if (IS_DEV) {
     console.log('[Desktop] Dev mode: running SQLite migrations...')
     try {
@@ -960,7 +985,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
         `${prisma} migrate deploy --config=prisma.config.local.ts`,
         {
           cwd: projectRoot,
-          env,
+          env: migrateEnv,
           stdio: 'pipe',
           timeout: 30000,
           encoding: 'utf-8',
@@ -1008,7 +1033,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
         `${prisma} migrate deploy --config=prisma.config.js`,
         {
           cwd: projectRoot,
-          env,
+          env: migrateEnv,
           stdio: 'pipe',
           timeout: 30000,
           encoding: 'utf-8',

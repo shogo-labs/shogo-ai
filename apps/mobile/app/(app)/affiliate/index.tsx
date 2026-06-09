@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Affiliate dashboard — landing screen for the native MLM program.
+ * Affiliate / referral dashboard.
+ *
+ * Now lives inside the unified Creator hub (`/(app)/creator`) as the
+ * "Referrals" tab via the exported {@link AffiliateReferralPanel}. The default
+ * export of this route just redirects into that hub so old links keep working.
  *
  * - Not enrolled  → CTA card linking to /affiliate/enroll
  * - Enrolled      → balance + referral link + 30d stats + entry points
@@ -17,10 +21,11 @@ import {
   RefreshControl, Platform, Share,
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
-import { useRouter } from 'expo-router'
+import * as WebBrowser from 'expo-web-browser'
+import { Redirect, useRouter, useLocalSearchParams } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
-  ArrowLeft, Copy, Share2, Wallet, Users, ChevronRight, AlertTriangle,
+  ArrowLeft, Copy, Share2, Wallet, Users, ChevronRight, AlertTriangle, Video,
 } from 'lucide-react-native'
 import { Card, CardContent, Button, Badge } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
@@ -30,9 +35,27 @@ function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
 }
 
-export default observer(function AffiliateDashboard() {
+/**
+ * Redirect legacy `/(app)/affiliate` into the unified Creator hub's Referrals
+ * tab. The real UI is {@link AffiliateReferralPanel}, embedded by the hub.
+ */
+export default function AffiliateDashboardRedirect() {
+  return <Redirect href="/(app)/creator?tab=refer" />
+}
+
+/**
+ * The referral/affiliate dashboard body. Rendered by the Creator hub
+ * (`embedded`) or standalone. When embedded, the hub supplies the page header
+ * and tab bar, so we drop the local back-header.
+ */
+export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
+  embedded = false,
+}: {
+  embedded?: boolean
+}) {
   const router = useRouter()
   const http = useDomainHttp()
+  const params = useLocalSearchParams<{ connect?: string }>()
 
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -70,6 +93,21 @@ export default observer(function AffiliateDashboard() {
 
   useEffect(() => { load() }, [load])
 
+  // Pull the latest Connect account status from Stripe (source of truth is
+  // the account.updated webhook, but it can lag), then reload the dashboard.
+  const syncConnect = useCallback(async () => {
+    try { await affiliateApi.getConnectStatus(http) } catch { /* best effort */ }
+    await load()
+  }, [http, load])
+
+  // Returning from Stripe-hosted onboarding (return_url adds ?connect=done)
+  // — refresh payout status so the UI reflects a now-verified account.
+  useEffect(() => {
+    if (params.connect === 'done' || params.connect === 'refresh') {
+      syncConnect()
+    }
+  }, [params.connect, syncConnect])
+
   const referralLink = summary ? buildReferralLink(summary.affiliate.code) : ''
 
   const copyLink = useCallback(async () => {
@@ -93,12 +131,14 @@ export default observer(function AffiliateDashboard() {
 
   return (
     <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
-        <Pressable onPress={() => router.back()} hitSlop={8}>
-          <ArrowLeft size={22} className="text-foreground" />
-        </Pressable>
-        <Text className="text-lg font-semibold text-foreground">Affiliate Program</Text>
-      </View>
+      {!embedded ? (
+        <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
+          <Pressable onPress={() => router.back()} hitSlop={8}>
+            <ArrowLeft size={22} className="text-foreground" />
+          </Pressable>
+          <Text className="text-lg font-semibold text-foreground">Affiliate Program</Text>
+        </View>
+      ) : null}
 
       <ScrollView
         contentContainerStyle={{ padding: 16, gap: 16 }}
@@ -152,9 +192,15 @@ export default observer(function AffiliateDashboard() {
                 subtitle="See who you've referred"
                 onPress={() => router.push('/(app)/affiliate/downline')}
               />
+              <NavRow
+                icon={<Video size={18} className="text-foreground" />}
+                title="Content earnings"
+                subtitle="Connect Instagram / TikTok, earn per view"
+                onPress={() => router.push('/(app)/affiliate/content')}
+              />
             </View>
 
-            <PayoutSetupCard summary={summary} />
+            <PayoutSetupCard summary={summary} onChanged={syncConnect} />
             <Disclosure />
           </>
         ) : null}
@@ -274,7 +320,9 @@ function NavRow({
   )
 }
 
-function PayoutSetupCard({ summary }: { summary: AffiliateSummary }) {
+function PayoutSetupCard({
+  summary, onChanged,
+}: { summary: AffiliateSummary; onChanged: () => void | Promise<void> }) {
   const http = useDomainHttp()
   const [working, setWorking] = useState(false)
   const verified = summary.affiliate.payoutStatus === 'verified'
@@ -284,13 +332,21 @@ function PayoutSetupCard({ summary }: { summary: AffiliateSummary }) {
     setWorking(true)
     try {
       const res = await affiliateApi.onboardStripeConnect(http)
-      if (res.onboardUrl && Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.open(res.onboardUrl, '_blank')
+      if (!res.onboardUrl) return
+      if (Platform.OS === 'web') {
+        // The return_url (set server-side) brings the browser back to
+        // /affiliate?connect=done, where the dashboard re-syncs status.
+        if (typeof window !== 'undefined') window.open(res.onboardUrl, '_self')
+        return
       }
+      // Native: open the hosted onboarding page; when the in-app browser
+      // is dismissed (completed or cancelled) re-sync the Connect status.
+      await WebBrowser.openBrowserAsync(res.onboardUrl)
+      await onChanged()
     } finally {
       setWorking(false)
     }
-  }, [http])
+  }, [http, onChanged])
 
   return (
     <Card>

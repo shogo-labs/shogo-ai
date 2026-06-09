@@ -315,6 +315,120 @@ export async function getGrowthTimeSeries(
 }
 
 // ============================================================================
+// Activity Timeseries (combined daily metrics)
+// ============================================================================
+
+export interface ActivityTimeseriesPoint {
+  date: string
+  newUsers: number
+  newWorkspaces: number
+  newProjects: number
+  messages: number
+  sessions: number
+  toolCalls: number
+}
+
+/**
+ * Combined daily activity series: new users (members in workspace scope),
+ * new workspaces, new projects, user messages, chat sessions, and tool calls.
+ * Zero-fills every day in the window so charts never jump over a gap.
+ * Scope-aware: `{}` = platform-wide, `{ workspaceId }` = one workspace.
+ */
+export async function getActivityTimeseries(
+  scope: AnalyticsScope = {},
+  period: AnalyticsPeriod = '30d',
+): Promise<ActivityTimeseriesPoint[]> {
+  const { from, to } = periodToWindow(period)
+
+  // Session scope fragment shared by messages / sessions / tool calls.
+  const sessionScope: any = {}
+  if (scope.projectId) sessionScope.contextId = scope.projectId
+  else if (scope.workspaceId) sessionScope.project = { workspaceId: scope.workspaceId }
+  const hasSessionScope = Object.keys(sessionScope).length > 0
+
+  const [users, workspaces, projects, messages, sessions, toolCalls] = await Promise.all([
+    // newUsers → platform: signups; workspace: new members
+    scope.workspaceId
+      ? prisma.member.findMany({
+          where: { workspaceId: scope.workspaceId, createdAt: { gte: from, lt: to } },
+          select: { createdAt: true },
+        })
+      : prisma.user.findMany({
+          where: { createdAt: { gte: from, lt: to } },
+          select: { createdAt: true },
+        }),
+    scope.workspaceId
+      ? Promise.resolve([] as { createdAt: Date }[])
+      : prisma.workspace.findMany({
+          where: { createdAt: { gte: from, lt: to } },
+          select: { createdAt: true },
+        }),
+    prisma.project.findMany({
+      where: {
+        createdAt: { gte: from, lt: to },
+        ...(scope.workspaceId ? { workspaceId: scope.workspaceId } : {}),
+      },
+      select: { createdAt: true },
+    }),
+    prisma.chatMessage.findMany({
+      where: {
+        role: 'user',
+        agent: 'technical',
+        createdAt: { gte: from, lt: to },
+        ...(hasSessionScope ? { session: sessionScope } : {}),
+      },
+      select: { createdAt: true },
+    }),
+    prisma.chatSession.findMany({
+      where: { createdAt: { gte: from, lt: to }, ...sessionScope },
+      select: { createdAt: true },
+    }),
+    prisma.toolCallLog.findMany({
+      where: {
+        createdAt: { gte: from, lt: to },
+        ...(hasSessionScope ? { chatSession: sessionScope } : {}),
+      },
+      select: { createdAt: true },
+    }),
+  ])
+
+  const bucket = (rows: { createdAt: Date }[]): Map<string, number> => {
+    const m = new Map<string, number>()
+    for (const r of rows) {
+      const d = isoDay(r.createdAt)
+      m.set(d, (m.get(d) ?? 0) + 1)
+    }
+    return m
+  }
+  const uM = bucket(users)
+  const wM = bucket(workspaces)
+  const pM = bucket(projects)
+  const mM = bucket(messages)
+  const sM = bucket(sessions)
+  const tM = bucket(toolCalls)
+
+  const days: ActivityTimeseriesPoint[] = []
+  const cursor = new Date(from)
+  cursor.setUTCHours(0, 0, 0, 0)
+  const last = new Date(to)
+  last.setUTCHours(0, 0, 0, 0)
+  while (cursor <= last) {
+    const key = isoDay(cursor)
+    days.push({
+      date: key,
+      newUsers: uM.get(key) ?? 0,
+      newWorkspaces: wM.get(key) ?? 0,
+      newProjects: pM.get(key) ?? 0,
+      messages: mM.get(key) ?? 0,
+      sessions: sM.get(key) ?? 0,
+      toolCalls: tM.get(key) ?? 0,
+    })
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return days
+}
+
+// ============================================================================
 // Member Usage Stats (People table)
 // ============================================================================
 
@@ -481,7 +595,7 @@ export interface SpendTimeseriesData {
     uniqueModels: number
   }
   models: string[]
-  groupBy: 'model' | 'user' | 'source'
+  groupBy: 'model' | 'workspace' | 'user' | 'source'
   metric: 'spend' | 'tokens' | 'requests'
 }
 
@@ -501,7 +615,7 @@ export async function getSpendTimeseries(
   options: {
     fromIso?: string
     toIso?: string
-    groupBy?: 'model' | 'user' | 'source'
+    groupBy?: 'model' | 'workspace' | 'user' | 'source'
     metric?: 'spend' | 'tokens' | 'requests'
     topN?: number
   } = {}
@@ -530,6 +644,7 @@ export async function getSpendTimeseries(
     where,
     select: {
       memberId: true,
+      workspaceId: true,
       billedUsd: true,
       rawUsd: true,
       source: true,
@@ -547,6 +662,17 @@ export async function getSpendTimeseries(
       select: { id: true, email: true, name: true },
     })
     userMap = new Map(users.map((u) => [u.id, u.email || u.name || u.id]))
+  }
+
+  // Resolve workspace names up front for groupBy:workspace
+  let workspaceMap = new Map<string, string>()
+  if (groupBy === 'workspace') {
+    const ids = [...new Set(events.map((e) => e.workspaceId).filter(Boolean))]
+    const workspaces = await prisma.workspace.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, name: true },
+    })
+    workspaceMap = new Map(workspaces.map((w) => [w.id, w.name || w.id]))
   }
 
   // Resolve model ids → display names when grouping by model (post catalog-uuid
@@ -589,9 +715,11 @@ export async function getSpendTimeseries(
     const series =
       groupBy === 'user'
         ? userMap.get(event.memberId) ?? event.memberId
-        : groupBy === 'source'
-          ? event.source
-          : (modelLabels.get(rawModel) ?? rawModel)
+        : groupBy === 'workspace'
+          ? (workspaceMap.get(event.workspaceId) ?? event.workspaceId)
+          : groupBy === 'source'
+            ? event.source
+            : (modelLabels.get(rawModel) ?? rawModel)
 
     const value =
       metric === 'tokens'
@@ -729,6 +857,212 @@ export async function getActiveUsers(
     wau: wauSessions.length,
     mau: mauSessions.length,
   }
+}
+
+// ============================================================================
+// Active Users Timeseries (rolling DAU / WAU / MAU)
+// ============================================================================
+
+export interface ActiveUsersTimeseriesPoint {
+  date: string
+  dau: number
+  wau: number
+  mau: number
+}
+
+/** Union the distinct-member sets for the `windowDays` ending on `day`. */
+function rollingUnionSize(
+  byDay: Map<string, Set<string>>,
+  day: Date,
+  windowDays: number,
+): number {
+  const u = new Set<string>()
+  const cursor = new Date(day)
+  for (let i = 0; i < windowDays; i++) {
+    const set = byDay.get(isoDay(cursor))
+    if (set) for (const id of set) u.add(id)
+    cursor.setUTCDate(cursor.getUTCDate() - 1)
+  }
+  return u.size
+}
+
+/**
+ * Daily active-user trend. DAU = distinct active members that day; WAU/MAU are
+ * rolling 7 / 30-day distinct counts. Activity is derived from usage events
+ * (each carries `createdAt` + `memberId`), with a 29-day lookback so the
+ * rolling windows are correct from the first rendered day.
+ */
+export async function getActiveUsersTimeseries(
+  scope: AnalyticsScope = {},
+  period: AnalyticsPeriod = '30d',
+): Promise<ActiveUsersTimeseriesPoint[]> {
+  const { from, to } = periodToWindow(period)
+  const lookbackFrom = new Date(from.getTime() - 29 * 24 * 60 * 60 * 1000)
+
+  const where: any = { createdAt: { gte: lookbackFrom, lt: to } }
+  if (scope.workspaceId) where.workspaceId = scope.workspaceId
+  if (scope.projectId) where.projectId = scope.projectId
+
+  const events = await prisma.usageEvent.findMany({
+    where,
+    select: { memberId: true, createdAt: true },
+  })
+
+  const byDay = new Map<string, Set<string>>()
+  for (const e of events) {
+    if (e.memberId === 'system') continue
+    const d = isoDay(e.createdAt)
+    if (!byDay.has(d)) byDay.set(d, new Set())
+    byDay.get(d)!.add(e.memberId)
+  }
+
+  const days: ActiveUsersTimeseriesPoint[] = []
+  const cursor = new Date(from)
+  cursor.setUTCHours(0, 0, 0, 0)
+  const last = new Date(to)
+  last.setUTCHours(0, 0, 0, 0)
+  while (cursor <= last) {
+    days.push({
+      date: isoDay(cursor),
+      dau: byDay.get(isoDay(cursor))?.size ?? 0,
+      wau: rollingUnionSize(byDay, cursor, 7),
+      mau: rollingUnionSize(byDay, cursor, 30),
+    })
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return days
+}
+
+// ============================================================================
+// Quality & Efficiency Timeseries
+// ============================================================================
+
+export interface QualityTimeseriesPoint {
+  date: string
+  cacheHitRatio: number
+  costPerMessage: number
+  costPerActiveUser: number
+  agentEscalatedRate: number
+  agentLoopRate: number
+  agentMaxTurnsRate: number
+}
+
+/**
+ * Daily quality & efficiency series: cache hit ratio and unit economics from
+ * usage events, plus agent quality rates from agent cost metrics. Rates are
+ * returned as percentages (0-100); costs in USD. Zero-filled per day.
+ */
+export async function getQualityTimeseries(
+  scope: AnalyticsScope = {},
+  period: AnalyticsPeriod = '30d',
+): Promise<QualityTimeseriesPoint[]> {
+  const { from, to } = periodToWindow(period)
+
+  const usageWhere: any = {
+    actionType: {
+      in: ['ai_proxy_completion', 'chat_message'],
+    },
+    createdAt: { gte: from, lt: to },
+  }
+  if (scope.workspaceId) usageWhere.workspaceId = scope.workspaceId
+  if (scope.projectId) usageWhere.projectId = scope.projectId
+
+  const sessionScope: any = {}
+  if (scope.projectId) sessionScope.contextId = scope.projectId
+  else if (scope.workspaceId) sessionScope.project = { workspaceId: scope.workspaceId }
+  const hasSessionScope = Object.keys(sessionScope).length > 0
+
+  const agentWhere: any = { createdAt: { gte: from, lt: to } }
+  if (scope.workspaceId) agentWhere.workspaceId = scope.workspaceId
+  if (scope.projectId) agentWhere.projectId = scope.projectId
+
+  const [events, messages, agentRuns] = await Promise.all([
+    prisma.usageEvent.findMany({
+      where: usageWhere,
+      select: { memberId: true, billedUsd: true, rawUsd: true, actionMetadata: true, createdAt: true },
+    }),
+    prisma.chatMessage.findMany({
+      where: {
+        role: 'user',
+        agent: 'technical',
+        createdAt: { gte: from, lt: to },
+        ...(hasSessionScope ? { session: sessionScope } : {}),
+      },
+      select: { createdAt: true },
+    }),
+    prisma.agentCostMetric.findMany({
+      where: agentWhere,
+      select: { createdAt: true, escalated: true, loopDetected: true, hitMaxTurns: true },
+    }),
+  ])
+
+  // Per-day accumulators.
+  interface Acc {
+    cached: number
+    input: number
+    spend: number
+    activeUsers: Set<string>
+    messages: number
+    runs: number
+    escalated: number
+    loop: number
+    maxTurns: number
+  }
+  const acc = new Map<string, Acc>()
+  const ensure = (d: string): Acc => {
+    let a = acc.get(d)
+    if (!a) {
+      a = { cached: 0, input: 0, spend: 0, activeUsers: new Set(), messages: 0, runs: 0, escalated: 0, loop: 0, maxTurns: 0 }
+      acc.set(d, a)
+    }
+    return a
+  }
+
+  for (const e of events) {
+    const meta = parseMeta(e.actionMetadata)
+    const a = ensure(isoDay(e.createdAt))
+    a.cached += (meta.cachedInputTokens as number) || 0
+    a.input += (meta.inputTokens as number) || 0
+    const cost = e.billedUsd > 0
+      ? e.billedUsd
+      : (e.rawUsd != null && e.rawUsd > 0)
+        ? e.rawUsd
+        : ((meta.rawUsd as number | undefined) ?? (meta.dollarCost as number | undefined) ?? 0)
+    a.spend += cost
+    if (e.memberId !== 'system') a.activeUsers.add(e.memberId)
+  }
+  for (const m of messages) ensure(isoDay(m.createdAt)).messages += 1
+  for (const r of agentRuns) {
+    const a = ensure(isoDay(r.createdAt))
+    a.runs += 1
+    if (r.escalated) a.escalated += 1
+    if (r.loopDetected) a.loop += 1
+    if (r.hitMaxTurns) a.maxTurns += 1
+  }
+
+  const pct = (num: number, den: number) => (den > 0 ? (num / den) * 100 : 0)
+
+  const days: QualityTimeseriesPoint[] = []
+  const cursor = new Date(from)
+  cursor.setUTCHours(0, 0, 0, 0)
+  const last = new Date(to)
+  last.setUTCHours(0, 0, 0, 0)
+  while (cursor <= last) {
+    const key = isoDay(cursor)
+    const a = acc.get(key)
+    const activeUsers = a?.activeUsers.size ?? 0
+    days.push({
+      date: key,
+      cacheHitRatio: a ? pct(a.cached, a.cached + a.input) : 0,
+      costPerMessage: a && a.messages > 0 ? a.spend / a.messages : 0,
+      costPerActiveUser: a && activeUsers > 0 ? a.spend / activeUsers : 0,
+      agentEscalatedRate: a ? pct(a.escalated, a.runs) : 0,
+      agentLoopRate: a ? pct(a.loop, a.runs) : 0,
+      agentMaxTurnsRate: a ? pct(a.maxTurns, a.runs) : 0,
+    })
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return days
 }
 
 // ============================================================================
@@ -882,9 +1216,13 @@ export async function getUsageLog(
  */
 export async function getUsageSummary(
   scope: AnalyticsScope = {},
-  period: AnalyticsPeriod = '30d'
+  period: AnalyticsPeriod = '30d',
+  options: { page?: number; limit?: number; excludeInternal?: boolean } = {}
 ) {
   const since = periodToDate(period)
+  const page = Math.max(1, options.page ?? 1)
+  const limit = Math.min(Math.max(1, options.limit ?? 25), 1000)
+  const excludeInternal = options.excludeInternal ?? false
 
   const where: any = {
     actionType: {
@@ -902,6 +1240,10 @@ export async function getUsageSummary(
   if (scope.workspaceId) where.workspaceId = scope.workspaceId
   if (scope.projectId) where.projectId = scope.projectId
   if (scope.userId) where.memberId = scope.userId
+
+  // When excluding internal users, build the set of internal member ids up
+  // front so we can skip their events during aggregation.
+  const internalIds = excludeInternal ? await getInternalUserIds() : null
 
   // Fetch all matching events (for in-memory aggregation)
   const events = await prisma.usageEvent.findMany({
@@ -928,7 +1270,10 @@ export async function getUsageSummary(
     totalDurationMs: number
   }>()
 
+  let countedEvents = 0
   for (const event of events) {
+    if (internalIds && internalIds.has(event.memberId)) continue
+    countedEvents += 1
     const meta = parseMeta(event.actionMetadata)
     const model = meta.model || meta.modelUsed || 'unknown'
     const key = `${event.memberId}::${model}`
@@ -1010,9 +1355,9 @@ export async function getUsageSummary(
     })
     .sort((a, b) => b.totalTokens - a.totalTokens)
 
-  // Compute totals
+  // Compute totals across the full (unpaginated) result set.
   const totals = {
-    totalRequests: events.length,
+    totalRequests: countedEvents,
     totalInputTokens: summaries.reduce((s, e) => s + e.totalInputTokens, 0),
     totalOutputTokens: summaries.reduce((s, e) => s + e.totalOutputTokens, 0),
     totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
@@ -1023,7 +1368,11 @@ export async function getUsageSummary(
     uniqueModels: new Set([...aggregateMap.values()].map((a) => a.model)).size,
   }
 
-  return { summaries, totals }
+  // Paginate the aggregated rows (the list can get very long in prod).
+  const total = summaries.length
+  const paged = summaries.slice((page - 1) * limit, (page - 1) * limit + limit)
+
+  return { summaries: paged, totals, total, page, limit }
 }
 
 // ============================================================================
@@ -1254,6 +1603,29 @@ function realUserEmailNotLike(): string {
     .join(' AND ')
 }
 
+/**
+ * Resolve the set of internal user ids (super admins + Shogo/test domains) so
+ * in-memory aggregations (usage summary, workspace activity) can skip them when
+ * `excludeInternal` is requested. Inverse of {@link realUserWhere}.
+ */
+export async function getInternalUserIds(): Promise<Set<string>> {
+  const rows = await prisma.user.findMany({
+    where: {
+      OR: [
+        { role: 'super_admin' },
+        ...EXCLUDED_EMAIL_PATTERNS.map(pattern => ({
+          email: {
+            contains: pattern.replace('%', ''),
+            ...(isSqlite ? {} : { mode: 'insensitive' as const }),
+          },
+        })),
+      ],
+    },
+    select: { id: true },
+  })
+  return new Set(rows.map(r => r.id))
+}
+
 // ============================================================================
 // User Funnel
 // ============================================================================
@@ -1397,7 +1769,7 @@ export interface UserActivity {
 export async function getUserActivityTable(
   period: AnalyticsPeriod = '30d',
   options: { page?: number; limit?: number; sort?: string; excludeInternal?: boolean } = {}
-): Promise<{ users: UserActivity[]; total: number }> {
+): Promise<{ users: UserActivity[]; total: number; page: number; limit: number }> {
   const since = periodToDate(period)
   const page = options.page ?? 1
   const limit = Math.min(options.limit ?? 20, 100)
@@ -1520,7 +1892,263 @@ export async function getUserActivityTable(
     spendUsd: usdMap.get(u.id) ?? 0,
   }))
 
-  return { users: result, total }
+  return { users: result, total, page, limit }
+}
+
+// ============================================================================
+// Tool Call Analytics
+// ============================================================================
+
+export interface ToolCallStat {
+  toolName: string
+  total: number
+  errors: number
+  successRate: number
+  avgDurationMs: number
+}
+
+export interface ToolCallAnalyticsResult {
+  tools: ToolCallStat[]
+  totals: { totalCalls: number; totalErrors: number; successRate: number }
+  daily: { date: string; calls: number; errors: number; successRate: number }[]
+}
+
+/**
+ * Decide whether a tool call failed. Going forward the writer records
+ * `status: 'error'` directly; for historical rows (always written as
+ * 'complete') we fall back to inspecting the stored `result` JSON for common
+ * error markers.
+ */
+function toolCallFailed(status: string, result: unknown): boolean {
+  if (status === 'error') return true
+  const r = parseMeta(result)
+  if (r && typeof r === 'object') {
+    if (r.success === false) return true
+    if (r.isError === true) return true
+    if (r.error != null && r.error !== false) return true
+    if (typeof r.state === 'string' && r.state.toLowerCase() === 'error') return true
+    if (typeof r.text === 'string' && /^\s*error\b/i.test(r.text)) return true
+  }
+  if (typeof result === 'string' && /^\s*error\b/i.test(result)) return true
+  return false
+}
+
+/**
+ * Tool-call usage and success-rate analytics. Per-tool counts + success rate,
+ * overall totals, and a zero-filled daily {calls, errors, successRate} series.
+ * Scope-aware via the chat session → project relation.
+ */
+export async function getToolCallAnalytics(
+  scope: AnalyticsScope = {},
+  period: AnalyticsPeriod = '30d',
+  options: { excludeInternal?: boolean } = {},
+): Promise<ToolCallAnalyticsResult> {
+  const { from, to } = periodToWindow(period)
+
+  const where: any = { createdAt: { gte: from, lt: to } }
+  if (scope.projectId) {
+    where.chatSession = { contextId: scope.projectId }
+  } else if (scope.workspaceId) {
+    where.chatSession = { project: { workspaceId: scope.workspaceId } }
+  }
+  if (options.excludeInternal) {
+    const internal = await getInternalUserIds()
+    if (internal.size > 0) {
+      const existing = where.chatSession ?? {}
+      where.chatSession = {
+        ...existing,
+        project: { ...(existing.project ?? {}), createdBy: { notIn: [...internal] } },
+      }
+    }
+  }
+
+  const rows = await prisma.toolCallLog.findMany({
+    where,
+    select: { toolName: true, status: true, result: true, duration: true, createdAt: true },
+  })
+
+  const perTool = new Map<string, { total: number; errors: number; durSum: number; durCount: number }>()
+  const perDay = new Map<string, { calls: number; errors: number }>()
+  let totalCalls = 0
+  let totalErrors = 0
+
+  for (const r of rows) {
+    const failed = toolCallFailed(r.status, r.result)
+    totalCalls += 1
+    if (failed) totalErrors += 1
+
+    const t = perTool.get(r.toolName) ?? { total: 0, errors: 0, durSum: 0, durCount: 0 }
+    t.total += 1
+    if (failed) t.errors += 1
+    if (typeof r.duration === 'number') { t.durSum += r.duration; t.durCount += 1 }
+    perTool.set(r.toolName, t)
+
+    const day = isoDay(r.createdAt)
+    const d = perDay.get(day) ?? { calls: 0, errors: 0 }
+    d.calls += 1
+    if (failed) d.errors += 1
+    perDay.set(day, d)
+  }
+
+  const tools: ToolCallStat[] = [...perTool.entries()]
+    .map(([toolName, s]) => ({
+      toolName,
+      total: s.total,
+      errors: s.errors,
+      successRate: s.total > 0 ? ((s.total - s.errors) / s.total) * 100 : 100,
+      avgDurationMs: s.durCount > 0 ? Math.round(s.durSum / s.durCount) : 0,
+    }))
+    .sort((a, b) => b.total - a.total)
+
+  const daily: { date: string; calls: number; errors: number; successRate: number }[] = []
+  const cursor = new Date(from)
+  cursor.setUTCHours(0, 0, 0, 0)
+  const last = new Date(to)
+  last.setUTCHours(0, 0, 0, 0)
+  while (cursor <= last) {
+    const key = isoDay(cursor)
+    const d = perDay.get(key)
+    const calls = d?.calls ?? 0
+    const errors = d?.errors ?? 0
+    daily.push({
+      date: key,
+      calls,
+      errors,
+      successRate: calls > 0 ? ((calls - errors) / calls) * 100 : 100,
+    })
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+
+  return {
+    tools,
+    totals: {
+      totalCalls,
+      totalErrors,
+      successRate: totalCalls > 0 ? ((totalCalls - totalErrors) / totalCalls) * 100 : 100,
+    },
+    daily,
+  }
+}
+
+// ============================================================================
+// Workspace Activity Table
+// ============================================================================
+
+export interface WorkspaceActivity {
+  workspaceId: string
+  name: string
+  projects: number
+  members: number
+  messages: number
+  toolCalls: number
+  spendUsd: number
+}
+
+/**
+ * Per-workspace activity table ranked by period spend and paginated. Heavy
+ * per-workspace joins (messages, tool calls) only run for the current page.
+ */
+export async function getWorkspaceActivityTable(
+  period: AnalyticsPeriod = '30d',
+  options: { page?: number; limit?: number; excludeInternal?: boolean } = {},
+): Promise<{ workspaces: WorkspaceActivity[]; total: number; page: number; limit: number }> {
+  const since = periodToDate(period)
+  const page = Math.max(1, options.page ?? 1)
+  const limit = Math.min(Math.max(1, options.limit ?? 20), 100)
+  const excludeInternal = options.excludeInternal ?? true
+
+  let workspaces = await prisma.workspace.findMany({ select: { id: true, name: true } })
+
+  if (excludeInternal) {
+    const internal = await getInternalUserIds()
+    const members = await prisma.member.findMany({
+      where: { workspaceId: { not: null } },
+      select: { workspaceId: true, userId: true },
+    })
+    const realWs = new Set<string>()
+    for (const m of members) {
+      if (m.workspaceId && !internal.has(m.userId)) realWs.add(m.workspaceId)
+    }
+    workspaces = workspaces.filter((w) => realWs.has(w.id))
+  }
+
+  // Spend over the period is the ranking key.
+  const spendRows = await prisma.usageEvent.groupBy({
+    by: ['workspaceId'],
+    where: { createdAt: { gte: since } },
+    _sum: { billedUsd: true },
+  })
+  const spendMap = new Map(spendRows.map((r) => [r.workspaceId, r._sum.billedUsd ?? 0]))
+
+  const ranked = workspaces
+    .map((w) => ({ id: w.id, name: w.name, spendUsd: spendMap.get(w.id) ?? 0 }))
+    .sort((a, b) => b.spendUsd - a.spendUsd)
+
+  const total = ranked.length
+  const pageRows = ranked.slice((page - 1) * limit, (page - 1) * limit + limit)
+  const ids = pageRows.map((w) => w.id)
+
+  if (ids.length === 0) {
+    return { workspaces: [], total, page, limit }
+  }
+
+  const [projectCounts, memberCounts, messageRows, toolRows] = await Promise.all([
+    prisma.project.groupBy({ by: ['workspaceId'], where: { workspaceId: { in: ids } }, _count: true }),
+    prisma.member.groupBy({ by: ['workspaceId'], where: { workspaceId: { in: ids } }, _count: true }),
+    isSqlite
+      ? prisma.$queryRawUnsafe<{ wid: string; count: number }[]>(`
+          SELECT p."workspaceId" AS "wid", CAST(COUNT(cm."id") AS INTEGER) AS "count"
+          FROM "chat_messages" cm
+          JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+          JOIN "projects" p ON p."id" = cs."contextId"
+          WHERE cm."role" = 'user' AND cm."agent" = 'technical'
+            AND cm."createdAt" >= ? AND p."workspaceId" IN (${ids.map(() => '?').join(',')})
+          GROUP BY p."workspaceId"
+        `, since, ...ids)
+      : prisma.$queryRawUnsafe<{ wid: string; count: number }[]>(`
+          SELECT p."workspaceId" AS "wid", COUNT(cm."id")::int AS "count"
+          FROM "chat_messages" cm
+          JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+          JOIN "projects" p ON p."id" = cs."contextId"
+          WHERE cm."role" = 'user' AND cm."agent" = 'technical'
+            AND cm."createdAt" >= $1 AND p."workspaceId" = ANY($2::text[])
+          GROUP BY p."workspaceId"
+        `, since, ids),
+    isSqlite
+      ? prisma.$queryRawUnsafe<{ wid: string; count: number }[]>(`
+          SELECT p."workspaceId" AS "wid", CAST(COUNT(tcl."id") AS INTEGER) AS "count"
+          FROM "tool_call_logs" tcl
+          JOIN "chat_sessions" cs ON cs."id" = tcl."chatSessionId"
+          JOIN "projects" p ON p."id" = cs."contextId"
+          WHERE tcl."createdAt" >= ? AND p."workspaceId" IN (${ids.map(() => '?').join(',')})
+          GROUP BY p."workspaceId"
+        `, since, ...ids)
+      : prisma.$queryRawUnsafe<{ wid: string; count: number }[]>(`
+          SELECT p."workspaceId" AS "wid", COUNT(tcl."id")::int AS "count"
+          FROM "tool_call_logs" tcl
+          JOIN "chat_sessions" cs ON cs."id" = tcl."chatSessionId"
+          JOIN "projects" p ON p."id" = cs."contextId"
+          WHERE tcl."createdAt" >= $1 AND p."workspaceId" = ANY($2::text[])
+          GROUP BY p."workspaceId"
+        `, since, ids),
+  ])
+
+  const projectMap = new Map(projectCounts.map((r) => [r.workspaceId!, toNum(r._count)]))
+  const memberMap = new Map(memberCounts.map((r) => [r.workspaceId!, toNum(r._count)]))
+  const messageMap = new Map(messageRows.map((r) => [r.wid, toNum(r.count)]))
+  const toolMap = new Map(toolRows.map((r) => [r.wid, toNum(r.count)]))
+
+  const result: WorkspaceActivity[] = pageRows.map((w) => ({
+    workspaceId: w.id,
+    name: w.name,
+    projects: projectMap.get(w.id) ?? 0,
+    members: memberMap.get(w.id) ?? 0,
+    messages: messageMap.get(w.id) ?? 0,
+    toolCalls: toolMap.get(w.id) ?? 0,
+    spendUsd: w.spendUsd,
+  }))
+
+  return { workspaces: result, total, page, limit }
 }
 
 // ============================================================================
@@ -1849,5 +2477,289 @@ export function deriveSourceTag(data: {
   }
   if (data.method === 'google') return 'google-oauth'
   return 'direct'
+}
+
+// ============================================================================
+// Creator Stats (admin: marketplace metrics + per-creator platform usage)
+// ============================================================================
+
+export interface CreatorStat {
+  userId: string
+  displayName: string
+  name: string | null
+  email: string
+  creatorTier: string
+  reputationScore: number
+  verified: boolean
+  totalAgentsPublished: number
+  totalInstalls: number
+  averageAgentRating: number
+  totalVersionsShipped: number
+  followerCount: number
+  /** Lifetime marketplace earnings, in USD (converted from cents). */
+  totalEarningsUsd: number
+  pendingPayoutUsd: number
+  totalPaidOutUsd: number
+  /** Lifetime Shogo platform spend by this creator's account, in USD. */
+  spendUsd: number
+}
+
+/**
+ * Admin creator stats: every marketplace creator with their denormalized
+ * marketplace metrics joined to their lifetime platform usage spend.
+ *
+ * Platform spend is attributed by walking `CreatorProfile.userId -> Member ->
+ * UsageEvent.memberId` and summing `billedUsd`, since usage is metered per
+ * workspace member, not per creator.
+ */
+export async function getCreatorStats(): Promise<CreatorStat[]> {
+  const creators = await prisma.creatorProfile.findMany({
+    orderBy: { totalInstalls: 'desc' },
+    include: {
+      user: { select: { id: true, name: true, email: true } },
+    },
+  })
+
+  if (creators.length === 0) return []
+
+  const userIds = creators.map((c) => c.userId)
+
+  // Map each member row owned by a creator back to its creator userId, so we
+  // can attribute usage_events (keyed by memberId) to the right creator.
+  const members = await prisma.member.findMany({
+    where: { userId: { in: userIds } },
+    select: { id: true, userId: true },
+  })
+  const memberToUser = new Map<string, string>(
+    members.map((m) => [m.id, m.userId])
+  )
+  const memberIds = members.map((m) => m.id)
+
+  const spendByUser = new Map<string, number>()
+  if (memberIds.length > 0) {
+    const events = await prisma.usageEvent.findMany({
+      where: { memberId: { in: memberIds } },
+      select: { memberId: true, billedUsd: true },
+    })
+    for (const ev of events) {
+      const uid = memberToUser.get(ev.memberId)
+      if (!uid) continue
+      spendByUser.set(uid, (spendByUser.get(uid) ?? 0) + (ev.billedUsd ?? 0))
+    }
+  }
+
+  return creators.map((c) => ({
+    userId: c.userId,
+    displayName: c.displayName,
+    name: c.user?.name ?? null,
+    email: c.user?.email ?? '',
+    creatorTier: String(c.creatorTier),
+    reputationScore: c.reputationScore,
+    verified: c.verified,
+    totalAgentsPublished: c.totalAgentsPublished,
+    totalInstalls: c.totalInstalls,
+    averageAgentRating: c.averageAgentRating,
+    totalVersionsShipped: c.totalVersionsShipped,
+    followerCount: c.followerCount,
+    totalEarningsUsd: c.totalEarningsInCents / 100,
+    pendingPayoutUsd: c.pendingPayoutInCents / 100,
+    totalPaidOutUsd: c.totalPaidOutInCents / 100,
+    spendUsd: spendByUser.get(c.userId) ?? 0,
+  }))
+}
+
+/** One published marketplace listing, summarized for the creator profile. */
+export interface CreatorListingSummary {
+  id: string
+  title: string
+  slug: string
+  status: string
+  pricingModel: string
+  installCount: number
+  averageRating: number
+  reviewCount: number
+  currentVersion: string
+  publishedAt: string | null
+}
+
+/**
+ * Affiliate-program 360 for a creator who is also an affiliate. Null when the
+ * creator never enrolled in the affiliate program.
+ */
+export interface CreatorAffiliateSummary {
+  /** Affiliate row id — needed for admin actions (content approval, payout). */
+  id: string
+  code: string
+  status: string
+  /** Per-affiliate L1 commission override in basis points (null = tier rate). */
+  commissionRateBps: number | null
+  /** Per-creator content-CPM override in cents/1k views (null = platform CPM). */
+  contentCpmCents: number | null
+  totalEarningsUsd: number
+  pendingPayoutUsd: number
+  totalPaidOutUsd: number
+  /** Approved, unpaid commissions an admin can release right now, in USD. */
+  payableUsd: number
+  /** Stripe Connect payout state: not_setup | pending_verification | verified. */
+  payoutStatus: string
+  /** Video-creator (content CPM) program application gate. */
+  contentProgramStatus: 'none' | 'pending' | 'approved' | 'rejected'
+  contentAppliedAt: string | null
+  contentReviewedAt: string | null
+  contentReviewedBy: string | null
+  contentRejectionReason: string | null
+  /** Users last-click-attributed to this affiliate. */
+  referralCount: number
+  /** Direct downline affiliates (children in the upline tree). */
+  downlineCount: number
+  /** Lifetime commission split by earning channel, in USD. */
+  referralEarningsUsd: number
+  contentEarningsUsd: number
+}
+
+/** Full per-creator profile: stats + published agents + affiliate 360. */
+export interface CreatorProfileDetail extends CreatorStat {
+  bio: string | null
+  avatarUrl: string | null
+  websiteUrl: string | null
+  createdAt: string
+  badges: { badgeType: string; earnedAt: string }[]
+  listings: CreatorListingSummary[]
+  affiliate: CreatorAffiliateSummary | null
+}
+
+/**
+ * Admin per-creator profile. Joins the creator's marketplace profile, their
+ * published listings, lifetime platform spend (the same Member -> UsageEvent
+ * walk as getCreatorStats), and — when the creator also enrolled as an
+ * affiliate — their affiliate/commission summary. Returns null when no
+ * CreatorProfile exists for `userId`.
+ */
+export async function getCreatorProfileDetail(
+  userId: string,
+): Promise<CreatorProfileDetail | null> {
+  const creator = await prisma.creatorProfile.findUnique({
+    where: { userId },
+    include: {
+      user: { select: { id: true, name: true, email: true } },
+      badges: { select: { badgeType: true, earnedAt: true }, orderBy: { earnedAt: 'desc' } },
+      listings: {
+        orderBy: { installCount: 'desc' },
+        select: {
+          id: true,
+          title: true,
+          slug: true,
+          status: true,
+          pricingModel: true,
+          installCount: true,
+          averageRating: true,
+          reviewCount: true,
+          currentVersion: true,
+          publishedAt: true,
+        },
+      },
+    },
+  })
+  if (!creator) return null
+
+  // Lifetime platform spend: usage is metered per workspace member, so walk
+  // this creator's Member rows back to their UsageEvents and sum billedUsd.
+  const members = await prisma.member.findMany({ where: { userId }, select: { id: true } })
+  const memberIds = members.map((m) => m.id)
+  let spendUsd = 0
+  if (memberIds.length > 0) {
+    const events = await prisma.usageEvent.findMany({
+      where: { memberId: { in: memberIds } },
+      select: { billedUsd: true },
+    })
+    spendUsd = events.reduce((sum, ev) => sum + (ev.billedUsd ?? 0), 0)
+  }
+
+  // Affiliate 360 — nullable; not every creator enrolled in the program.
+  const affiliate = await prisma.affiliate.findUnique({
+    where: { userId },
+    include: {
+      _count: { select: { attributions: true, children: true } },
+      commissions: { select: { source: true, amountCents: true, status: true, payoutId: true } },
+    },
+  })
+
+  let affiliateSummary: CreatorAffiliateSummary | null = null
+  if (affiliate) {
+    let referralCents = 0
+    let contentCents = 0
+    let payableCents = 0
+    for (const com of affiliate.commissions) {
+      if (String(com.source) === 'content') contentCents += com.amountCents
+      else referralCents += com.amountCents
+      // Approved + not yet attached to a payout = releasable now.
+      if (String(com.status) === 'approved' && !com.payoutId) payableCents += com.amountCents
+    }
+    affiliateSummary = {
+      id: affiliate.id,
+      code: affiliate.code,
+      status: String(affiliate.status),
+      commissionRateBps: affiliate.commissionRateBps,
+      contentCpmCents: affiliate.contentCpmCents,
+      totalEarningsUsd: affiliate.totalEarningsCents / 100,
+      pendingPayoutUsd: affiliate.pendingPayoutCents / 100,
+      totalPaidOutUsd: affiliate.totalPaidOutCents / 100,
+      payableUsd: payableCents / 100,
+      payoutStatus: String(affiliate.payoutStatus),
+      contentProgramStatus:
+        (String(affiliate.contentProgramStatus) as CreatorAffiliateSummary['contentProgramStatus']) ??
+        'none',
+      contentAppliedAt: affiliate.contentAppliedAt ? affiliate.contentAppliedAt.toISOString() : null,
+      contentReviewedAt: affiliate.contentReviewedAt
+        ? affiliate.contentReviewedAt.toISOString()
+        : null,
+      contentReviewedBy: affiliate.contentReviewedBy ?? null,
+      contentRejectionReason: affiliate.contentRejectionReason ?? null,
+      referralCount: affiliate._count.attributions,
+      downlineCount: affiliate._count.children,
+      referralEarningsUsd: referralCents / 100,
+      contentEarningsUsd: contentCents / 100,
+    }
+  }
+
+  return {
+    userId: creator.userId,
+    displayName: creator.displayName,
+    name: creator.user?.name ?? null,
+    email: creator.user?.email ?? '',
+    creatorTier: String(creator.creatorTier),
+    reputationScore: creator.reputationScore,
+    verified: creator.verified,
+    totalAgentsPublished: creator.totalAgentsPublished,
+    totalInstalls: creator.totalInstalls,
+    averageAgentRating: creator.averageAgentRating,
+    totalVersionsShipped: creator.totalVersionsShipped,
+    followerCount: creator.followerCount,
+    totalEarningsUsd: creator.totalEarningsInCents / 100,
+    pendingPayoutUsd: creator.pendingPayoutInCents / 100,
+    totalPaidOutUsd: creator.totalPaidOutInCents / 100,
+    spendUsd,
+    bio: creator.bio,
+    avatarUrl: creator.avatarUrl,
+    websiteUrl: creator.websiteUrl,
+    createdAt: creator.createdAt.toISOString(),
+    badges: creator.badges.map((b) => ({
+      badgeType: String(b.badgeType),
+      earnedAt: b.earnedAt.toISOString(),
+    })),
+    listings: creator.listings.map((l) => ({
+      id: l.id,
+      title: l.title,
+      slug: l.slug,
+      status: String(l.status),
+      pricingModel: String(l.pricingModel),
+      installCount: l.installCount,
+      averageRating: l.averageRating,
+      reviewCount: l.reviewCount,
+      currentVersion: l.currentVersion,
+      publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
+    })),
+    affiliate: affiliateSummary,
+  }
 }
 

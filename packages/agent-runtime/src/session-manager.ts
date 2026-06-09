@@ -286,6 +286,18 @@ export class SessionManager {
     return this.needsCompaction(session)
   }
 
+  /**
+   * Merge `patch` into a session's metadata and persist. Used to durably track
+   * the thread's running background processes (so the list survives restart).
+   * No-op if the session is not loaded.
+   */
+  setSessionMetadata(id: string, patch: Record<string, any>): void {
+    const session = this.sessions.get(id)
+    if (!session) return
+    session.metadata = { ...session.metadata, ...patch }
+    this.persistSession(session)
+  }
+
   /** Clear a session's history (keeps the session alive) */
   clearHistory(id: string): void {
     const session = this.sessions.get(id)
