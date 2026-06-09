@@ -233,8 +233,6 @@ export function Workbench({
   const [activity, setActivity] = useState<ActivityId>("files");
   const [graphOpen, setGraphOpen] = useState<boolean>(false);
 
-  // For managed (non-external) projects, force the activity away from
-  // git/debug/checkpoint since those panels are hidden.
   // Deep-link: let surfaces outside the Workbench (e.g. the top-bar Publish
   // popover's "View history" link) switch the active activity — notably
   // "checkpoint" to reveal the commit graph. Consume any pending request on
