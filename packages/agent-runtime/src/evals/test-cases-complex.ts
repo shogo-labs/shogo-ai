@@ -226,16 +226,16 @@ export const COMPLEX_EVALS: AgentEval[] = [
     initialMode: 'canvas',
     useRuntimeTemplate: true,
     workspaceFiles: { 'config.json': V2_CONFIG },
-    input: 'I need a triage board for my GitHub issues in the acme-corp/webapp repository. Pull the open issues using the GitHub integration (use GITHUB_LIST_ISSUES), categorize them by severity (Critical, High, Medium, Low based on their labels), and build me a React dashboard with the issues organized by severity columns. Set up a Prisma schema for persisting issue data with a status field, and write the components so I can see all issues at a glance. Verify everything looks good.',
+    input: 'I need a triage board for my GitHub issues in the acme-corp/webapp repository. Pull the open issues using the GitHub integration (use GITHUB_LIST_REPOSITORY_ISSUES), categorize them by severity (Critical, High, Medium, Low based on their labels), and build me a React dashboard with the issues organized by severity columns. Set up a Prisma schema for persisting issue data with a status field, and write the components so I can see all issues at a glance. Verify everything looks good.',
     maxScore: 100,
     toolMocks: withSkillServerMocks(GITHUB_TRIAGE_MOCKS),
     validationCriteria: [
       {
         id: 'used-github-issues',
-        description: 'Used GITHUB_LIST_ISSUES to fetch issues',
+        description: 'Used GITHUB_LIST_REPOSITORY_ISSUES to fetch issues',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'wrote-src-file',
@@ -817,10 +817,10 @@ export const COMPLEX_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-github-multi',
-        description: 'Used GITHUB_LIST_ISSUES or GITHUB_LIST_PULL_REQUESTS at least 2 times (multi-repo)',
+        description: 'Used GITHUB_LIST_REPOSITORY_ISSUES or GITHUB_LIST_PULL_REQUESTS at least 2 times (multi-repo)',
         points: 10,
         phase: 'intention',
-        validate: (r) => (toolCallCount(r, 'GITHUB_LIST_ISSUES') + toolCallCount(r, 'GITHUB_LIST_PULL_REQUESTS')) >= 2,
+        validate: (r) => (toolCallCount(r, 'GITHUB_LIST_REPOSITORY_ISSUES') + toolCallCount(r, 'GITHUB_LIST_PULL_REQUESTS')) >= 2,
       },
       {
         id: 'wrote-src-file',
