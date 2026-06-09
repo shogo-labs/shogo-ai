@@ -25,7 +25,27 @@ import {
   setEnsembleDataToken,
   type ContentSettingsPatch,
 } from '../services/affiliate-content-settings.service'
+import { payoutAffiliate, type PayoutAffiliateResult } from '../services/affiliate.service'
 import { prisma } from '../lib/prisma'
+
+/** Human-readable message for a failed {@link payoutAffiliate} outcome. */
+function payoutReasonMessage(reason: Extract<PayoutAffiliateResult, { ok: false }>['reason']): string {
+  switch (reason) {
+    case 'nothing_owed':
+      return 'No approved, unpaid commissions to pay out.'
+    case 'below_minimum':
+      return 'Owed amount is below the payout minimum.'
+    case 'unverified_payout':
+      return 'Payout setup is not verified for this creator.'
+    case 'stripe_unavailable':
+      return 'Stripe is not configured on this deployment.'
+    case 'local_mode':
+      return 'Payouts run on the cloud, not in local mode.'
+    case 'failed':
+    default:
+      return 'Payout failed.'
+  }
+}
 
 // ============================================================================
 // Admin Analytics Routes
@@ -969,6 +989,155 @@ export function adminRoutes(): Hono {
     } catch (error: any) {
       console.error('[Admin] Affiliate rate patch error:', error)
       return c.json({ error: { code: 'affiliate_update_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /affiliates/:id/content-application — approve or reject a creator's
+   * application to the video-creator (content CPM) program. Approval is the
+   * gate for BOTH earning (the hourly poller only accrues for approved
+   * creators) AND payout of content commissions, so rejecting/revoking here
+   * immediately stops further accrual.
+   *
+   * Body: { action: 'approve' | 'reject', reason?: string }
+   */
+  router.post('/affiliates/:id/content-application', async (c) => {
+    const id = c.req.param('id')
+    const auth = c.get('auth')
+    const reviewerId = auth?.userId ?? null
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    }
+    const action = body?.action
+    if (action !== 'approve' && action !== 'reject') {
+      return c.json(
+        { error: { code: 'bad_request', message: "action must be 'approve' or 'reject'" } },
+        400,
+      )
+    }
+    const reason =
+      action === 'reject' && typeof body?.reason === 'string' ? body.reason.slice(0, 500) : null
+
+    try {
+      const existing = await prisma.affiliate.findUnique({
+        where: { id },
+        select: { id: true },
+      })
+      if (!existing) {
+        return c.json({ error: { code: 'affiliate_not_found', message: 'Affiliate not found' } }, 404)
+      }
+      const updated = await prisma.affiliate.update({
+        where: { id },
+        data: {
+          contentProgramStatus: action === 'approve' ? 'approved' : 'rejected',
+          contentReviewedAt: new Date(),
+          contentReviewedBy: reviewerId,
+          contentRejectionReason: reason,
+        },
+        select: {
+          id: true,
+          contentProgramStatus: true,
+          contentReviewedAt: true,
+          contentReviewedBy: true,
+          contentRejectionReason: true,
+        },
+      })
+      return c.json({ ok: true, affiliate: updated })
+    } catch (error: any) {
+      console.error('[Admin] content-application error:', error)
+      return c.json({ error: { code: 'affiliate_update_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /affiliates/payouts/owed — affiliates with approved, unpaid
+   * commissions (money an admin can release). Powers the admin payout queue.
+   * Payouts are never automatic; an admin must trigger each one.
+   */
+  router.get('/affiliates/payouts/owed', async (c) => {
+    try {
+      const groups: any[] = await prisma.affiliateCommission.groupBy({
+        by: ['affiliateId'],
+        where: { status: 'approved', payoutId: null },
+        _sum: { amountCents: true },
+      })
+      const ids = groups.map((g) => g.affiliateId)
+      if (ids.length === 0) return c.json({ items: [] })
+      const owedById = new Map<string, number>(
+        groups.map((g) => [g.affiliateId, g._sum?.amountCents ?? 0]),
+      )
+
+      const affiliates = await prisma.affiliate.findMany({
+        where: { id: { in: ids } },
+        select: {
+          id: true,
+          userId: true,
+          code: true,
+          payoutStatus: true,
+          stripeCustomAccountId: true,
+          user: { select: { email: true, name: true } },
+        },
+      })
+      const items = affiliates
+        .map((a) => ({
+          affiliateId: a.id,
+          userId: a.userId,
+          code: a.code,
+          email: a.user?.email ?? null,
+          name: a.user?.name ?? null,
+          payoutStatus: a.payoutStatus,
+          payoutReady: Boolean(a.stripeCustomAccountId) && a.payoutStatus === 'verified',
+          owedCents: owedById.get(a.id) ?? 0,
+        }))
+        .sort((x, y) => y.owedCents - x.owedCents)
+      return c.json({ items })
+    } catch (error: any) {
+      console.error('[Admin] payouts/owed error:', error)
+      return c.json({ error: { code: 'affiliate_owed_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /affiliates/:id/payout — manually release a single affiliate's
+   * approved, unpaid commissions via Stripe Connect. This is the ONLY way a
+   * payout happens (there is no payout cron). Ignores the batch minimum since
+   * the admin is explicitly choosing to pay.
+   */
+  router.post('/affiliates/:id/payout', async (c) => {
+    const id = c.req.param('id')
+    try {
+      const existing = await prisma.affiliate.findUnique({ where: { id }, select: { id: true } })
+      if (!existing) {
+        return c.json({ error: { code: 'affiliate_not_found', message: 'Affiliate not found' } }, 404)
+      }
+      const result = await payoutAffiliate(id)
+      if (result.ok) {
+        return c.json({ ok: true, paidCents: result.paidCents, payoutId: result.payoutId })
+      }
+      const status =
+        result.reason === 'nothing_owed' || result.reason === 'below_minimum'
+          ? 400
+          : result.reason === 'unverified_payout' || result.reason === 'local_mode'
+            ? 409
+            : result.reason === 'stripe_unavailable'
+              ? 503
+              : 500
+      return c.json(
+        {
+          error: {
+            code: result.reason,
+            message: result.message ?? payoutReasonMessage(result.reason),
+            owedCents: result.owedCents,
+          },
+        },
+        status,
+      )
+    } catch (error: any) {
+      console.error('[Admin] affiliate payout error:', error)
+      return c.json({ error: { code: 'affiliate_payout_failed', message: error.message } }, 500)
     }
   })
 
