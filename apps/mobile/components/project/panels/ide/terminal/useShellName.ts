@@ -19,7 +19,7 @@
  *     Phase 3 is about chrome. Phase 12+ can wire the real shell-name from
  *     the host once profile-switching is in.
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 export type ShellName = 'zsh' | 'bash' | 'fish' | 'pwsh' | 'cmd' | 'sh' | string
 
@@ -61,18 +61,6 @@ export function useShellName(_sessionId: string): {
 } {
   const [shellName, setShellNameState] = useState<ShellName>(() => readStoredProfile() ?? defaultShellForPlatform())
 
-  // Listen for changes from other components that flip the profile (e.g. the
-  // … menu's "Select Default Profile" submenu). We use a custom storage event
-  // since localStorage 'storage' only fires cross-tab, not in the same tab.
-  useEffect(() => {
-    const handler = (ev: Event) => {
-      const ce = ev as CustomEvent<{ shellName: ShellName }>
-      if (ce.detail?.shellName) setShellNameState(ce.detail.shellName)
-    }
-    window.addEventListener('shogo:terminal:profile-changed', handler)
-    return () => window.removeEventListener('shogo:terminal:profile-changed', handler)
-  }, [])
-
   const setShellName = (next: ShellName) => {
     setShellNameState(next)
     try {
@@ -80,9 +68,7 @@ export function useShellName(_sessionId: string): {
     } catch {
       // localStorage unavailable — keep in-memory state only.
     }
-    window.dispatchEvent(
-      new CustomEvent('shogo:terminal:profile-changed', { detail: { shellName: next } }),
-    )
+
   }
 
   return { shellName, setShellName }

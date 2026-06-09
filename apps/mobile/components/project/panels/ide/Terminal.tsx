@@ -367,6 +367,7 @@ export function Terminal({
           const provisioned = await createPtyClientSession({
             spawn: {
               projectId,
+              shell: existing?.shell ?? shellNameRef.current,
               cols: initial.cols,
               rows: initial.rows,
             },
@@ -579,7 +580,7 @@ export function Terminal({
   // ─── Session add / split / close ────────────────────────────────────
   // "New Terminal": a fresh group → its own tab, rendered as a single pane.
   const addSession = useCallback(() => {
-    const s = makeSession();
+    const s = makeSession(undefined, shellNameRef.current);
     setSessions((prev) => addSessionToList(prev, s));
     setGroupLayouts((prev) => {
       const next = new Map(prev);
@@ -603,7 +604,7 @@ export function Terminal({
         sessionsRef.current.find((x) => x.id === activeIdRef.current) ??
         sessionsRef.current[0];
       if (!current) return;
-      const s = makeSession(current.groupId);
+      const s = makeSession(current.groupId, shellNameRef.current);
       setSessions((prev) => addSplitToList(prev, s));
       setGroupLayouts((prev) => {
         const next = new Map(prev);
@@ -631,7 +632,7 @@ export function Terminal({
         if (result.panelDismissed) {
           onRequestClose?.();
           // Reset to a single fresh tab so the next reopen starts clean.
-          const fresh = makeSession();
+          const fresh = makeSession(undefined, shellNameRef.current);
           setGroupLayouts(new Map([[fresh.groupId, splitLeafNode(fresh.id)]]));
           queueMicrotask(() => {
             setActiveId(fresh.id);
@@ -675,7 +676,7 @@ export function Terminal({
         const result = closeGroupInList(prev, groupId, activeIdRef.current);
         if (result.panelDismissed) {
           onRequestClose?.();
-          const fresh = makeSession();
+          const fresh = makeSession(undefined, shellNameRef.current);
           setGroupLayouts(new Map([[fresh.groupId, splitLeafNode(fresh.id)]]));
           queueMicrotask(() => {
             setActiveId(fresh.id);
@@ -845,7 +846,7 @@ export function Terminal({
   const closeAllSessions = useCallback(() => {
     sessionsRef.current.forEach((s) => disposeSession(s));
     onRequestClose?.();
-    const fresh = makeSession();
+    const fresh = makeSession(undefined, shellNameRef.current);
     setSessions([fresh]);
     setGroupLayouts(new Map([[fresh.groupId, splitLeafNode(fresh.id)]]));
     setActiveId(fresh.id);
@@ -1054,12 +1055,14 @@ export function Terminal({
   }));
 
   const { shellName, setShellName } = useShellName(active?.id ?? "");
+  const shellNameRef = useRef(shellName);
+  shellNameRef.current = shellName;
   const running = active?.status === "ready";
 
   useEffect(() => {
     if (!onControlsChange) return;
     onControlsChange({
-      shellName,
+      shellName: active?.shell ?? shellName,
       running,
       clearDisabled: !active?.client,
       onNew: addSession,
@@ -1080,15 +1083,17 @@ export function Terminal({
       onRunSelectedText: runSelectedText,
       onGoToRecentDirectory: openRecentDir,
       onNewWithProfile: (profile: string) => {
+        shellNameRef.current = profile as ShellName;
         setShellName(profile as ShellName);
         addSession();
       },
       onSplitWithProfile: (profile: string) => {
+        shellNameRef.current = profile as ShellName;
         setShellName(profile as ShellName);
         splitSession("row");
       },
     });
-  }, [shellName, running, active?.id, active?.client, onControlsChange,
+  }, [shellName, active?.shell, running, active?.id, active?.client, onControlsChange,
       scrollPrevCommand, scrollNextCommand, runActiveFile, runSelectedText, openRecentDir, navState]);
 
   useEffect(() => {
