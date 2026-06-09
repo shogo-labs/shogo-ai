@@ -510,10 +510,63 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           saveTimer = setTimeout(flushSnapshot, 500)
         }
 
+        // ── command decorations ──────────────────────────────────────────
+        // Track pending decorations: commandId → { decoration, element }
+        // so we can swap in the correct color once the exit code arrives.
+        interface PendingDecoration {
+          decoration: ReturnType<typeof term.registerDecoration> & object
+          el: HTMLElement | null
+        }
+        const pendingDecorations = new Map<number, PendingDecoration>()
+
+        function renderDot(el: HTMLElement, exitCode: number | null): void {
+          const color = exitCode === null ? '#858585' : exitCode === 0 ? '#4ec9b0' : '#f48771'
+          // Use a filled circle for all states — solid gray while running,
+          // teal on success, red on failure. Hollow circles are invisible
+          // against the dark terminal background.
+          Object.assign(el.style, {
+            display:        'flex',
+            alignItems:     'center',
+            justifyContent: 'center',
+            width:          '100%',
+            height:         '100%',
+            position:       'relative',
+          })
+          el.innerHTML = `<span style="
+            display:block;width:8px;height:8px;border-radius:50%;
+            background:${color};flex-shrink:0;
+            box-shadow:0 0 0 1px ${color}44;
+            transition:background 200ms;
+          "></span>`
+        }
+
         const offTracker = tracker.on((ev) => {
           if (ev.kind === 'command-started') {
             activeCommandRef.current = ev.command.id
             commandOutputRef.current.set(ev.command.id, [])
+
+            // Register a gutter decoration at the prompt row.
+            // Prefer promptMarker (the A-event anchor) over startMarker (C),
+            // but fall back to creating a fresh marker right now if neither
+            // is available — this handles shells that emit only a subset
+            // of the OSC 633 sequence.
+            const rawMarker =
+              (ev.command.promptMarker as any) ??
+              (ev.command.startMarker as any) ??
+              term.registerMarker(0)   // fallback: anchor to current line
+            if (rawMarker) {
+              try {
+                const dec = term.registerDecoration({
+                  marker: rawMarker,
+                  width: 1,
+                  overviewRulerOptions: { color: '#858585cc', position: 'left' },
+                })
+                if (dec) {
+                  dec.onRender((el) => renderDot(el, null))
+                  pendingDecorations.set(ev.command.id, { decoration: dec as any, el: null })
+                }
+              } catch (_e) { /* registerDecoration requires allowProposedApi */ }
+            }
           }
           if (ev.kind === 'cwd-changed') {
             onCwdChangeRef.current?.(ev.cwd)
@@ -521,6 +574,28 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           if (ev.kind === 'command-finished') {
             const output = commandOutputRef.current.get(ev.command.id)?.join('') ?? ''
             activeCommandRef.current = null
+
+            // Update the decoration color to reflect exit code.
+            const pending = pendingDecorations.get(ev.command.id)
+            if (pending) {
+              try {
+                const exitCode = ev.command.exitCode
+                const rulerColor = exitCode === 0 ? '#4ec9b0' : '#f48771'
+                // Re-register onRender so the next viewport repaint picks up
+                // the final color. The existing `onRender` from above is
+                // already replaced — xterm.js calls the latest registered one.
+                ;(pending.decoration as any).onRender((el: HTMLElement) => renderDot(el, exitCode))
+                // Also update the overview ruler (scrollbar dot) color.
+                try {
+                  ;(pending.decoration as any).options = {
+                    ...(pending.decoration as any).options,
+                    overviewRulerOptions: { color: `${rulerColor}cc`, position: 'left' },
+                  }
+                } catch (_) { /* options mutation not supported in all xterm versions */ }
+              } catch (_e) { /* decoration may have been disposed already */ }
+              pendingDecorations.delete(ev.command.id)
+            }
+
             void publishTerminalDiagnostics(projectId, apiBase, ev.command.id, ev.command.exitCode, output, matcherRef.current)
             // Persistence: every finished command is a good time to
             // checkpoint scrollback + cwd to the snapshot store.
@@ -593,6 +668,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           flushSnapshot()
           offData(); offExit(); offTrunc(); offError()
           offTracker()
+          pendingDecorations.clear()
           ro.disconnect()
           batcher.dispose()
           quickFix.dispose()
