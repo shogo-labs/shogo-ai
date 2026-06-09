@@ -166,11 +166,16 @@ function displayCwd(cwd: string | null | undefined): string {
   return v;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function cwdBasename(cwd: string | null | undefined): string {
   const v = displayCwd(cwd);
   if (v === "~") return "~";
   const parts = v.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? v;
+  const last = parts[parts.length - 1] ?? v;
+  // Workspace folders are named by UUID — never show that as subtitle.
+  if (UUID_RE.test(last)) return "";
+  return last;
 }
 
 function wsBaseFromApi(apiBase: string): string {
