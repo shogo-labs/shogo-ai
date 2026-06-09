@@ -9,8 +9,19 @@ const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 const DEFAULT_SQLITE_URL = 'file:./shogo.db'
 
+/**
+ * The app's own database connection string. Prefer SHOGO_APP_DATABASE_URL —
+ * the Shogo-specific name the desktop app uses so the value can't be inherited
+ * by project agents through the generic `DATABASE_URL` they expect (which an
+ * agent's `prisma` command would otherwise run against the app DB). Falls back
+ * to DATABASE_URL for cloud/dev/CI, which still set the generic name.
+ */
+export function appDatabaseUrl(): string | undefined {
+  return process.env.SHOGO_APP_DATABASE_URL ?? process.env.DATABASE_URL
+}
+
 function getSqliteUrl(): string {
-  const url = process.env.DATABASE_URL
+  const url = appDatabaseUrl()
   if (!url || url.startsWith('postgres')) return DEFAULT_SQLITE_URL
   return url
 }
@@ -28,6 +39,8 @@ const ARRAY_FIELDS = new Set([
   'allowedEmails', 'allowedDomains',
   // ModelDefinition alias list (Json? on PG, String? JSON on SQLite)
   'aliases',
+  // User granular admin permission scopes (String[] on PG, JSON String on SQLite)
+  'adminScopes',
 ])
 
 // Fields that are Json? in PostgreSQL but stored as String? in SQLite.
@@ -143,7 +156,7 @@ async function createPrismaClient(): Promise<PrismaClient> {
   const { PrismaClient: PgClient } = await import('../generated/prisma-pg/client')
   const { PrismaPg } = await import('@prisma/adapter-pg')
   const adapter = new PrismaPg({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: appDatabaseUrl(),
     max: parseInt(process.env.PRISMA_POOL_SIZE || '80', 10),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 15_000,

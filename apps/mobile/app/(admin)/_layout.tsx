@@ -11,7 +11,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { View, Text, Pressable, ActivityIndicator, useWindowDimensions } from 'react-native'
+import { View, Text, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import {
@@ -35,6 +35,10 @@ import {
   Heart,
   Store,
   KeyRound,
+  Sparkles,
+  Clapperboard,
+  Activity,
+  Wallet,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -44,26 +48,103 @@ import { usePlatformConfig } from '../../lib/platform-config'
 
 type UserRole = 'user' | 'super_admin'
 
-const BASE_NAV_ITEMS = [
-  { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard' },
-  { href: '/(admin)/users', icon: Users, label: 'Users' },
-  { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
-  { href: '/(admin)/grants', icon: Gift, label: 'Credit grants' },
-  { href: '/(admin)/license-keys', icon: KeyRound, label: 'License keys' },
-  { href: '/(admin)/marketplace', icon: Store, label: 'Marketplace' },
-  { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
-  { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
-  { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
-  { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
-  { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
-  { href: '/(admin)/general', icon: Settings, label: 'General' },
-] as const
+/**
+ * Nav item access markers:
+ *   - `scope`     → visible to super admins OR holders of that admin scope
+ *   - `scopes`    → visible to super admins OR holders of *any* listed scope
+ *   - `anyAdmin`  → visible to anyone with *some* admin access (e.g. Dashboard)
+ *   - neither     → super_admin only
+ */
+type AdminNavItem = {
+  href: string
+  icon: any
+  label: string
+  scope?: string
+  scopes?: readonly string[]
+  anyAdmin?: boolean
+}
 
-const AI_NAV_ITEM = { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' }
+type AdminNavSection = {
+  title: string
+  items: readonly AdminNavItem[]
+}
+
+/**
+ * Sidebar nav, grouped into labeled sections. A section is hidden entirely when
+ * the current user can see none of its items (see canSeeNavItem), so a scoped
+ * analytics/creators admin sees only Overview + Growth & Marketing.
+ */
+const NAV_SECTIONS: readonly AdminNavSection[] = [
+  {
+    title: 'Overview',
+    items: [
+      { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard', scopes: ['analytics:read', 'marketing:read', 'ai:read'] },
+    ],
+  },
+  {
+    title: 'Growth & Marketing',
+    items: [
+      { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics', scopes: ['analytics:read', 'marketing:read'] },
+      { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scope: 'creators:read' },
+      { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM' },
+      { href: '/(admin)/affiliate-payouts', icon: Wallet, label: 'Affiliate payouts' },
+    ],
+  },
+  {
+    title: 'Marketplace',
+    items: [
+      { href: '/(admin)/marketplace', icon: Store, label: 'Marketplace' },
+    ],
+  },
+  {
+    title: 'Platform',
+    items: [
+      { href: '/(admin)/users', icon: Users, label: 'Users' },
+      { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
+      { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
+    ],
+  },
+  {
+    title: 'Billing',
+    items: [
+      { href: '/(admin)/grants', icon: Gift, label: 'Credit grants' },
+      { href: '/(admin)/license-keys', icon: KeyRound, label: 'License keys' },
+    ],
+  },
+  {
+    title: 'Infrastructure',
+    items: [
+      { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
+      { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
+    ],
+  },
+  {
+    title: 'System',
+    items: [
+      { href: '/(admin)/ai-analytics', icon: Activity, label: 'AI Analytics', scopes: ['analytics:read', 'ai:read'] },
+      { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
+      { href: '/(admin)/general', icon: Settings, label: 'General' },
+      { href: '/(admin)/settings', icon: BrainCircuit, label: 'AI' },
+    ],
+  },
+]
+
+/** Flattened nav items, used by the portal entry + per-route access guard. */
+const ALL_NAV_ITEMS: readonly AdminNavItem[] = NAV_SECTIONS.flatMap((s) => s.items)
+
+/** Can the current user see this nav item / access this admin surface? */
+function canSeeNavItem(item: AdminNavItem, isSuperAdmin: boolean, scopes: string[]): boolean {
+  if (isSuperAdmin) return true
+  if (item.anyAdmin) return true
+  if (item.scopes) return item.scopes.some((s) => scopes.includes(s))
+  if (item.scope) return scopes.includes(item.scope)
+  return false
+}
 
 const LOCAL_MAIN_ITEMS = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
-  { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
+  { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics' },
+  { href: '/(admin)/ai-analytics', icon: Activity, label: 'AI Analytics' },
   { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
 ] as const
@@ -80,6 +161,7 @@ function useAdminCheck() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
   const http = useDomainHttp()
   const [role, setRole] = useState<UserRole | null>(null)
+  const [scopes, setScopes] = useState<string[]>([])
   const [checking, setChecking] = useState(true)
 
   useEffect(() => {
@@ -94,6 +176,7 @@ function useAdminCheck() {
       .then((data) => {
         if (!cancelled && data.ok && data.data?.role) {
           setRole(data.data.role as UserRole)
+          setScopes(Array.isArray(data.data.adminScopes) ? data.data.adminScopes : [])
         }
       })
       .catch((e) => console.error('[AdminLayout] Failed to verify admin role:', e))
@@ -103,8 +186,13 @@ function useAdminCheck() {
     return () => { cancelled = true }
   }, [http, isAuthenticated, authLoading, user?.id])
 
+  const isSuperAdmin = role === 'super_admin'
+
   return {
-    isSuperAdmin: role === 'super_admin',
+    isSuperAdmin,
+    scopes,
+    // Portal access: full super admins OR users granted at least one scope.
+    hasAdminAccess: isSuperAdmin || scopes.length > 0,
     isPending: authLoading || checking,
     isAuthenticated,
     userEmail: user?.email,
@@ -167,22 +255,59 @@ function AdminSidebar({
   isDrawer,
   onClose,
   infraHealth = 'unknown',
+  isSuperAdmin = true,
+  scopes = [],
 }: {
   userName?: string | null
   userEmail?: string | null
   isDrawer?: boolean
   onClose?: () => void
   infraHealth?: HealthStatus
+  isSuperAdmin?: boolean
+  scopes?: string[]
 }) {
   const router = useRouter()
   const pathname = usePathname()
   const { features, localMode } = usePlatformConfig()
-  const NAV_ITEMS = localMode ? LOCAL_MAIN_ITEMS : [...BASE_NAV_ITEMS, AI_NAV_ITEM]
+  // Non-local: group nav into sections, filter each by access, and drop any
+  // section left with no visible items. Local mode promotes everyone to
+  // super_admin and uses its own flat nav below.
+  const visibleSections = NAV_SECTIONS
+    .map((section) => ({
+      title: section.title,
+      items: section.items.filter((item) => canSeeNavItem(item, isSuperAdmin, scopes)),
+    }))
+    .filter((section) => section.items.length > 0)
 
   const handleNav = useCallback((href: string) => {
     router.push(href as any)
     onClose?.()
   }, [router, onClose])
+
+  const renderNavRow = (item: AdminNavItem | { href: string; icon: any; label: string }) => {
+    const Icon = item.icon
+    const active = isNavActive(pathname, item.href)
+    return (
+      <Pressable
+        key={item.href}
+        onPress={() => handleNav(item.href)}
+        role="button"
+        accessibilityLabel={item.label}
+        className={cn(
+          'flex-row items-center gap-3 px-3 py-2.5 rounded-lg',
+          active ? 'bg-primary/10' : 'active:bg-muted/50',
+        )}
+      >
+        <Icon size={18} className={active ? 'text-primary' : 'text-muted-foreground'} />
+        <Text className={cn('text-sm font-medium flex-1', active ? 'text-primary' : 'text-foreground')}>
+          {item.label}
+        </Text>
+        {item.label === 'Infrastructure' && infraHealth !== 'unknown' && (
+          <View className={cn('h-2 w-2 rounded-full', HEALTH_DOT_COLOR[infraHealth])} />
+        )}
+      </Pressable>
+    )
+  }
 
   const sidebar = (
     <View className={cn(
@@ -198,7 +323,9 @@ function AdminSidebar({
             </View>
             <View>
               <Text className="text-sm font-bold text-foreground">Admin</Text>
-              <Text className="text-[10px] text-muted-foreground">Super Admin Portal</Text>
+              <Text className="text-[10px] text-muted-foreground">
+                {isSuperAdmin ? 'Super Admin Portal' : 'Admin Portal'}
+              </Text>
             </View>
           </View>
           {isDrawer && (
@@ -210,80 +337,27 @@ function AdminSidebar({
       </View>
 
       {/* Nav Items */}
-      <View className="flex-1 px-3 py-3 gap-0.5">
-        {NAV_ITEMS.map((item) => {
-          const Icon = item.icon
-          const active = isNavActive(pathname, item.href)
-          return (
-            <Pressable
-              key={item.href}
-              onPress={() => handleNav(item.href)}
-              role="button"
-              accessibilityLabel={item.label}
-              className={cn(
-                'flex-row items-center gap-3 px-3 py-2.5 rounded-lg',
-                active
-                  ? 'bg-primary/10'
-                  : 'active:bg-muted/50'
-              )}
-            >
-              <Icon
-                size={18}
-                className={active ? 'text-primary' : 'text-muted-foreground'}
-              />
-              <Text
-                className={cn(
-                  'text-sm font-medium flex-1',
-                  active ? 'text-primary' : 'text-foreground'
-                )}
-              >
-                {item.label}
-              </Text>
-              {item.label === 'Infrastructure' && infraHealth !== 'unknown' && (
-                <View className={cn('h-2 w-2 rounded-full', HEALTH_DOT_COLOR[infraHealth])} />
-              )}
-            </Pressable>
-          )
-        })}
-
-        {localMode && (
-          <>
+      <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 12 }} showsVerticalScrollIndicator={false}>
+        {localMode ? (
+          <View className="gap-0.5">
+            {LOCAL_MAIN_ITEMS.map(renderNavRow)}
             <View className="mx-3 mt-4 mb-2 border-t border-border" />
             <Text className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Settings
             </Text>
-            {LOCAL_SETTINGS_ITEMS.map((item) => {
-              const Icon = item.icon
-              const active = isNavActive(pathname, item.href)
-              return (
-                <Pressable
-                  key={item.href}
-                  onPress={() => handleNav(item.href)}
-                  role="button"
-                  accessibilityLabel={item.label}
-                  className={cn(
-                    'flex-row items-center gap-3 px-3 py-2.5 rounded-lg',
-                    active ? 'bg-primary/10' : 'active:bg-muted/50'
-                  )}
-                >
-                  <Icon
-                    size={18}
-                    className={active ? 'text-primary' : 'text-muted-foreground'}
-                  />
-                  <Text
-                    className={cn(
-                      'text-sm font-medium flex-1',
-                      active ? 'text-primary' : 'text-foreground'
-                    )}
-                  >
-                    {item.label}
-                  </Text>
-                </Pressable>
-              )
-            })}
-          </>
+            {LOCAL_SETTINGS_ITEMS.map(renderNavRow)}
+          </View>
+        ) : (
+          visibleSections.map((section, idx) => (
+            <View key={section.title} className={cn('gap-0.5', idx > 0 && 'mt-3')}>
+              <Text className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {section.title}
+              </Text>
+              {section.items.map(renderNavRow)}
+            </View>
+          ))
         )}
-      </View>
+      </ScrollView>
 
       {/* Footer */}
       <View className="px-3 pb-4 gap-2">
@@ -360,7 +434,12 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/marketplace')) return 'Marketplace Review'
   if (pathname.startsWith('/projects/')) return 'Project Detail'
   if (pathname.includes('projects')) return 'Projects'
-  if (pathname.includes('analytics')) return 'Analytics'
+  if (pathname.includes('ai-analytics')) return 'AI Analytics'
+  if (pathname.includes('analytics')) return 'Marketing Analytics'
+  if (pathname.startsWith('/creators/')) return 'Creator Profile'
+  if (pathname.includes('creators')) return 'Creators'
+  if (pathname.includes('affiliate-payouts')) return 'Affiliate Payouts'
+  if (pathname.includes('affiliate-content')) return 'Affiliate CPM'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
   if (pathname.includes('heartbeats')) return 'Heartbeats'
   if (pathname.startsWith('/evals/')) return 'Eval Detail'
@@ -386,25 +465,40 @@ function AdminLayoutInner() {
   const pathname = usePathname()
   const { width } = useWindowDimensions()
   const isWide = width >= 900
-  const { isSuperAdmin, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
+  const { isSuperAdmin, scopes, hasAdminAccess, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
   const { localMode } = usePlatformConfig()
   const infraHealth = useInfraHealth(isSuperAdmin)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
+  // Portal entry: must be authenticated AND have some admin access.
   useEffect(() => {
-    if (!isPending && (!isAuthenticated || !isSuperAdmin)) {
+    if (!isPending && (!isAuthenticated || !hasAdminAccess)) {
       router.replace('/(app)')
     }
-  }, [isPending, isAuthenticated, isSuperAdmin, router])
+  }, [isPending, isAuthenticated, hasAdminAccess, router])
+
+  // Per-route guard: a partial admin who deep-links to a page they lack
+  // permission for is bounced to their first permitted page (the backend
+  // also 403s those endpoints — this is the matching UX).
+  useEffect(() => {
+    if (isPending || !isAuthenticated || !hasAdminAccess || isSuperAdmin || localMode) return
+    const permitted = ALL_NAV_ITEMS.filter((item) =>
+      canSeeNavItem(item, isSuperAdmin, scopes),
+    )
+    const onPermitted = permitted.some((item) => isNavActive(pathname, item.href))
+    if (!onPermitted && permitted.length > 0) {
+      router.replace(permitted[0].href as any)
+    }
+  }, [isPending, isAuthenticated, hasAdminAccess, isSuperAdmin, localMode, scopes, pathname, router])
 
   useEffect(() => {
-    if (localMode && !isPending && isSuperAdmin) {
+    if (localMode && !isPending && hasAdminAccess) {
       const p = pathname
       if (p === '/' || p === '' || p === '/(admin)' || p === '/index') {
         router.replace('/(admin)/projects' as any)
       }
     }
-  }, [localMode, isPending, isSuperAdmin, pathname, router])
+  }, [localMode, isPending, hasAdminAccess, pathname, router])
 
   useEffect(() => {
     if (isWide) setDrawerOpen(false)
@@ -423,13 +517,19 @@ function AdminLayoutInner() {
     )
   }
 
-  if (!isAuthenticated || !isSuperAdmin) return null
+  if (!isAuthenticated || !hasAdminAccess) return null
 
   return (
     <SafeAreaView className="flex-1 bg-background">
       <View className="flex-1 flex-row">
         {isWide && (
-          <AdminSidebar userName={userName} userEmail={userEmail} infraHealth={infraHealth} />
+          <AdminSidebar
+            userName={userName}
+            userEmail={userEmail}
+            infraHealth={infraHealth}
+            isSuperAdmin={isSuperAdmin}
+            scopes={scopes}
+          />
         )}
 
         <View className="flex-1">
@@ -452,6 +552,8 @@ function AdminLayoutInner() {
           isDrawer
           onClose={() => setDrawerOpen(false)}
           infraHealth={infraHealth}
+          isSuperAdmin={isSuperAdmin}
+          scopes={scopes}
         />
       )}
     </SafeAreaView>

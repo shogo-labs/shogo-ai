@@ -1067,6 +1067,15 @@ export class AgentGateway {
     this.lspManager?.stop()
     this.lspManager = null
 
+    // Kill every backgrounded shell command across all sessions. Exec no
+    // longer has a hard-timeout SIGKILL ceiling, so this shutdown sweep is the
+    // backstop that prevents long-running children from being orphaned when
+    // the gateway goes away.
+    for (const reg of this.commandRegistries.values()) {
+      try { reg.killAll() } catch { /* already gone */ }
+    }
+    this.commandRegistries.clear()
+
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
     await this.skillServerManager.stop()
@@ -1561,9 +1570,47 @@ export class AgentGateway {
     let reg = this.commandRegistries.get(sessionId)
     if (!reg) {
       reg = new CommandRegistry()
+
+      // Re-seed from the persisted snapshot so a thread reopened after a
+      // runtime restart still shows the processes it started. These are stale
+      // (the OS children belonged to the dead gateway) and are flagged as such.
+      const persisted = this.sessionManager.get(sessionId)?.metadata?.runningProcesses
+      if (Array.isArray(persisted) && persisted.length > 0) {
+        reg.restoreStale(persisted)
+      }
+
+      // Persist the running list on every change so it survives reconnect and
+      // restart via .shogo/sessions.db (synced to S3). Process start/exit is
+      // rare relative to message volume, so this write is cheap.
+      reg.onChange((running) => {
+        this.sessionManager.setSessionMetadata(sessionId, {
+          runningProcesses: running.map((p) => ({
+            runId: p.runId,
+            command: p.command,
+            pid: p.pid,
+            sandboxed: p.sandboxed,
+            containerName: p.containerName,
+            startedAt: p.startedAt,
+          })),
+        })
+      })
+
       this.commandRegistries.set(sessionId, reg)
     }
     return reg
+  }
+
+  /** List the background shell processes still running for a chat thread. */
+  listSessionProcesses(sessionId: string): import('./command-registry').RunningProcess[] {
+    return this.getOrCreateCommandRegistry(sessionId).listRunning()
+  }
+
+  /**
+   * Kill (or dismiss, if stale) one tracked background process for a thread.
+   * Returns true if a matching run_id existed.
+   */
+  killSessionProcess(sessionId: string, runId: string): boolean {
+    return this.getOrCreateCommandRegistry(sessionId).kill(runId)
   }
 
   /** Tear down per-session bookkeeping. Kills any backgrounded shell runs. */
@@ -1760,6 +1807,7 @@ export class AgentGateway {
       // workspace singleton; no downside to making it always-on.
       canvasFileWatcher: this.canvasFileWatcher,
       lspManager: this.lspManager ?? undefined,
+      getLspManager: () => this.lspManager,
       fileStateCache: this.fileStateCache,
       agentManager: this.agentManager,
       skillServerManager: this.skillServerManager,
@@ -2093,6 +2141,23 @@ export class AgentGateway {
 
     const turnAbort = new AbortController()
     this.turnAbortControllers.set(sessionId, turnAbort)
+
+    // Stream live process-list updates to the UI for the duration of this turn.
+    // The registry persists across turns; this subscription is per-turn so it
+    // is torn down when the stream closes.
+    let unsubscribeProcesses: (() => void) | undefined
+    if (uiWriter && sessionId) {
+      const reg = this.getOrCreateCommandRegistry(sessionId)
+      // Push the current list immediately so a reconnecting client re-syncs.
+      try {
+        uiWriter.write({ type: 'data-process-update', data: { processes: reg.listRunning() } } as any)
+      } catch { /* writer may already be closed */ }
+      unsubscribeProcesses = reg.onChange((processes) => {
+        try {
+          uiWriter.write({ type: 'data-process-update', data: { processes } } as any)
+        } catch { /* writer closed — onChange teardown happens in finally */ }
+      })
+    }
 
     try {
       const hookEmitter = this.hookEmitter
@@ -2879,6 +2944,7 @@ export class AgentGateway {
         clearInterval(timer)
       }
       toolHeartbeatTimers.clear()
+      unsubscribeProcesses?.()
     }
   }
 

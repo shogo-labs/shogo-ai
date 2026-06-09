@@ -96,6 +96,7 @@ import {
   renderWorkspaceManifestMarkdown,
   shouldSkipManagedSeeding,
   shouldEnforceProjectIdSanity,
+  shouldRunGitWorkspaceSync,
   parseWorkspacePreviewPath,
   buildWorkspacePreviewPath,
   parseWorkspacePreviewUrls,
@@ -1113,6 +1114,26 @@ app.get('/agent/sessions/:sessionId/summary', (c) => {
   const detail = sm.getDetail(c.req.param('sessionId'))
   if (!detail) return c.json({ error: 'session not found' }, 404)
   return c.json(detail)
+})
+
+// List the background shell processes still running for a chat thread. Used by
+// the client to seed its process panel on thread load (live updates arrive via
+// `data-process-update` SSE frames during a turn).
+app.get('/agent/chat/:chatSessionId/processes', (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const processes = agentGateway.listSessionProcesses(c.req.param('chatSessionId'))
+  return c.json({ processes })
+})
+
+// Kill (or dismiss, if stale) one tracked background process for a thread.
+app.post('/agent/chat/:chatSessionId/processes/:runId/kill', (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const killed = agentGateway.killSessionProcess(
+    c.req.param('chatSessionId'),
+    c.req.param('runId'),
+  )
+  if (!killed) return c.json({ error: 'unknown run_id' }, 404)
+  return c.json({ ok: true, processes: agentGateway.listSessionProcesses(c.req.param('chatSessionId')) })
 })
 
 // Read agent config
@@ -2317,6 +2338,29 @@ app.post('/preview/stop', (c) => {
   const pm = getPreviewManager()
   pm.stop()
   return c.json({ ok: true })
+})
+
+// Alias for `/preview/restart`. The code-agent prompt and older SDK/template
+// scripts call `/preview/rebuild`; without this they hit the SPA catch-all
+// and 404. Keep it a thin alias so existing callers just work.
+app.post('/preview/rebuild', async (c) => {
+  const pm = getPreviewManager()
+  const result = await pm.restart()
+  return c.json(result)
+})
+
+// Watcher pause/resume — used by `shogo push` to run prisma generate + db
+// push without racing the schema watcher's own restart (avoids EADDRINUSE).
+app.post('/preview/watch/pause', (c) => {
+  const pm = getPreviewManager()
+  pm.pauseWatchers()
+  return c.json({ ok: true, paused: true })
+})
+
+app.post('/preview/watch/resume', (c) => {
+  const pm = getPreviewManager()
+  pm.resumeWatchers()
+  return c.json({ ok: true, paused: false })
 })
 
 /**
@@ -4791,7 +4835,13 @@ async function initializeEssentials(): Promise<void> {
   // consecutive git pushes fail we re-enable S3 Layer 2 for the rest
   // of the session. On recovery we re-suppress (only in git_only mode;
   // dual_shadow always keeps S3 Layer 2 active).
-  if (!skipInternalSync && wantGitSync) {
+  //
+  // EXTERNAL projects are excluded: the workspace is the user's own repo
+  // and they own their git workflow. With cloudSyncMode defaulting to
+  // git_only (incl. on desktop), an unguarded path would `git add -A &&
+  // git commit` into their working tree every turn and `seedRepoIfAbsent`
+  // a `.git` into folders we don't own. See shouldRunGitWorkspaceSync.
+  if (shouldRunGitWorkspaceSync({ workingMode: WORKING_MODE, workerOwnsSync: skipInternalSync, wantGitSync })) {
     // Cold-start git lifecycle. The pod owns the repo: before the per-turn
     // committer can run, the working tree must be a git repo with the durable
     // history present.

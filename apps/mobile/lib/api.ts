@@ -61,6 +61,100 @@ export function createHttpClient(baseUrl?: string): HttpClient {
 // that aren't covered by the domain stores. They use the SDK HttpClient
 // available via `useDomainHttp()`.
 
+/** An assignable admin permission scope (mirror of apps/api/src/lib/admin-scopes.ts). */
+export interface AdminScopeDef {
+  id: string
+  label: string
+  description: string
+}
+
+/** A marketplace creator's admin stats: marketplace metrics + platform spend. */
+export interface AdminCreatorStat {
+  userId: string
+  displayName: string
+  name: string | null
+  email: string
+  creatorTier: string
+  reputationScore: number
+  verified: boolean
+  totalAgentsPublished: number
+  totalInstalls: number
+  averageAgentRating: number
+  totalVersionsShipped: number
+  followerCount: number
+  totalEarningsUsd: number
+  pendingPayoutUsd: number
+  totalPaidOutUsd: number
+  spendUsd: number
+}
+
+/** A creator's published marketplace listing, summarized for the profile view. */
+export interface AdminCreatorListing {
+  id: string
+  title: string
+  slug: string
+  status: string
+  pricingModel: string
+  installCount: number
+  averageRating: number
+  reviewCount: number
+  currentVersion: string
+  publishedAt: string | null
+}
+
+/** Affiliate-program 360 for a creator who also enrolled as an affiliate. */
+export type ContentProgramStatus = 'none' | 'pending' | 'approved' | 'rejected'
+
+export interface AdminCreatorAffiliate {
+  /** Affiliate row id — needed for admin content-approval + payout actions. */
+  id: string
+  code: string
+  status: string
+  commissionRateBps: number | null
+  contentCpmCents: number | null
+  totalEarningsUsd: number
+  pendingPayoutUsd: number
+  totalPaidOutUsd: number
+  /** Approved, unpaid commissions an admin can release right now, in USD. */
+  payableUsd: number
+  /** Stripe Connect payout state: not_setup | pending_verification | verified. */
+  payoutStatus: string
+  /** Video-creator (content CPM) program application gate. */
+  contentProgramStatus: ContentProgramStatus
+  contentAppliedAt: string | null
+  contentReviewedAt: string | null
+  contentReviewedBy: string | null
+  contentRejectionReason: string | null
+  referralCount: number
+  downlineCount: number
+  referralEarningsUsd: number
+  contentEarningsUsd: number
+}
+
+/** A creator/affiliate owed an approved-but-unpaid balance (admin queue). */
+export interface AdminAffiliateOwed {
+  affiliateId: string
+  userId: string
+  code: string
+  email: string | null
+  name: string | null
+  payoutStatus: string
+  /** True when Stripe Connect is set up + verified (payout can execute now). */
+  payoutReady: boolean
+  owedCents: number
+}
+
+/** Full per-creator profile returned by GET /api/admin/creators/:userId. */
+export interface AdminCreatorDetail extends AdminCreatorStat {
+  bio: string | null
+  avatarUrl: string | null
+  websiteUrl: string | null
+  createdAt: string
+  badges: { badgeType: string; earnedAt: string }[]
+  listings: AdminCreatorListing[]
+  affiliate: AdminCreatorAffiliate | null
+}
+
 export interface CheckoutParams {
   workspaceId: string
   planId: string
@@ -128,6 +222,34 @@ export interface CustomDomainInstruction {
   purpose: 'routing' | 'ssl-validation' | 'ownership-verification'
 }
 
+/** Coarse, user-facing provisioning stage (mirrors the API's `CustomDomainStage`). */
+export type CustomDomainStage =
+  | 'awaiting_dns'
+  | 'validating'
+  | 'issuing'
+  | 'active'
+  | 'failed'
+  | 'stalled'
+
+/** Per-record SSL DV validation status for the panel's ✓/… ticks. */
+export interface CustomDomainValidationRecord {
+  name: string
+  value: string
+  /** `pending` | `processing` | `active` | ... */
+  status: string
+}
+
+/** Server-side DNS verdict for the customer's routing + DCV records. */
+export interface CustomDomainDnsCheck {
+  cname: 'ok' | 'wrong' | 'missing'
+  txt: 'ok' | 'partial' | 'missing'
+  ok: boolean
+  cnameTarget?: string
+  txtFound: number
+  txtExpected: number
+  checkedAt: number
+}
+
 export interface CustomDomain {
   id: string
   hostname: string
@@ -137,6 +259,38 @@ export interface CustomDomain {
   verifiedAt?: number
   /** DNS records still required (returned on add + verify). */
   instructions?: CustomDomainInstruction[]
+  /** Links an apex domain to its `www` companion (undefined for standalone). */
+  groupId?: string
+  /** True when this is the canonical hostname of its group; the other
+   *  variant 308-redirects to it. Standalone domains are always primary. */
+  primary?: boolean
+  /** Hostname visitors are redirected to (the group's primary). Equals
+   *  `hostname` for a standalone/primary domain. */
+  canonicalHostname?: string
+  /** Coarse lifecycle stage for the status timeline. */
+  stage?: CustomDomainStage
+  /** Human-readable explanation of what's happening right now. */
+  message?: string
+  /** Per-record SSL DV validation state (drives green/amber ticks). */
+  validation?: CustomDomainValidationRecord[]
+  /** Latest server-side DNS check (CNAME + `_acme-challenge` TXT). */
+  dns?: CustomDomainDnsCheck
+  /** Issuing CA slug (`google` | `lets_encrypt` | `ssl_com`). */
+  certAuthority?: string
+  /** Friendly CA name for display (e.g. "SSL.com"). */
+  certAuthorityLabel?: string
+  /** When the domain was first added (epoch ms). */
+  createdAt?: number
+  /** When status was last reconciled with Cloudflare (epoch ms). */
+  lastCheckedAt?: number
+  /** When issuance was last re-triggered (epoch ms). */
+  lastRetriggerAt?: number
+  /** How many times issuance has been re-triggered. */
+  retriggerCount?: number
+  /** Server-computed: is the manual "Retrigger" button currently allowed? */
+  canRetrigger?: boolean
+  /** ms the user must wait before a (re)trigger is allowed (cooldown / age). */
+  retriggerCooldownMs?: number
 }
 
 export interface CustomDomainsResponse {
@@ -606,18 +760,38 @@ export const api = {
     return res.data
   },
 
+  /** Add a domain. Returns the whole group: the typed hostname plus its
+   *  auto-created apex/www companion when applicable. */
   async addCustomDomain(http: HttpClient, projectId: string, hostname: string) {
-    const res = await http.post<CustomDomain>(`/api/projects/${projectId}/domains`, { hostname })
-    return res.data
+    const res = await http.post<{ domains: CustomDomain[] }>(`/api/projects/${projectId}/domains`, { hostname })
+    return res.data.domains
   },
 
+  /** Re-check the whole apex/www group's DNS + SSL status. */
   async verifyCustomDomain(http: HttpClient, projectId: string, domainId: string) {
-    const res = await http.post<CustomDomain>(`/api/projects/${projectId}/domains/${domainId}/verify`)
-    return res.data
+    const res = await http.post<{ domains: CustomDomain[] }>(`/api/projects/${projectId}/domains/${domainId}/verify`)
+    return res.data.domains
   },
 
+  /** Manually re-trigger DV validation / cert issuance for a stalled domain
+   *  (DNS correct, past ~30m). Gated server-side; throws on 409/429/502 with
+   *  a friendly message. Returns the updated group. */
+  async retriggerCustomDomain(http: HttpClient, projectId: string, domainId: string) {
+    const res = await http.post<{ domains: CustomDomain[] }>(`/api/projects/${projectId}/domains/${domainId}/retrigger`)
+    return res.data.domains
+  },
+
+  /** Make this hostname the canonical (primary) one for its group; the
+   *  other variant redirects to it. Returns the updated group. */
+  async setPrimaryDomain(http: HttpClient, projectId: string, domainId: string) {
+    const res = await http.patch<{ domains: CustomDomain[] }>(`/api/projects/${projectId}/domains/${domainId}/primary`)
+    return res.data.domains
+  },
+
+  /** Remove a domain (and its apex/www companion). Returns removed ids. */
   async removeCustomDomain(http: HttpClient, projectId: string, domainId: string) {
-    await http.delete(`/api/projects/${projectId}/domains/${domainId}`)
+    const res = await http.delete<{ success: boolean; removedIds: string[] }>(`/api/projects/${projectId}/domains/${domainId}`)
+    return res.data?.removedIds ?? []
   },
 
   // ─── Integrations ────────────────────────────────────────
@@ -1314,7 +1488,81 @@ export const api = {
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {
-    const res = await http.get<{ ok: boolean; data?: { role?: string; onboardingCompleted?: boolean } }>('/api/me')
+    const res = await http.get<{ ok: boolean; data?: { role?: string; adminScopes?: string[]; onboardingCompleted?: boolean } }>('/api/me')
+    return res.data
+  },
+
+  // ─── Admin: scoped access ─────────────────────────────────
+
+  /** The catalog of assignable admin scopes (super_admin only). */
+  async getAdminScopeCatalog(http: HttpClient) {
+    const res = await http.get<{ ok: boolean; data?: AdminScopeDef[] }>('/api/admin/admin-scopes')
+    return res.data?.data ?? []
+  },
+
+  /** Set a user's granular admin scopes (super_admin only). */
+  async setUserAdminAccess(http: HttpClient, userId: string, scopes: string[]) {
+    const res = await http.patch<{
+      ok: boolean
+      data?: { id: string; role: string; adminScopes: string[] }
+    }>(`/api/admin/users/${encodeURIComponent(userId)}/admin-access`, { scopes })
+    return res.data?.data ?? null
+  },
+
+  /** Marketplace creators with marketplace metrics + per-creator platform spend. */
+  async getAdminCreators(http: HttpClient) {
+    const res = await http.get<{ ok: boolean; data?: AdminCreatorStat[] }>('/api/admin/creators')
+    return res.data?.data ?? []
+  },
+
+  /** Full per-creator profile: stats + published listings + affiliate 360. */
+  async getAdminCreatorDetail(http: HttpClient, userId: string) {
+    const res = await http.get<{ ok: boolean; data?: AdminCreatorDetail }>(
+      `/api/admin/creators/${encodeURIComponent(userId)}`,
+    )
+    return res.data?.data ?? null
+  },
+
+  /**
+   * Approve or reject a creator's video-creator (content CPM) program
+   * application. Approval is the gate for both earning and payout of content
+   * commissions. Super-admin only.
+   */
+  async reviewContentApplication(
+    http: HttpClient,
+    affiliateId: string,
+    action: 'approve' | 'reject',
+    reason?: string,
+  ) {
+    const res = await http.post<{ ok: boolean; affiliate?: any; error?: any }>(
+      `/api/admin/affiliates/${encodeURIComponent(affiliateId)}/content-application`,
+      { action, reason },
+    )
+    return res.data
+  },
+
+  /**
+   * Affiliates/creators with approved, unpaid commissions an admin can
+   * release. Powers the admin payout queue. Super-admin only.
+   */
+  async getAffiliatePayoutsOwed(http: HttpClient) {
+    const res = await http.get<{ items?: AdminAffiliateOwed[] }>(
+      '/api/admin/affiliates/payouts/owed',
+    )
+    return res.data?.items ?? []
+  },
+
+  /**
+   * Manually release a single affiliate's approved, unpaid commissions via
+   * Stripe Connect. Payouts are never automatic — this is the only trigger.
+   * Super-admin only. Throws a `ShogoError` on failure so callers can map
+   * `.status`/`.code` to a friendly message.
+   */
+  async payoutAffiliate(http: HttpClient, affiliateId: string) {
+    const res = await http.post<{ ok: boolean; paidCents?: number; payoutId?: string }>(
+      `/api/admin/affiliates/${encodeURIComponent(affiliateId)}/payout`,
+      {},
+    )
     return res.data
   },
 

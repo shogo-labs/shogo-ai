@@ -32,11 +32,28 @@ import { z } from 'zod'
 import { authMiddleware, requireAuth } from '../middleware/auth'
 import { prisma } from '../lib/prisma'
 import {
+  copyResponseHeaders,
+  forwardToUpstream,
+  getUpstreamCredential,
+  isLocalMode,
+} from '../lib/federated-upstream'
+import {
   AffiliateError,
   enrollAffiliate,
   getAffiliateSummary,
   recordClick,
 } from '../services/affiliate.service'
+import {
+  ContentAffiliateError,
+  addSocialAccount,
+  applyToContentProgram,
+  contentErrorStatus,
+  getContentSummary,
+  isContentCpmEnabled,
+  listSocialAccounts,
+  removeSocialAccount,
+  verifyAccount,
+} from '../services/affiliate-content.service'
 
 function isFlagOn(): boolean {
   return process.env.SHOGO_AFFILIATES_NATIVE === 'true'
@@ -84,6 +101,12 @@ const clickSchema = z.object({
 })
 
 // Browser-facing visit recorder (no internal secret). Minimal surface:
+// Content-CPM: connect a social handle for view-based earnings.
+const socialAccountSchema = z.object({
+  platform: z.enum(['instagram', 'tiktok']),
+  handle: z.string().trim().min(1).max(64),
+})
+
 // just the code + a client-generated visitor id. Used by the in-app
 // `/r/<code>` route (apps/mobile/app/r/[code].tsx).
 const visitSchema = z.object({
@@ -95,6 +118,70 @@ const visitSchema = z.object({
 
 export function affiliateRoutes(): Hono {
   const router = new Hono()
+
+  // --------------------------------------------------------------------------
+  // Local mode: proxy the authenticated per-user surface to Shogo Cloud
+  // --------------------------------------------------------------------------
+  //
+  // The affiliate/referral data model lives in the cloud. In local/desktop
+  // mode (`SHOGO_LOCAL_MODE=true`) there is no native affiliate program, so
+  // the unified Creator hub's "Referrals" panel must read/write the user's
+  // REAL cloud affiliate account using the connected `SHOGO_API_KEY`. We
+  // forward the per-user surface (`/affiliates/me*` and `/affiliates/enroll`)
+  // upstream with that credential. Public/internal hooks (click/visit/lookup)
+  // stay local. Without a connected key, the hub gates these out, but we
+  // still return `cloud_signin_required` defensively.
+  //
+  // Registered first so it runs before the `requireAuth` gates below — the
+  // cloud key, not the local session, is what authenticates upstream.
+  router.use('*', async (c, next) => {
+    if (!isLocalMode()) return next()
+    const path = c.req.path
+    const isUserSurface =
+      path.includes('/affiliates/me') || path.endsWith('/affiliates/enroll')
+    if (!isUserSurface) return next()
+
+    const key = await getUpstreamCredential()
+    if (!key) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'cloud_signin_required',
+            message: 'Sign in to Shogo Cloud to use Creator referral features.',
+          },
+        },
+        503,
+      )
+    }
+
+    try {
+      const upstream = await forwardToUpstream(c)
+      if (upstream.status === 401) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'cloud_signin_required',
+              message: 'Sign in to Shogo Cloud to use Creator referral features.',
+            },
+          },
+          503,
+        )
+      }
+      const headers = copyResponseHeaders(upstream)
+      const buf = await upstream.arrayBuffer()
+      return new Response(buf, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers,
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[affiliates] cloud proxy failed:', msg)
+      return c.json({ ok: false, error: { code: 'cloud_unreachable', message: msg } }, 502)
+    }
+  })
 
   // --------------------------------------------------------------------------
   // Public + internal endpoints — no per-user auth
@@ -393,10 +480,12 @@ export function affiliateRoutes(): Hono {
 
   /**
    * POST /api/affiliates/me/stripe-connect/onboard
-   * Reuses the marketplace stripe-connect.service onboarding helper to
-   * create a Stripe Custom account for the affiliate and return an
-   * onboarding URL. Affiliates and CreatorProfiles deliberately get
-   * separate Connect accounts — tax categorization differs.
+   * Ensures the affiliate has a Stripe Express Connect account and returns a
+   * Stripe-hosted onboarding (AccountLink) URL the client opens in a browser.
+   * Stripe collects KYC/identity + bank details on the hosted page and fires
+   * `account.updated` webhooks that flip Affiliate.payoutStatus to 'verified'.
+   * Affiliates and CreatorProfiles deliberately get separate Connect accounts
+   * — tax categorization differs.
    */
   router.post('/affiliates/me/stripe-connect/onboard', async (c) => {
     if (!isFlagOn()) return c.json({ ok: false, error: { code: 'feature_disabled' } }, 503)
@@ -407,18 +496,14 @@ export function affiliateRoutes(): Hono {
     if (!affiliate) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
 
     try {
-      const { createCustomAccountForAffiliate } = await import('../services/stripe-connect.service')
-      // Marketplace's createCustomAccount is keyed on CreatorProfile id;
-      // affiliates need their own thin wrapper that mirrors the shape
-      // but writes the Connect account id back to Affiliate. The wrapper
-      // is added alongside the existing helpers in stripe-connect.service.
-      const onboardUrl = await (createCustomAccountForAffiliate as any)(affiliate.id)
+      const { createAffiliateOnboardingLink } = await import('../services/stripe-connect.service')
+      const onboardUrl = await (createAffiliateOnboardingLink as any)(affiliate.id)
       return c.json({ ok: true, onboardUrl, payoutStatus: affiliate.payoutStatus })
     } catch (err: any) {
-      // The wrapper may not exist yet on stacks that haven't taken
-      // the latest stripe-connect.service patch. Surface a 501 so
-      // the mobile client can prompt for an app update.
-      if (err?.code === 'ERR_MODULE_NOT_FOUND' || /createCustomAccountForAffiliate/.test(String(err))) {
+      // The helper may not exist yet on stacks that haven't taken the
+      // latest stripe-connect.service patch. Surface a 501 so the mobile
+      // client can prompt for an app update.
+      if (err?.code === 'ERR_MODULE_NOT_FOUND' || /createAffiliateOnboardingLink/.test(String(err))) {
         return c.json({ ok: false, error: { code: 'not_implemented', message: 'Affiliate Connect onboarding not enabled on this deployment' } }, 501)
       }
       console.error('[Affiliate onboard] failed', err)
@@ -426,29 +511,191 @@ export function affiliateRoutes(): Hono {
     }
   })
 
-  /** POST /api/affiliates/me/stripe-connect/details — wraps submitPayoutDetails. */
-  router.post('/affiliates/me/stripe-connect/details', async (c) => {
+  /**
+   * GET /api/affiliates/me/stripe-connect/status
+   * Re-reads the affiliate's Express account from Stripe and persists the
+   * derived payoutStatus, returning it. Lets the app reflect a verified
+   * account immediately on return from hosted onboarding without waiting for
+   * the `account.updated` webhook (which remains the source of truth).
+   */
+  router.get('/affiliates/me/stripe-connect/status', async (c) => {
     if (!isFlagOn()) return c.json({ ok: false, error: { code: 'feature_disabled' } }, 503)
     const auth = c.get('auth') as { userId?: string } | undefined
     const userId = auth?.userId
     if (!userId) return c.json({ ok: false, error: { code: 'unauthorized' } }, 401)
     const affiliate = await prisma.affiliate.findUnique({ where: { userId } })
-    if (!affiliate?.stripeCustomAccountId) {
-      return c.json({ ok: false, error: { code: 'not_onboarded' } }, 400)
+    if (!affiliate) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
+    if (!affiliate.stripeCustomAccountId) {
+      return c.json({ ok: true, payoutStatus: affiliate.payoutStatus ?? null, onboarded: false })
     }
-    let body: unknown
-    try { body = await c.req.json() } catch { return c.json({ ok: false, error: { code: 'bad_request' } }, 400) }
 
     try {
-      const { submitPayoutDetailsForAffiliate } = await import('../services/stripe-connect.service')
-      const result = await (submitPayoutDetailsForAffiliate as any)(affiliate.id, body)
-      return c.json({ ok: true, ...result })
+      const { syncAffiliatePayoutStatus } = await import('../services/stripe-connect.service')
+      const payoutStatus = await (syncAffiliatePayoutStatus as any)(affiliate.id)
+      return c.json({ ok: true, payoutStatus, onboarded: true })
     } catch (err: any) {
-      if (/submitPayoutDetailsForAffiliate/.test(String(err))) {
+      if (/syncAffiliatePayoutStatus/.test(String(err))) {
         return c.json({ ok: false, error: { code: 'not_implemented' } }, 501)
       }
-      console.error('[Affiliate connect details] failed', err)
+      console.error('[Affiliate connect status] failed', err)
       return c.json({ ok: false, error: { code: 'server_error', message: err?.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // Content-CPM: social handles + view dashboard
+  // --------------------------------------------------------------------------
+  // Gated on the super-admin DB content toggle (affiliate.content.enabled) in
+  // addition to the master affiliate flag. These all require an enrolled
+  // affiliate.
+
+  /** Resolve the caller's affiliate id, or null. */
+  async function callerAffiliateId(c: any): Promise<string | null> {
+    const auth = c.get('auth') as { userId?: string } | undefined
+    const userId = auth?.userId
+    if (!userId) return null
+    const affiliate = await prisma.affiliate.findUnique({
+      where: { userId },
+      select: { id: true },
+    })
+    return affiliate?.id ?? null
+  }
+
+  async function contentEnabledOr503(c: any): Promise<Response | null> {
+    if (!isFlagOn() || !(await isContentCpmEnabled())) {
+      return c.json({ ok: false, error: { code: 'feature_disabled' } }, 503)
+    }
+    return null
+  }
+
+  /** GET /api/affiliates/me/social-accounts — list connected handles. */
+  router.get('/affiliates/me/social-accounts', async (c) => {
+    const blocked = await contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: true, accounts: [] })
+    const accounts = await listSocialAccounts(affiliateId)
+    return c.json({ ok: true, accounts })
+  })
+
+  /**
+   * POST /api/affiliates/me/social-accounts — connect a handle.
+   * Returns the row including the one-time `verificationCode` the
+   * affiliate must place in their bio before posts start earning.
+   */
+  router.post('/affiliates/me/social-accounts', async (c) => {
+    const blocked = await contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
+
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ ok: false, error: { code: 'bad_request' } }, 400)
+    }
+    const parsed = socialAccountSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json({ ok: false, error: { code: 'invalid_request', issues: parsed.error.issues } }, 400)
+    }
+    try {
+      const account = await addSocialAccount(affiliateId, parsed.data.platform, parsed.data.handle)
+      return c.json({ ok: true, account })
+    } catch (err) {
+      if (err instanceof ContentAffiliateError) {
+        return c.json({ ok: false, error: { code: err.code, message: err.message } }, contentErrorStatus(err.code))
+      }
+      console.error('[Affiliate content connect] failed', err)
+      return c.json({ ok: false, error: { code: 'server_error' } }, 500)
+    }
+  })
+
+  /**
+   * POST /api/affiliates/me/social-accounts/:id/verify — check the bio
+   * for the verification code and mark the account verified on success.
+   */
+  router.post('/affiliates/me/social-accounts/:id/verify', async (c) => {
+    const blocked = await contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
+    const id = c.req.param('id')
+    try {
+      const { verified, account } = await verifyAccount(affiliateId, id)
+      return c.json({ ok: true, verified, account })
+    } catch (err) {
+      if (err instanceof ContentAffiliateError) {
+        return c.json({ ok: false, error: { code: err.code, message: err.message } }, contentErrorStatus(err.code))
+      }
+      console.error('[Affiliate content verify] failed', err)
+      return c.json({ ok: false, error: { code: 'server_error' } }, 500)
+    }
+  })
+
+  /** DELETE /api/affiliates/me/social-accounts/:id — disconnect a handle. */
+  router.delete('/affiliates/me/social-accounts/:id', async (c) => {
+    const blocked = await contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
+    const id = c.req.param('id')
+    try {
+      await removeSocialAccount(affiliateId, id)
+      return c.json({ ok: true })
+    } catch (err) {
+      if (err instanceof ContentAffiliateError) {
+        return c.json({ ok: false, error: { code: err.code, message: err.message } }, contentErrorStatus(err.code))
+      }
+      console.error('[Affiliate content remove] failed', err)
+      return c.json({ ok: false, error: { code: 'server_error' } }, 500)
+    }
+  })
+
+  /**
+   * GET /api/affiliates/me/content — connected accounts, tracked posts +
+   * view counts, and content-CPM earning totals for the dashboard.
+   */
+  router.get('/affiliates/me/content', async (c) => {
+    const blocked = await contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) {
+      return c.json({
+        ok: true,
+        accounts: [],
+        posts: [],
+        totals: { posts: 0, lifetimeViews: 0, paidViews: 0, pendingCents: 0, approvedCents: 0, paidCents: 0 },
+      })
+    }
+    const summary = await getContentSummary(affiliateId)
+    return c.json({ ok: true, ...summary })
+  })
+
+  /**
+   * POST /api/affiliates/me/content/apply — apply to the video-creator
+   * (content CPM) program. Requires at least one connected AND verified
+   * social handle. Moves the affiliate to `pending`; a super admin then
+   * approves/rejects. Earning + payout of content commissions are blocked
+   * until approval.
+   */
+  router.post('/affiliates/me/content/apply', async (c) => {
+    const blocked = await contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
+    try {
+      const { status } = await applyToContentProgram(affiliateId)
+      return c.json({ ok: true, programStatus: status })
+    } catch (err) {
+      if (err instanceof ContentAffiliateError) {
+        return c.json(
+          { ok: false, error: { code: err.code, message: err.message } },
+          contentErrorStatus(err.code),
+        )
+      }
+      console.error('[Affiliate content apply] failed', err)
+      return c.json({ ok: false, error: { code: 'server_error' } }, 500)
     }
   })
 

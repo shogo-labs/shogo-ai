@@ -229,22 +229,7 @@ describe('CommandRegistry', () => {
   })
 })
 
-describe('sandboxExecAsync hard cap', () => {
-  test('hardTimeoutMs SIGKILLs runaway processes', async () => {
-    const handle = sandboxExecAsync({
-      command: 'sleep 30',
-      workspaceDir: tmpdir(),
-      sandboxConfig: { enabled: false },
-      hardTimeoutMs: 300,
-    })
-    const start = Date.now()
-    const result = await handle.done
-    const elapsed = Date.now() - start
-    expect(elapsed).toBeLessThan(5000)
-    expect(result.timedOut).toBe(true)
-    expect(result.killed).toBe(true)
-  })
-
+describe('sandboxExecAsync snapshots', () => {
   test('produces stdout snapshot before completion', async () => {
     if (PLATFORM === 'win32') return
     const handle = sandboxExecAsync({

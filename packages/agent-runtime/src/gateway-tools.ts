@@ -130,6 +130,10 @@ export interface ToolContext {
   }) => Promise<void>
   /** Multi-language LSP manager for read_lints diagnostics */
   lspManager?: import('@shogo/shared-runtime').WorkspaceLSPManager
+  /** Live LSP accessor — the manager starts asynchronously after a deferred
+   *  warmup, so `lspManager` may be a stale undefined snapshot taken before
+   *  startup. read_lints prefers this getter to resolve the current manager. */
+  getLspManager?: () => import('@shogo/shared-runtime').WorkspaceLSPManager | null
   /** Tracks which files the agent has read, their mtimes, and line counts */
   fileStateCache?: FileStateCache
   /** Dynamic sub-agent registry and lifecycle manager */
@@ -384,7 +388,7 @@ function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
 interface BuildExecResultOpts {
   ctx: ToolContext
   entry: CommandEntry
-  finalResult: { exitCode: number; stdout: string; stderr: string; killed: boolean; timedOut: boolean }
+  finalResult: { exitCode: number; stdout: string; stderr: string; killed: boolean }
 }
 
 function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOpts): AgentToolResult<any> {
@@ -404,7 +408,6 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
     sandboxed: entry.handle.sandboxed || undefined,
     cwdReset: meta?.cwdReset || undefined,
     killed: finalResult.killed || undefined,
-    timedOut: finalResult.timedOut || undefined,
     run_id: entry.runId,
   })
 }
@@ -620,6 +623,18 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `Unknown run_id: ${run_id}. The run may have been cleaned up (entries are kept ~10 min after completion).` })
       }
 
+      // Stale entries were restored from a persisted snapshot after a runtime
+      // restart — the underlying OS child is gone and cannot be polled.
+      if (entry.stale) {
+        return textResult({
+          status: 'stale',
+          run_id,
+          command: entry.command,
+          error: 'This process was started before the runtime restarted and can no longer be polled. ' +
+            'It may still be running detached; use exec("kill <pid>") if you need to stop it, or exec_list to review.',
+        })
+      }
+
       // If already done, return final result immediately.
       if (entry.finalResult) {
         return buildCompletedExecResult({ ctx, entry, finalResult: entry.finalResult })
@@ -681,6 +696,28 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
       }
 
       return buildCompletedExecResult({ ctx, entry, finalResult: winner })
+    },
+  }
+}
+
+function createExecListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'exec_list',
+    description:
+      'List the shell commands still running in the background for this thread ' +
+      '(those that returned `status: "running"` from a previous exec call and have ' +
+      'not finished or been killed). Each entry has a run_id, the command, its pid, ' +
+      'and how long it has been running. Use `exec_wait(run_id)` to poll one or ' +
+      '`exec("kill <pid>")` to stop it. Entries flagged `stale: true` were started ' +
+      'before the runtime restarted and can no longer be polled.',
+    label: 'List Running Commands',
+    parameters: Type.Object({}),
+    execute: async () => {
+      const registry = ctx.commandRegistry
+      if (!registry) {
+        return textResult({ error: 'CommandRegistry not available — exec_list requires a sessionId.' })
+      }
+      return textResult({ processes: registry.listRunning() })
     },
   }
 }
@@ -3354,6 +3391,11 @@ function renderAgentDirectUsageBlock(toolkitName: string, toolNames: string[]): 
     `Each tool returns { ok: boolean, data: <result>, error?: string }. For`,
     `list-style endpoints, items often live under \`data.values\` (Jira) or`,
     `\`data.items\` (Google) or similar — index in once and check the shape.`,
+    ``,
+    `Only call tool names from the bound \`tools\` list returned by this`,
+    `connect — do NOT invent or guess slugs (a made-up slug fails with`,
+    `"tool not found"). Pass real resource ids/handles for id parameters;`,
+    `never pass an OAuth token or API key where an id is expected.`,
   ].join('\n')
 }
 
@@ -4639,6 +4681,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   const tools: AgentTool[] = [
     g(createExecTool(ctx), 'shell'),
     g(createExecWaitTool(ctx), 'shell'),
+    g(createExecListTool(ctx), 'shell'),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
     g(createEditFileTool(ctx), 'file_write'),
@@ -4891,13 +4934,19 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
             mainSessionIds: ctx.mainSessionIds,
           })
 
+          const clip = (s: string | undefined, max: number): string => {
+            const v = s || ''
+            if (v.length <= max) return v
+            // Signpost the cut instead of silently dropping the tail.
+            return `${v.substring(0, max)}\n... [${v.length - max} chars truncated — re-run filtering output (head/tail/grep) to see the rest]`
+          }
           return textResult({
             skill: skillName,
             script,
             runtime,
             exitCode: result.exitCode,
-            stdout: result.stdout?.substring(0, 8000) || '',
-            stderr: result.stderr?.substring(0, 4000) || '',
+            stdout: clip(result.stdout, 8000),
+            stderr: clip(result.stderr, 4000),
           })
         } catch (err: any) {
           return textResult({ error: `Script execution failed: ${err.message}` })
@@ -6463,7 +6512,18 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       path: Type.Optional(Type.String({ description: 'File to check (e.g. src/App.tsx or scripts/main.py). Rarely needed — omit to auto-lint the files you just edited this turn.' })),
     }),
     execute: async (_toolCallId, params) => {
-      const lsp = ctx.lspManager
+      // The LSP starts asynchronously (deferred warmup + node_modules wait),
+      // so an early read_lints call used to fail-fast with "not available"
+      // even though the server was seconds from ready. Resolve the live
+      // manager and poll briefly for readiness before giving up.
+      const resolveLsp = () => ctx.getLspManager?.() ?? ctx.lspManager ?? null
+      const LSP_READY_TIMEOUT_MS = Number(process.env.SHOGO_READ_LINTS_WAIT_MS) || 10_000
+      const deadline = Date.now() + LSP_READY_TIMEOUT_MS
+      let lsp = resolveLsp()
+      while ((!lsp || !lsp.isRunning()) && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 250))
+        lsp = resolveLsp()
+      }
       if (!lsp || !lsp.isRunning()) {
         const runtimeErrors = getCanvasRuntimeErrors()
         if (runtimeErrors.length > 0) {
@@ -6471,7 +6531,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
           clearCanvasRuntimeErrors()
           return textResult({ ok: false, error: 'Language server not available.', runtimeErrors: errors })
         }
-        return textResult({ ok: false, error: 'Language server not available. Try again shortly.' })
+        return textResult({ ok: false, error: 'Language server still starting after waiting; type-checking unavailable this turn. Verify with `exec` running `bunx tsc --noEmit` (or the project build) instead, then retry read_lints shortly.' })
       }
 
       const { path: filePath } = params as { path?: string }

@@ -134,6 +134,7 @@ import {
   type SubagentProgress as SubagentProgressType,
   type RecentTool as RecentToolType,
 } from "./subagent"
+import { ProcessPanel, type RunningProcess } from "./ProcessPanel"
 import {
   type ToolCallData,
   getToolCategory as getToolCategoryFromTools,
@@ -1258,6 +1259,68 @@ export const ChatPanel = observer(function ChatPanel({
   const [accumulatedSubagentTools, setAccumulatedSubagentTools] = useState<ToolCallData[]>([])
   const processedProgressEventsRef = useRef<Set<string>>(new Set())
 
+  // Background shell processes the agent has started in this thread that are
+  // still running. Seeded from the runtime's process endpoint on load and kept
+  // live by `data-process-update` SSE frames during a turn.
+  const [runningProcesses, setRunningProcesses] = useState<RunningProcess[]>([])
+  const [killingProcesses, setKillingProcesses] = useState<Set<string>>(new Set())
+
+  const fetchRunningProcesses = useCallback(async () => {
+    const base = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+    if (!base || !currentSessionId) return
+    try {
+      const fetchFn = expoFetch ?? globalThis.fetch
+      const headers: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+      const res = await fetchFn(`${base}/agent/chat/${currentSessionId}/processes`, {
+        headers,
+        credentials: Platform.OS === 'web' ? 'include' : undefined,
+      } as any)
+      if (res.ok) {
+        const data = await res.json()
+        if (Array.isArray(data?.processes)) setRunningProcesses(data.processes as RunningProcess[])
+      }
+    } catch {
+      // Non-critical — the panel just won't seed until the next live frame.
+    }
+  }, [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch])
+
+  const handleKillProcess = useCallback(async (runId: string) => {
+    const base = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+    if (!base || !currentSessionId) return
+    setKillingProcesses((prev) => new Set(prev).add(runId))
+    try {
+      const fetchFn = expoFetch ?? globalThis.fetch
+      const headers: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+      const res = await fetchFn(`${base}/agent/chat/${currentSessionId}/processes/${runId}/kill`, {
+        method: 'POST',
+        headers,
+        credentials: Platform.OS === 'web' ? 'include' : undefined,
+      } as any)
+      if (res.ok) {
+        const data = await res.json()
+        if (Array.isArray(data?.processes)) setRunningProcesses(data.processes as RunningProcess[])
+        else setRunningProcesses((prev) => prev.filter((p) => p.runId !== runId))
+      }
+    } catch {
+      // Ignore — the live frame / next poll will reconcile.
+    } finally {
+      setKillingProcesses((prev) => {
+        const next = new Set(prev)
+        next.delete(runId)
+        return next
+      })
+    }
+  }, [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch])
+
+  // Seed the process list whenever the active thread changes.
+  useEffect(() => {
+    if (!currentSessionId) {
+      setRunningProcesses([])
+      return
+    }
+    fetchRunningProcesses()
+  }, [currentSessionId, fetchRunningProcesses])
+
   // Durable-turn lifecycle tracking. The runtime emits `data-turn-start`
   // exactly once per turn, periodic `data-turn-seq` heartbeats, and
   // `data-turn-complete` exactly once at clean termination. The fetch-level
@@ -1717,6 +1780,15 @@ export const ChatPanel = observer(function ChatPanel({
             }
             return next
           })
+        }
+      }
+
+      // Live background-process list. The runtime emits the full running list
+      // on every change, so we replace state wholesale (no reconciliation).
+      if (dataPart.type === "data-process-update") {
+        const procs = (dataPart as any).data?.processes
+        if (Array.isArray(procs)) {
+          setRunningProcesses(procs as RunningProcess[])
         }
       }
 
@@ -4802,6 +4874,17 @@ export const ChatPanel = observer(function ChatPanel({
             </View>
           )}
           </View>
+
+          {/* Running background processes (visible regardless of streaming) */}
+          {runningProcesses.length > 0 && (
+            <View className="px-4 pb-2">
+              <ProcessPanel
+                processes={runningProcesses}
+                onKill={handleKillProcess}
+                killing={killingProcesses}
+              />
+            </View>
+          )}
 
           {/* Tool Error Banner */}
           {toolErrorBanner && (

@@ -70,7 +70,6 @@ import {
   Key,
   Store,
   Mic,
-  Gift,
   Pin,
   PinOff,
   Archive,
@@ -969,7 +968,10 @@ function UserMenuContent({
 }: UserMenuProps & { onClose: () => void }) {
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   const { theme, setTheme } = useTheme()
-  const { localMode } = usePlatformConfig()
+  const { localMode, shogoKeyConnected } = usePlatformConfig()
+  // The Creator hub (marketplace publishing + referrals) is cloud-backed, so
+  // it only appears in local/desktop mode once signed in to Shogo Cloud.
+  const showCreator = !localMode || !!shogoKeyConnected
 
   return (
     <>
@@ -985,15 +987,17 @@ function UserMenuContent({
           <Text className="text-sm text-foreground">Profile</Text>
         </Pressable>
 
-        <Pressable
-          onPress={() => { onNavigate('/(app)/affiliate'); onClose() }}
-          role="menuitem"
-          accessibilityLabel="Affiliate"
-          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
-        >
-          <Gift size={18} className="text-muted-foreground" />
-          <Text className="text-sm text-foreground">Affiliate</Text>
-        </Pressable>
+        {showCreator && (
+          <Pressable
+            onPress={() => { onNavigate('/(app)/creator'); onClose() }}
+            role="menuitem"
+            accessibilityLabel="Creator"
+            className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+          >
+            <Store size={18} className="text-muted-foreground" />
+            <Text className="text-sm text-foreground">Creator</Text>
+          </Pressable>
+        )}
 
         <Pressable
           onPress={() => setAppearanceOpen(!appearanceOpen)}
@@ -1040,11 +1044,11 @@ function UserMenuContent({
           <Pressable
             onPress={() => { onNavigate('/(admin)'); onClose() }}
             role="menuitem"
-            accessibilityLabel="Super Admin panel"
+            accessibilityLabel="Admin panel"
             className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
           >
             <Shield size={18} className="text-primary" />
-            <Text className="text-sm text-foreground">Super Admin</Text>
+            <Text className="text-sm text-foreground">Admin</Text>
           </Pressable>
         )}
       </View>
@@ -1562,15 +1566,20 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const [processingInvite, setProcessingInvite] = useState<{ id: string; action: 'accept' | 'decline' } | null>(null)
   const [inboxOpen, setInboxOpen] = useState(false)
 
-  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+  // True for full super admins AND partial admins (users granted >=1 scope),
+  // so both see the admin-portal entry. The portal itself filters surfaces.
+  const [hasAdminAccess, setHasAdminAccess] = useState(false)
 
   useEffect(() => {
     if (!user?.id || !http) return
     let cancelled = false
     api.getMe(http)
       .then((data) => {
-        if (!cancelled && data?.ok && data.data?.role === 'super_admin') {
-          setIsSuperAdmin(true)
+        if (cancelled || !data?.ok) return
+        const role = data.data?.role
+        const scopes = Array.isArray(data.data?.adminScopes) ? data.data!.adminScopes! : []
+        if (role === 'super_admin' || scopes.length > 0) {
+          setHasAdminAccess(true)
         }
       })
       .catch((e) => console.error('[AppSidebar] Failed to fetch user role:', e))
@@ -2066,7 +2075,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               user={user}
               onSignOut={handleSignOut}
               onNavigate={(href) => { if (!isWide) onClose?.(); router.push(href as any); onNavPress() }}
-              isSuperAdmin={isSuperAdmin}
+              isSuperAdmin={hasAdminAccess}
               isWide={isWide}
               bottomInset={insets.bottom}
               collapsed={collapsed}

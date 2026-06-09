@@ -257,11 +257,11 @@ export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
       toolCount: 5,
       connected: true,
       authStatus: 'active',
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_UPDATE_ISSUE', 'GITHUB_SEARCH_ISSUES', 'GITHUB_GET_ISSUE'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_UPDATE_ISSUE', 'GITHUB_SEARCH_ISSUES', 'GITHUB_GET_ISSUE'],
       message: 'Installed github with 5 tool(s). Auth is active — connected and ready.',
     },
   },
-  GITHUB_LIST_ISSUES: {
+  GITHUB_LIST_REPOSITORY_ISSUES: {
     type: 'static',
     description: 'List issues in a GitHub repository. Returns an array of issues with title, labels, assignee, and state.',
     paramKeys: ['owner', 'repo', 'state', 'labels', 'per_page'],
@@ -663,11 +663,11 @@ export const PR_REVIEW_MOCKS: ToolMockMap = {
       toolCount: 6,
       connected: true,
       authStatus: 'active',
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_CREATE_ISSUE', 'GITHUB_UPDATE_ISSUE', 'GITHUB_CREATE_PULL_REQUEST_REVIEW', 'GITHUB_GET_PULL_REQUEST'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_CREATE_ISSUE', 'GITHUB_UPDATE_ISSUE', 'GITHUB_CREATE_PULL_REQUEST_REVIEW', 'GITHUB_GET_PULL_REQUEST'],
       message: 'Installed github with 6 tool(s). Auth is active — connected and ready.',
     },
   },
-  GITHUB_LIST_ISSUES: PR_PATTERN_SPEC,
+  GITHUB_LIST_REPOSITORY_ISSUES: PR_PATTERN_SPEC,
   GITHUB_LIST_PULL_REQUESTS: PR_PATTERN_SPEC,
   GITHUB_CREATE_PULL_REQUEST_REVIEW: {
     type: 'static',
@@ -1691,12 +1691,12 @@ export const COMPOSIO_PREFERENCE_MOCKS: ToolMockMap = {
       server: 'composio',
       integration: 'github',
       toolCount: 3,
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_LIST_PULL_REQUESTS'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_LIST_PULL_REQUESTS'],
       authStatus: 'active',
       message: 'Installed github with 3 tool(s). Auth is active.',
     },
   },
-GITHUB_LIST_ISSUES: {
+GITHUB_LIST_REPOSITORY_ISSUES: {
     type: 'static',
     description: 'List issues in a repository.',
     paramKeys: ['repo', 'state'],
@@ -2111,12 +2111,12 @@ export const REAL_DATA_GITHUB_ISSUES_MOCKS: ToolMockMap = {
       server: 'composio',
       integration: 'github',
       toolCount: 3,
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_GET_ISSUE', 'GITHUB_CREATE_ISSUE'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_GET_ISSUE', 'GITHUB_CREATE_ISSUE'],
       authStatus: 'active',
       message: 'Installed github with 3 tool(s). Auth is active.',
     },
   },
-GITHUB_LIST_ISSUES: {
+GITHUB_LIST_REPOSITORY_ISSUES: {
     type: 'static',
     description: 'List issues in a repository.',
     paramKeys: ['repo', 'state'],
@@ -2670,12 +2670,12 @@ export const TOOL_LIFECYCLE_FULL_MOCKS: ToolMockMap = {
     paramKeys: ['name'],
     response: {
       ok: true, server: 'composio', source: 'managed', integration: 'github', toolCount: 3,
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_GET_ISSUE'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_GET_ISSUE'],
       authStatus: 'active',
       message: 'Installed github with 3 tool(s). Auth is active.',
     },
   },
-GITHUB_LIST_ISSUES: {
+GITHUB_LIST_REPOSITORY_ISSUES: {
     type: 'static',
     description: 'List issues in a repository.',
     paramKeys: ['owner', 'repo', 'state'],
@@ -3051,7 +3051,7 @@ export const CICD_PIPELINE_MOCKS: ToolMockMap = {
       toolCount: 3,
       connected: true,
       authStatus: 'active',
-      tools: ['GITHUB_LIST_WORKFLOW_RUNS', 'GITHUB_LIST_ISSUES', 'GITHUB_GET_REPO'],
+      tools: ['GITHUB_LIST_WORKFLOW_RUNS', 'GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_GET_REPO'],
       message: 'Installed github with 3 tool(s). Auth is active — connected and ready.',
     },
   },
@@ -3202,12 +3202,12 @@ export const DATA_PROCESSING_LARGE_ISSUES_MOCKS: ToolMockMap = {
       server: 'composio',
       integration: 'github',
       toolCount: 3,
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_GET_ISSUE'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_GET_ISSUE'],
       authStatus: 'active',
       message: 'Installed github with 3 tool(s). Auth is active.',
     },
   },
-  GITHUB_LIST_ISSUES: {
+  GITHUB_LIST_REPOSITORY_ISSUES: {
     type: 'static',
     paramKeys: ['repo', 'state', 'per_page'],
     hidden: true,
