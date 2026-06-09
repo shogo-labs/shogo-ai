@@ -5,13 +5,14 @@ import type { Terminal as XTerminal } from '@xterm/xterm'
 import type { FitAddon as XFitAddon } from '@xterm/addon-fit'
 import { OscDecoder } from '@shogo/pty-core'
 import { Osc633Tracker, type Command } from './osc633-tracker'
+import { collectPromptAnchors, findPrevPromptLine, findNextPromptLine } from './command-navigation'
 import { StickyScroll } from './sticky-scroll'
 import { WriteBatcher } from './write-batcher'
 import { GpuRenderer } from './gpu-renderer'
 import { SearchController } from './search-popover'
 import { QuickFixManager } from './quick-fix'
 import { CmdKController, CmdKPopover, type LlmClient } from './cmd-k-popover'
-import { CommandHistorySource, trackerAdapter } from './history/history-sources'
+import { CommandHistorySource, trackerAdapter, type HistoryReader } from './history/history-sources'
 import { RecentCommandPicker, useCommandPicker } from './pickers/recent-pickers'
 import { getDesktopBridge } from './desktop-features'
 import { MatcherEngine } from './problem-matchers'
@@ -76,7 +77,11 @@ export interface ShogoTerminalSurfaceHandle {
   /** Interrupt the currently running command (sends SIGINT). */
   interruptCommand?(): CommandResult | null
   /** Get recent commands from the tracker. */
-  getRecentCommands?(limit?: number): Command[]
+  getRecentCommands?(limit?: number): Array<{ command: string }>
+  /** Scroll to the prompt line of the previous command (VS Code ⌘↑). */
+  scrollToPrevCommand?(): void
+  /** Scroll to the prompt line of the next command (VS Code ⌘↓). */
+  scrollToNextCommand?(): void
 }
 
 export interface ShogoTerminalSurfaceProps {
@@ -302,6 +307,8 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
      *   • verdict 'ask'   → render modal, resume on user click
      */
     const runWithApprovalRef = React.useRef<(command: string) => void>(() => undefined)
+    // Keyboard-intercepted command history (current session only, newest first)
+    const keyboardHistoryRef = React.useRef<string[]>([])
     runWithApprovalRef.current = (command: string) => {
       const cmd = command.trim()
       if (!cmd) return
@@ -343,7 +350,20 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
       // controller construction without re-binding.
       onSubmit: (command) => runWithApprovalRef.current(command),
     }))
-    const [commandHistorySource] = React.useState(() => new CommandHistorySource({ tracker: trackerAdapter(tracker) }))
+    const [commandHistorySource] = React.useState(() => {
+      let reader: HistoryReader | undefined
+      try {
+        const bridge = getDesktopBridge()
+        if (bridge.readShellHistory) {
+          reader = {
+            readZsh:  async () => (await bridge.readShellHistory!()).zsh,
+            readBash: async () => (await bridge.readShellHistory!()).bash,
+            readFish: async () => (await bridge.readShellHistory!()).fish,
+          }
+        }
+      } catch { /* non-desktop — no reader */ }
+      return new CommandHistorySource({ tracker: trackerAdapter(tracker), reader })
+    })
     const recentCommandPicker = useCommandPicker({
       source: commandHistorySource,
       onAccept: (entry) => runWithApprovalRef.current(entry.command),
@@ -401,6 +421,104 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         fit.fit()
         termRef.current = term
         fitRef.current = fit
+
+        // ── Gutter overlay ──────────────────────────────────────────────
+        // A fixed-width strip to the LEFT of the xterm canvas that holds
+        // the command-state dots.  We deliberately avoid xterm's
+        // registerDecoration for the visible dot because that API anchors
+        // to cell coordinates — it overlaps terminal text when the WebGL
+        // renderer is active (WebGL canvas ignores CSS padding on .xterm-rows).
+        const GUTTER_W = 16  // px – one cell-width-ish gutter
+        const xtermEl = term.element!  // the .xterm root element
+        xtermEl.style.marginLeft = `${GUTTER_W}px`
+        // Refit so cols are recalculated against the narrower available width
+        requestAnimationFrame(() => { try { fit.fit() } catch {} })
+
+        // The gutterEl is absolutely positioned over the left strip of the
+        // container so it appears to the left of the shifted xterm canvas.
+        container.style.position = container.style.position || 'relative'
+        const gutterEl = document.createElement('div')
+        Object.assign(gutterEl.style, {
+          position: 'absolute',
+          left: '6px',    // container padding-left
+          top:  '4px',    // container padding-top
+          width: `${GUTTER_W}px`,
+          bottom: '4px',
+          zIndex: '30',
+          pointerEvents: 'none',
+          overflow: 'hidden',
+        } as CSSStyleDeclaration)
+        container.appendChild(gutterEl)
+
+        // ── Dot helpers ─────────────────────────────────────────────────
+        // Returns the rendered cell height in CSS pixels (robust across
+        // both WebGL and DOM renderers and different device pixel ratios).
+        function getCellHeight(): number {
+          try {
+            const dims = (term as any)._core?._renderService?.dimensions
+            const h = dims?.css?.cell?.height ?? dims?.device?.cell?.height
+            if (h && h > 4) return h
+          } catch { /* ignore */ }
+          // Fallback: divide available container height by row count
+          const available = (container?.clientHeight ?? 0) - 8
+          return available > 0 && term.rows > 0 ? available / term.rows : (term.options.fontSize ?? 13) * 1.2
+        }
+
+        function makeDotSvg(running: boolean, success: boolean | null): string {
+          if (running || success === null) {
+            // Running → small gray circle
+            return `<svg viewBox="0 0 8 8" width="8" height="8" style="display:block">
+              <circle cx="4" cy="4" r="3.5" fill="#4fc3f7" opacity="0.85"/>
+            </svg>`
+          }
+          if (success) {
+            // Success → VS Code blue circle
+            return `<svg viewBox="0 0 8 8" width="8" height="8" style="display:block">
+              <circle cx="4" cy="4" r="3.5" fill="#007acc" opacity="0.9"/>
+            </svg>`
+          }
+          // Error → red circle with ✕
+          return `<svg viewBox="0 0 10 10" width="10" height="10" style="display:block">
+            <circle cx="5" cy="5" r="4.5" fill="#f14c4c"/>
+            <line x1="3" y1="3" x2="7" y2="7" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="7" y1="3" x2="3" y2="7" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>`
+        }
+
+        interface GutterDot {
+          dotEl:  HTMLDivElement
+          marker: { line: number; isDisposed: boolean }
+          rulerDec: { options: object; onRender?: (fn: (el: HTMLElement) => void) => void } | null
+        }
+        const gutterDots: GutterDot[] = []
+
+        function positionDot(dot: GutterDot): void {
+          if (dot.marker.isDisposed) { dot.dotEl.style.display = 'none'; return }
+          const cellH = getCellHeight()
+          const viewportY = term.buffer.active.viewportY
+          const relRow = dot.marker.line - viewportY
+          const visible = relRow >= 0 && relRow < term.rows
+          dot.dotEl.style.display = visible ? 'flex' : 'none'
+          if (visible) {
+            // Vertically centre the dot at the middle of its terminal row
+            dot.dotEl.style.top = `${relRow * cellH + cellH * 0.5}px`
+          }
+        }
+
+        function repositionAll(): void {
+          for (let i = gutterDots.length - 1; i >= 0; i--) {
+            const dot = gutterDots[i]
+            if (dot.marker.isDisposed) {
+              try { gutterEl.removeChild(dot.dotEl) } catch {}
+              gutterDots.splice(i, 1)
+            } else {
+              positionDot(dot)
+            }
+          }
+        }
+
+        term.onScroll(() => repositionAll())
+        term.onResize(() => requestAnimationFrame(repositionAll))
 
         term.onSelectionChange(() => {
           setHasTerminalSelection((term.getSelection() ?? '').trim().length > 0)
@@ -519,53 +637,45 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         }
         const pendingDecorations = new Map<number, PendingDecoration>()
 
-        function renderDot(el: HTMLElement, exitCode: number | null): void {
-          const color = exitCode === null ? '#858585' : exitCode === 0 ? '#4ec9b0' : '#f48771'
-          // Use a filled circle for all states — solid gray while running,
-          // teal on success, red on failure. Hollow circles are invisible
-          // against the dark terminal background.
-          Object.assign(el.style, {
-            display:        'flex',
-            alignItems:     'center',
-            justifyContent: 'center',
-            width:          '100%',
-            height:         '100%',
-            position:       'relative',
-          })
-          el.innerHTML = `<span style="
-            display:block;width:8px;height:8px;border-radius:50%;
-            background:${color};flex-shrink:0;
-            box-shadow:0 0 0 1px ${color}44;
-            transition:background 200ms;
-          "></span>`
-        }
+
 
         const offTracker = tracker.on((ev) => {
           if (ev.kind === 'command-started') {
             activeCommandRef.current = ev.command.id
             commandOutputRef.current.set(ev.command.id, [])
 
-            // Register a gutter decoration at the prompt row.
-            // Prefer promptMarker (the A-event anchor) over startMarker (C),
-            // but fall back to creating a fresh marker right now if neither
-            // is available — this handles shells that emit only a subset
-            // of the OSC 633 sequence.
+            // ── Gutter dot (visible left-strip marker) ─────────────────
             const rawMarker =
               (ev.command.promptMarker as any) ??
               (ev.command.startMarker as any) ??
-              term.registerMarker(0)   // fallback: anchor to current line
+              term.registerMarker(0)
             if (rawMarker) {
+              const dotEl = document.createElement('div') as HTMLDivElement
+              Object.assign(dotEl.style, {
+                position: 'absolute',
+                left: '0',
+                width: '100%',
+                transform: 'translateY(-50%)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'opacity 150ms',
+              } as CSSStyleDeclaration)
+              dotEl.innerHTML = makeDotSvg(true, null)
+              gutterEl.appendChild(dotEl)
+              const dot: GutterDot = { dotEl, marker: rawMarker, rulerDec: null }
+              gutterDots.push(dot)
+              positionDot(dot)
+              // Overview-ruler indicator in the scrollbar (width:0 → no visible cell overlay)
               try {
                 const dec = term.registerDecoration({
                   marker: rawMarker,
-                  width: 1,
-                  overviewRulerOptions: { color: '#858585cc', position: 'left' },
+                  width: 0,
+                  overviewRulerOptions: { color: '#4fc3f7cc', position: 'left' },
                 })
-                if (dec) {
-                  dec.onRender((el) => renderDot(el, null))
-                  pendingDecorations.set(ev.command.id, { decoration: dec as any, el: null })
-                }
-              } catch (_e) { /* registerDecoration requires allowProposedApi */ }
+                if (dec) dot.rulerDec = dec as any
+              } catch { /* allowProposedApi not enabled */ }
+              pendingDecorations.set(ev.command.id, { decoration: dot.rulerDec as any, el: dotEl })
             }
           }
           if (ev.kind === 'cwd-changed') {
@@ -575,24 +685,22 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             const output = commandOutputRef.current.get(ev.command.id)?.join('') ?? ''
             activeCommandRef.current = null
 
-            // Update the decoration color to reflect exit code.
+            // Update gutter dot color when command finishes
             const pending = pendingDecorations.get(ev.command.id)
             if (pending) {
+              const dotEl = pending.el as HTMLDivElement | null
+              const exitCode = ev.command.exitCode
+              const success = exitCode === null || exitCode === 0
+              if (dotEl) dotEl.innerHTML = makeDotSvg(false, success)
+              // Update overview ruler color
               try {
-                const exitCode = ev.command.exitCode
-                const rulerColor = exitCode === 0 ? '#4ec9b0' : '#f48771'
-                // Re-register onRender so the next viewport repaint picks up
-                // the final color. The existing `onRender` from above is
-                // already replaced — xterm.js calls the latest registered one.
-                ;(pending.decoration as any).onRender((el: HTMLElement) => renderDot(el, exitCode))
-                // Also update the overview ruler (scrollbar dot) color.
-                try {
-                  ;(pending.decoration as any).options = {
+                const rulerColor = success ? '#007acccc' : '#f14c4ccc'
+                ;(pending.decoration as any)?.options &&
+                  ((pending.decoration as any).options = {
                     ...(pending.decoration as any).options,
-                    overviewRulerOptions: { color: `${rulerColor}cc`, position: 'left' },
-                  }
-                } catch (_) { /* options mutation not supported in all xterm versions */ }
-              } catch (_e) { /* decoration may have been disposed already */ }
+                    overviewRulerOptions: { color: rulerColor, position: 'left' },
+                  })
+              } catch { /* immutable in some xterm builds */ }
               pendingDecorations.delete(ev.command.id)
             }
 
@@ -614,7 +722,30 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           flushIntervalMs: 0, // Manual flush only — on command finish + terminal close
         })
 
-        term.onData((data) => client.send(data))
+        // Track commands typed by the user via keyboard intercept.
+        // This gives current-session history even without OSC 633;E shell
+        // integration (which is the only source for tracker.commandLine).
+        let kbBuffer = ''
+        const MAX_KB_HISTORY = 500
+
+        term.onData((data) => {
+          if (data === '\r') {
+            const cmd = kbBuffer.trim()
+            if (cmd) {
+              const hist = keyboardHistoryRef.current
+              const idx = hist.indexOf(cmd)
+              if (idx !== -1) hist.splice(idx, 1)
+              hist.unshift(cmd)
+              if (hist.length > MAX_KB_HISTORY) hist.length = MAX_KB_HISTORY
+            }
+            kbBuffer = ''
+          } else if (data === '\x7f' || data === '\x08') {
+            kbBuffer = kbBuffer.slice(0, -1)
+          } else if (data.length === 1 && data >= ' ') {
+            kbBuffer += data
+          }
+          client.send(data)
+        })
         term.onResize(({ cols, rows }) => client.resize(cols, rows))
 
         const offData = client.onData((bytes) => {
@@ -669,7 +800,14 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             publishedAt: Date.now(),
           })
 
+        // Teardown: remove the gutter overlay and its children
+        const removeGutter = () => {
+          try { container.removeChild(gutterEl) } catch {}
+          gutterDots.length = 0
+        }
+
         cleanup = () => {
+          removeGutter()
           // Phase 10: flush one last snapshot before tearing down the
           // terminal — captures any post-last-command typing/output.
           flushSnapshot()
@@ -776,8 +914,46 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
       sendCommand: (command: string) => bridgeRef.current!.sendCommand(command),
       sendCommandBackground: (command: string) => bridgeRef.current!.sendCommandBackground(command),
       interruptCommand: () => bridgeRef.current!.interruptCommand(),
-      getRecentCommands: (limit?: number) => bridgeRef.current!.getRecentCommands(limit),
-    }), [recentCommandPicker])
+      getRecentCommands: (limit = 500) => {
+        // Keyboard-tracked (current session, always accurate) come first,
+        // then fall back to CommandHistorySource for older/disk commands.
+        const fromSource = bridgeRef.current!.getRecentCommands(limit)
+        const merged: Array<{ command: string }> = []
+        const seen = new Set<string>()
+        for (const cmd of keyboardHistoryRef.current) {
+          if (seen.has(cmd)) continue
+          seen.add(cmd)
+          merged.push({ command: cmd })
+        }
+        for (const e of fromSource) {
+          const cmdText = (e as any).commandLine ?? (e as any).command ?? ''
+          if (!cmdText || seen.has(cmdText)) continue
+          seen.add(cmdText)
+          merged.push({ command: cmdText })
+        }
+        return merged.slice(0, limit)
+      },
+      scrollToPrevCommand: () => {
+        const term = termRef.current
+        if (!term) return
+        const anchors = collectPromptAnchors(tracker)
+        if (anchors.length === 0) return
+        const viewportY = term.buffer.active.viewportY
+        const cur = viewportY + term.buffer.active.cursorY
+        const target = findPrevPromptLine(anchors, cur) ?? findPrevPromptLine(anchors, cur + 1)
+        if (target) term.scrollToLine(target.line)
+      },
+      scrollToNextCommand: () => {
+        const term = termRef.current
+        if (!term) return
+        const anchors = collectPromptAnchors(tracker)
+        if (anchors.length === 0) return
+        const viewportY = term.buffer.active.viewportY
+        const cur = viewportY + term.buffer.active.cursorY
+        const target = findNextPromptLine(anchors, cur)
+        if (target) term.scrollToLine(target.line)
+      },
+    }), [recentCommandPicker, tracker])
 
     const openContextMenu = (ev: React.MouseEvent) => {
       ev.preventDefault()
@@ -910,8 +1086,10 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           scrollbar-width: thin;
         }
         [data-shogo-terminal-surface] .xterm-rows {
-          padding-left: 32px !important;
           padding-right: 6px;
+        }
+        [data-shogo-terminal-surface] .xterm-decoration-container {
+          overflow: visible !important;
         }
         [data-shogo-terminal-surface] .xterm-viewport::-webkit-scrollbar {
           width: 10px;
