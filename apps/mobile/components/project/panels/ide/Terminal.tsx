@@ -11,7 +11,6 @@ import {
   Plus,
   X,
   ChevronDown,
-  Settings,
 } from "lucide-react-native";
 import { API_URL } from "../../../../lib/api";
 import { agentFetch } from "../../../../lib/agent-fetch";
@@ -1401,15 +1400,6 @@ function SessionTabs({
         >
           <ChevronDown size={12} />
         </button>
-        <button
-          type="button"
-          onClick={() => setAutoRepliesOpen(true)}
-          title="Auto-replies…"
-          aria-label="Auto-replies"
-          className="flex shrink-0 items-center gap-1 px-1 py-[6px] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
-        >
-          <Settings size={12} />
-        </button>
       </div>
       <div className="flex shrink-0 items-center gap-2 pr-1">
         <PhasedTerminalHeader
@@ -1652,6 +1642,34 @@ function ConfirmDangerous({
   );
 }
 
+const TERMINAL_SETTINGS_KEY = "shogo.desktop.terminal.settings.v1";
+const TERMINAL_SETTINGS_DEFAULTS = {
+  gpuEnabled: true,
+  shellIntegrationEnabled: true,
+  fontLigatures: true,
+  telemetryEnabled: false,
+  restorePolicy: "silent",
+};
+
+function useTerminalSettings() {
+  const [settings, setSettings] = useState(() => {
+    try {
+      const raw = typeof localStorage !== "undefined" ? localStorage.getItem(TERMINAL_SETTINGS_KEY) : null;
+      return raw ? { ...TERMINAL_SETTINGS_DEFAULTS, ...JSON.parse(raw) } : TERMINAL_SETTINGS_DEFAULTS;
+    } catch {
+      return TERMINAL_SETTINGS_DEFAULTS;
+    }
+  });
+  const set = useCallback((patch: Partial<typeof TERMINAL_SETTINGS_DEFAULTS>) => {
+    setSettings((prev) => {
+      const next = { ...prev, ...patch };
+      try { localStorage.setItem(TERMINAL_SETTINGS_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
+  return { settings, set };
+}
+
 function TerminalSettingsModal({
   onClose,
   onOpenAutoReplies,
@@ -1659,6 +1677,8 @@ function TerminalSettingsModal({
   onClose: () => void;
   onOpenAutoReplies: () => void;
 }): React.ReactElement {
+  const { settings, set } = useTerminalSettings();
+
   return createPortal(
     <div
       role="presentation"
@@ -1687,10 +1707,36 @@ function TerminalSettingsModal({
           </button>
         </div>
         <div className="space-y-3 text-[12px]">
-          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e] p-3">
-            <div className="font-medium text-white">Find and recent commands</div>
-            <p className="mt-1 text-[#9d9d9d]">Use the terminal ⋯ menu for Find and Run Recent Command. Both actions now open the active terminal's native picker.</p>
+          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e]">
+            <div className="border-b border-[#3c3c3c] px-3 py-2">
+              <div className="font-medium text-white">Appearance</div>
+            </div>
+            <SettingsToggle
+              label="Font ligatures"
+              description="Render → => != as connected glyphs (requires Fira Code, JetBrains Mono, or Cascadia Code)"
+              value={settings.fontLigatures}
+              onChange={(v) => set({ fontLigatures: v })}
+            />
+            <SettingsToggle
+              label="GPU renderer"
+              description="Use WebGL for faster terminal rendering. Disable if you see visual glitches."
+              value={settings.gpuEnabled}
+              onChange={(v) => set({ gpuEnabled: v })}
+            />
           </div>
+
+          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e]">
+            <div className="border-b border-[#3c3c3c] px-3 py-2">
+              <div className="font-medium text-white">Shell</div>
+            </div>
+            <SettingsToggle
+              label="Shell integration (OSC 633)"
+              description="Enables command decorations, CWD tracking, and navigate-by-command (⌘↑/↓)."
+              value={settings.shellIntegrationEnabled}
+              onChange={(v) => set({ shellIntegrationEnabled: v })}
+            />
+          </div>
+
           <button
             type="button"
             onClick={onOpenAutoReplies}
@@ -1702,13 +1748,55 @@ function TerminalSettingsModal({
             </span>
             <ChevronDown size={14} className="-rotate-90 text-[#858585]" />
           </button>
-          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e] p-3 text-[#9d9d9d]">
-            Scrollback is enabled with the desktop renderer's long buffer; use mouse wheel or trackpad inside the terminal area to scroll through long output.
+
+          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e] p-3 text-[11px] text-[#9d9d9d]">
+            <span className="font-medium text-[#cccccc]">Find & recent commands</span>
+            <span className="ml-1">— use the terminal ⋯ menu or ⌘F / Ctrl+Alt+R.</span>
+          </div>
+          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e] p-3 text-[11px] text-[#9d9d9d]">
+            Changes to GPU renderer and shell integration take effect on the next terminal spawn.
           </div>
         </div>
       </div>
     </div>,
     document.body,
+  );
+}
+
+function SettingsToggle({
+  label,
+  description,
+  value,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}): React.ReactElement {
+  return (
+    <label className="flex cursor-pointer items-start justify-between gap-3 px-3 py-2 hover:bg-[#2a2a2a]">
+      <div>
+        <div className="text-[12px] text-[#cccccc]">{label}</div>
+        <div className="mt-[2px] text-[10px] text-[#858585]">{description}</div>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={value}
+        onClick={(e) => { e.preventDefault(); onChange(!value); }}
+        className={`relative mt-[2px] inline-block h-4 w-7 shrink-0 rounded-full transition-colors ${
+          value ? "bg-[#0078d4]" : "bg-[#3c3c3c]"
+        }`}
+      >
+        <span
+          aria-hidden
+          className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white transition-transform duration-150 ${
+            value ? "translate-x-3" : "translate-x-0"
+          }`}
+        />
+      </button>
+    </label>
   );
 }
 
