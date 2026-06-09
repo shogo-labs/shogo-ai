@@ -38,6 +38,7 @@ type XFitAddon = import('@xterm/addon-fit').FitAddon
 export interface XtermSessionOptions {
   fontFamily?: string
   fontSize?: number
+  fontLigatures?: boolean
 }
 
 export class XtermSession {
@@ -74,6 +75,7 @@ export class XtermSession {
       ...TERMINAL_DEFAULTS,
       fontFamily: this.opts.fontFamily ?? TERMINAL_DEFAULTS.fontFamily,
       fontSize: this.opts.fontSize ?? TERMINAL_DEFAULTS.fontSize,
+      fontLigatures: this.opts.fontLigatures ?? TERMINAL_DEFAULTS.fontLigatures,
       theme: DARK_PLUS_THEME,
     } as unknown as ConstructorParameters<typeof xtermMod.Terminal>[0])
     this.term = term
@@ -152,6 +154,22 @@ export class XtermSession {
     } catch {
       // Unsupported runtime — keep old font on screen. A subsequent
       // remount picks up the new value via `this.opts`.
+    }
+  }
+
+  /**
+   * Live-update fontLigatures without tearing down the session.
+   * If called before attach(), persists into opts so attach() picks it up.
+   */
+  setLigatures(enabled: boolean): void {
+    if (this.disposed) return
+    ;(this.opts as XtermSessionOptions).fontLigatures = enabled
+    const term = this.term
+    if (!term) return
+    try {
+      ;(term.options as unknown as { fontLigatures: boolean }).fontLigatures = enabled
+    } catch {
+      // Unsupported runtime — takes effect on next remount via this.opts.
     }
   }
 

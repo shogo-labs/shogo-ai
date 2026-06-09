@@ -86,6 +86,7 @@ export interface ShogoTerminalSurfaceProps {
   fontSize?: number
   fontFamily?: string
   enableGpu?: boolean
+  fontLigatures?: boolean
   llm?: LlmClient
   projectId?: string | null
   apiBase?: string
@@ -175,6 +176,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     fontSize = 13,
     fontFamily = 'Menlo, Monaco, Consolas, "Liberation Mono", monospace',
     enableGpu = true,
+    fontLigatures = true,
     llm,
     projectId,
     apiBase,
@@ -384,6 +386,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           cursorBlink: true,
           fontFamily,
           fontSize,
+          fontLigatures,
           scrollback: 10_000,
           theme,
           allowProposedApi: true,
@@ -638,6 +641,17 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         console.warn('[shogo-term] theme update failed:', e)
       }
     }, [theme])
+
+    React.useEffect(() => {
+      const term = termRef.current
+      if (!term) return
+      try {
+        ;(term.options as Record<string, unknown>).fontLigatures = fontLigatures
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[shogo-term] fontLigatures update failed:', e)
+      }
+    }, [fontLigatures])
 
     // Search / ⌘K shortcuts on the host wrapper; ⌘L is handled via
     // xterm.attachCustomKeyEventHandler so it fires while the xterm
