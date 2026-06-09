@@ -21,6 +21,7 @@
 
 import type { Context, Next } from "hono"
 import { getAdminAccess, type AdminScope } from "../lib/admin-scopes"
+import { requireSuperAdmin } from "./super-admin"
 
 function unauthorized(c: Context) {
   return c.json(
@@ -68,4 +69,51 @@ export async function requireAnyAdmin(c: Context, next: Next) {
     return
   }
   return forbidden(c)
+}
+
+/**
+ * Paths under /api/admin/* whose authorization is delegated to a granular
+ * admin scope by the hand-written adminRoutes() router (creators:read,
+ * analytics:read) rather than to blanket super_admin.
+ *
+ * Why this exists: the generated CRUD router (createAdminRoutes) is mounted at
+ * /api/admin with `requireSuperAdmin` applied as `use("*", …)`. Hono folds a
+ * sub-router's wildcard middleware into the *parent* chain for the shared
+ * /api/admin prefix, so that gate also runs for the scoped routes served by
+ * the separately-mounted adminRoutes() router — 403'ing partial admins before
+ * requireAdminScope can run. (Same leakage hazard documented on
+ * userAttributionRoute in routes/admin.ts.) requireSuperAdminUnlessScoped
+ * defers these exact paths so the custom router's per-scope gate decides;
+ * everything else under /api/admin stays super_admin-only.
+ *
+ * Keep in sync with the scope gates in apps/api/src/routes/admin.ts:
+ *   - GET /creators                 → creators:read
+ *   - GET /analytics/*              → analytics:read
+ *   - /analytics/infra-current|history → still super_admin (excluded here)
+ */
+export function isScopeGatedAdminPath(path: string): boolean {
+  if (path === "/api/admin/creators") return true
+  if (
+    path.startsWith("/api/admin/analytics/") &&
+    path !== "/api/admin/analytics/infra-current" &&
+    path !== "/api/admin/analytics/infra-history"
+  ) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Blanket super_admin gate for the generated admin CRUD router, with an
+ * exception for scope-delegated paths (see isScopeGatedAdminPath). For those
+ * paths it calls next(), letting the request fall through to the custom
+ * adminRoutes() router whose requireAdminScope middleware performs the real
+ * authorization. For every other /api/admin/* path it enforces super_admin.
+ */
+export async function requireSuperAdminUnlessScoped(c: Context, next: Next) {
+  if (isScopeGatedAdminPath(c.req.path)) {
+    await next()
+    return
+  }
+  return requireSuperAdmin(c, next)
 }
