@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Admin Analytics - Comprehensive platform analytics with usage tables and chat metrics.
+ * Admin Marketing Analytics - growth & acquisition insights.
  *
- * Converted from apps/web/src/components/admin/pages/AdminAnalytics.tsx
- * Charts are replaced with View-based bar displays and stat cards.
+ * One half of the split analytics surface (see ai-analytics.tsx for the
+ * AI / engineering half). Focuses on funnel, acquisition sources, template
+ * engagement, per-user activity, and the AI insights digest.
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -13,7 +14,6 @@ import {
   Text,
   ScrollView,
   RefreshControl,
-  Switch,
   useWindowDimensions,
 } from 'react-native'
 import {
@@ -25,49 +25,29 @@ import {
   CalendarDays,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { API_URL } from '../../lib/api'
 import {
   type AnalyticsPeriod,
-  type UsageSummaryData,
-  type UsageLogData,
-  type ChatAnalyticsData,
-  type UsageBreakdownData,
   type FunnelData,
   type UserActivityData,
   type TemplateEngagementData,
   type SourceBreakdownData,
   type AIDigestData,
   type AIDigestListItem,
-  type SpendTimeseriesData,
-  type SpendGroupBy,
-  type SpendMetric,
   type ActivityTimeseriesPoint,
   type ActiveUsersTimeseriesPoint,
-  type QualityTimeseriesPoint,
-  type ToolCallAnalyticsData,
-  type WorkspaceActivityData,
-  PeriodSelector,
   StatCard,
-  UsageTableSection,
-  ChatAnalyticsSection,
-  UsageBreakdownSection,
   FunnelSection,
   UserActivityTable,
   TemplateEngagementPanel,
   SourceBreakdownPanel,
   AIInsightsPanel,
-  UsageTimeseriesChart,
   ActivityTrendsChart,
   ActiveUsersTrendChart,
-  QualityTimeseriesChart,
-  ToolCallAnalyticsPanel,
-  WorkspaceActivityTable,
 } from '../../components/analytics/SharedAnalytics'
-
-const API_BASE = `${API_URL}/api/admin`
+import { API_BASE, fetchAdminJson, AnalyticsHeader } from './_analytics-shared'
 
 // =============================================================================
-// Admin-specific types
+// Marketing-specific types
 // =============================================================================
 
 interface OverviewData {
@@ -86,23 +66,7 @@ interface ActiveUsersData {
 }
 
 // =============================================================================
-// API helpers
-// =============================================================================
-
-async function fetchAdminJson<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-  const qs = params ? '?' + new URLSearchParams(params).toString() : ''
-  try {
-    const res = await fetch(`${API_BASE}${path}${qs}`, { credentials: 'include' })
-    if (!res.ok) return null
-    const json = await res.json()
-    return json.data ?? null
-  } catch {
-    return null
-  }
-}
-
-// =============================================================================
-// Admin-specific components
+// Marketing-specific components
 // =============================================================================
 
 function OverviewCards({ data, loading }: { data: OverviewData | null; loading: boolean }) {
@@ -180,33 +144,20 @@ function ActiveUsersSection({ data, loading }: { data: ActiveUsersData | null; l
 // Main Page
 // =============================================================================
 
-export default function AdminAnalyticsPage() {
+export default function AdminMarketingAnalyticsPage() {
   const { width } = useWindowDimensions()
   const isWide = width >= 900
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
-  const [logPage, setLogPage] = useState(1)
   const [userPage, setUserPage] = useState(1)
-  const [summaryPage, setSummaryPage] = useState(1)
-  const [workspacePage, setWorkspacePage] = useState(1)
-  const [spendGroupBy, setSpendGroupBy] = useState<SpendGroupBy>('model')
-  const [spendMetric, setSpendMetric] = useState<SpendMetric>('spend')
   const [refreshing, setRefreshing] = useState(false)
   const [excludeInternal, setExcludeInternal] = useState(true)
   const [generating, setGenerating] = useState(false)
 
   const [overview, setOverview] = useState<{ data: OverviewData | null; loading: boolean }>({ data: null, loading: true })
   const [activeUsers, setActiveUsers] = useState<{ data: ActiveUsersData | null; loading: boolean }>({ data: null, loading: true })
-  const [spendTs, setSpendTs] = useState<{ data: SpendTimeseriesData | null; loading: boolean }>({ data: null, loading: true })
   const [activityTs, setActivityTs] = useState<{ data: ActivityTimeseriesPoint[] | null; loading: boolean }>({ data: null, loading: true })
   const [activeUsersTs, setActiveUsersTs] = useState<{ data: ActiveUsersTimeseriesPoint[] | null; loading: boolean }>({ data: null, loading: true })
-  const [qualityTs, setQualityTs] = useState<{ data: QualityTimeseriesPoint[] | null; loading: boolean }>({ data: null, loading: true })
-  const [toolCalls, setToolCalls] = useState<{ data: ToolCallAnalyticsData | null; loading: boolean }>({ data: null, loading: true })
-  const [workspaceActivity, setWorkspaceActivity] = useState<{ data: WorkspaceActivityData | null; loading: boolean }>({ data: null, loading: true })
-  const [usage, setUsage] = useState<{ data: UsageBreakdownData | null; loading: boolean }>({ data: null, loading: true })
-  const [usageSummary, setUsageSummary] = useState<{ data: UsageSummaryData | null; loading: boolean }>({ data: null, loading: true })
-  const [usageLog, setUsageLog] = useState<{ data: UsageLogData | null; loading: boolean }>({ data: null, loading: true })
-  const [chatStats, setChatStats] = useState<{ data: ChatAnalyticsData | null; loading: boolean }>({ data: null, loading: true })
   const [funnel, setFunnel] = useState<{ data: FunnelData | null; loading: boolean }>({ data: null, loading: true })
   const [userActivity, setUserActivity] = useState<{ data: UserActivityData | null; loading: boolean }>({ data: null, loading: true })
   const [templateEng, setTemplateEng] = useState<{ data: TemplateEngagementData | null; loading: boolean }>({ data: null, loading: true })
@@ -221,16 +172,8 @@ export default function AdminAnalyticsPage() {
 
     setOverview((s) => ({ ...s, loading: true }))
     setActiveUsers((s) => ({ ...s, loading: true }))
-    setSpendTs((s) => ({ ...s, loading: true }))
     setActivityTs((s) => ({ ...s, loading: true }))
     setActiveUsersTs((s) => ({ ...s, loading: true }))
-    setQualityTs((s) => ({ ...s, loading: true }))
-    setToolCalls((s) => ({ ...s, loading: true }))
-    setWorkspaceActivity((s) => ({ ...s, loading: true }))
-    setUsage((s) => ({ ...s, loading: true }))
-    setUsageSummary((s) => ({ ...s, loading: true }))
-    setUsageLog((s) => ({ ...s, loading: true }))
-    setChatStats((s) => ({ ...s, loading: true }))
     setFunnel((s) => ({ ...s, loading: true }))
     setUserActivity((s) => ({ ...s, loading: true }))
     setTemplateEng((s) => ({ ...s, loading: true }))
@@ -238,19 +181,11 @@ export default function AdminAnalyticsPage() {
     setAiDigest((s) => ({ ...s, loading: true }))
     setDigestList((s) => ({ ...s, loading: true }))
 
-    const [ov, au, sp, act, auTs, qual, tc, wsAct, us, uSum, uLog, ch, fn, ua, te, sb, dig, dl] = await Promise.all([
+    const [ov, au, act, auTs, fn, ua, te, sb, dig, dl] = await Promise.all([
       fetchAdminJson<OverviewData>('/analytics/overview'),
       fetchAdminJson<ActiveUsersData>('/analytics/active-users', pParams),
-      fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', { ...pParams, groupBy: spendGroupBy, metric: spendMetric }),
       fetchAdminJson<ActivityTimeseriesPoint[]>('/analytics/activity-timeseries', pParams),
       fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', pParams),
-      fetchAdminJson<QualityTimeseriesPoint[]>('/analytics/quality-timeseries', pParams),
-      fetchAdminJson<ToolCallAnalyticsData>('/analytics/tool-calls', pParams),
-      fetchAdminJson<WorkspaceActivityData>('/analytics/workspace-activity', { ...pParams, page: String(workspacePage), limit: '20' }),
-      fetchAdminJson<UsageBreakdownData>('/analytics/usage', pParams),
-      fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { ...pParams, page: String(summaryPage), limit: '25' }),
-      fetchAdminJson<UsageLogData>('/analytics/usage-log', { ...pParams, page: String(logPage), limit: '50' }),
-      fetchAdminJson<ChatAnalyticsData>('/analytics/chat', pParams),
       fetchAdminJson<FunnelData>('/analytics/funnel', pParams),
       fetchAdminJson<UserActivityData>('/analytics/user-activity', { ...pParams, page: String(userPage), limit: '20' }),
       fetchAdminJson<TemplateEngagementData>('/analytics/template-engagement', { excludeInternal: internalParam }),
@@ -261,23 +196,15 @@ export default function AdminAnalyticsPage() {
 
     setOverview({ data: ov, loading: false })
     setActiveUsers({ data: au, loading: false })
-    setSpendTs({ data: sp, loading: false })
     setActivityTs({ data: act, loading: false })
     setActiveUsersTs({ data: auTs, loading: false })
-    setQualityTs({ data: qual, loading: false })
-    setToolCalls({ data: tc, loading: false })
-    setWorkspaceActivity({ data: wsAct, loading: false })
-    setUsage({ data: us, loading: false })
-    setUsageSummary({ data: uSum, loading: false })
-    setUsageLog({ data: uLog, loading: false })
-    setChatStats({ data: ch, loading: false })
     setFunnel({ data: fn, loading: false })
     setUserActivity({ data: ua, loading: false })
     setTemplateEng({ data: te, loading: false })
     setSourceBreakdown({ data: sb, loading: false })
     setAiDigest({ data: dig, loading: false })
     setDigestList({ data: dl, loading: false })
-  }, [period, logPage, userPage, summaryPage, workspacePage, spendGroupBy, spendMetric, internalParam])
+  }, [period, userPage, internalParam])
 
   const handleGenerateDigest = useCallback(async () => {
     setGenerating(true)
@@ -325,30 +252,15 @@ export default function AdminAnalyticsPage() {
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      {/* Header */}
-      <View className="flex-row items-center justify-between mb-4">
-        <View>
-          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-lg')}>
-            Analytics
-          </Text>
-          <Text className="text-xs text-muted-foreground">
-            Comprehensive platform analytics and insights
-          </Text>
-        </View>
-      </View>
-
-      {/* Period selector + Internal toggle */}
-      <View className="flex-row items-center justify-between mb-4">
-        <PeriodSelector value={period} onChange={setPeriod} />
-        <View className="flex-row items-center gap-2">
-          <Text className="text-[10px] text-muted-foreground">Exclude internal</Text>
-          <Switch
-            value={excludeInternal}
-            onValueChange={setExcludeInternal}
-            trackColor={{ false: '#767577', true: '#6366f1' }}
-          />
-        </View>
-      </View>
+      <AnalyticsHeader
+        title="Marketing Analytics"
+        subtitle="Growth, acquisition, and engagement insights"
+        isWide={isWide}
+        period={period}
+        onPeriodChange={setPeriod}
+        excludeInternal={excludeInternal}
+        onExcludeInternalChange={setExcludeInternal}
+      />
 
       {/* Overview cards */}
       <View className="mb-4">
@@ -365,20 +277,6 @@ export default function AdminAnalyticsPage() {
         <ActiveUsersSection data={activeUsers.data} loading={activeUsers.loading} />
       </View>
 
-      {/* Consumption by model / workspace */}
-      <View className="mb-4">
-        <UsageTimeseriesChart
-          data={spendTs.data}
-          loading={spendTs.loading}
-          groupBy={spendGroupBy}
-          metric={spendMetric}
-          onGroupByChange={setSpendGroupBy}
-          onMetricChange={setSpendMetric}
-          title="Consumption Over Time"
-          subtitle="Daily usage by model, workspace, user, or source"
-        />
-      </View>
-
       {/* Activity + active-user trends: side-by-side on desktop */}
       <View className={cn('gap-4 mb-4', isWide && 'flex-row')}>
         <View className={cn(isWide && 'flex-1')}>
@@ -389,11 +287,6 @@ export default function AdminAnalyticsPage() {
         </View>
       </View>
 
-      {/* Quality & efficiency trend */}
-      <View className="mb-4">
-        <QualityTimeseriesChart data={qualityTs.data} loading={qualityTs.loading} />
-      </View>
-
       {/* User Activity Table */}
       <View className="mb-4">
         <UserActivityTable
@@ -402,21 +295,6 @@ export default function AdminAnalyticsPage() {
           page={userPage}
           onPageChange={setUserPage}
         />
-      </View>
-
-      {/* Workspace Activity Table */}
-      <View className="mb-4">
-        <WorkspaceActivityTable
-          data={workspaceActivity.data}
-          loading={workspaceActivity.loading}
-          page={workspacePage}
-          onPageChange={setWorkspacePage}
-        />
-      </View>
-
-      {/* Tool call analytics */}
-      <View className="mb-4">
-        <ToolCallAnalyticsPanel data={toolCalls.data} loading={toolCalls.loading} />
       </View>
 
       {/* Template + Source: side-by-side on desktop */}
@@ -430,7 +308,7 @@ export default function AdminAnalyticsPage() {
       </View>
 
       {/* AI Insights */}
-      <View className="mb-4">
+      <View>
         <AIInsightsPanel
           data={aiDigest.data}
           digestList={digestList.data}
@@ -439,30 +317,6 @@ export default function AdminAnalyticsPage() {
           onGenerate={handleGenerateDigest}
           generating={generating}
         />
-      </View>
-
-      {/* Usage table (summary + event log) */}
-      <View className="mb-4">
-        <UsageTableSection
-          summaryData={usageSummary.data}
-          logData={usageLog.data}
-          summaryLoading={usageSummary.loading}
-          logLoading={usageLog.loading}
-          onLogPageChange={setLogPage}
-          logPage={logPage}
-          onSummaryPageChange={setSummaryPage}
-          summaryPage={summaryPage}
-        />
-      </View>
-
-      {/* Chat analytics */}
-      <View className="mb-4">
-        <ChatAnalyticsSection data={chatStats.data} loading={chatStats.loading} />
-      </View>
-
-      {/* Usage breakdown */}
-      <View>
-        <UsageBreakdownSection data={usage.data} loading={usage.loading} />
       </View>
     </ScrollView>
   )

@@ -12,7 +12,7 @@
 
 import { Hono } from 'hono'
 import { requireSuperAdmin } from '../middleware/super-admin'
-import { requireAdminScope } from '../middleware/admin-access'
+import { requireAdminScope, requireAnyScope } from '../middleware/admin-access'
 import { ADMIN_SCOPES, isAdminScope, normalizeAdminScopes, type AdminScope } from '../lib/admin-scopes'
 import { authMiddleware, requireAuth } from '../middleware/auth'
 import * as analytics from '../services/analytics.service'
@@ -62,7 +62,43 @@ export function adminRoutes(): Hono {
   // router's blanket super-admin gate doesn't 403 scoped admins first.
   router.use('/creators', requireAdminScope('creators:read'))
   router.use('/creators/*', requireAdminScope('creators:read'))
-  router.use('/analytics/*', requireAdminScope('analytics:read'))
+
+  // Analytics is split across two pages with independent scopes. The broad
+  // entry gate admits any analytics-type scope (so shared endpoints used by
+  // the dashboard — overview, growth, active-users, usage-summary — stay
+  // reachable). The narrower per-path gates below then restrict page-specific
+  // endpoints to the matching scope. `analytics:read` is an umbrella that
+  // passes every gate; super_admin always passes.
+  router.use('/analytics/*', requireAnyScope('analytics:read', 'marketing:read', 'ai:read'))
+
+  // Marketing-only analytics endpoints.
+  for (const p of [
+    '/analytics/funnel',
+    '/analytics/user-activity',
+    '/analytics/template-engagement',
+    '/analytics/source-breakdown',
+    '/analytics/active-users-timeseries',
+    '/analytics/activity-timeseries',
+    '/analytics/ai-digest',
+    '/analytics/ai-digest/*',
+  ]) {
+    router.use(p, requireAnyScope('analytics:read', 'marketing:read'))
+  }
+
+  // AI / engineering-only analytics endpoints.
+  for (const p of [
+    '/analytics/spend-timeseries',
+    '/analytics/quality-timeseries',
+    '/analytics/workspace-activity',
+    '/analytics/tool-calls',
+    '/analytics/chat',
+    '/analytics/usage',
+    '/analytics/usage-log',
+    '/analytics/projects',
+    '/analytics/billing',
+  ]) {
+    router.use(p, requireAnyScope('analytics:read', 'ai:read'))
+  }
 
   // --------------------------------------------------------------------------
   // Platform Analytics (scope-free = platform-wide)

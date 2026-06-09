@@ -56,6 +56,26 @@ export function requireAdminScope(scope: AdminScope) {
 }
 
 /**
+ * Require *any one* of the listed admin scopes. Returns 401 if unauthenticated,
+ * 403 if the user is neither a super_admin nor a holder of at least one of
+ * `scopes`. Use this for surfaces reachable by multiple roles, e.g. shared
+ * analytics endpoints viewable by both marketing and AI/engineering admins.
+ */
+export function requireAnyScope(...scopes: AdminScope[]) {
+  return async (c: Context, next: Next) => {
+    const auth = c.get("auth")
+    if (!auth?.userId) return unauthorized(c)
+
+    const access = await getAdminAccess(auth.userId)
+    if (access.isSuperAdmin || scopes.some((s) => access.scopes.includes(s))) {
+      await next()
+      return
+    }
+    return forbidden(c)
+  }
+}
+
+/**
  * Require *any* admin access: super_admin, or at least one granted scope.
  * Used to gate entry to the admin portal as a whole.
  */

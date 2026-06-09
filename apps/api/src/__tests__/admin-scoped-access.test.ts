@@ -21,6 +21,8 @@ const superAdmin = { id: 'a', role: 'super_admin', adminScopes: [] as string[] }
 const analyticsAdmin = { id: 'b', role: 'user', adminScopes: ['analytics:read'] }
 const creatorsAdmin = { id: 'c', role: 'user', adminScopes: ['creators:read'] }
 const plainUser = { id: 'd', role: 'user', adminScopes: [] as string[] }
+const marketingAdmin = { id: 'e', role: 'user', adminScopes: ['marketing:read'] }
+const aiAdmin = { id: 'f', role: 'user', adminScopes: ['ai:read'] }
 
 let currentUser: typeof superAdmin = superAdmin
 
@@ -53,6 +55,7 @@ mock.module('../middleware/auth', () => ({
 mock.module('../services/analytics.service', () => ({
   getOverviewStats: async () => ({}),
   getUsageAnalytics: async () => ({}),
+  getUserFunnel: async () => ({}),
   getCreatorStats: async () => [],
   getCreatorProfileDetail: async () => ({ userId: 'x', listings: [], affiliate: null }),
 }))
@@ -71,6 +74,7 @@ beforeEach(() => {
 
 const OVERVIEW = '/api/admin/analytics/overview'
 const USAGE = '/api/admin/analytics/usage'
+const FUNNEL = '/api/admin/analytics/funnel'
 const CREATORS = '/api/admin/creators'
 const CREATOR_DETAIL = '/api/admin/creators/u_123'
 const INFRA = '/api/admin/analytics/infra-current'
@@ -85,15 +89,36 @@ describe('admin scoped access matrix', () => {
     expect((await app.request(CREATORS)).status).toBe(200)
   })
 
-  test('analytics:read admin sees analytics but not creators or infra/heartbeats', async () => {
+  test('analytics:read umbrella sees both marketing + ai analytics but not creators or infra/heartbeats', async () => {
     currentUser = analyticsAdmin
     const app = createApp()
     expect((await app.request(OVERVIEW)).status).toBe(200)
     expect((await app.request(USAGE)).status).toBe(200)
+    expect((await app.request(FUNNEL)).status).toBe(200)
     expect((await app.request(CREATORS)).status).toBe(403)
     expect((await app.request(CREATOR_DETAIL)).status).toBe(403)
     expect((await app.request(INFRA)).status).toBe(403)
     expect((await app.request(HEARTBEATS)).status).toBe(403)
+  })
+
+  test('marketing:read admin sees shared + marketing endpoints but not ai-only endpoints', async () => {
+    currentUser = marketingAdmin
+    const app = createApp()
+    expect((await app.request(OVERVIEW)).status).toBe(200)
+    expect((await app.request(FUNNEL)).status).toBe(200)
+    expect((await app.request(USAGE)).status).toBe(403)
+    expect((await app.request(CREATORS)).status).toBe(403)
+    expect((await app.request(INFRA)).status).toBe(403)
+  })
+
+  test('ai:read admin sees shared + ai endpoints but not marketing-only endpoints', async () => {
+    currentUser = aiAdmin
+    const app = createApp()
+    expect((await app.request(OVERVIEW)).status).toBe(200)
+    expect((await app.request(USAGE)).status).toBe(200)
+    expect((await app.request(FUNNEL)).status).toBe(403)
+    expect((await app.request(CREATORS)).status).toBe(403)
+    expect((await app.request(INFRA)).status).toBe(403)
   })
 
   test('creators:read admin sees creators list + detail but not analytics or infra', async () => {

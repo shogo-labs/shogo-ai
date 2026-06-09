@@ -22,7 +22,7 @@ mock.module('../../lib/prisma', () => ({
   },
 }))
 
-const { requireAdminScope, requireAnyAdmin } = await import('../admin-access')
+const { requireAdminScope, requireAnyScope, requireAnyAdmin } = await import('../admin-access')
 
 interface FakeJsonResponse {
   body: any
@@ -114,6 +114,45 @@ describe('requireAdminScope', () => {
     const c = makeContext({ userId: 'user-1' })
     const res = (await requireAdminScope('analytics:read')(c, next)) as FakeJsonResponse
     expect(res.status).toBe(403)
+    expect(nextCalled).toBe(0)
+  })
+})
+
+describe('requireAnyScope', () => {
+  it('returns 401 when auth is missing', async () => {
+    const c = makeContext(undefined)
+    const res = (await requireAnyScope('marketing:read', 'ai:read')(c, next)) as FakeJsonResponse
+    expect(res.status).toBe(401)
+    expect(nextCalled).toBe(0)
+  })
+
+  it('lets a super_admin through for any listed scope', async () => {
+    findUniqueImpl = async () => ({ role: 'super_admin', adminScopes: [] })
+    const c = makeContext({ userId: 'admin-1' })
+    await requireAnyScope('marketing:read', 'ai:read')(c, next)
+    expect(nextCalled).toBe(1)
+  })
+
+  it('lets a user holding any one of the listed scopes through', async () => {
+    findUniqueImpl = async () => ({ role: 'user', adminScopes: ['marketing:read'] })
+    const c = makeContext({ userId: 'user-1' })
+    await requireAnyScope('analytics:read', 'marketing:read')(c, next)
+    expect(nextCalled).toBe(1)
+  })
+
+  it('lets the legacy umbrella analytics:read through any analytics gate', async () => {
+    findUniqueImpl = async () => ({ role: 'user', adminScopes: ['analytics:read'] })
+    const c = makeContext({ userId: 'user-1' })
+    await requireAnyScope('analytics:read', 'ai:read')(c, next)
+    expect(nextCalled).toBe(1)
+  })
+
+  it('forbids a user holding none of the listed scopes', async () => {
+    findUniqueImpl = async () => ({ role: 'user', adminScopes: ['marketing:read'] })
+    const c = makeContext({ userId: 'user-1' })
+    const res = (await requireAnyScope('ai:read')(c, next)) as FakeJsonResponse
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('forbidden')
     expect(nextCalled).toBe(0)
   })
 })
