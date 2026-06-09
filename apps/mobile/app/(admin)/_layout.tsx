@@ -11,7 +11,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { View, Text, Pressable, ActivityIndicator, useWindowDimensions } from 'react-native'
+import { View, Text, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import {
@@ -60,24 +60,71 @@ type AdminNavItem = {
   anyAdmin?: boolean
 }
 
-const BASE_NAV_ITEMS: readonly AdminNavItem[] = [
-  { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard', scope: 'analytics:read' },
-  { href: '/(admin)/users', icon: Users, label: 'Users' },
-  { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
-  { href: '/(admin)/grants', icon: Gift, label: 'Credit grants' },
-  { href: '/(admin)/license-keys', icon: KeyRound, label: 'License keys' },
-  { href: '/(admin)/marketplace', icon: Store, label: 'Marketplace' },
-  { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
-  { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics', scope: 'analytics:read' },
-  { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scope: 'creators:read' },
-  { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM' },
-  { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
-  { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
-  { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
-  { href: '/(admin)/general', icon: Settings, label: 'General' },
+type AdminNavSection = {
+  title: string
+  items: readonly AdminNavItem[]
+}
+
+/**
+ * Sidebar nav, grouped into labeled sections. A section is hidden entirely when
+ * the current user can see none of its items (see canSeeNavItem), so a scoped
+ * analytics/creators admin sees only Overview + Growth & Marketing.
+ */
+const NAV_SECTIONS: readonly AdminNavSection[] = [
+  {
+    title: 'Overview',
+    items: [
+      { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard', scope: 'analytics:read' },
+    ],
+  },
+  {
+    title: 'Growth & Marketing',
+    items: [
+      { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics', scope: 'analytics:read' },
+      { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scope: 'creators:read' },
+      { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM' },
+    ],
+  },
+  {
+    title: 'Marketplace',
+    items: [
+      { href: '/(admin)/marketplace', icon: Store, label: 'Marketplace' },
+    ],
+  },
+  {
+    title: 'Platform',
+    items: [
+      { href: '/(admin)/users', icon: Users, label: 'Users' },
+      { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
+      { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
+    ],
+  },
+  {
+    title: 'Billing',
+    items: [
+      { href: '/(admin)/grants', icon: Gift, label: 'Credit grants' },
+      { href: '/(admin)/license-keys', icon: KeyRound, label: 'License keys' },
+    ],
+  },
+  {
+    title: 'Infrastructure',
+    items: [
+      { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
+      { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
+    ],
+  },
+  {
+    title: 'System',
+    items: [
+      { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
+      { href: '/(admin)/general', icon: Settings, label: 'General' },
+      { href: '/(admin)/settings', icon: BrainCircuit, label: 'AI' },
+    ],
+  },
 ]
 
-const AI_NAV_ITEM: AdminNavItem = { href: '/(admin)/settings', icon: BrainCircuit, label: 'AI' }
+/** Flattened nav items, used by the portal entry + per-route access guard. */
+const ALL_NAV_ITEMS: readonly AdminNavItem[] = NAV_SECTIONS.flatMap((s) => s.items)
 
 /** Can the current user see this nav item / access this admin surface? */
 function canSeeNavItem(item: AdminNavItem, isSuperAdmin: boolean, scopes: string[]): boolean {
@@ -214,17 +261,45 @@ function AdminSidebar({
   const router = useRouter()
   const pathname = usePathname()
   const { features, localMode } = usePlatformConfig()
-  // Local mode promotes everyone to super_admin, so its nav is unfiltered.
-  const NAV_ITEMS = localMode
-    ? LOCAL_MAIN_ITEMS
-    : [...BASE_NAV_ITEMS, AI_NAV_ITEM].filter((item) =>
-        canSeeNavItem(item, isSuperAdmin, scopes),
-      )
+  // Non-local: group nav into sections, filter each by access, and drop any
+  // section left with no visible items. Local mode promotes everyone to
+  // super_admin and uses its own flat nav below.
+  const visibleSections = NAV_SECTIONS
+    .map((section) => ({
+      title: section.title,
+      items: section.items.filter((item) => canSeeNavItem(item, isSuperAdmin, scopes)),
+    }))
+    .filter((section) => section.items.length > 0)
 
   const handleNav = useCallback((href: string) => {
     router.push(href as any)
     onClose?.()
   }, [router, onClose])
+
+  const renderNavRow = (item: AdminNavItem | { href: string; icon: any; label: string }) => {
+    const Icon = item.icon
+    const active = isNavActive(pathname, item.href)
+    return (
+      <Pressable
+        key={item.href}
+        onPress={() => handleNav(item.href)}
+        role="button"
+        accessibilityLabel={item.label}
+        className={cn(
+          'flex-row items-center gap-3 px-3 py-2.5 rounded-lg',
+          active ? 'bg-primary/10' : 'active:bg-muted/50',
+        )}
+      >
+        <Icon size={18} className={active ? 'text-primary' : 'text-muted-foreground'} />
+        <Text className={cn('text-sm font-medium flex-1', active ? 'text-primary' : 'text-foreground')}>
+          {item.label}
+        </Text>
+        {item.label === 'Infrastructure' && infraHealth !== 'unknown' && (
+          <View className={cn('h-2 w-2 rounded-full', HEALTH_DOT_COLOR[infraHealth])} />
+        )}
+      </Pressable>
+    )
+  }
 
   const sidebar = (
     <View className={cn(
@@ -254,80 +329,27 @@ function AdminSidebar({
       </View>
 
       {/* Nav Items */}
-      <View className="flex-1 px-3 py-3 gap-0.5">
-        {NAV_ITEMS.map((item) => {
-          const Icon = item.icon
-          const active = isNavActive(pathname, item.href)
-          return (
-            <Pressable
-              key={item.href}
-              onPress={() => handleNav(item.href)}
-              role="button"
-              accessibilityLabel={item.label}
-              className={cn(
-                'flex-row items-center gap-3 px-3 py-2.5 rounded-lg',
-                active
-                  ? 'bg-primary/10'
-                  : 'active:bg-muted/50'
-              )}
-            >
-              <Icon
-                size={18}
-                className={active ? 'text-primary' : 'text-muted-foreground'}
-              />
-              <Text
-                className={cn(
-                  'text-sm font-medium flex-1',
-                  active ? 'text-primary' : 'text-foreground'
-                )}
-              >
-                {item.label}
-              </Text>
-              {item.label === 'Infrastructure' && infraHealth !== 'unknown' && (
-                <View className={cn('h-2 w-2 rounded-full', HEALTH_DOT_COLOR[infraHealth])} />
-              )}
-            </Pressable>
-          )
-        })}
-
-        {localMode && (
-          <>
+      <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 12 }} showsVerticalScrollIndicator={false}>
+        {localMode ? (
+          <View className="gap-0.5">
+            {LOCAL_MAIN_ITEMS.map(renderNavRow)}
             <View className="mx-3 mt-4 mb-2 border-t border-border" />
             <Text className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Settings
             </Text>
-            {LOCAL_SETTINGS_ITEMS.map((item) => {
-              const Icon = item.icon
-              const active = isNavActive(pathname, item.href)
-              return (
-                <Pressable
-                  key={item.href}
-                  onPress={() => handleNav(item.href)}
-                  role="button"
-                  accessibilityLabel={item.label}
-                  className={cn(
-                    'flex-row items-center gap-3 px-3 py-2.5 rounded-lg',
-                    active ? 'bg-primary/10' : 'active:bg-muted/50'
-                  )}
-                >
-                  <Icon
-                    size={18}
-                    className={active ? 'text-primary' : 'text-muted-foreground'}
-                  />
-                  <Text
-                    className={cn(
-                      'text-sm font-medium flex-1',
-                      active ? 'text-primary' : 'text-foreground'
-                    )}
-                  >
-                    {item.label}
-                  </Text>
-                </Pressable>
-              )
-            })}
-          </>
+            {LOCAL_SETTINGS_ITEMS.map(renderNavRow)}
+          </View>
+        ) : (
+          visibleSections.map((section, idx) => (
+            <View key={section.title} className={cn('gap-0.5', idx > 0 && 'mt-3')}>
+              <Text className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {section.title}
+              </Text>
+              {section.items.map(renderNavRow)}
+            </View>
+          ))
         )}
-      </View>
+      </ScrollView>
 
       {/* Footer */}
       <View className="px-3 pb-4 gap-2">
@@ -405,6 +427,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/projects/')) return 'Project Detail'
   if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('analytics')) return 'Analytics'
+  if (pathname.startsWith('/creators/')) return 'Creator Profile'
   if (pathname.includes('creators')) return 'Creators'
   if (pathname.includes('affiliate-content')) return 'Affiliate CPM'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
@@ -449,7 +472,7 @@ function AdminLayoutInner() {
   // also 403s those endpoints — this is the matching UX).
   useEffect(() => {
     if (isPending || !isAuthenticated || !hasAdminAccess || isSuperAdmin || localMode) return
-    const permitted = [...BASE_NAV_ITEMS, AI_NAV_ITEM].filter((item) =>
+    const permitted = ALL_NAV_ITEMS.filter((item) =>
       canSeeNavItem(item, isSuperAdmin, scopes),
     )
     const onPermitted = permitted.some((item) => isNavActive(pathname, item.href))

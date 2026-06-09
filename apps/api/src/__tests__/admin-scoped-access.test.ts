@@ -54,6 +54,7 @@ mock.module('../services/analytics.service', () => ({
   getOverviewStats: async () => ({}),
   getUsageAnalytics: async () => ({}),
   getCreatorStats: async () => [],
+  getCreatorProfileDetail: async () => ({ userId: 'x', listings: [], affiliate: null }),
 }))
 
 const { adminRoutes } = await import('../routes/admin')
@@ -71,6 +72,7 @@ beforeEach(() => {
 const OVERVIEW = '/api/admin/analytics/overview'
 const USAGE = '/api/admin/analytics/usage'
 const CREATORS = '/api/admin/creators'
+const CREATOR_DETAIL = '/api/admin/creators/u_123'
 const INFRA = '/api/admin/analytics/infra-current'
 const HEARTBEATS = '/api/admin/heartbeats/overview'
 
@@ -89,14 +91,16 @@ describe('admin scoped access matrix', () => {
     expect((await app.request(OVERVIEW)).status).toBe(200)
     expect((await app.request(USAGE)).status).toBe(200)
     expect((await app.request(CREATORS)).status).toBe(403)
+    expect((await app.request(CREATOR_DETAIL)).status).toBe(403)
     expect((await app.request(INFRA)).status).toBe(403)
     expect((await app.request(HEARTBEATS)).status).toBe(403)
   })
 
-  test('creators:read admin sees creators but not analytics or infra', async () => {
+  test('creators:read admin sees creators list + detail but not analytics or infra', async () => {
     currentUser = creatorsAdmin
     const app = createApp()
     expect((await app.request(CREATORS)).status).toBe(200)
+    expect((await app.request(CREATOR_DETAIL)).status).toBe(200)
     expect((await app.request(OVERVIEW)).status).toBe(403)
     expect((await app.request(USAGE)).status).toBe(403)
     expect((await app.request(INFRA)).status).toBe(403)

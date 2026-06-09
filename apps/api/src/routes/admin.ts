@@ -55,8 +55,13 @@ export function adminRoutes(): Hono {
   // super_admin-only so partial admins cannot escalate their own access.
   router.use('/users/:id/admin-access', requireSuperAdmin)
 
-  // Delegable surfaces, gated by granular scopes.
+  // Delegable surfaces, gated by granular scopes. '/creators' is the exact
+  // list path; '/creators/*' covers the per-creator profile detail. Both must
+  // also be deferred by requireSuperAdminUnlessScoped (see
+  // middleware/admin-access.ts isScopeGatedAdminPath) so the generated CRUD
+  // router's blanket super-admin gate doesn't 403 scoped admins first.
   router.use('/creators', requireAdminScope('creators:read'))
+  router.use('/creators/*', requireAdminScope('creators:read'))
   router.use('/analytics/*', requireAdminScope('analytics:read'))
 
   // --------------------------------------------------------------------------
@@ -1057,6 +1062,26 @@ export function adminRoutes(): Hono {
     }
   })
 
+  /**
+   * GET /creators/:userId - Full per-creator profile: marketplace stats,
+   * published listings, lifetime platform spend, and (when enrolled) the
+   * affiliate/commission 360. Keyed by the creator's userId. 404 when the
+   * user has no CreatorProfile.
+   */
+  router.get('/creators/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId')
+      const data = await analytics.getCreatorProfileDetail(userId)
+      if (!data) {
+        return c.json({ error: { code: 'not_found', message: 'Creator not found' } }, 404)
+      }
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Creator profile error:', error)
+      return c.json({ error: { code: 'creator_profile_failed', message: error.message } }, 500)
+    }
+  })
+
   // --------------------------------------------------------------------------
   // Affiliate content-CPM settings (super-admin; gated by /affiliate-content/*)
   //
@@ -1204,20 +1229,6 @@ export function adminRoutes(): Hono {
     } catch (error: any) {
       console.error('[Admin] Set admin access error:', error)
       return c.json({ error: { code: 'admin_access_failed', message: error.message } }, 500)
-    }
-  })
-
-  /**
-   * GET /creators - Marketplace creators with denormalized marketplace metrics
-   * joined to their lifetime platform usage spend.
-   */
-  router.get('/creators', async (c) => {
-    try {
-      const data = await analytics.getCreatorStats()
-      return c.json({ ok: true, data })
-    } catch (error: any) {
-      console.error('[Admin] Creator stats error:', error)
-      return c.json({ error: { code: 'creators_failed', message: error.message } }, 500)
     }
   })
 
