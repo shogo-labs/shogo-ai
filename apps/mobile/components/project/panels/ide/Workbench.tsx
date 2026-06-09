@@ -364,6 +364,23 @@ export function Workbench({
     window.setTimeout(() => setToast(null), ms);
   }, []);
 
+  // Keep the terminal panel informed of the active editor file and selection
+  // so "Run Active File" and "Run Selected Text" work without prop-drilling.
+  useEffect(() => {
+    ideBottomPanelStore.setActiveEditorPath(active?.path ?? null);
+  }, [active?.path]);
+
+  useEffect(() => {
+    ideBottomPanelStore.setGetEditorSelection(() => {
+      const ed = editorRefs.current[activeGroup?.id ?? ""];
+      if (!ed) return null;
+      const selection = ed.getSelection();
+      if (!selection || selection.isEmpty()) return null;
+      return ed.getModel()?.getValueInRange(selection) ?? null;
+    });
+    return () => { ideBottomPanelStore.setGetEditorSelection(null); };
+  });
+
   // ─── Virtual tree (wraps each root as an expandable "workspace" entry) ──
   const virtualTree = useMemo<TreeNode[]>(
     () =>
