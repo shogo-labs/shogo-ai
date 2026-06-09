@@ -1017,6 +1017,15 @@ model ChatSession {
   updatedAt           DateTime    @default(now()) @updatedAt
   lastActiveAt        DateTime    @default(now())
 
+  // BETA: per-chat git worktrees. When the project's gitWorktreesEnabled flag
+  // is on, each chat runs on its own branch in an isolated worktree. These
+  // mirror the runtime worktree lifecycle for the UI (branch chip + merge
+  // state). null when the feature is off / no worktree has been created.
+  worktreeBranch      String?
+  // active | merging | merged
+  worktreeStatus      String?
+  worktreePath        String?
+
   // Relations - contextId can reference FeatureSession or Project
   project          Project?             @relation(fields: [contextId], references: [id], onDelete: Cascade)
   workspace        Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

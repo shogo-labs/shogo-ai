@@ -17,6 +17,23 @@ export const FORK_BOILERPLATE_TAG = 'fork-boilerplate'
 export const FORK_DIRECTIVE_PREFIX = 'Your directive: '
 
 /**
+ * BETA: per-chat git worktrees guidance. Appended to the system prompt only
+ * when the feature is enabled for the project so agents understand that they
+ * are working on an isolated branch and how to coordinate with sibling chats.
+ */
+export const WORKTREE_GUIDE = [
+  '## Per-Chat Git Worktrees (Beta)',
+  '',
+  'This project runs in per-chat git worktree mode. Important implications:',
+  '',
+  '- You are working in an ISOLATED git worktree on your own branch (`shogo/chat/<chatSessionId>`). Your edits do NOT affect `main` or other chats until they are merged.',
+  '- Other chats in this project may be running their own agents in parallel on their own branches.',
+  '- Use the `worktree_list` tool to see what sibling chats are working on (their branches, changed files, and how far ahead/behind `main` they are). Check it before large or wide-reaching changes so you can anticipate merge conflicts and avoid duplicating or clobbering parallel work.',
+  '- Your work is committed automatically at the end of each turn. You do not need to commit manually.',
+  '- Do NOT switch branches, run `git merge`, or `git checkout` other branches yourself — merging back into `main` is handled by the "Mark done & merge" flow the user triggers. When that runs you may be asked to resolve merge conflicts in your worktree; resolve them carefully and only ask the user (via `ask_user`) when a conflict is genuinely ambiguous.',
+].join('\n')
+
+/**
  * Wraps a user prompt in fork-mode boilerplate instructions.
  * The `<fork-boilerplate>` tag doubles as both instructions and the recursive
  * fork detection marker (see `isInForkChild`).

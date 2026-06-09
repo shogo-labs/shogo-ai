@@ -87,7 +87,8 @@ import {
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
-import { deriveApiUrl, getInternalHeaders, postCheckpointRecord } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus } from './internal-api'
+import { WORKTREE_BRANCH_PREFIX } from '@shogo/shared-runtime'
 import { initTrustResolver, refreshTrust } from './trust-resolver'
 import {
   isWorkspaceRuntimeMode,
@@ -376,6 +377,60 @@ function triggerLargeFileSync(): void {
  * re-arms S3 Layer 2; a checkpoint-record failure is best-effort (the commit
  * is already durable and the row can be reconciled on the next API hydrate).
  */
+/**
+ * BETA: per-chat git worktrees. Record a `ProjectCheckpoint` for a worktree
+ * merge into the default branch. The `.git` is already persisted by the merge
+ * path; this just writes the history row. Best-effort.
+ */
+async function recordWorktreeMergeCheckpoint(_chatSessionId: string, sha?: string): Promise<void> {
+  const projectId = process.env.PROJECT_ID
+  if (!projectId || !sha) return
+  try {
+    const meta = await gatherCommitMeta(WORKSPACE_DIR, sha)
+    if (meta) {
+      await postCheckpointRecord(projectId, {
+        commitSha: meta.sha,
+        commitMessage: meta.message,
+        branch: meta.branch,
+        filesChanged: meta.filesChanged,
+        additions: meta.additions,
+        deletions: meta.deletions,
+        isAutomatic: false,
+      })
+    }
+  } catch (err: any) {
+    console.warn('[agent-runtime] recordWorktreeMergeCheckpoint threw:', err?.message ?? err)
+  }
+}
+
+/**
+ * BETA: per-chat git worktrees. Run at the turn-complete boundary for a chat
+ * that owns a worktree:
+ *  - If a merge is in progress (a conflict-resolution turn) and the agent has
+ *    resolved all conflicts, finish the merge into the default branch, record a
+ *    checkpoint, tear down the worktree, and mark the chat merged.
+ *  - Otherwise commit the agent's edits onto the chat branch and persist `.git`.
+ */
+async function finalizeWorktreeTurn(chatSessionId: string): Promise<void> {
+  if (!agentGateway) return
+  if (await agentGateway.isWorktreeMergePending(chatSessionId)) {
+    const res = await agentGateway.completeWorktreeMerge(chatSessionId)
+    if (res.outcome === 'clean') {
+      await recordWorktreeMergeCheckpoint(chatSessionId, res.mergedSha)
+      await agentGateway.removeSessionWorktree(chatSessionId, { deleteBranch: true })
+      await postWorktreeStatus(chatSessionId, { worktreeStatus: 'merged' })
+    }
+    // else: conflicts remain (the agent likely asked the user) — leave the
+    // merge in progress; the next turn will try again.
+    return
+  }
+  await agentGateway.commitAndPersistSessionWorktree(chatSessionId)
+  await postWorktreeStatus(chatSessionId, {
+    worktreeBranch: `${WORKTREE_BRANCH_PREFIX}${chatSessionId}`,
+    worktreeStatus: 'active',
+  })
+}
+
 async function persistAndRecordCheckpoint(sha: string): Promise<void> {
   if (repoStoreConfigFromEnv()) {
     // Offload LFS object bytes to OCI (when active) then persist `.git`.
@@ -1216,6 +1271,57 @@ app.patch('/agent/config', async (c) => {
   }
 })
 
+// ── BETA: per-chat git worktrees ───────────────────────────────────────────
+
+// List the status of every chat worktree in this project (cross-chat overview).
+app.get('/agent/worktrees', async (c) => {
+  if (!agentGateway || !agentGateway.isWorktreesEnabled()) {
+    return c.json({ enabled: false, worktrees: [] })
+  }
+  try {
+    const worktrees = await agentGateway.listWorktreeStatuses()
+    return c.json({ enabled: true, worktrees })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Failed to list worktrees' }, 500)
+  }
+})
+
+// Mark a chat done and merge its worktree branch back into the default branch.
+// Clean merges complete here; conflicts are left in progress in the worktree
+// for the agent to resolve in a follow-up chat turn (auto-finished at the next
+// turn-complete via finalizeWorktreeTurn).
+app.post('/agent/worktrees/:chatSessionId/merge', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  if (!agentGateway.isWorktreesEnabled()) {
+    return c.json({ error: 'Per-chat git worktrees are not enabled for this project' }, 400)
+  }
+  const chatSessionId = c.req.param('chatSessionId')
+  if (!agentGateway.isWorktreeSession(chatSessionId)) {
+    return c.json({ status: 'noop', message: 'No worktree exists for this chat yet.' })
+  }
+  try {
+    await postWorktreeStatus(chatSessionId, { worktreeStatus: 'merging' })
+    const result = await agentGateway.mergeSessionWorktree(chatSessionId)
+    if (result.outcome === 'clean' || result.outcome === 'noop') {
+      await recordWorktreeMergeCheckpoint(chatSessionId, result.mergedSha)
+      await agentGateway.removeSessionWorktree(chatSessionId, { deleteBranch: true })
+      await postWorktreeStatus(chatSessionId, { worktreeStatus: 'merged' })
+      return c.json({ status: 'merged', mergedSha: result.mergedSha })
+    }
+    // Conflict — the merge is left in progress in the worktree. The caller
+    // should prompt the agent (a normal chat turn) to resolve it; the
+    // turn-complete handler finishes the merge once conflicts are gone.
+    return c.json({
+      status: 'conflict',
+      conflictedFiles: result.conflictedFiles,
+      message: result.message,
+    })
+  } catch (err: any) {
+    await postWorktreeStatus(chatSessionId, { worktreeStatus: 'active' }).catch(() => {})
+    return c.json({ error: err?.message || 'Merge failed' }, 500)
+  }
+})
+
 // Channel connect — persist to config.json and hot-connect via the gateway
 app.post('/agent/channels/connect', async (c) => {
   if (!agentGateway) {
@@ -1687,6 +1793,16 @@ app.post('/agent/chat', async (c) => {
           } catch (err: any) {
             console.warn('[agent-runtime] gitSync triggerSync at turn-complete threw:', err?.message ?? err)
           }
+        }
+
+        // BETA: per-chat git worktrees. When this session runs in an isolated
+        // worktree, the agent's edits live on its branch (not the main tree),
+        // so the main gitSync above no-ops. Commit the worktree (and, for a
+        // conflict-resolution turn, finish the merge) here.
+        if (agentGateway?.isWorktreeSession(chatSessionKey)) {
+          void finalizeWorktreeTurn(chatSessionKey).catch((err: any) =>
+            console.warn('[agent-runtime] finalizeWorktreeTurn at turn-complete threw:', err?.message ?? err),
+          )
         }
       } catch (error: any) {
         writer.write({
@@ -5153,7 +5269,22 @@ async function startGateway(): Promise<void> {
     })
   }
 
+  // BETA: per-chat git worktrees. Wire the durable-repo persist hook so that
+  // worktree-branch commits/merges land in the persisted `.git` (all refs),
+  // then recreate any in-flight chat worktrees that a cold start pruned.
+  agentGateway.setRepoPersistHook(async () => {
+    if (!repoStoreConfigFromEnv()) return
+    const res = await persistDurableRepo()
+    if (!res.ok) throw new Error(`durable repo persist failed: ${res.reason}`)
+  })
+
   await agentGateway.start()
+
+  if (agentGateway.isWorktreesEnabled()) {
+    void agentGateway.recreateActiveWorktrees().catch((err: any) =>
+      console.warn('[agent-runtime] recreateActiveWorktrees threw:', err?.message ?? err),
+    )
+  }
 
   gatewayReadyResolve?.()
   gatewayReadyResolve = null

@@ -75,7 +75,8 @@ import { CODE_AGENT_GENERAL_GUIDE, OUTPUT_CONTRACT_GUIDE } from './code-agent-pr
 import { SHOGO_SDK_GUIDE } from './shogo-sdk-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
-import { WorkspaceLSPManager, resolveBin } from '@shogo/shared-runtime'
+import { WorkspaceLSPManager, resolveBin, WorktreeManager } from '@shogo/shared-runtime'
+import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/shared-runtime'
 import { isWorkspaceRuntimeMode, workspaceAttachedProjectIds, workspaceProjectsManifest } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api'
@@ -89,7 +90,7 @@ import {
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { FileStateCache } from './file-state-cache'
-import { SUBAGENT_GUIDE } from './subagent-prompts'
+import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { CommandRegistry } from './command-registry'
@@ -289,6 +290,12 @@ export interface GatewayConfig {
   promptProfile?: 'full' | 'swe' | 'general'
   /** Enable coordinator mode (leader only delegates, never does work directly) */
   coordinatorMode?: boolean
+  /**
+   * BETA: per-chat git worktrees. When true, each chat session operates on
+   * its own branch (`shogo/chat/<sessionId>`) checked out in an isolated
+   * worktree; `main` only changes via the merge-on-done flow. Default off.
+   */
+  gitWorktreesEnabled?: boolean
 }
 
 /**
@@ -463,6 +470,18 @@ export class AgentGateway {
    * `AGENT_AUTO_TIER_MAP` env var. Undefined keeps the hardcoded defaults.
    */
   private autoTierOverride?: AutoTierOverride
+
+  // ── BETA: per-chat git worktrees ──────────────────────────────────────────
+  /** Lazily-created worktree manager (null until first use when enabled). */
+  private worktreeManager: WorktreeManager | null = null
+  /** Resolved worktree working-directory path per chat session. */
+  private sessionWorktreePaths = new Map<string, string>()
+  /**
+   * Best-effort hook to persist the durable `.git` (with all branch refs) to
+   * object storage after a worktree commit/merge. Wired by server.ts to the
+   * git_only durability path; a no-op in environments without one.
+   */
+  private repoPersistHook: (() => Promise<void> | void) | null = null
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -648,6 +667,11 @@ export class AgentGateway {
       allowedModes: ['canvas', 'none'],
       mainSessionIds: ['chat'],
     }
+    // BETA: per-chat git worktrees default. The warm-pool controller injects
+    // SHOGO_GIT_WORKTREES=1 at assignment when the project setting is on, so it
+    // acts as the boot default. An explicit value in config.json (written by
+    // PATCH /agent/config when the user toggles) always wins.
+    const worktreesEnvDefault = process.env.SHOGO_GIT_WORKTREES === '1'
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
     if (configPath) {
       try {
@@ -660,12 +684,13 @@ export class AgentGateway {
             : raw.heartbeatInterval ?? defaults.heartbeatInterval,
           heartbeatEnabled: raw.heartbeat?.enabled ?? raw.heartbeatEnabled ?? defaults.heartbeatEnabled,
           channels: Array.isArray(raw.channels) ? raw.channels : [],
+          gitWorktreesEnabled: raw.gitWorktreesEnabled ?? worktreesEnvDefault,
         }
       } catch (error: any) {
         console.error('[AgentGateway] Failed to parse config.json:', error.message)
       }
     }
-    return defaults
+    return { ...defaults, gitWorktreesEnabled: worktreesEnvDefault }
   }
 
   async start(): Promise<void> {
@@ -1689,6 +1714,17 @@ export class AgentGateway {
     // resolver keeps its last-known value rather than flapping.
     await refreshTrust()
 
+    // BETA: per-chat git worktrees. Ensure this session has its own worktree
+    // so the agent's file/exec tools operate on an isolated branch. Skills,
+    // memory, plans, and other `.shogo/` config continue to load from the
+    // canonical workspace (gitignored, shared) below. Best-effort: on failure
+    // we fall back to the shared working tree.
+    let sessionWorkspaceDir = this.workspaceDir
+    if (this.isWorktreeEligibleSession(sessionId, isHeartbeat)) {
+      const wt = await this.ensureSessionWorktree(sessionId)
+      if (wt) sessionWorkspaceDir = wt
+    }
+
     let systemPrompt = this.loadBootstrapContext(sessionId)
 
     console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
@@ -1786,7 +1822,7 @@ export class AgentGateway {
     }
 
     const toolContext: ToolContext = {
-      workspaceDir: this.workspaceDir,
+      workspaceDir: sessionWorkspaceDir,
       channels: this.channels,
       config: this.config,
       projectId: this.projectId,
@@ -1820,11 +1856,12 @@ export class AgentGateway {
       autoTierOverride: this.autoTierOverride,
       dualPlan,
       shellState: sessionId ? {
-        getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,
+        getCwd: () => this.shellCwd.get(sessionId!) || sessionWorkspaceDir,
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
       } : undefined,
       commandRegistry: sessionId ? this.getOrCreateCommandRegistry(sessionId) : undefined,
       guideRegistry: this.currentGuideRegistry,
+      listWorktreeStatuses: this.isWorktreesEnabled() ? () => this.listWorktreeStatuses() : undefined,
       toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
@@ -2950,6 +2987,7 @@ export class AgentGateway {
       parts.push(BROWSER_TOOL_GUIDE)
     }
     parts.push(SUBAGENT_GUIDE)
+    if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
@@ -3007,6 +3045,7 @@ export class AgentGateway {
     }
 
     parts.push(SUBAGENT_GUIDE)
+    if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
@@ -4191,6 +4230,205 @@ export class AgentGateway {
     setLoadedSkills(this.skills)
     this.configSkills = this.loadConfigSkills()
 
+  }
+
+  // ── BETA: per-chat git worktrees ──────────────────────────────────────────
+
+  /** Wire the durable-repo persist hook (server.ts owns the git_only path). */
+  setRepoPersistHook(fn: () => Promise<void> | void): void {
+    this.repoPersistHook = fn
+  }
+
+  /** Whether the per-chat worktree feature is active for this project. */
+  isWorktreesEnabled(): boolean {
+    return this.config.gitWorktreesEnabled === true
+  }
+
+  /** Lazily build the worktree manager when the feature is enabled. */
+  getWorktreeManager(): WorktreeManager | null {
+    if (!this.isWorktreesEnabled()) return null
+    if (!this.worktreeManager) {
+      this.worktreeManager = new WorktreeManager({ mainRepoDir: this.workspaceDir })
+    }
+    return this.worktreeManager
+  }
+
+  /**
+   * Sessions that should run in an isolated worktree. Excludes heartbeat and
+   * the configured "main" sessions (which operate on the canonical tree), and
+   * requires a path/branch-safe session id.
+   */
+  private isWorktreeEligibleSession(sessionId?: string, isHeartbeat?: boolean): boolean {
+    if (!this.isWorktreesEnabled()) return false
+    if (!sessionId || isHeartbeat) return false
+    if ((this.config.mainSessionIds ?? []).includes(sessionId)) return false
+    return /^[A-Za-z0-9._-]+$/.test(sessionId)
+  }
+
+  /** Whether a worktree has already been created for this session. */
+  isWorktreeSession(sessionId?: string): boolean {
+    if (!sessionId) return false
+    const p = this.sessionWorktreePaths.get(sessionId)
+    return !!(p && existsSync(p))
+  }
+
+  /**
+   * Ensure (lazily create / re-attach) the worktree for a chat session and
+   * cache its working-directory path. Returns null on failure or when the
+   * feature is off, so callers fall back to the canonical workspace.
+   */
+  async ensureSessionWorktree(sessionId: string): Promise<string | null> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return null
+    const cached = this.sessionWorktreePaths.get(sessionId)
+    if (cached && existsSync(cached)) return cached
+    try {
+      const info = await mgr.ensureWorktree(sessionId)
+      this.sessionWorktreePaths.set(sessionId, info.path)
+      return info.path
+    } catch (err: any) {
+      console.error(`${this.logPrefix} ensureSessionWorktree failed for ${sessionId}:`, err?.message ?? err)
+      return null
+    }
+  }
+
+  /** The working dir a session's tools should operate in (worktree or main). */
+  resolveSessionWorkspaceDir(sessionId?: string): string {
+    if (sessionId) {
+      const p = this.sessionWorktreePaths.get(sessionId)
+      if (p && existsSync(p)) return p
+    }
+    return this.workspaceDir
+  }
+
+  private async persistDurableRepoIfHooked(): Promise<void> {
+    if (!this.repoPersistHook) return
+    try {
+      await this.repoPersistHook()
+    } catch (err: any) {
+      console.warn(`${this.logPrefix} durable repo persist hook threw:`, err?.message ?? err)
+    }
+  }
+
+  /**
+   * Commit the session's worktree at the turn-complete boundary so its branch
+   * accumulates the agent's edits, then persist the durable `.git` (branches
+   * are refs in the shared object store). Best-effort and fire-and-forget from
+   * the caller's perspective.
+   */
+  async commitAndPersistSessionWorktree(sessionId?: string): Promise<void> {
+    if (!sessionId || !this.isWorktreeSession(sessionId)) return
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return
+    try {
+      await mgr.commitWorktree(sessionId, `chat ${sessionId}: ${new Date().toISOString()}`)
+      await this.persistDurableRepoIfHooked()
+    } catch (err: any) {
+      console.warn(`${this.logPrefix} commitAndPersistSessionWorktree threw:`, err?.message ?? err)
+    }
+  }
+
+  /**
+   * Recreate worktree working directories for all in-flight chat branches.
+   * Called on cold start so isolated trees survive a pod restart (branches are
+   * durable in the persisted `.git`; only the working dirs need replaying).
+   */
+  async recreateActiveWorktrees(): Promise<void> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return
+    try {
+      const infos = await mgr.recreateWorktrees()
+      for (const info of infos) {
+        if (info.exists) this.sessionWorktreePaths.set(info.chatSessionId, info.path)
+      }
+      if (infos.length > 0) {
+        console.log(`${this.logPrefix} recreated ${infos.length} chat worktree(s) on boot`)
+      }
+    } catch (err: any) {
+      console.warn(`${this.logPrefix} recreateActiveWorktrees threw:`, err?.message ?? err)
+    }
+  }
+
+  /** Current status of all Shogo-managed worktrees, for UI/awareness. */
+  async listWorktreeStatuses(): Promise<WorktreeStatus[]> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return []
+    const infos = await mgr.listWorktrees()
+    const out: WorktreeStatus[] = []
+    for (const info of infos) {
+      const s = await mgr.status(info.chatSessionId)
+      if (s) out.push(s)
+    }
+    return out
+  }
+
+  /**
+   * Project-level merge serialization. Only one chat may merge into the
+   * default branch at a time so two parallel "Mark done" actions can't race
+   * the shared `.git`. One gateway owns a project, so a gateway-level mutex is
+   * project-wide.
+   */
+  private mergeChain: Promise<unknown> = Promise.resolve()
+
+  async withMergeLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.mergeChain.then(fn, fn)
+    // Keep the chain alive regardless of this op's success/failure.
+    this.mergeChain = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  /** Whether the session's worktree has a merge in progress (mid-conflict). */
+  async isWorktreeMergePending(sessionId: string): Promise<boolean> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return false
+    try {
+      return await mgr.isMergeInProgress(sessionId)
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Attempt the clean merge-on-done path for a session's worktree into the
+   * default branch. Returns the merge result; on conflict the caller drives an
+   * agent turn to resolve and then calls {@link completeWorktreeMerge}.
+   */
+  async mergeSessionWorktree(sessionId: string): Promise<WorktreeMergeResult> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return { outcome: 'noop', conflictedFiles: [], message: 'worktrees disabled' }
+    return this.withMergeLock(async () => {
+      const result = await mgr.mergeBranchIntoMain(sessionId)
+      if (result.outcome === 'clean') {
+        await this.persistDurableRepoIfHooked()
+      }
+      return result
+    })
+  }
+
+  /** Finish a conflicted merge after the agent resolved files in the worktree. */
+  async completeWorktreeMerge(sessionId: string): Promise<WorktreeMergeResult> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return { outcome: 'noop', conflictedFiles: [], message: 'worktrees disabled' }
+    return this.withMergeLock(async () => {
+      const result = await mgr.completeConflictedMerge(sessionId)
+      if (result.outcome === 'clean') {
+        await this.persistDurableRepoIfHooked()
+      }
+      return result
+    })
+  }
+
+  /** Tear down a session's worktree (after a successful merge). */
+  async removeSessionWorktree(sessionId: string, opts?: { deleteBranch?: boolean }): Promise<void> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return
+    try {
+      await mgr.removeWorktree(sessionId, opts)
+      this.sessionWorktreePaths.delete(sessionId)
+      await this.persistDurableRepoIfHooked()
+    } catch (err: any) {
+      console.warn(`${this.logPrefix} removeSessionWorktree threw:`, err?.message ?? err)
+    }
   }
 
   private loadConfigSkills(): Array<{ name: string; trigger?: string; description?: string }> {

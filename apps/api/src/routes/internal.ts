@@ -634,4 +634,54 @@ app.post('/projects/:projectId/checkpoints/record', async (c) => {
   }
 })
 
+/**
+ * POST /api/internal/chat-sessions/:chatSessionId/worktree
+ *   body: { worktreeBranch?, worktreeStatus?, worktreePath? }
+ *
+ * BETA: per-chat git worktrees. Called by the agent-runtime pod to mirror a
+ * chat's worktree lifecycle (active / merging / merged) into the product DB so
+ * the UI can render the branch chip and merge state across reloads. Auth is
+ * validated against the chat session's owning project.
+ *
+ * Auth: K8s SA token (cluster) OR `x-runtime-token` (local desktop).
+ */
+app.post('/chat-sessions/:chatSessionId/worktree', async (c) => {
+  const chatSessionId = c.req.param('chatSessionId')
+  if (!chatSessionId) return c.json({ error: 'Missing chatSessionId' }, 400)
+
+  const { prisma } = await import('../lib/prisma')
+  const session = await prisma.chatSession.findUnique({
+    where: { id: chatSessionId },
+    select: { id: true, contextId: true, contextType: true },
+  })
+  if (!session) return c.json({ error: 'Chat session not found' }, 404)
+
+  // Project-scoped chats carry the project id on contextId; validate against it.
+  const projectId = session.contextType === 'project' ? session.contextId ?? undefined : undefined
+  if (!(await validateAuth(c, projectId))) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body || typeof body !== 'object') {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+
+  const data: Record<string, string | null> = {}
+  if ('worktreeBranch' in body) data.worktreeBranch = typeof body.worktreeBranch === 'string' ? body.worktreeBranch : null
+  if ('worktreePath' in body) data.worktreePath = typeof body.worktreePath === 'string' ? body.worktreePath : null
+  if ('worktreeStatus' in body) {
+    const s = body.worktreeStatus
+    data.worktreeStatus = (s === 'active' || s === 'merging' || s === 'merged') ? s : null
+  }
+
+  try {
+    await prisma.chatSession.update({ where: { id: chatSessionId }, data: data as any })
+    return c.json({ ok: true })
+  } catch (err: any) {
+    console.error(`[Internal] Failed to update worktree status for ${chatSessionId}:`, err.message)
+    return c.json({ error: 'Failed to update worktree status' }, 500)
+  }
+})
+
 export default app

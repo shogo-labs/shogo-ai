@@ -176,6 +176,10 @@ export interface ToolContext {
    *  Used e.g. to key the CDP screencast broadcaster so the mobile LiveBrowserView
    *  can subscribe to the right running subagent's browser viewport. */
   subagentInstanceId?: string
+  /** BETA: per-chat git worktrees — status of all sibling chats' branches.
+   *  Bound to the gateway so the worktree_list tool can surface cross-chat
+   *  awareness without a direct gateway reference. */
+  listWorktreeStatuses?: () => Promise<import('@shogo/shared-runtime').WorktreeStatus[]>
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -4444,11 +4448,57 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   tools.push(createTaskUpdateTool(ctx))
   tools.push(createSendTeamMessageTool(ctx))
 
+  // BETA: per-chat git worktrees — cross-chat awareness tool
+  tools.push(createWorktreeListTool(ctx))
+
   if (extraTools) {
     tools.push(...extraTools)
   }
 
   return tools
+}
+
+// ---------------------------------------------------------------------------
+// Git Worktree Awareness Tool (BETA)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lets an agent see the worktrees/branches of sibling chats in the same
+ * project so parallel agents can coordinate and anticipate merge conflicts.
+ * Only useful (and registered) when the per-chat worktrees feature is on.
+ */
+function createWorktreeListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'worktree_list',
+    label: 'List Chat Worktrees',
+    description:
+      'List the git worktrees/branches of the other chats in this project (per-chat worktrees mode). ' +
+      'Use this to understand what parallel agents are working on, which files they have touched, and how ' +
+      'far ahead/behind the default branch each chat is — so you can avoid stepping on their changes and ' +
+      'anticipate merge conflicts before merging back into main.',
+    parameters: Type.Object({}),
+    execute: async () => {
+      if (!ctx.listWorktreeStatuses) {
+        return textResult({ error: 'Per-chat git worktrees are not enabled for this project.' })
+      }
+      try {
+        const all = await ctx.listWorktreeStatuses()
+        const current = ctx.sessionId
+        const worktrees = all.map(w => ({
+          chatSessionId: w.chatSessionId,
+          branch: w.branch,
+          isCurrentChat: w.chatSessionId === current,
+          commitsAheadOfMain: w.ahead,
+          commitsBehindMain: w.behind,
+          uncommittedFiles: w.dirtyFiles,
+          changedFiles: w.changedFiles,
+        }))
+        return textResult({ count: worktrees.length, worktrees })
+      } catch (err: any) {
+        return textResult({ error: `Failed to list worktrees: ${err?.message ?? err}` })
+      }
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4829,6 +4879,8 @@ export function filterDisabledCapabilityTools(
   if (config.quickActionsEnabled === false) disabled.add('quick_action')
   if (config.channelsEnabled === false) for (const n of TOOL_GROUP_MAP.messaging) disabled.add(n)
   if (config.integrationsEnabled === false) for (const n of TOOL_GROUP_MAP.integrations) disabled.add(n)
+  // BETA: worktree awareness tool only exists when per-chat worktrees are on (off by default).
+  if (config.gitWorktreesEnabled !== true) disabled.add('worktree_list')
 
   const memoryOff = config.memoryEnabled === false
   if (disabled.size === 0 && !memoryOff) return tools

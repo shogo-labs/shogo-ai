@@ -109,6 +109,7 @@ import {
 import { useReconcileStaleModelSelection } from "../../lib/visible-models"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExecutionBadge } from "./ExecutionBadge"
+import { WorktreeBar } from "./WorktreeBar"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
 import {
@@ -5070,6 +5071,12 @@ export const ChatPanel = observer(function ChatPanel({
 
           {/* Input */}
           <View className="bg-transparent max-w-3xl w-full self-center mt-1">
+            <WorktreeBar
+              agentUrl={resolvedAgentUrl}
+              chatSessionId={currentSessionId}
+              isStreaming={isStreaming}
+              onSendMessage={(text) => handleInputSubmit(text)}
+            />
             <ExecutionBadge />
             <ChatInput
               onSubmit={handleInputSubmit}

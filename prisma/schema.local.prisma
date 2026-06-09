@@ -767,6 +767,12 @@ model ChatSession {
   updatedAt           DateTime @default(now()) @updatedAt
   lastActiveAt        DateTime @default(now())
 
+  // BETA: per-chat git worktrees (mirrors schema.prisma). null when off.
+  worktreeBranch      String?
+  // active | merging | merged
+  worktreeStatus      String?
+  worktreePath        String?
+
   project          Project?             @relation(fields: [contextId], references: [id], onDelete: Cascade)
   workspace        Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   attachedProjects ChatSessionProject[]
