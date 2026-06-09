@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, Maximize2, Minimize2, MoreHorizontal, Plus, X, Trash2, SquareSplitHorizontal, Terminal as TerminalIcon } from 'lucide-react-native'
 import { SHELL_LABELS, SHELL_OPTIONS } from './terminal/useShellName'
 import {
@@ -329,11 +330,12 @@ const DROPDOWN_ITEM =
 const DROPDOWN_ITEM_DISABLED =
   "flex w-full items-center px-3 py-[3px] text-left text-[12px] text-[#585858] cursor-default"
 
-function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarControls }) {
+function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarControls | null }) {
+  if (!tc) return null
   const [open, setOpen] = React.useState(false)
   const [subOpen, setSubOpen] = React.useState(false)
   const [activeIdx, setActiveIdx] = React.useState(-1)
-  const ref = React.useRef<HTMLDivElement>(null)
+  const menuRef = React.useRef<HTMLDivElement>(null)
   const btnRef = React.useRef<HTMLButtonElement>(null)
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -391,13 +393,13 @@ function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarCont
   React.useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node) && btnRef.current && !btnRef.current.contains(e.target as Node)) setOpen(false)
+      if (menuRef.current && !menuRef.current.contains(e.target as Node) && btnRef.current && !btnRef.current.contains(e.target as Node)) setOpen(false)
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") { setOpen(false); return }
       if (e.key === "ArrowDown") {
         e.preventDefault()
-        setActiveIdx((p) => { let n = p + 1; return Math.min(n, flatItems.length - 1) })
+        setActiveIdx((p) => Math.min(p + 1, flatItems.length - 1))
       }
       if (e.key === "ArrowUp") {
         e.preventDefault()
@@ -414,24 +416,36 @@ function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarCont
     return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey) }
   }, [open, activeIdx, subOpen, flatItems, activate])
 
-  const [menuPos, setMenuPos] = React.useState<{ top: number; left: number; maxH: number }>({ top: 0, left: 0, maxH: 400 })
+  const [menuPos, setMenuPos] = React.useState({ top: 0, left: 0, maxH: 400 })
   const [subPos, setSubPos] = React.useState({ top: 0, left: 0 })
 
-  React.useEffect(() => {
-    if (open && btnRef.current) {
-      const r = btnRef.current.getBoundingClientRect()
-      let top = r.bottom + 2
-      let left = r.left
-      if (left + 260 > window.innerWidth) left = window.innerWidth - 264
-      if (left < 4) left = 4
-      const maxH = Math.max(120, window.innerHeight - r.bottom - 8)
-      setMenuPos({ top, left, maxH })
-    }
-  }, [open])
+  const calcMenuPos = React.useCallback(() => {
+    if (!btnRef.current) return
+    const r = btnRef.current.getBoundingClientRect()
+    const gap = 4
+    const menuW = 260
+    const subW = 220
+    let top = r.bottom + gap
+    let left = r.left
+    if (left + menuW > window.innerWidth) left = window.innerWidth - menuW - 4
+    if (left < 4) left = 4
+    const maxH = Math.max(120, window.innerHeight - top - 8)
+    setMenuPos({ top, left, maxH })
+  }, [])
 
   React.useEffect(() => {
-    if (subOpen && ref.current && activeIdx >= 0) {
-      const menuEl = ref.current
+    if (!open) return
+    calcMenuPos()
+    const onResize = () => calcMenuPos()
+    const onScroll = () => calcMenuPos()
+    window.addEventListener("resize", onResize)
+    window.addEventListener("scroll", onScroll, true)
+    return () => { window.removeEventListener("resize", onResize); window.removeEventListener("scroll", onScroll, true) }
+  }, [open, calcMenuPos])
+
+  React.useEffect(() => {
+    if (subOpen && menuRef.current && activeIdx >= 0) {
+      const menuEl = menuRef.current
       const menuRect = menuEl.getBoundingClientRect()
       const allButtons = Array.from(menuEl.querySelectorAll('[role="menuitem"]'))
       const activeItemEl = allButtons[activeIdx]
@@ -440,8 +454,8 @@ function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarCont
       const subItemCount = submenuItem?.items?.length ?? 0
       const subH = subItemCount * 28 + 16
       let top = itemRect.top
-      let left = menuRect.right + 2
-      if (left + 220 > window.innerWidth) left = menuRect.left - 224
+      let left = menuRect.right + 4
+      if (left + subW > window.innerWidth) left = menuRect.left - subW - 4
       if (top + subH > window.innerHeight) top = window.innerHeight - subH - 4
       if (top < 0) top = 4
       setSubPos({ top, left })
@@ -449,84 +463,93 @@ function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarCont
   }, [subOpen, activeIdx])
 
   const submenuItem = flatItems[activeIdx]?.kind === "submenu" ? (flatItems[activeIdx] as Item) : null
+  const subW = 220
 
-  return (
-    <div ref={ref} className="relative">
+  if (!open) return (
+    <div className="relative">
       <button
         ref={btnRef}
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen(true)}
         className={DROPDOWN_TRIGGER}
         title="Terminal Actions"
         aria-label="Terminal Actions"
         aria-haspopup="menu"
-        aria-expanded={open}
+        aria-expanded={false}
       >
         <ChevronDown size={11} />
       </button>
-      {open &&
-        React.createElement(
-          "div",
+    </div>
+  )
+
+  const menu = createPortal(
+    React.createElement(
+      "div",
+      {
+        role: "menu",
+        "aria-activedescendant": activeIdx >= 0 ? `dropdown-item-${activeIdx}` : undefined,
+        className:
+          "fixed z-[2147483647] min-w-[260px] overflow-y-auto overflow-x-hidden rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl",
+        style: { top: menuPos.top, left: menuPos.left, maxHeight: menuPos.maxH },
+        ref: menuRef,
+      },
+      ...items.map((item, i) => {
+        if (item.kind === "separator") {
+          return React.createElement("div", { key: `s-${i}`, className: "my-1 h-px bg-[#454545]" })
+        }
+        const fi = flatItems.indexOf(item)
+        const isActive = fi === activeIdx
+        const isSubOpen = subOpen && isActive && item.kind === "submenu"
+        return React.createElement(
+          "button",
           {
-            role: "menu",
+            key: item.label,
+            type: "button",
+            role: "menuitem",
+            id: `dropdown-item-${fi}`,
+            disabled: item.kind === "action" && item.disabled,
+            onMouseEnter: () => {
+              setActiveIdx(fi)
+              if (item.kind === "submenu") {
+                if (timerRef.current) clearTimeout(timerRef.current)
+                setSubOpen(true)
+              }
+            },
+            onMouseLeave: () => {
+              if (item.kind === "submenu") {
+                timerRef.current = setTimeout(() => setSubOpen(false), 250)
+              }
+            },
+            onClick: () => activate(item),
             className:
-              "fixed z-[2147483647] min-w-[260px] overflow-y-auto rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl",
-            style: { top: menuPos.top, left: menuPos.left, maxHeight: menuPos.maxH },
-            ref,
+              item.kind === "action" && item.disabled
+                ? DROPDOWN_ITEM_DISABLED
+                : `${DROPDOWN_ITEM} ${isActive || isSubOpen ? "bg-[#04395e]" : ""}`,
           },
-          ...items.map((item, i) => {
-            if (item.kind === "separator") {
-              return React.createElement("div", { key: `s-${i}`, className: "my-1 h-px bg-[#454545]" })
-            }
-            const fi = flatItems.indexOf(item)
-            const isActive = fi === activeIdx
-            const isSubOpen = subOpen && isActive && item.kind === "submenu"
-            return React.createElement(
-              "button",
-              {
-                key: item.label,
-                type: "button",
-                role: "menuitem",
-                disabled: item.kind === "action" && item.disabled,
-                onMouseEnter: () => {
-                  setActiveIdx(fi)
-                  if (item.kind === "submenu") {
-                    if (timerRef.current) clearTimeout(timerRef.current)
-                    setSubOpen(true)
-                  }
-                },
-                onMouseLeave: () => {
-                  if (item.kind === "submenu") {
-                    timerRef.current = setTimeout(() => setSubOpen(false), 200)
-                  }
-                },
-                onClick: () => activate(item),
-                className:
-                  item.kind === "action" && item.disabled
-                    ? DROPDOWN_ITEM_DISABLED
-                    : `${DROPDOWN_ITEM} ${isActive || isSubOpen ? "bg-[#04395e]" : ""}`,
-              },
-              item.kind === "profile" && item.checked
-                ? React.createElement("span", { className: "mr-1 text-[#0078d4]" }, "✓")
-                : null,
-              React.createElement("span", { className: "flex-1" }, item.label),
-              item.kind === "submenu"
-                ? React.createElement("span", { className: "ml-2 text-[#858585]" }, "▶")
-                : null,
-              item.kind === "action" && item.shortcut
-                ? React.createElement("span", { className: "ml-3 text-[10px] text-[#858585]" }, item.shortcut)
-                : null,
-            )
-          }),
-        )}
-      {subOpen &&
-        submenuItem &&
+          item.kind === "profile" && item.checked
+            ? React.createElement("span", { className: "mr-1 text-[#0078d4]" }, "\u2713")
+            : null,
+          React.createElement("span", { className: "flex-1" }, item.label),
+          item.kind === "submenu"
+            ? React.createElement("span", { className: "ml-2 text-[#858585]" }, "\u25B6")
+            : null,
+          item.kind === "action" && item.shortcut
+            ? React.createElement("span", { className: "ml-3 text-[10px] text-[#858585]" }, item.shortcut)
+            : null,
+        )
+      }),
+    ),
+    document.body,
+  )
+
+  const submenu = subOpen && submenuItem
+    ? createPortal(
         React.createElement(
           "div",
           {
             role: "menu",
             className:
-              "fixed z-[2147483647] min-w-[220px] rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl",
+              "fixed z-[2147483647] min-w-[220px] overflow-y-auto overflow-x-hidden rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl",
             style: { top: subPos.top, left: subPos.left },
             onMouseEnter: () => { if (timerRef.current) clearTimeout(timerRef.current) },
             onMouseLeave: () => setSubOpen(false),
@@ -548,7 +571,27 @@ function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarCont
               React.createElement("span", { className: "flex-1" }, sub.label),
             ),
           ),
-        )}
+        ),
+        document.body,
+      )
+    : null
+
+  return (
+    <div className="relative">
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={DROPDOWN_TRIGGER}
+        title="Terminal Actions"
+        aria-label="Terminal Actions"
+        aria-haspopup="menu"
+        aria-expanded={true}
+      >
+        <ChevronDown size={11} />
+      </button>
+      {menu}
+      {submenu}
     </div>
   )
 }
