@@ -93,6 +93,11 @@ export async function fetchComposioToolSchemas(
     const params = new URLSearchParams({
       toolkit_slug: toolkitSlug,
       limit: String(pageLimit),
+      // Match the SDK's execute-time resolution (toolkitVersions: 'latest').
+      // Without this the v3 endpoint defaults to the base version `00000000_00`
+      // and returns only initial-release tools, so we'd bind a stale subset that
+      // mismatches what `tools.execute` can actually run against.
+      toolkit_versions: 'latest',
     })
     if (options?.important) params.set('important', 'true')
     if (cursor) params.set('cursor', cursor)
