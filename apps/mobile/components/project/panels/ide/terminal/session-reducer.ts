@@ -56,6 +56,7 @@ export interface Session {
    * positional label. Empty strings are normalised to `null` by the
    * reducer.
    */
+  shell: string | null
   customLabel: string | null
   /**
    * Optional accent color (CSS hex like `#0078d4`) for this tab/group.
@@ -85,7 +86,7 @@ export function __resetSessionIdSeqForTest(): void {
  * Create a session. Pass an existing `groupId` to add it as a split inside
  * that tab; omit it to mint a brand-new group (a new tab).
  */
-export function makeSession(groupId?: string): Session {
+export function makeSession(groupId?: string, shell?: string | null): Session {
   return {
     id: `t-${Date.now().toString(36)}-${++_idSeq}`,
     groupId: groupId ?? `g-${Date.now().toString(36)}-${++_groupSeq}`,
@@ -95,6 +96,7 @@ export function makeSession(groupId?: string): Session {
     cwd: null,
     errorMessage: null,
     exit: null,
+    shell: shell ?? null,
     customLabel: null,
     tabColor: null,
     isAgentTerminal: false,
@@ -192,7 +194,7 @@ export function labelsFor(sessions: Session[]): Map<string, string> {
     }
   }
   return new Map(
-    sessions.map((s) => [s.id, groupLabel.get(s.groupId) ?? s.id]),
+    sessions.map((s) => [s.id, groupLabel.get(s.groupId) ?? s.shell ?? s.id]),
   )
 }
 
