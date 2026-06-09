@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import * as React from 'react'
-import { ChevronDown, X } from 'lucide-react-native'
+import { ChevronDown, Maximize2, Minimize2, MoreHorizontal, Plus, X } from 'lucide-react-native'
 import {
   BOTTOM_PANEL_TABS,
   type BottomPanelTab,
@@ -38,9 +38,31 @@ export interface PanelTabStripProps {
   badges?: Partial<Record<BottomPanelTab, number>>
   onHide?(): void
   onClose?(): void
+  /**
+   * Tab-specific action: create a new terminal. Only rendered when the
+   * active tab is Terminal (matches VS Code's `+▾` affordance).
+   */
+  onNewTerminal?(): void
+  /**
+   * Toggle the panel between its normal height and maximised (full window
+   * height). Renders the `⛶` / restore icon in the right toolbar.
+   */
+  onMaximize?(): void
+  isMaximized?: boolean
+  /**
+   * Open a small overflow menu for panel-level actions (move panel,
+   * copy to new window, etc.). Renders `…`.
+   */
+  onPanelActions?(): void
 }
 
 export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
+  const {
+    onNewTerminal,
+    onMaximize,
+    isMaximized = false,
+    onPanelActions,
+  } = props
   const tabRefs = React.useRef(new Map<BottomPanelTab, HTMLButtonElement>())
   const stripRef = React.useRef<HTMLDivElement | null>(null)
   const [indicator, setIndicator] = React.useState<{ left: number; width: number } | null>(null)
@@ -144,7 +166,48 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
           }}
         />
       </div>
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-0.5">
+        {/* +▾  New Terminal — only shown when Terminal tab is active */}
+        {onNewTerminal && props.activeTab === 'Terminal' && (
+          <button
+            type="button"
+            onClick={onNewTerminal}
+            title="New Terminal  (⌘⇧`)"
+            aria-label="New Terminal"
+            className="flex items-center rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+          >
+            <Plus size={14} />
+          </button>
+        )}
+        {/* …  Panel actions */}
+        {onPanelActions && (
+          <button
+            type="button"
+            onClick={onPanelActions}
+            title="More panel actions"
+            aria-label="More panel actions"
+            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+          >
+            <MoreHorizontal size={14} />
+          </button>
+        )}
+        {/* Divider between panel-actions and window controls */}
+        {(onNewTerminal || onPanelActions) && (
+          <span aria-hidden="true" className="mx-1 h-4 w-px bg-[#3c3c3c]" />
+        )}
+        {/* ⛶  Maximize / restore panel */}
+        {onMaximize && (
+          <button
+            type="button"
+            onClick={onMaximize}
+            title={isMaximized ? 'Restore panel size  (⌘J)' : 'Maximize panel size  (⌘J)'}
+            aria-label={isMaximized ? 'Restore panel size' : 'Maximize panel size'}
+            aria-pressed={isMaximized}
+            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+          >
+            {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
+        )}
         {props.onHide && (
           <button
             type="button"
