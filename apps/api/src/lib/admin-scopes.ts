@@ -24,9 +24,21 @@ import { prisma } from "./prisma"
 export const ADMIN_SCOPES = [
   {
     id: "analytics:read",
-    label: "Usage analytics",
+    label: "Usage analytics (all)",
     description:
-      "View platform-wide usage and spend analytics, including the admin dashboard and analytics pages (read-only).",
+      "Umbrella scope: view both Marketing and AI/engineering analytics, plus the admin dashboard (read-only). Implies marketing:read and ai:read.",
+  },
+  {
+    id: "marketing:read",
+    label: "Marketing analytics",
+    description:
+      "View the Marketing analytics page: signup funnel, acquisition sources, template engagement, user activity, and AI insights digest (read-only).",
+  },
+  {
+    id: "ai:read",
+    label: "AI / engineering analytics",
+    description:
+      "View the AI/engineering analytics page: model spend, quality & efficiency, tool calls, usage logs, workspace activity, and chat metrics (read-only).",
   },
   {
     id: "creators:read",
