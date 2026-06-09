@@ -77,7 +77,7 @@ export function ActivityBar({
   onSelect: (id: ActivityId) => void;
   onToggleSidebar: () => void;
   onToggleTerminal: () => void;
-  /** When false (managed/blank projects), hides Source Control, Debug, and Checkpoint icons. */
+  /** Activity IDs to hide from the bar (currently unused — all items visible). */
   hiddenItemIds?: ActivityId[];
 }) {
   const handleSelect = (id: ActivityId) => {
