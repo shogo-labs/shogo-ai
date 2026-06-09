@@ -204,6 +204,9 @@ export interface TerminalToolbarControls {
   onRunRecent: () => void;
   onScrollPrevCommand: () => void;
   onScrollNextCommand: () => void;
+  canScrollPrev: boolean;
+  canScrollNext: boolean;
+  commandCount: number;
   onRunActiveFile: () => void;
   onRunSelectedText: () => void;
   onGoToRecentDirectory: () => void;
@@ -241,6 +244,7 @@ export function Terminal({
   const [cwdHistory, setCwdHistory] = useState<string[]>([]);
   const [recentDirOpen, setRecentDirOpen] = useState(false);
   const [recentCmdOpen, setRecentCmdOpen] = useState(false);
+  const [navState, setNavState] = useState({ canPrev: false, canNext: false, count: 0 });
   const [recentCmdList, setRecentCmdList] = useState<string[]>([]);
   // Per-group split layout (Phase 3 — vertical + mixed grid splits).
   // Lazily initialised: any group not in this map renders a flat horizontal
@@ -963,8 +967,33 @@ export function Terminal({
     xtermRefs.current.get(active.id)?.focus();
   }, [active]);
 
+  useEffect(() => {
+    if (!active) return;
+    const handle = xtermRefs.current.get(active.id);
+    const poll = () => {
+      const ns = handle?.getNavState?.();
+      if (ns) setNavState({ canPrev: ns.canPrev, canNext: ns.canNext, count: ns.commandCount });
+    };
+    poll();
+    const iv = window.setInterval(poll, 500);
+    return () => window.clearInterval(iv);
+  }, [active]);
+
   const openRecentDir = useCallback(() => {
     setRecentDirOpen(true);
+  }, []);
+
+  const openRecentRef = React.useRef(openRecent);
+  openRecentRef.current = openRecent;
+  useEffect(() => {
+    const onRunRecent = () => openRecentRef.current();
+    const onGoRecentDir = () => setRecentDirOpen(true);
+    window.addEventListener('shogo:terminal:run-recent-command', onRunRecent);
+    window.addEventListener('shogo:terminal:go-recent-directory', onGoRecentDir);
+    return () => {
+      window.removeEventListener('shogo:terminal:run-recent-command', onRunRecent);
+      window.removeEventListener('shogo:terminal:go-recent-directory', onGoRecentDir);
+    };
   }, []);
 
   /**
@@ -1042,12 +1071,15 @@ export function Terminal({
       onRunRecent: openRecent,
       onScrollPrevCommand: scrollPrevCommand,
       onScrollNextCommand: scrollNextCommand,
+      canScrollPrev: navState.canPrev,
+      canScrollNext: navState.canNext,
+      commandCount: navState.count,
       onRunActiveFile: runActiveFile,
       onRunSelectedText: runSelectedText,
       onGoToRecentDirectory: openRecentDir,
     });
   }, [shellName, running, active?.id, active?.client, onControlsChange,
-      scrollPrevCommand, scrollNextCommand, runActiveFile, runSelectedText, openRecentDir]);
+      scrollPrevCommand, scrollNextCommand, runActiveFile, runSelectedText, openRecentDir, navState]);
 
   useEffect(() => {
     return () => { onControlsChange?.(null); };
