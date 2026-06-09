@@ -81,9 +81,28 @@ describe('EnsembleDataProvider — TikTok', () => {
 })
 
 describe('EnsembleDataProvider — Instagram', () => {
+  test('getProfile uses detailed-info and reads biography (not the bio-less /user/info)', async () => {
+    const { fn, calls } = fakeFetch((url) => {
+      // The basic /instagram/user/info endpoint omits `biography`, so calling
+      // it would make ownership verification impossible; we must hit
+      // detailed-info. Fail loudly if the wrong endpoint is used.
+      expect(url.pathname).toBe('/apis/instagram/user/detailed-info')
+      expect(url.searchParams.get('username')).toBe('russell.builds')
+      return jsonResponse({
+        data: { id: '15606412957', fbid: '17841415748710801', biography: 'shogo-44b4b833', full_name: 'Russell LaCour' },
+      })
+    })
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const profile = await provider.getProfile('instagram', '@Russell.Builds')
+    expect(profile.providerUserId).toBe('15606412957')
+    expect(profile.bio).toContain('shogo-44b4b833')
+    expect(profile.displayName).toBe('Russell LaCour')
+    expect(calls).toHaveLength(1)
+  })
+
   test('merges posts + reels, reels win on view counts', async () => {
     const { fn } = fakeFetch((url) => {
-      if (url.pathname.endsWith('/instagram/user/info')) {
+      if (url.pathname.endsWith('/instagram/user/detailed-info')) {
         return jsonResponse({ data: { id: '18428658', biography: 'bio here', full_name: 'Kim' } })
       }
       if (url.pathname.endsWith('/instagram/user/posts')) {
