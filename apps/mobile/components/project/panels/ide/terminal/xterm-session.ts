@@ -34,6 +34,7 @@ import '@xterm/xterm/css/xterm.css'
 // at runtime. Web-only — xterm.js bundles a Canvas/WebGL renderer.
 type XTerminal = import('@xterm/xterm').Terminal
 type XFitAddon = import('@xterm/addon-fit').FitAddon
+type IMarker  = import('@xterm/xterm').IMarker
 
 export interface XtermSessionOptions {
   fontFamily?: string
@@ -51,6 +52,10 @@ export class XtermSession {
   private unsubResize: (() => void) | null = null
   private disposed = false
   private banneredExit = false
+  private commandMarkers: IMarker[] = []
+  private sentLines: string[] = []
+  private currentInputBuffer = ''
+  private static readonly MAX_HISTORY = 500
 
   constructor(
     private readonly client: PtyClientLike,
@@ -90,8 +95,36 @@ export class XtermSession {
     term.open(container)
     fitAddon.fit()
 
-    // Wire xterm → PTY
-    term.onData((data: string) => this.client.send(data))
+    // Wire xterm → PTY. Record a command-boundary marker when the user
+    // presses Enter so "Scroll to Previous/Next Command" has positions to jump to.
+    term.onData((data: string) => {
+      if (data === '\r') {
+        const m = term.registerMarker(0)
+        if (m) {
+          m.onDispose(() => {
+            this.commandMarkers = this.commandMarkers.filter((x) => x !== m)
+          })
+          this.commandMarkers.push(m)
+        }
+        // Record the command typed since last Enter (skip empty / whitespace-only)
+        const cmd = this.currentInputBuffer.trim()
+        if (cmd) {
+          // Dedup: move to front if already present
+          this.sentLines = [cmd, ...this.sentLines.filter((l) => l !== cmd)]
+          if (this.sentLines.length > XtermSession.MAX_HISTORY) {
+            this.sentLines.length = XtermSession.MAX_HISTORY
+          }
+        }
+        this.currentInputBuffer = ''
+      } else if (data === '\x7f' || data === '\x08') {
+        // Backspace / DEL
+        this.currentInputBuffer = this.currentInputBuffer.slice(0, -1)
+      } else if (data.length === 1 && data >= ' ') {
+        // Printable ASCII only — skip control / escape sequences
+        this.currentInputBuffer += data
+      }
+      this.client.send(data)
+    })
     term.onResize((dims: { cols: number; rows: number }) => {
       this.client.resize(dims.cols, dims.rows)
     })
@@ -114,6 +147,21 @@ export class XtermSession {
 
     // Sync initial size *after* fit() so the server matches the rendered grid.
     this.client.resize(term.cols, term.rows)
+
+    // Deferred re-fit: correct any column count computed while the panel was
+    // still mid open-animation. Two rAFs guarantees the browser has committed
+    // the final layout dimensions before FitAddon reads clientWidth.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (this.disposed) return
+        const prevCols = term.cols
+        const prevRows = term.rows
+        try { this.fitAddon?.fit() } catch {}
+        if (term.cols !== prevCols || term.rows !== prevRows) {
+          this.client.resize(term.cols, term.rows)
+        }
+      })
+    })
   }
 
   /** Re-fit on container resize. No-op before attach. */
@@ -185,6 +233,39 @@ export class XtermSession {
     this.term?.focus()
   }
 
+  /** Returns the list of commands sent to the PTY in this session (newest first). */
+  getSentLines(): string[] { return [...this.sentLines] }
+
+  /** Scroll to the nearest command marker above the current viewport top. */
+  scrollToPrevCommand(): void {
+    const term = this.term
+    if (!term) return
+    const viewportTop = term.buffer.active.viewportY
+    const live = this.commandMarkers.filter((m) => !m.isDisposed)
+    for (let i = live.length - 1; i >= 0; i--) {
+      if (live[i].line < viewportTop) {
+        term.scrollToLine(live[i].line)
+        return
+      }
+    }
+    if (live.length > 0) term.scrollToLine(live[0].line)
+  }
+
+  /** Scroll to the nearest command marker below the current viewport top. */
+  scrollToNextCommand(): void {
+    const term = this.term
+    if (!term) return
+    const viewportTop = term.buffer.active.viewportY
+    const live = this.commandMarkers.filter((m) => !m.isDisposed)
+    for (const m of live) {
+      if (m.line > viewportTop) {
+        term.scrollToLine(m.line)
+        return
+      }
+    }
+    if (live.length > 0) term.scrollToLine(live[live.length - 1].line)
+  }
+
   /** Tear down everything. Idempotent. */
   dispose(): void {
     if (this.disposed) return
@@ -194,6 +275,9 @@ export class XtermSession {
     try { this.unsubTrunc?.() } catch {}
     try { this.unsubResize?.() } catch {}
     this.unsubData = this.unsubExit = this.unsubTrunc = this.unsubResize = null
+    this.commandMarkers = []
+    this.sentLines = []
+    this.currentInputBuffer = ''
     try { this.term?.dispose() } catch {}
     this.term = null
     this.fitAddon = null
