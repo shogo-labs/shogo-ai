@@ -147,6 +147,13 @@ export async function getEffectivePlanId(
  * Allocate free-tier wallet for a new workspace (daily included, no monthly).
  * If active super-admin grants exist for the workspace, their summed
  * `monthlyIncludedUsd` seeds the wallet on day one.
+ *
+ * Overage is explicitly disabled for free wallets. The schema default for
+ * `overageEnabled` is `true` (so paid plans created via `allocateMonthlyIncluded`
+ * / `applyGrantMonthlyAllocation` keep working past included usage), but free
+ * accounts have no payment method on file, so any spend beyond their rolling
+ * window would be uncollectable loss. The window is the gate for free tier;
+ * once it's exhausted the request is refused rather than billed to overage.
  */
 export async function allocateFreeWallet(workspaceId: string) {
   const now = new Date();
@@ -168,6 +175,7 @@ export async function allocateFreeWallet(workspaceId: string) {
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
+      overageEnabled: false,
     },
   });
 }
