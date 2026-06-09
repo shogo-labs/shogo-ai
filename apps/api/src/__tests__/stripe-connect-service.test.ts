@@ -5,8 +5,7 @@
  *
  * Covers every exported function in both configured and unconfigured-Stripe
  * modes:
- *   - createCustomAccount (already-linked / mock-mode / live)
- *   - submitPayoutDetails (mock-mode / live with + without bankToken/ssn)
+ *   - createCustomAccount (already-linked / mock-mode / live, shared Express)
  *   - getAccountStatus (mock-mode default / live requirements due / past_due)
  *   - handleAccountUpdated (no Stripe / no profile / all derivation branches)
  *   - createCheckoutSession (no Stripe shortcut / fee guard / live)
@@ -23,13 +22,21 @@ import { withPrismaExports, PRISMA_NAMESPACE } from './helpers/prisma-mock-expor
 // ─── In-memory Prisma ─────────────────────────────────────────────────
 
 let profiles: Map<string, any>
+let affiliateRows: Map<string, any>
 function resetStores() {
   profiles = new Map()
+  affiliateRows = new Map()
 }
 resetStores()
 
 const creatorProfileTable = {
-  findUnique: async (args: any) => profiles.get(args.where.id) ?? null,
+  findUnique: async (args: any) => {
+    if (args.where.id != null) return profiles.get(args.where.id) ?? null
+    if (args.where.userId != null) {
+      for (const p of profiles.values()) if (p.userId === args.where.userId) return p
+    }
+    return null
+  },
   findFirst: async (args: any) => {
     for (const p of profiles.values()) {
       if (args.where.stripeCustomAccountId === p.stripeCustomAccountId) return p
@@ -45,6 +52,33 @@ const creatorProfileTable = {
   },
 }
 
+// Affiliates share one Connect account with the same user's CreatorProfile;
+// the service queries this table by userId during get-or-create. Empty in
+// these tests (no affiliate rows), but the table must exist so the lookups
+// don't throw.
+const affiliateTable = {
+  findUnique: async (args: any) => {
+    if (args.where.id != null) return affiliateRows.get(args.where.id) ?? null
+    if (args.where.userId != null) {
+      for (const a of affiliateRows.values()) if (a.userId === args.where.userId) return a
+    }
+    return null
+  },
+  findFirst: async (args: any) => {
+    for (const a of affiliateRows.values()) {
+      if (args.where.stripeCustomAccountId === a.stripeCustomAccountId) return a
+    }
+    return null
+  },
+  update: async (args: any) => {
+    const existing = affiliateRows.get(args.where.id)
+    if (!existing) throw new Error('not found')
+    const merged = { ...existing, ...args.data }
+    affiliateRows.set(args.where.id, merged)
+    return merged
+  },
+}
+
 const PAYOUT_STATUS = {
   pending_verification: 'pending_verification',
   verified: 'verified',
@@ -54,7 +88,7 @@ const PAYOUT_STATUS = {
 
 mock.module('../lib/prisma', () =>
   withPrismaExports({
-    prisma: { creatorProfile: creatorProfileTable },
+    prisma: { creatorProfile: creatorProfileTable, affiliate: affiliateTable },
     Prisma: PRISMA_NAMESPACE,
   }),
 )
@@ -63,7 +97,9 @@ mock.module('../lib/prisma', () =>
 // only ships the billing enums; layer PayoutStatus on top by overriding the
 // factory return.
 mock.module('../lib/prisma', () => ({
-  ...withPrismaExports({ prisma: { creatorProfile: creatorProfileTable } }),
+  ...withPrismaExports({
+    prisma: { creatorProfile: creatorProfileTable, affiliate: affiliateTable },
+  }),
   PayoutStatus: PAYOUT_STATUS,
 }))
 
@@ -140,87 +176,30 @@ describe('createCustomAccount', () => {
   })
 
   test('returns existing stripeCustomAccountId if already linked', async () => {
-    profiles.set('cp_1', { id: 'cp_1', stripeCustomAccountId: 'acct_existing' })
+    profiles.set('cp_1', { id: 'cp_1', userId: 'u_1', stripeCustomAccountId: 'acct_existing' })
     expect(await svc.createCustomAccount('cp_1', 'a@b.c')).toBe('acct_existing')
   })
 
   test('returns acct_mock_* when Stripe is not configured (no key)', async () => {
     delete process.env.STRIPE_SECRET_KEY
-    profiles.set('cp_2longerid12345', { id: 'cp_2longerid12345' })
+    profiles.set('cp_2longerid12345', { id: 'cp_2longerid12345', userId: 'u_2longerid12345' })
     const id = await svc.createCustomAccount('cp_2longerid12345', 'x@y.z')
     expect(id).toMatch(/^acct_mock_/)
     expect(profiles.get('cp_2longerid12345').stripeCustomAccountId).toBe(id)
   })
 
-  test('calls Stripe and persists returned account id when configured', async () => {
-    profiles.set('cp_3', { id: 'cp_3' })
-    accountsCreateImpl = async (_p: any) => ({ id: 'acct_real_xyz' })
+  test('creates a shared Express account and persists the returned id when configured', async () => {
+    profiles.set('cp_3', { id: 'cp_3', userId: 'u_3' })
+    let captured: any
+    accountsCreateImpl = async (p: any) => {
+      captured = p
+      return { id: 'acct_real_xyz' }
+    }
     const id = await svc.createCustomAccount('cp_3', 'e@e.e', 'US')
     expect(id).toBe('acct_real_xyz')
     expect(profiles.get('cp_3').stripeCustomAccountId).toBe('acct_real_xyz')
-  })
-})
-
-// ──────────────────────────────────────────────────────────────────────
-// submitPayoutDetails
-// ──────────────────────────────────────────────────────────────────────
-
-const SAMPLE_DETAILS = {
-  firstName: 'A',
-  lastName: 'B',
-  email: 'a@b.c',
-  dob: { day: 1, month: 1, year: 1990 },
-  address: {
-    line1: '1 St',
-    city: 'X',
-    state: 'CA',
-    postal_code: '90000',
-    country: 'US',
-  },
-}
-
-describe('submitPayoutDetails', () => {
-  test('self-heals by creating a Connect account when one is missing', async () => {
-    // Post-merge behaviour: rather than rejecting when the Connect account was
-    // never provisioned, submitPayoutDetails now creates it on the fly. In
-    // mock mode (no STRIPE_SECRET_KEY) createCustomAccount mints acct_mock_<id>.
-    delete process.env.STRIPE_SECRET_KEY
-    profiles.set('cp_1', { id: 'cp_1' })
-    await svc.submitPayoutDetails('cp_1', SAMPLE_DETAILS)
-    const p = profiles.get('cp_1')
-    expect(p.stripeCustomAccountId).toBe('acct_mock_cp_1')
-    expect(p.payoutStatus).toBe('pending_verification')
-  })
-
-  test('mock mode: marks pending_verification without calling Stripe', async () => {
-    delete process.env.STRIPE_SECRET_KEY
-    profiles.set('cp_1', { id: 'cp_1', stripeCustomAccountId: 'acct_mock_1' })
-    await svc.submitPayoutDetails('cp_1', SAMPLE_DETAILS)
-    expect(profiles.get('cp_1').payoutStatus).toBe('pending_verification')
-    expect(profiles.get('cp_1').payoutDetailsSubmittedAt).toBeInstanceOf(Date)
-    expect(accountsUpdateSpy).not.toHaveBeenCalled()
-  })
-
-  test('live: includes ssn + external_account when supplied', async () => {
-    profiles.set('cp_1', { id: 'cp_1', stripeCustomAccountId: 'acct_live' })
-    await svc.submitPayoutDetails('cp_1', {
-      ...SAMPLE_DETAILS,
-      ssnLast4: '1234',
-      bankAccountToken: 'btok_x',
-    })
-    expect(accountsUpdateSpy).toHaveBeenCalledTimes(1)
-    const [acctId, params] = accountsUpdateSpy.mock.calls[0]
-    expect(acctId).toBe('acct_live')
-    expect(params.individual.ssn_last_4).toBe('1234')
-    expect(params.external_account).toBe('btok_x')
-  })
-
-  test('live: omits ssn + external_account when not supplied', async () => {
-    profiles.set('cp_1', { id: 'cp_1', stripeCustomAccountId: 'acct_live' })
-    await svc.submitPayoutDetails('cp_1', SAMPLE_DETAILS)
-    const params = accountsUpdateSpy.mock.calls[0][1]
-    expect(params.individual.ssn_last_4).toBeUndefined()
-    expect(params.external_account).toBeUndefined()
+    expect(captured.type).toBe('express')
+    expect(captured.metadata).toEqual({ userId: 'u_3', kind: 'shared' })
   })
 })
 

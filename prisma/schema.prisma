@@ -2775,10 +2775,12 @@ enum CommissionSource {
 /// on every commission write. `code` is the public referral slug used in
 /// `https://shogo.ai/r/<code>` links.
 ///
-/// Payouts piggy-back on a Stripe Connect Custom account (same shape as
-/// CreatorProfile.stripeCustomAccountId, but a separate account because
-/// commissions are taxed differently from marketplace royalties and
-/// Stripe doesn't let one Custom account hold both safely).
+/// Payouts go through a Stripe Connect Express account that is SHARED with
+/// the same user's marketplace CreatorProfile (one connected account per
+/// user). `stripeCustomAccountId` here mirrors
+/// CreatorProfile.stripeCustomAccountId when both rows exist — see
+/// getOrCreateSharedConnectAccountId in stripe-connect.service.ts. (The
+/// column keeps its legacy `Custom`-era name; the account type is Express.)
 model Affiliate {
   id                    String          @id @default(cuid())
   userId                String          @unique

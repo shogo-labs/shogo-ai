@@ -476,11 +476,11 @@ export function marketplaceRoutes() {
         avatarUrl: body.avatarUrl ?? undefined,
         websiteUrl: body.websiteUrl ?? undefined,
       })
-      // Best-effort: provision the Stripe Connect account so payouts can be
-      // configured later. If this fails (network, Stripe outage, missing
-      // config), don't fail the whole request — the profile is already
-      // persisted and `/creator/payout-details` will self-heal the Connect
-      // account on first payout setup. Failing here would surface as
+      // Best-effort: provision the shared Stripe Connect account so payouts
+      // can be configured later. If this fails (network, Stripe outage,
+      // missing config), don't fail the whole request — the profile is
+      // already persisted and `/creator/connect/onboard` will provision the
+      // Connect account on first payout setup. Failing here would surface as
       // "Failed to create creator profile" even though the profile exists,
       // forcing the user to navigate away and back to recover.
       try {
@@ -543,26 +543,32 @@ export function marketplaceRoutes() {
     }
   })
 
-  app.post('/creator/payout-details', async (c) => {
+  // Hosted Stripe Connect onboarding for marketplace creators. Returns an
+  // AccountLink URL the client opens in a browser; Stripe collects KYC + bank
+  // details on its hosted page and `account.updated` webhooks drive the
+  // creator's payoutStatus. The creator + affiliate (if the same user) share
+  // one Connect account, so onboarding either role onboards both.
+  app.post('/creator/connect/onboard', async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {
       return c.json({ error: 'Unauthorized' }, 401)
+    }
+    if (!authCtx.email) {
+      return c.json({ error: 'Email required' }, 400)
     }
     try {
       const profile = await marketplaceService.getCreatorProfile(authCtx.userId)
       if (!profile) {
         return c.json({ error: 'Creator profile not found' }, 404)
       }
-      const details = (await c.req.json()) as stripeConnect.PayoutDetails
-      await stripeConnect.submitPayoutDetails(profile.id, details)
-      return c.json({ ok: true })
+      const onboardUrl = await stripeConnect.createCreatorOnboardingLink(
+        profile.id,
+        authCtx.email,
+      )
+      return c.json({ onboardUrl })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('no Stripe Connect account')) {
-        return c.json({ error: msg }, 400)
-      }
-      console.error('[marketplace] submitPayoutDetails', err)
-      return c.json({ error: 'Failed to submit payout details' }, 500)
+      console.error('[marketplace] createCreatorOnboardingLink', err)
+      return c.json({ error: 'Failed to start payout onboarding' }, 500)
     }
   })
 

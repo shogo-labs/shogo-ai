@@ -17,7 +17,8 @@ import {
   RefreshControl, Platform, Share,
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
-import { useRouter } from 'expo-router'
+import * as WebBrowser from 'expo-web-browser'
+import { useRouter, useLocalSearchParams } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft, Copy, Share2, Wallet, Users, ChevronRight, AlertTriangle, Video,
@@ -33,6 +34,7 @@ function dollars(cents: number): string {
 export default observer(function AffiliateDashboard() {
   const router = useRouter()
   const http = useDomainHttp()
+  const params = useLocalSearchParams<{ connect?: string }>()
 
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -69,6 +71,21 @@ export default observer(function AffiliateDashboard() {
   }, [http])
 
   useEffect(() => { load() }, [load])
+
+  // Pull the latest Connect account status from Stripe (source of truth is
+  // the account.updated webhook, but it can lag), then reload the dashboard.
+  const syncConnect = useCallback(async () => {
+    try { await affiliateApi.getConnectStatus(http) } catch { /* best effort */ }
+    await load()
+  }, [http, load])
+
+  // Returning from Stripe-hosted onboarding (return_url adds ?connect=done)
+  // — refresh payout status so the UI reflects a now-verified account.
+  useEffect(() => {
+    if (params.connect === 'done' || params.connect === 'refresh') {
+      syncConnect()
+    }
+  }, [params.connect, syncConnect])
 
   const referralLink = summary ? buildReferralLink(summary.affiliate.code) : ''
 
@@ -160,7 +177,7 @@ export default observer(function AffiliateDashboard() {
               />
             </View>
 
-            <PayoutSetupCard summary={summary} />
+            <PayoutSetupCard summary={summary} onChanged={syncConnect} />
             <Disclosure />
           </>
         ) : null}
@@ -280,7 +297,9 @@ function NavRow({
   )
 }
 
-function PayoutSetupCard({ summary }: { summary: AffiliateSummary }) {
+function PayoutSetupCard({
+  summary, onChanged,
+}: { summary: AffiliateSummary; onChanged: () => void | Promise<void> }) {
   const http = useDomainHttp()
   const [working, setWorking] = useState(false)
   const verified = summary.affiliate.payoutStatus === 'verified'
@@ -290,13 +309,21 @@ function PayoutSetupCard({ summary }: { summary: AffiliateSummary }) {
     setWorking(true)
     try {
       const res = await affiliateApi.onboardStripeConnect(http)
-      if (res.onboardUrl && Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.open(res.onboardUrl, '_blank')
+      if (!res.onboardUrl) return
+      if (Platform.OS === 'web') {
+        // The return_url (set server-side) brings the browser back to
+        // /affiliate?connect=done, where the dashboard re-syncs status.
+        if (typeof window !== 'undefined') window.open(res.onboardUrl, '_self')
+        return
       }
+      // Native: open the hosted onboarding page; when the in-app browser
+      // is dismissed (completed or cancelled) re-sync the Connect status.
+      await WebBrowser.openBrowserAsync(res.onboardUrl)
+      await onChanged()
     } finally {
       setWorking(false)
     }
-  }, [http])
+  }, [http, onChanged])
 
   return (
     <Card>
