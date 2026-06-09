@@ -56,6 +56,9 @@ export class XtermSession {
   private sentLines: string[] = []
   private currentInputBuffer = ''
   private static readonly MAX_HISTORY = 500
+  private commandBlocks: Array<{ id: number; command: string; promptLine: number; endLine: number; exitCode: number | null }> = []
+  private blockIdSeq = 0
+  private activeNavIndex: number | null = null
 
   constructor(
     private readonly client: PtyClientLike,
@@ -114,6 +117,20 @@ export class XtermSession {
           if (this.sentLines.length > XtermSession.MAX_HISTORY) {
             this.sentLines.length = XtermSession.MAX_HISTORY
           }
+          const buf = term.buffer.active
+          const currentLine = buf.cursorY + buf.viewportY
+          if (this.commandBlocks.length > 0) {
+            const last = this.commandBlocks[this.commandBlocks.length - 1]
+            if (last.endLine === last.promptLine) last.endLine = currentLine
+          }
+          this.commandBlocks.push({
+            id: ++this.blockIdSeq,
+            command: cmd,
+            promptLine: currentLine,
+            endLine: currentLine,
+            exitCode: null,
+          })
+          this.activeNavIndex = null
         }
         this.currentInputBuffer = ''
       } else if (data === '\x7f' || data === '\x08') {
@@ -236,34 +253,49 @@ export class XtermSession {
   /** Returns the list of commands sent to the PTY in this session (newest first). */
   getSentLines(): string[] { return [...this.sentLines] }
 
-  /** Scroll to the nearest command marker above the current viewport top. */
+  /** Navigation state for disabled-styling in the overflow menu. */
+  getNavState(): { commandCount: number; activeIndex: number | null; canPrev: boolean; canNext: boolean } {
+    return {
+      commandCount: this.commandBlocks.length,
+      activeIndex: this.activeNavIndex,
+      canPrev: this.commandBlocks.length > 1,
+      canNext: this.commandBlocks.length > 1,
+    }
+  }
+
+  /** Scroll to the previous command (VS Code ⌘↑). */
   scrollToPrevCommand(): void {
     const term = this.term
     if (!term) return
-    const viewportTop = term.buffer.active.viewportY
-    const live = this.commandMarkers.filter((m) => !m.isDisposed)
-    for (let i = live.length - 1; i >= 0; i--) {
-      if (live[i].line < viewportTop) {
-        term.scrollToLine(live[i].line)
-        return
+    const blocks = this.commandBlocks
+    if (blocks.length === 0) return
+    const viewportY = term.buffer.active.viewportY
+    const curIdx = this.activeNavIndex
+    let targetIdx: number
+    if (curIdx === null) {
+      targetIdx = -1
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        if (blocks[i].promptLine < viewportY) { targetIdx = i; break }
       }
+      if (targetIdx === -1) targetIdx = Math.max(0, blocks.length - 2)
+    } else {
+      targetIdx = Math.max(0, curIdx - 1)
     }
-    if (live.length > 0) term.scrollToLine(live[0].line)
+    this.activeNavIndex = targetIdx
+    term.scrollToLine(blocks[targetIdx].promptLine)
   }
 
-  /** Scroll to the nearest command marker below the current viewport top. */
+  /** Scroll to the next command (VS Code ⌘↓). */
   scrollToNextCommand(): void {
     const term = this.term
     if (!term) return
-    const viewportTop = term.buffer.active.viewportY
-    const live = this.commandMarkers.filter((m) => !m.isDisposed)
-    for (const m of live) {
-      if (m.line > viewportTop) {
-        term.scrollToLine(m.line)
-        return
-      }
-    }
-    if (live.length > 0) term.scrollToLine(live[live.length - 1].line)
+    const blocks = this.commandBlocks
+    if (blocks.length === 0) return
+    const curIdx = this.activeNavIndex
+    if (curIdx === null) return
+    const targetIdx = Math.min(blocks.length - 1, curIdx + 1)
+    this.activeNavIndex = targetIdx
+    term.scrollToLine(blocks[targetIdx].promptLine)
   }
 
   /** Tear down everything. Idempotent. */
@@ -278,6 +310,8 @@ export class XtermSession {
     this.commandMarkers = []
     this.sentLines = []
     this.currentInputBuffer = ''
+    this.commandBlocks = []
+    this.activeNavIndex = null
     try { this.term?.dispose() } catch {}
     this.term = null
     this.fitAddon = null
