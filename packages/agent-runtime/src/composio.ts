@@ -248,8 +248,13 @@ function getComposioClient(): Composio | null {
   const proxyUrl = process.env.TOOLS_PROXY_URL
   const proxyToken = process.env.AI_PROXY_TOKEN
 
+  // Resolve tools/execution against the latest toolkit version. Under SDK 0.6.x
+  // (API v3) the default was the base pinned version `00000000_00`, which only
+  // contains a toolkit's initial-release tools — so newer slugs 404'd at execute
+  // ("Tool X not found" / "Unable to retrieve tool with slug"). SDK 0.10 + API
+  // v3.1 default to `latest`; we pin it explicitly so the behavior is obvious.
   if (apiKey) {
-    composioClient = new Composio({ apiKey })
+    composioClient = new Composio({ apiKey, toolkitVersions: 'latest' })
     console.log('[Composio] Client initialized (direct)')
     return composioClient
   }
@@ -258,6 +263,7 @@ function getComposioClient(): Composio | null {
     composioClient = new Composio({
       apiKey: proxyToken,
       baseURL: `${proxyUrl}/composio`,
+      toolkitVersions: 'latest',
     })
     console.log('[Composio] Client initialized (via proxy)')
     return composioClient
