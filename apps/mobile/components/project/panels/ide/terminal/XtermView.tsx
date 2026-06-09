@@ -56,6 +56,14 @@ export interface XtermViewHandle {
   openFind?: () => void
   /** Open the recent-command picker when the backing renderer supports it. */
   openRecent?: () => void
+  /** Scroll viewport to the previous command boundary marker. */
+  scrollToPrevCommand?: () => void
+  /** Scroll viewport to the next command boundary marker. */
+  scrollToNextCommand?: () => void
+  /** Commands typed in this session (newest first). Falls back to empty array. */
+  getSentLines?: () => string[]
+  /** Combined keyboard + tracker + disk history (newest first). Desktop-only. */
+  getRecentCommands?: () => Array<{ command: string }>
 }
 
 export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function XtermView({
@@ -165,6 +173,16 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       refit: () => desktopHandleRef.current?.refit() ?? sessionRef.current?.fit(),
       openFind: () => desktopHandleRef.current?.openFind?.(),
       openRecent: () => desktopHandleRef.current?.openRecent?.(),
+      scrollToPrevCommand: () => {
+        desktopHandleRef.current?.scrollToPrevCommand?.()
+        sessionRef.current?.scrollToPrevCommand()
+      },
+      scrollToNextCommand: () => {
+        desktopHandleRef.current?.scrollToNextCommand?.()
+        sessionRef.current?.scrollToNextCommand()
+      },
+      getSentLines: () => sessionRef.current?.getSentLines() ?? [],
+      getRecentCommands: () => desktopHandleRef.current?.getRecentCommands?.() ?? [],
     }),
     [],
   )
