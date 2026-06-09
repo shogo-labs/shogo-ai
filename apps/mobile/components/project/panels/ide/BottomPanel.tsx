@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import * as React from "react";
-import { Terminal } from "./Terminal";
+import { Terminal, type TerminalToolbarControls } from "./Terminal";
 import { Problems } from "./Problems";
 import { OutputTab } from "./OutputTab";
 import { DebugConsole } from "./DebugConsole";
@@ -67,6 +67,8 @@ export function BottomPanel({
   const [localNewNonce, setLocalNewNonce] = React.useState(0);
   const effectiveNewSessionNonce = (newSessionNonce ?? 0) + localNewNonce;
 
+  const [terminalControls, setTerminalControls] = React.useState<TerminalToolbarControls | null>(null);
+
   // Panel maximize — fills window height; hides the editor area.
   const [isMaximized, setIsMaximized] = React.useState(false);
   const [panelActionsOpen, setPanelActionsOpen] = React.useState(false);
@@ -121,6 +123,7 @@ export function BottomPanel({
             visible={visible}
             newSessionNonce={effectiveNewSessionNonce}
             onRequestClose={onClose}
+            onControlsChange={setTerminalControls}
           />
         );
       case "Problems":
@@ -159,6 +162,7 @@ export function BottomPanel({
         onPanelActions={() => setPanelActionsOpen((v) => !v)}
         onHide={onClose}
         onClose={onClose}
+        terminalControls={terminalControls}
       />
       {panelActionsOpen && (
         <div
