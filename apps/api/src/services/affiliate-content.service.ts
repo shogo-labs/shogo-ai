@@ -102,6 +102,7 @@ export function contentErrorStatus(code: string): number {
   switch (code) {
     case 'invalid_platform':
     case 'invalid_handle':
+    case 'no_verified_account':
       return 400
     case 'handle_taken':
       return 409
@@ -299,10 +300,17 @@ export async function pollAccount(account: any, now: Date = new Date()): Promise
 
   const affiliate = await prisma.affiliate.findUnique({
     where: { id: account.affiliateId },
-    select: { id: true, userId: true, contentCpmCents: true },
+    select: { id: true, userId: true, contentCpmCents: true, contentProgramStatus: true },
   })
   if (!affiliate) {
     result.error = 'affiliate_not_found'
+    return result
+  }
+  // Earning gate (defensive — `pollAllVerifiedAccounts` already filters on
+  // this): never accrue for an affiliate not approved into the content
+  // program, even if called directly.
+  if (String(affiliate.contentProgramStatus) !== 'approved') {
+    result.error = 'content_program_not_approved'
     return result
   }
 
@@ -520,8 +528,17 @@ export async function pollAllVerifiedAccounts(now: Date = new Date()): Promise<P
 
   // Oldest-connected first. (Kept portable across PG/SQLite — no
   // nulls-ordering clause, which SQLite rejects.)
+  //
+  // Earning gate: only poll handles whose affiliate has been admin-approved
+  // into the video-creator (content CPM) program. A verified handle alone no
+  // longer earns — the affiliate must `apply` and a super admin must approve
+  // (`contentProgramStatus = 'approved'`). Unapproved affiliates accrue
+  // nothing, so there is never a content commission to pay out for them.
   const accounts: any[] = await prisma.affiliateSocialAccount.findMany({
-    where: { verificationStatus: 'verified' },
+    where: {
+      verificationStatus: 'verified',
+      affiliate: { contentProgramStatus: 'approved' },
+    },
     orderBy: { createdAt: 'asc' },
   })
 
@@ -553,6 +570,10 @@ export interface ContentSummary {
     paidCents: number
   }
   cpmCents: { instagram: number; tiktok: number }
+  /** Video-creator program application gate. Earning + payout require 'approved'. */
+  programStatus: 'none' | 'pending' | 'approved' | 'rejected'
+  appliedAt: string | null
+  rejectionReason: string | null
 }
 
 export async function getContentSummary(affiliateId: string): Promise<ContentSummary> {
@@ -576,7 +597,15 @@ export async function getContentSummary(affiliateId: string): Promise<ContentSum
       where: { affiliateId, source: 'content' },
       _sum: { amountCents: true },
     }),
-    prisma.affiliate.findUnique({ where: { id: affiliateId }, select: { contentCpmCents: true } }),
+    prisma.affiliate.findUnique({
+      where: { id: affiliateId },
+      select: {
+        contentCpmCents: true,
+        contentProgramStatus: true,
+        contentAppliedAt: true,
+        contentRejectionReason: true,
+      },
+    }),
     getContentSettings(),
   ])
   const override = affiliate?.contentCpmCents ?? null
@@ -601,5 +630,61 @@ export async function getContentSummary(affiliateId: string): Promise<ContentSum
       paidCents: byStatus.paid ?? 0,
     },
     cpmCents: { instagram: igCpm, tiktok: ttCpm },
+    programStatus: (affiliate?.contentProgramStatus as ContentSummary['programStatus']) ?? 'none',
+    appliedAt: affiliate?.contentAppliedAt ? affiliate.contentAppliedAt.toISOString() : null,
+    rejectionReason: affiliate?.contentRejectionReason ?? null,
   }
+}
+
+// ============================================================================
+// Application (apply → admin approval gate)
+// ============================================================================
+
+/**
+ * Apply to the video-creator (content CPM) program. Requires the affiliate
+ * to have already connected AND verified at least one social handle — the
+ * application is the step after verification, before a super admin approves.
+ *
+ * Idempotent: re-applying while `pending`/`approved` is a no-op that returns
+ * the current status. Re-applying after a `rejected` decision moves back to
+ * `pending` and clears the prior rejection reason.
+ */
+export async function applyToContentProgram(
+  affiliateId: string,
+  now: Date = new Date(),
+): Promise<{ status: 'none' | 'pending' | 'approved' | 'rejected' }> {
+  const affiliate = await prisma.affiliate.findUnique({
+    where: { id: affiliateId },
+    select: { id: true, contentProgramStatus: true },
+  })
+  if (!affiliate) {
+    throw new ContentAffiliateError('affiliate_not_found', 'Affiliate not found')
+  }
+
+  const current = String(affiliate.contentProgramStatus)
+  if (current === 'pending' || current === 'approved') {
+    return { status: current as 'pending' | 'approved' }
+  }
+
+  const verifiedCount = await prisma.affiliateSocialAccount.count({
+    where: { affiliateId, verificationStatus: 'verified' },
+  })
+  if (verifiedCount === 0) {
+    throw new ContentAffiliateError(
+      'no_verified_account',
+      'Connect and verify at least one social handle before applying.',
+    )
+  }
+
+  await prisma.affiliate.update({
+    where: { id: affiliateId },
+    data: {
+      contentProgramStatus: 'pending',
+      contentAppliedAt: now,
+      contentRejectionReason: null,
+      contentReviewedAt: null,
+      contentReviewedBy: null,
+    },
+  })
+  return { status: 'pending' }
 }

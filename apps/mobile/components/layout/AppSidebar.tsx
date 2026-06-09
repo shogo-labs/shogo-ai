@@ -70,7 +70,6 @@ import {
   Key,
   Store,
   Mic,
-  Gift,
   Pin,
   PinOff,
   Archive,
@@ -969,7 +968,10 @@ function UserMenuContent({
 }: UserMenuProps & { onClose: () => void }) {
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   const { theme, setTheme } = useTheme()
-  const { localMode } = usePlatformConfig()
+  const { localMode, shogoKeyConnected } = usePlatformConfig()
+  // The Creator hub (marketplace publishing + referrals) is cloud-backed, so
+  // it only appears in local/desktop mode once signed in to Shogo Cloud.
+  const showCreator = !localMode || !!shogoKeyConnected
 
   return (
     <>
@@ -985,15 +987,17 @@ function UserMenuContent({
           <Text className="text-sm text-foreground">Profile</Text>
         </Pressable>
 
-        <Pressable
-          onPress={() => { onNavigate('/(app)/affiliate'); onClose() }}
-          role="menuitem"
-          accessibilityLabel="Affiliate"
-          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
-        >
-          <Gift size={18} className="text-muted-foreground" />
-          <Text className="text-sm text-foreground">Affiliate</Text>
-        </Pressable>
+        {showCreator && (
+          <Pressable
+            onPress={() => { onNavigate('/(app)/creator'); onClose() }}
+            role="menuitem"
+            accessibilityLabel="Creator"
+            className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+          >
+            <Store size={18} className="text-muted-foreground" />
+            <Text className="text-sm text-foreground">Creator</Text>
+          </Pressable>
+        )}
 
         <Pressable
           onPress={() => setAppearanceOpen(!appearanceOpen)}
