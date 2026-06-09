@@ -10,7 +10,7 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native'
-import { useRouter } from 'expo-router'
+import { Redirect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft,
@@ -156,7 +156,25 @@ function buildDailySeries(
   return { series, lastWindow, prevWindow }
 }
 
-export default observer(function CreatorDashboardScreen() {
+/**
+ * Redirect legacy `/(app)/marketplace/creator` into the unified Creator hub's
+ * Publishing tab. The real UI is {@link CreatorPublishingPanel}, embedded by
+ * the hub.
+ */
+export default function CreatorDashboardRedirect() {
+  return <Redirect href="/(app)/creator?tab=publish" />
+}
+
+/**
+ * The marketplace creator/publishing dashboard body. Rendered by the Creator
+ * hub (`embedded`) or standalone. When embedded, the hub supplies the page
+ * header + tab bar, so we drop the local back-header.
+ */
+export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
+  embedded = false,
+}: {
+  embedded?: boolean
+}) {
   const router = useRouter()
   const { user } = useAuth()
   const http = useDomainHttp()
@@ -250,14 +268,16 @@ export default observer(function CreatorDashboardScreen() {
   if (hasProfile === false) {
     return (
       <View className="flex-1 bg-background">
-        <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
-          <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
-            <ArrowLeft size={20} color="#71717a" />
-          </Pressable>
-          <Text className="text-base font-semibold text-foreground flex-1">
-            Creator Program
-          </Text>
-        </View>
+        {!embedded ? (
+          <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
+            <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
+              <ArrowLeft size={20} color="#71717a" />
+            </Pressable>
+            <Text className="text-base font-semibold text-foreground flex-1">
+              Creator Program
+            </Text>
+          </View>
+        ) : null}
         <ScrollView className="flex-1" contentContainerStyle={{ padding: 24, paddingTop: 16 }}>
           <View className="items-center mt-2 mb-10">
             <View className="w-16 h-16 rounded-full bg-primary/15 items-center justify-center mb-4">
@@ -338,11 +358,15 @@ export default observer(function CreatorDashboardScreen() {
     >
       {/* Header */}
       <View className="flex-row items-center gap-3 mb-6">
-        <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
-          <ArrowLeft size={20} color="#71717a" />
-        </Pressable>
+        {!embedded ? (
+          <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
+            <ArrowLeft size={20} color="#71717a" />
+          </Pressable>
+        ) : null}
         <View className="flex-1">
-          <Text className="text-xl font-bold text-foreground">Creator dashboard</Text>
+          <Text className="text-xl font-bold text-foreground">
+            {embedded ? 'Publishing' : 'Creator dashboard'}
+          </Text>
         </View>
         {profile?.id && (
           <Pressable

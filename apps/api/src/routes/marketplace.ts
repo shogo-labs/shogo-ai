@@ -54,72 +54,15 @@ function parseCreatorIds(v: string | undefined): string[] | undefined {
 export function marketplaceRoutes() {
   const app = new Hono()
 
-  // ── Local mode: serve reads from the local DB, proxy writes to Cloud ─────
-  //
-  // In local/desktop mode (`SHOGO_LOCAL_MODE=true`) the boot migration
-  // populates the local SQLite DB with marketplace listings (first-party
-  // templates + any seed data). All GET/read endpoints are served directly
-  // from the local DB so devs can browse, view listing detail, read
-  // reviews, etc. without needing cloud connectivity.
-  //
-  // Write-path endpoints that need Stripe / cloud auth (install with
-  // payment, payout, etc.) are still proxied to Shogo Cloud when
-  // `SHOGO_API_KEY` is set. Without a key, those endpoints return
-  // `503 { code: 'cloud_signin_required' }`.
-  //
-  // Follow endpoints are always local (Cloud doesn't have them yet).
-  app.use('*', async (c, next) => {
-    if (process.env.SHOGO_LOCAL_MODE !== 'true') return next()
-
-    const path = c.req.path
+  // Forward the current request to Shogo Cloud using the connected
+  // `SHOGO_API_KEY` (local/desktop mode only). Shared by the local-mode
+  // middleware's creator-surface and write-path branches below.
+  const proxyToCloud = async (c: any): Promise<Response> => {
     const method = c.req.method
-
-    // All GET requests are served from the local DB — the boot migration
-    // seeds listings, creator profiles, versions, etc. into SQLite.
-    if (method === 'GET') return next()
-
-    // Follow / creator profile endpoints are always local.
-    if (
-      path.endsWith('/follow') ||
-      path.endsWith('/following') ||
-      path.includes('/creator/')
-    ) {
-      return next()
-    }
-
-    // Free installs can be processed locally (no Stripe needed).
-    // The install service handles workspace forking from local data.
-    if (path.endsWith('/install') && method === 'POST') {
-      return next()
-    }
-
-    // Review submission works locally.
-    if (path.endsWith('/reviews') && method === 'POST') {
-      return next()
-    }
-
-    // Update applies work locally (workspace snapshot extraction).
-    if (path.endsWith('/update') && method === 'POST') {
-      return next()
-    }
-
-    // Uninstall works locally (cancel DB record + remove workspace files).
-    if (path.includes('/installs/') && method === 'DELETE') {
-      return next()
-    }
-
-    // Everything else (paid checkout, Stripe payout, etc.) → proxy to Cloud.
     const cloudKey = process.env.SHOGO_API_KEY
-    if (!cloudKey) {
-      return c.json(
-        { error: 'Sign in to Shogo Cloud to use this marketplace feature.', code: 'cloud_signin_required' },
-        503,
-      )
-    }
-
     const fullUrl = `${getShogoCloudUrl()}${c.req.path}${new URL(c.req.url).search}`
     const headers = new Headers()
-    c.req.raw.headers.forEach((value, key) => {
+    c.req.raw.headers.forEach((value: string, key: string) => {
       const lower = key.toLowerCase()
       if (shouldSkipForwardedHeader(lower)) return
       if (lower === 'authorization') return
@@ -162,6 +105,84 @@ export function marketplaceRoutes() {
       statusText: upstream.statusText,
       headers: responseHeaders,
     })
+  }
+
+  // ── Local mode: serve reads from the local DB, proxy writes to Cloud ─────
+  //
+  // In local/desktop mode (`SHOGO_LOCAL_MODE=true`) the boot migration
+  // populates the local SQLite DB with marketplace listings (first-party
+  // templates + any seed data). All GET/read endpoints are served directly
+  // from the local DB so devs can browse, view listing detail, read
+  // reviews, etc. without needing cloud connectivity.
+  //
+  // Write-path endpoints that need Stripe / cloud auth (install with
+  // payment, payout, etc.) are still proxied to Shogo Cloud when
+  // `SHOGO_API_KEY` is set. Without a key, those endpoints return
+  // `503 { code: 'cloud_signin_required' }`.
+  //
+  // Follow endpoints are always local (Cloud doesn't have them yet).
+  app.use('*', async (c, next) => {
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') return next()
+
+    const path = c.req.path
+    const method = c.req.method
+    const cloudKey = process.env.SHOGO_API_KEY
+
+    // The authenticated creator's OWN dashboard (singular `/creator/*`:
+    // profile, connect/onboard, payout-status, dashboard, listings,
+    // transactions). When a cloud key is connected, proxy the WHOLE surface
+    // (reads + writes) to Shogo Cloud so the unified Creator "Publishing"
+    // panel manages the user's REAL cloud listings/earnings from
+    // local/desktop mode. Without a key we fall through to the existing
+    // local behaviour. Note: `/creators/*` (plural — public discovery +
+    // follow) is intentionally NOT matched and always stays local.
+    const isOwnCreatorSurface = path.includes('/creator/') && !path.includes('/creators/')
+    if (isOwnCreatorSurface && cloudKey) {
+      return proxyToCloud(c)
+    }
+
+    // All GET requests are served from the local DB — the boot migration
+    // seeds listings, creator profiles, versions, etc. into SQLite.
+    if (method === 'GET') return next()
+
+    // Follow / creator profile endpoints are always local.
+    if (
+      path.endsWith('/follow') ||
+      path.endsWith('/following') ||
+      path.includes('/creator/')
+    ) {
+      return next()
+    }
+
+    // Free installs can be processed locally (no Stripe needed).
+    // The install service handles workspace forking from local data.
+    if (path.endsWith('/install') && method === 'POST') {
+      return next()
+    }
+
+    // Review submission works locally.
+    if (path.endsWith('/reviews') && method === 'POST') {
+      return next()
+    }
+
+    // Update applies work locally (workspace snapshot extraction).
+    if (path.endsWith('/update') && method === 'POST') {
+      return next()
+    }
+
+    // Uninstall works locally (cancel DB record + remove workspace files).
+    if (path.includes('/installs/') && method === 'DELETE') {
+      return next()
+    }
+
+    // Everything else (paid checkout, Stripe payout, etc.) → proxy to Cloud.
+    if (!cloudKey) {
+      return c.json(
+        { error: 'Sign in to Shogo Cloud to use this marketplace feature.', code: 'cloud_signin_required' },
+        503,
+      )
+    }
+    return proxyToCloud(c)
   })
 
   app.get('/', async (c) => {
