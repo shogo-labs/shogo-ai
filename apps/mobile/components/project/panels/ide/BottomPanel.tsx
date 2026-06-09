@@ -256,11 +256,13 @@ export function BottomPanel({
               <PanelMenuItem
                 label="Scroll to Previous Command"
                 shortcut="⌘↑"
+                disabled={!terminalControls.canScrollPrev || terminalControls.commandCount < 2}
                 onClick={() => { terminalControls.onScrollPrevCommand(); setPanelActionsOpen(false); }}
               />
               <PanelMenuItem
                 label="Scroll to Next Command"
                 shortcut="⌘↓"
+                disabled={!terminalControls.canScrollNext || terminalControls.commandCount < 2}
                 onClick={() => { terminalControls.onScrollNextCommand(); setPanelActionsOpen(false); }}
               />
               <PanelMenuItem
