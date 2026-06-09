@@ -7,7 +7,7 @@
  * workspace settings analytics tab, and user profile usage section.
  */
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ import {
   ActivityIndicator,
   Image,
   Platform,
+  Modal,
 } from 'react-native'
 import {
   Cpu,
@@ -1272,31 +1273,64 @@ function ChartDropdown<T extends string>({
   onChange: (v: T) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [layout, setLayout] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
+  const triggerRef = useRef<View>(null)
+
+  const measureAndToggle = () => {
+    if (open) {
+      setOpen(false)
+      return
+    }
+    if (triggerRef.current) {
+      triggerRef.current.measureInWindow((x, y, width, height) => {
+        setLayout({ x, y, width, height })
+        setOpen(true)
+      })
+    } else {
+      setOpen(true)
+    }
+  }
+
   return (
-    <View style={{ zIndex: 100 }}>
+    <View ref={triggerRef}>
       <Pressable
-        onPress={() => setOpen((o) => !o)}
+        onPress={measureAndToggle}
         className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background"
       >
         <Text className="text-xs text-foreground">{prefix}: {labels[value]}</Text>
-        <ChevronDown size={12} className="text-muted-foreground" />
+        <ChevronDown
+          size={12}
+          className="text-muted-foreground"
+          style={{ transform: [{ rotate: open ? '180deg' : '0deg' }] }}
+        />
       </Pressable>
-      {open && (
-        <View
-          style={{ zIndex: 100 }}
-          className="absolute top-9 right-0 z-50 min-w-[160px] rounded-md border border-border bg-popover shadow-md"
-        >
-          {options.map((v) => (
-            <Pressable
-              key={v}
-              onPress={() => { onChange(v); setOpen(false) }}
-              className={cn('px-3 py-2', v === value && 'bg-muted')}
+
+      <Modal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}>
+        <View className="flex-1">
+          <Pressable className="flex-1" onPress={() => setOpen(false)} />
+          {layout && (
+            <View
+              className="min-w-[160px] rounded-md border border-border bg-popover shadow-md overflow-hidden"
+              style={{
+                position: 'absolute',
+                top: layout.y + layout.height + 4,
+                left: layout.x + layout.width - Math.max(layout.width, 160),
+                width: Math.max(layout.width, 160),
+              }}
             >
-              <Text className="text-xs text-foreground">{prefix}: {labels[v]}</Text>
-            </Pressable>
-          ))}
+              {options.map((v) => (
+                <Pressable
+                  key={v}
+                  onPress={() => { onChange(v); setOpen(false) }}
+                  className={cn('px-3 py-2', v === value && 'bg-muted')}
+                >
+                  <Text className="text-xs text-foreground">{prefix}: {labels[v]}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
         </View>
-      )}
+      </Modal>
     </View>
   )
 }
