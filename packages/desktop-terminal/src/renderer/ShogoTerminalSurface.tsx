@@ -10,7 +10,6 @@ import { StickyScroll } from './sticky-scroll'
 import { WriteBatcher } from './write-batcher'
 import { GpuRenderer } from './gpu-renderer'
 import { SearchController } from './search-popover'
-import { QuickFixManager } from './quick-fix'
 import { CmdKController, CmdKPopover, type LlmClient } from './cmd-k-popover'
 import { CommandHistorySource, trackerAdapter, type HistoryReader } from './history/history-sources'
 import { RecentCommandPicker, useCommandPicker } from './pickers/recent-pickers'
@@ -82,6 +81,8 @@ export interface ShogoTerminalSurfaceHandle {
   scrollToPrevCommand?(): void
   /** Scroll to the prompt line of the next command (VS Code ⌘↓). */
   scrollToNextCommand?(): void
+  /** Get navigation state for disabled-styling in the overflow menu. */
+  getNavState?(): { commandCount: number; activeIndex: number | null; canPrev: boolean; canNext: boolean }
 }
 
 export interface ShogoTerminalSurfaceProps {
@@ -309,6 +310,19 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     const runWithApprovalRef = React.useRef<(command: string) => void>(() => undefined)
     // Keyboard-intercepted command history (current session only, newest first)
     const keyboardHistoryRef = React.useRef<string[]>([])
+
+    const updateNavIndicatorRef = React.useRef<(term: import('@xterm/xterm').Terminal) => void>(() => {})
+
+    interface CommandBlock {
+      id: number
+      command: string
+      promptLine: number
+      endLine: number
+      exitCode: number | null
+    }
+    let blockIdSeq = 0
+    const commandBlocksRef = React.useRef<CommandBlock[]>([])
+    const activeNavIndexRef = React.useRef<number | null>(null)
     runWithApprovalRef.current = (command: string) => {
       const cmd = command.trim()
       if (!cmd) return
@@ -449,6 +463,35 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           overflow: 'hidden',
         } as CSSStyleDeclaration)
         container.appendChild(gutterEl)
+        container.addEventListener('contextmenu', (ev: MouseEvent) => {
+          const rect = container.getBoundingClientRect()
+          const relX = ev.clientX - rect.left
+          if (relX > GUTTER_W + 12) return
+          ev.preventDefault()
+          ev.stopPropagation()
+          const blocks = commandBlocksRef.current
+          if (blocks.length === 0) return
+          const term = termRef.current
+          if (!term) return
+          const cellH = getCellHeight()
+          const viewportY = term.buffer.active.viewportY
+          const clickY = ev.clientY - rect.top
+          let bestIdx = 0
+          let bestDist = Infinity
+          for (let i = 0; i < blocks.length; i++) {
+            const relRow = blocks[i].promptLine - viewportY
+            const dotCenterY = relRow * cellH + cellH / 2
+            const dist = Math.abs(clickY - dotCenterY)
+            if (dist < bestDist) {
+              bestDist = dist
+              bestIdx = i
+            }
+          }
+          const snap = tracker.snapshot()
+          if (bestIdx < snap.commands.length) {
+            setCmdMenu({ x: ev.clientX, y: ev.clientY, command: snap.commands[bestIdx] })
+          }
+        })
 
         // ── Dot helpers ─────────────────────────────────────────────────
         // Returns the rendered cell height in CSS pixels (robust across
@@ -515,8 +558,47 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
               positionDot(dot)
             }
           }
+          updateNavIndicator(term)
         }
 
+        const navIndicatorEl = document.createElement('div') as HTMLDivElement
+        Object.assign(navIndicatorEl.style, {
+          position: 'absolute',
+          left: '3px',
+          width: '3px',
+          height: '0',
+          background: '#007acc',
+          borderRadius: '1px',
+          transition: 'top 120ms ease-out, opacity 120ms ease-out',
+          opacity: '0',
+          pointerEvents: 'none',
+          zIndex: '31',
+        } as CSSStyleDeclaration)
+        gutterEl.appendChild(navIndicatorEl)
+
+        function updateNavIndicator(term: XTerminal): void { updateNavIndicatorRef.current(term) }
+        function updateNavIndicatorInner(term: XTerminal): void {
+          const navIdx = activeNavIndexRef.current
+          const blocks = commandBlocksRef.current
+          if (navIdx === null || navIdx < 0 || navIdx >= blocks.length) {
+            navIndicatorEl.style.opacity = '0'
+            return
+          }
+          const block = blocks[navIdx]
+          const cellH = getCellHeight()
+          const viewportY = term.buffer.active.viewportY
+          const relRow = block.promptLine - viewportY
+          const visible = relRow >= 0 && relRow < term.rows
+          if (!visible) {
+            navIndicatorEl.style.opacity = '0'
+            return
+          }
+          navIndicatorEl.style.top = `${relRow * cellH}px`
+          navIndicatorEl.style.height = `${cellH}px`
+          navIndicatorEl.style.opacity = '1'
+        }
+
+        updateNavIndicatorRef.current = updateNavIndicatorInner
         term.onScroll(() => repositionAll())
         term.onResize(() => requestAnimationFrame(repositionAll))
 
@@ -561,28 +643,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         const decoder = new OscDecoder()
         const batcher = new WriteBatcher({ sink: term.write.bind(term) })
         tracker.setMarkerFactory({ registerMarker: () => term.registerMarker(0) ?? undefined })
-        const quickFix = new QuickFixManager({
-          host: term,
-          tracker,
-          buffer: {
-            readRows(startLine, endLine) {
-              const rows: string[] = []
-              const base = term.buffer.active.baseY
-              for (let line = startLine; line < endLine; line += 1) {
-                rows.push(term.buffer.active.getLine(line - base)?.translateToString(true) ?? '')
-              }
-              return rows
-            },
-          },
-          onSuggestion(ev) {
-            // Phase 8: gate Quick-Fix run-actions through the approval
-            // store. Insert-only suggestions still flow straight to the
-            // PTY (they're typed at the prompt, not executed).
-            if (ev.suggestion.action.kind === 'run') {
-              runWithApprovalRef.current(ev.suggestion.action.payload)
-            }
-          },
-        })
+
         const gpu = new GpuRenderer({
           term,
           enabled: enableGpu && !!webglMod,
@@ -666,6 +727,17 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
               const dot: GutterDot = { dotEl, marker: rawMarker, rulerDec: null }
               gutterDots.push(dot)
               positionDot(dot)
+              dotEl.style.cursor = 'pointer'
+              dotEl.style.pointerEvents = 'auto'
+              dotEl.addEventListener('click', (clickEv: MouseEvent) => {
+                clickEv.stopPropagation()
+                setCmdMenu({ x: clickEv.clientX, y: clickEv.clientY, command: ev.command })
+              })
+              dotEl.addEventListener('contextmenu', (clickEv: MouseEvent) => {
+                clickEv.preventDefault()
+                clickEv.stopPropagation()
+                setCmdMenu({ x: clickEv.clientX, y: clickEv.clientY, command: ev.command })
+              })
               // Overview-ruler indicator in the scrollbar (width:0 → no visible cell overlay)
               try {
                 const dec = term.registerDecoration({
@@ -682,6 +754,10 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             onCwdChangeRef.current?.(ev.cwd)
           }
           if (ev.kind === 'command-finished') {
+            const blocks = commandBlocksRef.current
+            if (blocks.length > 0) {
+              blocks[blocks.length - 1].exitCode = ev.command.exitCode ?? 0
+            }
             const output = commandOutputRef.current.get(ev.command.id)?.join('') ?? ''
             activeCommandRef.current = null
 
@@ -739,6 +815,24 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
               if (hist.length > MAX_KB_HISTORY) hist.length = MAX_KB_HISTORY
             }
             kbBuffer = ''
+            const buf = term.buffer.active
+            const currentLine = buf.cursorY + buf.viewportY
+            const blocks = commandBlocksRef.current
+            if (blocks.length > 0) {
+              const last = blocks[blocks.length - 1]
+              if (last.endLine === last.promptLine) {
+                last.endLine = currentLine
+              }
+            }
+            blocks.push({
+              id: ++blockIdSeq,
+              command: cmd,
+              promptLine: currentLine,
+              endLine: currentLine,
+              exitCode: null,
+            })
+            activeNavIndexRef.current = null
+            updateNavIndicator(term)
           } else if (data === '\x7f' || data === '\x08') {
             kbBuffer = kbBuffer.slice(0, -1)
           } else if (data.length === 1 && data >= ' ') {
@@ -804,6 +898,8 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         const removeGutter = () => {
           try { container.removeChild(gutterEl) } catch {}
           gutterDots.length = 0
+          commandBlocksRef.current = []
+          activeNavIndexRef.current = null
         }
 
         cleanup = () => {
@@ -816,7 +912,6 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           pendingDecorations.clear()
           ro.disconnect()
           batcher.dispose()
-          quickFix.dispose()
           gpu.dispose()
           search.dispose?.()
           bridgeRef.current?.dispose()
@@ -933,25 +1028,52 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         }
         return merged.slice(0, limit)
       },
+      getNavState: () => {
+        const blocks = commandBlocksRef.current
+        const idx = activeNavIndexRef.current
+        return {
+          commandCount: blocks.length,
+          activeIndex: idx,
+          canPrev: blocks.length > 1,
+          canNext: blocks.length > 1,
+        }
+      },
       scrollToPrevCommand: () => {
         const term = termRef.current
         if (!term) return
-        const anchors = collectPromptAnchors(tracker)
-        if (anchors.length === 0) return
+        const blocks = commandBlocksRef.current
+        if (blocks.length === 0) return
         const viewportY = term.buffer.active.viewportY
-        const cur = viewportY + term.buffer.active.cursorY
-        const target = findPrevPromptLine(anchors, cur) ?? findPrevPromptLine(anchors, cur + 1)
-        if (target) term.scrollToLine(target.line)
+        const currentIdx = activeNavIndexRef.current
+        let targetIdx: number
+        if (currentIdx === null) {
+          targetIdx = -1
+          for (let i = blocks.length - 1; i >= 0; i--) {
+            if (blocks[i].promptLine < viewportY) { targetIdx = i; break }
+          }
+          if (targetIdx === -1) targetIdx = Math.max(0, blocks.length - 2)
+        } else {
+          targetIdx = currentIdx - 1
+          if (targetIdx < 0) targetIdx = 0
+        }
+        activeNavIndexRef.current = targetIdx
+        term.scrollToLine(blocks[targetIdx].promptLine)
+        term.focus()
+        updateNavIndicatorRef.current(term)
       },
       scrollToNextCommand: () => {
         const term = termRef.current
         if (!term) return
-        const anchors = collectPromptAnchors(tracker)
-        if (anchors.length === 0) return
-        const viewportY = term.buffer.active.viewportY
-        const cur = viewportY + term.buffer.active.cursorY
-        const target = findNextPromptLine(anchors, cur)
-        if (target) term.scrollToLine(target.line)
+        const blocks = commandBlocksRef.current
+        if (blocks.length === 0) return
+        const currentIdx = activeNavIndexRef.current
+        if (currentIdx === null) return
+        let targetIdx = currentIdx + 1
+        if (targetIdx >= blocks.length) targetIdx = blocks.length - 1
+        activeNavIndexRef.current = targetIdx
+        term.scrollToLine(blocks[targetIdx].promptLine)
+        term.focus()
+        updateNavIndicatorRef.current(term)
       },
     }), [recentCommandPicker, tracker])
 
@@ -1115,39 +1237,81 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
             onDismiss: () => setMenuPos(null),
           })
         : null,
-      // Phase 6: gutter-glyph click → small action popover. We reuse the
-      // same TerminalContextMenu primitive so visual style + dismissal
-      // (Esc, outside click) match the right-click menu exactly.
       cmdMenu
         ? React.createElement(TerminalContextMenu, {
-            groups: [[
-              {
-                label: 'Copy command',
-                disabled: false,
-                onSelect: () => {
-                  const cmdText = extractCommandText(cmdMenu.command, termRef.current)
-                  if (!cmdText) return
-                  copyToClipboard(cmdText)
-                },
-              },
-              {
-                label: 'Copy output',
-                disabled: !cmdMenu.command.startMarker || !cmdMenu.command.endMarker,
-                onSelect: () => {
-                  const term = termRef.current
-                  const startLine = cmdMenu.command.startMarker?.line
-                  const endLine = cmdMenu.command.endMarker?.line
-                  if (!term || startLine == null || endLine == null) return
-                  const base = term.buffer.active.baseY
-                  const rows: string[] = []
-                  for (let line = startLine; line <= endLine; line += 1) {
-                    rows.push(term.buffer.active.getLine(line - base)?.translateToString(true) ?? '')
-                  }
-                  copyToClipboard(rows.join('\n').trimEnd())
-                },
-              },
-
-            ]],
+            groups: (() => {
+              const cmd = cmdMenu.command
+              const cmdText = extractCommandText(cmd, termRef.current)
+              const hasOutput = !!(cmd.startMarker && cmd.endMarker)
+              const exitCode = cmd.exitCode
+              const success = exitCode === null || exitCode === 0
+              const statusLabel = exitCode == null ? '' : success ? ' (✓ success)' : ` (✗ exit ${exitCode})`
+              return [
+                [
+                  {
+                    label: 'Attach To Chat',
+                    disabled: !cmdText,
+                    onSelect: () => {
+                      const term = termRef.current
+                      if (!term || !cmdText) return
+                      let output = ''
+                      if (hasOutput && cmd.startMarker && cmd.endMarker) {
+                        const base = term.buffer.active.baseY
+                        const rows: string[] = []
+                        for (let line = cmd.startMarker.line; line <= cmd.endMarker.line; line += 1) {
+                          rows.push(term.buffer.active.getLine(line - base)?.translateToString(true) ?? '')
+                        }
+                        output = rows.join('\n').trimEnd()
+                      }
+                      const context = [
+                        '[CONTEXT — auto-generated, do not cite directly]',
+                        '## Terminal Command',
+                        `**Command:** ${cmdText}`,
+                        `**Exit Code:** ${exitCode ?? 'unknown'}`,
+                        output ? `\n**Output:**\n\`\`\`\n${output}\n\`\`\`` : '',
+                        '[END CONTEXT]',
+                      ].filter(Boolean).join('\n')
+                      dispatchAddToChat(context)
+                    },
+                  },
+                ],
+                [
+                  {
+                    label: 'Rerun Command',
+                    disabled: !cmdText,
+                    onSelect: () => {
+                      if (!cmdText) return
+                      const t = termRef.current
+                      if (t) {
+                        t.focus()
+                        t.paste(cmdText + '\r')
+                      }
+                    },
+                  },
+                  {
+                    label: 'Copy Command',
+                    shortcut: '⌘C',
+                    disabled: !cmdText,
+                    onSelect: () => {
+                      if (!cmdText) return
+                      copyToClipboard(cmdText)
+                    },
+                  },
+                ],
+                [
+                  {
+                    label: 'Run Recent Command',
+                    shortcut: '⌃⌥R',
+                    onSelect: () => { window.dispatchEvent(new CustomEvent('shogo:terminal:run-recent-command')) },
+                  },
+                  {
+                    label: 'Go To Recent Directory',
+                    shortcut: '⌘G',
+                    onSelect: () => { window.dispatchEvent(new CustomEvent('shogo:terminal:go-recent-directory')) },
+                  },
+                ],
+              ]
+            })(),
             x: cmdMenu.x,
             y: cmdMenu.y,
             onDismiss: () => setCmdMenu(null),
