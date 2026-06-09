@@ -105,13 +105,19 @@ export function createAutoResumingFetch(
     const initialResponse = await baseFetch(input as any, init)
     if (!initialResponse.ok || !initialResponse.body) return initialResponse
 
-    const turnId = initialResponse.headers.get(TURN_HEADER.TURN_ID)
     const chatSessionId = initialResponse.headers.get(TURN_HEADER.CHAT_SESSION_ID)
-    if (!turnId || !chatSessionId) {
-      // Server didn't tag this response with durable turn metadata —
-      // not a chat stream we can resume. Pass through.
+    if (!chatSessionId) {
+      // Without a chat-session id we can't build the resume URL, so this
+      // isn't a stream we can make durable. Pass through.
       return initialResponse
     }
+    // `X-Turn-Id` is the cloud-pod path's preferred turn marker, but it does
+    // NOT survive the worker tunnel (the worker forwards SSE *body* bytes
+    // only, not the runtime's response headers). When it's absent we fall
+    // back to reading the real turn id out of the body's `data-turn-start`
+    // frame inside `createDurableBody`. Either way, the presence of
+    // `X-Chat-Session-Id` is enough to opt this stream into durable resume.
+    const turnId = initialResponse.headers.get(TURN_HEADER.TURN_ID) || ''
 
     const chatPostUrl = typeof input === 'string'
       ? input
@@ -177,14 +183,20 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       let turnCompleted = false
       let cancelled = false
       let resumeAttempts = 0
+      // The turn id starts from the response header (cloud-pod path) but may
+      // be empty over the tunnel; we backfill it from the first
+      // `data-turn-start` body frame so the resume turn-rotation guard still
+      // works for tunnel-backed chats.
+      let activeTurnId = turnId
       const decoder = new TextDecoder()
       let parseBuf = ''
 
+      const tag = () => (activeTurnId || 'pending').slice(0, 8)
       const log = (msg: string) => {
-        if (logger) logger.log(`[AutoResume:${turnId.slice(0, 8)}] ${msg}`)
+        if (logger) logger.log(`[AutoResume:${tag()}] ${msg}`)
       }
       const warn = (msg: string) => {
-        if (logger) logger.warn(`[AutoResume:${turnId.slice(0, 8)}] ${msg}`)
+        if (logger) logger.warn(`[AutoResume:${tag()}] ${msg}`)
       }
 
       const inspectChunk = (chunk: Uint8Array) => {
@@ -210,7 +222,8 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           // Cheap pre-filter to avoid JSON.parse on every text-delta.
           if (
             !payload.includes('data-turn-seq') &&
-            !payload.includes('data-turn-complete')
+            !payload.includes('data-turn-complete') &&
+            !payload.includes('data-turn-start')
           ) {
             continue
           }
@@ -220,6 +233,11 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
               if (evt.data.seq > lastSeq) lastSeq = evt.data.seq
             } else if (evt?.type === 'data-turn-complete') {
               turnCompleted = true
+            } else if (evt?.type === 'data-turn-start' && typeof evt?.data?.turnId === 'string') {
+              // Backfill the turn id when the transport stripped the header
+              // (tunnel path). Only adopt it if we didn't already get one
+              // from the response header, so a header value stays canonical.
+              if (!activeTurnId) activeTurnId = evt.data.turnId
             }
           } catch {
             /* ignore — wasn't actually one of our markers */
@@ -269,7 +287,18 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
       try {
-        await pumpBody(initialBody, /* resumed */ false)
+        // The initial body can end in two ways: a clean EOF (done) or a
+        // thrown read error when the transport is severed mid-stream (the
+        // tunnel-drop case surfaces as an errored response body). BOTH mean
+        // "the bytes stopped" — and as long as we never saw
+        // `data-turn-complete`, the turn may still be live in the runtime's
+        // durable buffer. Treat an error like an EOF and fall through to the
+        // resume loop instead of aborting the whole durable body.
+        try {
+          await pumpBody(initialBody, /* resumed */ false)
+        } catch (err: any) {
+          warn(`initial body errored mid-stream (${err?.message || err}); will attempt resume`)
+        }
 
         while (!turnCompleted && !cancelled && resumeAttempts < maxResumeAttempts) {
           resumeAttempts++
@@ -292,17 +321,35 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             continue
           }
 
-          if (resumeRes.status === 204 || !resumeRes.body) {
-            log(`resume returned ${resumeRes.status} — turn no longer buffered, stopping`)
+          if (resumeRes.status === 204) {
+            // 204 is the runtime's definitive "no buffered turn for this
+            // session" — the turn is genuinely gone (expired / never
+            // existed). Stop.
+            log(`resume returned 204 — turn no longer buffered, stopping`)
+            try { resumeRes.body?.cancel() } catch { /* noop */ }
             break
+          }
+
+          if (!resumeRes.ok || !resumeRes.body) {
+            // Transient failure: the worker is mid-reconnect so the cloud
+            // can't reach the instance yet (503 instance_offline), a relay
+            // timed out, etc. These are NOT terminal — keep retrying with
+            // backoff until the tunnel comes back. Crucially, do NOT pump
+            // the error body into the AI SDK (it's JSON, not SSE).
+            warn(`resume returned ${resumeRes.status} (transient); retrying`)
+            try { resumeRes.body?.cancel() } catch { /* noop */ }
+            continue
           }
 
           // Confirm we're still talking about the same turn. If the
           // server has rotated to a new turnId on the same session, we
           // would corrupt the AI SDK accumulator by appending the new
-          // turn's bytes onto the old one — bail out instead.
+          // turn's bytes onto the old one — bail out instead. The guard
+          // only trips when BOTH ids are known and differ; over the tunnel
+          // the resume response carries no turn header, so we rely on the
+          // body-derived id staying stable across the resume.
           const resumeTurnId = resumeRes.headers.get(TURN_HEADER.TURN_ID)
-          if (resumeTurnId && resumeTurnId !== turnId) {
+          if (resumeTurnId && activeTurnId && resumeTurnId !== activeTurnId) {
             warn(`resume returned a different turnId (${resumeTurnId}); stopping`)
             try { resumeRes.body.cancel() } catch { /* noop */ }
             break
@@ -310,9 +357,14 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
 
           // Only reset the attempt counter if the resume actually
           // delivered bytes — otherwise an endless loop of empty 200s
-          // would never surface as "stalled".
-          const { bytes } = await pumpBody(resumeRes.body, /* resumed */ true)
-          if (bytes > 0) resumeAttempts = 0
+          // would never surface as "stalled". A mid-resume read error is
+          // again non-terminal: loop back and try another reconnect.
+          try {
+            const { bytes } = await pumpBody(resumeRes.body, /* resumed */ true)
+            if (bytes > 0) resumeAttempts = 0
+          } catch (err: any) {
+            warn(`resume body errored mid-stream (${err?.message || err}); retrying`)
+          }
         }
 
         if (!turnCompleted && !cancelled) {

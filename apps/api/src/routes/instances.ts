@@ -188,7 +188,19 @@ export interface TunnelResponse {
 }
 
 export interface TunnelStreamChunk {
-  type: 'stream-chunk' | 'stream-end' | 'stream-error'
+  /**
+   * `stream-interrupted` is a CLOUD-SYNTHESIZED signal (never sent by the
+   * worker) emitted when the worker's outbound WebSocket drops mid-stream
+   * with an abnormal close (e.g. 1006). Unlike `stream-error` — which means
+   * the upstream runtime genuinely failed and the turn is dead — an
+   * interruption is transient: the agent keeps running and buffering into
+   * the runtime's durable stream buffer, so a resumable consumer (the
+   * Studio auto-resume fetch) should reconnect via `/agent/chat/:id/stream`
+   * rather than treating the half-rendered response as complete. Relay
+   * sites that know the stream is resumable (chat turns) translate this
+   * into a CLEAN end-of-body; everyone else falls back to erroring.
+   */
+  type: 'stream-chunk' | 'stream-end' | 'stream-error' | 'stream-interrupted'
   requestId: string
   data?: string
   error?: string
@@ -393,8 +405,21 @@ export function handleInstanceWsClose(
       pending.reject(new Error('Tunnel disconnected'))
     }
     conn.pendingRequests.clear()
+    // A normal close (1000) or a deliberate eviction (4000, e.g. "Instance
+    // removed") means the worker is gone for good — terminate in-flight
+    // streams with a hard error. Any other close code (1006 abnormal, idle
+    // proxy cut, India-hop flap, etc.) is transient: the worker auto-
+    // reconnects in ~2s and the runtime keeps buffering the turn, so emit
+    // `stream-interrupted` instead. Resumable consumers (chat turns) end
+    // the body cleanly and reconnect via `/agent/chat/:id/stream?fromSeq=N`
+    // rather than freezing on the truncated response.
+    const isTerminalClose = code === 1000 || code === 4000
     for (const [reqId, handler] of conn.streamHandlers) {
-      handler({ type: 'stream-error', requestId: reqId, error: 'Tunnel disconnected' })
+      handler(
+        isTerminalClose
+          ? { type: 'stream-error', requestId: reqId, error: 'Tunnel disconnected' }
+          : { type: 'stream-interrupted', requestId: reqId, error: `Tunnel interrupted (${closeInfo})` },
+      )
     }
     conn.streamHandlers.clear()
     tunnels.delete(instanceId)
@@ -580,7 +605,7 @@ function sendLocalTunnelStreamRequest(
       // After the first chunk, switch to the tighter inter-chunk timeout.
       idleTimer = setTimeout(() => kill('idle'), STREAM_IDLE_TIMEOUT_MS)
     }
-    if (chunk.type === 'stream-end' || chunk.type === 'stream-error') {
+    if (chunk.type === 'stream-end' || chunk.type === 'stream-error' || chunk.type === 'stream-interrupted') {
       clearTimeout(idleTimer)
       clearTimeout(maxTimer)
     }
@@ -1263,6 +1288,16 @@ export function instanceRoutes() {
               if (trackerController) {
                 try { trackerController.close() } catch { /* already closed */ }
               }
+            } else if (chunk.type === 'stream-interrupted') {
+              // Transient worker reconnect: end the body cleanly (NOT an
+              // error) so a chat client's auto-resume reconnects via
+              // `/agent/chat/:id/stream` instead of erroring. For non-chat
+              // streams a clean close is still preferable to a hard error
+              // (the caller just sees a short read it can retry).
+              try { controller.close() } catch { /* already closed */ }
+              if (trackerController) {
+                try { trackerController.close() } catch { /* already closed */ }
+              }
             } else if (chunk.type === 'stream-error') {
               controller.error(new Error(chunk.error || 'Stream error'))
               if (trackerController) {
@@ -1531,6 +1566,15 @@ export function instanceRoutes() {
                   }
                 } else if (chunk.type === 'stream-end') {
                   controller.close()
+                  if (trackerController) {
+                    try { trackerController.close() } catch { /* already closed */ }
+                  }
+                } else if (chunk.type === 'stream-interrupted') {
+                  // Transient worker reconnect (e.g. 1006). End the body
+                  // cleanly so the client's auto-resume reconnects via
+                  // `/agent/chat/:id/stream?fromSeq=N` rather than treating
+                  // the truncated response as the final answer.
+                  try { controller.close() } catch { /* already closed */ }
                   if (trackerController) {
                     try { trackerController.close() } catch { /* already closed */ }
                   }

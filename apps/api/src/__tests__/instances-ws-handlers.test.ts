@@ -173,10 +173,7 @@ describe('instance WebSocket handlers', () => {
     expect(_testing.tunnels.get('inst-1')!.streamHandlers.has('stream-1')).toBe(false)
   })
 
-  test('close rejects pending requests, notifies stream handlers, unregisters ownership, and marks offline', async () => {
-    const ws = fakeWs({ instanceId: 'inst-1' })
-    const rejected: string[] = []
-    const chunks: any[] = []
+  function seedTunnelWithInflight(ws: any, rejected: string[], chunks: any[]) {
     _testing.tunnels.set('inst-1', {
       ws,
       instanceId: 'inst-1',
@@ -192,15 +189,62 @@ describe('instance WebSocket handlers', () => {
         ['stream-1', (chunk: any) => chunks.push(chunk)],
       ]),
     })
+  }
+
+  test('abnormal close (1006) notifies stream handlers with a TRANSIENT interruption (resumable)', async () => {
+    // The exact tunnel-drop scenario: the worker WebSocket dies with 1006
+    // mid-turn. In-flight streams must NOT be hard-errored — the agent keeps
+    // running and buffering, so the relay should see `stream-interrupted` and
+    // end the client SSE cleanly, letting the client auto-resume. Pending
+    // one-shot requests still reject (they can't be resumed), and ownership /
+    // DB status still flip to offline until the worker reconnects.
+    const ws = fakeWs({ instanceId: 'inst-1' })
+    const rejected: string[] = []
+    const chunks: any[] = []
+    seedTunnelWithInflight(ws, rejected, chunks)
+
+    handleInstanceWsClose(ws, 1006, 'Connection ended')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(rejected).toEqual(['Tunnel disconnected'])
+    expect(chunks[0]).toMatchObject({ type: 'stream-interrupted' })
+    expect(chunks[0].error).toContain('code=1006')
+    expect(_testing.tunnels.has('inst-1')).toBe(false)
+    expect(unregistered).toEqual(['inst-1'])
+    expect(instanceUpdates[0]).toMatchObject({ where: { id: 'inst-1' }, data: { status: 'offline' } })
+  })
+
+  test('a codeless close is treated as a transient interruption', async () => {
+    // A close delivered without a code is, in practice, an abnormal
+    // transport-level drop (no close frame). Treat it like 1006.
+    const ws = fakeWs({ instanceId: 'inst-1' })
+    const rejected: string[] = []
+    const chunks: any[] = []
+    seedTunnelWithInflight(ws, rejected, chunks)
 
     handleInstanceWsClose(ws)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(chunks[0]).toMatchObject({ type: 'stream-interrupted' })
+    expect(_testing.tunnels.has('inst-1')).toBe(false)
+  })
+
+  test('normal close (1000) hard-errors in-flight streams (terminal, not resumable)', async () => {
+    // A clean 1000 (idle timeout) or 4000 (deliberate eviction) means the
+    // worker is gone for good — there is nothing to resume, so in-flight
+    // streams get a terminal `stream-error`.
+    const ws = fakeWs({ instanceId: 'inst-1' })
+    const rejected: string[] = []
+    const chunks: any[] = []
+    seedTunnelWithInflight(ws, rejected, chunks)
+
+    handleInstanceWsClose(ws, 1000, 'Idle timeout')
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(rejected).toEqual(['Tunnel disconnected'])
     expect(chunks[0]).toMatchObject({ type: 'stream-error', error: 'Tunnel disconnected' })
     expect(_testing.tunnels.has('inst-1')).toBe(false)
     expect(unregistered).toEqual(['inst-1'])
-    expect(instanceUpdates[0]).toMatchObject({ where: { id: 'inst-1' }, data: { status: 'offline' } })
   })
 
   test('close ignores a stale socket that was superseded by a newer connection', async () => {

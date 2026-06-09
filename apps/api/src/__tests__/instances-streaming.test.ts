@@ -73,7 +73,7 @@ mock.module('../lib/push-notifications', () => ({
 
 const testUser = { id: 'user-1', userId: 'user-1', email: 'test@test.com', role: 'super_admin' }
 
-const { instanceRoutes, _testing, handleInstanceWsMessage } = await import('../routes/instances')
+const { instanceRoutes, _testing, handleInstanceWsMessage, handleInstanceWsClose } = await import('../routes/instances')
 
 function createTestApp() {
   const app = new Hono()
@@ -296,6 +296,120 @@ describe('Streaming Relay — POST /proxy/stream', () => {
     expect(joinedA).not.toContain('B-')
     expect(joinedB).toContain('B-1')
     expect(joinedB).not.toContain('A-')
+  })
+})
+
+// ─── Worker WS drop — the tunnel-resume seam ────────────────────────────────
+//
+// Regression tests for the silent-truncation bug: when the VPS worker's
+// outbound WebSocket drops mid-turn (1006 over the India hop), the agent keeps
+// running and buffering on the worker side. The relay must therefore end the
+// client SSE *cleanly* (so the chat client's auto-resume reconnects via
+// `/agent/chat/:id/stream?fromSeq=N`) instead of surfacing a fatal error that
+// the UI would render as a complete-but-truncated answer.
+//
+// Contrast: a deliberate close (1000 idle / 4000 eviction) means the worker is
+// gone for good — there is nothing to resume, so the body is hard-errored.
+//
+// This exercises the full SSE → WS-close → SSE seam through the real
+// `/proxy/stream` HTTP handler, as the client's `Response` body sees it. The
+// client half of the seam (clean EOF → resume GET) is covered by
+// packages/shared-app/src/chat/__tests__/auto-resuming-fetch.test.ts.
+
+async function readUntilDone(response: Response): Promise<{ text: string; threw: boolean }> {
+  const reader = response.body!.getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  let threw = false
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) text += decoder.decode(value, { stream: true })
+    }
+  } catch {
+    threw = true
+  }
+  return { text, threw }
+}
+
+describe('Streaming Relay — worker WS drop (tunnel resume seam)', () => {
+  beforeEach(resetMocks)
+  afterEach(() => _testing.tunnels.clear())
+
+  test('1006 mid-stream ends the client SSE cleanly (resumable, NOT errored)', async () => {
+    setupMockTunnel(INSTANCE_ID, (msg, ws) => {
+      if (!msg.stream) return
+      // Deliver two chunks of a chat turn, then simulate the worker tunnel
+      // dropping with an abnormal 1006 close while the turn is still in flight.
+      handleInstanceWsMessage(ws, JSON.stringify({
+        type: 'stream-chunk', requestId: msg.requestId, data: 'data: {"part":1}\n\n',
+      }))
+      handleInstanceWsMessage(ws, JSON.stringify({
+        type: 'stream-chunk', requestId: msg.requestId, data: 'data: {"part":2}\n\n',
+      }))
+      setTimeout(() => handleInstanceWsClose(ws, 1006, 'Connection ended'), 5)
+    })
+
+    const app = createTestApp()
+    const res = await app.request(`/api/instances/${INSTANCE_ID}/proxy/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: 'POST', path: '/agent/chat' }),
+    })
+    expect(res.status).toBe(200)
+
+    const { text, threw } = await readUntilDone(res)
+    // A transient drop must NOT throw — the body closes cleanly so the client
+    // can auto-resume rather than freezing on the truncated response.
+    expect(threw).toBe(false)
+    // Everything generated before the drop is still delivered (no data lost
+    // up to the interruption point).
+    expect(text).toContain('"part":1')
+    expect(text).toContain('"part":2')
+  })
+
+  test('a codeless mid-stream drop is also treated as a clean (resumable) close', async () => {
+    setupMockTunnel(INSTANCE_ID, (msg, ws) => {
+      if (!msg.stream) return
+      handleInstanceWsMessage(ws, JSON.stringify({
+        type: 'stream-chunk', requestId: msg.requestId, data: 'data: {"part":1}\n\n',
+      }))
+      // No close code at all == abnormal transport drop (no close frame).
+      setTimeout(() => handleInstanceWsClose(ws), 5)
+    })
+
+    const app = createTestApp()
+    const res = await app.request(`/api/instances/${INSTANCE_ID}/proxy/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: 'POST', path: '/agent/chat' }),
+    })
+
+    const { text, threw } = await readUntilDone(res)
+    expect(threw).toBe(false)
+    expect(text).toContain('"part":1')
+  })
+
+  test('1000 normal close mid-stream hard-errors the client SSE (terminal, not resumable)', async () => {
+    setupMockTunnel(INSTANCE_ID, (msg, ws) => {
+      if (!msg.stream) return
+      handleInstanceWsMessage(ws, JSON.stringify({
+        type: 'stream-chunk', requestId: msg.requestId, data: 'data: {"part":1}\n\n',
+      }))
+      // A clean 1000 (idle timeout) means the worker is gone for good.
+      setTimeout(() => handleInstanceWsClose(ws, 1000, 'Idle timeout'), 5)
+    })
+
+    const app = createTestApp()
+    const res = await app.request(`/api/instances/${INSTANCE_ID}/proxy/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: 'POST', path: '/agent/chat' }),
+    })
+
+    const { threw } = await readUntilDone(res)
+    expect(threw).toBe(true)
   })
 })
 

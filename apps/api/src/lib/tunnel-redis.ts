@@ -412,7 +412,11 @@ interface StreamRelayRequest {
 interface StreamRelayChunk {
   relayId: string
   chunk: {
-    type: 'stream-chunk' | 'stream-end' | 'stream-error'
+    // `stream-interrupted` mirrors the transient-drop signal in
+    // `routes/instances.ts` so a worker WebSocket close on the owning pod
+    // propagates to the requesting pod as a resumable interruption rather
+    // than a terminal error.
+    type: 'stream-chunk' | 'stream-end' | 'stream-error' | 'stream-interrupted'
     requestId: string
     data?: string
     error?: string
@@ -535,7 +539,15 @@ function handleIncomingStreamRelayChunk(msg: StreamRelayChunk) {
   const pending = pendingStreamRelays.get(msg.relayId)
   if (!pending) return
 
-  if (msg.chunk.type === 'stream-end' || msg.chunk.type === 'stream-error') {
+  if (
+    msg.chunk.type === 'stream-end' ||
+    msg.chunk.type === 'stream-error' ||
+    msg.chunk.type === 'stream-interrupted'
+  ) {
+    // All three are terminal for THIS relay subscription. On an
+    // interruption the requesting pod ends the client body cleanly and the
+    // client opens a fresh resume request (new relay) once the worker
+    // reconnects — there is nothing more to deliver on this relay id.
     clearTimeout(pending.timeout)
     pendingStreamRelays.delete(msg.relayId)
   }

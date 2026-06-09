@@ -44,11 +44,30 @@ const STREAMING_PATHS = new Set<string>([
   '/agent/logs/stream',
 ])
 
+/**
+ * The AI SDK's durable-resume reconnect endpoint: `GET /agent/chat/:id/stream`.
+ * It must be relayed as a live SSE stream (not buffered as a one-shot
+ * response) so the client's auto-resume wrapper can pick up live frames the
+ * runtime produced during a disconnect window. Mirrors `CHAT_RESUME_STREAM_RE`
+ * in `routes/instances.ts`.
+ */
+const CHAT_RESUME_STREAM_RE = /^\/agent\/chat\/[^/]+\/stream$/
+
 export function isAgentTunnelStreamingPath(method: string, cleanPath: string): boolean {
   if (method !== 'POST' && method !== 'GET') return false
   // /agent/logs/stream is GET-only; everything else streams under POST.
   if (cleanPath === '/agent/logs/stream') return method === 'GET'
+  // The chat-resume endpoint streams under GET. Without this a reconnect
+  // would be buffered into a one-shot response and the live tail would
+  // never reach the client — defeating durable resume across a tunnel drop.
+  if (CHAT_RESUME_STREAM_RE.test(cleanPath)) return method === 'GET'
   return method === 'POST' && STREAMING_PATHS.has(cleanPath)
+}
+
+/** Extract the chat-session id from a resume path like `/agent/chat/<id>/stream`. */
+function chatSessionIdFromResumePath(cleanPath: string): string | null {
+  const m = cleanPath.match(/^\/agent\/chat\/([^/]+)\/stream$/)
+  return m ? decodeURIComponent(m[1]) : null
 }
 
 export interface TunnelRelayOptions {
@@ -195,6 +214,18 @@ export async function relayAgentProxyViaTunnel(opts: TunnelRelayOptions): Promis
               if (trackerController) {
                 try { trackerController.close() } catch { /* already closed */ }
               }
+            } else if (chunk.type === 'stream-interrupted') {
+              // The worker's tunnel WebSocket dropped mid-turn (e.g. 1006
+              // over the India hop). The agent keeps running and buffering
+              // into the runtime's durable stream buffer, so this is NOT a
+              // terminal error. End the SSE body cleanly — the client's
+              // auto-resume wrapper sees EOF *without* a `data-turn-complete`
+              // marker and reconnects via `/agent/chat/:id/stream?fromSeq=N`,
+              // delivering everything generated during the disconnect.
+              try { controller.close() } catch { /* already closed */ }
+              if (trackerController) {
+                try { trackerController.close() } catch { /* already closed */ }
+              }
             } else if (chunk.type === 'stream-error') {
               controller.error(new Error(chunk.error || 'Stream error'))
               if (trackerController) {
@@ -223,6 +254,25 @@ export async function relayAgentProxyViaTunnel(opts: TunnelRelayOptions): Promis
       'X-Accel-Buffering': 'no',
       Connection: 'keep-alive',
     })
+
+    // Surface the durable-turn session id so the client's auto-resume fetch
+    // wrapper (`createAutoResumingFetch`) recognizes this as a resumable
+    // chat stream and reconnects via `/agent/chat/:id/stream` on a premature
+    // EOF (the tunnel-drop case). Without this header the wrapper treats the
+    // stream as non-durable and a 1006 disconnect silently truncates the
+    // response.
+    //
+    // The worker forwards only SSE *body* bytes over the tunnel, not the
+    // runtime's HTTP response headers, so the runtime's `X-Turn-Id` never
+    // reaches us here. That's fine: the client reads the real turn id from
+    // the body's `data-turn-start` frame. We only need to advertise the
+    // session id, which we already know — from the chat POST (`chatSessionId`)
+    // or, on a resume GET, from the request path itself.
+    const durableChatSessionId = chatSessionId || chatSessionIdFromResumePath(cleanPath)
+    if (durableChatSessionId) {
+      responseHeaders.set('X-Chat-Session-Id', durableChatSessionId)
+    }
+
     applyCorsHeaders(responseHeaders, c.req.header('origin'))
     return new Response(stream, { headers: responseHeaders })
   }
@@ -276,4 +326,8 @@ function applyCorsHeaders(headers: Headers, reqOrigin: string | undefined) {
   headers.set('access-control-allow-headers', '*')
   if (reqOrigin) headers.set('access-control-allow-credentials', 'true')
   headers.set('cross-origin-resource-policy', 'cross-origin')
+  // Cross-origin reads of response headers are hidden by default; the
+  // auto-resume wrapper needs to read the durable-turn headers off the
+  // chat stream response (Studio and the API are different origins).
+  headers.set('access-control-expose-headers', 'X-Turn-Id, X-Chat-Session-Id, X-Last-Seq, X-Turn-Status')
 }
