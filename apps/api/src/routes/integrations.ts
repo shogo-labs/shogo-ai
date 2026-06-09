@@ -163,7 +163,9 @@ function getComposio(): Composio | null {
   if (composioClient) return composioClient
   const apiKey = process.env.COMPOSIO_API_KEY
   if (!apiKey) return null
-  composioClient = new Composio({ apiKey })
+  // Pin 'latest' so toolkit/connection listings match the agent-runtime's
+  // execute-time resolution (see packages/agent-runtime/src/composio.ts).
+  composioClient = new Composio({ apiKey, toolkitVersions: 'latest' })
   return composioClient
 }
 
