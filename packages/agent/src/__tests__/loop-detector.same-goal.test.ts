@@ -11,7 +11,7 @@
  * that actually makes progress is not.
  */
 import { describe, test, expect } from 'bun:test'
-import { LoopDetector } from './loop-detector'
+import { LoopDetector } from '../loop-detector'
 
 describe('LoopDetector — no-progress / same-goal heuristic', () => {
   test('varied tool calls that ALL fail on one goal are flagged as a loop', () => {
