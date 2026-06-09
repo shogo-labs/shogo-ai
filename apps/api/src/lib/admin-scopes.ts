@@ -32,7 +32,7 @@ export const ADMIN_SCOPES = [
     id: "marketing:read",
     label: "Marketing analytics",
     description:
-      "View the Marketing analytics page: signup funnel, acquisition sources, template engagement, user activity, and AI insights digest (read-only).",
+      "View the Marketing analytics page: signup funnel, acquisition sources, user activity, and AI insights digest (read-only).",
   },
   {
     id: "ai:read",
