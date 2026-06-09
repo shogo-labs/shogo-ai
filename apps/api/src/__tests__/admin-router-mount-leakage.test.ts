@@ -63,6 +63,7 @@ mock.module('../services/analytics.service', () => ({
   getOverviewStats: async () => ({}),
   getUsageAnalytics: async () => ({}),
   getCreatorStats: async () => [],
+  getCreatorProfileDetail: async () => ({ userId: 'x', listings: [], affiliate: null }),
 }))
 
 const { authMiddleware, requireAuth } = await import('../middleware/auth')
@@ -93,6 +94,7 @@ beforeEach(() => {
 const OVERVIEW = '/api/admin/analytics/overview'
 const USAGE = '/api/admin/analytics/usage'
 const CREATORS = '/api/admin/creators'
+const CREATOR_DETAIL = '/api/admin/creators/u_123'
 const INFRA = '/api/admin/analytics/infra-current'
 const USERS_CRUD = '/api/admin/users'
 
@@ -111,6 +113,7 @@ describe('admin router mount leakage (both routers at /api/admin)', () => {
     expect((await app.request(OVERVIEW)).status).toBe(200)
     expect((await app.request(USAGE)).status).toBe(200)
     expect((await app.request(CREATORS)).status).toBe(200)
+    expect((await app.request(CREATOR_DETAIL)).status).toBe(200)
     // ...but is still blocked from super-admin-only surfaces.
     expect((await app.request(INFRA)).status).toBe(403)
     expect((await app.request(USERS_CRUD)).status).toBe(403)
@@ -121,14 +124,16 @@ describe('admin router mount leakage (both routers at /api/admin)', () => {
     const app = createApp()
     expect((await app.request(OVERVIEW)).status).toBe(200)
     expect((await app.request(CREATORS)).status).toBe(403)
+    expect((await app.request(CREATOR_DETAIL)).status).toBe(403)
     expect((await app.request(INFRA)).status).toBe(403)
     expect((await app.request(USERS_CRUD)).status).toBe(403)
   })
 
-  test('creators:read admin: creators 200, analytics 403, generated CRUD 403', async () => {
+  test('creators:read admin: creators list + detail 200, analytics 403, generated CRUD 403', async () => {
     currentUser = creatorsAdmin
     const app = createApp()
     expect((await app.request(CREATORS)).status).toBe(200)
+    expect((await app.request(CREATOR_DETAIL)).status).toBe(200)
     expect((await app.request(OVERVIEW)).status).toBe(403)
     expect((await app.request(USERS_CRUD)).status).toBe(403)
   })
@@ -138,6 +143,7 @@ describe('admin router mount leakage (both routers at /api/admin)', () => {
     const app = createApp()
     expect((await app.request(OVERVIEW)).status).toBe(403)
     expect((await app.request(CREATORS)).status).toBe(403)
+    expect((await app.request(CREATOR_DETAIL)).status).toBe(403)
     expect((await app.request(INFRA)).status).toBe(403)
     expect((await app.request(USERS_CRUD)).status).toBe(403)
   })

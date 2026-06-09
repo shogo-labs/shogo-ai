@@ -88,6 +88,46 @@ export interface AdminCreatorStat {
   spendUsd: number
 }
 
+/** A creator's published marketplace listing, summarized for the profile view. */
+export interface AdminCreatorListing {
+  id: string
+  title: string
+  slug: string
+  status: string
+  pricingModel: string
+  installCount: number
+  averageRating: number
+  reviewCount: number
+  currentVersion: string
+  publishedAt: string | null
+}
+
+/** Affiliate-program 360 for a creator who also enrolled as an affiliate. */
+export interface AdminCreatorAffiliate {
+  code: string
+  status: string
+  commissionRateBps: number | null
+  contentCpmCents: number | null
+  totalEarningsUsd: number
+  pendingPayoutUsd: number
+  totalPaidOutUsd: number
+  referralCount: number
+  downlineCount: number
+  referralEarningsUsd: number
+  contentEarningsUsd: number
+}
+
+/** Full per-creator profile returned by GET /api/admin/creators/:userId. */
+export interface AdminCreatorDetail extends AdminCreatorStat {
+  bio: string | null
+  avatarUrl: string | null
+  websiteUrl: string | null
+  createdAt: string
+  badges: { badgeType: string; earnedAt: string }[]
+  listings: AdminCreatorListing[]
+  affiliate: AdminCreatorAffiliate | null
+}
+
 export interface CheckoutParams {
   workspaceId: string
   planId: string
@@ -1446,6 +1486,14 @@ export const api = {
   async getAdminCreators(http: HttpClient) {
     const res = await http.get<{ ok: boolean; data?: AdminCreatorStat[] }>('/api/admin/creators')
     return res.data?.data ?? []
+  },
+
+  /** Full per-creator profile: stats + published listings + affiliate 360. */
+  async getAdminCreatorDetail(http: HttpClient, userId: string) {
+    const res = await http.get<{ ok: boolean; data?: AdminCreatorDetail }>(
+      `/api/admin/creators/${encodeURIComponent(userId)}`,
+    )
+    return res.data?.data ?? null
   },
 
   async completeOnboarding(http: HttpClient) {

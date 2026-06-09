@@ -2568,3 +2568,171 @@ export async function getCreatorStats(): Promise<CreatorStat[]> {
   }))
 }
 
+/** One published marketplace listing, summarized for the creator profile. */
+export interface CreatorListingSummary {
+  id: string
+  title: string
+  slug: string
+  status: string
+  pricingModel: string
+  installCount: number
+  averageRating: number
+  reviewCount: number
+  currentVersion: string
+  publishedAt: string | null
+}
+
+/**
+ * Affiliate-program 360 for a creator who is also an affiliate. Null when the
+ * creator never enrolled in the affiliate program.
+ */
+export interface CreatorAffiliateSummary {
+  code: string
+  status: string
+  /** Per-affiliate L1 commission override in basis points (null = tier rate). */
+  commissionRateBps: number | null
+  /** Per-creator content-CPM override in cents/1k views (null = platform CPM). */
+  contentCpmCents: number | null
+  totalEarningsUsd: number
+  pendingPayoutUsd: number
+  totalPaidOutUsd: number
+  /** Users last-click-attributed to this affiliate. */
+  referralCount: number
+  /** Direct downline affiliates (children in the upline tree). */
+  downlineCount: number
+  /** Lifetime commission split by earning channel, in USD. */
+  referralEarningsUsd: number
+  contentEarningsUsd: number
+}
+
+/** Full per-creator profile: stats + published agents + affiliate 360. */
+export interface CreatorProfileDetail extends CreatorStat {
+  bio: string | null
+  avatarUrl: string | null
+  websiteUrl: string | null
+  createdAt: string
+  badges: { badgeType: string; earnedAt: string }[]
+  listings: CreatorListingSummary[]
+  affiliate: CreatorAffiliateSummary | null
+}
+
+/**
+ * Admin per-creator profile. Joins the creator's marketplace profile, their
+ * published listings, lifetime platform spend (the same Member -> UsageEvent
+ * walk as getCreatorStats), and — when the creator also enrolled as an
+ * affiliate — their affiliate/commission summary. Returns null when no
+ * CreatorProfile exists for `userId`.
+ */
+export async function getCreatorProfileDetail(
+  userId: string,
+): Promise<CreatorProfileDetail | null> {
+  const creator = await prisma.creatorProfile.findUnique({
+    where: { userId },
+    include: {
+      user: { select: { id: true, name: true, email: true } },
+      badges: { select: { badgeType: true, earnedAt: true }, orderBy: { earnedAt: 'desc' } },
+      listings: {
+        orderBy: { installCount: 'desc' },
+        select: {
+          id: true,
+          title: true,
+          slug: true,
+          status: true,
+          pricingModel: true,
+          installCount: true,
+          averageRating: true,
+          reviewCount: true,
+          currentVersion: true,
+          publishedAt: true,
+        },
+      },
+    },
+  })
+  if (!creator) return null
+
+  // Lifetime platform spend: usage is metered per workspace member, so walk
+  // this creator's Member rows back to their UsageEvents and sum billedUsd.
+  const members = await prisma.member.findMany({ where: { userId }, select: { id: true } })
+  const memberIds = members.map((m) => m.id)
+  let spendUsd = 0
+  if (memberIds.length > 0) {
+    const events = await prisma.usageEvent.findMany({
+      where: { memberId: { in: memberIds } },
+      select: { billedUsd: true },
+    })
+    spendUsd = events.reduce((sum, ev) => sum + (ev.billedUsd ?? 0), 0)
+  }
+
+  // Affiliate 360 — nullable; not every creator enrolled in the program.
+  const affiliate = await prisma.affiliate.findUnique({
+    where: { userId },
+    include: {
+      _count: { select: { attributions: true, children: true } },
+      commissions: { select: { source: true, amountCents: true } },
+    },
+  })
+
+  let affiliateSummary: CreatorAffiliateSummary | null = null
+  if (affiliate) {
+    let referralCents = 0
+    let contentCents = 0
+    for (const com of affiliate.commissions) {
+      if (String(com.source) === 'content') contentCents += com.amountCents
+      else referralCents += com.amountCents
+    }
+    affiliateSummary = {
+      code: affiliate.code,
+      status: String(affiliate.status),
+      commissionRateBps: affiliate.commissionRateBps,
+      contentCpmCents: affiliate.contentCpmCents,
+      totalEarningsUsd: affiliate.totalEarningsCents / 100,
+      pendingPayoutUsd: affiliate.pendingPayoutCents / 100,
+      totalPaidOutUsd: affiliate.totalPaidOutCents / 100,
+      referralCount: affiliate._count.attributions,
+      downlineCount: affiliate._count.children,
+      referralEarningsUsd: referralCents / 100,
+      contentEarningsUsd: contentCents / 100,
+    }
+  }
+
+  return {
+    userId: creator.userId,
+    displayName: creator.displayName,
+    name: creator.user?.name ?? null,
+    email: creator.user?.email ?? '',
+    creatorTier: String(creator.creatorTier),
+    reputationScore: creator.reputationScore,
+    verified: creator.verified,
+    totalAgentsPublished: creator.totalAgentsPublished,
+    totalInstalls: creator.totalInstalls,
+    averageAgentRating: creator.averageAgentRating,
+    totalVersionsShipped: creator.totalVersionsShipped,
+    followerCount: creator.followerCount,
+    totalEarningsUsd: creator.totalEarningsInCents / 100,
+    pendingPayoutUsd: creator.pendingPayoutInCents / 100,
+    totalPaidOutUsd: creator.totalPaidOutInCents / 100,
+    spendUsd,
+    bio: creator.bio,
+    avatarUrl: creator.avatarUrl,
+    websiteUrl: creator.websiteUrl,
+    createdAt: creator.createdAt.toISOString(),
+    badges: creator.badges.map((b) => ({
+      badgeType: String(b.badgeType),
+      earnedAt: b.earnedAt.toISOString(),
+    })),
+    listings: creator.listings.map((l) => ({
+      id: l.id,
+      title: l.title,
+      slug: l.slug,
+      status: String(l.status),
+      pricingModel: String(l.pricingModel),
+      installCount: l.installCount,
+      averageRating: l.averageRating,
+      reviewCount: l.reviewCount,
+      currentVersion: l.currentVersion,
+      publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
+    })),
+    affiliate: affiliateSummary,
+  }
+}
+

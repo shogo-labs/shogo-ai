@@ -4,19 +4,23 @@
  * Admin Creators - Marketplace creators with marketplace metrics joined to
  * per-creator platform usage spend. Gated by the `creators:read` admin scope
  * (super admins always have access). Backed by GET /api/admin/creators.
+ *
+ * Each row links to the per-creator profile at /(admin)/creators/:userId.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
+  Pressable,
   ScrollView,
   RefreshControl,
   useWindowDimensions,
 } from 'react-native'
-import { Sparkles, Download, Star, DollarSign, Users } from 'lucide-react-native'
+import { useRouter } from 'expo-router'
+import { Sparkles, Download, Star, DollarSign, Users, ChevronRight } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { API_URL, type AdminCreatorStat } from '../../lib/api'
+import { API_URL, type AdminCreatorStat } from '../../../lib/api'
 
 const CREATORS_URL = `${API_URL}/api/admin/creators`
 
@@ -60,6 +64,7 @@ const COLS = [
   { key: 'rating', label: 'Rating', width: 80, align: 'right' as const },
   { key: 'earnings', label: 'Earnings', width: 110, align: 'right' as const },
   { key: 'spend', label: 'Platform spend', width: 130, align: 'right' as const },
+  { key: 'chevron', label: '', width: 40, align: 'right' as const },
 ]
 
 function HeaderRow() {
@@ -81,9 +86,14 @@ function HeaderRow() {
   )
 }
 
-function CreatorRow({ c }: { c: AdminCreatorStat }) {
+function CreatorRow({ c, onPress }: { c: AdminCreatorStat; onPress: () => void }) {
   return (
-    <View className="flex-row border-b border-border/50 items-center">
+    <Pressable
+      onPress={onPress}
+      role="button"
+      accessibilityLabel={`Open ${c.displayName || c.name || 'creator'} profile`}
+      className="flex-row border-b border-border/50 items-center active:bg-muted/40"
+    >
       <View style={{ width: COLS[0].width }} className="px-3 py-3">
         <View className="flex-row items-center gap-1.5">
           <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
@@ -115,11 +125,15 @@ function CreatorRow({ c }: { c: AdminCreatorStat }) {
       <View style={{ width: COLS[6].width }} className="px-3 py-3">
         <Text className="text-sm font-medium text-foreground text-right">{usd(c.spendUsd)}</Text>
       </View>
-    </View>
+      <View style={{ width: COLS[7].width }} className="px-3 py-3 items-end">
+        <ChevronRight size={16} className="text-muted-foreground" />
+      </View>
+    </Pressable>
   )
 }
 
 export default function AdminCreators() {
+  const router = useRouter()
   const { width } = useWindowDimensions()
   const isWide = width >= 900
   const [creators, setCreators] = useState<AdminCreatorStat[]>([])
@@ -180,7 +194,7 @@ export default function AdminCreators() {
           <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>Creators</Text>
         </View>
         <Text className="text-sm text-muted-foreground mt-0.5">
-          Marketplace creators with publishing metrics and platform usage
+          Marketplace creators with publishing metrics and platform usage. Tap a creator to view their profile.
         </Text>
       </View>
 
@@ -213,7 +227,11 @@ export default function AdminCreators() {
             <View>
               <HeaderRow />
               {creators.map((c) => (
-                <CreatorRow key={c.userId} c={c} />
+                <CreatorRow
+                  key={c.userId}
+                  c={c}
+                  onPress={() => router.push(`/(admin)/creators/${c.userId}` as any)}
+                />
               ))}
             </View>
           </ScrollView>
