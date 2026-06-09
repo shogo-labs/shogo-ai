@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import * as React from 'react'
-import { ChevronDown, Maximize2, Minimize2, MoreHorizontal, Plus, X } from 'lucide-react-native'
+import { ChevronDown, Maximize2, Minimize2, MoreHorizontal, Plus, X, Trash2, SquareSplitHorizontal, Terminal as TerminalIcon } from 'lucide-react-native'
+import { SHELL_LABELS, SHELL_OPTIONS } from './terminal/useShellName'
 import {
   BOTTOM_PANEL_TABS,
   type BottomPanelTab,
@@ -54,6 +55,7 @@ export interface PanelTabStripProps {
    * copy to new window, etc.). Renders `…`.
    */
   onPanelActions?(): void
+  terminalControls?: import("./Terminal").TerminalToolbarControls | null
 }
 
 export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
@@ -63,6 +65,11 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
     isMaximized = false,
     onPanelActions,
   } = props
+  const tc = props.activeTab === "Terminal" ? (props.terminalControls ?? null) : null
+  const [shellMenuOpen, setShellMenuOpen] = React.useState(false)
+  React.useEffect(() => {
+    if (props.activeTab !== "Terminal") setShellMenuOpen(false)
+  }, [props.activeTab])
   const tabRefs = React.useRef(new Map<BottomPanelTab, HTMLButtonElement>())
   const stripRef = React.useRef<HTMLDivElement | null>(null)
   const [indicator, setIndicator] = React.useState<{ left: number; width: number } | null>(null)
@@ -141,8 +148,10 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
                   <span
                     data-testid={`tab-badge-${t}`}
                     aria-hidden="true"
-                    className="inline-block h-1.5 w-1.5 rounded-full bg-red-500"
-                  />
+                    className="inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-[#0078d4] px-[3px] text-[9px] font-semibold leading-none text-white"
+                  >
+                    {badge > 99 ? '99+' : badge}
+                  </span>
                 )}
               </span>
             </button>
@@ -166,57 +175,139 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
           }}
         />
       </div>
-      <div className="flex items-center gap-0.5">
-        {/* +▾  New Terminal — only shown when Terminal tab is active */}
-        {onNewTerminal && props.activeTab === 'Terminal' && (
-          <button
-            type="button"
-            onClick={onNewTerminal}
-            title="New Terminal  (⌘⇧`)"
-            aria-label="New Terminal"
-            className="flex items-center rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
-          >
-            <Plus size={14} />
-          </button>
+      <div className="flex items-center pl-1">
+        {tc ? (
+          <div className="flex items-center gap-[1px]">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShellMenuOpen((v) => !v)}
+                title="Select Default Profile"
+                aria-label={`Terminal profile: ${tc.shellName}`}
+                className="flex items-center gap-[4px] rounded px-[6px] py-[3px] text-[11px] text-[#cccccc] hover:bg-[#ffffff1a] hover:text-white"
+              >
+                <TerminalIcon size={11} className="shrink-0" />
+                <span>{tc.shellName}</span>
+                <ChevronDown size={9} className="text-[#858585]" />
+              </button>
+              {shellMenuOpen && (
+                <div
+                  role="menu"
+                  aria-label="Select shell profile"
+                  className="absolute right-0 top-full z-50 mt-1 w-32 rounded border border-[#454545] bg-[#252526] py-1 shadow-xl"
+                  onMouseLeave={() => setShellMenuOpen(false)}
+                >
+                  {SHELL_OPTIONS.map((opt) => (
+                    <button
+                      key={opt}
+                      role="menuitem"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-[#cccccc] hover:bg-[#0078d4]/60"
+                      onClick={() => { tc.onPickProfile(opt); setShellMenuOpen(false); }}
+                    >
+                      <TerminalIcon size={11} />
+                      <span>{SHELL_LABELS[opt] ?? opt}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={tc.onNew}
+              title="New Terminal  (⌘⇧`)"
+              aria-label="New Terminal"
+              className="flex items-center rounded p-[4px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            >
+              <Plus size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={tc.onNew}
+              title="Launch Profile…"
+              aria-label="Launch Profile"
+              className="flex items-center rounded p-[4px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            >
+              <ChevronDown size={11} />
+            </button>
+            <button
+              type="button"
+              onClick={tc.onSplitRight}
+              title="Split Terminal Right  (⌘\)"
+              aria-label="Split Terminal"
+              className="flex items-center rounded p-[4px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            >
+              <SquareSplitHorizontal size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={tc.onKillActive}
+              title="Kill Terminal"
+              aria-label="Kill Terminal"
+              className={`flex items-center rounded p-[4px] hover:bg-[#ffffff1a] ${tc.running ? "text-[#f48771] hover:text-[#f48771]" : "text-[#858585] hover:text-white"}`}
+            >
+              <Trash2 size={13} />
+            </button>
+            {onPanelActions && (
+              <button
+                type="button"
+                onClick={onPanelActions}
+                title="Views and More Actions…"
+                aria-label="More panel actions"
+                className="flex items-center rounded p-[4px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+              >
+                <MoreHorizontal size={14} />
+              </button>
+            )}
+            <span aria-hidden="true" className="mx-[3px] h-4 w-px bg-[#3c3c3c]" />
+          </div>
+        ) : (
+          <div className="flex items-center gap-[1px]">
+            {onNewTerminal && props.activeTab === "Terminal" && (
+              <button
+                type="button"
+                onClick={onNewTerminal}
+                title="New Terminal  (⌘⇧`)"
+                aria-label="New Terminal"
+                className="flex items-center rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+              >
+                <Plus size={13} />
+              </button>
+            )}
+            {props.onHide && (
+              <button
+                type="button"
+                onClick={props.onHide}
+                title="Hide panel  (⌘J)"
+                aria-label="Hide panel"
+                className="flex items-center rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+              >
+                <ChevronDown size={13} />
+              </button>
+            )}
+            {onPanelActions && (
+              <button
+                type="button"
+                onClick={onPanelActions}
+                title="More panel actions"
+                aria-label="More panel actions"
+                className="rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+              >
+                <MoreHorizontal size={13} />
+              </button>
+            )}
+            <span aria-hidden="true" className="mx-[3px] h-4 w-px bg-[#3c3c3c]" />
+          </div>
         )}
-        {/* …  Panel actions */}
-        {onPanelActions && (
-          <button
-            type="button"
-            onClick={onPanelActions}
-            title="More panel actions"
-            aria-label="More panel actions"
-            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
-          >
-            <MoreHorizontal size={14} />
-          </button>
-        )}
-        {/* Divider between panel-actions and window controls */}
-        {(onNewTerminal || onPanelActions) && (
-          <span aria-hidden="true" className="mx-1 h-4 w-px bg-[#3c3c3c]" />
-        )}
-        {/* ⛶  Maximize / restore panel */}
         {onMaximize && (
           <button
             type="button"
             onClick={onMaximize}
-            title={isMaximized ? 'Restore panel size  (⌘J)' : 'Maximize panel size  (⌘J)'}
-            aria-label={isMaximized ? 'Restore panel size' : 'Maximize panel size'}
+            title={isMaximized ? "Restore panel size  (⌘J)" : "Maximize panel size  (⌘J)"}
+            aria-label={isMaximized ? "Restore panel size" : "Maximize panel size"}
             aria-pressed={isMaximized}
-            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            className="rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
           >
-            {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-          </button>
-        )}
-        {props.onHide && (
-          <button
-            type="button"
-            onClick={props.onHide}
-            title="Hide panel  (⌘J)"
-            aria-label="Hide panel"
-            className="flex items-center gap-1 rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
-          >
-            <ChevronDown size={14} />
+            {isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
         )}
         {props.onClose && (
@@ -225,9 +316,9 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
             onClick={props.onClose}
             title="Close panel"
             aria-label="Close panel"
-            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            className="rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
           >
-            <X size={14} />
+            <X size={13} />
           </button>
         )}
       </div>
