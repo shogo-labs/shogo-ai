@@ -214,7 +214,7 @@ export function DrawerHost({
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Editor/canvas area — hidden when panel is maximized */}
-      <div className={isPanelMaximized ? 'h-0 overflow-hidden' : 'relative flex-1 min-h-0'}>
+      <div className={isPanelMaximized ? 'relative h-0 overflow-hidden' : 'relative flex-1 min-h-0'}>
         {children}
       </div>
       {open ? (
