@@ -64,6 +64,8 @@ export interface XtermViewHandle {
   getSentLines?: () => string[]
   /** Combined keyboard + tracker + disk history (newest first). Desktop-only. */
   getRecentCommands?: () => Array<{ command: string }>
+  /** Navigation state for disabled-styling in the overflow menu. */
+  getNavState?: () => { commandCount: number; activeIndex: number | null; canPrev: boolean; canNext: boolean }
 }
 
 export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function XtermView({
@@ -183,6 +185,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       },
       getSentLines: () => sessionRef.current?.getSentLines() ?? [],
       getRecentCommands: () => desktopHandleRef.current?.getRecentCommands?.() ?? [],
+      getNavState: () => desktopHandleRef.current?.getNavState?.() ?? sessionRef.current?.getNavState?.() ?? { commandCount: 0, activeIndex: null, canPrev: false, canNext: false },
     }),
     [],
   )
