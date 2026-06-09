@@ -343,7 +343,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         description: 'Called GitHub list issues tool directly',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'wrote-code-file',
@@ -370,7 +370,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         validate: (r) => {
           const searchIdx = r.toolCalls.findIndex(t => t.name === 'search_integrations')
           const installIdx = r.toolCalls.findIndex(t => t.name === 'connect')
-          const fetchIdx = r.toolCalls.findIndex(t => t.name === 'GITHUB_LIST_ISSUES')
+          const fetchIdx = r.toolCalls.findIndex(t => t.name === 'GITHUB_LIST_REPOSITORY_ISSUES')
           const writeIdx = r.toolCalls.findIndex(t => t.name === 'write_file')
           return searchIdx >= 0 && installIdx > searchIdx && fetchIdx > installIdx && writeIdx > fetchIdx
         },

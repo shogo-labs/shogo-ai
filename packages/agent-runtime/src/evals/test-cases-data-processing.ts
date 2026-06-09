@@ -84,10 +84,10 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
       },
       {
         id: 'called-list-issues',
-        description: 'Called GITHUB_LIST_ISSUES to fetch issues',
+        description: 'Called GITHUB_LIST_REPOSITORY_ISSUES to fetch issues',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'created-prisma-schema',
@@ -227,10 +227,10 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
       },
       {
         id: 'called-list-issues',
-        description: 'Called GITHUB_LIST_ISSUES to fetch issues',
+        description: 'Called GITHUB_LIST_REPOSITORY_ISSUES to fetch issues',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'created-prisma-schema',
