@@ -210,6 +210,8 @@ export interface TerminalToolbarControls {
   onRunActiveFile: () => void;
   onRunSelectedText: () => void;
   onGoToRecentDirectory: () => void;
+  onNewWithProfile?: (profile: string) => void;
+  onSplitWithProfile?: (profile: string) => void;
 }
 
 export function Terminal({
@@ -1077,6 +1079,14 @@ export function Terminal({
       onRunActiveFile: runActiveFile,
       onRunSelectedText: runSelectedText,
       onGoToRecentDirectory: openRecentDir,
+      onNewWithProfile: (profile: string) => {
+        setShellName(profile as ShellName);
+        addSession();
+      },
+      onSplitWithProfile: (profile: string) => {
+        setShellName(profile as ShellName);
+        splitSession("row");
+      },
     });
   }, [shellName, running, active?.id, active?.client, onControlsChange,
       scrollPrevCommand, scrollNextCommand, runActiveFile, runSelectedText, openRecentDir, navState]);
@@ -1742,8 +1752,16 @@ function SessionTabs({
         <PhasedTerminalHeader
           activeId={activeId}
           onNew={onAdd}
+          onNewWithProfile={(profile) => {
+            setShellName(profile);
+            addSession();
+          }}
           onSplit={onSplit}
           onSplitDown={onSplitDown}
+          onSplitWithProfile={(profile) => {
+            setShellName(profile);
+            splitSession("row");
+          }}
           onKillActive={onKillActive}
           running={running}
           onStop={onStop}
@@ -2286,6 +2304,8 @@ function PhasedTerminalHeader(props: {
   onConfigure: () => void;
   onRunRecent: () => void;
   clearDisabled: boolean;
+  onNewWithProfile?: (profile: string) => void;
+  onSplitWithProfile?: (profile: string) => void;
 }) {
   const { shellName, setShellName } = useShellName(props.activeId);
   return (
@@ -2293,8 +2313,10 @@ function PhasedTerminalHeader(props: {
       shellName={shellName}
       onPickProfile={setShellName}
       onNew={props.onNew}
+      onNewWithProfile={props.onNewWithProfile}
       onSplit={props.onSplit}
       onSplitDown={props.onSplitDown}
+      onSplitWithProfile={props.onSplitWithProfile}
       onKill={props.onKillActive}
       running={props.running}
       onStop={props.onStop}
