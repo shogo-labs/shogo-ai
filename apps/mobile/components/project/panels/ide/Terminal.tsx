@@ -65,6 +65,7 @@ import {
   type AutoReplyRule,
   type AutoReplyState,
 } from "./terminal/auto-replies";
+import { ideBottomPanelStore } from "../../../../lib/ide-bottom-panel-store";
 
 /**
  * The IDE "Terminal" — a real PTY-backed shell, one per tab.
@@ -201,6 +202,11 @@ export interface TerminalToolbarControls {
   onPickProfile: (name: ShellName) => void;
   onConfigure: () => void;
   onRunRecent: () => void;
+  onScrollPrevCommand: () => void;
+  onScrollNextCommand: () => void;
+  onRunActiveFile: () => void;
+  onRunSelectedText: () => void;
+  onGoToRecentDirectory: () => void;
 }
 
 export function Terminal({
@@ -232,6 +238,10 @@ export function Terminal({
   const [activeId, setActiveId] = useState<string>(() => sessions[0]?.id ?? "t0");
   const [confirming, setConfirming] = useState<PresetCommandDto | null>(null);
   const [terminalSettingsOpen, setTerminalSettingsOpen] = useState(false);
+  const [cwdHistory, setCwdHistory] = useState<string[]>([]);
+  const [recentDirOpen, setRecentDirOpen] = useState(false);
+  const [recentCmdOpen, setRecentCmdOpen] = useState(false);
+  const [recentCmdList, setRecentCmdList] = useState<string[]>([]);
   // Per-group split layout (Phase 3 — vertical + mixed grid splits).
   // Lazily initialised: any group not in this map renders a flat horizontal
   // row built from its sessions, matching the pre-split-tree behaviour.
@@ -296,7 +306,18 @@ export function Terminal({
   const activeGroupId = active?.groupId ?? "";
 
   const patchSession = useCallback((id: string, patch: (s: Session) => Session) => {
-    setSessions((prev) => patchSessionInList(prev, id, patch));
+    setSessions((prev) => {
+      const next = patchSessionInList(prev, id, patch);
+      const patched = next.find((s) => s.id === id);
+      const cwd = patched?.cwd;
+      if (cwd) {
+        setCwdHistory((h) => {
+          const deduped = [cwd, ...h.filter((d) => d !== cwd)];
+          return deduped.slice(0, 50);
+        });
+      }
+      return next;
+    });
   }, []);
 
   const renameGroup = useCallback((groupId: string, label: string | null) => {
@@ -853,9 +874,19 @@ export function Terminal({
   // the container was previously `display: none`.
   useEffect(() => {
     if (!visible) return;
-    const handle = xtermRefs.current.get(activeId);
-    handle?.refit();
-    handle?.focus();
+    const id = activeId;
+    let raf2: number;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const handle = xtermRefs.current.get(id);
+        handle?.refit();
+        handle?.focus();
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2!);
+    };
   }, [visible, activeId]);
 
   // ─── Toolbar actions ────────────────────────────────────────────────
@@ -875,8 +906,66 @@ export function Terminal({
 
   const openRecent = useCallback(() => {
     if (!active) return;
-    xtermRefs.current.get(active.id)?.openRecent?.();
+    const handle = xtermRefs.current.get(active.id);
+    // Prefer the combined keyboard+tracker+disk list (desktop), fall back to
+    // web session-only keyboard history.
+    const fromDesktop = handle?.getRecentCommands?.() ?? [];
+    const fromWeb = handle?.getSentLines?.() ?? [];
+    const commands = fromDesktop.length > 0
+      ? fromDesktop.map((e) => e.command)
+      : fromWeb;
+    setRecentCmdList(commands);
+    setRecentCmdOpen(true);
   }, [active]);
+
+  const scrollPrevCommand = useCallback(() => {
+    if (!active) return;
+    xtermRefs.current.get(active.id)?.scrollToPrevCommand?.();
+  }, [active]);
+
+  const scrollNextCommand = useCallback(() => {
+    if (!active) return;
+    xtermRefs.current.get(active.id)?.scrollToNextCommand?.();
+  }, [active]);
+
+  const runActiveFile = useCallback(() => {
+    const filePath = ideBottomPanelStore.getActiveEditorPath();
+    if (!filePath || !active?.client) return;
+    const name = filePath.split('/').pop() ?? filePath;
+    const ext = name.split('.').pop()?.toLowerCase() ?? '';
+    const cmds: Record<string, string> = {
+      py: `python3 "${name}"`,
+      js: `node "${name}"`,
+      mjs: `node "${name}"`,
+      cjs: `node "${name}"`,
+      ts: `npx ts-node "${name}"`,
+      tsx: `npx ts-node "${name}"`,
+      sh: `bash "${name}"`,
+      bash: `bash "${name}"`,
+      zsh: `zsh "${name}"`,
+      rb: `ruby "${name}"`,
+      go: `go run "${name}"`,
+      php: `php "${name}"`,
+      pl: `perl "${name}"`,
+      r: `Rscript "${name}"`,
+    };
+    const cmd = cmds[ext] ?? `./"${name}"`;
+    active.client.send(`${cmd}
+`);
+    xtermRefs.current.get(active.id)?.focus();
+  }, [active]);
+
+  const runSelectedText = useCallback(() => {
+    const text = ideBottomPanelStore.getEditorSelectionText();
+    if (!text?.trim() || !active?.client) return;
+    active.client.send(`${text.trim()}
+`);
+    xtermRefs.current.get(active.id)?.focus();
+  }, [active]);
+
+  const openRecentDir = useCallback(() => {
+    setRecentDirOpen(true);
+  }, []);
 
   /**
    * Run a preset by typing its command into the active shell. We hand it
@@ -951,8 +1040,14 @@ export function Terminal({
       onPickProfile: setShellName,
       onConfigure: () => setTerminalSettingsOpen(true),
       onRunRecent: openRecent,
+      onScrollPrevCommand: scrollPrevCommand,
+      onScrollNextCommand: scrollNextCommand,
+      onRunActiveFile: runActiveFile,
+      onRunSelectedText: runSelectedText,
+      onGoToRecentDirectory: openRecentDir,
     });
-  }, [shellName, running, active?.id, active?.client, onControlsChange]);
+  }, [shellName, running, active?.id, active?.client, onControlsChange,
+      scrollPrevCommand, scrollNextCommand, runActiveFile, runSelectedText, openRecentDir]);
 
   useEffect(() => {
     return () => { onControlsChange?.(null); };
@@ -1069,7 +1164,7 @@ export function Terminal({
           onConfirm={() => runCommand(confirming, true)}
         />
       )}
-      {terminalSettingsOpen && (
+      {terminalSettingsOpen && createPortal(
         <TerminalSettingsModal
           onClose={() => setTerminalSettingsOpen(false)}
           onOpenAutoReplies={() => {
@@ -1078,7 +1173,38 @@ export function Terminal({
               window.dispatchEvent(new CustomEvent("shogo:terminal:auto-replies"));
             }
           }}
-        />
+        />,
+        document.body
+      )}
+      {recentDirOpen && createPortal(
+        <RecentDirectoryPicker
+          dirs={cwdHistory}
+          onSelect={(dir) => {
+            setRecentDirOpen(false);
+            if (active?.client) {
+              active.client.send(`cd "${dir}"
+`);
+              xtermRefs.current.get(active.id)?.focus();
+            }
+          }}
+          onClose={() => setRecentDirOpen(false)}
+        />,
+        document.body
+      )}
+      {recentCmdOpen && createPortal(
+        <RecentCommandPickerModal
+          commands={recentCmdList}
+          onSelect={(cmd) => {
+            setRecentCmdOpen(false);
+            if (active?.client) {
+              active.client.send(`${cmd}
+`);
+              xtermRefs.current.get(active.id)?.focus();
+            }
+          }}
+          onClose={() => setRecentCmdOpen(false)}
+        />,
+        document.body
       )}
     </div>
   );
@@ -1110,7 +1236,7 @@ function TerminalAllInstanceList({
   onCloseSession: (sessionId: string) => void;
   onSplitSession: () => void;
 }): React.ReactElement | null {
-  if (groups.length === 0) return null;
+  if (groups.length < 2) return null;
 
   type InstanceRow =
     | { kind: "group"; groupId: string; label: string; isActive: boolean }
@@ -1785,7 +1911,7 @@ function ConfirmDangerous({
 }) {
   const titleId = "destructive-confirm-title"
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60">
       <div
         role="dialog"
         aria-modal="true"
@@ -1847,6 +1973,130 @@ function useTerminalSettings() {
     });
   }, []);
   return { settings, set };
+}
+
+function RecentCommandPickerModal({
+  commands,
+  onSelect,
+  onClose,
+}: {
+  commands: string[];
+  onSelect: (cmd: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = React.useState("");
+  const filtered = query.trim()
+    ? commands.filter((c) => c.toLowerCase().includes(query.toLowerCase()))
+    : commands;
+
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] flex items-start justify-center bg-black/40 pt-16"
+      onClick={onClose}
+    >
+      <div
+        className="w-[560px] max-w-[90vw] rounded-md border border-[#454545] bg-[#252526] shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center border-b border-[#454545] px-3 py-2 gap-2">
+          <span className="text-[11px] text-[#858585] shrink-0">Run Recent Command</span>
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Type to filter commands..."
+            className="flex-1 bg-transparent text-[12px] text-[#cccccc] outline-none placeholder:text-[#585858]"
+          />
+        </div>
+        <div className="max-h-72 overflow-y-auto py-1">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-[11px] text-[#585858]">
+              {commands.length === 0
+                ? "No command history yet — run some commands first"
+                : "No matching commands"}
+            </div>
+          ) : (
+            filtered.map((cmd, i) => (
+              <button
+                key={i}
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[#cccccc] hover:bg-[#0078d4]/60"
+                onClick={() => onSelect(cmd)}
+              >
+                <span className="font-mono truncate">{cmd}</span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecentDirectoryPicker({
+  dirs,
+  onSelect,
+  onClose,
+}: {
+  dirs: string[];
+  onSelect: (dir: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = React.useState("");
+  const filtered = query.trim()
+    ? dirs.filter((d) => d.toLowerCase().includes(query.toLowerCase()))
+    : dirs;
+
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] flex items-start justify-center bg-black/40 pt-16"
+      onClick={onClose}
+    >
+      <div
+        className="w-[480px] max-w-[90vw] rounded-md border border-[#454545] bg-[#252526] shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center border-b border-[#454545] px-3 py-2 gap-2">
+          <span className="text-[11px] text-[#858585] shrink-0">Go to Directory</span>
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter directories..."
+            className="flex-1 bg-transparent text-[12px] text-[#cccccc] outline-none placeholder:text-[#585858]"
+          />
+        </div>
+        <div className="max-h-64 overflow-y-auto py-1">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-[11px] text-[#585858]">No matching directories</div>
+          ) : (
+            filtered.map((dir) => (
+              <button
+                key={dir}
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[#cccccc] hover:bg-[#0078d4]/60"
+                onClick={() => onSelect(dir)}
+              >
+                <span className="font-mono">{dir}</span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function TerminalSettingsModal({
