@@ -33,6 +33,33 @@ import { useGlobalShortcuts } from "../../../../hooks/useGlobalShortcuts";
  * via `role`/`aria-*` so tests can query by role rather than implementation
  * details (Tailwind class strings). See `BottomPanel.rtl.test.tsx`.
  */
+
+function PanelMenuItem({
+  label,
+  shortcut,
+  onClick,
+  disabled = false,
+}: {
+  label: string;
+  shortcut?: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      role="menuitem"
+      disabled={disabled}
+      className={`flex w-full items-center justify-between px-3 py-1.5 text-xs ${
+        disabled ? "cursor-default text-[#585858]" : "text-[#cccccc] hover:bg-[#0078d4]/60"
+      }`}
+      onClick={disabled ? undefined : onClick}
+    >
+      <span>{label}</span>
+      {shortcut && <span className="ml-6 text-[#858585]">{shortcut}</span>}
+    </button>
+  );
+}
+
 export function BottomPanel({
   projectId,
   newSessionNonce,
@@ -72,6 +99,38 @@ export function BottomPanel({
   // Panel maximize — fills window height; hides the editor area.
   const [isMaximized, setIsMaximized] = React.useState(false);
   const [panelActionsOpen, setPanelActionsOpen] = React.useState(false);
+  const moreButtonRef = React.useRef<HTMLButtonElement>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+  const [menuPos, setMenuPos] = React.useState<{ top: number; right: number; maxH: number } | null>(null);
+
+  React.useEffect(() => {
+    if (!panelActionsOpen) return;
+    const recalc = () => {
+      const btn = moreButtonRef.current;
+      if (!btn) return;
+      const r = btn.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - r.bottom - 8;
+      const spaceAbove = r.top - 8;
+      const fitsBelow = spaceBelow >= 200;
+      const maxH = Math.min(Math.max(fitsBelow ? spaceBelow : spaceAbove, 120), window.innerHeight - 24);
+      const top = fitsBelow ? r.bottom + 4 : r.top - Math.min(maxH, 400) - 4;
+      setMenuPos({ top, right: window.innerWidth - r.right, maxH });
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (
+        menuRef.current && !menuRef.current.contains(e.target as Node) &&
+        moreButtonRef.current && !moreButtonRef.current.contains(e.target as Node)
+      ) {
+        setPanelActionsOpen(false);
+      }
+    };
+    window.addEventListener('resize', recalc, { passive: true });
+    window.addEventListener('pointerdown', onPointerDown, { capture: true });
+    return () => {
+      window.removeEventListener('resize', recalc);
+      window.removeEventListener('pointerdown', onPointerDown, { capture: true });
+    };
+  }, [panelActionsOpen]);
   const onMaximizeChangeRef = React.useRef(onMaximizeChange);
   onMaximizeChangeRef.current = onMaximizeChange;
   const handleMaximize = React.useCallback(() => {
@@ -159,33 +218,87 @@ export function BottomPanel({
         onNewTerminal={() => setLocalNewNonce((n) => n + 1)}
         onMaximize={handleMaximize}
         isMaximized={isMaximized}
-        onPanelActions={() => setPanelActionsOpen((v) => !v)}
+        onPanelActions={() => {
+          const btn = moreButtonRef.current;
+          if (btn) {
+            const r = btn.getBoundingClientRect();
+            const spaceBelow = window.innerHeight - r.bottom - 8;
+            const spaceAbove = r.top - 8;
+            const fitsBelow = spaceBelow >= 200;
+            const maxH = Math.min(Math.max(fitsBelow ? spaceBelow : spaceAbove, 120), window.innerHeight - 24);
+            const top = fitsBelow ? r.bottom + 4 : r.top - Math.min(maxH, 400) - 4;
+            const right = window.innerWidth - r.right;
+            setMenuPos({ top, right, maxH });
+          }
+          setPanelActionsOpen((v) => !v);
+        }}
+        moreButtonRef={moreButtonRef}
         onHide={onClose}
         onClose={onClose}
         terminalControls={terminalControls}
       />
-      {panelActionsOpen && (
+      {panelActionsOpen && menuPos && (
         <div
           role="menu"
           aria-label="Panel actions"
-          className="absolute right-1 top-7 z-50 w-52 rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl"
-          onMouseLeave={() => setPanelActionsOpen(false)}
+          style={{
+            position: 'fixed',
+            top: menuPos.top,
+            right: menuPos.right,
+            maxHeight: menuPos.maxH,
+            zIndex: 9999,
+          }}
+          ref={menuRef}
+          className="w-64 min-w-[180px] overflow-y-auto rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl"
         >
-          <button
-            role="menuitem"
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#0078d4]/60"
+          {tab === "Terminal" && terminalControls && (
+            <>
+              <PanelMenuItem
+                label="Scroll to Previous Command"
+                shortcut="⌘↑"
+                onClick={() => { terminalControls.onScrollPrevCommand(); setPanelActionsOpen(false); }}
+              />
+              <PanelMenuItem
+                label="Scroll to Next Command"
+                shortcut="⌘↓"
+                onClick={() => { terminalControls.onScrollNextCommand(); setPanelActionsOpen(false); }}
+              />
+              <PanelMenuItem
+                label="Clear Terminal"
+                shortcut="⌘K"
+                onClick={() => { terminalControls.onClear(); setPanelActionsOpen(false); }}
+                disabled={terminalControls.clearDisabled}
+              />
+              <PanelMenuItem
+                label="Run Active File"
+                onClick={() => { terminalControls.onRunActiveFile(); setPanelActionsOpen(false); }}
+              />
+              <PanelMenuItem
+                label="Run Selected Text"
+                onClick={() => { terminalControls.onRunSelectedText(); setPanelActionsOpen(false); }}
+              />
+              <div className="my-1 border-t border-[#454545]" />
+              <PanelMenuItem
+                label="Go to Recent Directory..."
+                shortcut="⌘G"
+                onClick={() => { terminalControls.onGoToRecentDirectory(); setPanelActionsOpen(false); }}
+              />
+              <PanelMenuItem
+                label="Run Recent Command..."
+                shortcut="⌃⌥R"
+                onClick={() => { terminalControls.onRunRecent(); setPanelActionsOpen(false); }}
+              />
+              <div className="my-1 border-t border-[#454545]" />
+            </>
+          )}
+          <PanelMenuItem
+            label={isMaximized ? "Restore Panel Size" : "Maximize Panel Size"}
             onClick={() => { handleMaximize(); setPanelActionsOpen(false); }}
-          >
-            {isMaximized ? 'Restore Panel Size' : 'Maximize Panel Size'}
-          </button>
-          <div className="my-1 border-t border-[#454545]" />
-          <button
-            role="menuitem"
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#0078d4]/60"
+          />
+          <PanelMenuItem
+            label="Close Panel"
             onClick={() => { onClose?.(); setPanelActionsOpen(false); }}
-          >
-            Close Panel
-          </button>
+          />
         </div>
       )}
       {/*

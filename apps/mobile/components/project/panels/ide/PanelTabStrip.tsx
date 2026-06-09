@@ -55,6 +55,7 @@ export interface PanelTabStripProps {
    * copy to new window, etc.). Renders `…`.
    */
   onPanelActions?(): void
+  moreButtonRef?: React.RefObject<HTMLButtonElement>
   terminalControls?: import("./Terminal").TerminalToolbarControls | null
 }
 
@@ -64,6 +65,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
     onMaximize,
     isMaximized = false,
     onPanelActions,
+    moreButtonRef,
   } = props
   const tc = props.activeTab === "Terminal" ? (props.terminalControls ?? null) : null
   const [shellMenuOpen, setShellMenuOpen] = React.useState(false)
@@ -249,6 +251,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
             </button>
             {onPanelActions && (
               <button
+                ref={moreButtonRef}
                 type="button"
                 onClick={onPanelActions}
                 title="Views and More Actions…"
@@ -286,6 +289,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
             )}
             {onPanelActions && (
               <button
+                ref={moreButtonRef}
                 type="button"
                 onClick={onPanelActions}
                 title="More panel actions"
