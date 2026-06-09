@@ -651,6 +651,13 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         const ro = new ResizeObserver(() => fit.fit())
         ro.observe(container)
         client.resize(term.cols, term.rows)
+        // First-terminal stagger fix: the bottom panel may still be
+        // animating when Terminal 1 opens, causing fit.fit() to measure
+        // a slightly-too-narrow column count. Schedule a confirmatory
+        // refit one animation frame later — by then the layout has
+        // settled and the shell receives the correct SIGWINCH column
+        // count, eliminating the truncated-username wrap artifact.
+        requestAnimationFrame(() => { fitRef.current?.fit() })
         if (autoFocus && !hidden) term.focus()
 
         // Publish terminal context to the module-level store so the chat
