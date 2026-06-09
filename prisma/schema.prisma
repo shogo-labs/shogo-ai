@@ -2769,6 +2769,16 @@ enum CommissionSource {
   content
 }
 
+/// Application/approval state for the video-creator (content CPM) program.
+/// `none` = never applied; `pending` = applied, awaiting admin review;
+/// `approved` = may earn + be paid content CPM; `rejected` = denied.
+enum ContentProgramStatus {
+  none
+  pending
+  approved
+  rejected
+}
+
 /// One per user who has opted into the affiliate program. The self-relation
 /// (`parent` / `children`) builds the upline tree. `depth` is denormalized
 /// (root = 1) so payout-time tree walks stay fast without recursive joins
@@ -2815,6 +2825,17 @@ model Affiliate {
   contentCpmCents       Int?
   /// Set when the user accepted the affiliate terms during enroll.
   termsAcceptedAt       DateTime?
+  /// Video-creator (content CPM) program application gate. Both EARNING
+  /// (the poller only accrues for approved affiliates) and PAYOUT of
+  /// `source='content'` commissions require `approved`. Flips to `pending`
+  /// when the affiliate applies (requires >= 1 verified handle); a super
+  /// admin then approves/rejects on the per-creator admin page.
+  contentProgramStatus   ContentProgramStatus @default(none)
+  contentAppliedAt       DateTime?
+  contentReviewedAt      DateTime?
+  /// User id of the admin who approved/rejected the content application.
+  contentReviewedBy      String?
+  contentRejectionReason String?
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
 

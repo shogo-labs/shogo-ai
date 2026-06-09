@@ -2065,6 +2065,11 @@ model Affiliate {
   commissionRateBps        Int?
   contentCpmCents          Int?
   termsAcceptedAt          DateTime?
+  contentProgramStatus     String    @default("none")
+  contentAppliedAt         DateTime?
+  contentReviewedAt        DateTime?
+  contentReviewedBy        String?
+  contentRejectionReason   String?
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
 

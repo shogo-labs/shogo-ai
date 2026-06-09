@@ -101,6 +101,13 @@ const prismaStub: any = {
       let rows = accounts.filter((a) => {
         if (where?.affiliateId && a.affiliateId !== where.affiliateId) return false
         if (where?.verificationStatus && a.verificationStatus !== where.verificationStatus) return false
+        // Relation filter: only handles whose affiliate is in the requested
+        // content-program state (the earning gate added to pollAllVerifiedAccounts).
+        const wantStatus = where?.affiliate?.contentProgramStatus
+        if (wantStatus) {
+          const aff = affiliates.get(a.affiliateId)
+          if (!aff || aff.contentProgramStatus !== wantStatus) return false
+        }
         return true
       })
       if (orderBy?.createdAt === 'asc') rows = rows.sort((a, b) => +a.createdAt - +b.createdAt)
@@ -123,6 +130,12 @@ const prismaStub: any = {
       if (idx >= 0) accounts.splice(idx, 1)
       return {}
     },
+    count: async ({ where }: any = {}) =>
+      accounts.filter((a) => {
+        if (where?.affiliateId && a.affiliateId !== where.affiliateId) return false
+        if (where?.verificationStatus && a.verificationStatus !== where.verificationStatus) return false
+        return true
+      }).length,
   },
   affiliatePost: {
     findUnique: async ({ where }: any) => {
@@ -267,7 +280,19 @@ beforeEach(() => {
   posts = []
   snapshots = []
   commissions = []
-  affiliates = new Map([['aff-1', { id: 'aff-1', userId: 'user-1', pendingPayoutCents: 0, contentCpmCents: null }]])
+  affiliates = new Map([
+    [
+      'aff-1',
+      {
+        id: 'aff-1',
+        userId: 'user-1',
+        pendingPayoutCents: 0,
+        contentCpmCents: null,
+        // Approved into the video-creator program — earning is gated on this.
+        contentProgramStatus: 'approved',
+      },
+    ],
+  ])
   nextId = 0
   fakeProvider.profile = { providerUserId: 'puid-1', bio: '', displayName: 'Tester' }
   fakeProvider.postsToReturn = []
@@ -435,6 +460,50 @@ describe('pollAccount — CPM math', () => {
     expect(commissions).toHaveLength(0)
     expect(accounts[0].lastError).toContain('units exhausted')
   })
+
+  test('does not accrue when the affiliate is not approved into the program', async () => {
+    affiliates.get('aff-1')!.contentProgramStatus = 'pending'
+    const account = await connectVerified()
+    fakeProvider.postsToReturn = [makePost({ views: 5000 })]
+    const res = await svc.pollAccount(account)
+    expect(res.error).toBe('content_program_not_approved')
+    expect(commissions).toHaveLength(0)
+    expect(affiliates.get('aff-1')!.pendingPayoutCents).toBe(0)
+  })
+})
+
+describe('applyToContentProgram', () => {
+  test('moves none → pending when a verified handle exists', async () => {
+    affiliates.get('aff-1')!.contentProgramStatus = 'none'
+    await connectVerified()
+    const { status } = await svc.applyToContentProgram('aff-1')
+    expect(status).toBe('pending')
+    expect(affiliates.get('aff-1')!.contentProgramStatus).toBe('pending')
+    expect(affiliates.get('aff-1')!.contentAppliedAt).toBeInstanceOf(Date)
+  })
+
+  test('rejects when no verified handle is connected', async () => {
+    affiliates.get('aff-1')!.contentProgramStatus = 'none'
+    await svc.addSocialAccount('aff-1', 'tiktok', 'unverified') // pending only
+    await expect(svc.applyToContentProgram('aff-1')).rejects.toMatchObject({
+      code: 'no_verified_account',
+    })
+  })
+
+  test('is a no-op when already approved', async () => {
+    affiliates.get('aff-1')!.contentProgramStatus = 'approved'
+    const { status } = await svc.applyToContentProgram('aff-1')
+    expect(status).toBe('approved')
+  })
+
+  test('re-applies from rejected back to pending', async () => {
+    affiliates.get('aff-1')!.contentProgramStatus = 'rejected'
+    affiliates.get('aff-1')!.contentRejectionReason = 'low quality'
+    await connectVerified()
+    const { status } = await svc.applyToContentProgram('aff-1')
+    expect(status).toBe('pending')
+    expect(affiliates.get('aff-1')!.contentRejectionReason).toBeNull()
+  })
 })
 
 describe('getContentSummary', () => {
@@ -472,5 +541,14 @@ describe('poll-affiliate-content cron', () => {
     const res = await job.runPollAffiliateContent()
     expect(res.accountsPolled).toBe(1)
     expect(res.newCommissionCents).toBe(100)
+  })
+
+  test('skips verified accounts whose affiliate is not approved', async () => {
+    affiliates.get('aff-1')!.contentProgramStatus = 'pending'
+    await connectVerified('tiktok', 'creator')
+    fakeProvider.postsToReturn = [makePost({ views: 1000 })]
+    const res = await job.runPollAffiliateContent()
+    expect(res.accountsPolled).toBe(0)
+    expect(res.newCommissionCents).toBe(0)
   })
 })
