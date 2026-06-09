@@ -183,7 +183,7 @@ export const COMPOSIO_EVALS: AgentEval[] = [
         description: 'Called GitHub list issues tool directly',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'response-has-issues',
