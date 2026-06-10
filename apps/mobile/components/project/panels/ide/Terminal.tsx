@@ -579,8 +579,10 @@ export function Terminal({
 
   // ─── Session add / split / close ────────────────────────────────────
   // "New Terminal": a fresh group → its own tab, rendered as a single pane.
-  const addSession = useCallback(() => {
-    const s = makeSession(undefined, shellNameRef.current);
+  const addSession = useCallback((overrideShell?: string) => {
+    // Guard: React's onClick passes a SyntheticEvent as the first arg.
+    const shell = typeof overrideShell === 'string' ? overrideShell : undefined;
+    const s = makeSession(undefined, shell ?? shellNameRef.current);
     setSessions((prev) => addSessionToList(prev, s));
     setGroupLayouts((prev) => {
       const next = new Map(prev);
@@ -599,12 +601,13 @@ export function Terminal({
   // Down). Default is 'row' so all existing call sites and shortcuts that
   // pass no argument keep their horizontal-split behaviour.
   const splitSession = useCallback(
-    (direction: "row" | "column" = "row") => {
+    (direction: "row" | "column" = "row", overrideShell?: string) => {
       const current =
         sessionsRef.current.find((x) => x.id === activeIdRef.current) ??
         sessionsRef.current[0];
       if (!current) return;
-      const s = makeSession(current.groupId, shellNameRef.current);
+      const shell = typeof overrideShell === 'string' ? overrideShell : undefined;
+      const s = makeSession(current.groupId, shell ?? shellNameRef.current);
       setSessions((prev) => addSplitToList(prev, s));
       setGroupLayouts((prev) => {
         const next = new Map(prev);
@@ -1083,14 +1086,10 @@ export function Terminal({
       onRunSelectedText: runSelectedText,
       onGoToRecentDirectory: openRecentDir,
       onNewWithProfile: (profile: string) => {
-        shellNameRef.current = profile as ShellName;
-        setShellName(profile as ShellName);
-        addSession();
+        addSession(profile);
       },
       onSplitWithProfile: (profile: string) => {
-        shellNameRef.current = profile as ShellName;
-        setShellName(profile as ShellName);
-        splitSession("row");
+        splitSession("row", profile);
       },
     });
   }, [shellName, active?.shell, running, active?.id, active?.client, onControlsChange,
@@ -1758,14 +1757,12 @@ function SessionTabs({
           activeId={activeId}
           onNew={onAdd}
           onNewWithProfile={(profile) => {
-            setShellName(profile);
-            addSession();
+            addSession(profile);
           }}
           onSplit={onSplit}
           onSplitDown={onSplitDown}
           onSplitWithProfile={(profile) => {
-            setShellName(profile);
-            splitSession("row");
+            splitSession("row", profile);
           }}
           onKillActive={onKillActive}
           running={running}
