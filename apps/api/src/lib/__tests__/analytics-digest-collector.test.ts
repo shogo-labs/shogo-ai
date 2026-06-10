@@ -276,6 +276,48 @@ describe('start/stopAnalyticsDigestCollector', () => {
     }
   })
 
+  it('does NOT schedule a timer outside the main region', () => {
+    const realSetTimeout = globalThis.setTimeout
+    const originalRegion = process.env.REGION_ID
+    let scheduled = false
+    ;(globalThis as any).setTimeout = (..._a: any[]) => {
+      scheduled = true
+      return realSetTimeout(() => {}, 0) as any
+    }
+    try {
+      process.env.REGION_ID = 'eu-frankfurt-1'
+      startAnalyticsDigestCollector(fakePrisma)
+      expect(scheduled).toBe(false)
+      process.env.REGION_ID = 'ap-mumbai-1'
+      startAnalyticsDigestCollector(fakePrisma)
+      expect(scheduled).toBe(false)
+    } finally {
+      ;(globalThis as any).setTimeout = realSetTimeout
+      if (originalRegion === undefined) delete process.env.REGION_ID
+      else process.env.REGION_ID = originalRegion
+    }
+  })
+
+  it('schedules a timer in the main region (us-ashburn-1)', () => {
+    const realSetTimeout = globalThis.setTimeout
+    const originalRegion = process.env.REGION_ID
+    let scheduled = false
+    ;(globalThis as any).setTimeout = (..._a: any[]) => {
+      scheduled = true
+      return realSetTimeout(() => {}, 0) as any
+    }
+    try {
+      process.env.REGION_ID = 'us-ashburn-1'
+      startAnalyticsDigestCollector(fakePrisma)
+      expect(scheduled).toBe(true)
+      stopAnalyticsDigestCollector()
+    } finally {
+      ;(globalThis as any).setTimeout = realSetTimeout
+      if (originalRegion === undefined) delete process.env.REGION_ID
+      else process.env.REGION_ID = originalRegion
+    }
+  })
+
   it('timer callback runs generateDigest then re-schedules (success path, lines 267-269,273)', async () => {
     const realSetTimeout = globalThis.setTimeout
     const calls: Array<() => Promise<void> | void> = []
