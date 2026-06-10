@@ -241,6 +241,27 @@ function getAuthConfigs(): ComposioAuthConfigs {
 
 let composioClient: Composio | null = null
 
+/**
+ * Directories the SDK is allowed to read local files from during *automatic*
+ * file upload (when `dangerouslyAllowAutoUploadDownloadFiles` is on). Passing a
+ * value REPLACES the SDK default (`~/.composio/temp`), so we re-add it and add
+ * the agent's workspace root — that's where the agent writes the media it then
+ * passes to `file_uploadable` tool fields (e.g. YOUTUBE_UPLOAD_VIDEO's
+ * `videoFilePath`). `WORKSPACE_DIR` mirrors the resolution in server.ts. The
+ * built-in sensitive-path denylist (`.ssh`, `.aws`, `.env`, …) stays on.
+ */
+function getComposioFileUploadDirs(): string[] {
+  const workspaceDir =
+    process.env.WORKSPACE_DIR ||
+    process.env.AGENT_DIR ||
+    process.env.PROJECT_DIR ||
+    '/app/workspace'
+  const home = process.env.HOME
+  const dirs = [workspaceDir]
+  if (home) dirs.push(`${home}/.composio/temp`)
+  return dirs
+}
+
 function getComposioClient(): Composio | null {
   if (composioClient) return composioClient
 
@@ -253,8 +274,20 @@ function getComposioClient(): Composio | null {
   // contains a toolkit's initial-release tools — so newer slugs 404'd at execute
   // ("Tool X not found" / "Unable to retrieve tool with slug"). SDK 0.10 + API
   // v3.1 default to `latest`; we pin it explicitly so the behavior is obvious.
+  //
+  // `dangerouslyAllowAutoUploadDownloadFiles` re-enables automatic staging of
+  // local files for `file_uploadable` tool fields. SDK 0.6.5 did this by
+  // default; SDK 0.10 turns it OFF by default, so a raw local path was forwarded
+  // as-is and Composio's backend mis-read it as an existing `s3key`, failing with
+  // "Failed to download file with s3key '…': storage returned HTTP 404" (broke
+  // YOUTUBE_UPLOAD_VIDEO / YOUTUBE_MULTIPART_UPLOAD_VIDEO post-upgrade).
   if (apiKey) {
-    composioClient = new Composio({ apiKey, toolkitVersions: 'latest' })
+    composioClient = new Composio({
+      apiKey,
+      toolkitVersions: 'latest',
+      dangerouslyAllowAutoUploadDownloadFiles: true,
+      fileUploadDirs: getComposioFileUploadDirs(),
+    })
     console.log('[Composio] Client initialized (direct)')
     return composioClient
   }
@@ -264,6 +297,8 @@ function getComposioClient(): Composio | null {
       apiKey: proxyToken,
       baseURL: `${proxyUrl}/composio`,
       toolkitVersions: 'latest',
+      dangerouslyAllowAutoUploadDownloadFiles: true,
+      fileUploadDirs: getComposioFileUploadDirs(),
     })
     console.log('[Composio] Client initialized (via proxy)')
     return composioClient
@@ -561,6 +596,21 @@ function textResult(data: any): AgentToolResult<any> {
 }
 
 /**
+ * Composio tools the catalog exposes but that are broken upstream — we never
+ * bind them, so the agent can't discover or call them.
+ *
+ * - `YOUTUBE_UPLOAD_VIDEO`: the API accepts the upload and returns a video id,
+ *   but its non-resumable media transfer yields a file YouTube cannot process
+ *   ("Processing abandoned"). Verified end-to-end against the real SDK for both
+ *   a tiny synthetic clip and a proper 720p H.264/AAC file — 3/3 abandoned,
+ *   while `YOUTUBE_MULTIPART_UPLOAD_VIDEO` processed successfully every time.
+ *   Agents should use `YOUTUBE_MULTIPART_UPLOAD_VIDEO` instead.
+ */
+const COMPOSIO_BLOCKED_SLUGS = new Set<string>([
+  'YOUTUBE_UPLOAD_VIDEO',
+])
+
+/**
  * Dynamically register proxy AgentTools for each action in a Composio toolkit.
  * Each proxy tool executes via the Composio SDK directly.
  * Tool names are the raw Composio slugs (e.g. GOOGLECALENDAR_CREATE_EVENT).
@@ -579,7 +629,9 @@ export async function registerToolkitProxyTools(
   // for the life of the runtime. addProxyTools dedupes by name, so re-running is
   // cheap and self-heals: it appends only the slugs that were missing.
   const schemas = await fetchComposioToolSchemas(toolkitSlug)
-  const nonDeprecated = schemas.filter(s => !s.is_deprecated)
+  const nonDeprecated = schemas.filter(
+    s => !s.is_deprecated && !COMPOSIO_BLOCKED_SLUGS.has(s.slug),
+  )
 
   if (nonDeprecated.length === 0) {
     // Don't discard a prior good registration on a transient empty fetch.
@@ -618,6 +670,17 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
     parameters = Type.Object(props)
   }
 
+  // Fields the catalog marks `file_uploadable` (e.g. YOUTUBE_UPLOAD_VIDEO's
+  // `videoFilePath`). The SDK's auto-upload reads a local *path* arg and stages
+  // it to Composio storage — but it resolves a relative path against
+  // `process.cwd()`, which is not the agent's workspace. The agent typically
+  // passes a workspace-relative path ("uploads/clip.mp4"), so we rebase those
+  // onto WORKSPACE_DIR before execute. URLs and already-staged descriptors are
+  // left untouched.
+  const fileUploadableFields = Object.entries(schema.input_parameters?.properties ?? {})
+    .filter(([, prop]) => (prop as any)?.file_uploadable === true)
+    .map(([key]) => key)
+
   return {
     name: schema.slug,
     description: schema.description || `Composio tool: ${schema.slug}`,
@@ -629,6 +692,29 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
         return textResult({ error: 'Composio not initialized. Call connect first.' })
       }
       const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
+
+      // Rebase relative file paths onto the workspace so the SDK's auto-upload
+      // (which resolves against process.cwd()) can read them. Absolute paths,
+      // URLs, and pre-staged { s3key } descriptors pass through unchanged.
+      if (fileUploadableFields.length > 0) {
+        const path = require('node:path') as typeof import('node:path')
+        const workspaceDir =
+          process.env.WORKSPACE_DIR ||
+          process.env.AGENT_DIR ||
+          process.env.PROJECT_DIR ||
+          '/app/workspace'
+        for (const field of fileUploadableFields) {
+          const value = args[field]
+          if (
+            typeof value === 'string' &&
+            value &&
+            !/^[a-z][a-z0-9+.-]*:\/\//i.test(value) &&
+            !path.isAbsolute(value)
+          ) {
+            args[field] = path.resolve(workspaceDir, value)
+          }
+        }
+      }
 
       // A single execute attempt, normalized to a discriminated result so the
       // throw path and the `!successful` path share one classification.

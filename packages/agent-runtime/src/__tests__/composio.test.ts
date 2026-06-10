@@ -404,6 +404,21 @@ describe('registerToolkitProxyTools', () => {
     expect(mgr.calls).toHaveLength(1)
   })
 
+  // YOUTUBE_UPLOAD_VIDEO is on the upstream-broken denylist: the API accepts the
+  // upload but YouTube can't process the result ("Processing abandoned"). It must
+  // never be bound; YOUTUBE_MULTIPART_UPLOAD_VIDEO is the working path.
+  it('filters out upstream-broken slugs (YOUTUBE_UPLOAD_VIDEO)', async () => {
+    mockedSchemas = [
+      { slug: 'YOUTUBE_UPLOAD_VIDEO', description: 'upload', is_deprecated: false },
+      { slug: 'YOUTUBE_MULTIPART_UPLOAD_VIDEO', description: 'multipart upload', is_deprecated: false },
+      { slug: 'YOUTUBE_LIST_CHANNEL_VIDEOS', description: 'list', is_deprecated: false },
+    ]
+    const mgr = fakeMcpMgr()
+    const r = await registerToolkitProxyTools(mgr, 'youtube')
+    expect(r.toolNames).not.toContain('YOUTUBE_UPLOAD_VIDEO')
+    expect(r.toolNames.sort()).toEqual(['YOUTUBE_LIST_CHANNEL_VIDEOS', 'YOUTUBE_MULTIPART_UPLOAD_VIDEO'])
+  })
+
   it('dedups across calls — re-registering the same toolkit is a no-op on the manager', async () => {
     mockedSchemas = [
       { slug: 'GITHUB_LIST', description: 'list', is_deprecated: false },
