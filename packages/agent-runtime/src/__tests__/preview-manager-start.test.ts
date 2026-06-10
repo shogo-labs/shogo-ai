@@ -177,3 +177,92 @@ describe('PreviewManager.start (non-blocking)', () => {
     expect(hits.length).toBe(0)
   })
 })
+
+describe('PreviewManager.prewarm (pool warm-up)', () => {
+  // prewarm() runs the project-independent heavy setup (install + prisma +
+  // codegen) while the pod is UNASSIGNED, but must NOT start serving — that
+  // stays with the post-assign start(), which spawns the API sidecar with
+  // the project's env. Stub the heavy methods so we observe ordering without
+  // spawning real subprocesses.
+  function stubPrewarmWork(pm: PreviewManager, delayMs: number, hits: string[]) {
+    const sleep = (label: string) =>
+      new Promise<void>((resolve) => {
+        setTimeout(() => {
+          hits.push(label)
+          resolve()
+        }, delayMs)
+      })
+    ;(pm as any).installDepsIfNeeded = async (_t: any) => sleep('install')
+    ;(pm as any).runPrismaIfNeeded = async (_t: any) => sleep('prisma')
+    ;(pm as any).runShogoGenerate = async () => {
+      hits.push('generate')
+      return true
+    }
+    ;(pm as any).startBuildWatch = async () => sleep('build')
+    ;(pm as any).startApiServer = async () => sleep('api')
+  }
+
+  test('runs install + prisma + codegen but does NOT start serving', async () => {
+    const root = makeWorkspace({ prebuiltDist: true, hasPrisma: true })
+    workspaces.push(root)
+
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    const hits: string[] = []
+    stubPrewarmWork(pm, 20, hits)
+
+    await pm.prewarm()
+
+    // The expensive, project-independent steps ran...
+    expect(hits).toContain('install')
+    expect(hits).toContain('prisma')
+    expect(hits).toContain('generate')
+    // ...but the persistent serving lifecycle did NOT (no API spawn, no
+    // build watch), and the manager is still idle/unstarted so a later
+    // start() owns the real phase machine.
+    expect(hits).not.toContain('api')
+    expect(hits).not.toContain('build')
+    expect(pm.getStatus().running).toBe(false)
+    expect(pm.getStatus().phase).toBe('idle')
+  })
+
+  test('is memoized — repeated calls join the same run', async () => {
+    const root = makeWorkspace({ prebuiltDist: true, hasPrisma: true })
+    workspaces.push(root)
+
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    const hits: string[] = []
+    stubPrewarmWork(pm, 20, hits)
+
+    await Promise.all([pm.prewarm(), pm.prewarm(), pm.prewarm()])
+
+    // install/prisma ran exactly once despite three prewarm() calls.
+    expect(hits.filter((h) => h === 'install').length).toBe(1)
+    expect(hits.filter((h) => h === 'prisma').length).toBe(1)
+  })
+
+  test('an assign (start) that lands mid-prewarm reuses it instead of racing', async () => {
+    const root = makeWorkspace({ prebuiltDist: true, hasPrisma: true })
+    workspaces.push(root)
+
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    const hits: string[] = []
+    stubPrewarmWork(pm, 80, hits)
+
+    // Kick off prewarm but DON'T await — simulate an assign landing while the
+    // unassigned pod is still warming up.
+    const prewarming = pm.prewarm()
+    const result = await pm.start()
+    // start() still returns immediately (prebuilt dist).
+    expect(result.mode).toBe('prebuilt-dist')
+    expect(pm.getStatus().phase).toBe('ready')
+
+    await prewarming
+    // Let backgroundSetup (which awaits the in-flight prewarm first) finish.
+    await new Promise((r) => setTimeout(r, 600))
+
+    // The prebuilt-dist fast path must survive a concurrent prewarm: phase
+    // stays ready and the API sidecar is eventually spawned by start().
+    expect(pm.getStatus().phase).toBe('ready')
+    expect(hits).toContain('api')
+  })
+})
