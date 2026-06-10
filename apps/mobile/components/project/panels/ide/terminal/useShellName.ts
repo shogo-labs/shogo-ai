@@ -3,35 +3,26 @@
 /**
  * Live shell-name hook for the terminal header.
  *
- * VS Code's terminal panel shows the active shell binary (zsh, bash, fish,
- * pwsh) in a dropdown so the user can switch profiles. We need the same.
+ * VS Code's terminal panel shows the active shell binary (zsh, bash) in a
+ * dropdown so the user can switch profiles. We need the same.
  *
- * Why a hook (not a static prop):
- *   - In desktop runtime, the user can change profile mid-session via the …
- *     menu → "Select Default Profile". The header must re-render.
- *   - The shell binary the PTY actually spawned isn't tracked in
- *     session-reducer's `Session` shape today. Until we extend the protocol
- *     to surface `process.env.SHELL` from the pty-host back to the renderer,
- *     this hook returns a sensible platform default and exposes a setter
- *     so the … menu can override it locally.
- *
- *   - We intentionally do NOT block this on extending the desktop bridge —
- *     Phase 3 is about chrome. Phase 12+ can wire the real shell-name from
- *     the host once profile-switching is in.
+ * The `sessionId` is accepted so we can later key the override per-session.
+ * Today we use a single global preference, which matches VS Code's behavior
+ * for "Select Default Profile" (it sets the default for *new* terminals;
+ * existing terminals keep their current shell).
  */
 import { useState } from 'react'
 
-export type ShellName = 'zsh' | 'bash' | 'fish' | 'pwsh' | 'cmd' | 'sh' | string
+export type ShellName = 'zsh' | 'bash' | 'cmd' | string
 
 const PROFILE_KEY = 'shogo:terminal:profile'
 
 function defaultShellForPlatform(): ShellName {
-  // Renderer is always in a browser context; we infer from userAgent.
   if (typeof navigator !== 'undefined') {
     const ua = navigator.userAgent.toLowerCase()
     if (ua.includes('mac os') || ua.includes('macintosh')) return 'zsh'
     if (ua.includes('linux')) return 'bash'
-    if (ua.includes('windows')) return 'pwsh'
+    if (ua.includes('windows')) return 'cmd'
   }
   return 'zsh'
 }
@@ -68,18 +59,14 @@ export function useShellName(_sessionId: string): {
     } catch {
       // localStorage unavailable — keep in-memory state only.
     }
-
   }
 
   return { shellName, setShellName }
 }
 
-export const SHELL_OPTIONS: ShellName[] = ['zsh', 'bash', 'fish', 'pwsh', 'sh']
+export const SHELL_OPTIONS: ShellName[] = ['zsh', 'bash']
 
 export const SHELL_LABELS: Record<string, string> = {
   zsh: 'zsh',
   bash: 'bash',
-  fish: 'fish',
-  pwsh: 'PowerShell',
-  sh: 'sh',
 }

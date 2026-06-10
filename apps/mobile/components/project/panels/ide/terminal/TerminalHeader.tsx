@@ -33,14 +33,11 @@ import { createPortal } from 'react-dom'
 
 import type { ShellName } from './useShellName'
 
-// Known profiles surfaced in the dropdowns. Source-defined for now; once the
+// Supported terminal profiles. Source-defined for now; once the
 // desktop bridge exposes a real profile registry we'll source from there.
 const KNOWN_PROFILES: { id: ShellName; label: string; binary: string }[] = [
   { id: 'zsh', label: 'zsh', binary: '/bin/zsh' },
   { id: 'bash', label: 'bash', binary: '/bin/bash' },
-  { id: 'fish', label: 'fish', binary: '/opt/homebrew/bin/fish' },
-  { id: 'pwsh', label: 'PowerShell', binary: 'pwsh' },
-  { id: 'sh', label: 'sh', binary: '/bin/sh' },
 ]
 
 export interface TerminalHeaderProps {
