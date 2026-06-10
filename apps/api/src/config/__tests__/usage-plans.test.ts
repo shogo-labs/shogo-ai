@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'bun:test'
 import {
   FREE_DAILY_INCLUDED_USD,
   MONTHLY_DAILY_CAP_USD,
@@ -15,6 +15,7 @@ import {
   SEAT_INCLUDED_USD,
   VOICE_RAW_USD,
   comparePlanRank,
+  getClaimedPodCapForPlan,
   getDailyIncludedForPlan,
   getMonthlyIncludedForPlan,
   getMonthlyIncludedEquivalent,
@@ -357,5 +358,52 @@ describe('comparePlanRank', () => {
   it('normalizes decorated ids before comparing', () => {
     expect(comparePlanRank('Pro-Annual', 'business_monthly')).toBeLessThan(0)
     expect(comparePlanRank('Enterprise-XL', 'pro_200')).toBeGreaterThan(0)
+  })
+})
+
+describe('getClaimedPodCapForPlan', () => {
+  const ORIGINAL_OVERRIDE = process.env.WARM_POOL_CLAIMED_CAP_BY_TIER
+
+  afterEach(() => {
+    if (ORIGINAL_OVERRIDE === undefined) delete process.env.WARM_POOL_CLAIMED_CAP_BY_TIER
+    else process.env.WARM_POOL_CLAIMED_CAP_BY_TIER = ORIGINAL_OVERRIDE
+  })
+
+  it('scales linearly with tier rank (PLAN_RANK + 2)', () => {
+    delete process.env.WARM_POOL_CLAIMED_CAP_BY_TIER
+    expect(getClaimedPodCapForPlan('free')).toBe(2)
+    expect(getClaimedPodCapForPlan('basic')).toBe(3)
+    expect(getClaimedPodCapForPlan('pro')).toBe(4)
+    expect(getClaimedPodCapForPlan('business')).toBe(5)
+    expect(getClaimedPodCapForPlan('enterprise')).toBe(6)
+  })
+
+  it('normalizes decorated plan ids before resolving', () => {
+    delete process.env.WARM_POOL_CLAIMED_CAP_BY_TIER
+    expect(getClaimedPodCapForPlan('Pro-Annual')).toBe(4)
+    expect(getClaimedPodCapForPlan('business_monthly')).toBe(5)
+    expect(getClaimedPodCapForPlan('Enterprise-XL')).toBe(6)
+  })
+
+  it('falls back to the free cap for unknown / missing ids', () => {
+    delete process.env.WARM_POOL_CLAIMED_CAP_BY_TIER
+    expect(getClaimedPodCapForPlan(null)).toBe(2)
+    expect(getClaimedPodCapForPlan(undefined)).toBe(2)
+    expect(getClaimedPodCapForPlan('')).toBe(2)
+    expect(getClaimedPodCapForPlan('platinum')).toBe(2)
+  })
+
+  it('applies per-tier env overrides over the linear default', () => {
+    process.env.WARM_POOL_CLAIMED_CAP_BY_TIER = JSON.stringify({ free: 1, pro: 10 })
+    expect(getClaimedPodCapForPlan('free')).toBe(1)
+    expect(getClaimedPodCapForPlan('pro')).toBe(10)
+    // tiers not present in the override keep the linear default
+    expect(getClaimedPodCapForPlan('business')).toBe(5)
+  })
+
+  it('ignores malformed override JSON and uses the linear default', () => {
+    process.env.WARM_POOL_CLAIMED_CAP_BY_TIER = '{not valid json'
+    expect(getClaimedPodCapForPlan('free')).toBe(2)
+    expect(getClaimedPodCapForPlan('pro')).toBe(4)
   })
 })

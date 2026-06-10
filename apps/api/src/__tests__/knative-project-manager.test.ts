@@ -51,6 +51,7 @@ let workspaceInstanceSize = 'small'
 let queryRawRows: any[] = [{ acquired: true }]
 const executeRawCalls: string[] = []
 const projectUpdateCalls: any[] = []
+const warmPoolCalls: string[] = []
 let warmPoolMock: any
 
 mock.module('@kubernetes/client-node', () => withK8sExports({
@@ -144,6 +145,11 @@ mock.module('../lib/project-user-context', () => ({
   getProjectOwnerUserId: async () => 'owner-user-test',
 }))
 
+let effectivePlanId = 'free'
+mock.module('../services/billing.service', () => ({
+  getEffectivePlanId: async () => effectivePlanId,
+}))
+
 mock.module('../services/instance.service', () => ({
   buildProjectResourceOverrides: (_workspaceId: string, size: string) => ({
     requests: { memory: `${size}-request-memory`, cpu: `${size}-request-cpu` },
@@ -190,13 +196,20 @@ beforeEach(() => {
   queryRawRows = [{ acquired: true }]
   executeRawCalls.length = 0
   projectUpdateCalls.length = 0
+  effectivePlanId = 'free'
+  warmPoolCalls.length = 0
   warmPoolMock = {
     getAssignedPod: () => null,
     getStatus: () => ({ enabled: false }),
     buildProjectEnv: async () => ({ PROJECT_ID: 'p1' }),
-    claim: () => null,
+    claim: () => { warmPoolCalls.push('claim'); return null },
     assign: async () => {},
     evictProject: async () => ({ evicted: true }),
+    touchProject: () => {},
+    enforcePerUserClaimedCap: async (...args: any[]) => {
+      warmPoolCalls.push(`enforce:${args.join(',')}`)
+      return { cap: 2, count: 0, evicted: [] }
+    },
   }
   nextFetch = () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
 })
@@ -770,6 +783,68 @@ describe('getProjectPodUrl (module-level helper)', () => {
     expect(assignCalls[0]).toEqual([pod, 'p-warm', { PROJECT_ID: 'p-warm', EXTRA: '1' }])
     expect(executeRawCalls).toContain('SELECT pg_advisory_unlock($1)')
     expect(capture.some((c) => c.method === 'createNamespacedCustomObject' && c.args[0].plural === 'domainmappings')).toBe(true)
+  })
+
+  test('enforces the per-user claimed-pod cap BEFORE claiming, then still claims', async () => {
+    customGetError = Object.assign(new Error('not found'), { code: 404 })
+    effectivePlanId = 'pro'
+    const pod = {
+      id: 'warm-cap',
+      serviceName: 'warm-pod-cap',
+      url: 'http://warm-pod-cap.shogo-test.svc.cluster.local',
+      ready: true,
+      createdAt: Date.now(),
+    }
+    warmPoolMock = {
+      getAssignedPod: () => null,
+      getStatus: () => ({ enabled: true }),
+      buildProjectEnv: async (projectId: string) => ({ PROJECT_ID: projectId }),
+      claim: () => { warmPoolCalls.push('claim'); return pod },
+      assign: async () => {},
+      evictProject: async () => ({ evicted: true }),
+      touchProject: () => {},
+      enforcePerUserClaimedCap: async (...args: any[]) => {
+        warmPoolCalls.push(`enforce:${args.join(',')}`)
+        return { cap: 4, count: 4, evicted: ['lru-victim'] }
+      },
+    }
+
+    const url = await getProjectPodUrl('p-cap')
+
+    // Cap enforcement ran with (projectId, ownerUserId, planId) and BEFORE claim.
+    expect(warmPoolCalls[0]).toBe('enforce:p-cap,owner-user-test,pro')
+    expect(warmPoolCalls).toContain('claim')
+    expect(warmPoolCalls.indexOf('enforce:p-cap,owner-user-test,pro')).toBeLessThan(
+      warmPoolCalls.indexOf('claim'),
+    )
+    // The claim still succeeds after the LRU eviction freed a slot.
+    expect(url).toBe(pod.url)
+  })
+
+  test('cap enforcement failure never blocks the claim (non-fatal)', async () => {
+    customGetError = Object.assign(new Error('not found'), { code: 404 })
+    const pod = {
+      id: 'warm-cap2',
+      serviceName: 'warm-pod-cap2',
+      url: 'http://warm-pod-cap2.shogo-test.svc.cluster.local',
+      ready: true,
+      createdAt: Date.now(),
+    }
+    warmPoolMock = {
+      getAssignedPod: () => null,
+      getStatus: () => ({ enabled: true }),
+      buildProjectEnv: async (projectId: string) => ({ PROJECT_ID: projectId }),
+      claim: () => pod,
+      assign: async () => {},
+      evictProject: async () => ({ evicted: true }),
+      touchProject: () => {},
+      enforcePerUserClaimedCap: async () => {
+        throw new Error('boom')
+      },
+    }
+
+    const url = await getProjectPodUrl('p-cap-err')
+    expect(url).toBe(pod.url)
   })
 
   test('returns a recent assigned warm pod without probing health', async () => {
