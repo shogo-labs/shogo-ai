@@ -5451,9 +5451,25 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: pre-seeding workspace with runtime template...')
   ensureWorkspaceFiles()
-  ensureWorkspaceDeps(WORKSPACE_DIR).then(() => {
+  ensureWorkspaceDeps(WORKSPACE_DIR).then(async () => {
     workspaceStatus.depsInstalled = true
     logTiming('Pool mode: workspace deps pre-seeded')
+
+    // Pre-warm the preview pipeline (prisma generate + db push + codegen)
+    // against the seeded template while the pod is still unassigned. This
+    // moves the project-independent ~15-20s of setup off the user-perceived
+    // assignment latency, so the first /pool/assign only pays the ~5s API
+    // sidecar spawn and the canvas surfaces "Project Ready" in a few seconds
+    // instead of sitting on "Starting API server…" for ~30s. Best-effort:
+    // the assign path re-runs anything still missing via start()'s guards.
+    if (!IS_WORKSPACE_RUNTIME) {
+      try {
+        await getPreviewManager().prewarm()
+        logTiming('Pool mode: preview pipeline pre-warmed')
+      } catch (err: any) {
+        console.error('[agent-runtime] Pool preview pre-warm failed:', err?.message ?? err)
+      }
+    }
   }).catch(err => {
     console.error('[agent-runtime] Pool pre-seed deps failed:', err.message)
   })

@@ -720,6 +720,11 @@ export class PreviewManager {
   private hasApiServer: boolean | null = null
   private regenerating = false
   private pendingSchemaChange = false
+  // In-flight pool pre-warm (see `prewarm()`). Memoized so repeated calls
+  // join the same run, and awaited at the top of `backgroundSetup()` so an
+  // assign that lands mid-prewarm reuses its artifacts instead of racing a
+  // second prisma generate / codegen against it.
+  private prewarmPromise: Promise<void> | null = null
   // When true, the schema watcher defers regen instead of acting on a
   // change. Used by `shogo push` (SDK) to run prisma generate + db push
   // itself without racing a concurrent watcher-driven restart (the classic
@@ -1716,8 +1721,86 @@ export class PreviewManager {
     }
   }
 
+  /**
+   * Pool pre-warm: run the project-INDEPENDENT heavy setup (deps install,
+   * `prisma generate` + `db push`, and code generation) against the seeded
+   * runtime template while the pod is still unassigned, so the post-assign
+   * `start()` finds those artifacts already on disk and skips straight to
+   * spawning the API sidecar (~5s) instead of paying the full ~20-30s
+   * pipeline. This is what lets a warm pod surface "Project Ready" within a
+   * few seconds instead of sitting on "Starting API server…".
+   *
+   * Deliberately does NOT spawn the persistent API server or flip `started`:
+   *  - `start()` (run from `initializeEssentials` on `/pool/assign`) keeps
+   *    ownership of the actual serving lifecycle, so its "if needed" guards
+   *    still correctly re-run install/prisma/build for an EXISTING project
+   *    whose S3-restored workspace differs from the template. A pre-spawned
+   *    sidecar would otherwise serve stale template content / a stale-env DB.
+   *  - the sidecar is spawned post-assign so it inherits the project's env
+   *    (PROJECT_ID, tokens, SHOGO_API_URL) instead of the pool placeholder.
+   *
+   * Memoized + best-effort + idempotent: any failure just means the assign
+   * path pays the normal cost, and a no-op once the preview has started.
+   */
+  prewarm(): Promise<void> {
+    if (this.prewarmPromise) return this.prewarmPromise
+    this.prewarmPromise = this._doPrewarm()
+    return this.prewarmPromise
+  }
+
+  private async _doPrewarm(): Promise<void> {
+    if (this.started) return
+    const bundlerCwd = this.resolveBundlerCwd()
+    if (!existsSync(join(bundlerCwd, 'package.json'))) {
+      console.log(`[${LOG_PREFIX}] Pool pre-warm: no package.json in ${bundlerCwd} — skipping`)
+      return
+    }
+    if (this.resolveDevServer() === 'none') {
+      console.log(`[${LOG_PREFIX}] Pool pre-warm: devServer=none — skipping`)
+      return
+    }
+
+    const timings: Record<string, number> = {}
+    try {
+      console.log(`[${LOG_PREFIX}] Pool pre-warm: install + prisma + codegen (unassigned pod)`)
+      await this.installDepsIfNeeded(timings)
+      await this.runPrismaIfNeeded(timings)
+      // Pre-generate `server.tsx` + `src/generated/` too, so the post-assign
+      // `startApiServer()` skips its on-first-boot codegen and just spawns.
+      if (existsSync(join(bundlerCwd, 'prisma', 'schema.prisma'))) {
+        await this.runShogoGenerate()
+      }
+      console.log(`[${LOG_PREFIX}] Pool pre-warm complete:`, JSON.stringify(timings))
+    } catch (err: any) {
+      console.error(
+        `[${LOG_PREFIX}] Pool pre-warm failed (assign will pay full cost):`,
+        err?.message ?? err,
+      )
+    } finally {
+      // Pre-warm only seeds on-disk artifacts; it must not leave the manager
+      // looking like it's mid-build. `start()` owns the real phase machine.
+      if (!this.started) this._phase = 'idle'
+    }
+  }
+
   private async backgroundSetup(timings: Record<string, number>): Promise<void> {
+    // Captured before awaiting any in-flight pre-warm below: `start()` set
+    // `_phase = 'ready'` synchronously for a prebuilt dist, and we don't want
+    // a concurrent pre-warm's transient prisma/build phase mutations to flip
+    // this decision.
     const startedWithPrebuiltDist = this._phase === 'ready'
+
+    // If a pool pre-warm is still in flight (an assign that landed before the
+    // unassigned pod finished pre-warming), let it settle first so we reuse
+    // its prisma client / dev.db / generated server.tsx instead of racing a
+    // second generate against it.
+    if (this.prewarmPromise) {
+      try {
+        await this.prewarmPromise
+      } catch {
+        /* best-effort: prewarm logs its own failure */
+      }
+    }
 
     await this.installDepsIfNeeded(timings)
     await this.runPrismaIfNeeded(timings)
