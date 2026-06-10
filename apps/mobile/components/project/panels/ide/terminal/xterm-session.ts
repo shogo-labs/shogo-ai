@@ -51,6 +51,7 @@ export class XtermSession {
   private unsubTrunc: (() => void) | null = null
   private unsubResize: (() => void) | null = null
   private disposed = false
+  private _clearedInitialStale = false
   private banneredExit = false
   private commandMarkers: IMarker[] = []
   private sentLines: string[] = []
@@ -168,13 +169,22 @@ export class XtermSession {
     // Deferred re-fit: correct any column count computed while the panel was
     // still mid open-animation. Two rAFs guarantees the browser has committed
     // the final layout dimensions before FitAddon reads clientWidth.
+    //
+    // If the container size changed, we clear the terminal buffer so the
+    // shell's initial prompt (which was rendered at the wrong width and may
+    // be wrapped/garbled) is removed. The subsequent resize causes the shell
+    // to redraw its prompt at the correct dimensions on a clean screen.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (this.disposed) return
+        // Mark initial sizing as complete — future resize events should
+        // NOT auto-clear (the user may have meaningful content).
+        this._clearedInitialStale = true
         const prevCols = term.cols
         const prevRows = term.rows
         try { this.fitAddon?.fit() } catch {}
         if (term.cols !== prevCols || term.rows !== prevRows) {
+          term.clear()
           this.client.resize(term.cols, term.rows)
         }
       })
@@ -184,7 +194,15 @@ export class XtermSession {
   /** Re-fit on container resize. No-op before attach. */
   fit(): void {
     if (this.disposed) return
+    const prevCols = this.term.cols
+    const prevRows = this.term.rows
     try { this.fitAddon?.fit() } catch {}
+    // On the very first size correction (panel open animation settling),
+    // clear stale prompt output that was rendered at the wrong width.
+    if (!this._clearedInitialStale && (this.term.cols !== prevCols || this.term.rows !== prevRows)) {
+      this._clearedInitialStale = true
+      this.term.clear()
+    }
   }
 
   /**
