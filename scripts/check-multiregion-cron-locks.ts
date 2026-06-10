@@ -127,7 +127,7 @@ const INTENTIONALLY_REGIONAL: IntentionallyRegional[] = [
     fn: 'generateDigest',
     file: 'apps/api/src/lib/analytics-digest-collector.ts',
     reason:
-      'Seed for genuine per-region analytics: dashboard will eventually show separate funnel numbers for US/EU/India. Folding `region` into the unique key is the contract; do not wrap in withGlobalJobLock. See schema comment on AnalyticsDigest.region for the follow-up plan (source-table region tagging).',
+      'Scheduled daily run is pinned to the main region (`shouldScheduleDigest()` => REGION_ID === us-ashburn-1 or unset for dev), so in steady state only one region writes. `region` stays in the unique key (do not wrap in withGlobalJobLock) as a defense-in-depth backstop: the manual admin trigger (POST /analytics/ai-digest/generate) can invoke generateDigest from any region, and the per-region key keeps such a write off the main row instead of poisoning the apply worker. See the MAIN_REGION_ID comment in analytics-digest-collector.ts.',
     regionKeyColumn: 'analytics_digests.region',
   },
 ]
@@ -283,7 +283,7 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     key: 'AnalyticsDigest.(date,period,region)',
     category: 'cron_regional',
     reason:
-      'Intentionally regional: every region writes its own row tagged with `REGION_ID`. Folding `region` into the key prevents the cross-region INSERT collision; the per-region semantics are the seed for genuine regional analytics (see schema comment + INTENTIONALLY_REGIONAL entry).',
+      'Scheduled daily run is pinned to the main region (us-ashburn-1) via shouldScheduleDigest(), so normally a single region writes. `region` remains in the key as a defense-in-depth backstop against the cross-region INSERT collision because the manual admin trigger can run generateDigest from any region (see INTENTIONALLY_REGIONAL entry + MAIN_REGION_ID comment in analytics-digest-collector.ts).',
     writer: 'generateDigest',
   },
   {

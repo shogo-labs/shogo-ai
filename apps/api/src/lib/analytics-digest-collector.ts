@@ -26,6 +26,34 @@ const MAX_CHUNKS = 3
 const CHARS_PER_TOKEN = 4
 const DIGEST_HOUR = parseInt(process.env.ANALYTICS_DIGEST_HOUR || '8', 10)
 
+// The daily digest is the platform-wide "AI Insights" run, and it operates
+// over GLOBAL (logically-replicated) analytics data — every region sees the
+// same numbers. We only want ONE authoritative scheduled run per day.
+//
+// Before the 2026-05-22 multi-region rollout this was effectively single
+// region. After the rollout all three API regions (US/EU/India) booted this
+// scheduler, so each wrote its own `(date, '24h', REGION_ID)` row against the
+// same global data — producing ~3 near-identical "AI Insights/day" rows.
+//
+// Pin the scheduled run to the main region (US, `us-ashburn-1`) — the same
+// primary region that owns DB migrations — so only one row is produced per
+// day. `region` stays in the unique key (see `generateDigest`) as a
+// defense-in-depth backstop, because the manual admin trigger can still run
+// `generateDigest` in any region and local/dev runs leave REGION_ID unset.
+const MAIN_REGION_ID = 'us-ashburn-1'
+
+/**
+ * Whether this process should run the *scheduled* daily digest.
+ *
+ * True for the main region in production, and true whenever `REGION_ID` is
+ * unset (local/dev/test, where there is only one process) so the collector
+ * keeps working off-cluster. EU/India production replicas return false.
+ */
+function shouldScheduleDigest(): boolean {
+  const region = process.env.REGION_ID
+  return !region || region === MAIN_REGION_ID
+}
+
 let digestTimer: ReturnType<typeof setTimeout> | null = null
 
 function formatThread(thread: ConversationThread): string {
@@ -152,14 +180,18 @@ export async function generateDigest(prisma: PrismaClient) {
   const now = new Date()
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000)
   const dateOnly = new Date(now.toISOString().split('T')[0])
-  // Region that produced this digest. Folded into the `analytics_digests`
-  // unique key so the daily cron in each region (`us-ashburn-1`,
-  // `eu-frankfurt-1`, `ap-mumbai-1`) writes its own row without colliding
-  // with sibling regions' rows after they replicate in via logical
-  // replication. Defaulting to `'unknown'` (rather than throwing) keeps
-  // local/dev/test runs working where REGION_ID isn't set — that string
-  // is distinct from every real region tag so it can't accidentally
-  // collide with a production row.
+  // Region that produced this digest, folded into the `analytics_digests`
+  // unique key. The scheduled daily run is pinned to the main region (see
+  // `shouldScheduleDigest`), so in steady state only `us-ashburn-1` writes.
+  // `region` nevertheless stays in the unique key as a defense-in-depth
+  // backstop against the cross-region poison-pill: the manual admin trigger
+  // (`POST /analytics/ai-digest/generate`) can invoke `generateDigest` in
+  // any region, and keeping `region` in the key means such a write lands on
+  // its own row rather than colliding with the main region's row after it
+  // replicates in via logical replication. Defaulting to `'unknown'` (rather
+  // than throwing) keeps local/dev/test runs working where REGION_ID isn't
+  // set — that string is distinct from every real region tag so it can't
+  // accidentally collide with a production row.
   const region = process.env.REGION_ID || 'unknown'
 
   console.log(
@@ -259,6 +291,14 @@ function msUntilNextRun(): number {
 }
 
 export function startAnalyticsDigestCollector(prisma: PrismaClient): void {
+  if (!shouldScheduleDigest()) {
+    console.log(
+      `[AnalyticsDigest] Not the main region (REGION_ID=${process.env.REGION_ID}); ` +
+        `daily digest runs only in ${MAIN_REGION_ID}. Scheduler not started.`,
+    )
+    return
+  }
+
   function scheduleNext() {
     const delay = msUntilNextRun()
     const nextRun = new Date(Date.now() + delay)
