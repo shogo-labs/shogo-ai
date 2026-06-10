@@ -617,6 +617,20 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         term.onScroll(() => repositionAll())
         term.onResize(() => requestAnimationFrame(repositionAll))
 
+        // Intercept xterm's CSI "J" (Erase in Display) escape sequence.
+        // When the shell's `clear` command sends CSI 2 J (clear entire
+        // screen), xterm clears its buffer but our gutter dots (separate
+        // DOM elements) are orphaned.  We only trigger on CSI 2 J (full
+        // screen clear), NOT on CSI 0 J (cursor-to-end) which fires
+        // constantly during normal terminal output and would kill all dots.
+        const offCsiJ = term.parser.registerCsiHandler(
+          { final: 'J' },
+          (params) => {
+            if (params[0] === 2) clearGutterRef.current?.()
+            return false
+          },
+        )
+
         term.onSelectionChange(() => {
           setHasTerminalSelection((term.getSelection() ?? '').trim().length > 0)
         })
@@ -924,6 +938,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           flushSnapshot()
           offData(); offExit(); offTrunc(); offError()
           offTracker()
+          offCsiJ.dispose()
           pendingDecorations.clear()
           ro.disconnect()
           batcher.dispose()
