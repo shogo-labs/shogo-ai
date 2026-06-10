@@ -184,6 +184,9 @@ export class XtermSession {
         const prevRows = term.rows
         try { this.fitAddon?.fit() } catch {}
         if (term.cols !== prevCols || term.rows !== prevRows) {
+          // Send CR to PTY so zsh accepts the empty input line,
+          // preventing PROMPT_EOL_MARK ("%") from appearing after the clear.
+          this.client.send('\r')
           term.clear()
           this.client.resize(term.cols, term.rows)
         }
@@ -201,6 +204,9 @@ export class XtermSession {
     // clear stale prompt output that was rendered at the wrong width.
     if (!this._clearedInitialStale && (this.term.cols !== prevCols || this.term.rows !== prevRows)) {
       this._clearedInitialStale = true
+      // Send CR to PTY so zsh accepts the empty input line,
+      // preventing PROMPT_EOL_MARK ("%") from appearing after the clear.
+      this.client.send('\r')
       this.term.clear()
     }
   }
