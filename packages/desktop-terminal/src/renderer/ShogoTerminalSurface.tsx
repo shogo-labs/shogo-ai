@@ -617,24 +617,6 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         term.onScroll(() => repositionAll())
         term.onResize(() => requestAnimationFrame(repositionAll))
 
-        // Intercept xterm's CSI "J" (Erase in Display) escape sequence.
-        // When the shell's `clear` command (or any program) sends CSI 2 J
-        // to clear the entire screen, xterm clears its buffer but our
-        // gutter dots (DOM elements) are orphaned.  This handler detects
-        // the clear and removes all gutter dots so they stay in sync.
-        const offCsiJ = term.parser.registerCsiHandler(
-          { final: 'J' },
-          (params) => {
-            // params[0] === 2 → clear entire screen (what `clear` sends)
-            // params[0] === 0 or empty → clear from cursor to end
-            // In both cases we should clean up gutter dots that are now
-            // invisible.  We only skip params[0] === 1 (clear upward)
-            // because dots below the cursor would still be visible.
-            if (params[0] !== 1) clearGutterRef.current?.()
-            return false // let xterm's default handler also run
-          },
-        )
-
         term.onSelectionChange(() => {
           setHasTerminalSelection((term.getSelection() ?? '').trim().length > 0)
         })
@@ -942,7 +924,6 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           flushSnapshot()
           offData(); offExit(); offTrunc(); offError()
           offTracker()
-          offCsiJ.dispose()
           pendingDecorations.clear()
           ro.disconnect()
           batcher.dispose()
