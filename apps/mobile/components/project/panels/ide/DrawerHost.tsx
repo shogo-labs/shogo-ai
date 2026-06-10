@@ -59,6 +59,8 @@ interface DrawerHostProps {
    * the chat to use.
    */
   isChatFullscreen: boolean
+  /** Filesystem path of the opened project folder. */
+  folderPath?: string
   /** The right-pane content (the previewTab switch). */
   children: React.ReactNode
 }
@@ -86,6 +88,7 @@ export function DrawerHost({
   platformIsWeb,
   canvasAreaHidden,
   isChatFullscreen,
+  folderPath,
   children,
 }: DrawerHostProps): JSX.Element {
   const open = useBottomPanelState((s) => s.open)
@@ -242,6 +245,7 @@ export function DrawerHost({
               agentUrl={agentUrl ?? null}
               messages={messages}
               onMaximizeChange={handleMaximizeChange}
+              folderPath={folderPath}
             />
           </div>
         </>

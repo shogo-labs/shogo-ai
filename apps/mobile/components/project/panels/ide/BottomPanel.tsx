@@ -68,6 +68,7 @@ export function BottomPanel({
   agentUrl = null,
   messages,
   onMaximizeChange,
+  folderPath,
 }: {
   projectId: string | null | undefined;
   newSessionNonce: number;
@@ -84,6 +85,8 @@ export function BottomPanel({
    * when `maximized` is true, and restore its prior height when false.
    */
   onMaximizeChange?: (maximized: boolean) => void;
+  /** Filesystem path of the opened project folder. */
+  folderPath?: string
 }) {
   const tab = useBottomPanelState((s) => s.activeTab);
   const unseenForThisProject = useBottomPanelState((s) =>
@@ -183,6 +186,7 @@ export function BottomPanel({
             newSessionNonce={effectiveNewSessionNonce}
             onRequestClose={onClose}
             onControlsChange={setTerminalControls}
+            folderPath={folderPath}
           />
         );
       case "Problems":

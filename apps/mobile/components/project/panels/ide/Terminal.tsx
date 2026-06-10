@@ -220,6 +220,7 @@ export function Terminal({
   newSessionNonce,
   onRequestClose,
   onControlsChange,
+  folderPath,
 }: {
   projectId: string | null | undefined;
   visible: boolean;
@@ -235,6 +236,8 @@ export function Terminal({
    * uses this to show the toolbar in the VS Code-style panel header row.
    */
   onControlsChange?: (controls: TerminalToolbarControls | null) => void;
+  /** Filesystem path of the opened project folder — used as terminal cwd. */
+  folderPath?: string
 }) {
   const [commands, setCommands] = useState<Record<string, PresetCommandDto[]>>({});
   const [loading, setLoading] = useState(false);
@@ -368,6 +371,7 @@ export function Terminal({
             spawn: {
               projectId,
               shell: existing?.shell ?? shellNameRef.current,
+              cwd: folderPath,
               cols: initial.cols,
               rows: initial.rows,
             },
