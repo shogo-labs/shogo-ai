@@ -193,8 +193,23 @@ export function labelsFor(sessions: Session[]): Map<string, string> {
       groupLabel.set(s.groupId, s.customLabel)
     }
   }
+  // Count occurrences of each shell so we can suffix duplicates (e.g. "zsh (2)")
+  const shellCount = new Map<string, number>()
+  for (const s of sessions) {
+    const name = s.shell ?? positional.get(s.groupId) ?? 'Terminal'
+    shellCount.set(name, (shellCount.get(name) ?? 0) + 1)
+  }
+  const shellSeen = new Map<string, number>()
   return new Map(
-    sessions.map((s) => [s.id, groupLabel.get(s.groupId) ?? s.shell ?? s.id]),
+    sessions.map((s) => {
+      const custom = groupLabel.get(s.groupId)
+      if (custom && custom !== positional.get(s.groupId)) return [s.id, custom]
+      const shell = s.shell ?? 'Terminal'
+      const count = shellCount.get(shell) ?? 1
+      const seen = (shellSeen.get(shell) ?? 0) + 1
+      shellSeen.set(shell, seen)
+      return [s.id, seen > 1 ? `${shell} (${seen})` : shell]
+    }),
   )
 }
 
