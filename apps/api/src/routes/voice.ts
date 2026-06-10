@@ -56,7 +56,7 @@
 import { Hono } from 'hono'
 import { streamText, convertToModelMessages, type UIMessage } from 'ai'
 import { stripOrphanToolParts } from '../lib/strip-orphan-tool-parts'
-import { createAnthropic } from '@ai-sdk/anthropic'
+import { resolveLanguageModel, DEFAULT_ASSISTANT_MODEL } from '../lib/resolve-language-model'
 import { ElevenLabsClient } from '@shogo-ai/sdk/voice'
 import {
   TRANSLATOR_SYSTEM_PROMPT,
@@ -108,34 +108,17 @@ function auditMemberId(c: HonoContext): string {
 }
 
 const TRANSLATOR_MODEL_ID =
-  process.env.SHOGO_VOICE_TRANSLATOR_MODEL || 'claude-haiku-4-5'
+  process.env.SHOGO_VOICE_TRANSLATOR_MODEL || DEFAULT_ASSISTANT_MODEL
 
 /**
- * Resolve the translator LLM. Mirrors the two-tier pattern used by the
- * AI-chat example and the rest of the API server:
- *   1. Shogo AI Proxy (AI_PROXY_URL + AI_PROXY_TOKEN) — preferred.
- *   2. Direct ANTHROPIC_API_KEY — fallback for local dev.
+ * Resolve the translator LLM via the shared multi-provider resolver
+ * (`lib/resolve-language-model.ts`), which routes Anthropic models through the
+ * proxy's `/ai/anthropic/v1` endpoint and custom OpenAI-compatible models
+ * (e.g. Hoshi) through `/ai/v1`, with a direct `ANTHROPIC_API_KEY` local-dev
+ * fallback. Returns `null` when no transport is configured.
  */
 function resolveTranslatorModel() {
-  const proxyUrl = process.env.AI_PROXY_URL
-  const proxyToken = process.env.AI_PROXY_TOKEN
-
-  if (proxyUrl && proxyToken) {
-    const anthropicProxyUrl = proxyUrl.replace('/ai/v1', '/ai/anthropic/v1')
-    const anthropic = createAnthropic({
-      baseURL: anthropicProxyUrl,
-      apiKey: proxyToken,
-    })
-    return anthropic(TRANSLATOR_MODEL_ID)
-  }
-
-  const directKey = process.env.ANTHROPIC_API_KEY
-  if (directKey) {
-    const anthropic = createAnthropic({ apiKey: directKey })
-    return anthropic(TRANSLATOR_MODEL_ID)
-  }
-
-  return null
+  return resolveLanguageModel(TRANSLATOR_MODEL_ID)?.model ?? null
 }
 
 function resolveElevenLabsClient(): { client: ElevenLabsClient; agentId: string } | { error: string } {

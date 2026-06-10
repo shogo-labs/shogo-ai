@@ -5,29 +5,44 @@
  * used to generate chat/project titles.
  *
  *   bun test apps/api/src/lib/__tests__/title-model.test.ts
+ *
+ * Provider/transport selection now lives in `resolve-language-model.ts`
+ * (covered by its own test); here we mock that seam and `ai`'s `generateText`
+ * so we can drive the configured-vs-default fallback + token mapping
+ * deterministically.
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, mock } from 'bun:test'
 
-// ─── Mutable mock data for the model registry (id-aware, like the real one) ──
-let ENTRIES: Record<string, any> = {}
-let ROUTINGS: Record<string, any> = {}
+const DEFAULT_ASSISTANT_MODEL = 'hoshi-1.0'
 
-mock.module('../../services/model-registry.service', () => ({
-  getMergedModelEntrySync: (id: string) => ENTRIES[id],
-  getDbRoutingConfigSync: (id: string) => ROUTINGS[id],
+// ─── Controllable resolver + generateText mocks ────────────────────────────
+// `resolvable[id]` → the billing id to return, or null/undefined to make the
+// model unresolvable (helper returns null → runModel throws).
+let resolvable: Record<string, { billingModelId: string } | null | undefined> = {}
+// `behavior[id]` → text / usage to return, or { throws: true } to simulate an
+// upstream failure for that model.
+let behavior: Record<string, { text?: string; usage?: any; throws?: boolean }> = {}
+
+mock.module('../resolve-language-model', () => ({
+  DEFAULT_ASSISTANT_MODEL,
+  resolveLanguageModel: (id: string) => {
+    const r = resolvable[id]
+    if (!r) return null
+    return { model: { __id: id }, billingModelId: r.billingModelId, provider: 'custom' }
+  },
 }))
 
-// Mock the Anthropic path so the default/fallback branch is deterministic.
-let anthropicText = '{"title": "Anthropic Title", "description": "from anthropic"}'
 mock.module('ai', () => ({
-  generateText: async (_opts: any) => ({
-    text: anthropicText,
-    usage: { inputTokens: 11, outputTokens: 7 },
-  }),
-}))
-mock.module('@ai-sdk/anthropic', () => ({
-  createAnthropic: () => (model: string) => ({ model }),
+  generateText: async (opts: any) => {
+    const id = opts.model?.__id
+    const b = behavior[id] ?? {}
+    if (b.throws) throw new Error(`upstream error for ${id}`)
+    return {
+      text: b.text ?? '{"title": "Default Title", "description": "d"}',
+      usage: b.usage ?? { inputTokens: 11, outputTokens: 7 },
+    }
+  },
 }))
 
 const {
@@ -40,140 +55,87 @@ const {
 const SYSTEM = 'system prompt'
 const PROMPT = 'first message'
 
-// The default Haiku model resolves to a native Anthropic catalog entry.
-const HAIKU_ENTRY = {
-  id: DEFAULT_TITLE_MODEL_ID,
-  provider: 'anthropic',
-  apiModel: DEFAULT_TITLE_MODEL_ID,
-}
-
 beforeEach(() => {
-  ENTRIES = { [DEFAULT_TITLE_MODEL_ID]: HAIKU_ENTRY }
-  ROUTINGS = {}
+  // Default model resolves and produces a result.
+  resolvable = { [DEFAULT_TITLE_MODEL_ID]: { billingModelId: DEFAULT_TITLE_MODEL_ID } }
+  behavior = {}
   setTitleGenerationModelId(null)
-  anthropicText = '{"title": "Anthropic Title", "description": "from anthropic"}'
-  process.env.ANTHROPIC_API_KEY = 'sk-test'
 })
-
-afterEach(() => {
-  ;(globalThis.fetch as any) = realFetch
-})
-
-const realFetch = globalThis.fetch
 
 describe('title-model id resolution', () => {
-  test('defaults to the Haiku model id when unset', () => {
+  test('defaults to the shared assistant model id when unset', () => {
+    expect(DEFAULT_TITLE_MODEL_ID).toBe(DEFAULT_ASSISTANT_MODEL)
     expect(getTitleGenerationModelId()).toBe(DEFAULT_TITLE_MODEL_ID)
   })
 
   test('returns the configured id once set, and resets on empty', () => {
-    setTitleGenerationModelId('hoshi')
-    expect(getTitleGenerationModelId()).toBe('hoshi')
+    setTitleGenerationModelId('hoshi-custom')
+    expect(getTitleGenerationModelId()).toBe('hoshi-custom')
     setTitleGenerationModelId('   ')
     expect(getTitleGenerationModelId()).toBe(DEFAULT_TITLE_MODEL_ID)
   })
 })
 
-describe('custom OpenAI-compatible provider (Hoshi)', () => {
-  test('calls the provider chat-completions endpoint and bills the real id', async () => {
-    ENTRIES['hoshi'] = { id: 'hoshi', provider: 'custom', apiModel: 'hoshi-1' }
-    ROUTINGS['hoshi'] = {
-      provider: 'custom',
-      apiModel: 'hoshi-1',
-      baseUrl: 'https://api.hoshi.example/v1',
-      apiKey: 'sk-hoshi',
-      authStyle: 'bearer',
+describe('generateTitleCompletion', () => {
+  test('runs the configured model and bills its resolved id + token usage', async () => {
+    resolvable['hoshi-custom'] = { billingModelId: 'hoshi-custom' }
+    behavior['hoshi-custom'] = {
+      text: '{"title": "Hoshi Title", "description": "d"}',
+      usage: { inputTokens: 20, outputTokens: 5 },
     }
-    setTitleGenerationModelId('hoshi')
-
-    let capturedUrl = ''
-    let capturedInit: any = null
-    ;(globalThis.fetch as any) = async (url: string, init: any) => {
-      capturedUrl = url
-      capturedInit = init
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: '{"title": "Hoshi Title", "description": "d"}' } }],
-          usage: { prompt_tokens: 20, completion_tokens: 5 },
-        }),
-      }
-    }
+    setTitleGenerationModelId('hoshi-custom')
 
     const result = await generateTitleCompletion({ system: SYSTEM, prompt: PROMPT })
-
-    expect(capturedUrl).toBe('https://api.hoshi.example/v1/chat/completions')
-    expect(capturedInit.headers['Authorization']).toBe('Bearer sk-hoshi')
-    const body = JSON.parse(capturedInit.body)
-    expect(body.model).toBe('hoshi-1')
     expect(result.text).toContain('Hoshi Title')
     expect(result.inputTokens).toBe(20)
     expect(result.outputTokens).toBe(5)
-    expect(result.billingModelId).toBe('hoshi')
+    expect(result.billingModelId).toBe('hoshi-custom')
   })
 
-  test('uses the api-key header when configured', async () => {
-    ENTRIES['hoshi'] = { id: 'hoshi', provider: 'custom', apiModel: 'hoshi-1' }
-    ROUTINGS['hoshi'] = {
-      provider: 'custom',
-      apiModel: 'hoshi-1',
-      baseUrl: 'https://api.hoshi.example/v1',
-      apiKey: 'sk-hoshi',
-      authStyle: 'api-key-header',
+  test('maps OpenAI-style usage keys (prompt/completion tokens)', async () => {
+    resolvable['hoshi-custom'] = { billingModelId: 'hoshi-custom' }
+    behavior['hoshi-custom'] = {
+      text: 'x',
+      usage: { promptTokens: 42, completionTokens: 9 },
     }
-    setTitleGenerationModelId('hoshi')
-
-    let capturedInit: any = null
-    ;(globalThis.fetch as any) = async (_url: string, init: any) => {
-      capturedInit = init
-      return {
-        ok: true,
-        json: async () => ({ choices: [{ message: { content: 'x' } }], usage: {} }),
-      }
-    }
-
-    await generateTitleCompletion({ system: SYSTEM, prompt: PROMPT })
-    expect(capturedInit.headers['api-key']).toBe('sk-hoshi')
-    expect(capturedInit.headers['Authorization']).toBeUndefined()
-  })
-
-  test('falls back to the default Haiku model when the custom provider errors', async () => {
-    ENTRIES['hoshi'] = { id: 'hoshi', provider: 'custom', apiModel: 'hoshi-1' }
-    ROUTINGS['hoshi'] = {
-      provider: 'custom',
-      apiModel: 'hoshi-1',
-      baseUrl: 'https://api.hoshi.example/v1',
-      apiKey: 'sk-hoshi',
-      authStyle: 'bearer',
-    }
-    setTitleGenerationModelId('hoshi')
-
-    ;(globalThis.fetch as any) = async () => ({ ok: false, status: 502, text: async () => 'bad gateway' })
+    setTitleGenerationModelId('hoshi-custom')
 
     const result = await generateTitleCompletion({ system: SYSTEM, prompt: PROMPT })
-    // The fallback ran the Anthropic default model.
-    expect(result.text).toContain('Anthropic Title')
-    expect(result.billingModelId).toBe(DEFAULT_TITLE_MODEL_ID)
+    expect(result.inputTokens).toBe(42)
+    expect(result.outputTokens).toBe(9)
   })
-})
 
-describe('anthropic default model', () => {
-  test('runs the Anthropic model when configured id is anthropic', async () => {
-    // HAIKU_ENTRY is seeded in beforeEach; configured id is unset → default.
+  test('falls back to the default model when the configured model errors', async () => {
+    resolvable['hoshi-custom'] = { billingModelId: 'hoshi-custom' }
+    behavior['hoshi-custom'] = { throws: true }
+    setTitleGenerationModelId('hoshi-custom')
+
     const result = await generateTitleCompletion({ system: SYSTEM, prompt: PROMPT })
-    expect(result.text).toContain('Anthropic Title')
-    expect(result.inputTokens).toBe(11)
-    expect(result.outputTokens).toBe(7)
+    expect(result.text).toContain('Default Title')
     expect(result.billingModelId).toBe(DEFAULT_TITLE_MODEL_ID)
   })
 
-  test('throws when no model can produce a result', async () => {
-    // Configured custom provider with no credentials, and no anthropic key for
-    // the fallback → nothing can run.
-    ENTRIES['hoshi'] = { id: 'hoshi', provider: 'custom', apiModel: 'hoshi-1' }
-    setTitleGenerationModelId('hoshi')
-    delete process.env.ANTHROPIC_API_KEY
+  test('falls back to the default model when the configured model is unresolvable', async () => {
+    // No `resolvable` entry → helper returns null → runModel throws → fallback.
+    setTitleGenerationModelId('nonexistent-model')
 
-    await expect(generateTitleCompletion({ system: SYSTEM, prompt: PROMPT })).rejects.toThrow()
+    const result = await generateTitleCompletion({ system: SYSTEM, prompt: PROMPT })
+    expect(result.text).toContain('Default Title')
+    expect(result.billingModelId).toBe(DEFAULT_TITLE_MODEL_ID)
+  })
+
+  test('only tries the default once when it is also the configured id', async () => {
+    behavior[DEFAULT_TITLE_MODEL_ID] = { throws: true }
+    await expect(
+      generateTitleCompletion({ system: SYSTEM, prompt: PROMPT }),
+    ).rejects.toThrow()
+  })
+
+  test('throws when neither configured nor default can produce a result', async () => {
+    resolvable = {} // nothing resolves at all
+    setTitleGenerationModelId('hoshi-custom')
+    await expect(
+      generateTitleCompletion({ system: SYSTEM, prompt: PROMPT }),
+    ).rejects.toThrow()
   })
 })
