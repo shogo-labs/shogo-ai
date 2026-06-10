@@ -322,6 +322,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     let blockIdSeq = 0
     const commandBlocksRef = React.useRef<CommandBlock[]>([])
     const activeNavIndexRef = React.useRef<number | null>(null)
+    const clearGutterRef = React.useRef<(() => void) | null>(null)
     runWithApprovalRef.current = (command: string) => {
       const cmd = command.trim()
       if (!cmd) return
@@ -533,6 +534,21 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           rulerDec: { options: object; onRender?: (fn: (el: HTMLElement) => void) => void } | null
         }
         const gutterDots: GutterDot[] = []
+
+        // Wire clearGutterRef so the imperative clear() handle can
+        // remove all gutter dots when the user hits the Clear button
+        // or runs `clear` in the shell.
+        clearGutterRef.current = () => {
+          for (const dot of gutterDots) {
+            try { gutterEl.removeChild(dot.dotEl) } catch {}
+            if (dot.rulerDec && typeof (dot.rulerDec as any).dispose === 'function') {
+              try { (dot.rulerDec as any).dispose() } catch {}
+            }
+          }
+          gutterDots.length = 0
+          commandBlocksRef.current = []
+          activeNavIndexRef.current = null
+        }
 
         function positionDot(dot: GutterDot): void {
           if (dot.marker.isDisposed) { dot.dotEl.style.display = 'none'; return }
@@ -998,7 +1014,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     }, [cmdK, searchController, searchOpen])
 
     React.useImperativeHandle(ref, () => ({
-      clear: () => termRef.current?.clear(),
+      clear: () => { clearGutterRef.current?.(); termRef.current?.clear() },
       focus: () => termRef.current?.focus(),
       refit: () => fitRef.current?.fit(),
       openFind: () => {
@@ -1178,7 +1194,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         onRename: () => onRename?.(),
         onConfigure: () => onConfigure?.(),
         onSplit: () => onSplit?.(),
-        onClear: () => term?.clear(),
+        onClear: () => { clearGutterRef.current?.(); term?.clear() },
       })
     }, [menuPos, hasClipboard, state, tracker, client, contextColors, contextIcons, onChangeColor, onChangeIcon, onRename, onConfigure, onSplit])
 
