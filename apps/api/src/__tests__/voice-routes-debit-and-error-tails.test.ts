@@ -165,8 +165,17 @@ mock.module('ai', () => ({
   },
   convertToModelMessages: (m: any) => m,
 }))
-mock.module('@ai-sdk/anthropic', () => ({
-  createAnthropic: () => () => ({}),
+// Translator model resolution flows through the shared resolver now. Mirror
+// its env-driven null behavior so the route's 503 (no transport) vs 200
+// (resolves) contract still holds.
+mock.module('../lib/resolve-language-model', () => ({
+  DEFAULT_ASSISTANT_MODEL: 'hoshi-1.0',
+  resolveLanguageModel: () => {
+    const hasProxy = Boolean(process.env.AI_PROXY_URL && process.env.AI_PROXY_TOKEN)
+    const hasKey = Boolean(process.env.ANTHROPIC_API_KEY)
+    if (!hasProxy && !hasKey) return null
+    return { model: { provider: 'anthropic' }, billingModelId: 'test-model', provider: 'anthropic' }
+  },
 }))
 
 const { authMiddleware } = await import('../middleware/auth')

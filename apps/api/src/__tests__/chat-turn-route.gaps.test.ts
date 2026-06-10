@@ -31,6 +31,10 @@ import { Hono } from 'hono'
 
 process.env.AI_PROXY_SECRET =
   process.env.AI_PROXY_SECRET ?? 'test-signing-secret-for-runtime-token'
+// `CHAT_MODEL_ID` is captured at module-load time inside the chat route, so the
+// default chat model must be pinned BEFORE that import (below). A claude-family
+// id keeps the resolver on the Anthropic transport branch these tests assert.
+process.env.SHOGO_CHAT_MODEL = 'claude-haiku-4-5'
 
 // ─── Prisma mock ──────────────────────────────────────────────────────────
 
@@ -173,6 +177,29 @@ mock.module('@ai-sdk/anthropic', () => ({
   createAnthropic: createAnthropicMock,
 }))
 
+// `resolveChatModel` now delegates transport selection to the shared
+// `resolveLanguageModel` helper, so its branches (proxy vs direct key) live
+// behind the registry lookups. We let the REAL helper run and feed it a
+// claude-family default (below) so it takes the Anthropic branch and these
+// transport assertions stay meaningful. The custom (OpenAI-compatible) branch
+// is covered directly in resolve-language-model.test.ts.
+const createOpenAICompatibleArgs: any[] = []
+const createOpenAICompatibleMock = mock((...args: any[]) => {
+  createOpenAICompatibleArgs.push(args)
+  return (modelId: string) => ({ __openaiModel: true, modelId })
+})
+mock.module('@ai-sdk/openai-compatible', () => ({
+  createOpenAICompatible: createOpenAICompatibleMock,
+}))
+// Empty registry: ids pass through unresolved, so a `claude-*` default routes
+// to the Anthropic branch via the helper's prefix heuristic.
+mock.module('../services/model-registry.service', () => ({
+  getMergedModelEntrySync: () => undefined,
+}))
+mock.module('../services/public-models.service', () => ({
+  resolvePublicModelSync: () => null,
+}))
+
 // `streamText` + helpers — same shape as the existing test file. We
 // inject failure modes via the streamText mock and via the
 // convertToModelMessages mock.
@@ -259,8 +286,11 @@ beforeEach(() => {
   resolveProjectAgentBehaviour = 'normal'
   streamTextThrows = false
   convertToModelMessagesThrows = false
+  createOpenAICompatibleArgs.length = 0
   restoreEnv()
-  // Default: Anthropic direct key available so the model resolves.
+  // Default: Anthropic direct key available so the model resolves. The default
+  // chat model is pinned to a claude id so the helper takes the Anthropic
+  // transport branch the assertions below depend on.
   process.env.ANTHROPIC_API_KEY = 'test-anthropic-key'
   delete process.env.AI_PROXY_URL
   delete process.env.AI_PROXY_TOKEN

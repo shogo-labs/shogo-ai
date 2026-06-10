@@ -51,10 +51,10 @@
 import { Hono } from 'hono'
 import { streamText, convertToModelMessages, jsonSchema, tool, type UIMessage } from 'ai'
 import { stripOrphanToolParts } from '../lib/strip-orphan-tool-parts'
-import { createAnthropic } from '@ai-sdk/anthropic'
 import { z } from 'zod'
 import { apiKeyOrSession, authorizeProject } from '../middleware/auth'
 import { resolveVoiceContext } from '../lib/voice-context'
+import { resolveLanguageModel, DEFAULT_ASSISTANT_MODEL } from '../lib/resolve-language-model'
 
 /**
  * Default persona used by the chat route when the project has not
@@ -78,34 +78,21 @@ const DEFAULT_CHAT_SYSTEM_PROMPT = `You are the Shogo assistant for this project
  */
 const CHAT_CONTEXT_MARKER = '{{PROJECT_CONTEXT}}'
 
-const CHAT_MODEL_ID = process.env.SHOGO_CHAT_MODEL || 'claude-haiku-4-5'
+const CHAT_MODEL_ID = process.env.SHOGO_CHAT_MODEL || DEFAULT_ASSISTANT_MODEL
 
 /**
- * Resolve the chat LLM. Mirrors `resolveTranslatorModel` in voice.ts:
- *   1. Shogo AI proxy (`AI_PROXY_URL` + `AI_PROXY_TOKEN`) — preferred.
- *   2. Direct `ANTHROPIC_API_KEY` — fallback for local dev.
+ * Resolve the chat LLM via the shared multi-provider resolver
+ * (`lib/resolve-language-model.ts`), which routes Anthropic models through the
+ * proxy's `/ai/anthropic/v1` endpoint and custom OpenAI-compatible models
+ * (e.g. Hoshi) through `/ai/v1`, with a direct `ANTHROPIC_API_KEY` local-dev
+ * fallback. Returns `null` when no transport is configured.
  *
- * `agentModelId` (when set) overrides the env-driven default. Used
- * when a named `ProjectAgent` row carries its own `model` field.
+ * `agentModelId` (when set) overrides the env-driven default. Used when a named
+ * `ProjectAgent` row carries its own `model` field.
  */
 function resolveChatModel(agentModelId: string | null = null) {
   const modelId = agentModelId || CHAT_MODEL_ID
-  const proxyUrl = process.env.AI_PROXY_URL
-  const proxyToken = process.env.AI_PROXY_TOKEN
-  if (proxyUrl && proxyToken) {
-    const anthropicProxyUrl = proxyUrl.replace('/ai/v1', '/ai/anthropic/v1')
-    const anthropic = createAnthropic({
-      baseURL: anthropicProxyUrl,
-      apiKey: proxyToken,
-    })
-    return anthropic(modelId)
-  }
-  const directKey = process.env.ANTHROPIC_API_KEY
-  if (directKey) {
-    const anthropic = createAnthropic({ apiKey: directKey })
-    return anthropic(modelId)
-  }
-  return null
+  return resolveLanguageModel(modelId)?.model ?? null
 }
 
 /** Substitute the project-context block into the persona prompt. */

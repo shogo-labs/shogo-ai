@@ -57,7 +57,6 @@ import { voiceRoutes } from './routes/voice'
 import { chatRoutes } from './routes/chat'
 import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { toolsProxyRoutes } from './routes/tools-proxy'
-import { calculateUsageCost } from './lib/usage-cost'
 import {
   generateTitleCompletion,
   setTitleGenerationModelId,
@@ -5572,10 +5571,11 @@ app.post('/api/generate-project-name', async (c) => {
     }
 
     // Run the admin-configured title-generation model (super-admin selectable
-    // via the `title-generation.model` PlatformSetting; defaults to Haiku).
-    // Custom OpenAI-compatible providers (e.g. Hoshi) don't need
-    // ANTHROPIC_API_KEY; the helper falls back to the default Haiku model and,
-    // failing that, throws so the outer catch returns a heuristic name.
+    // via the `title-generation.model` PlatformSetting; defaults to the shared
+    // assistant model). Provider handling (Anthropic + custom OpenAI-compatible
+    // like Hoshi) is delegated to `resolveLanguageModel`; the helper falls back
+    // to the default model and, failing that, throws so the outer catch returns
+    // a heuristic name.
     const result = await generateTitleCompletion({
       maxTokens: 80,
       system: `You generate short titles for chat conversations. The user will provide the first message from a conversation. Your job is to generate a short title summarizing the topic.
@@ -5627,25 +5627,10 @@ Examples:
       name = fallbackGenerateProjectName(prompt)
     }
 
-    // Track USD usage (fire-and-forget). Bill against the resolved model id so
-    // DB per-token pricing (custom providers like Hoshi) is honored instead of
-    // the static Haiku bucket.
-    if (workspaceId) {
-      const inTok = result.inputTokens
-      const outTok = result.outputTokens
-      if (inTok + outTok > 0) {
-        const { rawUsd, billedUsd } = calculateUsageCost(inTok, outTok, result.billingModelId)
-        billingService.consumeUsage({
-          workspaceId,
-          projectId: null,
-          memberId: authUserId || 'system',
-          actionType: 'project_name_generation',
-          rawUsd,
-          billedUsd,
-          actionMetadata: { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok, rawUsd, model: result.billingModelId },
-        }).catch(() => {})
-      }
-    }
+    // Usage is metered by the AI proxy: `generateTitleCompletion` now routes
+    // through `resolveLanguageModel` (proxy `/ai/v1` or `/ai/anthropic/v1`),
+    // which records the completion server-side. No explicit `consumeUsage`
+    // here — billing it again would double-charge.
 
     // When projectId is provided, persist the generated name and description
     if (projectId) {

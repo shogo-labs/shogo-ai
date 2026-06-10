@@ -1798,6 +1798,29 @@ export async function buildUsageLimitInfo(
  * same project bill independently. When omitted the legacy
  * projectId-only key is used (back-compat with older runtimes).
  */
+/**
+ * Header a server-initiated request sets to mark a completion as internal +
+ * non-billable (recorded for admin cost-tracking only). See `resolveInternalUsage`.
+ */
+const INTERNAL_USAGE_TAG_HEADER = 'x-shogo-usage-tag'
+/** Allowlisted internal usage tags the server may request via the header. */
+const INTERNAL_USAGE_TAGS = new Set<string>(['title_generation'])
+
+/**
+ * Resolve the internal (non-billable) usage tag for a request, if any.
+ *
+ * Security: only the server's own proxy-JWT (`authKind === 'proxy-jwt'`) is
+ * trusted to mark a completion non-billable. Workspace API keys (`api-key`) and
+ * per-project pod runtime tokens (`runtime`) MUST NOT be able to dodge billing
+ * by setting this header, so they're rejected here.
+ */
+function resolveInternalUsage(c: any, tokenPayload: ProxyTokenPayload): { actionType: string } | null {
+  if (tokenPayload.authKind !== 'proxy-jwt') return null
+  const tag = c.req.header(INTERNAL_USAGE_TAG_HEADER)
+  if (tag && INTERNAL_USAGE_TAGS.has(tag)) return { actionType: tag }
+  return null
+}
+
 export async function recordUsage(
   tokenPayload: ProxyTokenPayload,
   model: string,
@@ -1806,10 +1829,45 @@ export async function recordUsage(
   cachedInputTokens: number = 0,
   cacheWriteTokens: number = 0,
   chatSessionId?: string | null,
+  internalUsage?: { actionType: string } | null,
 ) {
   // For API-key auth the projectId is a sentinel ('api-key'), not a real
   // Project row. Pass null so the UsageEvent FK constraint is satisfied.
   const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
+
+  // Internal, non-billable completion (e.g. server-initiated title generation):
+  // record the real cost for ADMIN cost-tracking only — never debit a wallet,
+  // never accumulate into a billing session. The dedicated `actionType` keeps it
+  // out of the user-facing usage log/summary (which whitelist only
+  // `ai_proxy_completion` / `chat_message` / `voice_*`), while admin analytics
+  // (`getUsageAnalytics`, scoped by action type) still see it.
+  if (internalUsage) {
+    const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
+    if (totalTokens === 0) return
+    try {
+      const billingModel = proxyModelToBillingModel(model)
+      const { rawUsd } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
+      const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+      await prisma.usageEvent.create({
+        data: {
+          workspaceId: tokenPayload.workspaceId,
+          projectId: billingProjectId,
+          memberId: billingUserId,
+          actionType: internalUsage.actionType,
+          rawUsd,
+          billedUsd: 0,
+          source: 'daily',
+          balanceBefore: 0,
+          balanceAfter: 0,
+          actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens, internal: true, billable: false },
+        },
+      })
+      console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${billingModel}) — not billed`)
+    } catch (err) {
+      console.error('[AI Proxy] Failed to record internal usage:', err)
+    }
+    return
+  }
 
   // If a billing session is open, accumulate — the session closer will charge
   if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId)) {
@@ -2192,16 +2250,19 @@ export function aiProxyRoutes() {
         workspaceId: resolved.workspaceId,
         userId: resolved.userId,
         type: 'ai-proxy',
+        authKind: 'api-key',
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 3600,
       }
     }
 
     if (token.startsWith('rt_v1_')) {
-      return resolveRuntimeToken(token)
+      const rt = await resolveRuntimeToken(token)
+      return rt ? { ...rt, authKind: 'runtime' } : null
     }
 
-    return verifyProxyToken(token)
+    const jwt = await verifyProxyToken(token)
+    return jwt ? { ...jwt, authKind: 'proxy-jwt' } : null
   }
 
   /**
@@ -2414,6 +2475,7 @@ export function aiProxyRoutes() {
       // / instance-tunnel) so accumulateUsage can route to the right
       // `(projectId, chatSessionId)` billing-session slot.
       const chatSessionId = c.req.header('x-chat-session-id') || null
+      const internalUsage = resolveInternalUsage(c, tokenPayload)
 
       // Resolve agent-mode aliases (basic/advanced) to real model names
       if (request.model) {
@@ -2517,11 +2579,11 @@ export function aiProxyRoutes() {
       if (request.stream) {
         if (modelConfig.provider === 'anthropic') {
           return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok, cacheWriteTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId)
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage)
           }, c.req.raw.signal)
         } else {
           return await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId)
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId, internalUsage)
           }, c.req.raw.signal)
         }
       } else {
@@ -2543,6 +2605,7 @@ export function aiProxyRoutes() {
             cachedPrompt,
             0,
             chatSessionId,
+            internalUsage,
           )
         }
 
@@ -2613,6 +2676,7 @@ export function aiProxyRoutes() {
         return c.json({ error: { message: 'model is required', type: 'invalid_request_error' } }, 400)
       }
       const chatSessionId = c.req.header('x-chat-session-id') || null
+      const internalUsage = resolveInternalUsage(c, tokenPayload)
 
       const { resolvedModel } = resolveAgentModel(requestedModel)
       const modelConfig = resolveModel(resolvedModel)
@@ -2690,7 +2754,7 @@ export function aiProxyRoutes() {
           },
           flush() {
             if (inputTokens || outputTokens || cachedInputTokens) {
-              recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens, 0, chatSessionId)
+              recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens, 0, chatSessionId, internalUsage)
             }
           },
         })
@@ -2716,7 +2780,7 @@ export function aiProxyRoutes() {
         if (result.usage) {
           const totalInput = result.usage.input_tokens || 0
           const cachedInput = result.usage.input_tokens_details?.cached_tokens || 0
-          recordUsage(tokenPayload, requestedModel, totalInput - cachedInput, result.usage.output_tokens || 0, cachedInput, 0, chatSessionId)
+          recordUsage(tokenPayload, requestedModel, totalInput - cachedInput, result.usage.output_tokens || 0, cachedInput, 0, chatSessionId, internalUsage)
         }
         return c.json(result)
       }
@@ -2855,16 +2919,19 @@ export function aiProxyRoutes() {
         workspaceId: resolved.workspaceId,
         userId: resolved.userId,
         type: 'ai-proxy',
+        authKind: 'api-key',
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 3600,
       }
     }
 
     if (apiKey.startsWith('rt_v1_')) {
-      return resolveRuntimeToken(apiKey)
+      const rt = await resolveRuntimeToken(apiKey)
+      return rt ? { ...rt, authKind: 'runtime' } : null
     }
 
-    return verifyProxyToken(apiKey)
+    const jwt = await verifyProxyToken(apiKey)
+    return jwt ? { ...jwt, authKind: 'proxy-jwt' } : null
   }
 
   /**
@@ -2917,6 +2984,7 @@ export function aiProxyRoutes() {
       const requestModel = parsed.model || 'advanced'
       const isStream = !!parsed.stream
       const chatSessionId = c.req.header('x-chat-session-id') || null
+      const internalUsage = resolveInternalUsage(c, tokenPayload)
 
       const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
@@ -3049,7 +3117,7 @@ export function aiProxyRoutes() {
           const openaiResult = await response.json() as any
           const oaiTotalPrompt = openaiResult.usage?.prompt_tokens || 0
           const oaiCachedPrompt = openaiResult.usage?.prompt_tokens_details?.cached_tokens || 0
-          recordUsage(tokenPayload, resolvedModel, oaiTotalPrompt - oaiCachedPrompt, openaiResult.usage?.completion_tokens || 0, oaiCachedPrompt, 0, chatSessionId)
+          recordUsage(tokenPayload, resolvedModel, oaiTotalPrompt - oaiCachedPrompt, openaiResult.usage?.completion_tokens || 0, oaiCachedPrompt, 0, chatSessionId, internalUsage)
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
           return c.json(anthropicResult)
         }
@@ -3123,7 +3191,7 @@ export function aiProxyRoutes() {
         const cacheWriteTok = responseBody.usage?.cache_creation_input_tokens || 0
         const cachedTok = responseBody.usage?.cache_read_input_tokens || 0
         const outTok = responseBody.usage?.output_tokens || 0
-        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId)
+        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage)
         return c.json(responseBody)
       }
 
@@ -3168,7 +3236,7 @@ export function aiProxyRoutes() {
           }
         },
         flush() {
-          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens, streamCacheWriteTokens, chatSessionId)
+          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens, streamCacheWriteTokens, chatSessionId, internalUsage)
         },
       })
 

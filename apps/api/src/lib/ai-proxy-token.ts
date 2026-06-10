@@ -71,6 +71,14 @@ export interface ProxyTokenPayload {
   iat: number
   /** Expires at (unix seconds) */
   exp: number
+  /**
+   * How the bearer was authenticated. Set by the proxy auth validators (NOT
+   * part of the signed JWT). Used to gate privileged behaviors that only the
+   * server itself may request — e.g. tagging an internal, non-billable
+   * completion. Only `'proxy-jwt'` (a server-minted token) is trusted for that;
+   * `'api-key'` (workspace key) and `'runtime'` (per-project pod token) are not.
+   */
+  authKind?: 'api-key' | 'runtime' | 'proxy-jwt'
 }
 
 // =============================================================================
