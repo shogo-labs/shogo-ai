@@ -2816,6 +2816,7 @@ export default observer(function ProjectLayout() {
             platformIsWeb={Platform.OS === 'web'}
             canvasAreaHidden={canvasAreaHidden}
             isChatFullscreen={isChatFullscreen}
+            folderPath={primaryFolderPath ?? undefined}
           >
           {/* Floating chat button on native narrow canvas — above every canvas sub-tab (z-20 panels) */}
           {showNativeNarrowChatFab && (
