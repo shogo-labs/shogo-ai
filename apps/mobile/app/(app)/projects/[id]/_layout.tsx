@@ -98,6 +98,7 @@ import {
   type SettingsSectionItem,
 } from '../../../../components/project/panels'
 import { FoldersPanel } from '../../../../components/project/panels/FoldersPanel'
+import { CustomDomainsSection } from '../../../../components/project/CustomDomainsSection'
 import { CheckpointGraphNative } from '../../../../components/project/panels/ide/graph/CheckpointGraphNative'
 import { TrustPrompt, type TrustDecision } from '../../../../components/project/TrustPrompt'
 import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
@@ -117,6 +118,7 @@ import {
   BarChart3,
   FileText,
   ShieldCheck,
+  Globe,
 } from 'lucide-react-native'
 import {
   useToast,
@@ -452,6 +454,8 @@ export default observer(function ProjectLayout() {
     sdkGuideEnabled: projectSettings.sdkGuideEnabled !== false,
     integrationsEnabled: projectSettings.integrationsEnabled !== false,
     channelsEnabled: projectSettings.channelsEnabled !== false,
+    // Beta, opt-in: off unless explicitly enabled.
+    gitWorktreesEnabled: projectSettings.gitWorktreesEnabled === true,
   }), [projectSettings])
 
   const updateProjectSettings = useCallback(async (patch: Record<string, unknown>) => {
@@ -3071,6 +3075,26 @@ export default observer(function ProjectLayout() {
                         render: () => (
                           <PanelErrorBoundary panelName="Auth & Database">
                             <AuthDatabasePanel projectId={projectId!} visible />
+                          </PanelErrorBoundary>
+                        ),
+                      },
+                    ],
+                  },
+                  {
+                    id: 'publishing',
+                    label: 'PUBLISHING',
+                    items: [
+                      {
+                        id: 'custom-domains',
+                        label: 'Custom domain',
+                        icon: Globe,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Custom domain">
+                            <CustomDomainsSection
+                              projectId={projectId!}
+                              http={http}
+                              embedded={false}
+                            />
                           </PanelErrorBoundary>
                         ),
                       },

@@ -114,6 +114,44 @@ export async function postCheckpointRecord(
   }
 }
 
+/**
+ * BETA: per-chat git worktrees — reflect a chat's worktree lifecycle into the
+ * product DB (ChatSession.worktree* columns) so the UI can render the branch
+ * chip and merge state across reloads. Best-effort; never throws.
+ */
+export interface WorktreeStatusPayload {
+  worktreeBranch?: string | null
+  worktreeStatus?: 'active' | 'merging' | 'merged' | null
+  worktreePath?: string | null
+}
+
+export async function postWorktreeStatus(
+  chatSessionId: string,
+  payload: WorktreeStatusPayload,
+): Promise<boolean> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return false
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/chat-sessions/${encodeURIComponent(chatSessionId)}/worktree`,
+      {
+        method: 'POST',
+        headers: getInternalHeaders(),
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(5_000),
+      },
+    )
+    if (!res.ok) {
+      console.warn(`[Runtime] postWorktreeStatus HTTP ${res.status} for ${chatSessionId}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn('[Runtime] postWorktreeStatus failed:', err?.message ?? err)
+    return false
+  }
+}
+
 export async function postCostMetric(payload: AgentCostMetricPayload): Promise<void> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) return

@@ -81,8 +81,15 @@ class MockElevenLabsClient {
 
 mock.module('@shogo-ai/sdk/voice', () => ({ ElevenLabsClient: MockElevenLabsClient }))
 
-mock.module('@ai-sdk/anthropic', () => ({
-  createAnthropic: mock(() => (model: string) => ({ provider: 'anthropic', model })),
+// Translator model resolution flows through the shared resolver now. This
+// suite only exercises the resolved (200) path, so return a sentinel model.
+mock.module('../lib/resolve-language-model', () => ({
+  DEFAULT_ASSISTANT_MODEL: 'hoshi-1.0',
+  resolveLanguageModel: mock(() => ({
+    model: { provider: 'anthropic', model: 'test-model' },
+    billingModelId: 'test-model',
+    provider: 'anthropic',
+  })),
 }))
 
 mock.module('ai', () => ({

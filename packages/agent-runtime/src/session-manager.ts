@@ -36,6 +36,10 @@ export interface SerializedSession {
   totalMessages: number
   compactionCount: number
   modelOverride?: string
+  /** Native provider hint paired with `modelOverride` (e.g. `anthropic`).
+   *  Persisted so a reloaded session keeps native routing; older sessions
+   *  simply lack it and fall back to id-based inference. */
+  modelProvider?: string
   metadata: Record<string, any>
 }
 
@@ -99,6 +103,8 @@ export interface ManagedSession {
   /** Number of compactions performed */
   compactionCount: number
   modelOverride?: string
+  /** Native provider hint paired with `modelOverride` (see SerializedSession). */
+  modelProvider?: string
   stopRequested: boolean
   metadata: Record<string, any>
 }
@@ -278,6 +284,18 @@ export class SessionManager {
     session.totalMessages += msgs.length
     this.persistSession(session)
     return this.needsCompaction(session)
+  }
+
+  /**
+   * Merge `patch` into a session's metadata and persist. Used to durably track
+   * the thread's running background processes (so the list survives restart).
+   * No-op if the session is not loaded.
+   */
+  setSessionMetadata(id: string, patch: Record<string, any>): void {
+    const session = this.sessions.get(id)
+    if (!session) return
+    session.metadata = { ...session.metadata, ...patch }
+    this.persistSession(session)
   }
 
   /** Clear a session's history (keeps the session alive) */

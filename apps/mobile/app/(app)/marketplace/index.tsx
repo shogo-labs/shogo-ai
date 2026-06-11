@@ -706,7 +706,7 @@ export default observer(function MarketplaceHomeScreen() {
             <Text className="text-xs font-medium text-muted-foreground">Creators</Text>
           </Pressable>
           <Pressable
-            onPress={() => router.push('/(app)/marketplace/creator' as any)}
+            onPress={() => router.push('/(app)/creator?tab=publish' as any)}
             className="flex-row items-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-primary"
           >
             <UserCircle size={14} color="#fff" />

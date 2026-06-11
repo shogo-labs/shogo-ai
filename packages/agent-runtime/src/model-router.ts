@@ -14,6 +14,8 @@ export {
   buildAutoTierMap,
   buildModelTierMap,
   formatRoutingLog,
+  autoTierIds,
+  autoTierProviderHints,
 } from '@shogo-ai/sdk/model-router'
 export type {
   RoutingConfig,
@@ -22,4 +24,6 @@ export type {
   SpawnClassificationInput,
   ModelTierMap,
   ModelRouterOptions,
+  AutoTierEntry,
+  AutoTierOverride,
 } from '@shogo-ai/sdk/model-router'

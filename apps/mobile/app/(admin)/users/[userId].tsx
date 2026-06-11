@@ -43,7 +43,7 @@ import {
 import { Heading } from '@/components/ui/heading'
 import { Text as UIText } from '@/components/ui/text'
 import { Button, ButtonText } from '@/components/ui/button'
-import { API_URL } from '../../../lib/api'
+import { API_URL, type AdminScopeDef } from '../../../lib/api'
 import { usePlatformConfig } from '../../../lib/platform-config'
 
 const API_BASE = `${API_URL}/api/admin`
@@ -53,6 +53,7 @@ interface UserDetail {
   name: string | null
   email: string
   role: string
+  adminScopes?: string[]
   image: string | null
   emailVerified: boolean
   createdAt: string
@@ -111,6 +112,23 @@ async function adminDeleteUser(userId: string): Promise<{ ok?: boolean; error?: 
   }
 }
 
+async function adminSetUserAccess(
+  userId: string,
+  scopes: string[],
+): Promise<{ ok?: boolean; error?: { code: string; message: string } }> {
+  try {
+    const res = await fetch(`${API_BASE}/users/${userId}/admin-access`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scopes }),
+    })
+    return res.json()
+  } catch {
+    return { error: { code: 'network_error', message: 'Network error. Please try again.' } }
+  }
+}
+
 export default function AdminUserDetailPage() {
   const { userId } = useLocalSearchParams<{ userId: string }>()
   const router = useRouter()
@@ -125,10 +143,26 @@ export default function AdminUserDetailPage() {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [workspaceNames, setWorkspaceNames] = useState<Record<string, string>>({})
 
+  // Scoped admin access
+  const [scopeCatalog, setScopeCatalog] = useState<AdminScopeDef[]>([])
+  const [selectedScopes, setSelectedScopes] = useState<string[]>([])
+  const [savingScopes, setSavingScopes] = useState(false)
+  const [scopeStatus, setScopeStatus] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchAdminJson<AdminScopeDef[]>('/admin-scopes').then((data) => {
+      if (!cancelled && Array.isArray(data)) setScopeCatalog(data)
+    })
+    return () => { cancelled = true }
+  }, [])
+
   const loadUser = useCallback(async () => {
     if (!userId) return
     const data = await fetchAdminJson<UserDetail>(`/users/${userId}`)
     setUser(data)
+    setSelectedScopes(Array.isArray(data?.adminScopes) ? data!.adminScopes! : [])
+    setScopeStatus(null)
     setLoading(false)
     setRefreshing(false)
 
@@ -172,6 +206,32 @@ export default function AdminUserDetailPage() {
   }
 
   const isPromoting = user?.role !== 'super_admin'
+
+  const toggleScope = (id: string) => {
+    setScopeStatus(null)
+    setSelectedScopes((prev) =>
+      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id],
+    )
+  }
+
+  const savedScopes = user?.adminScopes ?? []
+  const scopesDirty =
+    selectedScopes.length !== savedScopes.length ||
+    selectedScopes.some((s) => !savedScopes.includes(s))
+
+  const saveScopes = async () => {
+    if (!user) return
+    setSavingScopes(true)
+    setScopeStatus(null)
+    const result = await adminSetUserAccess(user.id, selectedScopes)
+    setSavingScopes(false)
+    if (result.ok) {
+      setScopeStatus('Saved')
+      loadUser()
+    } else {
+      setScopeStatus(result.error?.message ?? 'Failed to save')
+    }
+  }
 
   if (loading) {
     return (
@@ -354,6 +414,78 @@ export default function AdminUserDetailPage() {
             </View>
           </View>
         </View>
+
+        {/* Admin access (scoped permissions) */}
+        {!localMode && (
+          <View className="rounded-xl border border-border bg-card p-5 mb-4">
+            <View className="flex-row items-center gap-2 mb-1">
+              <Shield size={16} className="text-foreground" />
+              <Text className="text-sm font-semibold text-foreground">Admin access</Text>
+            </View>
+            {user.role === 'super_admin' ? (
+              <Text className="text-sm text-muted-foreground mt-1">
+                Super admins have full access to every admin surface. Remove the
+                super admin role to grant scoped access instead.
+              </Text>
+            ) : (
+              <>
+                <Text className="text-sm text-muted-foreground mt-1 mb-3">
+                  Grant {user.email} access to specific admin surfaces without
+                  full super admin privileges.
+                </Text>
+                {scopeCatalog.length === 0 ? (
+                  <Text className="text-sm text-muted-foreground">No scopes available.</Text>
+                ) : (
+                  <View className="gap-2">
+                    {scopeCatalog.map((scope) => {
+                      const checked = selectedScopes.includes(scope.id)
+                      return (
+                        <Pressable
+                          key={scope.id}
+                          onPress={() => toggleScope(scope.id)}
+                          className={cn(
+                            'flex-row items-start gap-3 p-3 rounded-lg border',
+                            checked ? 'border-primary/40 bg-primary/5' : 'border-border active:bg-muted/40',
+                          )}
+                        >
+                          <View
+                            className={cn(
+                              'h-5 w-5 rounded items-center justify-center mt-0.5',
+                              checked ? 'bg-primary' : 'border border-border',
+                            )}
+                          >
+                            {checked && <CheckCircle size={14} className="text-primary-foreground" />}
+                          </View>
+                          <View className="flex-1">
+                            <Text className="text-sm font-medium text-foreground">{scope.label}</Text>
+                            <Text className="text-xs text-muted-foreground mt-0.5">{scope.description}</Text>
+                          </View>
+                        </Pressable>
+                      )
+                    })}
+                  </View>
+                )}
+                <View className="flex-row items-center gap-3 mt-4">
+                  <Pressable
+                    onPress={saveScopes}
+                    disabled={!scopesDirty || savingScopes}
+                    className={cn(
+                      'px-4 py-2 rounded-lg bg-primary active:opacity-90',
+                      (!scopesDirty || savingScopes) && 'opacity-50',
+                    )}
+                  >
+                    <Text className="text-sm font-medium text-primary-foreground">
+                      {savingScopes ? 'Saving…' : 'Save access'}
+                    </Text>
+                  </Pressable>
+                  {scopeStatus && (
+                    <Text className="text-xs text-muted-foreground">{scopeStatus}</Text>
+                  )}
+                </View>
+              </>
+            )}
+          </View>
+        )}
 
         {/* Workspaces + Sessions */}
         <View className={cn(isWide ? 'flex-row gap-4' : 'gap-4')}>

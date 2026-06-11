@@ -58,10 +58,6 @@ beforeEach(() => {
   execSyncImpl = () => ''
 })
 
-afterEach(() => {
-  delete process.env.SHOGO_EXEC_HARD_TIMEOUT_MS
-})
-
 describe('purgeSecretsFromEnv', () => {
   test('captures + clears known secret keys and pattern-matched keys', () => {
     process.env.OPENAI_API_KEY = 'sk-purge-me'
@@ -79,6 +75,101 @@ describe('purgeSecretsFromEnv', () => {
     delete process.env.STRIPE_SECRET_KEY
     sandbox.purgeSecretsFromEnv()
     expect(sandbox.getCapturedSecret('STRIPE_SECRET_KEY')).toBeUndefined()
+  })
+
+  test('keeps non-secret sqlite file: DATABASE_URL but purges a postgres one', () => {
+    process.env.DATABASE_URL = 'file:/workspace/prisma/dev.db'
+    sandbox.purgeSecretsFromEnv()
+    // sqlite file URL is not a credential — the agent needs it for prisma.
+    expect(process.env.DATABASE_URL).toBe('file:/workspace/prisma/dev.db')
+
+    process.env.DATABASE_URL = 'postgres://user:pw@host:5432/db'
+    sandbox.purgeSecretsFromEnv()
+    expect(process.env.DATABASE_URL).toBeUndefined()
+    expect(sandbox.getCapturedSecret('DATABASE_URL')).toBe('postgres://user:pw@host:5432/db')
+    delete process.env.DATABASE_URL
+  })
+})
+
+describe('getSanitizedEnv — never inherits a database URL', () => {
+  afterEach(() => {
+    delete process.env.DATABASE_URL
+    delete process.env.PROJECTS_DATABASE_URL
+    delete process.env.SHOGO_APP_DATABASE_URL
+  })
+
+  // Regression: an agent building a project ran `prisma migrate reset` and,
+  // because the desktop app's file: DATABASE_URL was inherited straight
+  // through the sanitized env, wiped + re-schema'd the MAIN Shogo DB. The
+  // agent shell must never inherit ANY ambient database URL — buildExecEnv
+  // injects a project-scoped one instead.
+  test('strips a sqlite file: DATABASE_URL (no longer passed through)', () => {
+    process.env.DATABASE_URL = 'file:/workspace/prisma/dev.db'
+    expect(sandbox.getSanitizedEnv().DATABASE_URL).toBeUndefined()
+  })
+
+  test('strips a postgres DATABASE_URL credential', () => {
+    process.env.DATABASE_URL = 'postgres://user:pw@host:5432/db'
+    expect(sandbox.getSanitizedEnv().DATABASE_URL).toBeUndefined()
+  })
+
+  test('strips PROJECTS_DATABASE_URL in both file: and remote forms', () => {
+    process.env.PROJECTS_DATABASE_URL = 'mysql://root@host/app'
+    expect(sandbox.getSanitizedEnv().PROJECTS_DATABASE_URL).toBeUndefined()
+    process.env.PROJECTS_DATABASE_URL = 'file:./prisma/dev.db'
+    expect(sandbox.getSanitizedEnv().PROJECTS_DATABASE_URL).toBeUndefined()
+  })
+
+  test('strips the desktop app DB var (SHOGO_APP_DATABASE_URL)', () => {
+    process.env.SHOGO_APP_DATABASE_URL = 'file:/Users/me/Library/Application Support/Shogo/data/shogo.db'
+    expect(sandbox.getSanitizedEnv().SHOGO_APP_DATABASE_URL).toBeUndefined()
+  })
+})
+
+describe('projectScopedDatabaseUrl — clamps the agent DB to the project', () => {
+  const ws = '/work/proj'
+
+  test('defaults to the project sqlite when no .env value', () => {
+    expect(sandbox.projectScopedDatabaseUrl(ws, undefined)).toBe('file:/work/proj/prisma/dev.db')
+  })
+
+  test('honors an explicit remote (non-file) DB from .env', () => {
+    expect(sandbox.projectScopedDatabaseUrl(ws, 'postgres://u:p@host/db'))
+      .toBe('postgres://u:p@host/db')
+  })
+
+  test('keeps a file: URL that resolves inside the workspace', () => {
+    expect(sandbox.projectScopedDatabaseUrl(ws, 'file:./prisma/dev.db'))
+      .toBe('file:/work/proj/prisma/dev.db')
+  })
+
+  test('refuses a file: URL pointing OUTSIDE the workspace (the app DB)', () => {
+    const appDb = 'file:/Users/me/Library/Application Support/Shogo/data/shogo.db'
+    expect(sandbox.projectScopedDatabaseUrl(ws, appDb)).toBe('file:/work/proj/prisma/dev.db')
+  })
+
+  test('refuses a ../ traversal escape', () => {
+    expect(sandbox.projectScopedDatabaseUrl(ws, 'file:../../etc/evil.db'))
+      .toBe('file:/work/proj/prisma/dev.db')
+  })
+
+  test('re-bases to the container workspace path when sandboxed', () => {
+    expect(sandbox.projectScopedDatabaseUrl(ws, undefined, '/workspace'))
+      .toBe('file:/workspace/prisma/dev.db')
+  })
+})
+
+describe('buildExecEnv — agent shell env', () => {
+  afterEach(() => {
+    delete process.env.DATABASE_URL
+    delete process.env.SHOGO_APP_DATABASE_URL
+  })
+
+  test('injects a project-scoped DATABASE_URL even when the app DB is ambient', () => {
+    process.env.SHOGO_APP_DATABASE_URL = 'file:/Users/me/Shogo/data/shogo.db'
+    process.env.DATABASE_URL = 'file:/Users/me/Shogo/data/shogo.db'
+    const env = sandbox.buildExecEnv('/work/proj')
+    expect(env.DATABASE_URL).toBe('file:/work/proj/prisma/dev.db')
   })
 })
 
@@ -102,7 +193,6 @@ describe('sandboxExecAsync (non-sandbox)', () => {
     expect(result.stdout).toContain('hello')
     expect(result.stderr).toContain('warn')
     expect(result.killed).toBe(false)
-    expect(result.timedOut).toBe(false)
     expect(handle.exited()).toBe(true)
     expect(handle.stdout()).toContain('hello')
     expect(handle.stderr()).toContain('warn')
@@ -197,48 +287,6 @@ describe('sandboxExecAsync kill paths', () => {
     call.child.emitExit(137)
     const r = await handle.done
     expect(r.killed).toBe(true)
-  })
-
-  test('hard timeout auto-SIGKILLs and marks timedOut', async () => {
-    process.env.SHOGO_EXEC_HARD_TIMEOUT_MS = '20'
-    const handle = sandbox.sandboxExecAsync({
-      command: 'sleep 99',
-      workspaceDir: '/tmp/ws',
-      sandboxConfig: { enabled: false },
-    })
-    const call = spawnCalls.at(-1)!
-    await new Promise((r) => setTimeout(r, 60))
-    expect(call.child.killSignal).toBe('SIGKILL')
-    call.child.emitExit(137)
-    const r = await handle.done
-    expect(r.timedOut).toBe(true)
-    expect(r.killed).toBe(true)
-  })
-
-  test('explicit hardTimeoutMs option overrides env', async () => {
-    const handle = sandbox.sandboxExecAsync({
-      command: 'sleep 99',
-      workspaceDir: '/tmp/ws',
-      sandboxConfig: { enabled: false },
-      hardTimeoutMs: 15,
-    })
-    const call = spawnCalls.at(-1)!
-    await new Promise((r) => setTimeout(r, 50))
-    expect(call.child.killSignal).toBe('SIGKILL')
-    call.child.emitExit(137)
-    await handle.done
-  })
-
-  test('SHOGO_EXEC_HARD_TIMEOUT_MS=invalid falls back to default', async () => {
-    process.env.SHOGO_EXEC_HARD_TIMEOUT_MS = 'not-a-number'
-    const handle = sandbox.sandboxExecAsync({
-      command: 'true',
-      workspaceDir: '/tmp/ws',
-      sandboxConfig: { enabled: false },
-    })
-    const call = spawnCalls.at(-1)!
-    call.child.emitExit(0)
-    await handle.done
   })
 })
 

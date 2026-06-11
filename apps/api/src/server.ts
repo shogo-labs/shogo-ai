@@ -57,7 +57,6 @@ import { voiceRoutes } from './routes/voice'
 import { chatRoutes } from './routes/chat'
 import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { toolsProxyRoutes } from './routes/tools-proxy'
-import { calculateUsageCost } from './lib/usage-cost'
 import {
   generateTitleCompletion,
   setTitleGenerationModelId,
@@ -94,6 +93,8 @@ import { localProjectsRoutes } from './routes/local-projects'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
+import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
+import { normalizeAdminScopes } from './lib/admin-scopes'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
 import { getNativeProviderApiKeySync } from './services/provider-credentials.service'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
@@ -1619,8 +1620,8 @@ app.post('/api/projects/:projectId/republish', async (c) => {
 })
 
 // Custom domains (Cloudflare for SaaS bring-your-own-domain). List/add and
-// per-domain verify/delete all forward into publishRoutes() like the
-// publish endpoints above.
+// per-domain verify/retrigger/primary/delete all forward into publishRoutes()
+// like the publish endpoints above.
 app.get('/api/projects/:projectId/domains', async (c) => {
   const router = publishRoutes()
   const url = new URL(c.req.url)
@@ -1650,6 +1651,22 @@ app.post('/api/projects/:projectId/domains/:domainId/verify', async (c) => {
     headers: c.req.raw.headers,
     body: c.req.raw.body,
   })
+  return router.fetch(newReq)
+})
+
+app.post('/api/projects/:projectId/domains/:domainId/retrigger', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains/${c.req.param('domainId')}/retrigger`
+  const newReq = new Request(url.toString(), { method: 'POST', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.patch('/api/projects/:projectId/domains/:domainId/primary', async (c) => {
+  const router = publishRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/domains/${c.req.param('domainId')}/primary`
+  const newReq = new Request(url.toString(), { method: 'PATCH', headers: c.req.raw.headers })
   return router.fetch(newReq)
 })
 
@@ -5086,13 +5103,34 @@ app.patch('/api/admin/settings/infrastructure', async (c) => {
 app.get('/api/admin/settings/agent-models', async (c) => {
   try {
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['agent-model.basic', 'agent-model.advanced', 'agent-model.default-mode'] } },
+      where: {
+        key: {
+          in: [
+            'agent-model.basic',
+            'agent-model.advanced',
+            'agent-model.default-mode',
+            'agent-model.auto-economy',
+            'agent-model.auto-standard',
+            'agent-model.auto-premium',
+          ],
+        },
+      },
     })
-    const overrides: Record<string, string | null> = { basic: null, advanced: null, defaultMode: null }
+    const overrides: Record<string, string | null> = {
+      basic: null,
+      advanced: null,
+      defaultMode: null,
+      autoEconomy: null,
+      autoStandard: null,
+      autoPremium: null,
+    }
     for (const row of rows) {
       if (row.key === 'agent-model.basic') overrides.basic = row.value
       if (row.key === 'agent-model.advanced') overrides.advanced = row.value
       if (row.key === 'agent-model.default-mode') overrides.defaultMode = row.value
+      if (row.key === 'agent-model.auto-economy') overrides.autoEconomy = row.value
+      if (row.key === 'agent-model.auto-standard') overrides.autoStandard = row.value
+      if (row.key === 'agent-model.auto-premium') overrides.autoPremium = row.value
     }
     return c.json(overrides)
   } catch (err: any) {
@@ -5107,7 +5145,7 @@ app.put('/api/admin/settings/agent-models', async (c) => {
     const auth = c.get('auth') as any
     const userId = auth?.user?.id || 'unknown'
 
-    const { setAgentModeOverrides } = await import('@shogo/model-catalog')
+    const { setAgentModeOverrides, setAutoTierOverrides } = await import('@shogo/model-catalog')
     const overrides: Partial<Record<string, string>> = {}
 
     for (const mode of ['basic', 'advanced'] as const) {
@@ -5122,6 +5160,31 @@ app.put('/api/admin/settings/agent-models', async (c) => {
           update: { value: String(value), updatedBy: userId },
         })
         overrides[mode] = String(value)
+      }
+    }
+
+    // Auto-mode tier overrides (economy/standard/premium → model id, which may
+    // be a public alias like `hoshi-1.0`). Persisted under agent-model.auto-*
+    // and held in memory so the runtime env builder can resolve + inject them.
+    const autoTierKeys: Record<string, 'economy' | 'standard' | 'premium'> = {
+      autoEconomy: 'economy',
+      autoStandard: 'standard',
+      autoPremium: 'premium',
+    }
+    const autoTierOverrides: Partial<Record<'economy' | 'standard' | 'premium', string>> = {}
+    for (const [bodyKey, tier] of Object.entries(autoTierKeys)) {
+      if (body[bodyKey] === undefined) continue
+      const value = body[bodyKey]
+      const settingKey = `agent-model.auto-${tier}`
+      if (value === null || value === '') {
+        await prisma.platformSetting.deleteMany({ where: { key: settingKey } })
+      } else {
+        await prisma.platformSetting.upsert({
+          where: { key: settingKey },
+          create: { key: settingKey, value: String(value), updatedBy: userId },
+          update: { value: String(value), updatedBy: userId },
+        })
+        autoTierOverrides[tier] = String(value)
       }
     }
 
@@ -5140,7 +5203,19 @@ app.put('/api/admin/settings/agent-models', async (c) => {
     }
 
     setAgentModeOverrides(overrides)
-    return c.json({ ok: true, overrides })
+    // Reload the full auto-tier override set from DB so partial updates and
+    // deletions both take effect in memory immediately.
+    const autoRows = await prisma.platformSetting.findMany({
+      where: { key: { in: ['agent-model.auto-economy', 'agent-model.auto-standard', 'agent-model.auto-premium'] } },
+    })
+    const liveAutoTiers: Partial<Record<'economy' | 'standard' | 'premium', string>> = {}
+    for (const row of autoRows) {
+      if (row.key === 'agent-model.auto-economy') liveAutoTiers.economy = row.value
+      if (row.key === 'agent-model.auto-standard') liveAutoTiers.standard = row.value
+      if (row.key === 'agent-model.auto-premium') liveAutoTiers.premium = row.value
+    }
+    setAutoTierOverrides(liveAutoTiers)
+    return c.json({ ok: true, overrides, autoTierOverrides })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
@@ -5496,10 +5571,11 @@ app.post('/api/generate-project-name', async (c) => {
     }
 
     // Run the admin-configured title-generation model (super-admin selectable
-    // via the `title-generation.model` PlatformSetting; defaults to Haiku).
-    // Custom OpenAI-compatible providers (e.g. Hoshi) don't need
-    // ANTHROPIC_API_KEY; the helper falls back to the default Haiku model and,
-    // failing that, throws so the outer catch returns a heuristic name.
+    // via the `title-generation.model` PlatformSetting; defaults to the shared
+    // assistant model). Provider handling (Anthropic + custom OpenAI-compatible
+    // like Hoshi) is delegated to `resolveLanguageModel`; the helper falls back
+    // to the default model and, failing that, throws so the outer catch returns
+    // a heuristic name.
     const result = await generateTitleCompletion({
       maxTokens: 80,
       system: `You generate short titles for chat conversations. The user will provide the first message from a conversation. Your job is to generate a short title summarizing the topic.
@@ -5551,25 +5627,10 @@ Examples:
       name = fallbackGenerateProjectName(prompt)
     }
 
-    // Track USD usage (fire-and-forget). Bill against the resolved model id so
-    // DB per-token pricing (custom providers like Hoshi) is honored instead of
-    // the static Haiku bucket.
-    if (workspaceId) {
-      const inTok = result.inputTokens
-      const outTok = result.outputTokens
-      if (inTok + outTok > 0) {
-        const { rawUsd, billedUsd } = calculateUsageCost(inTok, outTok, result.billingModelId)
-        billingService.consumeUsage({
-          workspaceId,
-          projectId: null,
-          memberId: authUserId || 'system',
-          actionType: 'project_name_generation',
-          rawUsd,
-          billedUsd,
-          actionMetadata: { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok, rawUsd, model: result.billingModelId },
-        }).catch(() => {})
-      }
-    }
+    // Usage is metered by the AI proxy: `generateTitleCompletion` now routes
+    // through `resolveLanguageModel` (proxy `/ai/v1` or `/ai/anthropic/v1`),
+    // which records the completion server-side. No explicit `consumeUsage`
+    // here — billing it again would double-charge.
 
     // When projectId is provided, persist the generated name and description
     if (projectId) {
@@ -6102,7 +6163,7 @@ app.post('/api/billing/portal', async (c) => {
     }
 
     // Get return URL from request body if provided
-    let returnUrl = `${getFrontendUrl()}/app/billing`
+    let returnUrl = `${getFrontendUrl()}/billing`
     try {
       const body = await c.req.json<{ returnUrl?: string }>()
       if (body?.returnUrl) {
@@ -6372,7 +6433,7 @@ app.post('/api/billing/instance-portal', async (c) => {
       }, 404)
     }
 
-    let returnUrl = `${getFrontendUrl()}/app/billing`
+    let returnUrl = `${getFrontendUrl()}/billing`
     try {
       const body = await c.req.json<{ returnUrl?: string }>()
       if (body?.returnUrl) returnUrl = body.returnUrl
@@ -6867,6 +6928,20 @@ app.post('/api/webhooks/stripe', async (c) => {
         }
         break
       }
+      case 'account.updated': {
+        // Connect account lifecycle. As hosted onboarding clears KYC/bank
+        // requirements, this maps the account's payout capability back onto
+        // the owning CreatorProfile or Affiliate's payoutStatus (so the
+        // affiliate payout cron can start paying a now-verified affiliate).
+        const acct = event.data.object as Stripe.Account
+        try {
+          const { handleAccountUpdated } = await import('./services/stripe-connect.service')
+          await handleAccountUpdated(acct.id)
+        } catch (err: any) {
+          console.error('[Webhook] account.updated sync failed:', err?.message ?? err)
+        }
+        break
+      }
       case 'invoice.payment_failed': {
         const invoice = event.data.object as Stripe.Invoice
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
@@ -7052,11 +7127,17 @@ app.post(
   },
 )
 
-// Generated admin CRUD routes - full model CRUD with pagination/search/sorting
-// Protected by auth + requireSuperAdmin middleware stack
+// Generated admin CRUD routes - full model CRUD with pagination/search/sorting.
+// Protected by auth + super_admin. NOTE: createAdminRoutes applies these as
+// `use("*", …)`, and Hono folds that wildcard into the parent chain for the
+// shared /api/admin prefix — so this gate ALSO runs for the scope-delegated
+// analytics/creators routes served by the adminRoutes() router mounted just
+// below. requireSuperAdminUnlessScoped defers those exact paths so partial
+// admins reach the custom router's requireAdminScope gate; everything else
+// stays super_admin-only. (See isScopeGatedAdminPath in middleware/admin-access.)
 app.route('/api/admin', createAdminRoutes({
   prisma,
-  middleware: [authMiddleware, requireAuth, requireSuperAdmin],
+  middleware: [authMiddleware, requireAuth, requireSuperAdminUnlessScoped],
 }))
 
 // Hand-written admin routes for custom analytics endpoints
@@ -7112,6 +7193,7 @@ app.get('/api/me', authMiddleware, requireAuth, async (c) => {
       emailVerified: true,
       image: true,
       role: true,
+      adminScopes: true,
       onboardingCompleted: true,
       createdAt: true,
       updatedAt: true,
@@ -7120,7 +7202,10 @@ app.get('/api/me', authMiddleware, requireAuth, async (c) => {
   if (!user) {
     return c.json({ error: { code: 'not_found', message: 'User not found' } }, 404)
   }
-  return c.json({ ok: true, data: user })
+  return c.json({
+    ok: true,
+    data: { ...user, adminScopes: normalizeAdminScopes(user.adminScopes) },
+  })
 })
 
 // =============================================================================
@@ -7743,19 +7828,35 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 // This allows resolveModelId('basic'/'advanced') to return admin-chosen models.
 await (async () => {
   try {
-    const { setAgentModeOverrides } = await import('@shogo/model-catalog')
+    const { setAgentModeOverrides, setAutoTierOverrides } = await import('@shogo/model-catalog')
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['agent-model.basic', 'agent-model.advanced', 'agent-model.default-mode'] } },
+      where: {
+        key: {
+          in: [
+            'agent-model.basic',
+            'agent-model.advanced',
+            'agent-model.default-mode',
+            'agent-model.auto-economy',
+            'agent-model.auto-standard',
+            'agent-model.auto-premium',
+          ],
+        },
+      },
     })
     if (rows.length > 0) {
       const overrides: Record<string, string> = {}
+      const autoTiers: Partial<Record<'economy' | 'standard' | 'premium', string>> = {}
       for (const row of rows) {
         if (row.key === 'agent-model.basic') overrides.basic = row.value
         if (row.key === 'agent-model.advanced') overrides.advanced = row.value
+        if (row.key === 'agent-model.auto-economy') autoTiers.economy = row.value
+        if (row.key === 'agent-model.auto-standard') autoTiers.standard = row.value
+        if (row.key === 'agent-model.auto-premium') autoTiers.premium = row.value
       }
       setAgentModeOverrides(overrides)
+      setAutoTierOverrides(autoTiers)
       const defaultMode = rows.find(r => r.key === 'agent-model.default-mode')?.value
-      console.log('[AgentModels] Loaded admin model overrides:', overrides, defaultMode ? `defaultMode=${defaultMode}` : '')
+      console.log('[AgentModels] Loaded admin model overrides:', overrides, Object.keys(autoTiers).length ? `autoTiers=${JSON.stringify(autoTiers)}` : '', defaultMode ? `defaultMode=${defaultMode}` : '')
     }
   } catch (err: any) {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
@@ -8114,18 +8215,45 @@ if (isKubernetes()) {
       const { startApproveEligibleCommissionsCron } = await import(
         './jobs/approve-eligible-commissions'
       )
-      const { startAffiliatePayoutsCron } = await import(
-        './jobs/run-affiliate-payouts'
-      )
       const { startAffiliateInvoiceReconciliationCron } = await import(
         './jobs/affiliate-invoice-reconciliation'
       )
+      const { startPollAffiliateContentCron } = await import(
+        './jobs/poll-affiliate-content'
+      )
       startApproveEligibleCommissionsCron()
-      startAffiliatePayoutsCron()
+      // NOTE: affiliate/creator payouts are intentionally NOT scheduled.
+      // Payments are never automatic — a super admin manually triggers each
+      // payout from the admin UI (per-creator "Approve & pay" or the payout
+      // queue), which calls `payoutAffiliate`. The `runAffiliatePayouts`
+      // batch helper and `run-affiliate-payouts` cron module remain in the
+      // codebase as a reusable/testable primitive but are not wired here.
       startAffiliateInvoiceReconciliationCron()
+      startPollAffiliateContentCron()
     } catch (err: any) {
       console.error(
         '[Affiliate] failed to schedule cron jobs (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Custom-domain reconciler — polls Cloudflare for SaaS custom hostnames that
+// haven't gone live yet and writes the Worker KV route once active, so a
+// bring-your-own domain activates on its own (no manual "Check status").
+// No-op when custom domains aren't configured for this deployment, and
+// wrapped in withGlobalJobLock so only one region reconciles per tick.
+{
+  ;(async () => {
+    try {
+      const { startPollCustomDomainsCron } = await import(
+        './jobs/poll-custom-domains'
+      )
+      startPollCustomDomainsCron()
+    } catch (err: any) {
+      console.error(
+        '[PollCustomDomains] failed to schedule reconciler (non-fatal):',
         err?.message ?? err,
       )
     }

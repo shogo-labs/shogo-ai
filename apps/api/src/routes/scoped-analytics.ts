@@ -126,8 +126,13 @@ export function scopedAnalyticsRoutes(): Hono {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
-      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-      const data = await analytics.getUsageSummary({ workspaceId }, period)
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const page = parseInt(url.searchParams.get('page') || '1', 10)
+      // Default high so the workspace usage table + leaderboard keep showing all
+      // rows (workspaces are small); admin paginates explicitly.
+      const limit = parseInt(url.searchParams.get('limit') || '500', 10)
+      const data = await analytics.getUsageSummary({ workspaceId }, period, { page, limit })
       return c.json({ ok: true, data })
     } catch (error: any) {
       return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
@@ -319,6 +324,74 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
+  router.get('/workspaces/:workspaceId/analytics/activity-timeseries', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getActivityTimeseries({ workspaceId }, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/analytics/active-users-timeseries', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getActiveUsersTimeseries({ workspaceId }, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/analytics/quality-timeseries', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getQualityTimeseries({ workspaceId }, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/analytics/tool-calls', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getToolCallAnalytics({ workspaceId }, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
   // --------------------------------------------------------------------------
   // Project Analytics
   // --------------------------------------------------------------------------
@@ -411,7 +484,7 @@ export function scopedAnalyticsRoutes(): Hono {
       const auth = c.get('auth')
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
 
-      const data = await analytics.getUsageSummary({ userId: auth.userId! }, period)
+      const data = await analytics.getUsageSummary({ userId: auth.userId! }, period, { limit: 500 })
       return c.json({ ok: true, data })
     } catch (error: any) {
       return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)

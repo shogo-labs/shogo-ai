@@ -25,6 +25,9 @@ export interface ChatSessionType {
   createdAt: Date
   updatedAt: Date
   lastActiveAt: Date
+  worktreeBranch?: string
+  worktreeStatus?: string
+  worktreePath?: string
 }
 
 export interface ChatSessionCreateInput {
@@ -41,6 +44,9 @@ export interface ChatSessionCreateInput {
   isPinned?: boolean
   isArchived?: boolean
   lastActiveAt?: Date
+  worktreeBranch?: string
+  worktreeStatus?: string
+  worktreePath?: string
 }
 
 export interface ChatSessionUpdateInput {
@@ -57,4 +63,7 @@ export interface ChatSessionUpdateInput {
   isPinned?: boolean
   isArchived?: boolean
   lastActiveAt?: Date
+  worktreeBranch?: string
+  worktreeStatus?: string
+  worktreePath?: string
 }

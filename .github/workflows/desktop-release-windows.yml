@@ -331,7 +331,14 @@ jobs:
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           name: Shogo Desktop ${{ github.ref_name }}
-          draft: false
+          # Keep the release a DRAFT while every workflow that targets this
+          # tag uploads its assets. Four workflows publish to the same v*
+          # release (this one + desktop-release-macos, publish-agent-runtime,
+          # publish-shogo-worker), so a non-draft create here would expose a
+          # release that is still missing the other workflows' assets. The
+          # finalize-release.yml coordinator flips draft -> published only once
+          # all four runs for this commit have succeeded.
+          draft: true
           files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

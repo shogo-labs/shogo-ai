@@ -95,6 +95,38 @@ export {
   type EnsureCustomRoutesResult,
 } from './custom-routes'
 
+// Protected custom regions — preserve hand/agent-written code inside
+// SHOGO:CUSTOM markers across `server.tsx` regeneration.
+export {
+  mergeProtectedRegions,
+  extractProtectedRegions,
+  CUSTOM_REGION_START,
+  CUSTOM_REGION_END,
+  type ProtectedRegion,
+} from './server-custom-regions'
+
+// Protected `prisma/schema.prisma` header — keeps a stray `write_file` from
+// downgrading the generator/datasource blocks (e.g. re-introducing a
+// Prisma-6 `url = env("DATABASE_URL")` that hard-errors on Prisma 7).
+export {
+  enforceSchemaHeader,
+  headerIsDowngraded,
+  hasMarkedSchemaHeader,
+  SCHEMA_HEADER_REGION_ID,
+  SCHEMA_HEADER_MANAGED_COMMENT,
+  DEFAULT_PRISMA_HEADER,
+} from './prisma-schema-guard'
+
+// Protected `prisma.config.ts` — keeps a stray `write_file` from dropping the
+// Prisma-7-required `datasource.url` (e.g. moving it under `migrate`/an
+// `async url()` resolver), which makes `prisma db push` hard-error.
+export {
+  enforcePrismaConfig,
+  configIsDowngraded,
+  PRISMA_CONFIG_MANAGED_COMMENT,
+  DEFAULT_PRISMA_CONFIG,
+} from './prisma-config-guard'
+
 // Auth store generator
 export {
   generateAuthStore,

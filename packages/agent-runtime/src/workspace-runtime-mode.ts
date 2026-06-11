@@ -232,3 +232,32 @@ export function shouldEnforceProjectIdSanity(opts: {
 }): boolean {
   return opts.workingMode !== 'external' && !opts.isWorkspaceRuntime
 }
+
+/**
+ * Whether the runtime should instantiate `GitWorkspaceSync` and run its
+ * per-turn `git add -A && git commit` (+ cold-start `seedRepoIfAbsent`).
+ *
+ * Gated OFF for:
+ *   - `workerOwnsSync` (`SHOGO_CLOUD_SYNC=1`): a paired worker watcher is
+ *     the source of truth; the runtime's own committer would loop.
+ *   - non-git sync modes (`wantGitSync === false`, i.e. plain `s3`).
+ *   - **external projects**: the workspace IS the user's own repo and the
+ *     user owns their git workflow. Auto-committing `auto: <ts>` into their
+ *     working tree on every turn — or dropping a fresh `.git` via
+ *     `seedRepoIfAbsent` into a folder we don't own — is the cardinal sin
+ *     every IDE-style tool avoids. Mirrors the auto-checkpoint guards in
+ *     `project-chat.ts` / `checkpoint.service.ts` (`CheckpointsDisabledError`).
+ *     This matters most on desktop, where `cloudSyncMode` now defaults to
+ *     `git_only` for every project (incl. external) — without this guard
+ *     opening any external folder would start committing to the user's repo.
+ *
+ * Pure so the boot decision can be unit-tested without the side-effectful
+ * `server.ts` boot path.
+ */
+export function shouldRunGitWorkspaceSync(opts: {
+  workingMode: WorkingMode
+  workerOwnsSync: boolean
+  wantGitSync: boolean
+}): boolean {
+  return opts.wantGitSync && !opts.workerOwnsSync && opts.workingMode !== 'external'
+}

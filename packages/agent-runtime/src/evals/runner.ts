@@ -61,6 +61,12 @@ export interface ParsedAgentResponse {
   cacheReadTokens: number
   cacheWriteTokens: number
   promptBreakdown?: PromptBreakdown
+  /** Gateway quality signals from the turn's `data-usage` frame. */
+  loopDetected?: boolean
+  hitMaxTurns?: boolean
+  responseEmpty?: boolean
+  /** Agent-loop iteration count reported by the gateway for this turn. */
+  gatewayIterations?: number
 }
 
 /**
@@ -224,6 +230,10 @@ async function parseSSEStream(
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
   let promptBreakdown: PromptBreakdown | undefined
+  let loopDetected: boolean | undefined
+  let hitMaxTurns: boolean | undefined
+  let responseEmpty: boolean | undefined
+  let gatewayIterations = 0
 
   const reader = response.body?.getReader()
   if (!reader) throw new Error('No response body')
@@ -265,6 +275,12 @@ async function parseSSEStream(
               outputTokens += u.outputTokens || 0
               cacheReadTokens += u.cacheReadTokens || 0
               cacheWriteTokens += u.cacheWriteTokens || 0
+              // Capture gateway quality signals so evals can assert on them.
+              // The gateway emits these on _lastTurnUsage (see gateway.ts).
+              if (typeof u.loopDetected === 'boolean') loopDetected = u.loopDetected
+              if (typeof u.hitMaxTurns === 'boolean') hitMaxTurns = u.hitMaxTurns
+              if (typeof u.responseEmpty === 'boolean') responseEmpty = u.responseEmpty
+              if (typeof u.iterations === 'number') gatewayIterations = u.iterations
               if (verbose) {
                 const total = (u.inputTokens || 0) + (u.cacheReadTokens || 0) + (u.cacheWriteTokens || 0)
                 console.log(`      Usage: ${total}+${u.outputTokens} tokens (${u.cacheReadTokens || 0} cached), ${u.iterations} iterations, ${u.toolCallCount} tools`)
@@ -350,7 +366,7 @@ async function parseSSEStream(
     console.log(`      [SSE] Complete: ${toolCalls.length} tools, ${stepCount} steps`)
   }
 
-  return { text, toolCalls, stepCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, promptBreakdown }
+  return { text, toolCalls, stepCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, promptBreakdown, loopDetected, hitMaxTurns, responseEmpty, gatewayIterations }
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +466,11 @@ export async function runEval(
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
   let promptBreakdown: PromptBreakdown | undefined
+  // Gateway quality signals from the final evaluated turn.
+  let loopDetected = false
+  let hitMaxTurns = false
+  let responseEmpty: boolean | undefined
+  let gatewayIterations = 0
 
   const askUserResponseQueue = [...(eval_.askUserResponses ?? [])]
 
@@ -547,6 +568,10 @@ export async function runEval(
     toolCalls.push(...response.toolCalls)
     perTurnToolCalls.push(response.toolCalls)
     accumulate(response)
+    loopDetected = !!response.loopDetected
+    hitMaxTurns = !!response.hitMaxTurns
+    responseEmpty = response.responseEmpty
+    gatewayIterations = response.gatewayIterations ?? gatewayIterations
 
     // Handle ask_user on the final turn too
     try {
@@ -554,6 +579,10 @@ export async function runEval(
       if (execResp) {
         responseText = execResp.text
         finalTurnToolCalls = execResp.toolCalls
+        loopDetected = !!execResp.loopDetected
+        hitMaxTurns = !!execResp.hitMaxTurns
+        responseEmpty = execResp.responseEmpty
+        gatewayIterations = execResp.gatewayIterations ?? gatewayIterations
       }
     } catch (e: any) {
       errors.push(`ask_user follow-up error: ${e.message}`)
@@ -583,6 +612,7 @@ export async function runEval(
     successfulToolCalls: successfulTools,
     failedToolCalls: failedTools,
     iterations: stepCount,
+    gatewayIterations: gatewayIterations || undefined,
     tokens: { input: inputTokens, output: outputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheWriteTokens, total: totalTokens },
     timing: { totalMs: durationMs },
   }
@@ -615,6 +645,9 @@ export async function runEval(
     errors: errors.length > 0 ? errors : undefined,
     workspaceDir: cfg.workspaceDir,
     promptBreakdown,
+    loopDetected,
+    hitMaxTurns,
+    responseEmpty,
   }
 
   // For intention criteria we transparently swap `toolCalls` to the

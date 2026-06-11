@@ -87,7 +87,8 @@ import {
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
-import { deriveApiUrl, getInternalHeaders, postCheckpointRecord } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus } from './internal-api'
+import { WORKTREE_BRANCH_PREFIX } from '@shogo/shared-runtime'
 import { initTrustResolver, refreshTrust } from './trust-resolver'
 import {
   isWorkspaceRuntimeMode,
@@ -96,6 +97,7 @@ import {
   renderWorkspaceManifestMarkdown,
   shouldSkipManagedSeeding,
   shouldEnforceProjectIdSanity,
+  shouldRunGitWorkspaceSync,
   parseWorkspacePreviewPath,
   buildWorkspacePreviewPath,
   parseWorkspacePreviewUrls,
@@ -375,6 +377,60 @@ function triggerLargeFileSync(): void {
  * re-arms S3 Layer 2; a checkpoint-record failure is best-effort (the commit
  * is already durable and the row can be reconciled on the next API hydrate).
  */
+/**
+ * BETA: per-chat git worktrees. Record a `ProjectCheckpoint` for a worktree
+ * merge into the default branch. The `.git` is already persisted by the merge
+ * path; this just writes the history row. Best-effort.
+ */
+async function recordWorktreeMergeCheckpoint(_chatSessionId: string, sha?: string): Promise<void> {
+  const projectId = process.env.PROJECT_ID
+  if (!projectId || !sha) return
+  try {
+    const meta = await gatherCommitMeta(WORKSPACE_DIR, sha)
+    if (meta) {
+      await postCheckpointRecord(projectId, {
+        commitSha: meta.sha,
+        commitMessage: meta.message,
+        branch: meta.branch,
+        filesChanged: meta.filesChanged,
+        additions: meta.additions,
+        deletions: meta.deletions,
+        isAutomatic: false,
+      })
+    }
+  } catch (err: any) {
+    console.warn('[agent-runtime] recordWorktreeMergeCheckpoint threw:', err?.message ?? err)
+  }
+}
+
+/**
+ * BETA: per-chat git worktrees. Run at the turn-complete boundary for a chat
+ * that owns a worktree:
+ *  - If a merge is in progress (a conflict-resolution turn) and the agent has
+ *    resolved all conflicts, finish the merge into the default branch, record a
+ *    checkpoint, tear down the worktree, and mark the chat merged.
+ *  - Otherwise commit the agent's edits onto the chat branch and persist `.git`.
+ */
+async function finalizeWorktreeTurn(chatSessionId: string): Promise<void> {
+  if (!agentGateway) return
+  if (await agentGateway.isWorktreeMergePending(chatSessionId)) {
+    const res = await agentGateway.completeWorktreeMerge(chatSessionId)
+    if (res.outcome === 'clean') {
+      await recordWorktreeMergeCheckpoint(chatSessionId, res.mergedSha)
+      await agentGateway.removeSessionWorktree(chatSessionId, { deleteBranch: true })
+      await postWorktreeStatus(chatSessionId, { worktreeStatus: 'merged' })
+    }
+    // else: conflicts remain (the agent likely asked the user) — leave the
+    // merge in progress; the next turn will try again.
+    return
+  }
+  await agentGateway.commitAndPersistSessionWorktree(chatSessionId)
+  await postWorktreeStatus(chatSessionId, {
+    worktreeBranch: `${WORKTREE_BRANCH_PREFIX}${chatSessionId}`,
+    worktreeStatus: 'active',
+  })
+}
+
 async function persistAndRecordCheckpoint(sha: string): Promise<void> {
   if (repoStoreConfigFromEnv()) {
     // Offload LFS object bytes to OCI (when active) then persist `.git`.
@@ -1115,6 +1171,26 @@ app.get('/agent/sessions/:sessionId/summary', (c) => {
   return c.json(detail)
 })
 
+// List the background shell processes still running for a chat thread. Used by
+// the client to seed its process panel on thread load (live updates arrive via
+// `data-process-update` SSE frames during a turn).
+app.get('/agent/chat/:chatSessionId/processes', (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const processes = agentGateway.listSessionProcesses(c.req.param('chatSessionId'))
+  return c.json({ processes })
+})
+
+// Kill (or dismiss, if stale) one tracked background process for a thread.
+app.post('/agent/chat/:chatSessionId/processes/:runId/kill', (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const killed = agentGateway.killSessionProcess(
+    c.req.param('chatSessionId'),
+    c.req.param('runId'),
+  )
+  if (!killed) return c.json({ error: 'unknown run_id' }, 404)
+  return c.json({ ok: true, processes: agentGateway.listSessionProcesses(c.req.param('chatSessionId')) })
+})
+
 // Read agent config
 app.get('/agent/config', (c) => {
   const configPath = join(WORKSPACE_DIR, 'config.json')
@@ -1192,6 +1268,57 @@ app.patch('/agent/config', async (c) => {
     return c.json({ ok: true })
   } catch (error: any) {
     return c.json({ error: error.message || 'Failed to update config' }, 500)
+  }
+})
+
+// ── BETA: per-chat git worktrees ───────────────────────────────────────────
+
+// List the status of every chat worktree in this project (cross-chat overview).
+app.get('/agent/worktrees', async (c) => {
+  if (!agentGateway || !agentGateway.isWorktreesEnabled()) {
+    return c.json({ enabled: false, worktrees: [] })
+  }
+  try {
+    const worktrees = await agentGateway.listWorktreeStatuses()
+    return c.json({ enabled: true, worktrees })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Failed to list worktrees' }, 500)
+  }
+})
+
+// Mark a chat done and merge its worktree branch back into the default branch.
+// Clean merges complete here; conflicts are left in progress in the worktree
+// for the agent to resolve in a follow-up chat turn (auto-finished at the next
+// turn-complete via finalizeWorktreeTurn).
+app.post('/agent/worktrees/:chatSessionId/merge', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  if (!agentGateway.isWorktreesEnabled()) {
+    return c.json({ error: 'Per-chat git worktrees are not enabled for this project' }, 400)
+  }
+  const chatSessionId = c.req.param('chatSessionId')
+  if (!agentGateway.isWorktreeSession(chatSessionId)) {
+    return c.json({ status: 'noop', message: 'No worktree exists for this chat yet.' })
+  }
+  try {
+    await postWorktreeStatus(chatSessionId, { worktreeStatus: 'merging' })
+    const result = await agentGateway.mergeSessionWorktree(chatSessionId)
+    if (result.outcome === 'clean' || result.outcome === 'noop') {
+      await recordWorktreeMergeCheckpoint(chatSessionId, result.mergedSha)
+      await agentGateway.removeSessionWorktree(chatSessionId, { deleteBranch: true })
+      await postWorktreeStatus(chatSessionId, { worktreeStatus: 'merged' })
+      return c.json({ status: 'merged', mergedSha: result.mergedSha })
+    }
+    // Conflict — the merge is left in progress in the worktree. The caller
+    // should prompt the agent (a normal chat turn) to resolve it; the
+    // turn-complete handler finishes the merge once conflicts are gone.
+    return c.json({
+      status: 'conflict',
+      conflictedFiles: result.conflictedFiles,
+      message: result.message,
+    })
+  } catch (err: any) {
+    await postWorktreeStatus(chatSessionId, { worktreeStatus: 'active' }).catch(() => {})
+    return c.json({ error: err?.message || 'Merge failed' }, 500)
   }
 })
 
@@ -1534,10 +1661,15 @@ app.post('/agent/chat', async (c) => {
   }
 
   const modelOverride = (body.agentMode as string | undefined) || undefined
+  // Native provider hint resolved by the API server from its model registry so
+  // the gateway can route a DB model addressed by an opaque UUID to its real
+  // provider's native endpoint instead of inferring `custom` from the id.
+  // Optional — absent requests fall back to id-based inference.
+  const modelProvider = (body.modelProvider as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
-  console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
+  console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, modelProvider: ${modelProvider ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
 
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
@@ -1586,6 +1718,7 @@ app.post('/agent/chat', async (c) => {
         writer.write({ type: 'start-step' })
         await agentGateway!.processChatMessageStream(userText || '', writer, {
           modelOverride,
+          modelProvider,
           fileParts: userFileParts.length > 0 ? userFileParts : undefined,
           userId: chatUserId,
           interactionMode,
@@ -1660,6 +1793,16 @@ app.post('/agent/chat', async (c) => {
           } catch (err: any) {
             console.warn('[agent-runtime] gitSync triggerSync at turn-complete threw:', err?.message ?? err)
           }
+        }
+
+        // BETA: per-chat git worktrees. When this session runs in an isolated
+        // worktree, the agent's edits live on its branch (not the main tree),
+        // so the main gitSync above no-ops. Commit the worktree (and, for a
+        // conflict-resolution turn, finish the merge) here.
+        if (agentGateway?.isWorktreeSession(chatSessionKey)) {
+          void finalizeWorktreeTurn(chatSessionKey).catch((err: any) =>
+            console.warn('[agent-runtime] finalizeWorktreeTurn at turn-complete threw:', err?.message ?? err),
+          )
         }
       } catch (error: any) {
         writer.write({
@@ -2311,6 +2454,29 @@ app.post('/preview/stop', (c) => {
   const pm = getPreviewManager()
   pm.stop()
   return c.json({ ok: true })
+})
+
+// Alias for `/preview/restart`. The code-agent prompt and older SDK/template
+// scripts call `/preview/rebuild`; without this they hit the SPA catch-all
+// and 404. Keep it a thin alias so existing callers just work.
+app.post('/preview/rebuild', async (c) => {
+  const pm = getPreviewManager()
+  const result = await pm.restart()
+  return c.json(result)
+})
+
+// Watcher pause/resume — used by `shogo push` to run prisma generate + db
+// push without racing the schema watcher's own restart (avoids EADDRINUSE).
+app.post('/preview/watch/pause', (c) => {
+  const pm = getPreviewManager()
+  pm.pauseWatchers()
+  return c.json({ ok: true, paused: true })
+})
+
+app.post('/preview/watch/resume', (c) => {
+  const pm = getPreviewManager()
+  pm.resumeWatchers()
+  return c.json({ ok: true, paused: false })
 })
 
 /**
@@ -3895,7 +4061,7 @@ app.post('/agent/skill-server/sync', async (c) => {
 
 app.post('/agent/runtime-checks', async (c) => {
   const { runRuntimeChecks } = await import('./evals/runtime-checks')
-  const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean }>()
+  const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean; tenantProbe?: { route: string } }>()
   // Use the PreviewManager's configured port directly; `getSkillServerPort()`
   // also falls through to the same value via the shim, but reading it from
   // the manager keeps the source-of-truth obvious. Never falls back to the
@@ -3910,6 +4076,8 @@ app.post('/agent/runtime-checks', async (c) => {
       canvasExpectedPort: body.canvasExpectedPort ?? skillServerPort,
       evalId: body.evalId,
       verbose: body.verbose,
+      runtimePort: parseInt(process.env.PORT || '8080', 10),
+      tenantProbe: body.tenantProbe,
     })
     return c.json({ ok: true, results })
   } catch (err: any) {
@@ -4783,7 +4951,13 @@ async function initializeEssentials(): Promise<void> {
   // consecutive git pushes fail we re-enable S3 Layer 2 for the rest
   // of the session. On recovery we re-suppress (only in git_only mode;
   // dual_shadow always keeps S3 Layer 2 active).
-  if (!skipInternalSync && wantGitSync) {
+  //
+  // EXTERNAL projects are excluded: the workspace is the user's own repo
+  // and they own their git workflow. With cloudSyncMode defaulting to
+  // git_only (incl. on desktop), an unguarded path would `git add -A &&
+  // git commit` into their working tree every turn and `seedRepoIfAbsent`
+  // a `.git` into folders we don't own. See shouldRunGitWorkspaceSync.
+  if (shouldRunGitWorkspaceSync({ workingMode: WORKING_MODE, workerOwnsSync: skipInternalSync, wantGitSync })) {
     // Cold-start git lifecycle. The pod owns the repo: before the per-turn
     // committer can run, the working tree must be a git repo with the durable
     // history present.
@@ -5095,7 +5269,22 @@ async function startGateway(): Promise<void> {
     })
   }
 
+  // BETA: per-chat git worktrees. Wire the durable-repo persist hook so that
+  // worktree-branch commits/merges land in the persisted `.git` (all refs),
+  // then recreate any in-flight chat worktrees that a cold start pruned.
+  agentGateway.setRepoPersistHook(async () => {
+    if (!repoStoreConfigFromEnv()) return
+    const res = await persistDurableRepo()
+    if (!res.ok) throw new Error(`durable repo persist failed: ${res.reason}`)
+  })
+
   await agentGateway.start()
+
+  if (agentGateway.isWorktreesEnabled()) {
+    void agentGateway.recreateActiveWorktrees().catch((err: any) =>
+      console.warn('[agent-runtime] recreateActiveWorktrees threw:', err?.message ?? err),
+    )
+  }
 
   gatewayReadyResolve?.()
   gatewayReadyResolve = null
@@ -5262,9 +5451,25 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: pre-seeding workspace with runtime template...')
   ensureWorkspaceFiles()
-  ensureWorkspaceDeps(WORKSPACE_DIR).then(() => {
+  ensureWorkspaceDeps(WORKSPACE_DIR).then(async () => {
     workspaceStatus.depsInstalled = true
     logTiming('Pool mode: workspace deps pre-seeded')
+
+    // Pre-warm the preview pipeline (prisma generate + db push + codegen)
+    // against the seeded template while the pod is still unassigned. This
+    // moves the project-independent ~15-20s of setup off the user-perceived
+    // assignment latency, so the first /pool/assign only pays the ~5s API
+    // sidecar spawn and the canvas surfaces "Project Ready" in a few seconds
+    // instead of sitting on "Starting API server…" for ~30s. Best-effort:
+    // the assign path re-runs anything still missing via start()'s guards.
+    if (!IS_WORKSPACE_RUNTIME) {
+      try {
+        await getPreviewManager().prewarm()
+        logTiming('Pool mode: preview pipeline pre-warmed')
+      } catch (err: any) {
+        console.error('[agent-runtime] Pool preview pre-warm failed:', err?.message ?? err)
+      }
+    }
   }).catch(err => {
     console.error('[agent-runtime] Pool pre-seed deps failed:', err.message)
   })

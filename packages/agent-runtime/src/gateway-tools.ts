@@ -19,6 +19,7 @@ import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
+import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
 import { CommandRegistry, type CommandEntry } from './command-registry'
 import {
   resolveRunDir as resolveScreenshotRunDir,
@@ -129,6 +130,10 @@ export interface ToolContext {
   }) => Promise<void>
   /** Multi-language LSP manager for read_lints diagnostics */
   lspManager?: import('@shogo/shared-runtime').WorkspaceLSPManager
+  /** Live LSP accessor — the manager starts asynchronously after a deferred
+   *  warmup, so `lspManager` may be a stale undefined snapshot taken before
+   *  startup. read_lints prefers this getter to resolve the current manager. */
+  getLspManager?: () => import('@shogo/shared-runtime').WorkspaceLSPManager | null
   /** Tracks which files the agent has read, their mtimes, and line counts */
   fileStateCache?: FileStateCache
   /** Dynamic sub-agent registry and lifecycle manager */
@@ -151,6 +156,10 @@ export interface ToolContext {
   effectiveModel?: string
   /** When true, Auto mode is active — sub-agents should use the spawn-time model router */
   autoRouting?: boolean
+  /** Admin-configured Auto-mode tier overrides (resolved model id + provider
+   *  hint per tier), threaded to sub-agent spawn routing so it matches the
+   *  main agent's Auto model selection. */
+  autoTierOverride?: import('./model-router').AutoTierOverride
   /** When true, create_plan/update_plan additionally generate a stakeholder
    *  translation of the technical plan using the fast-tier model and emit it via
    *  the `data-plan-summary` stream event. Persistent per-user preference. */
@@ -167,6 +176,10 @@ export interface ToolContext {
    *  Used e.g. to key the CDP screencast broadcaster so the mobile LiveBrowserView
    *  can subscribe to the right running subagent's browser viewport. */
   subagentInstanceId?: string
+  /** BETA: per-chat git worktrees — status of all sibling chats' branches.
+   *  Bound to the gateway so the worktree_list tool can surface cross-chat
+   *  awareness without a direct gateway reference. */
+  listWorktreeStatuses?: () => Promise<import('@shogo/shared-runtime').WorktreeStatus[]>
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -335,7 +348,7 @@ function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
 interface BuildExecResultOpts {
   ctx: ToolContext
   entry: CommandEntry
-  finalResult: { exitCode: number; stdout: string; stderr: string; killed: boolean; timedOut: boolean }
+  finalResult: { exitCode: number; stdout: string; stderr: string; killed: boolean }
 }
 
 function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOpts): AgentToolResult<any> {
@@ -355,7 +368,6 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
     sandboxed: entry.handle.sandboxed || undefined,
     cwdReset: meta?.cwdReset || undefined,
     killed: finalResult.killed || undefined,
-    timedOut: finalResult.timedOut || undefined,
     run_id: entry.runId,
   })
 }
@@ -405,6 +417,16 @@ function createExecTool(ctx: ToolContext): AgentTool {
 
       if (isBlockedCommand(command)) {
         return textResult({ error: `Blocked command: ${command}` })
+      }
+
+      // Stop the agent from killing the runtime that hosts its own tools. A
+      // broad `pkill -f`/`killall` in the agent's shell otherwise reaches the
+      // gateway process (same environment), SIGTERMs it, and takes the whole
+      // session/VM down mid-task. Only commands that would actually signal the
+      // gateway are refused — specific dev-server/port kills still work.
+      const gatewayGuard = commandTargetsGateway(command)
+      if (gatewayGuard.blocked) {
+        return textResult({ error: gatewayKillRefusal(gatewayGuard.reason ?? 'kill targets the runtime') })
       }
 
       let currentCwd = ctx.shellState?.getCwd() || ctx.workspaceDir
@@ -511,6 +533,18 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `Unknown run_id: ${run_id}. The run may have been cleaned up (entries are kept ~10 min after completion).` })
       }
 
+      // Stale entries were restored from a persisted snapshot after a runtime
+      // restart — the underlying OS child is gone and cannot be polled.
+      if (entry.stale) {
+        return textResult({
+          status: 'stale',
+          run_id,
+          command: entry.command,
+          error: 'This process was started before the runtime restarted and can no longer be polled. ' +
+            'It may still be running detached; use exec("kill <pid>") if you need to stop it, or exec_list to review.',
+        })
+      }
+
       // If already done, return final result immediately.
       if (entry.finalResult) {
         return buildCompletedExecResult({ ctx, entry, finalResult: entry.finalResult })
@@ -572,6 +606,28 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
       }
 
       return buildCompletedExecResult({ ctx, entry, finalResult: winner })
+    },
+  }
+}
+
+function createExecListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'exec_list',
+    description:
+      'List the shell commands still running in the background for this thread ' +
+      '(those that returned `status: "running"` from a previous exec call and have ' +
+      'not finished or been killed). Each entry has a run_id, the command, its pid, ' +
+      'and how long it has been running. Use `exec_wait(run_id)` to poll one or ' +
+      '`exec("kill <pid>")` to stop it. Entries flagged `stale: true` were started ' +
+      'before the runtime restarted and can no longer be polled.',
+    label: 'List Running Commands',
+    parameters: Type.Object({}),
+    execute: async () => {
+      const registry = ctx.commandRegistry
+      if (!registry) {
+        return textResult({ error: 'CommandRegistry not available — exec_list requires a sessionId.' })
+      }
+      return textResult({ processes: registry.listRunning() })
     },
   }
 }
@@ -3245,6 +3301,11 @@ function renderAgentDirectUsageBlock(toolkitName: string, toolNames: string[]): 
     `Each tool returns { ok: boolean, data: <result>, error?: string }. For`,
     `list-style endpoints, items often live under \`data.values\` (Jira) or`,
     `\`data.items\` (Google) or similar — index in once and check the shape.`,
+    ``,
+    `Only call tool names from the bound \`tools\` list returned by this`,
+    `connect — do NOT invent or guess slugs (a made-up slug fails with`,
+    `"tool not found"). Pass real resource ids/handles for id parameters;`,
+    `never pass an OAuth token or API key where an id is expected.`,
   ].join('\n')
 }
 
@@ -4326,6 +4387,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   const tools: AgentTool[] = [
     g(createExecTool(ctx), 'shell'),
     g(createExecWaitTool(ctx), 'shell'),
+    g(createExecListTool(ctx), 'shell'),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
     g(createEditFileTool(ctx), 'file_write'),
@@ -4386,11 +4448,57 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   tools.push(createTaskUpdateTool(ctx))
   tools.push(createSendTeamMessageTool(ctx))
 
+  // BETA: per-chat git worktrees — cross-chat awareness tool
+  tools.push(createWorktreeListTool(ctx))
+
   if (extraTools) {
     tools.push(...extraTools)
   }
 
   return tools
+}
+
+// ---------------------------------------------------------------------------
+// Git Worktree Awareness Tool (BETA)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lets an agent see the worktrees/branches of sibling chats in the same
+ * project so parallel agents can coordinate and anticipate merge conflicts.
+ * Only useful (and registered) when the per-chat worktrees feature is on.
+ */
+function createWorktreeListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'worktree_list',
+    label: 'List Chat Worktrees',
+    description:
+      'List the git worktrees/branches of the other chats in this project (per-chat worktrees mode). ' +
+      'Use this to understand what parallel agents are working on, which files they have touched, and how ' +
+      'far ahead/behind the default branch each chat is — so you can avoid stepping on their changes and ' +
+      'anticipate merge conflicts before merging back into main.',
+    parameters: Type.Object({}),
+    execute: async () => {
+      if (!ctx.listWorktreeStatuses) {
+        return textResult({ error: 'Per-chat git worktrees are not enabled for this project.' })
+      }
+      try {
+        const all = await ctx.listWorktreeStatuses()
+        const current = ctx.sessionId
+        const worktrees = all.map(w => ({
+          chatSessionId: w.chatSessionId,
+          branch: w.branch,
+          isCurrentChat: w.chatSessionId === current,
+          commitsAheadOfMain: w.ahead,
+          commitsBehindMain: w.behind,
+          uncommittedFiles: w.dirtyFiles,
+          changedFiles: w.changedFiles,
+        }))
+        return textResult({ count: worktrees.length, worktrees })
+      } catch (err: any) {
+        return textResult({ error: `Failed to list worktrees: ${err?.message ?? err}` })
+      }
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4576,13 +4684,19 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
             mainSessionIds: ctx.mainSessionIds,
           })
 
+          const clip = (s: string | undefined, max: number): string => {
+            const v = s || ''
+            if (v.length <= max) return v
+            // Signpost the cut instead of silently dropping the tail.
+            return `${v.substring(0, max)}\n... [${v.length - max} chars truncated — re-run filtering output (head/tail/grep) to see the rest]`
+          }
           return textResult({
             skill: skillName,
             script,
             runtime,
             exitCode: result.exitCode,
-            stdout: result.stdout?.substring(0, 8000) || '',
-            stderr: result.stderr?.substring(0, 4000) || '',
+            stdout: clip(result.stdout, 8000),
+            stderr: clip(result.stderr, 4000),
           })
         } catch (err: any) {
           return textResult({ error: `Script execution failed: ${err.message}` })
@@ -4765,6 +4879,8 @@ export function filterDisabledCapabilityTools(
   if (config.quickActionsEnabled === false) disabled.add('quick_action')
   if (config.channelsEnabled === false) for (const n of TOOL_GROUP_MAP.messaging) disabled.add(n)
   if (config.integrationsEnabled === false) for (const n of TOOL_GROUP_MAP.integrations) disabled.add(n)
+  // BETA: worktree awareness tool only exists when per-chat worktrees are on (off by default).
+  if (config.gitWorktreesEnabled !== true) disabled.add('worktree_list')
 
   const memoryOff = config.memoryEnabled === false
   if (disabled.size === 0 && !memoryOff) return tools
@@ -6148,7 +6264,18 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       path: Type.Optional(Type.String({ description: 'File to check (e.g. src/App.tsx or scripts/main.py). Rarely needed — omit to auto-lint the files you just edited this turn.' })),
     }),
     execute: async (_toolCallId, params) => {
-      const lsp = ctx.lspManager
+      // The LSP starts asynchronously (deferred warmup + node_modules wait),
+      // so an early read_lints call used to fail-fast with "not available"
+      // even though the server was seconds from ready. Resolve the live
+      // manager and poll briefly for readiness before giving up.
+      const resolveLsp = () => ctx.getLspManager?.() ?? ctx.lspManager ?? null
+      const LSP_READY_TIMEOUT_MS = Number(process.env.SHOGO_READ_LINTS_WAIT_MS) || 10_000
+      const deadline = Date.now() + LSP_READY_TIMEOUT_MS
+      let lsp = resolveLsp()
+      while ((!lsp || !lsp.isRunning()) && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 250))
+        lsp = resolveLsp()
+      }
       if (!lsp || !lsp.isRunning()) {
         const runtimeErrors = getCanvasRuntimeErrors()
         if (runtimeErrors.length > 0) {
@@ -6156,7 +6283,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
           clearCanvasRuntimeErrors()
           return textResult({ ok: false, error: 'Language server not available.', runtimeErrors: errors })
         }
-        return textResult({ ok: false, error: 'Language server not available. Try again shortly.' })
+        return textResult({ ok: false, error: 'Language server still starting after waiting; type-checking unavailable this turn. Verify with `exec` running `bunx tsc --noEmit` (or the project build) instead, then retry read_lints shortly.' })
       }
 
       const { path: filePath } = params as { path?: string }

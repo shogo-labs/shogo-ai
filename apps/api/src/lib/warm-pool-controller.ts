@@ -2088,6 +2088,12 @@ export class WarmPoolController {
       const expectedImage = RUNTIME_CONFIG.image()
 
       for (const service of items) {
+      // A Knative Service's status has no replica count; the live pod count
+      // lives on its backing Revision (`status.actualReplicas`). Build a
+      // revisionName -> actualReplicas map once per cycle so we can tell a
+      // genuinely hot pod from one Knative has scaled to zero.
+      const revisionReplicas = await this.getRevisionReplicaMap()
+
         const name = service.metadata?.name
         const labels = service.metadata?.labels || {}
         const status = labels[POOL_STATUS_LABEL_KEY]
@@ -2164,7 +2170,14 @@ export class WarmPoolController {
         // already-running warm pod is available. This is the fix for the
         // 2026-05-26 prod-us incident where the warm-pool controller
         // happily handed out a ksvc whose pod had been zero for 28 min.
-        const actualReplicas = (service.status as any)?.actualReplicas ?? 0
+        //
+        // NOTE: `actualReplicas` does NOT exist on a Knative Service's status
+        // — it lives on the Revision status. Reading it off `service.status`
+        // always yielded `undefined → 0`, so `hot` was permanently false and
+        // the controller never saw a running warm pod (prod-us/prod-india,
+        // 2026-06-08). Map the ksvc to its ready Revision's actualReplicas.
+        const readyRevName = service.status?.latestReadyRevisionName
+        const actualReplicas = readyRevName ? (revisionReplicas.get(readyRevName) ?? 0) : 0
         const hot = ready && actualReplicas > 0
 
         // POD-LEVEL broken detection. Image-pull/create errors are never
@@ -2282,6 +2295,37 @@ export class WarmPoolController {
     } catch (err: any) {
       console.error('[WarmPool] Failed to discover existing pods:', err.message)
     }
+  }
+
+  /**
+   * Build a map of Knative Revision name -> live replica count
+   * (`status.actualReplicas`) for the namespace. The warm-pool controller
+   * needs this because a Knative *Service*'s status carries no replica
+   * count — only the backing *Revision* does. Without it, "is this pod
+   * actually running right now?" can't be answered and every warm pod looks
+   * cold (prod incident 2026-06-08). Failure is non-fatal: callers fall back
+   * to treating pods as cold, which is the safe (claimable) default.
+   */
+  private async getRevisionReplicaMap(): Promise<Map<string, number>> {
+    const replicas = new Map<string, number>()
+    try {
+      const api = getCustomApi()
+      const response = await api.listNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'revisions',
+      })
+      const items = (response as any).items || []
+      for (const rev of items) {
+        const name = rev.metadata?.name
+        if (!name) continue
+        replicas.set(name, rev.status?.actualReplicas ?? 0)
+      }
+    } catch (err: any) {
+      console.error('[WarmPool] Failed to list revisions for replica map:', err.message)
+    }
+    return replicas
   }
 
   /**

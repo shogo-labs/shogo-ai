@@ -19,6 +19,7 @@ const scheduler = {
 mock.module('../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
     c.set('user', { id: 'user-1' })
+    c.set('auth', { userId: 'user-1', isAuthenticated: true })
     await next()
   },
   requireAuth: async (_c: any, next: any) => next(),
@@ -76,6 +77,11 @@ mock.module('../lib/analytics-digest-collector', () => ({
 }))
 
 const prisma = {
+  // getAdminAccess (via the real requireAdminScope gating the analytics
+  // routes) resolves this; super_admin implicitly holds every scope.
+  user: {
+    findUnique: mock(async () => ({ role: 'super_admin', adminScopes: [] as string[] })),
+  },
   infraSnapshot: {
     findFirst: mock(async () => ({ id: 'snapshot-1' })),
     findMany: mock(async () => [{ timestamp: new Date('2026-01-01T00:00:00Z') }]),
@@ -143,7 +149,8 @@ const prisma = {
       userId: 'user-9',
       code: 'creator',
       status: 'active',
-      commissionRateBps: data.commissionRateBps,
+      commissionRateBps: 'commissionRateBps' in data ? data.commissionRateBps : null,
+      contentCpmCents: 'contentCpmCents' in data ? data.contentCpmCents : null,
     })),
   },
 }
@@ -433,6 +440,26 @@ describe('PATCH /affiliates/:id — per-affiliate commission-rate override', () 
     expect((await patch('aff-1', { commissionRateBps: -1 })).status).toBe(400)
     expect((await patch('aff-1', { commissionRateBps: 12.5 })).status).toBe(400)
     expect((await patch('aff-1', { commissionRateBps: 'lots' })).status).toBe(400)
+  })
+
+  test('sets a per-creator content CPM override', async () => {
+    const res = await patch('aff-1', { contentCpmCents: 250 })
+    expect(res.status).toBe(200)
+    const body = await json(res)
+    expect(body.affiliate.contentCpmCents).toBe(250)
+    expect(prisma.affiliate.update.mock.calls.at(-1)![0].data).toEqual({ contentCpmCents: 250 })
+  })
+
+  test('clears the content CPM override when passed null', async () => {
+    const res = await patch('aff-1', { contentCpmCents: null })
+    expect(res.status).toBe(200)
+    expect(prisma.affiliate.update.mock.calls.at(-1)![0].data).toEqual({ contentCpmCents: null })
+  })
+
+  test('rejects an invalid content CPM and an empty patch', async () => {
+    expect((await patch('aff-1', { contentCpmCents: -1 })).status).toBe(400)
+    expect((await patch('aff-1', { contentCpmCents: 1.5 })).status).toBe(400)
+    expect((await patch('aff-1', {})).status).toBe(400)
   })
 
   test('returns 404 for an unknown affiliate', async () => {

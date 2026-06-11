@@ -62,12 +62,21 @@ import {
   isAutoModel,
   AUTO_MODEL_ID,
 } from '@shogo/model-catalog'
-import { selectModelForSpawn, buildAutoTierMap, formatRoutingLog, type SpawnClassificationInput } from './model-router'
+import {
+  selectModelForSpawn,
+  buildAutoTierMap,
+  formatRoutingLog,
+  autoTierIds,
+  autoTierProviderHints,
+  type SpawnClassificationInput,
+  type AutoTierOverride,
+} from './model-router'
 import { CODE_AGENT_GENERAL_GUIDE, OUTPUT_CONTRACT_GUIDE } from './code-agent-prompt'
 import { SHOGO_SDK_GUIDE } from './shogo-sdk-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
-import { WorkspaceLSPManager, resolveBin } from '@shogo/shared-runtime'
+import { WorkspaceLSPManager, resolveBin, WorktreeManager } from '@shogo/shared-runtime'
+import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/shared-runtime'
 import { isWorkspaceRuntimeMode, workspaceAttachedProjectIds, workspaceProjectsManifest } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api'
@@ -81,7 +90,7 @@ import {
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { FileStateCache } from './file-state-cache'
-import { SUBAGENT_GUIDE } from './subagent-prompts'
+import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { CommandRegistry } from './command-registry'
@@ -94,6 +103,7 @@ import {
   previewBuildLogPath,
   previewConsoleLogPath,
 } from './runtime-log-paths'
+import { shouldInjectPreviewUrl, buildPreviewUrlBlock } from './preview-url-context'
 
 const QUICK_ACTION_GUIDE = `## Quick Actions
 
@@ -128,6 +138,37 @@ function hasErrorInResult(result: unknown): boolean {
  */
 function inferProviderFromModel(modelId: string, configProvider: string): string {
   return catalogInferProvider(modelId, configProvider)
+}
+
+/**
+ * Parse the admin-injected `AGENT_AUTO_TIER_MAP` env var into an
+ * `AutoTierOverride`. The API server resolves each configured tier id
+ * (including public aliases like `hoshi-1.0`) to a runtime-resolvable model id
+ * plus an optional provider hint before serializing this JSON. Returns
+ * undefined when unset or malformed so Auto falls back to the hardcoded
+ * defaults in `buildAutoTierMap()`.
+ */
+function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | undefined {
+  if (!raw) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined
+  const src = parsed as Record<string, unknown>
+  const out: AutoTierOverride = {}
+  for (const tier of ['economy', 'standard', 'premium'] as const) {
+    const entry = src[tier]
+    if (!entry || typeof entry !== 'object') continue
+    const e = entry as Record<string, unknown>
+    const id = typeof e.id === 'string' ? e.id.trim() : ''
+    if (!id) continue
+    const provider = typeof e.provider === 'string' && e.provider.trim() ? e.provider.trim() : undefined
+    out[tier] = { id, provider }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 /**
@@ -249,6 +290,12 @@ export interface GatewayConfig {
   promptProfile?: 'full' | 'swe' | 'general'
   /** Enable coordinator mode (leader only delegates, never does work directly) */
   coordinatorMode?: boolean
+  /**
+   * BETA: per-chat git worktrees. When true, each chat session operates on
+   * its own branch (`shogo/chat/<sessionId>`) checked out in an isolated
+   * worktree; `main` only changes via the merge-on-done flow. Default off.
+   */
+  gitWorktreesEnabled?: boolean
 }
 
 /**
@@ -418,6 +465,23 @@ export class AgentGateway {
   private shellCwd = new Map<string, string>()
   /** Per-session backgrounded command registry — soft-timed-out exec runs */
   private commandRegistries = new Map<string, import('./command-registry').CommandRegistry>()
+  /**
+   * Admin-configured Auto-mode tier overrides, parsed once from the injected
+   * `AGENT_AUTO_TIER_MAP` env var. Undefined keeps the hardcoded defaults.
+   */
+  private autoTierOverride?: AutoTierOverride
+
+  // ── BETA: per-chat git worktrees ──────────────────────────────────────────
+  /** Lazily-created worktree manager (null until first use when enabled). */
+  private worktreeManager: WorktreeManager | null = null
+  /** Resolved worktree working-directory path per chat session. */
+  private sessionWorktreePaths = new Map<string, string>()
+  /**
+   * Best-effort hook to persist the durable `.git` (with all branch refs) to
+   * object storage after a worktree commit/merge. Wired by server.ts to the
+   * git_only durability path; a no-op in environments without one.
+   */
+  private repoPersistHook: (() => Promise<void> | void) | null = null
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -433,6 +497,14 @@ export class AgentGateway {
     if (process.env.AGENT_ADVANCED_MODEL) envOverrides.advanced = process.env.AGENT_ADVANCED_MODEL
     if (Object.keys(envOverrides).length > 0) {
       setAgentModeOverrides(envOverrides)
+    }
+
+    // Parse admin-configured Auto-mode tier overrides (resolved model id +
+    // provider hint per tier) so the spawn router can route Auto to models
+    // like Hoshi that the hardcoded default map omits.
+    this.autoTierOverride = parseAutoTierOverride(process.env.AGENT_AUTO_TIER_MAP)
+    if (this.autoTierOverride) {
+      console.log(`[AgentGateway] Auto tier override active: ${JSON.stringify(this.autoTierOverride)}`)
     }
 
     // Initialize permission engine in local mode
@@ -595,6 +667,11 @@ export class AgentGateway {
       allowedModes: ['canvas', 'none'],
       mainSessionIds: ['chat'],
     }
+    // BETA: per-chat git worktrees default. The warm-pool controller injects
+    // SHOGO_GIT_WORKTREES=1 at assignment when the project setting is on, so it
+    // acts as the boot default. An explicit value in config.json (written by
+    // PATCH /agent/config when the user toggles) always wins.
+    const worktreesEnvDefault = process.env.SHOGO_GIT_WORKTREES === '1'
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
     if (configPath) {
       try {
@@ -607,12 +684,13 @@ export class AgentGateway {
             : raw.heartbeatInterval ?? defaults.heartbeatInterval,
           heartbeatEnabled: raw.heartbeat?.enabled ?? raw.heartbeatEnabled ?? defaults.heartbeatEnabled,
           channels: Array.isArray(raw.channels) ? raw.channels : [],
+          gitWorktreesEnabled: raw.gitWorktreesEnabled ?? worktreesEnvDefault,
         }
       } catch (error: any) {
         console.error('[AgentGateway] Failed to parse config.json:', error.message)
       }
     }
-    return defaults
+    return { ...defaults, gitWorktreesEnabled: worktreesEnvDefault }
   }
 
   async start(): Promise<void> {
@@ -1014,6 +1092,15 @@ export class AgentGateway {
     this.lspManager?.stop()
     this.lspManager = null
 
+    // Kill every backgrounded shell command across all sessions. Exec no
+    // longer has a hard-timeout SIGKILL ceiling, so this shutdown sweep is the
+    // backstop that prevents long-running children from being orphaned when
+    // the gateway goes away.
+    for (const reg of this.commandRegistries.values()) {
+      try { reg.killAll() } catch { /* already gone */ }
+    }
+    this.commandRegistries.clear()
+
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
     await this.skillServerManager.stop()
@@ -1215,6 +1302,9 @@ export class AgentGateway {
         const channelDef = this.config.channels.find(c => c.type === message.channelType)
         const model = channelDef?.model
         session.modelOverride = (model === 'basic' || model === 'advanced') ? model : 'basic'
+        // Channel models carry no provider hint; clear any stale one so the
+        // provider is inferred from this id.
+        session.modelProvider = undefined
       }
 
       try {
@@ -1362,6 +1452,11 @@ export class AgentGateway {
     writer: { write(chunk: Record<string, any>): void },
     options?: {
       modelOverride?: string
+      /** Native provider hint from the API server (resolved from the model
+       *  registry), paired with `modelOverride`. Lets a DB model addressed by
+       *  an opaque UUID route to its real provider (e.g. `anthropic`) instead
+       *  of being inferred as `custom`. Absent → id-based inference. */
+      modelProvider?: string
       fileParts?: FilePart[]
       userId?: string
       interactionMode?: 'agent' | 'plan' | 'ask'
@@ -1385,6 +1480,10 @@ export class AgentGateway {
     if (options?.modelOverride) {
       const session = this.sessionManager.getOrCreate(sessionId)
       session.modelOverride = options.modelOverride
+      // Keep the provider hint paired with the override. Assigned even when
+      // undefined so a previously-hinted model can't leave a stale provider
+      // behind once the selection changes.
+      session.modelProvider = options.modelProvider
     }
 
     if (options?.userId) {
@@ -1480,6 +1579,9 @@ export class AgentGateway {
       reloadConfig: () => this.reloadConfig(),
       setModelOverride: (model: string) => {
         session.modelOverride = model
+        // Slash-command/programmatic override carries no provider hint; clear
+        // any stale one so the provider is inferred from this id.
+        session.modelProvider = undefined
       },
       getStatus: () => this.getStatus(),
     }
@@ -1493,9 +1595,47 @@ export class AgentGateway {
     let reg = this.commandRegistries.get(sessionId)
     if (!reg) {
       reg = new CommandRegistry()
+
+      // Re-seed from the persisted snapshot so a thread reopened after a
+      // runtime restart still shows the processes it started. These are stale
+      // (the OS children belonged to the dead gateway) and are flagged as such.
+      const persisted = this.sessionManager.get(sessionId)?.metadata?.runningProcesses
+      if (Array.isArray(persisted) && persisted.length > 0) {
+        reg.restoreStale(persisted)
+      }
+
+      // Persist the running list on every change so it survives reconnect and
+      // restart via .shogo/sessions.db (synced to S3). Process start/exit is
+      // rare relative to message volume, so this write is cheap.
+      reg.onChange((running) => {
+        this.sessionManager.setSessionMetadata(sessionId, {
+          runningProcesses: running.map((p) => ({
+            runId: p.runId,
+            command: p.command,
+            pid: p.pid,
+            sandboxed: p.sandboxed,
+            containerName: p.containerName,
+            startedAt: p.startedAt,
+          })),
+        })
+      })
+
       this.commandRegistries.set(sessionId, reg)
     }
     return reg
+  }
+
+  /** List the background shell processes still running for a chat thread. */
+  listSessionProcesses(sessionId: string): import('./command-registry').RunningProcess[] {
+    return this.getOrCreateCommandRegistry(sessionId).listRunning()
+  }
+
+  /**
+   * Kill (or dismiss, if stale) one tracked background process for a thread.
+   * Returns true if a matching run_id existed.
+   */
+  killSessionProcess(sessionId: string, runId: string): boolean {
+    return this.getOrCreateCommandRegistry(sessionId).kill(runId)
   }
 
   /** Tear down per-session bookkeeping. Kills any backgrounded shell runs. */
@@ -1574,6 +1714,17 @@ export class AgentGateway {
     // resolver keeps its last-known value rather than flapping.
     await refreshTrust()
 
+    // BETA: per-chat git worktrees. Ensure this session has its own worktree
+    // so the agent's file/exec tools operate on an isolated branch. Skills,
+    // memory, plans, and other `.shogo/` config continue to load from the
+    // canonical workspace (gitignored, shared) below. Best-effort: on failure
+    // we fall back to the shared working tree.
+    let sessionWorkspaceDir = this.workspaceDir
+    if (this.isWorktreeEligibleSession(sessionId, isHeartbeat)) {
+      const wt = await this.ensureSessionWorktree(sessionId)
+      if (wt) sessionWorkspaceDir = wt
+    }
+
     let systemPrompt = this.loadBootstrapContext(sessionId)
 
     console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
@@ -1618,7 +1769,8 @@ export class AgentGateway {
     let modelId: string
 
     if (autoRouting) {
-      const autoTiers = buildAutoTierMap()
+      const autoTiers = buildAutoTierMap(autoTierIds(this.autoTierOverride))
+      const providerHints = autoTierProviderHints(this.autoTierOverride)
       const estimatedTokens = this.sessionManager.estimateTokens(session)
       const classInput: SpawnClassificationInput = {
         prompt,
@@ -1631,16 +1783,25 @@ export class AgentGateway {
         availableModels: autoTiers,
       })
       modelId = routingDecision.selectedModel
-      provider = inferProviderFromModel(modelId, this.config.model.provider)
+      // Prefer the admin-supplied provider hint for the routed model (set when
+      // the tier resolves to a DB/custom-backed model whose provider can't be
+      // inferred from the id, e.g. Hoshi); otherwise infer from the id.
+      provider = providerHints[modelId] ?? inferProviderFromModel(modelId, this.config.model.provider)
       console.log(`${this.logPrefix} ${formatRoutingLog(routingDecision, prompt)}`)
       if (uiWriter) {
         uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
       }
     } else {
       const effectiveAlias = modelAlias
-      provider = inferProviderFromModel(effectiveAlias, this.config.model.provider)
+      // Honor the API server's native provider hint when present (it's paired
+      // with the model override); otherwise infer from the id as before. This
+      // routes a DB model addressed by an opaque UUID to its real provider
+      // (anthropic → native passthrough) instead of falling back to `custom`
+      // and the lossy OpenAI-compat conversion path. For every id the catalog
+      // already classifies the way inference does, the hint is a no-op.
+      provider = session.modelProvider ?? inferProviderFromModel(effectiveAlias, this.config.model.provider)
       modelId = resolveModelAlias(effectiveAlias)
-      console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
+      console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider}${session.modelProvider ? ' (hint)' : ''} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
     }
 
     // Reset per-turn state and wire/clear the SSE writer for permission requests.
@@ -1661,7 +1822,7 @@ export class AgentGateway {
     }
 
     const toolContext: ToolContext = {
-      workspaceDir: this.workspaceDir,
+      workspaceDir: sessionWorkspaceDir,
       channels: this.channels,
       config: this.config,
       projectId: this.projectId,
@@ -1682,6 +1843,7 @@ export class AgentGateway {
       // workspace singleton; no downside to making it always-on.
       canvasFileWatcher: this.canvasFileWatcher,
       lspManager: this.lspManager ?? undefined,
+      getLspManager: () => this.lspManager,
       fileStateCache: this.fileStateCache,
       agentManager: this.agentManager,
       skillServerManager: this.skillServerManager,
@@ -1691,13 +1853,15 @@ export class AgentGateway {
       workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
       autoRouting,
+      autoTierOverride: this.autoTierOverride,
       dualPlan,
       shellState: sessionId ? {
-        getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,
+        getCwd: () => this.shellCwd.get(sessionId!) || sessionWorkspaceDir,
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
       } : undefined,
       commandRegistry: sessionId ? this.getOrCreateCommandRegistry(sessionId) : undefined,
       guideRegistry: this.currentGuideRegistry,
+      listWorktreeStatuses: this.isWorktreesEnabled() ? () => this.listWorktreeStatuses() : undefined,
       toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
@@ -1967,6 +2131,23 @@ export class AgentGateway {
 
     const turnAbort = new AbortController()
     this.turnAbortControllers.set(sessionId, turnAbort)
+
+    // Stream live process-list updates to the UI for the duration of this turn.
+    // The registry persists across turns; this subscription is per-turn so it
+    // is torn down when the stream closes.
+    let unsubscribeProcesses: (() => void) | undefined
+    if (uiWriter && sessionId) {
+      const reg = this.getOrCreateCommandRegistry(sessionId)
+      // Push the current list immediately so a reconnecting client re-syncs.
+      try {
+        uiWriter.write({ type: 'data-process-update', data: { processes: reg.listRunning() } } as any)
+      } catch { /* writer may already be closed */ }
+      unsubscribeProcesses = reg.onChange((processes) => {
+        try {
+          uiWriter.write({ type: 'data-process-update', data: { processes } } as any)
+        } catch { /* writer closed — onChange teardown happens in finally */ }
+      })
+    }
 
     try {
       const hookEmitter = this.hookEmitter
@@ -2308,7 +2489,7 @@ export class AgentGateway {
         ? { 'x-chat-session-id': sessionId }
         : undefined
 
-      const result = await runAgentLoop({
+      const loopOptions: Parameters<typeof runAgentLoop>[0] = {
         provider,
         model: modelId,
         system: systemPrompt,
@@ -2556,7 +2737,51 @@ export class AgentGateway {
             })
           )
         },
-      })
+      }
+
+      let result = await runAgentLoop(loopOptions)
+
+      // Auto-continue across the iteration ceiling (ported from teammate-loop's
+      // MAX_TEAMMATE_CONTINUATIONS). A long task that exhausts maxIterations
+      // should keep going a bounded number of times and end with a real model
+      // summary, instead of stalling on a blank/boilerplate "ran out of steps"
+      // turn. Synthetic continuation prompts accumulate into history so message
+      // alternation stays valid; usage is folded forward for accurate billing.
+      const maxAutoContinuations = parseInt(process.env.AGENT_MAX_AUTO_CONTINUATIONS || '3', 10)
+      let autoContinuations = 0
+      const accumulatedNewMessages = [...result.newMessages]
+      while (
+        result.maxIterationsExhausted &&
+        !result.loopBreak &&
+        !result.error &&
+        !turnAbort.signal.aborted &&
+        autoContinuations < maxAutoContinuations
+      ) {
+        autoContinuations++
+        console.warn(
+          `${this.logPrefix} Auto-continuing after iteration ceiling (pass ${autoContinuations}/${maxAutoContinuations}) for session ${sessionId}`,
+        )
+        const contHistory = [...history, ...accumulatedNewMessages]
+        const contPrompt =
+          'Continue — you ran out of steps before finishing. Pick up exactly where you left off and complete the remaining work. ' +
+          'When everything is done, end with a short summary of what you changed; if you are still not finished, say what remains.'
+        const contResult = await runAgentLoop({
+          ...loopOptions,
+          history: contHistory,
+          prompt: contPrompt,
+          images: undefined,
+        })
+        accumulatedNewMessages.push(...contResult.newMessages)
+        // Fold prior usage/iterations/tool calls forward so the whole turn is billed.
+        contResult.inputTokens += result.inputTokens
+        contResult.outputTokens += result.outputTokens
+        contResult.cacheReadTokens += result.cacheReadTokens
+        contResult.cacheWriteTokens += result.cacheWriteTokens
+        contResult.iterations += result.iterations
+        contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
+        result = contResult
+      }
+      result.newMessages = accumulatedNewMessages
 
       // Persist messages to session FIRST — before any uiWriter calls that
       // could throw due to client disconnect.  This ensures "continue" after
@@ -2709,6 +2934,7 @@ export class AgentGateway {
         clearInterval(timer)
       }
       toolHeartbeatTimers.clear()
+      unsubscribeProcesses?.()
     }
   }
 
@@ -2761,6 +2987,7 @@ export class AgentGateway {
       parts.push(BROWSER_TOOL_GUIDE)
     }
     parts.push(SUBAGENT_GUIDE)
+    if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
@@ -2818,6 +3045,7 @@ export class AgentGateway {
     }
 
     parts.push(SUBAGENT_GUIDE)
+    if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
@@ -3088,12 +3316,18 @@ export class AgentGateway {
 
     // APP_MODE_DISABLED: app template context injection removed (was reading .app-template)
 
-    // 7c. Runtime build + console log tails (canvas mode only — Vite preview pipeline)
-    if (activeMode === 'canvas') {
+    // 7c. Preview URL — inject whenever the runtime can serve the app, so the
+    // agent always has the real public URL (not just in canvas mode). See
+    // shouldInjectPreviewUrl(); this closes the "shared a localhost URL" gap.
+    if (shouldInjectPreviewUrl(activeMode)) {
       const previewUrl = this.buildPreviewUrlContext()
       if (previewUrl) {
         pushDynamic('preview-url', previewUrl)
       }
+    }
+
+    // Runtime build + console log tails (canvas mode only — Vite preview pipeline)
+    if (activeMode === 'canvas') {
       const runtimeLogs = this.buildRuntimeLogsContext()
       if (runtimeLogs) {
         pushDynamic('runtime-logs', runtimeLogs)
@@ -3210,11 +3444,6 @@ export class AgentGateway {
    * agent about a URL that won't load.
    */
   private buildPreviewUrlContext(): string | null {
-    const publicUrl = process.env.PUBLIC_PREVIEW_URL?.trim() || ''
-
-    const runtimePort = parseInt(process.env.PORT || '8080', 10)
-    const internalUrl = `http://localhost:${runtimePort}/`
-
     // dist/ may live at either workspaceDir/project/dist (k8s layout, where
     // the project lives in a /project subdir) or workspaceDir/dist (local
     // RuntimeManager layout, where workspaceDir === projectDir).
@@ -3222,24 +3451,11 @@ export class AgentGateway {
       existsSync(join(this.workspaceDir, 'project', 'dist', 'index.html')) ||
       existsSync(join(this.workspaceDir, 'dist', 'index.html'))
 
-    if (publicUrl.length === 0 && !hasDist) return null
-
-    const externalUrl = publicUrl.length > 0 ? publicUrl : internalUrl
-    const hasDistinctPublic = publicUrl.length > 0 && publicUrl !== internalUrl
-
-    const lines: string[] = [
-      '## Running App Preview',
-      '',
-      `The user's app is running and reachable at **${externalUrl}**.`,
-    ]
-    if (hasDistinctPublic) {
-      lines.push(`Internal (from inside this runtime): \`${internalUrl}\`.`)
-    }
-    lines.push(
-      '',
-      'When the user asks you to QA / test / try the app, spawn the **browser_qa** subagent and pass this URL as the target. This block is the single source of truth for the preview URL — do not read it from `vite.config.ts`, `package.json`, or any other file; those values are overridden by the launcher.',
-    )
-    return lines.join('\n')
+    return buildPreviewUrlBlock({
+      publicUrl: process.env.PUBLIC_PREVIEW_URL,
+      runtimePort: parseInt(process.env.PORT || '8080', 10),
+      hasDist,
+    })
   }
 
   /**
@@ -4014,6 +4230,205 @@ export class AgentGateway {
     setLoadedSkills(this.skills)
     this.configSkills = this.loadConfigSkills()
 
+  }
+
+  // ── BETA: per-chat git worktrees ──────────────────────────────────────────
+
+  /** Wire the durable-repo persist hook (server.ts owns the git_only path). */
+  setRepoPersistHook(fn: () => Promise<void> | void): void {
+    this.repoPersistHook = fn
+  }
+
+  /** Whether the per-chat worktree feature is active for this project. */
+  isWorktreesEnabled(): boolean {
+    return this.config.gitWorktreesEnabled === true
+  }
+
+  /** Lazily build the worktree manager when the feature is enabled. */
+  getWorktreeManager(): WorktreeManager | null {
+    if (!this.isWorktreesEnabled()) return null
+    if (!this.worktreeManager) {
+      this.worktreeManager = new WorktreeManager({ mainRepoDir: this.workspaceDir })
+    }
+    return this.worktreeManager
+  }
+
+  /**
+   * Sessions that should run in an isolated worktree. Excludes heartbeat and
+   * the configured "main" sessions (which operate on the canonical tree), and
+   * requires a path/branch-safe session id.
+   */
+  private isWorktreeEligibleSession(sessionId?: string, isHeartbeat?: boolean): boolean {
+    if (!this.isWorktreesEnabled()) return false
+    if (!sessionId || isHeartbeat) return false
+    if ((this.config.mainSessionIds ?? []).includes(sessionId)) return false
+    return /^[A-Za-z0-9._-]+$/.test(sessionId)
+  }
+
+  /** Whether a worktree has already been created for this session. */
+  isWorktreeSession(sessionId?: string): boolean {
+    if (!sessionId) return false
+    const p = this.sessionWorktreePaths.get(sessionId)
+    return !!(p && existsSync(p))
+  }
+
+  /**
+   * Ensure (lazily create / re-attach) the worktree for a chat session and
+   * cache its working-directory path. Returns null on failure or when the
+   * feature is off, so callers fall back to the canonical workspace.
+   */
+  async ensureSessionWorktree(sessionId: string): Promise<string | null> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return null
+    const cached = this.sessionWorktreePaths.get(sessionId)
+    if (cached && existsSync(cached)) return cached
+    try {
+      const info = await mgr.ensureWorktree(sessionId)
+      this.sessionWorktreePaths.set(sessionId, info.path)
+      return info.path
+    } catch (err: any) {
+      console.error(`${this.logPrefix} ensureSessionWorktree failed for ${sessionId}:`, err?.message ?? err)
+      return null
+    }
+  }
+
+  /** The working dir a session's tools should operate in (worktree or main). */
+  resolveSessionWorkspaceDir(sessionId?: string): string {
+    if (sessionId) {
+      const p = this.sessionWorktreePaths.get(sessionId)
+      if (p && existsSync(p)) return p
+    }
+    return this.workspaceDir
+  }
+
+  private async persistDurableRepoIfHooked(): Promise<void> {
+    if (!this.repoPersistHook) return
+    try {
+      await this.repoPersistHook()
+    } catch (err: any) {
+      console.warn(`${this.logPrefix} durable repo persist hook threw:`, err?.message ?? err)
+    }
+  }
+
+  /**
+   * Commit the session's worktree at the turn-complete boundary so its branch
+   * accumulates the agent's edits, then persist the durable `.git` (branches
+   * are refs in the shared object store). Best-effort and fire-and-forget from
+   * the caller's perspective.
+   */
+  async commitAndPersistSessionWorktree(sessionId?: string): Promise<void> {
+    if (!sessionId || !this.isWorktreeSession(sessionId)) return
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return
+    try {
+      await mgr.commitWorktree(sessionId, `chat ${sessionId}: ${new Date().toISOString()}`)
+      await this.persistDurableRepoIfHooked()
+    } catch (err: any) {
+      console.warn(`${this.logPrefix} commitAndPersistSessionWorktree threw:`, err?.message ?? err)
+    }
+  }
+
+  /**
+   * Recreate worktree working directories for all in-flight chat branches.
+   * Called on cold start so isolated trees survive a pod restart (branches are
+   * durable in the persisted `.git`; only the working dirs need replaying).
+   */
+  async recreateActiveWorktrees(): Promise<void> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return
+    try {
+      const infos = await mgr.recreateWorktrees()
+      for (const info of infos) {
+        if (info.exists) this.sessionWorktreePaths.set(info.chatSessionId, info.path)
+      }
+      if (infos.length > 0) {
+        console.log(`${this.logPrefix} recreated ${infos.length} chat worktree(s) on boot`)
+      }
+    } catch (err: any) {
+      console.warn(`${this.logPrefix} recreateActiveWorktrees threw:`, err?.message ?? err)
+    }
+  }
+
+  /** Current status of all Shogo-managed worktrees, for UI/awareness. */
+  async listWorktreeStatuses(): Promise<WorktreeStatus[]> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return []
+    const infos = await mgr.listWorktrees()
+    const out: WorktreeStatus[] = []
+    for (const info of infos) {
+      const s = await mgr.status(info.chatSessionId)
+      if (s) out.push(s)
+    }
+    return out
+  }
+
+  /**
+   * Project-level merge serialization. Only one chat may merge into the
+   * default branch at a time so two parallel "Mark done" actions can't race
+   * the shared `.git`. One gateway owns a project, so a gateway-level mutex is
+   * project-wide.
+   */
+  private mergeChain: Promise<unknown> = Promise.resolve()
+
+  async withMergeLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.mergeChain.then(fn, fn)
+    // Keep the chain alive regardless of this op's success/failure.
+    this.mergeChain = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  /** Whether the session's worktree has a merge in progress (mid-conflict). */
+  async isWorktreeMergePending(sessionId: string): Promise<boolean> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return false
+    try {
+      return await mgr.isMergeInProgress(sessionId)
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Attempt the clean merge-on-done path for a session's worktree into the
+   * default branch. Returns the merge result; on conflict the caller drives an
+   * agent turn to resolve and then calls {@link completeWorktreeMerge}.
+   */
+  async mergeSessionWorktree(sessionId: string): Promise<WorktreeMergeResult> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return { outcome: 'noop', conflictedFiles: [], message: 'worktrees disabled' }
+    return this.withMergeLock(async () => {
+      const result = await mgr.mergeBranchIntoMain(sessionId)
+      if (result.outcome === 'clean') {
+        await this.persistDurableRepoIfHooked()
+      }
+      return result
+    })
+  }
+
+  /** Finish a conflicted merge after the agent resolved files in the worktree. */
+  async completeWorktreeMerge(sessionId: string): Promise<WorktreeMergeResult> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return { outcome: 'noop', conflictedFiles: [], message: 'worktrees disabled' }
+    return this.withMergeLock(async () => {
+      const result = await mgr.completeConflictedMerge(sessionId)
+      if (result.outcome === 'clean') {
+        await this.persistDurableRepoIfHooked()
+      }
+      return result
+    })
+  }
+
+  /** Tear down a session's worktree (after a successful merge). */
+  async removeSessionWorktree(sessionId: string, opts?: { deleteBranch?: boolean }): Promise<void> {
+    const mgr = this.getWorktreeManager()
+    if (!mgr) return
+    try {
+      await mgr.removeWorktree(sessionId, opts)
+      this.sessionWorktreePaths.delete(sessionId)
+      await this.persistDurableRepoIfHooked()
+    } catch (err: any) {
+      console.warn(`${this.logPrefix} removeSessionWorktree threw:`, err?.message ?? err)
+    }
   }
 
   private loadConfigSkills(): Array<{ name: string; trigger?: string; description?: string }> {

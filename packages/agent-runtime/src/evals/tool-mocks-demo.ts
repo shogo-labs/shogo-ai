@@ -724,7 +724,7 @@ export const DEMO_SUPPORT_MOCKS: ToolMockMap = {
     type: 'pattern',
     paramKeys: ['name'],
     patterns: [
-      { match: { name: 'github' },   response: { ok: true, server: 'composio', integration: 'github',   toolCount: 4, connected: true, authStatus: 'active', tools: ['GITHUB_CREATE_PR', 'GITHUB_LIST_ISSUES', 'GITHUB_CREATE_COMMENT', 'GITHUB_LIST_REVIEWS'], message: 'Installed github with 4 tool(s).' } },
+      { match: { name: 'github' },   response: { ok: true, server: 'composio', integration: 'github',   toolCount: 4, connected: true, authStatus: 'active', tools: ['GITHUB_CREATE_PR', 'GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_CREATE_COMMENT', 'GITHUB_LIST_REVIEWS'], message: 'Installed github with 4 tool(s).' } },
       { match: { name: 'linear' },   response: { ok: true, server: 'composio', integration: 'linear',   toolCount: 2, connected: true, authStatus: 'active', tools: ['LINEAR_CREATE_ISSUE', 'LINEAR_UPDATE_ISSUE'], message: 'Installed linear with 2 tool(s).' } },
       { match: { name: 'sentry' },   response: { ok: true, server: 'composio', integration: 'sentry',   toolCount: 1, connected: true, authStatus: 'active', tools: ['SENTRY_LIST_ISSUES'], message: 'Installed sentry with 1 tool.' } },
       { match: { name: 'intercom' }, response: { ok: true, server: 'composio', integration: 'intercom', toolCount: 2, connected: true, authStatus: 'active', tools: ['INTERCOM_LIST_CONVERSATIONS', 'INTERCOM_REPLY'], message: 'Installed intercom with 2 tool(s).' } },
