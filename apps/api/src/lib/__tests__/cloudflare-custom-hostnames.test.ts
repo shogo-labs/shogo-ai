@@ -15,6 +15,7 @@ import {
   createCustomHostname,
   getCustomHostname,
   findCustomHostnameByName,
+  retriggerCustomHostname,
   deleteCustomHostname,
   putHostnameMapping,
   deleteHostnameMapping,
@@ -218,6 +219,83 @@ describe('getCustomHostname / findCustomHostnameByName', () => {
       fetched.restore()
     }
   })
+
+  test('surfaces the issuing CA and per-record validation status', async () => {
+    const fetched = installFakeFetch(() => ({
+      body: {
+        success: true,
+        errors: [],
+        result: {
+          id: 'ch-1',
+          hostname: 'app.acme.com',
+          status: 'pending',
+          ssl: {
+            status: 'pending_validation',
+            certificate_authority: 'ssl_com',
+            validation_records: [
+              { txt_name: '_acme.app.acme.com', txt_value: 'tok123', status: 'pending' },
+            ],
+          },
+        },
+      },
+    }))
+    try {
+      const state = await getCustomHostname('ch-1')
+      expect(state?.certAuthority).toBe('ssl_com')
+      expect(state?.validation).toEqual([
+        { name: '_acme.app.acme.com', value: 'tok123', status: 'pending' },
+      ])
+    } finally {
+      fetched.restore()
+    }
+  })
+})
+
+describe('retriggerCustomHostname', () => {
+  beforeEach(() => setEnv())
+  afterEach(() => clearEnv())
+
+  test('PATCHes the SSL config (same DV method) without changing tokens', async () => {
+    const fetched = installFakeFetch(() => ({
+      body: { success: true, errors: [], result: PENDING_RESULT },
+    }))
+    try {
+      const state = await retriggerCustomHostname('ch-1')
+      const patch = fetched.calls.find((c) => c.method === 'PATCH')!
+      expect(patch).toBeDefined()
+      expect(patch.url).toContain('/zones/zone-one/custom_hostnames/ch-1')
+      // Re-trigger only re-submits the SSL block (DV, same method) — no
+      // `hostname` key, so Cloudflare keeps the existing validation tokens.
+      expect(patch.body).toEqual({
+        ssl: {
+          method: 'txt',
+          type: 'dv',
+          settings: { min_tls_version: '1.2' },
+          bundle_method: 'ubiquitous',
+        },
+      })
+      expect(state?.id).toBe('ch-1')
+    } finally {
+      fetched.restore()
+    }
+  })
+
+  test('throws a structured error on CF failure', async () => {
+    const fetched = installFakeFetch(() => ({
+      status: 400,
+      body: { success: false, errors: [{ code: 1234, message: 'nope' }], result: null },
+    }))
+    try {
+      await expect(retriggerCustomHostname('ch-1')).rejects.toThrow('1234 nope')
+    } finally {
+      fetched.restore()
+    }
+  })
+
+  test('returns null (no-op) when the feature is disabled', async () => {
+    clearEnv()
+    expect(await retriggerCustomHostname('ch-1')).toBeNull()
+  })
 })
 
 describe('deleteCustomHostname', () => {
@@ -262,14 +340,27 @@ describe('KV hostname map', () => {
     }
   })
 
-  test('PUT writes the subdomain to the namespaced key', async () => {
+  test('PUT writes JSON {s,c} to the namespaced key (canonical defaults to self)', async () => {
     setEnv({ kv: true })
     const fetched = installFakeFetch(() => ({ body: { success: true } }))
     try {
       expect(await putHostnameMapping('app.acme.com', 'myapp')).toBe(true)
       const put = fetched.calls.find((c) => c.method === 'PUT')!
       expect(put.url).toContain('/accounts/acct-1/storage/kv/namespaces/kv-1/values/app.acme.com')
-      expect(put.body).toBe('myapp')
+      // installFakeFetch JSON-parses the body, so it round-trips to an object.
+      expect(put.body).toEqual({ s: 'myapp', c: 'app.acme.com' })
+    } finally {
+      fetched.restore()
+    }
+  })
+
+  test('PUT carries the canonical hostname for an apex/www redirect', async () => {
+    setEnv({ kv: true })
+    const fetched = installFakeFetch(() => ({ body: { success: true } }))
+    try {
+      expect(await putHostnameMapping('acme.com', 'myapp', 'www.acme.com')).toBe(true)
+      const put = fetched.calls.find((c) => c.method === 'PUT')!
+      expect(put.body).toEqual({ s: 'myapp', c: 'www.acme.com' })
     } finally {
       fetched.restore()
     }

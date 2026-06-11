@@ -21,6 +21,13 @@ export interface LoopDetectorConfig {
   cycleWindowSize: number
   /** Min cycle length to detect (default: 2, e.g. A→B→A→B) */
   minCycleLength: number
+  /**
+   * Max consecutive *unproductive* (failed/errored) tool calls before
+   * triggering the no-progress breaker. Catches the case where the agent
+   * thrashes at one unreachable goal with many *different* calls, so the
+   * identical/cycle heuristics never fire (default: 5).
+   */
+  maxConsecutiveNoProgress: number
 }
 
 export interface LoopDetectorResult {
@@ -33,6 +40,8 @@ interface ToolCallEntry {
   name: string
   inputHash: string
   outputHash: string
+  /** True when the output looks like a failure / error (no forward progress). */
+  unproductive: boolean
 }
 
 const DEFAULT_CONFIG: LoopDetectorConfig = {
@@ -40,6 +49,7 @@ const DEFAULT_CONFIG: LoopDetectorConfig = {
   maxIdenticalOutputs: 4,
   cycleWindowSize: 10,
   minCycleLength: 2,
+  maxConsecutiveNoProgress: 5,
 }
 
 export class LoopDetector {
@@ -63,6 +73,7 @@ export class LoopDetector {
       name,
       inputHash: stableHash(input),
       outputHash: stableHash(output),
+      unproductive: isUnproductiveOutput(output),
     }
     this.history.push(entry)
 
@@ -88,6 +99,33 @@ export class LoopDetector {
 
     const cycleResult = this.checkCycles()
     if (cycleResult.loopDetected) return cycleResult
+
+    const noProgressResult = this.checkNoProgress()
+    if (noProgressResult.loopDetected) return noProgressResult
+
+    return { loopDetected: false }
+  }
+
+  /**
+   * Check for a run of consecutive unproductive (failed/errored) calls — the
+   * agent is hammering one goal with varied calls but getting nowhere. This is
+   * the gap the identical/cycle detectors miss: every call is different, yet no
+   * progress is made.
+   */
+  private checkNoProgress(): LoopDetectorResult {
+    const { maxConsecutiveNoProgress } = this.config
+    if (this.history.length < maxConsecutiveNoProgress) {
+      return { loopDetected: false }
+    }
+
+    const tail = this.history.slice(-maxConsecutiveNoProgress)
+    if (tail.every((e) => e.unproductive)) {
+      return {
+        loopDetected: true,
+        reason: 'no_progress',
+        pattern: `${maxConsecutiveNoProgress} consecutive tool calls failed with no progress toward the goal — stop and ask for help instead of retrying`,
+      }
+    }
 
     return { loopDetected: false }
   }
@@ -185,6 +223,39 @@ export class LoopDetector {
 
     return { loopDetected: false }
   }
+}
+
+const ERROR_TEXT_RE =
+  /\b(error|failed|failure|refused|unreachable|denied|forbidden|not\s*found|cannot|could\s*not|couldn'?t|unable|timed\s*out|timeout)\b|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|EAI_AGAIN|\b[45]\d\d\b/i
+
+/**
+ * Classify whether a tool output represents a failure / lack of progress.
+ * Structured signals (exit code, ok/success flags, HTTP status, error field)
+ * win; otherwise we scan failure-ish text. Explicit success signals short-
+ * circuit to "productive" so we never count a successful step against the agent.
+ */
+function isUnproductiveOutput(output: any): boolean {
+  if (output == null) return false
+
+  if (typeof output === 'string') return ERROR_TEXT_RE.test(output)
+
+  if (typeof output === 'object') {
+    // Explicit success → definitely productive.
+    if (output.ok === true || output.success === true) return false
+    if (typeof output.exitCode === 'number' && output.exitCode === 0) return false
+
+    // Explicit failure signals.
+    if (typeof output.exitCode === 'number' && output.exitCode !== 0) return true
+    if (output.ok === false || output.success === false) return true
+    if (typeof output.status === 'number' && output.status >= 400) return true
+    if (output.error != null && output.error !== false && output.error !== '') return true
+
+    // Fall back to scanning the usual error-bearing fields.
+    const text = `${output.stderr ?? ''} ${output.message ?? ''} ${output.stdout ?? ''}`.trim()
+    if (text) return ERROR_TEXT_RE.test(text)
+  }
+
+  return false
 }
 
 /**

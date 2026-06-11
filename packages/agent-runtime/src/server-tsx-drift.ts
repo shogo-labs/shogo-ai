@@ -36,6 +36,11 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import {
+  extractProtectedRegions,
+  mergeProtectedRegions,
+  type ProtectedRegion,
+} from '@shogo-ai/sdk/generators'
 
 const LOG_PREFIX = 'server-tsx-drift'
 
@@ -381,4 +386,91 @@ function insertMount(source: string, mountLine: string, apiBasePath: string): st
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// ---------------------------------------------------------------------------
+// Custom-region preservation across regeneration
+// ---------------------------------------------------------------------------
+//
+// `shogo generate` fully rewrites `server.tsx`. When the agent (or a pod
+// author) adds custom code directly to it — most damagingly, security
+// middleware like a tenant guard — a routine schema-change regen silently
+// clobbers it. The supported surface is `custom-routes.ts`, but losing a guard
+// on regen is a P0, so we preserve anything wrapped in SHOGO:CUSTOM markers:
+// capture the regions before the regen, re-apply them after.
+
+export interface CapturedServerRegions {
+  serverTsxPath: string
+  before: string
+  regions: ProtectedRegion[]
+}
+
+function findServerEntry(cwd: string): string | null {
+  const candidates = [
+    join(cwd, 'server.tsx'),
+    join(cwd, 'server.ts'),
+    join(cwd, 'project', 'server.tsx'),
+    join(cwd, 'project', 'server.ts'),
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+  return null
+}
+
+/**
+ * Snapshot the protected regions in the current `server.tsx` so they can be
+ * re-applied after a regeneration. Returns `null` when there's no server file
+ * or no protected regions (the common case — zero overhead).
+ */
+export function captureServerCustomRegions(cwd: string): CapturedServerRegions | null {
+  const serverTsxPath = findServerEntry(cwd)
+  if (!serverTsxPath) return null
+
+  let before: string
+  try {
+    before = readFileSync(serverTsxPath, 'utf-8')
+  } catch {
+    return null
+  }
+
+  const regions = extractProtectedRegions(before)
+  if (regions.length === 0) return null
+
+  return { serverTsxPath, before, regions }
+}
+
+/**
+ * Re-apply regions captured by {@link captureServerCustomRegions} onto the
+ * freshly regenerated `server.tsx`. No-op when nothing was captured or when the
+ * regen already preserved the regions.
+ */
+export function reapplyServerCustomRegions(captured: CapturedServerRegions | null): void {
+  if (!captured) return
+  const { serverTsxPath, before, regions } = captured
+  if (!existsSync(serverTsxPath)) return
+
+  let after: string
+  try {
+    after = readFileSync(serverTsxPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  // Regen already kept them (patched path, or a future region-aware generator).
+  if (extractProtectedRegions(after).length >= regions.length) return
+
+  try {
+    const merged = mergeProtectedRegions(before, after)
+    if (merged !== after) {
+      writeFileSync(serverTsxPath, merged, 'utf-8')
+      console.warn(
+        `[${LOG_PREFIX}] Re-applied ${regions.length} custom region(s) to ${serverTsxPath} after regeneration.`,
+      )
+    }
+  } catch (err: any) {
+    console.error(
+      `[${LOG_PREFIX}] Failed to re-apply custom regions after regen: ${err?.message ?? err}`,
+    )
+  }
 }

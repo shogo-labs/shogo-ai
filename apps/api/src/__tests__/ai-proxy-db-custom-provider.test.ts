@@ -6,6 +6,7 @@ process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-
 // A real 32-byte master key so the registry can decrypt the custom provider key.
 process.env.SECRETS_ENCRYPTION_KEY = Buffer.from('0123456789abcdef0123456789abcdef').toString('base64')
 process.env.ANTHROPIC_API_KEY = 'sk-ant-db-routing-test'
+process.env.OPENAI_API_KEY = 'sk-openai-db-routing-test'
 
 /**
  * AI Proxy — DB-defined model routing (the model-registry → ai-proxy seam).
@@ -31,6 +32,13 @@ delete process.env.SHOGO_API_KEY
 delete process.env.SHOGO_CLOUD_URL
 
 const MIMO_KEY = 'sk-mimo-staging-routing-key-abcdef'
+
+// Opaque UUIDs are how DB models are really addressed in production (the slug
+// lives in `apiModel`/`aliases`, not the id). The prior native-routing
+// attempt's test used the slug as the id and so never exercised the
+// UUID → apiModel rewrite that actually 404s upstream.
+const OPUS_UUID = '11111111-2222-3333-4444-555555555555'
+const GPT_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 
 // ─── Mutable DB rows the registry loads through the mocked prisma ──────────
 let MODELS: any[] = []
@@ -89,6 +97,49 @@ function seed() {
       cachedInputPerMillion: 0.5,
       cacheWritePerMillion: 6.25,
       outputPerMillion: 25,
+    },
+    // UUID-addressed Opus: id is an opaque UUID, the real Anthropic slug lives
+    // in apiModel. This is the production addressing the routing must honor.
+    {
+      id: OPUS_UUID,
+      provider: 'anthropic',
+      providerId: null,
+      apiModel: 'claude-opus-4-8',
+      displayName: 'Claude Opus 4.8 (DB)',
+      shortDisplayName: 'Opus 4.8',
+      tier: 'premium',
+      family: 'opus',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 2,
+      aliases: [],
+      capabilities: null,
+      inputPerMillion: 5,
+      cachedInputPerMillion: 0.5,
+      cacheWritePerMillion: 6.25,
+      outputPerMillion: 25,
+    },
+    // UUID-addressed GPT: native OpenAI, routed through the Responses API.
+    {
+      id: GPT_UUID,
+      provider: 'openai',
+      providerId: null,
+      apiModel: 'gpt-5.5',
+      displayName: 'GPT 5.5 (DB)',
+      shortDisplayName: 'GPT 5.5',
+      tier: 'standard',
+      family: 'gpt',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 3,
+      aliases: [],
+      capabilities: null,
+      inputPerMillion: 2,
+      cachedInputPerMillion: 0.2,
+      cacheWritePerMillion: 2.5,
+      outputPerMillion: 10,
     },
   ]
 }
@@ -193,6 +244,42 @@ function postChat(app: any, model: string) {
   }))
 }
 
+// The runtime speaks the native Anthropic Messages API for `provider:anthropic`
+// models — this is the endpoint a UUID-addressed Opus turn actually hits.
+function postAnthropic(app: any, model: string, extra: Record<string, unknown> = {}) {
+  return app.fetch(new Request('http://x/api/ai/anthropic/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': TOKEN },
+    body: JSON.stringify({ model, max_tokens: 64, messages: [{ role: 'user', content: 'hi' }], ...extra }),
+  }))
+}
+
+// The runtime speaks the OpenAI Responses API for native `provider:openai`
+// models — the endpoint a UUID-addressed GPT turn hits.
+function postResponses(app: any, model: string) {
+  return app.fetch(new Request('http://x/api/ai/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+    body: JSON.stringify({ model, input: 'hi' }),
+  }))
+}
+
+/** Parse the body of the last captured upstream fetch. */
+function lastForwardedBody(): any {
+  const raw = lastFetchInit?.body
+  if (typeof raw !== 'string') return undefined
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+}
+
+/** Parse the `model` field off the body of the last captured upstream fetch. */
+function lastForwardedModel(): string | undefined {
+  return lastForwardedBody()?.model
+}
+
 describe('ai-proxy DB-defined model routing', () => {
   test('routes a custom-provider model to its base URL with Bearer auth', async () => {
     const res = await postChat(buildApp(), 'mimo-v2.5')
@@ -231,5 +318,136 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(res.status).toBe(400)
     const data = await res.json() as any
     expect(data.error.code).toBe('model_not_found')
+  })
+
+  // ── UUID-addressed native models (the actual production bug) ──────────────
+  // The runtime, given a provider hint, routes these through the native
+  // endpoints. The proxy must rewrite the opaque UUID to the upstream
+  // `apiModel` or the provider 404s on the unknown id.
+
+  test('Anthropic passthrough rewrites a UUID-addressed Opus to its apiModel', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID)
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://api.anthropic.com/v1/messages')
+    // The bug: forwarding the raw UUID 404s upstream. Must send the slug.
+    expect(lastForwardedModel()).toBe('claude-opus-4-8')
+    const apiKey = (lastFetchInit?.headers as Record<string, string>)?.['x-api-key']
+    expect(apiKey).toBe('sk-ant-db-routing-test')
+  })
+
+  // ── Adaptive thinking normalization (the production 400) ──────────────────
+  // A UUID-addressed Opus reaches pi-ai as an opaque id, so it can't detect
+  // adaptive thinking and emits the legacy budget-based `thinking.type:
+  // "enabled"` block. Opus 4.7/4.8 reject that with a 400. The proxy — which
+  // knows the real apiModel — must rewrite it to the adaptive shape.
+
+  test('rewrites budget-based thinking to adaptive for a UUID-addressed Opus', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID, {
+      thinking: { type: 'enabled', budget_tokens: 20000, display: 'summarized' },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.model).toBe('claude-opus-4-8')
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    // effort must live in a separate output_config object, not inside thinking.
+    expect(body.thinking.budget_tokens).toBeUndefined()
+    expect(body.output_config?.effort).toBe('high')
+  })
+
+  test('defaults thinking display to summarized when the source omits it', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID, {
+      thinking: { type: 'enabled', budget_tokens: 8000 },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config?.effort).toBe('medium')
+  })
+
+  test('leaves a disabled thinking block untouched for Opus', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID, {
+      thinking: { type: 'disabled' },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.thinking).toEqual({ type: 'disabled' })
+    expect(body.output_config).toBeUndefined()
+  })
+
+  // ── Adaptive thinking visibility (the Opus-only "no thinking" symptom) ─────
+  // Opus 4.7/4.8 default `display` to "omitted" — an adaptive block without an
+  // explicit display yields empty thinking blocks, so the client renders no
+  // reasoning. (Sonnet 4.6 / Opus 4.6 default to "summarized", which is why the
+  // bug is Opus-only.) The proxy must default display to "summarized".
+
+  test('defaults display to summarized on an adaptive block missing display', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID, {
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'high' },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    // An effort the caller already set is preserved untouched.
+    expect(body.output_config?.effort).toBe('high')
+  })
+
+  test('respects an explicit display: omitted on an adaptive block', async () => {
+    const res = await postAnthropic(buildApp(), OPUS_UUID, {
+      thinking: { type: 'adaptive', display: 'omitted' },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
+  })
+
+  test('Responses API rewrites a UUID-addressed GPT to its apiModel', async () => {
+    const res = await postResponses(buildApp(), GPT_UUID)
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://api.openai.com/v1/responses')
+    expect(lastForwardedModel()).toBe('gpt-5.5')
+    const auth = (lastFetchInit?.headers as Record<string, string>)?.['Authorization']
+    expect(auth).toBe('Bearer sk-openai-db-routing-test')
+  })
+})
+
+// ── Cloud-proxy forwarding for the Responses API (GPT reasoning) ────────────
+// GPT-5.x reasoning models route through the Responses API, and that endpoint
+// was the only LLM path with no cloud-forwarding branch. In cloud-proxy mode
+// the local instance has no OpenAI key, so the request must be forwarded to the
+// cloud (which resolves the model id and holds the key) — exactly like
+// chat-completions and anthropic-messages. Without it GPT reasoning never
+// reaches the client in cloud-proxy mode.
+describe('ai-proxy Responses API — cloud-proxy forwarding', () => {
+  const ORIG = {
+    localMode: process.env.SHOGO_LOCAL_MODE,
+    apiKey: process.env.SHOGO_API_KEY,
+    cloudUrl: process.env.SHOGO_CLOUD_URL,
+  }
+
+  beforeAll(() => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    process.env.SHOGO_API_KEY = 'shogo_sk_cloud_test'
+    process.env.SHOGO_CLOUD_URL = 'https://cloud.test'
+  })
+
+  afterAll(() => {
+    if (ORIG.localMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+    else process.env.SHOGO_LOCAL_MODE = ORIG.localMode
+    if (ORIG.apiKey === undefined) delete process.env.SHOGO_API_KEY
+    else process.env.SHOGO_API_KEY = ORIG.apiKey
+    if (ORIG.cloudUrl === undefined) delete process.env.SHOGO_CLOUD_URL
+    else process.env.SHOGO_CLOUD_URL = ORIG.cloudUrl
+  })
+
+  test('forwards a Responses request to the cloud instead of OpenAI', async () => {
+    const res = await postResponses(buildApp(), GPT_UUID)
+    expect(res.status).toBe(200)
+    // Cloud endpoint, not api.openai.com — the cloud resolves the UUID + key.
+    expect(lastFetchUrl).toBe('https://cloud.test/api/ai/v1/responses')
+    const auth = (lastFetchInit?.headers as Record<string, string>)?.['Authorization']
+    expect(auth).toBe('Bearer shogo_sk_cloud_test')
+    // Body passes through unresolved (the cloud owns model resolution).
+    expect(lastForwardedModel()).toBe(GPT_UUID)
   })
 })

@@ -710,11 +710,36 @@ export async function handleClawback(
 export async function approveEligibleCommissions(
   now: Date = new Date(),
 ): Promise<{ approved: number }> {
-  const res = await prisma.affiliateCommission.updateMany({
-    where: { status: 'pending', eligibleAt: { lte: now } },
+  // Referral commissions: flip pending → approved once the refund hold has
+  // elapsed (unchanged behaviour).
+  const referral = await prisma.affiliateCommission.updateMany({
+    where: { status: 'pending', eligibleAt: { lte: now }, source: 'referral' },
     data: { status: 'approved' },
   })
-  return { approved: res.count ?? 0 }
+
+  // Content (CPM) commissions: additionally gated on the affiliate being
+  // admin-approved into the video-creator program. `updateMany` can't filter
+  // on a relation, so resolve the approved affiliate ids first. (Accrual is
+  // already blocked for unapproved affiliates by the poller; this also guards
+  // the case where approval is revoked after some rows already accrued.)
+  const approvedAffiliates = await prisma.affiliate.findMany({
+    where: { contentProgramStatus: 'approved' },
+    select: { id: true },
+  })
+  const approvedIds = approvedAffiliates.map((a) => a.id)
+  const content = approvedIds.length
+    ? await prisma.affiliateCommission.updateMany({
+        where: {
+          status: 'pending',
+          eligibleAt: { lte: now },
+          source: 'content',
+          affiliateId: { in: approvedIds },
+        },
+        data: { status: 'approved' },
+      })
+    : { count: 0 }
+
+  return { approved: (referral.count ?? 0) + (content.count ?? 0) }
 }
 
 // ============================================================================
@@ -730,25 +755,166 @@ export interface PayoutSummary {
   totalCentsPaid: number
 }
 
+/** Outcome of paying (or attempting to pay) a single affiliate. */
+export type PayoutAffiliateResult =
+  | { ok: true; paidCents: number; payoutId: string }
+  | {
+      ok: false
+      reason:
+        | 'local_mode'
+        | 'nothing_owed'
+        | 'below_minimum'
+        | 'unverified_payout'
+        | 'stripe_unavailable'
+        | 'failed'
+      owedCents: number
+      message?: string
+    }
+
+/** Default Stripe client factory (null when STRIPE_SECRET_KEY is unset). */
+function defaultStripeFactory(): Stripe | null {
+  const key = process.env.STRIPE_SECRET_KEY
+  if (!key) return null
+  return new Stripe(key, { apiVersion: '2025-04-30.basil' as any })
+}
+
 /**
- * Group approved commissions per affiliate and pay out via Stripe
- * Connect. Skips affiliates below `SHOGO_AFFILIATE_MIN_PAYOUT_CENTS`
- * or without `payoutStatus === 'verified'`.
+ * Pay ONE affiliate's approved, unpaid commissions out via Stripe Connect.
+ * This is the unit of work behind the (manual, admin-triggered) "Approve &
+ * pay" action and the batch helper below.
  *
- * Sequence per affiliate:
- *   1. Create `AffiliatePayout` row (pending).
+ * Payments are NEVER automatic — there is no scheduled cron that calls this;
+ * a super admin triggers it explicitly per affiliate. By default the batch
+ * minimum is ignored (`minPayoutCents = 0`): the admin is deliberately
+ * choosing to pay whatever is owed.
+ *
+ * Sequence:
+ *   1. Create `AffiliatePayout` row (pending) — gives us an idempotency key.
  *   2. `stripe.transfers.create` — platform balance → connected account.
- *   3. `stripe.payouts.create` (via stripeConnect.triggerPayout) —
- *      connected account → bank.
- *   4. Mark commissions as `paid`, point them at the payout row.
+ *   3. `stripe.payouts.create` — connected account → bank.
+ *   4. Mark commissions `paid`, point them at the payout row.
  *   5. Update affiliate counters.
  *
- * Both Stripe writes use `idempotencyKey: payout.id` so transient
- * failures + retries can never double-pay.
+ * Both Stripe writes use `idempotencyKey: payout.id` so transient failures +
+ * retries can never double-pay.
+ */
+export async function payoutAffiliate(
+  affiliateId: string,
+  now: Date = new Date(),
+  options: {
+    minPayoutCents?: number
+    /** Pre-built client (batch path). `undefined` → build via factory. */
+    stripe?: Stripe | null
+    stripeFactory?: () => Stripe | null
+  } = {},
+): Promise<PayoutAffiliateResult> {
+  if (isLocalMode) return { ok: false, reason: 'local_mode', owedCents: 0 }
+
+  const minPayoutCents = options.minPayoutCents ?? 0
+
+  const groups: any[] = await prisma.affiliateCommission.groupBy({
+    by: ['affiliateId'],
+    where: { affiliateId, status: 'approved', payoutId: null },
+    _sum: { amountCents: true },
+  })
+  const sum = groups[0]?._sum?.amountCents ?? 0
+  if (sum <= 0) return { ok: false, reason: 'nothing_owed', owedCents: 0 }
+  if (sum < minPayoutCents) return { ok: false, reason: 'below_minimum', owedCents: sum }
+
+  const affiliate = await prisma.affiliate.findUnique({ where: { id: affiliateId } })
+  if (!affiliate?.stripeCustomAccountId || affiliate.payoutStatus !== 'verified') {
+    return { ok: false, reason: 'unverified_payout', owedCents: sum }
+  }
+
+  const stripe =
+    options.stripe !== undefined ? options.stripe : (options.stripeFactory ?? defaultStripeFactory)()
+  if (!stripe) {
+    console.warn('[Affiliate] STRIPE_SECRET_KEY unset; cannot pay out')
+    return { ok: false, reason: 'stripe_unavailable', owedCents: sum }
+  }
+
+  // Period covers oldest unpaid commission → now.
+  const oldest = await prisma.affiliateCommission.findFirst({
+    where: { affiliateId, status: 'approved', payoutId: null },
+    orderBy: { createdAt: 'asc' },
+    select: { createdAt: true },
+  })
+  const periodStart = oldest?.createdAt ?? now
+  const periodEnd = now
+
+  // 1. Create the payout row first so we have an idempotency key.
+  const payout = await prisma.affiliatePayout.create({
+    data: { affiliateId, amountCents: sum, status: 'pending', periodStart, periodEnd },
+  })
+
+  try {
+    // 2. Platform balance → connected account.
+    const transfer = await stripe.transfers.create(
+      {
+        amount: sum,
+        currency: 'usd',
+        destination: affiliate.stripeCustomAccountId,
+        transfer_group: payout.id,
+        metadata: { affiliateId, payoutId: payout.id, kind: 'affiliate_commission' },
+      },
+      { idempotencyKey: `${payout.id}:transfer` },
+    )
+
+    // 3. Connected account → bank.
+    const directPayout = await stripe.payouts.create(
+      {
+        amount: sum,
+        currency: 'usd',
+        metadata: { affiliateId, payoutId: payout.id, kind: 'affiliate_commission' },
+      },
+      { stripeAccount: affiliate.stripeCustomAccountId, idempotencyKey: `${payout.id}:payout` },
+    )
+    const stripePayoutId = directPayout.id
+
+    // 4. Mark commissions paid + point at the payout row.
+    await prisma.$transaction(async (tx) => {
+      await tx.affiliateCommission.updateMany({
+        where: { affiliateId, status: 'approved', payoutId: null },
+        data: { status: 'paid', payoutId: payout.id },
+      })
+      await tx.affiliatePayout.update({
+        where: { id: payout.id },
+        data: { status: 'paid', stripeTransferId: transfer.id, stripePayoutId, paidAt: now },
+      })
+      await tx.affiliate.update({
+        where: { id: affiliateId },
+        data: {
+          totalEarningsCents: { increment: sum },
+          totalPaidOutCents: { increment: sum },
+          pendingPayoutCents: { decrement: sum },
+        },
+      })
+    })
+
+    return { ok: true, paidCents: sum, payoutId: payout.id }
+  } catch (err: any) {
+    console.error('[Affiliate] payout failed for', affiliateId, err?.message ?? err)
+    await prisma.affiliatePayout
+      .update({
+        where: { id: payout.id },
+        data: { status: 'failed', failureReason: err?.message ?? String(err) },
+      })
+      .catch(() => undefined)
+    return { ok: false, reason: 'failed', owedCents: sum, message: err?.message ?? String(err) }
+  }
+}
+
+/**
+ * Batch helper: pay every affiliate with approved, unpaid commissions, one at
+ * a time via {@link payoutAffiliate}. Skips affiliates below
+ * `SHOGO_AFFILIATE_MIN_PAYOUT_CENTS` or without `payoutStatus === 'verified'`.
  *
- * Failure isolation: a single affiliate's transfer/payout error
- * leaves the row in `failed` with `failureReason` set, but does NOT
- * abort the batch — other affiliates still get paid.
+ * Failure isolation: a single affiliate's transfer/payout error leaves its
+ * row in `failed` with `failureReason` set but does NOT abort the batch.
+ *
+ * NOTE: no scheduled cron calls this anymore — payouts are admin-triggered
+ * (see `payoutAffiliate`). It remains as a reusable/testable batch primitive
+ * and for any future explicitly-invoked "pay everyone owed" admin action.
  */
 export async function runAffiliatePayouts(
   now: Date = new Date(),
@@ -778,11 +944,9 @@ export async function runAffiliatePayouts(
   summary.candidates = groups.length
   if (groups.length === 0) return summary
 
-  const stripeFactory = options.stripeFactory ?? (() => {
-    const key = process.env.STRIPE_SECRET_KEY
-    if (!key) return null
-    return new Stripe(key, { apiVersion: '2025-04-30.basil' as any })
-  })
+  // Build the Stripe client once for the whole batch. Preserve the original
+  // early-out + warning when no key is configured.
+  const stripeFactory = options.stripeFactory ?? defaultStripeFactory
   const stripe = stripeFactory()
   if (!stripe) {
     console.warn('[Affiliate] STRIPE_SECRET_KEY unset; skipping payouts')
@@ -790,115 +954,18 @@ export async function runAffiliatePayouts(
   }
 
   for (const g of groups) {
-    const affiliateId = g.affiliateId
-    const sum = g._sum?.amountCents ?? 0
-    if (sum < minPayoutCents) {
-      summary.skippedBelowMinimum++
-      continue
-    }
-
-    const affiliate = await prisma.affiliate.findUnique({ where: { id: affiliateId } })
-    if (!affiliate?.stripeCustomAccountId || affiliate.payoutStatus !== 'verified') {
-      summary.skippedUnverifiedPayout++
-      continue
-    }
-
-    // Period covers oldest unpaid commission → now.
-    const oldest = await prisma.affiliateCommission.findFirst({
-      where: { affiliateId, status: 'approved', payoutId: null },
-      orderBy: { createdAt: 'asc' },
-      select: { createdAt: true },
-    })
-    const periodStart = oldest?.createdAt ?? now
-    const periodEnd = now
-
-    // 1. Create the payout row first so we have an idempotency key.
-    const payout = await prisma.affiliatePayout.create({
-      data: {
-        affiliateId,
-        amountCents: sum,
-        status: 'pending',
-        periodStart,
-        periodEnd,
-      },
-    })
-
-    try {
-      // 2. Platform balance → connected account.
-      const transfer = await stripe.transfers.create(
-        {
-          amount: sum,
-          currency: 'usd',
-          destination: affiliate.stripeCustomAccountId,
-          transfer_group: payout.id,
-          metadata: {
-            affiliateId,
-            payoutId: payout.id,
-            kind: 'affiliate_commission',
-          },
-        },
-        { idempotencyKey: `${payout.id}:transfer` },
-      )
-
-      // 3. Connected account → bank. stripeConnect.triggerPayout is keyed
-      //    on CreatorProfile id (marketplace shape) so we can't reuse it
-      //    directly for affiliates; instead we call stripe.payouts.create
-      //    against the affiliate's Connect account id with the same
-      //    `stripeAccount` + `idempotencyKey` invariants triggerPayout uses.
-      const directPayout = await stripe.payouts.create(
-        {
-          amount: sum,
-          currency: 'usd',
-          metadata: {
-            affiliateId,
-            payoutId: payout.id,
-            kind: 'affiliate_commission',
-          },
-        },
-        {
-          stripeAccount: affiliate.stripeCustomAccountId,
-          idempotencyKey: `${payout.id}:payout`,
-        },
-      )
-      const stripePayoutId = directPayout.id
-
-      // 4. Mark commissions paid + point at the payout row.
-      await prisma.$transaction(async (tx) => {
-        await tx.affiliateCommission.updateMany({
-          where: { affiliateId, status: 'approved', payoutId: null },
-          data: { status: 'paid', payoutId: payout.id },
-        })
-        await tx.affiliatePayout.update({
-          where: { id: payout.id },
-          data: {
-            status: 'paid',
-            stripeTransferId: transfer.id,
-            stripePayoutId,
-            paidAt: now,
-          },
-        })
-        await tx.affiliate.update({
-          where: { id: affiliateId },
-          data: {
-            totalEarningsCents: { increment: sum },
-            totalPaidOutCents: { increment: sum },
-            pendingPayoutCents: { decrement: sum },
-          },
-        })
-      })
-
+    const res = await payoutAffiliate(g.affiliateId, now, { minPayoutCents, stripe })
+    if (res.ok) {
       summary.paid++
-      summary.totalCentsPaid += sum
-    } catch (err: any) {
+      summary.totalCentsPaid += res.paidCents
+    } else if (res.reason === 'below_minimum') {
+      summary.skippedBelowMinimum++
+    } else if (res.reason === 'unverified_payout') {
+      summary.skippedUnverifiedPayout++
+    } else if (res.reason === 'failed') {
       summary.failed++
-      console.error('[Affiliate] payout failed for', affiliateId, err?.message ?? err)
-      await prisma.affiliatePayout
-        .update({
-          where: { id: payout.id },
-          data: { status: 'failed', failureReason: err?.message ?? String(err) },
-        })
-        .catch(() => undefined)
     }
+    // nothing_owed / stripe_unavailable / local_mode: no-op (not counted).
   }
 
   return summary

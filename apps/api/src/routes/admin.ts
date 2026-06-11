@@ -12,11 +12,40 @@
 
 import { Hono } from 'hono'
 import { requireSuperAdmin } from '../middleware/super-admin'
+import { requireAdminScope, requireAnyScope } from '../middleware/admin-access'
+import { ADMIN_SCOPES, isAdminScope, normalizeAdminScopes, type AdminScope } from '../lib/admin-scopes'
 import { authMiddleware, requireAuth } from '../middleware/auth'
 import * as analytics from '../services/analytics.service'
 import type { AnalyticsPeriod } from '../services/analytics.service'
 import { resolveModelLabel, resolveModelLabels } from '../services/model-registry.service'
+import {
+  getContentSettings,
+  setContentSettings,
+  getEnsembleDataTokenInfo,
+  setEnsembleDataToken,
+  type ContentSettingsPatch,
+} from '../services/affiliate-content-settings.service'
+import { payoutAffiliate, type PayoutAffiliateResult } from '../services/affiliate.service'
 import { prisma } from '../lib/prisma'
+
+/** Human-readable message for a failed {@link payoutAffiliate} outcome. */
+function payoutReasonMessage(reason: Extract<PayoutAffiliateResult, { ok: false }>['reason']): string {
+  switch (reason) {
+    case 'nothing_owed':
+      return 'No approved, unpaid commissions to pay out.'
+    case 'below_minimum':
+      return 'Owed amount is below the payout minimum.'
+    case 'unverified_payout':
+      return 'Payout setup is not verified for this creator.'
+    case 'stripe_unavailable':
+      return 'Stripe is not configured on this deployment.'
+    case 'local_mode':
+      return 'Payouts run on the cloud, not in local mode.'
+    case 'failed':
+    default:
+      return 'Payout failed.'
+  }
+}
 
 // ============================================================================
 // Admin Analytics Routes
@@ -25,10 +54,71 @@ import { prisma } from '../lib/prisma'
 export function adminRoutes(): Hono {
   const router = new Hono()
 
-  // Apply auth + super admin middleware to all routes
+  // All admin routes require authentication.
   router.use('*', authMiddleware)
   router.use('*', requireAuth)
-  router.use('*', requireSuperAdmin)
+
+  // Scoped authorization. A super_admin passes every check (see
+  // requireAdminScope); partial admins pass only the scopes they hold.
+  //
+  // Sensitive surfaces stay super_admin-only. These are registered *before*
+  // the broad '/analytics/*' scope gate so they short-circuit first: a
+  // scoped analytics admin hitting infra is rejected by requireSuperAdmin
+  // rather than slipping through the analytics:read gate.
+  router.use('/analytics/infra-current', requireSuperAdmin)
+  router.use('/analytics/infra-history', requireSuperAdmin)
+  router.use('/heartbeats', requireSuperAdmin)
+  router.use('/heartbeats/*', requireSuperAdmin)
+  router.use('/affiliates/*', requireSuperAdmin)
+
+  // Assigning admin scopes to a user is itself a privileged action — keep it
+  // super_admin-only so partial admins cannot escalate their own access.
+  router.use('/users/:id/admin-access', requireSuperAdmin)
+
+  // Delegable surfaces, gated by granular scopes. '/creators' is the exact
+  // list path; '/creators/*' covers the per-creator profile detail. Both must
+  // also be deferred by requireSuperAdminUnlessScoped (see
+  // middleware/admin-access.ts isScopeGatedAdminPath) so the generated CRUD
+  // router's blanket super-admin gate doesn't 403 scoped admins first.
+  router.use('/creators', requireAdminScope('creators:read'))
+  router.use('/creators/*', requireAdminScope('creators:read'))
+
+  // Analytics is split across two pages with independent scopes. The broad
+  // entry gate admits any analytics-type scope (so shared endpoints used by
+  // the dashboard — overview, growth, active-users, usage-summary — stay
+  // reachable). The narrower per-path gates below then restrict page-specific
+  // endpoints to the matching scope. `analytics:read` is an umbrella that
+  // passes every gate; super_admin always passes.
+  router.use('/analytics/*', requireAnyScope('analytics:read', 'marketing:read', 'ai:read'))
+
+  // Marketing-only analytics endpoints.
+  for (const p of [
+    '/analytics/funnel',
+    '/analytics/user-activity',
+    '/analytics/template-engagement',
+    '/analytics/source-breakdown',
+    '/analytics/active-users-timeseries',
+    '/analytics/activity-timeseries',
+    '/analytics/ai-digest',
+    '/analytics/ai-digest/*',
+  ]) {
+    router.use(p, requireAnyScope('analytics:read', 'marketing:read'))
+  }
+
+  // AI / engineering-only analytics endpoints.
+  for (const p of [
+    '/analytics/spend-timeseries',
+    '/analytics/quality-timeseries',
+    '/analytics/workspace-activity',
+    '/analytics/tool-calls',
+    '/analytics/chat',
+    '/analytics/usage',
+    '/analytics/usage-log',
+    '/analytics/projects',
+    '/analytics/billing',
+  ]) {
+    router.use(p, requireAnyScope('analytics:read', 'ai:read'))
+  }
 
   // --------------------------------------------------------------------------
   // Platform Analytics (scope-free = platform-wide)
@@ -154,11 +244,115 @@ export function adminRoutes(): Hono {
    */
   router.get('/analytics/usage-summary', async (c) => {
     try {
-      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-      const data = await analytics.getUsageSummary({}, period)
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const page = parseInt(url.searchParams.get('page') || '1', 10)
+      const limit = parseInt(url.searchParams.get('limit') || '25', 10)
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await analytics.getUsageSummary({}, period, { page, limit, excludeInternal })
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Usage summary error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/spend-timeseries - Daily consumption grouped by
+   * model / workspace / user / source (stacked-area chart).
+   */
+  router.get('/analytics/spend-timeseries', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const fromIso = url.searchParams.get('from') || undefined
+      const toIso = url.searchParams.get('to') || undefined
+      const groupBy = (url.searchParams.get('groupBy') || 'model') as 'model' | 'workspace' | 'user' | 'source'
+      const metric = (url.searchParams.get('metric') || 'spend') as 'spend' | 'tokens' | 'requests'
+      const topN = parseInt(url.searchParams.get('topN') || '8', 10)
+
+      const data = await analytics.getSpendTimeseries({}, period, { fromIso, toIso, groupBy, metric, topN })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Spend timeseries error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/activity-timeseries - Combined daily activity metrics
+   * (new users / workspaces / projects, messages, sessions, tool calls).
+   */
+  router.get('/analytics/activity-timeseries', async (c) => {
+    try {
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+      const data = await analytics.getActivityTimeseries({}, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Activity timeseries error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/active-users-timeseries - Daily rolling DAU/WAU/MAU.
+   */
+  router.get('/analytics/active-users-timeseries', async (c) => {
+    try {
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+      const data = await analytics.getActiveUsersTimeseries({}, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Active users timeseries error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/quality-timeseries - Daily cache hit ratio, unit economics,
+   * and agent quality rates.
+   */
+  router.get('/analytics/quality-timeseries', async (c) => {
+    try {
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+      const data = await analytics.getQualityTimeseries({}, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Quality timeseries error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/tool-calls - Tool-call usage and success-rate analytics.
+   */
+  router.get('/analytics/tool-calls', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await analytics.getToolCallAnalytics({}, period, { excludeInternal })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Tool calls analytics error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /analytics/workspace-activity - Paginated per-workspace activity table.
+   */
+  router.get('/analytics/workspace-activity', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const page = parseInt(url.searchParams.get('page') || '1', 10)
+      const limit = parseInt(url.searchParams.get('limit') || '20', 10)
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await analytics.getWorkspaceActivityTable(period, { page, limit, excludeInternal })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Workspace activity error:', error)
       return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
     }
   })
@@ -753,18 +947,57 @@ export function adminRoutes(): Hono {
       return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
     }
 
-    const raw = body?.commissionRateBps
-    let commissionRateBps: number | null
-    if (raw === null) {
-      commissionRateBps = null
-    } else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= 10000) {
-      commissionRateBps = raw
-    } else {
+    // Both overrides are optional; only the fields present in the body are
+    // touched. `commissionRateBps` is the referral-commission override (bps,
+    // 0..10000); `contentCpmCents` is the per-creator content-CPM override
+    // (cents per 1,000 views, >= 0). Pass null on either to clear it and fall
+    // back to the platform default.
+    const data: { commissionRateBps?: number | null; contentCpmCents?: number | null } = {}
+
+    if ('commissionRateBps' in body) {
+      const raw = body.commissionRateBps
+      if (raw === null) {
+        data.commissionRateBps = null
+      } else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= 10000) {
+        data.commissionRateBps = raw
+      } else {
+        return c.json(
+          {
+            error: {
+              code: 'invalid_rate',
+              message: 'commissionRateBps must be null or an integer between 0 and 10000 (basis points)',
+            },
+          },
+          400,
+        )
+      }
+    }
+
+    if ('contentCpmCents' in body) {
+      const raw = body.contentCpmCents
+      if (raw === null) {
+        data.contentCpmCents = null
+      } else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0) {
+        data.contentCpmCents = raw
+      } else {
+        return c.json(
+          {
+            error: {
+              code: 'invalid_cpm',
+              message: 'contentCpmCents must be null or a non-negative integer (cents per 1,000 views)',
+            },
+          },
+          400,
+        )
+      }
+    }
+
+    if (Object.keys(data).length === 0) {
       return c.json(
         {
           error: {
-            code: 'invalid_rate',
-            message: 'commissionRateBps must be null or an integer between 0 and 10000 (basis points)',
+            code: 'bad_request',
+            message: 'Provide commissionRateBps and/or contentCpmCents (number or null).',
           },
         },
         400,
@@ -778,13 +1011,429 @@ export function adminRoutes(): Hono {
       }
       const updated = await prisma.affiliate.update({
         where: { id },
-        data: { commissionRateBps },
-        select: { id: true, userId: true, code: true, status: true, commissionRateBps: true },
+        data,
+        select: {
+          id: true,
+          userId: true,
+          code: true,
+          status: true,
+          commissionRateBps: true,
+          contentCpmCents: true,
+        },
       })
       return c.json({ ok: true, affiliate: updated })
     } catch (error: any) {
       console.error('[Admin] Affiliate rate patch error:', error)
       return c.json({ error: { code: 'affiliate_update_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /affiliates/:id/content-application — approve or reject a creator's
+   * application to the video-creator (content CPM) program. Approval is the
+   * gate for BOTH earning (the hourly poller only accrues for approved
+   * creators) AND payout of content commissions, so rejecting/revoking here
+   * immediately stops further accrual.
+   *
+   * Body: { action: 'approve' | 'reject', reason?: string }
+   */
+  router.post('/affiliates/:id/content-application', async (c) => {
+    const id = c.req.param('id')
+    const auth = c.get('auth')
+    const reviewerId = auth?.userId ?? null
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    }
+    const action = body?.action
+    if (action !== 'approve' && action !== 'reject') {
+      return c.json(
+        { error: { code: 'bad_request', message: "action must be 'approve' or 'reject'" } },
+        400,
+      )
+    }
+    const reason =
+      action === 'reject' && typeof body?.reason === 'string' ? body.reason.slice(0, 500) : null
+
+    try {
+      const existing = await prisma.affiliate.findUnique({
+        where: { id },
+        select: { id: true },
+      })
+      if (!existing) {
+        return c.json({ error: { code: 'affiliate_not_found', message: 'Affiliate not found' } }, 404)
+      }
+      const updated = await prisma.affiliate.update({
+        where: { id },
+        data: {
+          contentProgramStatus: action === 'approve' ? 'approved' : 'rejected',
+          contentReviewedAt: new Date(),
+          contentReviewedBy: reviewerId,
+          contentRejectionReason: reason,
+        },
+        select: {
+          id: true,
+          contentProgramStatus: true,
+          contentReviewedAt: true,
+          contentReviewedBy: true,
+          contentRejectionReason: true,
+        },
+      })
+      return c.json({ ok: true, affiliate: updated })
+    } catch (error: any) {
+      console.error('[Admin] content-application error:', error)
+      return c.json({ error: { code: 'affiliate_update_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /affiliates/payouts/owed — affiliates with approved, unpaid
+   * commissions (money an admin can release). Powers the admin payout queue.
+   * Payouts are never automatic; an admin must trigger each one.
+   */
+  router.get('/affiliates/payouts/owed', async (c) => {
+    try {
+      const groups: any[] = await prisma.affiliateCommission.groupBy({
+        by: ['affiliateId'],
+        where: { status: 'approved', payoutId: null },
+        _sum: { amountCents: true },
+      })
+      const ids = groups.map((g) => g.affiliateId)
+      if (ids.length === 0) return c.json({ items: [] })
+      const owedById = new Map<string, number>(
+        groups.map((g) => [g.affiliateId, g._sum?.amountCents ?? 0]),
+      )
+
+      const affiliates = await prisma.affiliate.findMany({
+        where: { id: { in: ids } },
+        select: {
+          id: true,
+          userId: true,
+          code: true,
+          payoutStatus: true,
+          stripeCustomAccountId: true,
+          user: { select: { email: true, name: true } },
+        },
+      })
+      const items = affiliates
+        .map((a) => ({
+          affiliateId: a.id,
+          userId: a.userId,
+          code: a.code,
+          email: a.user?.email ?? null,
+          name: a.user?.name ?? null,
+          payoutStatus: a.payoutStatus,
+          payoutReady: Boolean(a.stripeCustomAccountId) && a.payoutStatus === 'verified',
+          owedCents: owedById.get(a.id) ?? 0,
+        }))
+        .sort((x, y) => y.owedCents - x.owedCents)
+      return c.json({ items })
+    } catch (error: any) {
+      console.error('[Admin] payouts/owed error:', error)
+      return c.json({ error: { code: 'affiliate_owed_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /affiliates/:id/payout — manually release a single affiliate's
+   * approved, unpaid commissions via Stripe Connect. This is the ONLY way a
+   * payout happens (there is no payout cron). Ignores the batch minimum since
+   * the admin is explicitly choosing to pay.
+   */
+  router.post('/affiliates/:id/payout', async (c) => {
+    const id = c.req.param('id')
+    try {
+      const existing = await prisma.affiliate.findUnique({ where: { id }, select: { id: true } })
+      if (!existing) {
+        return c.json({ error: { code: 'affiliate_not_found', message: 'Affiliate not found' } }, 404)
+      }
+      const result = await payoutAffiliate(id)
+      if (result.ok) {
+        return c.json({ ok: true, paidCents: result.paidCents, payoutId: result.payoutId })
+      }
+      const status =
+        result.reason === 'nothing_owed' || result.reason === 'below_minimum'
+          ? 400
+          : result.reason === 'unverified_payout' || result.reason === 'local_mode'
+            ? 409
+            : result.reason === 'stripe_unavailable'
+              ? 503
+              : 500
+      return c.json(
+        {
+          error: {
+            code: result.reason,
+            message: result.message ?? payoutReasonMessage(result.reason),
+            owedCents: result.owedCents,
+          },
+        },
+        status,
+      )
+    } catch (error: any) {
+      console.error('[Admin] affiliate payout error:', error)
+      return c.json({ error: { code: 'affiliate_payout_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // Creator Stats (creators:read scope)
+  // --------------------------------------------------------------------------
+
+  // --------------------------------------------------------------------------
+  // Admin access assignment (super_admin only — see gate above)
+  // --------------------------------------------------------------------------
+
+  /**
+   * GET /admin-scopes - The catalog of assignable admin scopes (for building
+   * the assignment UI).
+   */
+  router.get('/admin-scopes', async (c) => {
+    return c.json({ ok: true, data: ADMIN_SCOPES })
+  })
+
+  /**
+   * PATCH /users/:id/admin-access - Set a user's granular admin scopes.
+   * Body: { scopes: string[] }. Scopes are validated against the catalog;
+   * an empty array revokes all partial admin access. A user's platform
+   * `role` (user vs super_admin) is managed separately.
+   */
+  router.patch('/users/:id/admin-access', async (c) => {
+    const id = c.req.param('id')
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    const raw = body?.scopes
+    if (!Array.isArray(raw)) {
+      return c.json(
+        { error: { code: 'invalid_scopes', message: 'scopes must be an array of scope ids' } },
+        400,
+      )
+    }
+    const invalid = raw.filter((s: unknown) => !isAdminScope(s))
+    if (invalid.length > 0) {
+      return c.json(
+        {
+          error: {
+            code: 'invalid_scopes',
+            message: `Unknown scope(s): ${invalid.join(', ')}`,
+          },
+        },
+        400,
+      )
+    }
+    const scopes = [...new Set(raw as AdminScope[])]
+
+    try {
+      const existing = await prisma.user.findUnique({ where: { id }, select: { id: true } })
+      if (!existing) {
+        return c.json({ error: { code: 'user_not_found', message: 'User not found' } }, 404)
+      }
+      const updated = await prisma.user.update({
+        where: { id },
+        data: { adminScopes: scopes },
+        select: { id: true, role: true, adminScopes: true },
+      })
+      return c.json({
+        ok: true,
+        data: {
+          id: updated.id,
+          role: updated.role,
+          adminScopes: normalizeAdminScopes(updated.adminScopes),
+        },
+      })
+    } catch (error: any) {
+      console.error('[Admin] Set admin access error:', error)
+      return c.json({ error: { code: 'admin_access_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /creators - Marketplace creators with denormalized marketplace metrics
+   * joined to their lifetime platform usage spend.
+   */
+  router.get('/creators', async (c) => {
+    try {
+      const data = await analytics.getCreatorStats()
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Creator stats error:', error)
+      return c.json({ error: { code: 'creators_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /creators/:userId - Full per-creator profile: marketplace stats,
+   * published listings, lifetime platform spend, and (when enrolled) the
+   * affiliate/commission 360. Keyed by the creator's userId. 404 when the
+   * user has no CreatorProfile.
+   */
+  router.get('/creators/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId')
+      const data = await analytics.getCreatorProfileDetail(userId)
+      if (!data) {
+        return c.json({ error: { code: 'not_found', message: 'Creator not found' } }, 404)
+      }
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Creator profile error:', error)
+      return c.json({ error: { code: 'creator_profile_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // Affiliate content-CPM settings (super-admin; gated by /affiliate-content/*)
+  //
+  // The whole content-CPM feature (Instagram / TikTok view tracking) is
+  // optional and DB-controlled here rather than via env vars. `enabled` is the
+  // master toggle; the rest are the polling/payout knobs. The EnsembleData API
+  // token is a secret, stored encrypted and surfaced only as a configured/mask
+  // flag.
+  // --------------------------------------------------------------------------
+
+  /** GET /affiliate-content/settings — current settings + token status. */
+  router.get('/affiliate-content/settings', async (c) => {
+    const [settings, token] = await Promise.all([
+      getContentSettings({ force: true }),
+      getEnsembleDataTokenInfo(),
+    ])
+    return c.json({ ok: true, settings, ensembleDataToken: token })
+  })
+
+  /**
+   * PUT /affiliate-content/settings — update any subset of the settings.
+   * Numeric fields accept null to clear (revert to default). `ensembleDataToken`
+   * (when present) is stored encrypted; pass '' or null to clear it.
+   */
+  router.put('/affiliate-content/settings', async (c) => {
+    const auth = c.get('auth')
+    const userId = auth?.userId || 'unknown'
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    if (body?.provider !== undefined && body.provider !== 'ensembledata' && body.provider !== 'official') {
+      return c.json(
+        { error: { code: 'invalid_provider', message: "provider must be 'ensembledata' or 'official'" } },
+        400,
+      )
+    }
+    if (body?.enabled !== undefined && typeof body.enabled !== 'boolean') {
+      return c.json({ error: { code: 'invalid_enabled', message: 'enabled must be a boolean' } }, 400)
+    }
+
+    const patch: ContentSettingsPatch = {}
+    if (body?.enabled !== undefined) patch.enabled = body.enabled
+    if (body?.provider !== undefined) patch.provider = body.provider
+    for (const field of [
+      'cpmCents',
+      'cpmCentsInstagram',
+      'cpmCentsTiktok',
+      'holdDays',
+      'postsPerAccount',
+      'maxViewsPerPostPerRun',
+    ] as const) {
+      if (body?.[field] !== undefined) patch[field] = body[field]
+    }
+
+    try {
+      const settings = await setContentSettings(patch, userId)
+      if (body?.ensembleDataToken !== undefined) {
+        await setEnsembleDataToken(
+          typeof body.ensembleDataToken === 'string' ? body.ensembleDataToken : null,
+          userId,
+        )
+      }
+      const token = await getEnsembleDataTokenInfo()
+      return c.json({ ok: true, settings, ensembleDataToken: token })
+    } catch (error: any) {
+      console.error('[Admin] Affiliate content settings update error:', error)
+      return c.json({ error: { code: 'settings_update_failed', message: error.message } }, 400)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // Creator Stats (creators:read scope)
+  // --------------------------------------------------------------------------
+
+  // --------------------------------------------------------------------------
+  // Admin access assignment (super_admin only — see gate above)
+  // --------------------------------------------------------------------------
+
+  /**
+   * GET /admin-scopes - The catalog of assignable admin scopes (for building
+   * the assignment UI).
+   */
+  router.get('/admin-scopes', async (c) => {
+    return c.json({ ok: true, data: ADMIN_SCOPES })
+  })
+
+  /**
+   * PATCH /users/:id/admin-access - Set a user's granular admin scopes.
+   * Body: { scopes: string[] }. Scopes are validated against the catalog;
+   * an empty array revokes all partial admin access. A user's platform
+   * `role` (user vs super_admin) is managed separately.
+   */
+  router.patch('/users/:id/admin-access', async (c) => {
+    const id = c.req.param('id')
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    const raw = body?.scopes
+    if (!Array.isArray(raw)) {
+      return c.json(
+        { error: { code: 'invalid_scopes', message: 'scopes must be an array of scope ids' } },
+        400,
+      )
+    }
+    const invalid = raw.filter((s: unknown) => !isAdminScope(s))
+    if (invalid.length > 0) {
+      return c.json(
+        {
+          error: {
+            code: 'invalid_scopes',
+            message: `Unknown scope(s): ${invalid.join(', ')}`,
+          },
+        },
+        400,
+      )
+    }
+    const scopes = [...new Set(raw as AdminScope[])]
+
+    try {
+      const existing = await prisma.user.findUnique({ where: { id }, select: { id: true } })
+      if (!existing) {
+        return c.json({ error: { code: 'user_not_found', message: 'User not found' } }, 404)
+      }
+      const updated = await prisma.user.update({
+        where: { id },
+        data: { adminScopes: scopes },
+        select: { id: true, role: true, adminScopes: true },
+      })
+      return c.json({
+        ok: true,
+        data: {
+          id: updated.id,
+          role: updated.role,
+          adminScopes: normalizeAdminScopes(updated.adminScopes),
+        },
+      })
+    } catch (error: any) {
+      console.error('[Admin] Set admin access error:', error)
+      return c.json({ error: { code: 'admin_access_failed', message: error.message } }, 500)
     }
   })
 

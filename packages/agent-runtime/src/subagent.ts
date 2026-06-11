@@ -542,6 +542,8 @@ import {
   escalateModel,
   buildAutoTierMap,
   formatRoutingLog,
+  autoTierIds,
+  autoTierProviderHints,
   type RoutingDecision,
   type ModelRouterOptions,
   type SpawnClassificationInput,
@@ -972,8 +974,9 @@ export async function runSubagent(
   let routerOptions: ModelRouterOptions | undefined
 
   const useAutoRouting = parentCtx.autoRouting && !config.modelTier && !config.model
+  const autoProviderHints = autoTierProviderHints(parentCtx.autoTierOverride)
   if (useAutoRouting) {
-    const autoTiers = buildAutoTierMap()
+    const autoTiers = buildAutoTierMap(autoTierIds(parentCtx.autoTierOverride))
     routerOptions = { ceilingModel: autoTiers.premium, availableModels: autoTiers }
     const classInput: SpawnClassificationInput = {
       prompt,
@@ -997,7 +1000,9 @@ export async function runSubagent(
   try { callbacks?.onModelResolved?.(model) } catch { /* non-fatal */ }
 
   const runOnce = async (runModel: string): Promise<SubagentResult> => {
-    const runProvider = useAutoRouting ? inferProviderFromModel(runModel, provider) : provider
+    const runProvider = useAutoRouting
+      ? (autoProviderHints[runModel] ?? inferProviderFromModel(runModel, provider))
+      : provider
     const result = await runAgentLoop({
       provider: runProvider,
       model: runModel,

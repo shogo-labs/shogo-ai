@@ -178,6 +178,14 @@ export interface RuntimeCheckResults {
   canvasCompileErrors: string[]
   /** Vite build readiness — template files + deps present. null = check not run. */
   viteBuildReadiness: ViteBuildReadiness | null
+  /** Per-route record counts from the initial list GET (captured before the check's own POST). */
+  recordCounts?: Record<string, number>
+  /** Sum of recordCounts — residual rows the agent's own run left behind (leak detection). */
+  residualRecordCount?: number
+  /** Whether the preview/runtime port answered GET / with status < 500. null = not probed. */
+  previewReachable?: boolean | null
+  /** Whether an unauthenticated request to the tenant-probe route was rejected (401/403). null = not probed. */
+  tenantIsolationOk?: boolean | null
   errors: string[]
 }
 
@@ -247,6 +255,14 @@ export interface EvalResult {
   runtimeWarnings?: string[]
   /** Per-section prompt token breakdown from the first turn. */
   promptBreakdown?: PromptBreakdown
+  /**
+   * Gateway quality signals from the final evaluated turn's `data-usage`
+   * frame. Captured by the runner so evals can assert on loop/iteration/empty
+   * outcomes that are otherwise invisible (the runner used to drop these).
+   */
+  loopDetected?: boolean
+  hitMaxTurns?: boolean
+  responseEmpty?: boolean
 }
 
 export interface CriterionResult {
@@ -273,6 +289,8 @@ export interface EvalMetrics {
   successfulToolCalls: number
   failedToolCalls: number
   iterations: number
+  /** Agent-loop iterations reported by the gateway on the final turn's data-usage frame. */
+  gatewayIterations?: number
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
   timing: { totalMs: number }
   /** Docker container CPU/memory stats collected during the eval run. */

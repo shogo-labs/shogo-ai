@@ -21,7 +21,8 @@ import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
-import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
+import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
+import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded } from '@shogo-ai/sdk/generators'
 import {
   commitBuildOutputAsync,
   cleanupStagingOutput,
@@ -719,6 +720,17 @@ export class PreviewManager {
   private hasApiServer: boolean | null = null
   private regenerating = false
   private pendingSchemaChange = false
+  // In-flight pool pre-warm (see `prewarm()`). Memoized so repeated calls
+  // join the same run, and awaited at the top of `backgroundSetup()` so an
+  // assign that lands mid-prewarm reuses its artifacts instead of racing a
+  // second prisma generate / codegen against it.
+  private prewarmPromise: Promise<void> | null = null
+  // When true, the schema watcher defers regen instead of acting on a
+  // change. Used by `shogo push` (SDK) to run prisma generate + db push
+  // itself without racing a concurrent watcher-driven restart (the classic
+  // EADDRINUSE source). Resumed via resumeWatchers(), which flushes any
+  // change that landed while paused.
+  private watchersPaused = false
   private lastGenerateError: string | null = null
   // Surfaced via getStatus() so external observers (the API's import
   // bootstrap bridge, debug UIs, etc.) can tell "install/prisma succeeded"
@@ -1170,8 +1182,99 @@ export class PreviewManager {
    * Returns false on any failure; the error message is exposed via
    * `apiLastGenerateError` for the caller to surface to the agent.
    */
+  /**
+   * Guard the protected `prisma/schema.prisma` header against a stray
+   * `write_file` that downgrades it — most damagingly an agent rewriting the
+   * whole schema from a Prisma-5/6 memory and re-introducing
+   * `url = env("DATABASE_URL")` in the datasource (a hard `P1012` error on
+   * Prisma 7) or the legacy `prisma-client-js` generator. Runs immediately
+   * before the schema is consumed by `shogo generate` / `prisma db push`, so a
+   * downgrade never reaches Prisma. The agent's models are preserved; only the
+   * generator/datasource header is restored (and re-wrapped in SHOGO:CUSTOM
+   * markers). No-op when the header is already Prisma-7-correct.
+   */
+  private healSchemaHeader(): boolean {
+    const schemaPath = join(this.bundlerCwd, 'prisma', 'schema.prisma')
+    if (!existsSync(schemaPath)) return false
+    let schema: string
+    try {
+      schema = readFileSync(schemaPath, 'utf-8')
+    } catch {
+      return false
+    }
+    if (!headerIsDowngraded(schema)) return false
+
+    let repaired: string
+    try {
+      repaired = enforceSchemaHeader(schema)
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] schema-header guard failed: ${err?.message ?? err}`)
+      return false
+    }
+    if (repaired === schema) return false
+
+    try {
+      writeFileSync(schemaPath, repaired, 'utf-8')
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] schema-header guard write failed: ${err?.message ?? err}`)
+      return false
+    }
+    // Keep the watcher from treating our own corrective write as a new edit.
+    this.lastSchemaHash = createHash('sha1').update(repaired, 'utf-8').digest('hex')
+    console.warn(
+      `[${LOG_PREFIX}] Restored protected prisma/schema.prisma header ` +
+        `(stripped datasource url / legacy generator provider that would break Prisma 7).`,
+    )
+    return true
+  }
+
+  /**
+   * Sibling of {@link healSchemaHeader} for `prisma.config.ts`. When a stray
+   * write dropped the Prisma-7-required `datasource.url` (e.g. moved it under a
+   * `migrate`/`async url()` resolver — the shape weaker models produce), restore
+   * the canonical config so `prisma db push` / `generate` can resolve the
+   * datasource URL. `prisma.config.ts` isn't watched, so no hash bookkeeping is
+   * needed; the heal is idempotent and only writes when the config is broken.
+   */
+  private healPrismaConfig(): boolean {
+    const configPath = join(this.bundlerCwd, 'prisma.config.ts')
+    if (!existsSync(configPath)) return false
+    let config: string
+    try {
+      config = readFileSync(configPath, 'utf-8')
+    } catch {
+      return false
+    }
+    if (!configIsDowngraded(config)) return false
+
+    let repaired: string
+    try {
+      repaired = enforcePrismaConfig(config)
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] prisma-config guard failed: ${err?.message ?? err}`)
+      return false
+    }
+    if (repaired === config) return false
+
+    try {
+      writeFileSync(configPath, repaired, 'utf-8')
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] prisma-config guard write failed: ${err?.message ?? err}`)
+      return false
+    }
+    console.warn(
+      `[${LOG_PREFIX}] Restored prisma.config.ts datasource.url ` +
+        `(agent wrote a config without datasource.url; prisma db push would fail).`,
+    )
+    return true
+  }
+
   private async runShogoGenerate(): Promise<boolean> {
     const cwd = this.bundlerCwd
+    // Protect the generator+datasource header before the codegen pipeline
+    // (which runs `prisma generate`) reads the schema.
+    this.healSchemaHeader()
+    this.healPrismaConfig()
     const pkgJsonPath = join(cwd, 'package.json')
     if (!existsSync(pkgJsonPath)) return false
 
@@ -1283,7 +1386,12 @@ export class PreviewManager {
     }
     console.log(`[${LOG_PREFIX}] Running ${cmdLabel} at ${cwd}...`)
 
-    return await new Promise<boolean>((resolveResult) => {
+    // Preserve any SHOGO:CUSTOM regions in server.tsx (e.g. custom tenant
+    // middleware) across this regeneration. Captured before the overwrite,
+    // re-applied after a successful generate. No-op when there are none.
+    const preservedRegions = captureServerCustomRegions(cwd)
+
+    const generateOk = await new Promise<boolean>((resolveResult) => {
       // Use async spawn rather than execSync. The runtime's startup path
       // already drives a vite watcher, an LSP server, and the agent
       // gateway concurrently — blocking the event loop with execSync
@@ -1339,6 +1447,9 @@ export class PreviewManager {
         }
       })
     })
+
+    if (generateOk) reapplyServerCustomRegions(preservedRegions)
+    return generateOk
   }
 
   /**
@@ -1379,7 +1490,8 @@ export class PreviewManager {
     try {
       this.schemaWatcher = watch(prismaDir, (_event, filename) => {
         if (filename !== 'schema.prisma') return
-        if (this.regenerating) {
+        if (this.regenerating || this.watchersPaused) {
+          // Defer: resumeWatchers() (or the end of regen) will flush it.
           this.pendingSchemaChange = true
           return
         }
@@ -1407,6 +1519,34 @@ export class PreviewManager {
     if (this.schemaWatcher) {
       this.schemaWatcher.close()
       this.schemaWatcher = null
+    }
+  }
+
+  /**
+   * Pause watcher-driven regeneration/restart. Used by `shogo push` so an
+   * external prisma generate + db push doesn't race a concurrent
+   * watcher-triggered restart (which leaks the API port → EADDRINUSE).
+   */
+  pauseWatchers(): void {
+    this.watchersPaused = true
+    if (this.schemaTimer) {
+      clearTimeout(this.schemaTimer)
+      this.schemaTimer = null
+    }
+  }
+
+  /**
+   * Resume watcher-driven regeneration. If a schema change landed while
+   * paused, flush it now (re-baselining first so an unchanged file is a
+   * no-op).
+   */
+  resumeWatchers(): void {
+    if (!this.watchersPaused) return
+    this.watchersPaused = false
+    if (this.pendingSchemaChange && !this.regenerating) {
+      this.pendingSchemaChange = false
+      this.lastSchemaHash = this.computeSchemaHash()
+      void this.handleSchemaChange()
     }
   }
 
@@ -1581,8 +1721,86 @@ export class PreviewManager {
     }
   }
 
+  /**
+   * Pool pre-warm: run the project-INDEPENDENT heavy setup (deps install,
+   * `prisma generate` + `db push`, and code generation) against the seeded
+   * runtime template while the pod is still unassigned, so the post-assign
+   * `start()` finds those artifacts already on disk and skips straight to
+   * spawning the API sidecar (~5s) instead of paying the full ~20-30s
+   * pipeline. This is what lets a warm pod surface "Project Ready" within a
+   * few seconds instead of sitting on "Starting API server…".
+   *
+   * Deliberately does NOT spawn the persistent API server or flip `started`:
+   *  - `start()` (run from `initializeEssentials` on `/pool/assign`) keeps
+   *    ownership of the actual serving lifecycle, so its "if needed" guards
+   *    still correctly re-run install/prisma/build for an EXISTING project
+   *    whose S3-restored workspace differs from the template. A pre-spawned
+   *    sidecar would otherwise serve stale template content / a stale-env DB.
+   *  - the sidecar is spawned post-assign so it inherits the project's env
+   *    (PROJECT_ID, tokens, SHOGO_API_URL) instead of the pool placeholder.
+   *
+   * Memoized + best-effort + idempotent: any failure just means the assign
+   * path pays the normal cost, and a no-op once the preview has started.
+   */
+  prewarm(): Promise<void> {
+    if (this.prewarmPromise) return this.prewarmPromise
+    this.prewarmPromise = this._doPrewarm()
+    return this.prewarmPromise
+  }
+
+  private async _doPrewarm(): Promise<void> {
+    if (this.started) return
+    const bundlerCwd = this.resolveBundlerCwd()
+    if (!existsSync(join(bundlerCwd, 'package.json'))) {
+      console.log(`[${LOG_PREFIX}] Pool pre-warm: no package.json in ${bundlerCwd} — skipping`)
+      return
+    }
+    if (this.resolveDevServer() === 'none') {
+      console.log(`[${LOG_PREFIX}] Pool pre-warm: devServer=none — skipping`)
+      return
+    }
+
+    const timings: Record<string, number> = {}
+    try {
+      console.log(`[${LOG_PREFIX}] Pool pre-warm: install + prisma + codegen (unassigned pod)`)
+      await this.installDepsIfNeeded(timings)
+      await this.runPrismaIfNeeded(timings)
+      // Pre-generate `server.tsx` + `src/generated/` too, so the post-assign
+      // `startApiServer()` skips its on-first-boot codegen and just spawns.
+      if (existsSync(join(bundlerCwd, 'prisma', 'schema.prisma'))) {
+        await this.runShogoGenerate()
+      }
+      console.log(`[${LOG_PREFIX}] Pool pre-warm complete:`, JSON.stringify(timings))
+    } catch (err: any) {
+      console.error(
+        `[${LOG_PREFIX}] Pool pre-warm failed (assign will pay full cost):`,
+        err?.message ?? err,
+      )
+    } finally {
+      // Pre-warm only seeds on-disk artifacts; it must not leave the manager
+      // looking like it's mid-build. `start()` owns the real phase machine.
+      if (!this.started) this._phase = 'idle'
+    }
+  }
+
   private async backgroundSetup(timings: Record<string, number>): Promise<void> {
+    // Captured before awaiting any in-flight pre-warm below: `start()` set
+    // `_phase = 'ready'` synchronously for a prebuilt dist, and we don't want
+    // a concurrent pre-warm's transient prisma/build phase mutations to flip
+    // this decision.
     const startedWithPrebuiltDist = this._phase === 'ready'
+
+    // If a pool pre-warm is still in flight (an assign that landed before the
+    // unassigned pod finished pre-warming), let it settle first so we reuse
+    // its prisma client / dev.db / generated server.tsx instead of racing a
+    // second generate against it.
+    if (this.prewarmPromise) {
+      try {
+        await this.prewarmPromise
+      } catch {
+        /* best-effort: prewarm logs its own failure */
+      }
+    }
 
     await this.installDepsIfNeeded(timings)
     await this.runPrismaIfNeeded(timings)
@@ -1937,6 +2155,12 @@ export class PreviewManager {
     const cwd = this.bundlerCwd
     const prismaSchema = join(cwd, 'prisma', 'schema.prisma')
     if (!existsSync(prismaSchema)) return
+
+    // Restore the protected header before any Prisma CLI reads the schema, so a
+    // stray write_file that re-added a Prisma-6 datasource url can't break
+    // `prisma generate` / `db push`. Same for prisma.config.ts (datasource.url).
+    this.healSchemaHeader()
+    this.healPrismaConfig()
 
     const prismaClientExists = this.prismaClientDirCandidates(cwd).some((p) => existsSync(p))
     if (prismaClientExists) {
@@ -2495,8 +2719,19 @@ export class PreviewManager {
 
     // Make sure the port is actually free before we spawn — a previous
     // run may have leaked a process or had its EADDRINUSE handler skip
-    // cleanup. `forceKillPort()` no-ops when nothing is listening.
-    await this.waitForPortRelease()
+    // cleanup. The schema-change and sync() restart paths reach us via
+    // startApiServer() WITHOUT a preceding forceKillPort() (unlike
+    // restartApiServerOnly/handleCrash), so if the old sidecar is slow to
+    // release the port we'd otherwise spawn straight into EADDRINUSE and
+    // bounce through the crash handler — surfacing as sustained /api/* 503s.
+    // Escalate to a force-kill instead of waiting-then-spawning blindly.
+    if (!(await this.isPortFree())) {
+      await this.waitForPortRelease()
+      if (!(await this.isPortFree())) {
+        await this.forceKillPort()
+        await this.waitForPortRelease()
+      }
+    }
 
     // Each fresh spawn is also a fresh chance to recover from a crash
     // loop; the running counter only matters across consecutive failures

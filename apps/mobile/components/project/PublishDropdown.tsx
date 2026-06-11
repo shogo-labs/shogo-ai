@@ -321,8 +321,12 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
             )}
           </View>
 
-          {/* Custom domains — only meaningful once the app is published */}
-          {isPublished && <CustomDomainsSection projectId={projectId} />}
+          {/* Custom domains — only meaningful once the app is published.
+              `http` is passed down because this dropdown renders inside a
+              gluestack Popover whose overlay is teleported outside the
+              SDKDomainProvider, so the section can't resolve useDomainHttp()
+              on its own. */}
+          {isPublished && <CustomDomainsSection projectId={projectId} http={http} />}
 
           {/* Error */}
           {error && (

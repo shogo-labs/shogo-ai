@@ -67,6 +67,60 @@ export interface AffiliateDownlineNode {
   createdAt: string
 }
 
+export type SocialPlatform = 'instagram' | 'tiktok'
+export type SocialVerificationStatus = 'pending' | 'verified' | 'rejected'
+
+export interface AffiliateSocialAccount {
+  id: string
+  platform: SocialPlatform
+  handle: string
+  verificationStatus: SocialVerificationStatus
+  verificationCode: string
+  providerUserId: string | null
+  verifiedAt: string | null
+  lastPolledAt: string | null
+  lastError: string | null
+  createdAt: string
+}
+
+export interface AffiliateContentPost {
+  id: string
+  platform: SocialPlatform
+  providerPostId: string
+  url: string | null
+  caption: string | null
+  postedAt: string | null
+  lastViews: number
+  paidViews: number
+  lastLikes: number
+  lastComments: number
+  lastShares: number
+  lastPolledAt: string | null
+}
+
+export type ContentProgramStatus = 'none' | 'pending' | 'approved' | 'rejected'
+
+export interface AffiliateContentSummary {
+  accounts: AffiliateSocialAccount[]
+  posts: AffiliateContentPost[]
+  totals: {
+    posts: number
+    lifetimeViews: number
+    paidViews: number
+    pendingCents: number
+    approvedCents: number
+    paidCents: number
+  }
+  cpmCents: { instagram: number; tiktok: number }
+  /**
+   * Video-creator program application gate. Earning AND payout of content
+   * commissions require `approved`. Defaults to `none` for older backends.
+   */
+  programStatus: ContentProgramStatus
+  appliedAt: string | null
+  rejectionReason: string | null
+}
+
 export const affiliateApi = {
   async me(http: HttpClient): Promise<
     | { enrolled: false }
@@ -119,9 +173,66 @@ export const affiliateApi = {
     return res.data ?? { onboardUrl: '' }
   },
 
-  async submitPayoutDetails(http: HttpClient, body: Record<string, unknown>) {
-    const res = await http.post<any>('/api/affiliates/me/stripe-connect/details', body)
+  async getConnectStatus(
+    http: HttpClient,
+  ): Promise<{ payoutStatus: string | null; onboarded: boolean }> {
+    const res = await http.get<any>('/api/affiliates/me/stripe-connect/status')
+    return res.data ?? { payoutStatus: null, onboarded: false }
+  },
+
+  // --- Content-CPM: social handles + view dashboard ------------------------
+
+  async listSocialAccounts(http: HttpClient): Promise<{ accounts: AffiliateSocialAccount[] }> {
+    const res = await http.get<any>('/api/affiliates/me/social-accounts')
+    return res.data ?? { accounts: [] }
+  },
+
+  async addSocialAccount(
+    http: HttpClient,
+    body: { platform: SocialPlatform; handle: string },
+  ): Promise<{ ok: boolean; account?: AffiliateSocialAccount; error?: any }> {
+    const res = await http.post<any>('/api/affiliates/me/social-accounts', body)
     return res.data
+  },
+
+  async verifySocialAccount(
+    http: HttpClient,
+    id: string,
+  ): Promise<{ ok: boolean; verified?: boolean; account?: AffiliateSocialAccount; error?: any }> {
+    const res = await http.post<any>(`/api/affiliates/me/social-accounts/${encodeURIComponent(id)}/verify`, {})
+    return res.data
+  },
+
+  async removeSocialAccount(http: HttpClient, id: string): Promise<{ ok: boolean }> {
+    const res = await http.delete<any>(`/api/affiliates/me/social-accounts/${encodeURIComponent(id)}`)
+    return res.data ?? { ok: false }
+  },
+
+  async getContent(http: HttpClient): Promise<AffiliateContentSummary> {
+    const res = await http.get<any>('/api/affiliates/me/content')
+    return (
+      res.data ?? {
+        accounts: [],
+        posts: [],
+        totals: { posts: 0, lifetimeViews: 0, paidViews: 0, pendingCents: 0, approvedCents: 0, paidCents: 0 },
+        cpmCents: { instagram: 0, tiktok: 0 },
+        programStatus: 'none',
+        appliedAt: null,
+        rejectionReason: null,
+      }
+    )
+  },
+
+  /**
+   * Apply to the video-creator (content CPM) program. Requires at least one
+   * connected + verified social handle. Returns the new program status
+   * (`pending` on success) or an error (e.g. `no_verified_account`).
+   */
+  async applyContentProgram(
+    http: HttpClient,
+  ): Promise<{ ok: boolean; programStatus?: ContentProgramStatus; error?: any }> {
+    const res = await http.post<any>('/api/affiliates/me/content/apply', {})
+    return res.data ?? { ok: false }
   },
 }
 

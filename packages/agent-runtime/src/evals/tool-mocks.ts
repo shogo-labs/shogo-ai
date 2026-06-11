@@ -257,11 +257,11 @@ export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
       toolCount: 5,
       connected: true,
       authStatus: 'active',
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_UPDATE_ISSUE', 'GITHUB_SEARCH_ISSUES', 'GITHUB_GET_ISSUE'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_UPDATE_ISSUE', 'GITHUB_SEARCH_ISSUES', 'GITHUB_GET_ISSUE'],
       message: 'Installed github with 5 tool(s). Auth is active — connected and ready.',
     },
   },
-  GITHUB_LIST_ISSUES: {
+  GITHUB_LIST_REPOSITORY_ISSUES: {
     type: 'static',
     description: 'List issues in a GitHub repository. Returns an array of issues with title, labels, assignee, and state.',
     paramKeys: ['owner', 'repo', 'state', 'labels', 'per_page'],
@@ -663,11 +663,11 @@ export const PR_REVIEW_MOCKS: ToolMockMap = {
       toolCount: 6,
       connected: true,
       authStatus: 'active',
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_CREATE_ISSUE', 'GITHUB_UPDATE_ISSUE', 'GITHUB_CREATE_PULL_REQUEST_REVIEW', 'GITHUB_GET_PULL_REQUEST'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_CREATE_ISSUE', 'GITHUB_UPDATE_ISSUE', 'GITHUB_CREATE_PULL_REQUEST_REVIEW', 'GITHUB_GET_PULL_REQUEST'],
       message: 'Installed github with 6 tool(s). Auth is active — connected and ready.',
     },
   },
-  GITHUB_LIST_ISSUES: PR_PATTERN_SPEC,
+  GITHUB_LIST_REPOSITORY_ISSUES: PR_PATTERN_SPEC,
   GITHUB_LIST_PULL_REQUESTS: PR_PATTERN_SPEC,
   GITHUB_CREATE_PULL_REQUEST_REVIEW: {
     type: 'static',
@@ -1691,12 +1691,12 @@ export const COMPOSIO_PREFERENCE_MOCKS: ToolMockMap = {
       server: 'composio',
       integration: 'github',
       toolCount: 3,
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_LIST_PULL_REQUESTS'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_LIST_PULL_REQUESTS'],
       authStatus: 'active',
       message: 'Installed github with 3 tool(s). Auth is active.',
     },
   },
-GITHUB_LIST_ISSUES: {
+GITHUB_LIST_REPOSITORY_ISSUES: {
     type: 'static',
     description: 'List issues in a repository.',
     paramKeys: ['repo', 'state'],
@@ -2111,12 +2111,12 @@ export const REAL_DATA_GITHUB_ISSUES_MOCKS: ToolMockMap = {
       server: 'composio',
       integration: 'github',
       toolCount: 3,
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_GET_ISSUE', 'GITHUB_CREATE_ISSUE'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_GET_ISSUE', 'GITHUB_CREATE_ISSUE'],
       authStatus: 'active',
       message: 'Installed github with 3 tool(s). Auth is active.',
     },
   },
-GITHUB_LIST_ISSUES: {
+GITHUB_LIST_REPOSITORY_ISSUES: {
     type: 'static',
     description: 'List issues in a repository.',
     paramKeys: ['repo', 'state'],
@@ -2256,6 +2256,163 @@ export const REAL_DATA_GOOGLE_SHEETS_MOCKS: ToolMockMap = {
         ],
       },
       successful: true,
+    },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Truncated Google Doc → Drive-export fallback (P0 reproduction)
+//
+// GOOGLEDOCS_GET_DOCUMENT_BY_ID returns only the *opening* of a long doc and
+// stops mid-section — the concluding "FINAL DECISION" paragraph (the unique
+// tail the user asked for) is absent. The agent must notice the content is
+// incomplete and fall back to GOOGLEDRIVE_DOWNLOAD_FILE, which returns the
+// full plain-text export including the tail sentence.
+//
+// Pre-fix: the agent trusts the truncated Docs payload and answers without the
+// final decision. Post-fix (structured truncation signal + Docs→Drive export
+// guidance) it downloads the full file and reports HELIOTROPE-7.
+// ---------------------------------------------------------------------------
+
+/** Unique sentence that exists ONLY in the full Drive export, never in the truncated Docs payload. */
+export const TRUNCATED_DOCS_TAIL =
+  'FINAL DECISION: we are migrating to the Penrose architecture in Q3 — codename HELIOTROPE-7.'
+
+const TRUNCATED_DOCS_OPENING = [
+  'Architecture Review — Persistence Layer (CONFIDENTIAL)',
+  '',
+  '1. Background',
+  'Our current storage tier has scaled past its original design envelope. Read',
+  'amplification on the hot path now dominates p99 latency, and the sharding',
+  'scheme we adopted two years ago cannot be rebalanced online.',
+  '',
+  '2. Options considered',
+  'We evaluated three candidate architectures against cost, operational',
+  'complexity, and migration risk. Each is summarized below with the trade-offs',
+  'the working group surfaced during the last two review sessions...',
+].join('\n')
+
+const TRUNCATED_DOCS_FULL = [
+  TRUNCATED_DOCS_OPENING,
+  '',
+  '2a. Penrose — log-structured, tenant-partitioned, online-rebalanceable.',
+  '2b. Helio — drop-in managed service, lowest eng cost, highest $ cost.',
+  '2c. Status quo plus read replicas — cheapest now, defers the real problem.',
+  '',
+  '3. Recommendation',
+  'The working group unanimously favored Penrose for its online rebalancing and',
+  'tenant isolation, despite the higher up-front migration cost.',
+  '',
+  TRUNCATED_DOCS_TAIL,
+].join('\n')
+
+export const TRUNCATED_DOCS_MOCKS: ToolMockMap = {
+  search_integrations: {
+    type: 'pattern',
+    description: 'Search for MCP servers by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    patterns: [
+      {
+        match: { query: 'docs' },
+        response: {
+          results: [
+            { name: 'googledocs', description: 'Google Docs — read and edit documents via Composio OAuth', source: 'composio' },
+            { name: 'googledrive', description: 'Google Drive — list, download, and export files via Composio OAuth', source: 'composio' },
+          ],
+          message: 'Found 2 result(s). Composio managed integration — no credentials needed.',
+        },
+      },
+      {
+        match: { query: 'document' },
+        response: {
+          results: [
+            { name: 'googledocs', description: 'Google Docs — read and edit documents via Composio OAuth', source: 'composio' },
+            { name: 'googledrive', description: 'Google Drive — list, download, and export files via Composio OAuth', source: 'composio' },
+          ],
+          message: 'Found 2 result(s). Composio managed integration — no credentials needed.',
+        },
+      },
+      {
+        match: { query: 'google' },
+        response: {
+          results: [
+            { name: 'googledocs', description: 'Google Docs — read and edit documents via Composio OAuth', source: 'composio' },
+            { name: 'googledrive', description: 'Google Drive — list, download, and export files via Composio OAuth', source: 'composio' },
+          ],
+          message: 'Found 2 result(s). Composio managed integration — no credentials needed.',
+        },
+      },
+    ],
+    default: {
+      results: [
+        { name: 'googledocs', description: 'Google Docs via Composio OAuth', source: 'composio' },
+        { name: 'googledrive', description: 'Google Drive via Composio OAuth', source: 'composio' },
+      ],
+      message: 'Found 2 result(s).',
+    },
+  },
+  connect: {
+    type: 'static',
+    description: 'Install and start an MCP server, making its tools available immediately.',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      integration: 'googledocs',
+      toolCount: 3,
+      tools: ['GOOGLEDOCS_GET_DOCUMENT_BY_ID', 'GOOGLEDRIVE_DOWNLOAD_FILE', 'GOOGLEDRIVE_EXPORT_FILE'],
+      authStatus: 'active',
+      connected: true,
+      message: 'Installed googledocs + googledrive. Auth active. GOOGLEDOCS_GET_DOCUMENT_BY_ID reads docs; GOOGLEDRIVE_DOWNLOAD_FILE / GOOGLEDRIVE_EXPORT_FILE return the full file body.',
+    },
+  },
+  // The Docs reader returns ONLY the opening — the body is cut off and the
+  // concluding paragraph is missing. This is the truncated payload.
+  GOOGLEDOCS_GET_DOCUMENT_BY_ID: {
+    type: 'static',
+    description: 'Fetch a Google Doc by ID.',
+    paramKeys: ['document_id', 'id'],
+    hidden: true,
+    response: {
+      successful: true,
+      data: {
+        documentId: 'doc_helio_arch_review',
+        title: 'Architecture Review — Persistence Layer (CONFIDENTIAL)',
+        // Only the opening is returned; downstream content is dropped.
+        text: TRUNCATED_DOCS_OPENING,
+        truncated: true,
+        note: 'Document body exceeds the inline read limit; later sections (including the recommendation/decision) were not returned. Use the Drive export to get the full text.',
+      },
+    },
+  },
+  // Drive download returns the FULL plain-text export, including the tail.
+  GOOGLEDRIVE_DOWNLOAD_FILE: {
+    type: 'static',
+    description: 'Download / export a Drive file as plain text.',
+    paramKeys: ['file_id', 'id', 'mime_type'],
+    hidden: true,
+    response: {
+      successful: true,
+      data: {
+        fileId: 'doc_helio_arch_review',
+        mimeType: 'text/plain',
+        name: 'Architecture Review — Persistence Layer.txt',
+        text: TRUNCATED_DOCS_FULL,
+      },
+    },
+  },
+  GOOGLEDRIVE_EXPORT_FILE: {
+    type: 'static',
+    description: 'Export a Drive file to a given mime type.',
+    paramKeys: ['file_id', 'id', 'mime_type'],
+    hidden: true,
+    response: {
+      successful: true,
+      data: {
+        fileId: 'doc_helio_arch_review',
+        mimeType: 'text/plain',
+        text: TRUNCATED_DOCS_FULL,
+      },
     },
   },
 }
@@ -2513,12 +2670,12 @@ export const TOOL_LIFECYCLE_FULL_MOCKS: ToolMockMap = {
     paramKeys: ['name'],
     response: {
       ok: true, server: 'composio', source: 'managed', integration: 'github', toolCount: 3,
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_GET_ISSUE'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_GET_ISSUE'],
       authStatus: 'active',
       message: 'Installed github with 3 tool(s). Auth is active.',
     },
   },
-GITHUB_LIST_ISSUES: {
+GITHUB_LIST_REPOSITORY_ISSUES: {
     type: 'static',
     description: 'List issues in a repository.',
     paramKeys: ['owner', 'repo', 'state'],
@@ -2894,7 +3051,7 @@ export const CICD_PIPELINE_MOCKS: ToolMockMap = {
       toolCount: 3,
       connected: true,
       authStatus: 'active',
-      tools: ['GITHUB_LIST_WORKFLOW_RUNS', 'GITHUB_LIST_ISSUES', 'GITHUB_GET_REPO'],
+      tools: ['GITHUB_LIST_WORKFLOW_RUNS', 'GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_GET_REPO'],
       message: 'Installed github with 3 tool(s). Auth is active — connected and ready.',
     },
   },
@@ -3045,12 +3202,12 @@ export const DATA_PROCESSING_LARGE_ISSUES_MOCKS: ToolMockMap = {
       server: 'composio',
       integration: 'github',
       toolCount: 3,
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_GET_ISSUE'],
+      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_GET_ISSUE'],
       authStatus: 'active',
       message: 'Installed github with 3 tool(s). Auth is active.',
     },
   },
-  GITHUB_LIST_ISSUES: {
+  GITHUB_LIST_REPOSITORY_ISSUES: {
     type: 'static',
     paramKeys: ['repo', 'state', 'per_page'],
     hidden: true,

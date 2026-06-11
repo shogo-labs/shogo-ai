@@ -36,6 +36,8 @@ const VALID_TRACKS = [
   'subagent-coordination', 'teammate-coordination', 'business-user',
   'startup-cto', 'freelancer', 'content-creator', 'event-planner',
   'nonprofit', 'adversarial', 'cross-cutting', 'workspace-attachments',
+  'preview-url', 'truncation', 'codegen-safety', 'verification', 'loops',
+  'long-task', 'test-hygiene', 'agent-hardening',
 ]
 
 const VALID_MODELS = new Set([

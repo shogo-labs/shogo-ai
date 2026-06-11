@@ -11,6 +11,8 @@ import {
   formatRoutingLog,
   setRoutingConfig,
   getRoutingConfig,
+  autoTierIds,
+  autoTierProviderHints,
   type SpawnClassificationInput,
   type ModelRouterOptions,
   type RoutingDecision,
@@ -40,6 +42,56 @@ describe('buildAutoTierMap', () => {
     const b = buildAutoTierMap()
     expect(a).toEqual(b)
     expect(a).not.toBe(b)
+  })
+
+  test('applies a partial override per tier, keeping defaults for the rest', () => {
+    const map = buildAutoTierMap({ premium: 'mimo-v2.5' })
+    expect(map.economy).toBe('gpt-5.4-nano')
+    expect(map.standard).toBe('claude-haiku-4-5-20251001')
+    expect(map.premium).toBe('mimo-v2.5')
+  })
+
+  test('overrides all tiers when fully specified (e.g. Hoshi everywhere)', () => {
+    const map = buildAutoTierMap({ economy: 'mimo-v2.5', standard: 'mimo-v2.5', premium: 'mimo-v2.5' })
+    expect(map).toEqual({ economy: 'mimo-v2.5', standard: 'mimo-v2.5', premium: 'mimo-v2.5' })
+  })
+
+  test('ignores blank/whitespace override values and keeps defaults', () => {
+    const map = buildAutoTierMap({ economy: '   ', standard: '' })
+    expect(map.economy).toBe('gpt-5.4-nano')
+    expect(map.standard).toBe('claude-haiku-4-5-20251001')
+    expect(map.premium).toBe('claude-sonnet-4-6')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// autoTierIds / autoTierProviderHints
+// ---------------------------------------------------------------------------
+
+describe('autoTierIds', () => {
+  test('returns undefined when no override is supplied', () => {
+    expect(autoTierIds(undefined)).toBeUndefined()
+  })
+
+  test('extracts only the configured tier ids', () => {
+    expect(autoTierIds({ economy: { id: 'a' }, premium: { id: 'c', provider: 'custom' } })).toEqual({
+      economy: 'a',
+      premium: 'c',
+    })
+  })
+})
+
+describe('autoTierProviderHints', () => {
+  test('returns an empty map without an override', () => {
+    expect(autoTierProviderHints(undefined)).toEqual({})
+  })
+
+  test('maps each model id to its provider hint, skipping entries without one', () => {
+    const hints = autoTierProviderHints({
+      economy: { id: 'gpt-5.4-nano' },
+      standard: { id: 'mimo-v2.5', provider: 'custom' },
+    })
+    expect(hints).toEqual({ 'mimo-v2.5': 'custom' })
   })
 })
 

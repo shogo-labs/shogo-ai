@@ -90,7 +90,10 @@ interface ChatCompletionContentBlock {
 export interface ChatCompletionRequest {
   model: string
   messages: Array<{
-    role: 'system' | 'user' | 'assistant' | 'tool'
+    // `developer` is OpenAI's reasoning-model alias for the system prompt;
+    // accept it here so callers routed through the OpenAI chat-completions
+    // shape (pi-ai's openai-completions provider) don't trip the converter.
+    role: 'system' | 'developer' | 'user' | 'assistant' | 'tool'
     content: string | Array<ChatCompletionContentBlock>
     name?: string
     tool_call_id?: string
@@ -838,7 +841,9 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
   const messages: Array<{ role: string; content: string | Array<any> }> = []
 
   for (const msg of request.messages) {
-    if (msg.role === 'system') {
+    // Anthropic has no `developer` role — OpenAI reasoning models use it as the
+    // system-prompt channel — so fold `developer` into the `system` parameter.
+    if (msg.role === 'system' || msg.role === 'developer') {
       const text = typeof msg.content === 'string'
         ? msg.content
         : msg.content.map(p => p.text || '').join('\n')
@@ -878,17 +883,17 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
         const last = blocks[blocks.length - 1] as { cache_control?: AnthropicCacheControl }
         if (!last.cache_control) last.cache_control = msgCC
       }
-      messages.push({ role: msg.role === 'tool' ? 'user' : msg.role, content: blocks })
+      messages.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content: blocks })
     } else if (typeof msg.content === 'string' && msgCC) {
       // Coerce string content to a single text block so cache_control has a home.
       messages.push({
-        role: msg.role === 'tool' ? 'user' : msg.role,
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
         content: [{ type: 'text', text: msg.content, cache_control: msgCC }],
       })
     } else {
       // No cache metadata on this message — pass through unchanged.
       messages.push({
-        role: msg.role === 'tool' ? 'user' : msg.role,
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
         content: msg.content,
       })
     }
@@ -1667,6 +1672,81 @@ function splitSystemBlocksForCaching(parsed: any): void {
   parsed.system = newSystem
 }
 
+/**
+ * Anthropic model ids (with or without a date suffix) that require the
+ * *adaptive* thinking API (`thinking.type: "adaptive"` + `output_config.effort`)
+ * and reject the legacy budget-based `thinking.type: "enabled"` shape. Mirrors
+ * pi-ai's `supportsAdaptiveThinking`.
+ */
+function apiModelSupportsAdaptiveThinking(apiModel: string): boolean {
+  return (
+    apiModel.includes('opus-4-6') ||
+    apiModel.includes('opus-4.6') ||
+    apiModel.includes('opus-4-7') ||
+    apiModel.includes('opus-4.7') ||
+    apiModel.includes('opus-4-8') ||
+    apiModel.includes('opus-4.8') ||
+    apiModel.includes('sonnet-4-6') ||
+    apiModel.includes('sonnet-4.6')
+  )
+}
+
+/** Map a budget-based thinking allocation to an adaptive effort bucket. */
+function budgetTokensToEffort(budgetTokens: number | undefined): 'low' | 'medium' | 'high' {
+  if (!budgetTokens || budgetTokens < 4096) return 'low'
+  if (budgetTokens < 16000) return 'medium'
+  return 'high'
+}
+
+/**
+ * Normalize the thinking config for the resolved upstream model.
+ *
+ * Two distinct problems, both rooted in the agent-runtime addressing DB-defined
+ * models by an opaque UUID (so pi-ai can't substring-match the id against its
+ * adaptive-thinking allowlist):
+ *
+ *  1. Legacy shape rejected. When pi-ai treats the model as non-adaptive it
+ *     emits the budget-based `thinking.type: "enabled"` block, which Opus
+ *     4.6+/Sonnet 4.6 reject with a 400 ("thinking.type.enabled is not
+ *     supported for this model"). We rewrite it to `type: "adaptive"` +
+ *     `output_config.effort`.
+ *
+ *  2. Thinking invisible. When an adaptive block arrives *without* a `display`
+ *     field, Opus 4.7/4.8 (and Mythos) default `display` to `"omitted"` — the
+ *     model still thinks (and bills) but returns empty thinking blocks, so the
+ *     client shows no reasoning. Opus 4.6 / Sonnet 4.6 default to `"summarized"`
+ *     so they look fine, which is why the symptom is Opus-only. We default the
+ *     display to `"summarized"` so reasoning is surfaced, matching the product's
+ *     pre-adaptive behavior. An explicit `display` (incl. `"omitted"`) is
+ *     respected.
+ *
+ * Since the proxy is the boundary that knows the real `apiModel`, both fixes
+ * live here. Idempotent. Mutates `parsed` in place.
+ */
+function normalizeThinkingForModel(parsed: any, apiModel: string): void {
+  const thinking = parsed?.thinking
+  if (!thinking || typeof thinking !== 'object') return
+  if (!apiModelSupportsAdaptiveThinking(apiModel)) return
+
+  if (thinking.type === 'enabled') {
+    const effort = budgetTokensToEffort(thinking.budget_tokens)
+    parsed.thinking = {
+      type: 'adaptive',
+      display: thinking.display ?? 'summarized',
+    }
+    parsed.output_config = { ...(parsed.output_config ?? {}), effort }
+    return
+  }
+
+  if (thinking.type === 'adaptive') {
+    // Surface summarized reasoning unless the caller explicitly chose a mode.
+    // Without this, Opus 4.7/4.8 omit thinking content by default.
+    if (thinking.display === undefined) {
+      parsed.thinking = { ...thinking, display: 'summarized' }
+    }
+  }
+}
+
 // =============================================================================
 // Billing
 // =============================================================================
@@ -1718,6 +1798,29 @@ export async function buildUsageLimitInfo(
  * same project bill independently. When omitted the legacy
  * projectId-only key is used (back-compat with older runtimes).
  */
+/**
+ * Header a server-initiated request sets to mark a completion as internal +
+ * non-billable (recorded for admin cost-tracking only). See `resolveInternalUsage`.
+ */
+const INTERNAL_USAGE_TAG_HEADER = 'x-shogo-usage-tag'
+/** Allowlisted internal usage tags the server may request via the header. */
+const INTERNAL_USAGE_TAGS = new Set<string>(['title_generation'])
+
+/**
+ * Resolve the internal (non-billable) usage tag for a request, if any.
+ *
+ * Security: only the server's own proxy-JWT (`authKind === 'proxy-jwt'`) is
+ * trusted to mark a completion non-billable. Workspace API keys (`api-key`) and
+ * per-project pod runtime tokens (`runtime`) MUST NOT be able to dodge billing
+ * by setting this header, so they're rejected here.
+ */
+function resolveInternalUsage(c: any, tokenPayload: ProxyTokenPayload): { actionType: string } | null {
+  if (tokenPayload.authKind !== 'proxy-jwt') return null
+  const tag = c.req.header(INTERNAL_USAGE_TAG_HEADER)
+  if (tag && INTERNAL_USAGE_TAGS.has(tag)) return { actionType: tag }
+  return null
+}
+
 export async function recordUsage(
   tokenPayload: ProxyTokenPayload,
   model: string,
@@ -1726,10 +1829,45 @@ export async function recordUsage(
   cachedInputTokens: number = 0,
   cacheWriteTokens: number = 0,
   chatSessionId?: string | null,
+  internalUsage?: { actionType: string } | null,
 ) {
   // For API-key auth the projectId is a sentinel ('api-key'), not a real
   // Project row. Pass null so the UsageEvent FK constraint is satisfied.
   const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
+
+  // Internal, non-billable completion (e.g. server-initiated title generation):
+  // record the real cost for ADMIN cost-tracking only — never debit a wallet,
+  // never accumulate into a billing session. The dedicated `actionType` keeps it
+  // out of the user-facing usage log/summary (which whitelist only
+  // `ai_proxy_completion` / `chat_message` / `voice_*`), while admin analytics
+  // (`getUsageAnalytics`, scoped by action type) still see it.
+  if (internalUsage) {
+    const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
+    if (totalTokens === 0) return
+    try {
+      const billingModel = proxyModelToBillingModel(model)
+      const { rawUsd } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
+      const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+      await prisma.usageEvent.create({
+        data: {
+          workspaceId: tokenPayload.workspaceId,
+          projectId: billingProjectId,
+          memberId: billingUserId,
+          actionType: internalUsage.actionType,
+          rawUsd,
+          billedUsd: 0,
+          source: 'daily',
+          balanceBefore: 0,
+          balanceAfter: 0,
+          actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens, internal: true, billable: false },
+        },
+      })
+      console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${billingModel}) — not billed`)
+    } catch (err) {
+      console.error('[AI Proxy] Failed to record internal usage:', err)
+    }
+    return
+  }
 
   // If a billing session is open, accumulate — the session closer will charge
   if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId)) {
@@ -2112,16 +2250,19 @@ export function aiProxyRoutes() {
         workspaceId: resolved.workspaceId,
         userId: resolved.userId,
         type: 'ai-proxy',
+        authKind: 'api-key',
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 3600,
       }
     }
 
     if (token.startsWith('rt_v1_')) {
-      return resolveRuntimeToken(token)
+      const rt = await resolveRuntimeToken(token)
+      return rt ? { ...rt, authKind: 'runtime' } : null
     }
 
-    return verifyProxyToken(token)
+    const jwt = await verifyProxyToken(token)
+    return jwt ? { ...jwt, authKind: 'proxy-jwt' } : null
   }
 
   /**
@@ -2158,6 +2299,54 @@ export function aiProxyRoutes() {
     }
 
     if (request.stream) {
+      if (!response.body) {
+        return c.json({ error: { message: 'Cloud proxy returned no stream body', type: 'server_error' } }, 502)
+      }
+      return new Response(response.body, {
+        status: response.status,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'X-Proxy-Provider': 'shogo-cloud',
+        },
+      })
+    }
+
+    const data = await response.json()
+    return c.json(data, response.status as any)
+  }
+
+  /**
+   * Forward an OpenAI Responses-API request to the Shogo Cloud proxy.
+   *
+   * GPT-5.x reasoning models route through the Responses API (pi-ai sets
+   * `api: 'openai-responses'`), and reasoning summaries only stream over this
+   * endpoint. In cloud-proxy mode the local instance has no provider key, so —
+   * exactly like chat-completions and anthropic-messages — the request must be
+   * forwarded to the cloud, which holds the OpenAI key and resolves the model
+   * id. Without this the Responses path 503s (or bypasses the cloud), and GPT
+   * reasoning never reaches the client.
+   */
+  async function forwardResponsesToCloud(c: any, request: any, signal?: AbortSignal): Promise<Response> {
+    const cloudUrl = getShogoCloudUrl()
+    const shogoKey = process.env.SHOGO_API_KEY!
+
+    const response = await fetch(`${cloudUrl}/api/ai/v1/responses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${shogoKey}`,
+      },
+      body: JSON.stringify(request),
+      signal,
+    })
+
+    // Self-heal on revoked / superseded device key.
+    if (response.status === 401) {
+      void wipeCloudKey('AI proxy responses got 401 from Shogo Cloud')
+    }
+
+    if (request?.stream) {
       if (!response.body) {
         return c.json({ error: { message: 'Cloud proxy returned no stream body', type: 'server_error' } }, 502)
       }
@@ -2286,6 +2475,7 @@ export function aiProxyRoutes() {
       // / instance-tunnel) so accumulateUsage can route to the right
       // `(projectId, chatSessionId)` billing-session slot.
       const chatSessionId = c.req.header('x-chat-session-id') || null
+      const internalUsage = resolveInternalUsage(c, tokenPayload)
 
       // Resolve agent-mode aliases (basic/advanced) to real model names
       if (request.model) {
@@ -2389,11 +2579,11 @@ export function aiProxyRoutes() {
       if (request.stream) {
         if (modelConfig.provider === 'anthropic') {
           return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok, cacheWriteTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId)
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage)
           }, c.req.raw.signal)
         } else {
           return await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId)
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId, internalUsage)
           }, c.req.raw.signal)
         }
       } else {
@@ -2415,6 +2605,7 @@ export function aiProxyRoutes() {
             cachedPrompt,
             0,
             chatSessionId,
+            internalUsage,
           )
         }
 
@@ -2455,6 +2646,21 @@ export function aiProxyRoutes() {
       )
     }
 
+    // When a Shogo Cloud key is configured, forward to the cloud — the local
+    // instance has no OpenAI key and the cloud resolves the model id. Mirrors
+    // the chat-completions / anthropic-messages cloud paths; required for GPT
+    // reasoning (Responses API) to work in cloud-proxy mode.
+    if (isShogoCloudForwarding()) {
+      try {
+        const request = await c.req.json()
+        console.log(`[AI Proxy] Forwarding Responses API to Shogo Cloud: ${request?.model} (stream: ${!!request?.stream})`)
+        return await forwardResponsesToCloud(c, request, c.req.raw.signal)
+      } catch (error: any) {
+        console.error('[AI Proxy] Cloud forwarding error (responses):', error.message)
+        return c.json({ error: { message: `Cloud proxy error: ${error.message}`, type: 'server_error', code: 'cloud_proxy_error' } }, 502)
+      }
+    }
+
     if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
@@ -2470,6 +2676,7 @@ export function aiProxyRoutes() {
         return c.json({ error: { message: 'model is required', type: 'invalid_request_error' } }, 400)
       }
       const chatSessionId = c.req.header('x-chat-session-id') || null
+      const internalUsage = resolveInternalUsage(c, tokenPayload)
 
       const { resolvedModel } = resolveAgentModel(requestedModel)
       const modelConfig = resolveModel(resolvedModel)
@@ -2547,7 +2754,7 @@ export function aiProxyRoutes() {
           },
           flush() {
             if (inputTokens || outputTokens || cachedInputTokens) {
-              recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens, 0, chatSessionId)
+              recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens, 0, chatSessionId, internalUsage)
             }
           },
         })
@@ -2573,7 +2780,7 @@ export function aiProxyRoutes() {
         if (result.usage) {
           const totalInput = result.usage.input_tokens || 0
           const cachedInput = result.usage.input_tokens_details?.cached_tokens || 0
-          recordUsage(tokenPayload, requestedModel, totalInput - cachedInput, result.usage.output_tokens || 0, cachedInput, 0, chatSessionId)
+          recordUsage(tokenPayload, requestedModel, totalInput - cachedInput, result.usage.output_tokens || 0, cachedInput, 0, chatSessionId, internalUsage)
         }
         return c.json(result)
       }
@@ -2712,16 +2919,19 @@ export function aiProxyRoutes() {
         workspaceId: resolved.workspaceId,
         userId: resolved.userId,
         type: 'ai-proxy',
+        authKind: 'api-key',
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 3600,
       }
     }
 
     if (apiKey.startsWith('rt_v1_')) {
-      return resolveRuntimeToken(apiKey)
+      const rt = await resolveRuntimeToken(apiKey)
+      return rt ? { ...rt, authKind: 'runtime' } : null
     }
 
-    return verifyProxyToken(apiKey)
+    const jwt = await verifyProxyToken(apiKey)
+    return jwt ? { ...jwt, authKind: 'proxy-jwt' } : null
   }
 
   /**
@@ -2774,6 +2984,7 @@ export function aiProxyRoutes() {
       const requestModel = parsed.model || 'advanced'
       const isStream = !!parsed.stream
       const chatSessionId = c.req.header('x-chat-session-id') || null
+      const internalUsage = resolveInternalUsage(c, tokenPayload)
 
       const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
@@ -2906,7 +3117,7 @@ export function aiProxyRoutes() {
           const openaiResult = await response.json() as any
           const oaiTotalPrompt = openaiResult.usage?.prompt_tokens || 0
           const oaiCachedPrompt = openaiResult.usage?.prompt_tokens_details?.cached_tokens || 0
-          recordUsage(tokenPayload, resolvedModel, oaiTotalPrompt - oaiCachedPrompt, openaiResult.usage?.completion_tokens || 0, oaiCachedPrompt, 0, chatSessionId)
+          recordUsage(tokenPayload, resolvedModel, oaiTotalPrompt - oaiCachedPrompt, openaiResult.usage?.completion_tokens || 0, oaiCachedPrompt, 0, chatSessionId, internalUsage)
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
           return c.json(anthropicResult)
         }
@@ -2921,8 +3132,19 @@ export function aiProxyRoutes() {
         )
       }
 
-      // Replace the model name with the resolved one before forwarding
-      parsed.model = resolvedModel
+      // Replace the model name with the resolved upstream name before
+      // forwarding. DB-defined models are addressed by an opaque id (a UUID),
+      // and Anthropic 404s on that id — so prefer the resolved `apiModel`
+      // (e.g. `claude-opus-4-8`). Falls back to `resolvedModel` when the id
+      // isn't catalog-resolvable, preserving the prior behavior for everything
+      // already addressed by a real Anthropic model name.
+      parsed.model = resolvedModelConfig?.apiModel ?? resolvedModel
+
+      // Rewrite the thinking config to the adaptive shape when the resolved
+      // upstream model requires it. DB models reach pi-ai as an opaque UUID, so
+      // it can't detect adaptive thinking and emits the legacy budget-based
+      // `thinking.type: "enabled"` block, which Opus 4.6+/Sonnet 4.6 reject.
+      normalizeThinkingForModel(parsed, parsed.model)
 
       // Split system prompt at CACHE_BOUNDARY so Anthropic can cache the stable
       // prefix independently. The agent-runtime embeds <|CACHE_BOUNDARY|> between
@@ -2969,7 +3191,7 @@ export function aiProxyRoutes() {
         const cacheWriteTok = responseBody.usage?.cache_creation_input_tokens || 0
         const cachedTok = responseBody.usage?.cache_read_input_tokens || 0
         const outTok = responseBody.usage?.output_tokens || 0
-        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId)
+        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage)
         return c.json(responseBody)
       }
 
@@ -3014,7 +3236,7 @@ export function aiProxyRoutes() {
           }
         },
         flush() {
-          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens, streamCacheWriteTokens, chatSessionId)
+          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens, streamCacheWriteTokens, chatSessionId, internalUsage)
         },
       })
 

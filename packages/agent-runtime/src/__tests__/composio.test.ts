@@ -57,6 +57,8 @@ import {
   buildLegacyComposioUserId,
   registerToolkitProxyTools,
   checkComposioAuth,
+  classifyComposioError,
+  extractComposioErrorDetail,
 } from '../composio'
 
 const ENV_KEYS = [
@@ -362,11 +364,22 @@ describe('registerToolkitProxyTools', () => {
     await initComposioSession('u', 'w', 'p')
   })
 
+  // Mirrors MCPClientManager.addProxyTools: dedupes by name within a group and
+  // is a no-op when nothing new is being added.
   function fakeMcpMgr() {
     const calls: Array<{ slug: string; tools: any[] }> = []
+    const groups = new Map<string, Set<string>>()
     return {
       calls,
-      addProxyTools: (slug: string, tools: any[]) => { calls.push({ slug, tools }) },
+      groups,
+      addProxyTools: (slug: string, tools: any[]) => {
+        const existing = groups.get(slug) || new Set<string>()
+        const fresh = tools.filter(t => !existing.has(t.name))
+        if (fresh.length === 0) return
+        for (const t of fresh) existing.add(t.name)
+        groups.set(slug, existing)
+        calls.push({ slug, tools: fresh })
+      },
     } as any
   }
 
@@ -391,15 +404,69 @@ describe('registerToolkitProxyTools', () => {
     expect(mgr.calls).toHaveLength(1)
   })
 
-  it('dedups across calls — second call returns the already-registered names', async () => {
+  // YOUTUBE_UPLOAD_VIDEO is on the upstream-broken denylist: the API accepts the
+  // upload but YouTube can't process the result ("Processing abandoned"). It must
+  // never be bound; YOUTUBE_MULTIPART_UPLOAD_VIDEO is the working path.
+  it('filters out upstream-broken slugs (YOUTUBE_UPLOAD_VIDEO)', async () => {
+    mockedSchemas = [
+      { slug: 'YOUTUBE_UPLOAD_VIDEO', description: 'upload', is_deprecated: false },
+      { slug: 'YOUTUBE_MULTIPART_UPLOAD_VIDEO', description: 'multipart upload', is_deprecated: false },
+      { slug: 'YOUTUBE_LIST_CHANNEL_VIDEOS', description: 'list', is_deprecated: false },
+    ]
+    const mgr = fakeMcpMgr()
+    const r = await registerToolkitProxyTools(mgr, 'youtube')
+    expect(r.toolNames).not.toContain('YOUTUBE_UPLOAD_VIDEO')
+    expect(r.toolNames.sort()).toEqual(['YOUTUBE_LIST_CHANNEL_VIDEOS', 'YOUTUBE_MULTIPART_UPLOAD_VIDEO'])
+  })
+
+  it('dedups across calls — re-registering the same toolkit is a no-op on the manager', async () => {
     mockedSchemas = [
       { slug: 'GITHUB_LIST', description: 'list', is_deprecated: false },
     ]
-    await registerToolkitProxyTools(fakeMcpMgr(), 'github')
-    const mgr2 = fakeMcpMgr()
-    const r2 = await registerToolkitProxyTools(mgr2, 'github')
+    const mgr = fakeMcpMgr()
+    const r1 = await registerToolkitProxyTools(mgr, 'github')
+    expect(r1.toolNames).toContain('GITHUB_LIST')
+    expect(mgr.calls).toHaveLength(1)
+    // Second registration re-fetches but the manager dedupes by name, so no new
+    // proxy tools are added.
+    const r2 = await registerToolkitProxyTools(mgr, 'github')
     expect(r2.toolNames).toContain('GITHUB_LIST')
-    expect(mgr2.calls).toHaveLength(0)
+    expect(mgr.calls).toHaveLength(1)
+  })
+
+  it('repairs a partial/capped registration when more tools become available', async () => {
+    // First registration only sees one tool (e.g. an old run that was capped or
+    // partially failed mid-fetch).
+    mockedSchemas = [
+      { slug: 'GITLAB_A', description: 'a', is_deprecated: false },
+    ]
+    const mgr = fakeMcpMgr()
+    const r1 = await registerToolkitProxyTools(mgr, 'gitlab')
+    expect(r1.toolCount).toBe(1)
+    // On reconnect the full set is visible — the missing tool must be appended,
+    // not skipped by an early-return.
+    mockedSchemas = [
+      { slug: 'GITLAB_A', description: 'a', is_deprecated: false },
+      { slug: 'GITLAB_B', description: 'b', is_deprecated: false },
+    ]
+    const r2 = await registerToolkitProxyTools(mgr, 'gitlab')
+    expect(r2.toolCount).toBe(2)
+    expect(r2.toolNames.sort()).toEqual(['GITLAB_A', 'GITLAB_B'])
+    // Only the newly-discovered tool is pushed to the manager on the repair pass.
+    expect(mgr.calls).toHaveLength(2)
+    expect(mgr.calls[1].tools.map((t: any) => t.name)).toEqual(['GITLAB_B'])
+  })
+
+  it('keeps a prior good registration if a later fetch returns empty', async () => {
+    mockedSchemas = [
+      { slug: 'NOTION_A', description: 'a', is_deprecated: false },
+    ]
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'notion')
+    mockedSchemas = []
+    const r2 = await registerToolkitProxyTools(mgr, 'notion')
+    expect(r2.toolNames).toContain('NOTION_A')
+    expect(r2.toolCount).toBe(1)
   })
 
   it('proxy tool execute() surfaces a needs-init error when no session', async () => {
@@ -444,7 +511,8 @@ describe('registerToolkitProxyTools', () => {
     await registerToolkitProxyTools(mgr, 'xkit-big')
     const tool = mgr.calls[0].tools[0]
     const res = await tool.execute('tc', {})
-    expect(res.content?.[0]?.text).toContain('[Response was truncated')
+    expect(res.content?.[0]?.text).toContain('TRUNCATED')
+    expect(res.content?.[0]?.text).toContain('INCOMPLETE')
   })
 
   it('proxy tool execute() returns error payload when SDK reports unsuccessful', async () => {
@@ -467,6 +535,55 @@ describe('registerToolkitProxyTools', () => {
     const res = await tool.execute('tc', {})
     expect(res.details.error).toMatch(/returned an error/)
     expect(res.details.authExpired).toBeUndefined()
+  })
+
+  it('proxy tool execute() retries once on a transient not-found and then succeeds', async () => {
+    setEnv('COMPOSIO_NOTFOUND_RETRY_DELAY_MS', '0')
+    mockedSchemas = [{ slug: 'XKIT_FLAKY', description: '', is_deprecated: false }]
+    let calls = 0
+    handlers.toolsExecute = async () => {
+      calls++
+      if (calls === 1) return { successful: false, error: 'Unable to retrieve tool with slug XKIT_FLAKY' }
+      return { successful: true, data: { ok: true } }
+    }
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'xkit-flaky')
+    const tool = mgr.calls[0].tools[0]
+    const res = await tool.execute('tc', {})
+    expect(calls).toBe(2)
+    expect(res.content?.[0]?.text).toContain('ok')
+  })
+
+  it('proxy tool execute() retries a persistent not-found exactly once, then surfaces the classified error', async () => {
+    setEnv('COMPOSIO_NOTFOUND_RETRY_DELAY_MS', '0')
+    mockedSchemas = [{ slug: 'XKIT_PHANTOM', description: '', is_deprecated: false }]
+    let calls = 0
+    handlers.toolsExecute = async () => {
+      calls++
+      return { successful: false, error: 'Tool XKIT_PHANTOM not found' }
+    }
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'xkit-phantom')
+    const tool = mgr.calls[0].tools[0]
+    const res = await tool.execute('tc', {})
+    expect(calls).toBe(2)
+    expect(res.details.errorKind).toBe('notfound')
+  })
+
+  it('proxy tool execute() does NOT retry non-notfound errors (auth)', async () => {
+    setEnv('COMPOSIO_NOTFOUND_RETRY_DELAY_MS', '0')
+    mockedSchemas = [{ slug: 'XKIT_AUTH1', description: '', is_deprecated: false }]
+    let calls = 0
+    handlers.toolsExecute = async () => {
+      calls++
+      return { successful: false, error: 'Unauthorized: oauth token expired' }
+    }
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'xkit-auth1')
+    const tool = mgr.calls[0].tools[0]
+    const res = await tool.execute('tc', {})
+    expect(calls).toBe(1)
+    expect(res.details.authExpired).toBe(true)
   })
 
   it('proxy tool execute() marks authExpired on thrown auth errors', async () => {
@@ -697,6 +814,90 @@ describe('checkComposioAuth', () => {
     }
     await checkComposioAuth('github')
     expect(sawAuthConfigs).toBe(true)
+  })
+})
+
+describe('classifyComposioError', () => {
+  it('classifies expired/invalid OAuth as auth (authExpired)', () => {
+    const c = classifyComposioError('401 unauthorized: token expired')
+    expect(c.kind).toBe('auth')
+    expect(c.authExpired).toBe(true)
+  })
+
+  it('classifies a YouTube 403 as permission (needsScope), not auth', () => {
+    const c = classifyComposioError('{"error":{"code":403,"message":"The request is not properly authorized.","reason":"forbidden"}}')
+    expect(c.kind).toBe('permission')
+    expect(c.needsScope).toBe(true)
+    expect(c.authExpired).toBeUndefined()
+  })
+
+  it('classifies a Shopify 404 "Not Found" as notfound', () => {
+    const c = classifyComposioError('Not Found')
+    expect(c.kind).toBe('notfound')
+    expect(c.hint).toMatch(/verify the id|do not guess/i)
+  })
+
+  it('classifies arg validation errors as validation (needsArgFix)', () => {
+    const c = classifyComposioError('Validation failed: id must have required properties id')
+    expect(c.kind).toBe('validation')
+    expect(c.needsArgFix).toBe(true)
+  })
+
+  it('classifies the token-as-channel-id error as validation', () => {
+    const c = classifyComposioError("Invalid request data provided - Value error, Invalid YouTube channel ID format")
+    expect(c.kind).toBe('validation')
+  })
+
+  it('classifies an unbound/invalid slug as notfound', () => {
+    const c = classifyComposioError('Unable to retrieve tool with slug SHOPIFY_GET_PRODUCTS_COUNT')
+    expect(c.kind).toBe('notfound')
+  })
+
+  it('leaves an unknown error unclassified', () => {
+    const c = classifyComposioError('the upstream service hiccuped')
+    expect(c.kind).toBe('unknown')
+    expect(c.authExpired).toBeUndefined()
+    expect(c.needsScope).toBeUndefined()
+  })
+
+  // Regression: live Composio returns ActionExecute_ConnectedAccountNotFound
+  // (code 1810) when a tool is called for an unconnected integration. This is the
+  // single most common real failure and must be actionable, not 'unknown'.
+  it('classifies "no connected account" as notconnected (connect flow)', () => {
+    const raw = 'Error executing the tool GITHUB_LIST_COMMITS | 400 {"message":"No connected account found for user ID x for toolkit github","slug":"ActionExecute_ConnectedAccountNotFound","suggested_fix":"Connect your github account first"}'
+    const c = classifyComposioError(raw)
+    expect(c.kind).toBe('notconnected')
+    expect(c.authExpired).toBe(true)
+    expect(c.hint).toMatch(/connect|initiate/i)
+  })
+
+  // Regression: '401' must not match inside a larger number. A live
+  // Tool_ToolNotFound payload carries "code":2401 and was misclassified as auth.
+  it('does not treat error code 2401 as a 401 auth error', () => {
+    const raw = 'Unable to retrieve tool with slug GITHUB_FAKE | 404 {"code":2401,"slug":"Tool_ToolNotFound","status":404}'
+    const c = classifyComposioError(raw)
+    expect(c.kind).toBe('notfound')
+  })
+})
+
+describe('extractComposioErrorDetail', () => {
+  // The SDK throws with a generic top-level message; the actionable cause lives
+  // in err.cause.message / err.cause.error. Verified against live responses.
+  it('digs the real cause out of err.cause', () => {
+    const err: any = new Error('Error executing the tool GITHUB_LIST_COMMITS')
+    err.cause = {
+      message: '400 {"error":{"slug":"ActionExecute_ConnectedAccountNotFound"}}',
+      error: { error: { slug: 'ActionExecute_ConnectedAccountNotFound', message: 'No connected account found', suggested_fix: 'Connect your github account first' } },
+    }
+    const detail = extractComposioErrorDetail(err)
+    expect(detail).toMatch(/no connected account/i)
+    expect(detail).toMatch(/connect your github/i)
+    expect(classifyComposioError(detail).kind).toBe('notconnected')
+  })
+
+  it('passes through a plain string and tolerates null', () => {
+    expect(extractComposioErrorDetail('boom')).toBe('boom')
+    expect(extractComposioErrorDetail(null)).toBe('')
   })
 })
 

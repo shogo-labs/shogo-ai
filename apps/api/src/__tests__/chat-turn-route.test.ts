@@ -145,11 +145,18 @@ mock.module('../lib/voice-context', () => ({
     `${base}\n\n${ctx}`.trim(),
 }))
 
-// `@ai-sdk/anthropic` — return a sentinel "model" object that
-// `streamText` will accept (we mock streamText itself, so the model
-// shape doesn't have to be real).
-mock.module('@ai-sdk/anthropic', () => ({
-  createAnthropic: () => () => ({ __mockModel: true }),
+// `../lib/resolve-language-model` — return a sentinel "model" object that
+// `streamText` will accept (we mock streamText itself, so the model shape
+// doesn't have to be real). The chat route resolves its LLM through this
+// shared helper now (Anthropic + custom providers), so mocking it here keeps
+// the route's `resolveChatModel` returning a usable model.
+mock.module('../lib/resolve-language-model', () => ({
+  DEFAULT_ASSISTANT_MODEL: 'hoshi-1.0',
+  resolveLanguageModel: (modelId: string) => ({
+    model: { __mockModel: true },
+    billingModelId: modelId,
+    provider: 'custom',
+  }),
 }))
 
 // `ai` — stub `streamText` so we can assert the system prompt without

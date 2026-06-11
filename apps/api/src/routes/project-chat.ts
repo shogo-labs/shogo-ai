@@ -21,6 +21,7 @@ import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing.service"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
+import { stampModelProvider } from "../lib/stamp-model-provider"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
@@ -138,6 +139,8 @@ export async function trackUsageFromStream(
     result: any
     startedAt: number
     duration: number | null
+    /** Set when the runtime reports the tool errored, so we persist status='error'. */
+    error?: boolean
   }
   let toolCallMap = new Map<string, ToolCallRecord>()
 
@@ -358,11 +361,35 @@ export async function trackUsageFromStream(
       if (record) {
         record.result = data.output ?? null
         record.duration = Date.now() - record.startedAt
+        // Detect failure markers in the output so we can persist status='error'.
+        const out: any = data.output
+        if (
+          out &&
+          typeof out === 'object' &&
+          (out.success === false || out.isError === true || out.error != null)
+        ) {
+          record.error = true
+        }
       }
       const part = toolPartIndex.get(toolCallId)
       if (part) {
         part.output = data.output ?? { success: true }
         part.state = 'output-available'
+      }
+    }
+
+    if (type === 'tool-output-error') {
+      const toolCallId = data.toolCallId || ''
+      const record = toolCallMap.get(toolCallId)
+      if (record) {
+        record.error = true
+        record.result = { error: data.errorText ?? data.error ?? 'tool error' }
+        record.duration = Date.now() - record.startedAt
+      }
+      const part = toolPartIndex.get(toolCallId)
+      if (part) {
+        part.output = { error: data.errorText ?? data.error ?? 'tool error' }
+        part.state = 'output-error'
       }
     }
 
@@ -670,7 +697,7 @@ export async function trackUsageFromStream(
             args: tc.args != null ? JSON.stringify(tc.args) : undefined,
             result: tc.result != null ? JSON.stringify(tc.result) : undefined,
             duration: tc.duration,
-            status: 'complete' as const,
+            status: tc.error ? ('error' as const) : ('complete' as const),
           })),
         })
         console.log(`[ProjectChat] 🔧 Logged ${toolCallMap.size} tool calls for session ${chatSessionId}`)
@@ -699,8 +726,20 @@ export async function trackUsageFromStream(
   // chat-turn auto-checkpoint to avoid a second row with the same SHA.
   const workerOwnsSync =
     process.env.SHOGO_CLOUD_SYNC === '1' || process.env.SHOGO_CLOUD_SYNC === 'true'
+  // BETA: per-chat git worktrees. When on, the agent's edits live on the
+  // chat's branch in an isolated worktree (committed + persisted runtime-side),
+  // not in the main working tree. The project-scoped checkpoint here would
+  // either no-op or capture unrelated main state, so skip it entirely.
+  let worktreesEnabled = false
+  try {
+    const p = await prisma.project.findUnique({ where: { id: project.id }, select: { settings: true } as any }) as { settings?: unknown } | null
+    const raw = p?.settings
+    const settings = typeof raw === 'string' ? (() => { try { return JSON.parse(raw) } catch { return null } })() : raw
+    worktreesEnabled = !!(settings && typeof settings === 'object' && (settings as Record<string, unknown>).gitWorktreesEnabled === true)
+  } catch { /* default false */ }
   if (
     !workerOwnsSync &&
+    !worktreesEnabled &&
     hasFileModifyingTools(toolCallMap) &&
     observedTurnComplete &&
     !originalStreamErrored &&
@@ -923,9 +962,15 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
           if (!hasAdvanced) {
             parsedBody.agentMode = 'claude-haiku-4-5-20251001'
-            body = JSON.stringify(parsedBody)
           }
         }
+        // Resolve the model's native provider from the registry and stamp it on
+        // the forwarded body. Runs after any tier-downgrade so the provider
+        // reflects the model that will actually run. Lets a UUID-addressed DB
+        // model route to its native provider instead of being inferred as
+        // `custom` by the runtime.
+        stampModelProvider(parsedBody)
+        body = JSON.stringify(parsedBody)
       }
 
       // Track the user who initiated this chat so AI proxy requests from the

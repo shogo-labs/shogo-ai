@@ -25,6 +25,32 @@ import { SUBAGENT_GUIDE } from './subagent-prompts'
 // promptOverrides — the prefix is still prepended to the full guide content.
 export { OPTIMIZED_PERSONALITY_GUIDE, OPTIMIZED_MCP_DISCOVERY_GUIDE }
 
+/**
+ * Appended to the integrations guide. Truncation happens on integration tool
+ * calls, so the recovery instructions live alongside that guide rather than
+ * costing always-on prompt tokens. Reproduces the fix for the "answered from a
+ * truncated Google Doc" regression.
+ */
+export const TRUNCATED_OUTPUT_GUIDE = `
+
+## Truncated Tool Output — recover the full value
+
+Large tool responses are truncated to fit the context budget. When a result
+carries a \`_truncation\` signal (or a \`[⚠️ TRUNCATED ...]\` annotation), the
+payload is INCOMPLETE — treat it as a partial view, never as the whole thing.
+
+- Do not answer questions about the end/conclusion/total of the data from a
+  truncated payload. The part you cannot see is exactly the part you are missing.
+- Recover the full value by going back to the source:
+  - **Google Docs**: \`GOOGLEDOCS_GET_DOCUMENT_BY_ID\` truncates long docs. Export
+    the complete body with \`GOOGLEDRIVE_DOWNLOAD_FILE\` (or
+    \`GOOGLEDRIVE_EXPORT_FILE\`) using the same document id.
+  - **Long lists**: page through with a smaller range / explicit pagination.
+  - **Large files**: read them in chunks.
+- For large datasets you need to analyze, ingest into the skill server
+  (Prisma schema → script → query) instead of re-reading raw.
+`
+
 export const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
 
 When the user changes your personality, tone, role, name, or boundaries, you MUST:
@@ -95,7 +121,7 @@ export function buildGuideRegistry(promptOverrides?: Map<string, string>): Map<s
   const mcpGuide = promptOverrides?.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE
 
   return new Map<string, string>([
-    ['integrations', mcpGuide],
+    ['integrations', mcpGuide + TRUNCATED_OUTPUT_GUIDE],
     ['subagent', SUBAGENT_GUIDE],
     ['browser', BROWSER_TOOL_GUIDE],
     ['constraint-awareness', constraintGuide],

@@ -4,6 +4,7 @@
 import Stripe from 'stripe';
 
 import { prisma, PayoutStatus } from '../lib/prisma';
+import { getFrontendUrl } from '../lib/cloud-urls';
 
 export const PLATFORM_FEE_PERCENT = 20;
 
@@ -39,26 +40,81 @@ export function __getStripeForTesting(): Stripe {
   return getStripe();
 }
 
-export type PayoutDetails = {
-  bankAccountToken?: string;
-  firstName: string;
-  lastName: string;
-  dob: { day: number; month: number; year: number };
-  address: {
-    line1: string;
-    city: string;
-    state: string;
-    postal_code: string;
-    country: string;
-  };
-  ssnLast4?: string;
-  email: string;
-};
-
 function platformFeeAmountCents(priceInCents: number): number {
   return Math.round((priceInCents * PLATFORM_FEE_PERCENT) / 100);
 }
 
+/**
+ * Get-or-create the single Stripe Express Connect account for a user, shared
+ * across BOTH their marketplace CreatorProfile and their Affiliate record.
+ *
+ * A user may wear one or both hats but is paid through one connected account;
+ * the id is mirrored onto whichever of the two rows exist so every read site
+ * (`CreatorProfile.stripeCustomAccountId` / `Affiliate.stripeCustomAccountId`)
+ * resolves to the same account.
+ *
+ * Express accounts let Stripe host KYC/identity + bank collection via the
+ * hosted onboarding flow (see the onboarding-link helpers); we keep
+ * `payouts.schedule.interval = 'manual'` so the marketplace payout release and
+ * the affiliate payout cron stay in control of connected-account → bank
+ * transfers rather than Stripe auto-paying out.
+ *
+ * Legacy note: if a user somehow already has two *different* account ids
+ * (provisioned before accounts were shared) we leave them as-is — Stripe
+ * accounts can't be merged — and only backfill a side whose id is null.
+ */
+async function getOrCreateSharedConnectAccountId(opts: {
+  userId: string;
+  email: string;
+  country?: string;
+}): Promise<string> {
+  const [profile, affiliate] = await Promise.all([
+    prisma.creatorProfile.findUnique({ where: { userId: opts.userId } }),
+    prisma.affiliate.findUnique({ where: { userId: opts.userId } }),
+  ]);
+
+  let accountId =
+    profile?.stripeCustomAccountId ?? affiliate?.stripeCustomAccountId ?? null;
+
+  if (!accountId) {
+    if (!isStripeConfigured()) {
+      accountId = `acct_mock_${opts.userId.slice(0, 12)}`;
+    } else {
+      const stripe = getStripe();
+      const account = await stripe.accounts.create({
+        type: 'express',
+        country: opts.country ?? 'US',
+        email: opts.email,
+        capabilities: { transfers: { requested: true } },
+        settings: { payouts: { schedule: { interval: 'manual' } } },
+        metadata: { userId: opts.userId, kind: 'shared' },
+      });
+      accountId = account.id;
+    }
+  }
+
+  // Mirror the id onto both rows so creator + affiliate always share it.
+  if (profile && profile.stripeCustomAccountId == null) {
+    await prisma.creatorProfile.update({
+      where: { id: profile.id },
+      data: { stripeCustomAccountId: accountId },
+    });
+  }
+  if (affiliate && affiliate.stripeCustomAccountId == null) {
+    await prisma.affiliate.update({
+      where: { id: affiliate.id },
+      data: { stripeCustomAccountId: accountId },
+    });
+  }
+
+  return accountId;
+}
+
+/**
+ * Ensure the marketplace creator has a (shared) Express Connect account and
+ * return its id, persisting it on the CreatorProfile. Shares the same account
+ * as the user's Affiliate record when present.
+ */
 export async function createCustomAccount(
   creatorProfileId: string,
   email: string,
@@ -73,51 +129,18 @@ export async function createCustomAccount(
   if (profile.stripeCustomAccountId) {
     return profile.stripeCustomAccountId;
   }
-
-  if (!isStripeConfigured()) {
-    const mockId = `acct_mock_${creatorProfileId.slice(0, 12)}`;
-    await prisma.creatorProfile.update({
-      where: { id: creatorProfileId },
-      data: { stripeCustomAccountId: mockId },
-    });
-    return mockId;
-  }
-
-  const stripe = getStripe();
-  const account = await stripe.accounts.create({
-    type: 'custom',
-    country,
+  return getOrCreateSharedConnectAccountId({
+    userId: profile.userId,
     email,
-    capabilities: {
-      transfers: { requested: true },
-    },
-    settings: {
-      payouts: {
-        schedule: {
-          interval: 'manual',
-        },
-      },
-    },
+    country,
   });
-
-  await prisma.creatorProfile.update({
-    where: { id: creatorProfileId },
-    data: { stripeCustomAccountId: account.id },
-  });
-
-  return account.id;
 }
 
 /**
- * Create a Stripe Custom Connect account for an Affiliate (MLM program).
- *
- * Affiliates and CreatorProfiles deliberately get separate Connect
- * accounts: tax categorization and 1099 issuance differ between
- * marketplace-sales recipients and referral commission recipients,
- * so we keep them on separate Stripe accounts to keep reporting clean.
- *
- * Returns either the existing onboarding URL or the persisted account id.
- * The route layer converts the bare id into a Stripe AccountLink URL.
+ * Ensure the affiliate has a (shared) Express Connect account and return its
+ * id. Shares the same account as the user's marketplace CreatorProfile when
+ * present — resolved/created via {@link getOrCreateSharedConnectAccountId}
+ * keyed on the affiliate's userId.
  */
 export async function createCustomAccountForAffiliate(
   affiliateId: string,
@@ -129,152 +152,91 @@ export async function createCustomAccountForAffiliate(
   if (!affiliate) throw new Error('Affiliate not found');
   if (affiliate.stripeCustomAccountId) return affiliate.stripeCustomAccountId;
 
-  const email = (affiliate as any).user?.email ?? `affiliate+${affiliateId}@shogo.local`;
+  const email =
+    (affiliate as any).user?.email ?? `affiliate+${affiliateId}@shogo.local`;
+  return getOrCreateSharedConnectAccountId({ userId: affiliate.userId, email });
+}
 
-  if (!isStripeConfigured()) {
-    const mockId = `acct_mock_aff_${affiliateId.slice(0, 12)}`;
-    await prisma.affiliate.update({
-      where: { id: affiliateId },
-      data: { stripeCustomAccountId: mockId },
-    });
-    return mockId;
+/**
+ * Mint a single-use Stripe-hosted onboarding (AccountLink) URL for a connected
+ * account. Stripe collects identity/KYC + bank details on the hosted page and
+ * fires `account.updated` webhooks as requirements clear, which
+ * {@link handleAccountUpdated} maps back onto the owning CreatorProfile and/or
+ * Affiliate payoutStatus.
+ *
+ * `returnPath` is the in-app path (e.g. `/affiliate`, `/marketplace/creator`)
+ * the hosted flow redirects back to. When Stripe is unconfigured (local/dev)
+ * there is no hosted page to link to, so we return that app URL directly.
+ */
+async function createConnectOnboardingLink(
+  accountId: string,
+  returnPath: string,
+): Promise<string> {
+  const base = getFrontendUrl().replace(/\/$/, '');
+  if (!isStripeConfigured() || accountId.startsWith('acct_mock')) {
+    return `${base}${returnPath}?connect=mock`;
   }
 
   const stripe = getStripe();
-  const account = await stripe.accounts.create({
-    type: 'custom',
-    country: 'US',
-    email,
-    capabilities: {
-      transfers: { requested: true },
-    },
-    settings: {
-      payouts: { schedule: { interval: 'manual' } },
-    },
-    metadata: { affiliateId, kind: 'affiliate' },
+  const link = await stripe.accountLinks.create({
+    account: accountId,
+    type: 'account_onboarding',
+    refresh_url: `${base}${returnPath}?connect=refresh`,
+    return_url: `${base}${returnPath}?connect=done`,
   });
-
-  await prisma.affiliate.update({
-    where: { id: affiliateId },
-    data: { stripeCustomAccountId: account.id },
-  });
-
-  return account.id;
+  return link.url;
 }
 
-/** Affiliate equivalent of submitPayoutDetails — writes back to Affiliate. */
-export async function submitPayoutDetailsForAffiliate(
+/**
+ * Hosted onboarding link for an affiliate's (shared) Express account.
+ * Ensures the account exists via {@link createCustomAccountForAffiliate}.
+ */
+export async function createAffiliateOnboardingLink(
   affiliateId: string,
-  details: PayoutDetails,
-): Promise<{ payoutStatus: PayoutStatus }> {
+): Promise<string> {
+  const accountId = await createCustomAccountForAffiliate(affiliateId);
+  return createConnectOnboardingLink(accountId, '/affiliate');
+}
+
+/**
+ * Hosted onboarding link for a marketplace creator's (shared) Express account.
+ * Ensures the account exists via {@link createCustomAccount}.
+ */
+export async function createCreatorOnboardingLink(
+  creatorProfileId: string,
+  email: string,
+  country = 'US',
+): Promise<string> {
+  const accountId = await createCustomAccount(creatorProfileId, email, country);
+  return createConnectOnboardingLink(accountId, '/marketplace/creator');
+}
+
+/**
+ * Re-read an affiliate's Express account from Stripe and persist the derived
+ * `payoutStatus`. Used by the status endpoint so the app can reflect a
+ * verified account immediately on return from hosted onboarding without
+ * waiting for the `account.updated` webhook (which remains the source of
+ * truth but may lag).
+ */
+export async function syncAffiliatePayoutStatus(
+  affiliateId: string,
+): Promise<PayoutStatus> {
   const affiliate = await prisma.affiliate.findUnique({ where: { id: affiliateId } });
   if (!affiliate?.stripeCustomAccountId) {
     throw new Error('Affiliate has no Stripe Connect account');
   }
   if (!isStripeConfigured()) {
-    await prisma.affiliate.update({
-      where: { id: affiliateId },
-      data: { payoutStatus: 'pending_verification' as any },
-    });
-    return { payoutStatus: 'pending_verification' as any };
+    return (affiliate.payoutStatus as PayoutStatus) ?? PayoutStatus.pending_verification;
   }
 
   const stripe = getStripe();
-  const individual: Stripe.AccountUpdateParams.Individual = {
-    first_name: details.firstName,
-    last_name: details.lastName,
-    email: details.email,
-    dob: { day: details.dob.day, month: details.dob.month, year: details.dob.year },
-    address: {
-      line1: details.address.line1,
-      city: details.address.city,
-      state: details.address.state,
-      postal_code: details.address.postal_code,
-      country: details.address.country,
-    },
-  };
-  if (details.ssnLast4) individual.ssn_last_4 = details.ssnLast4;
-
-  const params: Stripe.AccountUpdateParams = { individual };
-  if (details.bankAccountToken) params.external_account = details.bankAccountToken;
-
-  await stripe.accounts.update(affiliate.stripeCustomAccountId, params);
+  const acct = await stripe.accounts.retrieve(affiliate.stripeCustomAccountId);
+  const payoutStatus = derivePayoutStatusFromAccount(acct);
   await prisma.affiliate.update({
     where: { id: affiliateId },
-    data: { payoutStatus: 'pending_verification' as any },
+    data: { payoutStatus: payoutStatus as any },
   });
-  return { payoutStatus: 'pending_verification' as any };
-}
-
-export async function submitPayoutDetails(
-  creatorProfileId: string,
-  details: PayoutDetails,
-): Promise<void> {
-  const profile = await prisma.creatorProfile.findUnique({
-    where: { id: creatorProfileId },
-  });
-  if (!profile) {
-    throw new Error('Creator profile not found');
-  }
-
-  // Self-heal: if the Connect account was never provisioned (e.g. the
-  // best-effort creation during profile setup failed, or predates that
-  // step), create it now rather than rejecting the payout submission.
-  const stripeAccountId =
-    profile.stripeCustomAccountId ??
-    (await createCustomAccount(
-      creatorProfileId,
-      details.email,
-      details.address.country,
-    ));
-
-  if (!isStripeConfigured()) {
-    await prisma.creatorProfile.update({
-      where: { id: creatorProfileId },
-      data: {
-        payoutStatus: PayoutStatus.pending_verification,
-        payoutDetailsSubmittedAt: new Date(),
-      },
-    });
-    return;
-  }
-
-  const stripe = getStripe();
-  const individual: Stripe.AccountUpdateParams.Individual = {
-    first_name: details.firstName,
-    last_name: details.lastName,
-    email: details.email,
-    dob: {
-      day: details.dob.day,
-      month: details.dob.month,
-      year: details.dob.year,
-    },
-    address: {
-      line1: details.address.line1,
-      city: details.address.city,
-      state: details.address.state,
-      postal_code: details.address.postal_code,
-      country: details.address.country,
-    },
-  };
-  if (details.ssnLast4) {
-    individual.ssn_last_4 = details.ssnLast4;
-  }
-
-  const params: Stripe.AccountUpdateParams = { individual };
-  if (details.bankAccountToken) {
-    params.external_account = details.bankAccountToken;
-  }
-
-  await stripe.accounts.update(stripeAccountId, params);
-
-  await prisma.creatorProfile.update({
-    where: { id: creatorProfileId },
-    data: {
-      payoutStatus: PayoutStatus.pending_verification,
-      payoutDetailsSubmittedAt: new Date(),
-    },
-  });
+  return payoutStatus;
 }
 
 export async function getAccountStatus(creatorProfileId: string): Promise<{
@@ -335,10 +297,18 @@ function derivePayoutStatusFromAccount(acct: Stripe.Account): PayoutStatus {
 export async function handleAccountUpdated(stripeAccountId: string): Promise<void> {
   if (!isStripeConfigured()) return;
 
-  const profile = await prisma.creatorProfile.findFirst({
-    where: { stripeCustomAccountId: stripeAccountId },
-  });
-  if (!profile) {
+  // A connected account id belongs to either a marketplace CreatorProfile or
+  // an Affiliate (separate Connect accounts by design). Resolve both so the
+  // single `account.updated` webhook keeps either side's payoutStatus in sync.
+  const [profile, affiliate] = await Promise.all([
+    prisma.creatorProfile.findFirst({
+      where: { stripeCustomAccountId: stripeAccountId },
+    }),
+    prisma.affiliate.findFirst({
+      where: { stripeCustomAccountId: stripeAccountId },
+    }),
+  ]);
+  if (!profile && !affiliate) {
     return;
   }
 
@@ -346,10 +316,18 @@ export async function handleAccountUpdated(stripeAccountId: string): Promise<voi
   const acct = await stripe.accounts.retrieve(stripeAccountId);
   const payoutStatus = derivePayoutStatusFromAccount(acct);
 
-  await prisma.creatorProfile.update({
-    where: { id: profile.id },
-    data: { payoutStatus },
-  });
+  if (profile) {
+    await prisma.creatorProfile.update({
+      where: { id: profile.id },
+      data: { payoutStatus },
+    });
+  }
+  if (affiliate) {
+    await prisma.affiliate.update({
+      where: { id: affiliate.id },
+      data: { payoutStatus: payoutStatus as any },
+    });
+  }
 }
 
 export async function createCheckoutSession(params: {

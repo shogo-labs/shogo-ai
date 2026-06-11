@@ -241,6 +241,27 @@ function getAuthConfigs(): ComposioAuthConfigs {
 
 let composioClient: Composio | null = null
 
+/**
+ * Directories the SDK is allowed to read local files from during *automatic*
+ * file upload (when `dangerouslyAllowAutoUploadDownloadFiles` is on). Passing a
+ * value REPLACES the SDK default (`~/.composio/temp`), so we re-add it and add
+ * the agent's workspace root — that's where the agent writes the media it then
+ * passes to `file_uploadable` tool fields (e.g. YOUTUBE_UPLOAD_VIDEO's
+ * `videoFilePath`). `WORKSPACE_DIR` mirrors the resolution in server.ts. The
+ * built-in sensitive-path denylist (`.ssh`, `.aws`, `.env`, …) stays on.
+ */
+function getComposioFileUploadDirs(): string[] {
+  const workspaceDir =
+    process.env.WORKSPACE_DIR ||
+    process.env.AGENT_DIR ||
+    process.env.PROJECT_DIR ||
+    '/app/workspace'
+  const home = process.env.HOME
+  const dirs = [workspaceDir]
+  if (home) dirs.push(`${home}/.composio/temp`)
+  return dirs
+}
+
 function getComposioClient(): Composio | null {
   if (composioClient) return composioClient
 
@@ -248,8 +269,25 @@ function getComposioClient(): Composio | null {
   const proxyUrl = process.env.TOOLS_PROXY_URL
   const proxyToken = process.env.AI_PROXY_TOKEN
 
+  // Resolve tools/execution against the latest toolkit version. Under SDK 0.6.x
+  // (API v3) the default was the base pinned version `00000000_00`, which only
+  // contains a toolkit's initial-release tools — so newer slugs 404'd at execute
+  // ("Tool X not found" / "Unable to retrieve tool with slug"). SDK 0.10 + API
+  // v3.1 default to `latest`; we pin it explicitly so the behavior is obvious.
+  //
+  // `dangerouslyAllowAutoUploadDownloadFiles` re-enables automatic staging of
+  // local files for `file_uploadable` tool fields. SDK 0.6.5 did this by
+  // default; SDK 0.10 turns it OFF by default, so a raw local path was forwarded
+  // as-is and Composio's backend mis-read it as an existing `s3key`, failing with
+  // "Failed to download file with s3key '…': storage returned HTTP 404" (broke
+  // YOUTUBE_UPLOAD_VIDEO / YOUTUBE_MULTIPART_UPLOAD_VIDEO post-upgrade).
   if (apiKey) {
-    composioClient = new Composio({ apiKey })
+    composioClient = new Composio({
+      apiKey,
+      toolkitVersions: 'latest',
+      dangerouslyAllowAutoUploadDownloadFiles: true,
+      fileUploadDirs: getComposioFileUploadDirs(),
+    })
     console.log('[Composio] Client initialized (direct)')
     return composioClient
   }
@@ -258,6 +296,9 @@ function getComposioClient(): Composio | null {
     composioClient = new Composio({
       apiKey: proxyToken,
       baseURL: `${proxyUrl}/composio`,
+      toolkitVersions: 'latest',
+      dangerouslyAllowAutoUploadDownloadFiles: true,
+      fileUploadDirs: getComposioFileUploadDirs(),
     })
     console.log('[Composio] Client initialized (via proxy)')
     return composioClient
@@ -403,16 +444,148 @@ export function buildLegacyComposioUserId(userId: string, projectId: string): st
 // Proxy tool registration
 // ---------------------------------------------------------------------------
 
-const COMPOSIO_AUTH_ERROR_PATTERNS = [
-  'unauthorized', 'forbidden', 'not_authed', 'invalid_auth',
-  'token expired', 'refresh token', 'invalid_grant', 'expired',
-  'revoked', 'auth_expired', 'credentials', 'oauth',
-  'access denied', 'authentication failed',
+// Distinguish failure classes so the agent reacts correctly instead of
+// retrying blindly or surfacing an opaque error:
+//   auth       -> OAuth session expired/invalid -> reconnect
+//   permission -> connected but missing scope (e.g. YouTube 403) -> reconnect w/ scope
+//   notfound   -> resource id wrong OR slug not in catalog -> verify id / discover slug
+//   validation -> bad arguments (e.g. token passed as channel id) -> fix args
+const COMPOSIO_AUTH_PATTERNS = [
+  'not_authed', 'invalid_auth', 'token expired', 'refresh token',
+  'invalid_grant', 'revoked', 'auth_expired', 'oauth', '401',
+  'unauthorized', 'authentication failed', 'credentials',
+]
+const COMPOSIO_PERMISSION_PATTERNS = [
+  'forbidden', '403', 'access denied', 'not properly authorized',
+  'insufficient scope', 'insufficient permission', 'permission denied',
+]
+const COMPOSIO_NOTFOUND_PATTERNS = [
+  '404', 'not found', 'unable to retrieve tool', 'tool not found',
+  'toolnotfound', 'does not exist',
+]
+const COMPOSIO_VALIDATION_PATTERNS = [
+  'validation failed', 'invalid request data', 'must have required',
+  'required propert', 'value error', 'invalid arguments', 'invalid value',
+  'invalid format',
+]
+// The integration was never connected for this user/toolkit (distinct from an
+// expired OAuth session). Composio returns ActionExecute_ConnectedAccountNotFound.
+const COMPOSIO_NOTCONNECTED_PATTERNS = [
+  'no connected account', 'connectedaccountnotfound', 'no active connection',
+  'connect your', 'connect the', 'initiate_connection',
 ]
 
-function isComposioAuthError(raw: string): boolean {
-  const l = raw.toLowerCase()
-  return COMPOSIO_AUTH_ERROR_PATTERNS.some(p => l.includes(p))
+type ComposioErrorKind = 'auth' | 'permission' | 'notfound' | 'validation' | 'notconnected' | 'unknown'
+
+/**
+ * The Composio SDK (>=0.6) throws ComposioToolExecutionError on failure with a
+ * GENERIC top-level message ("Error executing the tool X"). The actionable cause
+ * (ConnectedAccountNotFound, 401/403, validation detail, suggested_fix) lives in
+ * err.cause.message / err.cause.error. Surface the deepest signal so the agent
+ * can self-correct instead of seeing an opaque error. Verified against live
+ * Composio responses (GITHUB_LIST_COMMITS w/o connected account -> code 1810).
+ */
+export function extractComposioErrorDetail(err: unknown): string {
+  if (err == null) return ''
+  if (typeof err === 'string') return err
+  const e = err as any
+  const parts: string[] = []
+  const push = (v: unknown) => { if (typeof v === 'string' && v) parts.push(v) }
+  const fromBody = (body: any) => {
+    const inner = body?.error ?? body
+    push(inner?.slug)
+    push(inner?.message)
+    push(inner?.suggested_fix)
+  }
+  // Top-level message (generic but harmless to include).
+  push(e?.message)
+  // SDK wraps the HTTP error in .cause; the body is on cause.error / cause.message.
+  const cause = e?.cause
+  if (cause) {
+    push(cause?.message)
+    fromBody(cause?.error)
+  }
+  // Some shapes expose the parsed body directly.
+  fromBody(e?.error)
+  fromBody(e?.response?.data)
+  return parts.join(' | ')
+}
+
+interface ComposioErrorClass {
+  kind: ComposioErrorKind
+  authExpired?: boolean
+  needsScope?: boolean
+  needsArgFix?: boolean
+  hint?: string
+}
+
+export function classifyComposioError(raw: string): ComposioErrorClass {
+  const l = (raw || '').toLowerCase()
+  // Bare numeric patterns (HTTP codes) must match on word boundaries — otherwise
+  // '401' spuriously matches inside an error code like 2401. Verified: a live
+  // Tool_ToolNotFound 404 payload carries "code":2401 and was misclassified auth.
+  const matches = (p: string) =>
+    /^\d+$/.test(p) ? new RegExp(`\\b${p}\\b`).test(l) : l.includes(p)
+  const has = (pats: string[]) => pats.some(matches)
+  // Most-specific first: validation/not-found before the broad auth keywords.
+  if (has(COMPOSIO_VALIDATION_PATTERNS)) {
+    return {
+      kind: 'validation',
+      needsArgFix: true,
+      hint: "Arguments were rejected. Re-read this tool's required parameters and retry with corrected arguments — never pass an OAuth token, API key, or a guessed value where a resource id/handle is expected.",
+    }
+  }
+  if (has(COMPOSIO_NOTCONNECTED_PATTERNS)) {
+    return {
+      kind: 'notconnected',
+      authExpired: true,
+      hint: 'This integration is not connected for the user yet. Initiate the connection flow (connect / COMPOSIO_INITIATE_CONNECTION) for this toolkit and wait for the user to authorize, then retry. Do not repeat the call until the account is connected.',
+    }
+  }
+  if (has(COMPOSIO_AUTH_PATTERNS)) {
+    return {
+      kind: 'auth',
+      authExpired: true,
+      hint: "The integration's OAuth session is expired or invalid. Ask the user to reconnect the integration, then retry.",
+    }
+  }
+  if (has(COMPOSIO_PERMISSION_PATTERNS)) {
+    return {
+      kind: 'permission',
+      needsScope: true,
+      hint: 'The integration is connected but lacks the scope/permission for this action. Ask the user to reconnect granting the required scope (e.g. repo for GitHub, youtube.* for YouTube), then retry. Do not repeat the call unchanged.',
+    }
+  }
+  if (has(COMPOSIO_NOTFOUND_PATTERNS)) {
+    return {
+      kind: 'notfound',
+      hint: 'The target resource was not found, or the tool slug is not available. Verify the id/handle (do not guess ids), or use search_integrations/connect to find the correct tool. Do not repeat the same call unchanged.',
+    }
+  }
+  return { kind: 'unknown' }
+}
+
+/** Build the structured error payload the agent sees, optionally enriched
+ *  with the valid bound slugs for this toolkit (helps the agent self-correct
+ *  when it invents or mis-types a slug). */
+function buildComposioErrorResult(errMsg: string, slug: string) {
+  const c = classifyComposioError(errMsg)
+  let hint = c.hint
+  if (c.kind === 'notfound' && /retrieve tool with slug|tool .*not found|not found/i.test(errMsg)) {
+    const prefix = `${slug.split('_')[0]}_`
+    const available = [...registeredProxyToolNames].filter(n => n.startsWith(prefix)).slice(0, 40)
+    if (available.length > 0) {
+      hint = `${hint ?? ''} Valid bound tools for this integration: ${available.join(', ')}.`.trim()
+    }
+  }
+  return {
+    error: errMsg,
+    errorKind: c.kind,
+    ...(c.authExpired && { authExpired: true }),
+    ...(c.needsScope && { needsScope: true }),
+    ...(c.needsArgFix && { needsArgFix: true }),
+    ...(hint && { hint }),
+  }
 }
 
 function textResult(data: any): AgentToolResult<any> {
@@ -421,6 +594,21 @@ function textResult(data: any): AgentToolResult<any> {
     details: data,
   }
 }
+
+/**
+ * Composio tools the catalog exposes but that are broken upstream — we never
+ * bind them, so the agent can't discover or call them.
+ *
+ * - `YOUTUBE_UPLOAD_VIDEO`: the API accepts the upload and returns a video id,
+ *   but its non-resumable media transfer yields a file YouTube cannot process
+ *   ("Processing abandoned"). Verified end-to-end against the real SDK for both
+ *   a tiny synthetic clip and a proper 720p H.264/AAC file — 3/3 abandoned,
+ *   while `YOUTUBE_MULTIPART_UPLOAD_VIDEO` processed successfully every time.
+ *   Agents should use `YOUTUBE_MULTIPART_UPLOAD_VIDEO` instead.
+ */
+const COMPOSIO_BLOCKED_SLUGS = new Set<string>([
+  'YOUTUBE_UPLOAD_VIDEO',
+])
 
 /**
  * Dynamically register proxy AgentTools for each action in a Composio toolkit.
@@ -433,15 +621,24 @@ export async function registerToolkitProxyTools(
 ): Promise<{ toolNames: string[]; toolCount: number }> {
   const prefix = `${toolkitSlug.toUpperCase()}_`
   const alreadyRegistered = [...registeredProxyToolNames].filter(n => n.startsWith(prefix))
-  if (alreadyRegistered.length > 0) {
-    console.log(`[Composio] Toolkit "${toolkitSlug}" already has ${alreadyRegistered.length} proxy tools registered`)
-    return { toolNames: alreadyRegistered, toolCount: alreadyRegistered.length }
-  }
 
+  // We always re-fetch on (re)connect rather than blindly trusting a prior
+  // registration. A registration that partially failed — or that predates the
+  // pagination fix and was silently capped at the old 100-tool limit — leaves a
+  // non-empty-but-incomplete Set; an early-return would make that gap permanent
+  // for the life of the runtime. addProxyTools dedupes by name, so re-running is
+  // cheap and self-heals: it appends only the slugs that were missing.
   const schemas = await fetchComposioToolSchemas(toolkitSlug)
-  const nonDeprecated = schemas.filter(s => !s.is_deprecated)
+  const nonDeprecated = schemas.filter(
+    s => !s.is_deprecated && !COMPOSIO_BLOCKED_SLUGS.has(s.slug),
+  )
 
   if (nonDeprecated.length === 0) {
+    // Don't discard a prior good registration on a transient empty fetch.
+    if (alreadyRegistered.length > 0) {
+      console.warn(`[Composio] Empty fetch for "${toolkitSlug}"; keeping ${alreadyRegistered.length} already-registered tools`)
+      return { toolNames: alreadyRegistered, toolCount: alreadyRegistered.length }
+    }
     console.warn(`[Composio] No tools found for toolkit "${toolkitSlug}"`)
     return { toolNames: [], toolCount: 0 }
   }
@@ -451,7 +648,11 @@ export async function registerToolkitProxyTools(
 
   const toolNames = proxyTools.map(t => t.name)
   for (const n of toolNames) registeredProxyToolNames.add(n)
-  console.log(`[Composio] Registered ${toolNames.length} proxy tools for "${toolkitSlug}"`)
+  if (alreadyRegistered.length > 0 && toolNames.length > alreadyRegistered.length) {
+    console.log(`[Composio] Repaired partial registration for "${toolkitSlug}": ${alreadyRegistered.length} -> ${toolNames.length} proxy tools`)
+  } else {
+    console.log(`[Composio] Registered ${toolNames.length} proxy tools for "${toolkitSlug}"`)
+  }
   return { toolNames, toolCount: toolNames.length }
 }
 
@@ -469,6 +670,17 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
     parameters = Type.Object(props)
   }
 
+  // Fields the catalog marks `file_uploadable` (e.g. YOUTUBE_UPLOAD_VIDEO's
+  // `videoFilePath`). The SDK's auto-upload reads a local *path* arg and stages
+  // it to Composio storage — but it resolves a relative path against
+  // `process.cwd()`, which is not the agent's workspace. The agent typically
+  // passes a workspace-relative path ("uploads/clip.mp4"), so we rebase those
+  // onto WORKSPACE_DIR before execute. URLs and already-staged descriptors are
+  // left untouched.
+  const fileUploadableFields = Object.entries(schema.input_parameters?.properties ?? {})
+    .filter(([, prop]) => (prop as any)?.file_uploadable === true)
+    .map(([key]) => key)
+
   return {
     name: schema.slug,
     description: schema.description || `Composio tool: ${schema.slug}`,
@@ -480,36 +692,95 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
         return textResult({ error: 'Composio not initialized. Call connect first.' })
       }
       const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
-      try {
-        const t0 = performance.now()
-        const result = await client.tools.execute(schema.slug, {
-          userId: storedComposioUserId,
-          arguments: args,
-          dangerouslySkipVersionCheck: true,
-        })
-        const elapsed = performance.now() - t0
-        recordTiming(schema.slug, elapsed)
 
-        if (!result.successful) {
-          const errMsg = result.error || `Tool ${schema.slug} returned an error`
-          const authExpired = isComposioAuthError(errMsg)
-          return textResult({ error: errMsg, ...(authExpired && { authExpired: true }) })
+      // Rebase relative file paths onto the workspace so the SDK's auto-upload
+      // (which resolves against process.cwd()) can read them. Absolute paths,
+      // URLs, and pre-staged { s3key } descriptors pass through unchanged.
+      if (fileUploadableFields.length > 0) {
+        const path = require('node:path') as typeof import('node:path')
+        const workspaceDir =
+          process.env.WORKSPACE_DIR ||
+          process.env.AGENT_DIR ||
+          process.env.PROJECT_DIR ||
+          '/app/workspace'
+        for (const field of fileUploadableFields) {
+          const value = args[field]
+          if (
+            typeof value === 'string' &&
+            value &&
+            !/^[a-z][a-z0-9+.-]*:\/\//i.test(value) &&
+            !path.isAbsolute(value)
+          ) {
+            args[field] = path.resolve(workspaceDir, value)
+          }
         }
-
-        const MAX_CHARS = 25000
-        const { result: raw, truncated } = smartTruncateJson(result.data, MAX_CHARS)
-
-        let annotation = ''
-        if (truncated) {
-          annotation = `\n\n[Response was truncated from ${JSON.stringify(result.data).length} to ${raw.length} chars. For large datasets, use the skill server pattern: create a Prisma schema in .shogo/server/schema.prisma, ingest the data via a script, then query and display with canvas code.]`
-        }
-
-        return textResult(raw + annotation)
-      } catch (err: any) {
-        const errMsg = `Tool "${schema.slug}" failed: ${err.message}`
-        const authExpired = isComposioAuthError(err.message)
-        return textResult({ error: errMsg, ...(authExpired && { authExpired: true }) })
       }
+
+      // A single execute attempt, normalized to a discriminated result so the
+      // throw path and the `!successful` path share one classification.
+      type Attempt =
+        | { ok: true; data: unknown }
+        | { ok: false; errMsg: string; kind: ComposioErrorKind }
+      const attempt = async (): Promise<Attempt> => {
+        try {
+          const t0 = performance.now()
+          const result = await client.tools.execute(schema.slug, {
+            userId: storedComposioUserId!,
+            arguments: args,
+            dangerouslySkipVersionCheck: true,
+          })
+          recordTiming(schema.slug, performance.now() - t0)
+          if (!result.successful) {
+            const errMsg = extractComposioErrorDetail(result) || result.error || `Tool ${schema.slug} returned an error`
+            return { ok: false, errMsg, kind: classifyComposioError(errMsg).kind }
+          }
+          return { ok: true, data: result.data }
+        } catch (err: any) {
+          // The SDK throws with a generic top-level message; the real cause
+          // (ConnectedAccountNotFound, 401/403, validation) is nested in err.cause.
+          const detail = extractComposioErrorDetail(err) || err?.message || 'unknown error'
+          const errMsg = `Tool "${schema.slug}" failed: ${detail}`
+          return { ok: false, errMsg, kind: classifyComposioError(errMsg).kind }
+        }
+      }
+
+      // Composio's execute endpoint intermittently returns "tool not found" /
+      // "unable to retrieve tool" for valid, catalog-listed-and-connected slugs
+      // (confirmed in prod: the same slug succeeds 8-22x and 404s a few times in
+      // the same window). Retry once to ride through the transient. Persistent
+      // notfound (phantom catalog tools, agent-invented slugs) just fails the
+      // second time too and falls through to the classified self-correct hint.
+      let res = await attempt()
+      if (!res.ok && res.kind === 'notfound') {
+        const rawDelay = process.env.COMPOSIO_NOTFOUND_RETRY_DELAY_MS
+        const delayMs = rawDelay != null && rawDelay !== '' && Number.isFinite(Number(rawDelay))
+          ? Math.max(0, Number(rawDelay))
+          : 500
+        await new Promise(r => setTimeout(r, delayMs))
+        const retry = await attempt()
+        if (retry.ok || retry.kind !== 'notfound') res = retry
+      }
+
+      if (!res.ok) {
+        return textResult(buildComposioErrorResult(res.errMsg, schema.slug))
+      }
+
+      // Configurable so large integration payloads (e.g. Shopify product
+      // catalogs) aren't always clipped at the legacy 25k default.
+      const MAX_CHARS = Math.max(4000, Number(process.env.COMPOSIO_MAX_RESULT_CHARS) || 25000)
+      const { result: raw, truncated } = smartTruncateJson(res.data, MAX_CHARS)
+
+      let annotation = ''
+      if (truncated) {
+        const slug = schema.slug.toUpperCase()
+        const isGoogleDoc = slug.includes('GOOGLEDOCS') || slug.includes('GOOGLE_DOCS')
+        const docHint = isGoogleDoc
+          ? ` This is a Google Doc: to read the COMPLETE document (including its ending/conclusion), export it via GOOGLEDRIVE_DOWNLOAD_FILE or GOOGLEDRIVE_EXPORT_FILE using the same document id — that returns the full body. Do NOT summarize the document's decision or conclusion from this truncated copy.`
+          : ''
+        annotation = `\n\n[⚠️ TRUNCATED — this response was cut from ${JSON.stringify(res.data).length} to ${raw.length} chars and is INCOMPLETE. Do not treat it as the whole result or answer as if you have seen the end. To get the full value, re-fetch the source directly: page through with a smaller range, or export/download the underlying file.${docHint} For large datasets, use the skill server pattern: create a Prisma schema in .shogo/server/schema.prisma, ingest the data via a script, then query and display with canvas code.]`
+      }
+
+      return textResult(raw + annotation)
     },
   } as AgentTool
 }

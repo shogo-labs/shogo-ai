@@ -25,6 +25,17 @@ export {
 } from './git-bootstrap'
 
 export {
+  WorktreeManager,
+  WORKTREE_BRANCH_PREFIX,
+  WORKTREE_DIR_NAME,
+  type WorktreeManagerConfig,
+  type WorktreeInfo,
+  type WorktreeStatus,
+  type MergeResult,
+  type MergeOutcome,
+} from './git-worktree'
+
+export {
   persistRepoToStore,
   restoreRepoFromStore,
   seedRepoIfAbsent,

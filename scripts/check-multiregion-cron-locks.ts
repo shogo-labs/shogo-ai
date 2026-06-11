@@ -346,10 +346,30 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     writer: 'affiliate-invoice-reconciliation',
   },
   {
+    key: 'AffiliateCommission.(affiliateId,contentRunId,source)',
+    category: 'cron_locked',
+    reason:
+      'Content-CPM idempotency key. Written only by pollAccount (affiliate-content.service.ts) under withGlobalJobLock(poll-affiliate-content); contentRunId = the originating snapshot id (globally unique cuid), so even without the lock two rows could never collide on this key, and the lock guarantees a single regional writer per tick.',
+    writer: 'poll-affiliate-content',
+  },
+  {
     key: 'AffiliateCommissionTier.level',
     category: 'single_tenant_upsert',
     reason:
       'Seeded by the affiliate_system migration (INSERT ON CONFLICT DO NOTHING); runtime mutations only via a future super-admin route, single ingest per change.',
+  },
+  {
+    key: 'AffiliateSocialAccount.(handle,platform)',
+    category: 'request_scoped',
+    reason:
+      'addSocialAccount (affiliate-content.service.ts) is an opt-in user action with a findUnique idempotency early-return and a P2002 catch; one affiliate connecting a handle at a time. Residual cross-region double-submit during failover is P2 (caller surfaces handle_taken).',
+  },
+  {
+    key: 'AffiliatePost.(platform,providerPostId)',
+    category: 'cron_locked',
+    reason:
+      'Upserted only by pollAccount (affiliate-content.service.ts) under withGlobalJobLock(poll-affiliate-content) via findUnique-then-create inside a $transaction; exactly one region polls a given account per tick.',
+    writer: 'poll-affiliate-content',
   },
   {
     key: 'CreatorFollow.(creatorId,followerId)',

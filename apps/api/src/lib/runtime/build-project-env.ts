@@ -9,6 +9,7 @@
 
 import { generateProxyToken } from '../ai-proxy-token'
 import { getAgentModeOverrides } from '@shogo/model-catalog'
+import { buildAutoTierMapEnv } from './auto-tier-env'
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -73,6 +74,13 @@ export async function buildProjectEnv(
         env.MOUNT_WORKSPACE = 'false'
       }
 
+      // BETA: per-chat git worktrees (off by default). Injected so the
+      // runtime seeds config.json on cold boot; the live toggle path goes
+      // through PATCH /agent/config. Read in agent-runtime/src/server.ts.
+      if (settings?.gitWorktreesEnabled === true) {
+        env.SHOGO_GIT_WORKTREES = '1'
+      }
+
       // Tech stack is sourced exclusively from project.settings.techStackId
       // now that templateId is gone. Marketplace installs (the only flow
       // that creates new projects) populate this field directly from the
@@ -135,6 +143,11 @@ export async function buildProjectEnv(
   const modelOverrides = getAgentModeOverrides()
   if (modelOverrides.basic) env.AGENT_BASIC_MODEL = modelOverrides.basic
   if (modelOverrides.advanced) env.AGENT_ADVANCED_MODEL = modelOverrides.advanced
+
+  // Inject admin-configured Auto-mode tier overrides (public aliases resolved
+  // to backing model ids) so the spawn router can route Auto to e.g. Hoshi.
+  const autoTierMapEnv = buildAutoTierMapEnv()
+  if (autoTierMapEnv) env.AGENT_AUTO_TIER_MAP = autoTierMapEnv
 
   if (process.env.S3_WORKSPACES_BUCKET) {
     env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET

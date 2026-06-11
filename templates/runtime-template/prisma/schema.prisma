@@ -1,3 +1,5 @@
+// SHOGO:CUSTOM-START prisma-header
+// Managed by Shogo. Do not add a datasource `url` or change the generator `provider` — the database URL is configured in prisma.config.ts (Prisma 7+).
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -6,6 +8,7 @@ generator client {
 datasource db {
   provider = "sqlite"
 }
+// SHOGO:CUSTOM-END
 
 model User {
   id        String   @id @default(cuid())
