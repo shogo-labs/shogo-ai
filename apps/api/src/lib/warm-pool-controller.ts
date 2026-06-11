@@ -1606,13 +1606,18 @@ export class WarmPoolController {
           )
         }
 
-        // Use soft eviction by default: keep the live Knative service so a
-        // returning user reuses the warm pod (deps cache, gateway state)
-        // instead of paying the cost of a fresh warm-pool claim + S3
-        // restore. The Knative `scale-to-zero-pod-retention-period` (now
-        // 1800s by default in `knative-project-manager.ts`) handles the
-        // actual resource-freeing lifecycle.
-        await this.evictProject(pod.projectId, { deleteService: false }).catch((err) => {
+        // Hard-evict so we reclaim the pod's DISK when we GC it for being
+        // idle — not ~30 minutes later. Soft-evict kept the Knative service
+        // (and its running pod) alive for warm reuse, but that left the 5Gi
+        // emptyDir backing the workspace pinned on the node until Knative's
+        // `scale-to-zero-pod-retention-period` (1800s) finally dropped the
+        // pod. Dozens of idle-but-not-yet-reaped pods then stacked their
+        // emptyDirs on a node and drove it into DiskPressure (the 2026-06-11
+        // India incident). Deleting the service tears the pod (and its
+        // emptyDir) down immediately, reclaiming the disk now; the
+        // content-addressed S3 deps cache (`_deps-cache/<hash>.tar.gz`) keeps
+        // a returning user's re-warm fast without us pinning disk in between.
+        await this.evictProject(pod.projectId, { deleteService: true }).catch((err) => {
           console.error(`[WarmPool GC] Failed to evict ${pod.projectId}:`, err.message)
         })
         idleEvicted++
