@@ -2875,7 +2875,10 @@ export class AgentGateway {
               : isBillingError
                 ? 'Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.'
                 : isProviderError
-                  ? `AI provider error: ${msg}`
+                  // Don't leak raw upstream provider bodies (e.g. a WAF block
+                  // page) to the client — the full message is in the server
+                  // logs above. Surface a generic, actionable message instead.
+                  ? 'Model unavailable. Please try again shortly, or switch to a different model.'
                   : `I encountered an issue processing your message: ${msg}`
             uiWriter.write({ type: 'error', errorText } as any)
           }
@@ -2919,8 +2922,10 @@ export class AgentGateway {
           const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
           uiWriter.write({
             type: 'error',
+            // Generic message — raw provider bodies (e.g. WAF block pages) stay
+            // in the server logs above and are never surfaced to the client.
             errorText: isProviderError
-              ? `AI provider error: ${msg}`
+              ? 'Model unavailable. Please try again shortly, or switch to a different model.'
               : 'I encountered an issue processing your message. Please try starting a new conversation.',
           } as any)
         }
