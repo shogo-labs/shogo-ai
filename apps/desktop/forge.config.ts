@@ -58,6 +58,11 @@ const OPTIONAL_RESOURCES = [
   './resources/sherpa-onnx',
   './resources/shogo-sysaudio',
   './resources/seed.db',
+  // Runtime install scripts (e.g. download-sherpa.mjs) copied by bundle-api.mjs.
+  // The install-sherpa route resolves them at process.cwd()/scripts/, where
+  // cwd is process.resourcesPath in the packaged app. Without this, the
+  // directory is never shipped and install-sherpa 500s with "not found".
+  './resources/scripts',
 ]
 
 // VM disk images are Linux-only and not usable on Windows. Exclude them
