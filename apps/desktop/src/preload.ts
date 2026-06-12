@@ -287,16 +287,16 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('extensions:enable', id, scope, workspaceRoot),
     disable: (id: string, scope?: 'global' | 'workspace', workspaceRoot?: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }> =>
       ipcRenderer.invoke('extensions:disable', id, scope, workspaceRoot),
-    restartHost: (): Promise<{ ok: boolean; restarted?: boolean; message?: string; error?: string }> =>
-      ipcRenderer.invoke('extensions:restartHost'),
+    restartHost: (workspaceRoot?: string): Promise<{ ok: boolean; restarted?: boolean; message?: string; error?: string }> =>
+      ipcRenderer.invoke('extensions:restartHost', { workspaceRoot }),
     checkUpdates: (): Promise<{ ok: boolean; updates?: unknown[]; error?: string }> =>
       ipcRenderer.invoke('extensions:checkUpdates'),
     update: (id: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('extensions:update', id),
     getContributions: (workspaceRoot?: string): Promise<{ ok: boolean; extensions?: unknown[]; contributions?: unknown[]; error?: string }> =>
       ipcRenderer.invoke('extensions:getContributions', { workspaceRoot }),
-    runCommand: (commandId: string, args?: unknown[]): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
-      ipcRenderer.invoke('extensions:runCommand', commandId, args),
+    runCommand: (commandId: string, args?: unknown[], workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:runCommand', commandId, args, { workspaceRoot }),
     showRunningExtensions: (): Promise<{ ok: boolean; running?: unknown[]; message?: string; error?: string }> =>
       ipcRenderer.invoke('extensions:showRunningExtensions'),
     startBisect: (): Promise<{ ok: boolean; error?: string }> =>

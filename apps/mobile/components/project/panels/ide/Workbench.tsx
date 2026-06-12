@@ -1367,6 +1367,8 @@ export function Workbench({
     [roots, openFileInGroup, activeGroupIdx, activeGroup],
   );
 
+  const extensionsSummary = useExtensions({ workspaceRoot: gitWorkspaceRootRef.current });
+
   // ─── Commands ────────────────────────────────────────────────────────
   const commands: Command[] = useMemo(() => {
     const cmds: Command[] = [
@@ -1399,6 +1401,22 @@ export function Workbench({
         label: `Workspace: Close Folder "${r.label}"`,
         run: () => void closeRoot(r.id),
       });
+    }
+    for (const extension of extensionsSummary.installed) {
+      if (!extension.enabled || !extension.compatible) continue;
+      for (const command of extension.manifest.contributes?.commands ?? []) {
+        cmds.push({
+          id: `extension:${command.command}`,
+          label: `${command.category ? `${command.category}: ` : ""}${command.title}`,
+          category: command.category ?? extension.displayName ?? extension.name,
+          run: async () => {
+            const bridge = getDesktopExtensionsBridge();
+            if (!bridge) return;
+            const response = await bridge.runCommand(command.command, [], gitWorkspaceRootRef.current ?? undefined);
+            if (!response.ok) console.warn(response.error ?? `Extension command failed: ${command.command}`);
+          },
+        });
+      }
     }
     cmds.push(
       { id: "view.splitRight", label: "View: Split Editor Right", shortcut: "⌘\\", run: splitRight },
@@ -1495,7 +1513,7 @@ export function Workbench({
     handleSave, handleSaveAll, activeGroup, activeGroupIdx, closeInGroup, splitRight,
     closeOtherGroup, focusNextGroup, togglePinInGroup, gotoLine, refreshAllRoots,
     openLocalFolder, closeRoot, fsaSupported, roots, sidebarOpen, bottomPanelOpen,
-    requestNewTerminal,
+    requestNewTerminal, extensionsSummary.installed,
   ]);
 
   const commandItems: PaletteItem[] = useMemo(
@@ -1701,7 +1719,6 @@ export function Workbench({
   }, [projectId, folderPath]);
   const gitSnapshot = useGitStatus(gitWorkspaceRoot);
   const extensionsBridgeAvailable = getDesktopExtensionsBridge() !== null;
-  const extensionsSummary = useExtensions({ workspaceRoot: gitWorkspaceRoot });
 
   // ─── G4: git gutter markers + inline blame + conflict CodeLens ─────
   // Attach Monaco decorations + a code lens provider for the active

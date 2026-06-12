@@ -62,11 +62,11 @@ export interface DesktopExtensionsBridge {
   uninstall(id: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }>;
   enable(id: string, scope?: "global" | "workspace", workspaceRoot?: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }>;
   disable(id: string, scope?: "global" | "workspace", workspaceRoot?: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }>;
-  restartHost(): Promise<{ ok: boolean; restarted?: boolean; message?: string; error?: string }>;
+  restartHost(workspaceRoot?: string): Promise<{ ok: boolean; restarted?: boolean; message?: string; error?: string }>;
   checkUpdates(): Promise<{ ok: boolean; updates?: unknown[]; error?: string }>;
   update(id: string): Promise<{ ok: boolean; error?: string }>;
   getContributions(workspaceRoot?: string): Promise<{ ok: boolean; extensions?: InstalledExtension[]; contributions?: unknown[]; error?: string }>;
-  runCommand(commandId: string, args?: unknown[]): Promise<{ ok: boolean; result?: unknown; error?: string }>;
+  runCommand(commandId: string, args?: unknown[], workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }>;
   showRunningExtensions(): Promise<{ ok: boolean; running?: unknown[]; message?: string; error?: string }>;
   startBisect(): Promise<{ ok: boolean; error?: string }>;
 }
