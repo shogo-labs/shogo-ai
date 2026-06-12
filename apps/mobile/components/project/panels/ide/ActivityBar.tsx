@@ -1,4 +1,4 @@
-import { Files, GitCommit, ListTree, Search, Settings, Terminal as TerminalIcon } from "lucide-react-native";
+import { Files, GitCommit, ListTree, Search, Settings, Terminal as TerminalIcon, Puzzle } from "lucide-react-native";
 import { CodiconSourceControl, CodiconRunDebug } from "./icons";
 import type { ActivityId } from "./types";
 import { formatBadgeCount, type BadgeData, type BadgeTone } from "./badges/formatBadge";
@@ -12,6 +12,7 @@ const ITEMS: { id: ActivityId; icon: React.ComponentType<{ size?: number }>; lab
   { id: "git",        icon: CodiconSourceControl, label: "Source Control", hint: "⌃⇧G" },
   // VS Code parity — Run and Debug (bug + play triangle)
   { id: "debug",      icon: CodiconRunDebug,      label: "Run and Debug",  hint: "⇧⌘D" },
+  { id: "extensions", icon: Puzzle,               label: "Extensions",     hint: "⇧⌘X" },
   // Shogo-unique — the original `-o-` GitCommit glyph is now reserved
   // exclusively for the Checkpoint activity. Source Control above gets
   // the VS Code-style codicon so there is no visual collision.
