@@ -118,3 +118,20 @@ export function CodiconRunDebug({
     </Svg>
   );
 }
+
+export function CodiconExtensions({
+  size = 20,
+  color = "currentColor",
+}: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <Path
+        d="M2.25 2.25h4.9v4.9h-4.9z M2.25 8.85h4.9v4.9h-4.9z M8.85 8.85h4.9v4.9h-4.9z M10.65 1.6 14.4 5.35 10.65 9.1 6.9 5.35Z"
+        stroke={color}
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}

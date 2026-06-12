@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { ArrowLeft, AlertTriangle, Download, Package, Play, Power, PowerOff, Star, Trash2 } from "lucide-react-native";
+import { ArrowLeft, AlertTriangle, Download, Play, Power, PowerOff, Star, Trash2 } from "lucide-react-native";
+import { CodiconExtensions } from "../icons";
 import type { ExtensionSearchResult, InstalledExtension } from "./types";
 
 export function ExtensionDetails({
@@ -41,7 +42,7 @@ export function ExtensionDetails({
       <div className="flex-1 overflow-auto p-4 text-[12px] text-[color:var(--ide-text)]">
         <div className="flex items-start gap-3">
           <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded bg-[color:var(--ide-panel)] text-[color:var(--ide-muted)]">
-            {iconUrl ? <img src={iconUrl} alt="" className="h-full w-full object-contain" /> : <Package size={27} />}
+            {iconUrl ? <img src={iconUrl} alt="" className="h-full w-full object-contain" /> : <CodiconExtensions size={34} />}
           </div>
           <div className="min-w-0 flex-1">
             <h3 className="truncate text-[18px] font-semibold text-[color:var(--ide-text-strong)]">{displayName}</h3>
@@ -50,7 +51,7 @@ export function ExtensionDetails({
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-[color:var(--ide-muted)]">
               {typeof downloads === "number" && <span>{formatDownloads(downloads)} downloads</span>}
-              {typeof rating === "number" && <span className="inline-flex items-center gap-1"><Star size={11} className="text-amber-400" /> {rating.toFixed(1).replace(/\.0$/, "")}</span>}
+              {typeof rating === "number" && <span className="inline-flex items-center gap-1"><Star size={11} color="#fbbf24" /> {rating.toFixed(1).replace(/\.0$/, "")}</span>}
               {installed && <span>{installed.enabled ? "Enabled" : "Disabled"}</span>}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">

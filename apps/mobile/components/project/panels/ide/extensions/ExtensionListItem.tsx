@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { CheckCircle2, Download, Package, Power, PowerOff, Star, Trash2, XCircle } from "lucide-react-native";
+import { CheckCircle2, Download, Power, PowerOff, Star, Trash2, XCircle } from "lucide-react-native";
+import { CodiconExtensions } from "../icons";
 import type { ExtensionSearchResult, InstalledExtension } from "./types";
 
 export function InstalledExtensionListItem({
@@ -81,7 +82,7 @@ export function SearchExtensionListItem({
         </div>
         <div className="shrink-0 text-right text-[10px] text-[color:var(--ide-muted)]">
           {typeof result.downloads === "number" && <div>{formatDownloads(result.downloads)}</div>}
-          {typeof result.rating === "number" && <div className="mt-1 inline-flex items-center justify-end gap-0.5"><Star size={10} className="text-amber-400" /> {result.rating.toFixed(1).replace(/\.0$/, "")}</div>}
+          {typeof result.rating === "number" && <div className="mt-1 inline-flex items-center justify-end gap-0.5"><Star size={10} color="#fbbf24" /> {result.rating.toFixed(1).replace(/\.0$/, "")}</div>}
         </div>
       </button>
       <div className="mt-2 flex justify-end pl-11">
@@ -104,7 +105,7 @@ export function SearchExtensionListItem({
 function ExtensionIcon({ iconUrl }: { iconUrl?: string }) {
   return (
     <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-[color:var(--ide-panel)] text-[color:var(--ide-muted)]">
-      {iconUrl ? <img src={iconUrl} alt="" className="h-full w-full object-contain" /> : <Package size={19} />}
+      {iconUrl ? <img src={iconUrl} alt="" className="h-full w-full object-contain" /> : <CodiconExtensions size={22} />}
     </div>
   );
 }
