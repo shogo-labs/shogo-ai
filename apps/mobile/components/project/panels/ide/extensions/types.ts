@@ -58,6 +58,7 @@ export interface InstalledExtension {
   version: string;
   displayName?: string;
   description?: string;
+  iconUrl?: string;
   source: ExtensionInstallSource;
   installedAt: number;
   updatedAt: number;

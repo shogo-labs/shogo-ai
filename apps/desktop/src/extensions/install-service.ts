@@ -18,6 +18,7 @@ export interface InstalledExtensionRecord {
   version: string
   displayName?: string
   description?: string
+  iconUrl?: string
   installPath: string
   manifestPath: string
   source: ExtensionInstallSource
@@ -86,6 +87,7 @@ export class ExtensionInstallService {
     const disabledWorkspace = new Set(workspaceRoot ? this.readStringArray(this.disabledWorkspacePath(workspaceRoot)) : [])
     return state.extensions.map((record) => ({
       ...record,
+      iconUrl: installedIconUrl(record),
       disabledGlobally: disabledGlobal.has(record.id),
       disabledForWorkspace: disabledWorkspace.has(record.id),
       enabled: !record.pendingDelete && !disabledGlobal.has(record.id) && !disabledWorkspace.has(record.id),
@@ -102,7 +104,7 @@ export class ExtensionInstallService {
     }
   }
 
-  installFromVsix(vsixPath: string, source: ExtensionInstallSource = 'vsix'): InstalledExtensionRecord {
+  installFromVsix(vsixPath: string, source: ExtensionInstallSource = 'vsix', metadata: { iconUrl?: string } = {}): InstalledExtensionRecord {
     const absoluteVsixPath = path.resolve(vsixPath)
     const packageBytes = fs.readFileSync(absoluteVsixPath)
     const packageHash = crypto.createHash('sha256').update(packageBytes).digest('hex')
@@ -153,6 +155,7 @@ export class ExtensionInstallService {
       version: manifest.version,
       displayName: manifest.displayName,
       description: manifest.description,
+      iconUrl: metadata.iconUrl,
       installPath,
       manifestPath: path.join(installPath, 'package.json'),
       source,
@@ -260,6 +263,33 @@ export class ExtensionInstallService {
 
 export function defaultExtensionsRoot(): string {
   return path.join(electron.app.getPath('userData'), 'extensions')
+}
+
+function installedIconUrl(record: InstalledExtensionRecord): string | undefined {
+  if (record.iconUrl) return record.iconUrl
+  const icon = record.manifest.icon
+  if (!icon) return undefined
+  if (/^https?:\/\//i.test(icon) || icon.startsWith('data:')) return icon
+  try {
+    const iconPath = safeJoin(record.installPath, icon)
+    if (!fs.existsSync(iconPath)) return undefined
+    const stat = fs.statSync(iconPath)
+    if (stat.size > 2 * 1024 * 1024) return undefined
+    return `data:${iconMimeType(iconPath)};base64,${fs.readFileSync(iconPath).toString('base64')}`
+  } catch {
+    return undefined
+  }
+}
+
+function iconMimeType(file: string): string {
+  switch (path.extname(file).toLowerCase()) {
+    case '.svg': return 'image/svg+xml'
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg'
+    case '.webp': return 'image/webp'
+    case '.gif': return 'image/gif'
+    default: return 'image/png'
+  }
 }
 
 function validateArchiveEntryPath(entryName: string): void {

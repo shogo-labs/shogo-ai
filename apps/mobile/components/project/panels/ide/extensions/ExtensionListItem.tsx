@@ -19,7 +19,7 @@ export function InstalledExtensionListItem({
   return (
     <div className="group border-b border-[color:var(--ide-border)] px-3 py-2 hover:bg-[color:var(--ide-hover-subtle)]">
       <button onClick={onSelect} className="flex w-full items-start gap-3 text-left">
-        <ExtensionIcon iconUrl={undefined} />
+        <ExtensionIcon iconUrl={extension.iconUrl} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-semibold text-[color:var(--ide-text-strong)]">
             {extension.displayName ?? extension.name}

@@ -109,6 +109,7 @@ function extensionToSearchResult(ext: ExtensionListItem): ExtensionSearchResult 
     displayName: ext.displayName ?? ext.name,
     description: ext.description ?? '',
     version: ext.version,
+    iconUrl: ext.iconUrl,
     source: ext.source === 'vsix' ? 'local-vsix' : ext.source,
     categories: ext.manifest.categories ?? [],
     tags: [],
