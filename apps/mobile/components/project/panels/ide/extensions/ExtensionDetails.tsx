@@ -26,10 +26,11 @@ export function ExtensionDetails({
   onRunCommand?: (commandId: string) => void;
 }) {
   const [tab, setTab] = useState<DetailTab>("details");
-  const installed = installedItem ?? ("manifest" in item ? item : undefined);
-  const commands = installed?.manifest.contributes?.commands ?? [];
-  const views = installed?.manifest.contributes?.views ?? {};
-  const viewContainers = installed?.manifest.contributes?.viewsContainers;
+  const installed = installedItem;
+  const manifest = installedItem?.manifest ?? ("manifest" in item ? item.manifest : undefined);
+  const commands = manifest?.contributes?.commands ?? [];
+  const views = manifest?.contributes?.views ?? {};
+  const viewContainers = manifest?.contributes?.viewsContainers;
   const displayName = item.displayName || item.name;
   const iconUrl = "iconUrl" in item ? item.iconUrl : undefined;
   const rating = "rating" in item ? item.rating : undefined;
@@ -159,7 +160,7 @@ export function ExtensionDetails({
 
           {tab === "dependencies" && (
             <Section title="Dependencies">
-              <Empty>{installed?.manifest.activationEvents?.length ? `Activation events: ${installed.manifest.activationEvents.join(", ")}` : "No extension dependencies are declared in the loaded manifest summary."}</Empty>
+              <Empty>{manifest?.activationEvents?.length ? `Activation events: ${manifest.activationEvents.join(", ")}` : "No extension dependencies are declared in the loaded manifest summary."}</Empty>
             </Section>
           )}
         </main>

@@ -54,7 +54,7 @@ import { SettingsPane } from "./SettingsPane";
 import { ExtensionsViewlet, TrustPublisherDialog, isPublisherTrusted, trustPublisher } from "./extensions/ExtensionsViewlet";
 import { collectRuntimeContainers, ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
 import { getDesktopExtensionsBridge, useExtensions } from "./extensions/useExtensions";
-import type { ExtensionSearchResult, InstalledExtension } from "./extensions/types";
+import type { ExtensionRuntimeViewResult, ExtensionSearchResult, InstalledExtension } from "./extensions/types";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
@@ -233,7 +233,7 @@ export function Workbench({
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
   const [graphOpen, setGraphOpen] = useState<boolean>(false);
-  const [pendingExtensionInstall, setPendingExtensionInstall] = useState<ExtensionSearchResult | null>(null);
+  const [pendingExtensionInstall, setPendingExtensionInstall] = useState<InstalledExtension | ExtensionSearchResult | null>(null);
 
   // Deep-link: let surfaces outside the Workbench (e.g. the top-bar Publish
   // popover's "View history" link) switch the active activity — notably
@@ -1354,7 +1354,7 @@ export function Workbench({
     setActiveGroupIdx(activeGroupIdx);
   }, [activeGroupIdx, findOpenLocation, updateGroup]);
 
-  const requestExtensionInstall = useCallback((item: ExtensionSearchResult) => {
+  const requestExtensionInstall = useCallback((item: InstalledExtension | ExtensionSearchResult) => {
     if (isPublisherTrusted(item.publisher)) {
       void extensionsSummary.installFromRegistry(item.id, item.version);
     } else {
@@ -1367,8 +1367,21 @@ export function Workbench({
     void extensionsSummary.installFromRegistry(pendingExtensionInstall.id, pendingExtensionInstall.version);
     setPendingExtensionInstall(null);
   }, [extensionsSummary, pendingExtensionInstall]);
-  const runExtensionCommand = useCallback((commandId: string) => {
-    void extensionsSummary.runCommand(commandId);
+  const runExtensionCommand = useCallback((commandId: string, args?: unknown[]) => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return;
+    void bridge.runCommand(commandId, args ?? [], gitWorkspaceRootRef.current ?? undefined).then((response) => {
+      if (!response.ok) console.warn(response.error ?? `Extension command failed: ${commandId}`);
+      else void extensionsSummary.showRunningExtensions();
+    });
+  }, [extensionsSummary]);
+  const loadExtensionRuntimeView = useCallback(async (viewId: string): Promise<ExtensionRuntimeViewResult | null> => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return null;
+    const response = await bridge.getView(viewId, gitWorkspaceRootRef.current ?? undefined);
+    if (!response.ok) throw new Error(response.error ?? `Extension view failed: ${viewId}`);
+    void extensionsSummary.showRunningExtensions();
+    return response.view ?? null;
   }, [extensionsSummary]);
 
   // ─── Commands ────────────────────────────────────────────────────────
@@ -1989,6 +2002,7 @@ export function Workbench({
                   container={activeExtensionRuntimeContainer}
                   onRunCommand={runExtensionCommand}
                   onOpenDetails={openExtensionDetailsTab}
+                  onLoadView={loadExtensionRuntimeView}
                 />
               )}
               {activity === "settings" && (

@@ -179,7 +179,7 @@ export function ExtensionsViewlet({
   );
 }
 
-export function TrustPublisherDialog({ extension, onCancel, onTrust }: { extension: ExtensionSearchResult; onCancel: () => void; onTrust: () => void }) {
+export function TrustPublisherDialog({ extension, onCancel, onTrust }: { extension: InstalledExtension | ExtensionSearchResult; onCancel: () => void; onTrust: () => void }) {
   return (
     <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 p-4">
       <div className="w-full max-w-sm rounded-lg border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] p-4 shadow-2xl">
@@ -187,7 +187,7 @@ export function TrustPublisherDialog({ extension, onCancel, onTrust }: { extensi
         <p className="mt-3 text-[12px] leading-relaxed text-[color:var(--ide-text)]">
           The extension <span className="font-semibold text-[color:var(--ide-text-strong)]">{extension.displayName || extension.name}</span> is published by <span className="font-semibold text-[color:var(--ide-text-strong)]">{extension.publisher}</span>. Extensions can run code in your workspace. Proceed only if you trust this publisher.
         </p>
-        {extension.verified && <p className="mt-2 text-[11px] text-sky-200">✓ Open VSX marks this publisher as verified.</p>}
+        {"verified" in extension && extension.verified && <p className="mt-2 text-[11px] text-sky-200">✓ Open VSX marks this publisher as verified.</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button onClick={onCancel} className="rounded border border-[color:var(--ide-border)] px-3 py-1.5 text-[12px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]">Cancel</button>
           <button onClick={onTrust} className="rounded bg-[color:var(--ide-accent)] px-3 py-1.5 text-[12px] font-semibold text-white hover:opacity-90">Trust Publisher & Install</button>

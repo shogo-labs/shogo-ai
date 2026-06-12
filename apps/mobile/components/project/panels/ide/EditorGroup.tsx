@@ -53,7 +53,7 @@ export function EditorGroupView({
   editorTheme?: string;
   installedExtensions?: InstalledExtension[];
   extensionInstallingId?: string | null;
-  onInstallExtension?: (item: ExtensionSearchResult) => void;
+  onInstallExtension?: (item: InstalledExtension | ExtensionSearchResult) => void;
   onEnableExtension?: (id: string) => void;
   onDisableExtension?: (id: string) => void;
   onUninstallExtension?: (id: string) => void;
@@ -97,7 +97,7 @@ export function EditorGroupView({
               item={active.extensionDetail}
               installedItem={installedExtensions.find((extension) => extension.id === active.extensionDetail?.id)}
               installing={extensionInstallingId === active.extensionDetail.id}
-              onInstall={!("manifest" in active.extensionDetail) && !installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onInstallExtension?.(active.extensionDetail as ExtensionSearchResult) : undefined}
+              onInstall={!installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onInstallExtension?.(active.extensionDetail as InstalledExtension | ExtensionSearchResult) : undefined}
               onEnable={installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onEnableExtension?.(active.extensionDetail!.id) : undefined}
               onDisable={installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onDisableExtension?.(active.extensionDetail!.id) : undefined}
               onUninstall={installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onUninstallExtension?.(active.extensionDetail!.id) : undefined}
