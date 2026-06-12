@@ -102,7 +102,7 @@ export class ExtensionInstallService {
     }
   }
 
-  installFromVsix(vsixPath: string): InstalledExtensionRecord {
+  installFromVsix(vsixPath: string, source: ExtensionInstallSource = 'vsix'): InstalledExtensionRecord {
     const absoluteVsixPath = path.resolve(vsixPath)
     const packageBytes = fs.readFileSync(absoluteVsixPath)
     const packageHash = crypto.createHash('sha256').update(packageBytes).digest('hex')
@@ -155,14 +155,14 @@ export class ExtensionInstallService {
       description: manifest.description,
       installPath,
       manifestPath: path.join(installPath, 'package.json'),
-      source: 'vsix',
+      source,
       installedAt: now,
       updatedAt: now,
       packageHash,
       compatible: parsed.compatible,
       compatibilityReason: parsed.compatibilityReason,
       warnings: parsed.warnings,
-      autoUpdate: false,
+      autoUpdate: source !== 'vsix',
       restartRequired: true,
       manifest,
     }

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { RefreshCw, Search } from "lucide-react-native";
+import { Filter, RefreshCw, Search, X } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import { ExtensionActionsMenu } from "./ExtensionActionsMenu";
 import { ExtensionDetails } from "./ExtensionDetails";
@@ -11,8 +11,10 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
   const extensions = useExtensions({ workspaceRoot });
   const [selected, setSelected] = useState<InstalledExtension | ExtensionSearchResult | null>(null);
   const installed = extensions.installed;
+  const installedIds = useMemo(() => new Set(installed.map((extension) => extension.id)), [installed]);
   const disabled = useMemo(() => installed.filter((extension) => !extension.enabled), [installed]);
   const enabled = useMemo(() => installed.filter((extension) => extension.enabled), [installed]);
+  const hasQuery = extensions.query.trim().length > 0;
 
   if (!extensions.available) {
     return (
@@ -30,7 +32,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
       <div className="flex items-center justify-between border-b border-[color:var(--ide-border)] px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">Extensions</span>
         <div className="flex items-center gap-1">
-          <button title="Refresh" onClick={() => void extensions.refresh()} className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]">
+          <button title="Refresh" onClick={() => { void extensions.refresh(); void extensions.runSearch(); }} className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]">
             <RefreshCw size={14} />
           </button>
           <ExtensionActionsMenu
@@ -51,6 +53,12 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
             placeholder="Search Extensions in Marketplace"
             className="min-w-0 flex-1 bg-transparent text-[12px] text-[color:var(--ide-text)] outline-none placeholder:text-[color:var(--ide-muted)]"
           />
+          {extensions.query && (
+            <button type="button" onClick={() => extensions.setQuery("")} className="rounded p-0.5 text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]">
+              <X size={13} />
+            </button>
+          )}
+          <Filter size={13} className="text-[color:var(--ide-muted)]" />
         </form>
       </div>
 
@@ -67,12 +75,15 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
       {extensions.message && <Banner tone="info">{extensions.message}</Banner>}
 
       <div className="flex-1 overflow-auto">
-        {extensions.results.length > 0 && (
-          <Section title={`Search Results (${extensions.results.length})`}>
+        {hasQuery && (
+          <Section title={extensions.searching ? "Search Results (searching…)" : `Search Results (${extensions.results.length})`}>
+            {extensions.results.length === 0 && !extensions.searching && <Empty>No extensions found for “{extensions.query.trim()}”.</Empty>}
             {extensions.results.map((result) => (
               <SearchExtensionListItem
                 key={result.id}
                 result={result}
+                installed={installedIds.has(result.id)}
+                installing={extensions.installingId === result.id}
                 onSelect={() => setSelected(result)}
                 onInstall={() => void extensions.installFromRegistry(result.id, result.version)}
               />
@@ -81,7 +92,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
         )}
 
         <Section title={`Installed (${installed.length})`} loading={extensions.loading}>
-          {enabled.length === 0 && <Empty>Install a VSIX or search Open VSX to add extensions.</Empty>}
+          {enabled.length === 0 && <Empty>Install an extension from Open VSX or use “Install from VSIX...” in the menu.</Empty>}
           {enabled.map((extension) => (
             <InstalledExtensionListItem
               key={extension.id}
@@ -109,12 +120,35 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
           </Section>
         )}
 
-        <Section title="Recommended">
-          <Empty>Workspace recommendations from .vscode/extensions.json will appear here.</Empty>
-        </Section>
+        {!hasQuery && (
+          <Section title={extensions.loadingRecommendations ? "Recommended (loading…)" : `Recommended (${extensions.recommended.length})`}>
+            {extensions.recommended.length === 0 && !extensions.loadingRecommendations && <Empty>No recommendations available. Check your network connection or search Open VSX.</Empty>}
+            {extensions.recommended.map((result) => (
+              <SearchExtensionListItem
+                key={result.id}
+                result={result}
+                installed={installedIds.has(result.id)}
+                installing={extensions.installingId === result.id}
+                onSelect={() => setSelected(result)}
+                onInstall={() => void extensions.installFromRegistry(result.id, result.version)}
+              />
+            ))}
+          </Section>
+        )}
 
-        <Section title="Running Extensions">
-          <Empty>No extension host is running yet.</Empty>
+        <Section title={`Running Extensions (${extensions.running.length})`}>
+          {extensions.running.length === 0 ? (
+            <Empty>No extension commands have activated yet.</Empty>
+          ) : (
+            extensions.running.map((status) => (
+              <div key={status.id} className="border-b border-[color:var(--ide-border)] px-3 py-2 text-[11px] text-[color:var(--ide-text)]">
+                <div className="font-semibold text-[color:var(--ide-text-strong)]">{status.id}</div>
+                <div className="text-[color:var(--ide-muted)]">
+                  {status.activationReason ?? "activated"} · {status.activationTimeMs ?? 0}ms · crashes {status.crashCount}
+                </div>
+              </div>
+            ))
+          )}
         </Section>
       </div>
     </div>
