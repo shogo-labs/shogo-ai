@@ -6,7 +6,7 @@ import os from 'os'
 import path from 'path'
 import { ExtensionInstallService, type ExtensionEnableScope } from './install-service'
 import { ExtensionRegistryService } from './registry-service'
-import { ExtensionHostManager } from './host-manager'
+import { ExtensionHostManager, type ExtensionWorkspaceState } from './host-manager'
 
 let installService: ExtensionInstallService | null = null
 let registryService: ExtensionRegistryService | null = null
@@ -15,7 +15,14 @@ let hostManager: ExtensionHostManager | null = null
 function services(): { install: ExtensionInstallService; registry: ExtensionRegistryService; host: ExtensionHostManager } {
   if (!installService) installService = new ExtensionInstallService()
   if (!registryService) registryService = new ExtensionRegistryService(installService)
-  if (!hostManager) hostManager = new ExtensionHostManager(installService)
+  if (!hostManager) {
+    hostManager = new ExtensionHostManager(installService)
+    hostManager.onEvent((event) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send('extensions:event', event)
+      }
+    })
+  }
   return { install: installService, registry: registryService, host: hostManager }
 }
 
@@ -78,7 +85,7 @@ export function registerExtensionsIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('extensions:installFromVsix', async (event, args?: { path?: string }) => {
+  ipcMain.handle('extensions:installFromVsix', async (event, args?: { path?: string; workspaceRoot?: string }) => {
     try {
       const window = BrowserWindow.fromWebContents(event.sender) ?? undefined
       const selectedPath = args?.path ?? await pickVsixPath(window)
@@ -87,13 +94,14 @@ export function registerExtensionsIpcHandlers(): void {
       const trusted = await ensurePublisherTrusted(window, inspection.manifest.publisher, inspection.manifest.displayName ?? inspection.manifest.name)
       if (!trusted) return { ok: false, cancelled: true, error: `Publisher not trusted: ${inspection.manifest.publisher}` }
       const record = services().install.installFromVsix(selectedPath)
-      return { ok: true, extension: record, restartRequired: true }
+      const extension = services().install.listInstalled(args?.workspaceRoot).find((item) => item.id === record.id) ?? record
+      return { ok: true, extension, restartRequired: true }
     } catch (err) {
       return failure(err)
     }
   })
 
-  ipcMain.handle('extensions:installFromRegistry', async (event, id: string, version?: string) => {
+  ipcMain.handle('extensions:installFromRegistry', async (event, id: string, version?: string, options?: { workspaceRoot?: string }) => {
     try {
       const [publisher, name] = id.split('.')
       if (!publisher || !name) throw new Error('Extension id must be publisher.name')
@@ -117,7 +125,8 @@ export function registerExtensionsIpcHandlers(): void {
       const record = services().install.installFromVsix(file, 'open-vsx', {
         iconUrl: typeof metadata.iconUrl === 'string' ? metadata.iconUrl : metadata.files?.icon,
       })
-      return { ok: true, extension: record, restartRequired: true }
+      const extension = services().install.listInstalled(options?.workspaceRoot).find((item) => item.id === record.id) ?? record
+      return { ok: true, extension, restartRequired: true }
     } catch (err) {
       return failure(err)
     }
@@ -184,6 +193,29 @@ export function registerExtensionsIpcHandlers(): void {
       return failure(err)
     }
   })
+  ipcMain.handle('extensions:getOutputChannels', async (_event, options?: { workspaceRoot?: string }) => {
+    try {
+      return { ok: true, channels: await services().host.getOutputChannels(options?.workspaceRoot) }
+    } catch (err) {
+      return failure(err)
+    }
+  })
+  ipcMain.handle('extensions:respondUiRequest', (_event, requestId: string, response: { ok: boolean; result?: unknown; error?: string }) => {
+    try {
+      services().host.respondToUiRequest(requestId, response.ok, response.result, response.error)
+      return { ok: true }
+    } catch (err) {
+      return failure(err)
+    }
+  })
+  ipcMain.handle('extensions:updateWorkspaceState', async (_event, state: ExtensionWorkspaceState) => {
+    try {
+      await services().host.updateWorkspaceState(state)
+      return { ok: true }
+    } catch (err) {
+      return failure(err)
+    }
+  })
   ipcMain.handle('extensions:showRunningExtensions', () => {
     try {
       const running = services().host.getRunningExtensions()
@@ -201,7 +233,7 @@ export function disposeExtensionsIpcHandlers(): void {
     'extensions:listInstalled', 'extensions:getContributions', 'extensions:search', 'extensions:listTrustedPublishers', 'extensions:trustPublisher', 'extensions:getWorkspaceTrust', 'extensions:trustWorkspace', 'extensions:installFromVsix',
     'extensions:installFromRegistry', 'extensions:uninstall', 'extensions:enable', 'extensions:disable',
     'extensions:restartHost', 'extensions:checkUpdates', 'extensions:update', 'extensions:runCommand',
-    'extensions:activateEvent', 'extensions:getView', 'extensions:getStatusBarItems', 'extensions:getWebviewPanels', 'extensions:showRunningExtensions', 'extensions:startBisect',
+    'extensions:activateEvent', 'extensions:getView', 'extensions:getStatusBarItems', 'extensions:getWebviewPanels', 'extensions:getOutputChannels', 'extensions:respondUiRequest', 'extensions:updateWorkspaceState', 'extensions:showRunningExtensions', 'extensions:startBisect',
   ]) ipcMain.removeHandler(channel)
 }
 

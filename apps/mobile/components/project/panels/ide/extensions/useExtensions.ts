@@ -15,11 +15,22 @@ export function getDesktopExtensionsBridge(): DesktopExtensionsBridge | null {
   if (!bridge) return null;
   for (const method of [
     "listInstalled", "search", "listTrustedPublishers", "trustPublisher", "getWorkspaceTrust", "trustWorkspace", "installFromVsix", "installFromRegistry", "uninstall", "enable", "disable",
-    "restartHost", "checkUpdates", "update", "getContributions", "runCommand", "activateEvent", "getView", "getStatusBarItems", "getWebviewPanels", "showRunningExtensions", "startBisect",
+    "restartHost", "checkUpdates", "update", "getContributions", "runCommand", "activateEvent", "getView", "getStatusBarItems", "getWebviewPanels", "getOutputChannels", "respondUiRequest", "updateWorkspaceState", "onEvent", "showRunningExtensions", "startBisect",
   ] as const) {
     if (typeof bridge[method] !== "function") return null;
   }
   return bridge;
+}
+
+function installResultMessage(extension: InstalledExtension | undefined): string {
+  if (!extension) return "Extension installed. Restart extensions to apply changes.";
+  if (!extension.hasUsableEntryPoint) {
+    return extension.unsupportedSurfaceMessage ?? "Extension installed, but no usable entry point is currently reachable.";
+  }
+  const first = extension.usableEntryPoints[0];
+  return first
+    ? `Extension installed. Restart extensions to use ${first.label}.`
+    : "Extension installed. Restart extensions to apply changes.";
 }
 
 export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null } = {}) {
@@ -172,35 +183,35 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
   const installFromVsix = useCallback(async () => {
     if (!bridge) return;
     setError(null);
-    const response = await bridge.installFromVsix();
+    const response = await bridge.installFromVsix(workspaceRoot ?? undefined);
     if (!response.ok) {
       if (!response.cancelled) setError(response.error ?? "VSIX install failed");
       return;
     }
-    setMessage("Extension installed. Restart extensions to apply changes.");
+    setMessage(installResultMessage(response.extension));
     await refresh();
     await loadTrustedPublishers();
     await loadRecommendations();
-  }, [bridge, refresh, loadTrustedPublishers, loadRecommendations]);
+  }, [bridge, workspaceRoot, refresh, loadTrustedPublishers, loadRecommendations]);
 
   const installFromRegistry = useCallback(async (id: string, version?: string) => {
     if (!bridge) return;
     setError(null);
     setInstallingId(id);
     try {
-      const response = await bridge.installFromRegistry(id, version);
+      const response = await bridge.installFromRegistry(id, version, workspaceRoot ?? undefined);
       if (!response.ok) {
         if (!response.cancelled) setError(response.error ?? "Extension install failed");
         return;
       }
-      setMessage("Extension installed. Restart extensions to apply changes.");
+      setMessage(installResultMessage(response.extension));
       await refresh();
       await loadTrustedPublishers();
       await loadRecommendations();
     } finally {
       setInstallingId(null);
     }
-  }, [bridge, refresh, loadTrustedPublishers, loadRecommendations]);
+  }, [bridge, workspaceRoot, refresh, loadTrustedPublishers, loadRecommendations]);
 
   const setEnabled = useCallback(async (id: string, enabled: boolean) => {
     if (!bridge) return;

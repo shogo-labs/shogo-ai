@@ -54,7 +54,7 @@ import { SettingsPane } from "./SettingsPane";
 import { ExtensionsViewlet, TrustPublisherDialog } from "./extensions/ExtensionsViewlet";
 import { collectRuntimeContainers, ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
 import { getDesktopExtensionsBridge, useExtensions } from "./extensions/useExtensions";
-import type { ExtensionRuntimeViewResult, ExtensionRuntimeWebviewPanel, ExtensionSearchResult, InstalledExtension } from "./extensions/types";
+import type { ExtensionHostEvent, ExtensionRuntimeViewResult, ExtensionRuntimeWebviewPanel, ExtensionSearchResult, ExtensionUiRequest, ExtensionWorkspaceState, InstalledExtension } from "./extensions/types";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
@@ -143,6 +143,18 @@ function useResolvedTheme(): "light" | "dark" {
 }
 
 const fileId = (rootId: string, path: string) => `${rootId}::${path}`;
+
+function workspaceFsPath(root: string, relPath: string): string {
+  const trimmedRoot = root.replace(/[\\/]+$/, "");
+  const trimmedPath = relPath.replace(/^[\\/]+/, "");
+  return `${trimmedRoot}/${trimmedPath}`;
+}
+
+function documentVersion(content: string, dirty: boolean): number {
+  let hash = dirty ? 17 : 0;
+  for (let i = 0; i < content.length; i++) hash = ((hash << 5) - hash + content.charCodeAt(i)) | 0;
+  return Math.abs(hash);
+}
 
 /** Debounce for auto save while typing (ms). */
 const AUTO_SAVE_DELAY_MS = 1000;
@@ -268,6 +280,21 @@ export function Workbench({
     try { localStorage.setItem("shogo.ide.sidebarOpen", String(sidebarOpen)); } catch { /* ignore */ }
   }, [sidebarOpen]);
 
+  useEffect(() => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return;
+    return bridge.onEvent((event: ExtensionHostEvent) => {
+      if (event.type === "uiRequest") setExtensionUiRequest(event.request);
+    });
+  }, []);
+
+  const respondToExtensionUiRequest = useCallback((requestId: string, result?: unknown, ok = true) => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return;
+    void bridge.respondUiRequest(requestId, ok ? { ok: true, result } : { ok: false, error: String(result ?? "Extension UI request cancelled") });
+    setExtensionUiRequest((current) => current?.requestId === requestId ? null : current);
+  }, []);
+
   // Bottom-panel state lives in the lifted store so the same drawer is
   // visible from anywhere in the project view (via DrawerHost mounted at
   // ProjectLayout). ⌘J / ⌘⇧` keybinds and the command palette here all
@@ -296,6 +323,7 @@ export function Workbench({
 
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
   const [toast, setToast] = useState<string | null>(null);
+  const [extensionUiRequest, setExtensionUiRequest] = useState<ExtensionUiRequest | null>(null);
   const [newRequest, setNewRequest] = useState<
     { kind: "file" | "dir"; nonce: number; rootId?: string } | null
   >(null);
@@ -1779,6 +1807,44 @@ export function Workbench({
   const gitSnapshot = useGitStatus(gitWorkspaceRoot);
   const extensionsBridgeAvailable = getDesktopExtensionsBridge() !== null;
 
+  useEffect(() => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge || !gitWorkspaceRoot) return;
+    const documents = groups
+      .flatMap((group) => group.files)
+      .filter((file) => file.rootId === "agent" && !PREVIEW_LANGUAGES.has(file.language))
+      .map((file) => ({
+        path: file.path,
+        fsPath: workspaceFsPath(gitWorkspaceRoot, file.path),
+        languageId: file.language || "plaintext",
+        version: documentVersion(file.content, file.dirty),
+        text: file.content,
+        isDirty: file.dirty,
+      }));
+    const visibleDocumentPaths = groups
+      .map((group) => group.files.find((file) => file.id === group.activeId))
+      .filter((file): file is OpenFile => !!file && file.rootId === "agent" && !PREVIEW_LANGUAGES.has(file.language))
+      .map((file) => file.path);
+    const state: ExtensionWorkspaceState = {
+      workspaceRoot: gitWorkspaceRoot,
+      workspaceName: roots.find((root) => root.id === "agent")?.label ?? agentLabel,
+      activeDocumentPath: active?.rootId === "agent" && !PREVIEW_LANGUAGES.has(active.language) ? active.path : null,
+      visibleDocumentPaths,
+      documents,
+      configuration: {
+        editor: settings,
+        "editor.fontFamily": settings.fontFamily,
+        "editor.fontSize": settings.fontSize,
+        "editor.tabSize": settings.tabSize,
+        "editor.formatOnSave": settings.formatOnSave,
+        "files.autoSave": settings.autoSave ? "afterDelay" : "off",
+      },
+    };
+    void bridge.updateWorkspaceState(state).then((response) => {
+      if (!response.ok) console.warn(response.error ?? "Extension workspace state sync failed");
+    });
+  }, [active?.id, active?.language, active?.path, active?.rootId, agentLabel, gitWorkspaceRoot, groups, roots, settings]);
+
   // ─── G4: git gutter markers + inline blame + conflict CodeLens ─────
   // Attach Monaco decorations + a code lens provider for the active
   // editor whenever Monaco is ready, a git workspace root is known, and
@@ -1962,6 +2028,13 @@ export function Workbench({
                 <div className="pointer-events-none absolute bottom-4 right-4 z-40 rounded bg-[color:var(--ide-primary)] px-3 py-1.5 text-[12px] text-white shadow-lg">
                   {toast}
                 </div>
+              )}
+              {extensionUiRequest && (
+                <ExtensionUiRequestDialog
+                  request={extensionUiRequest}
+                  onResolve={(result) => respondToExtensionUiRequest(extensionUiRequest.requestId, result, true)}
+                  onCancel={() => respondToExtensionUiRequest(extensionUiRequest.requestId, undefined, true)}
+                />
               )}
             </div>
 
@@ -2306,6 +2379,92 @@ function FilesPane({
       )}
     </div>
   );
+}
+
+function ExtensionUiRequestDialog({
+  request,
+  onResolve,
+  onCancel,
+}: {
+  request: ExtensionUiRequest;
+  onResolve: (result: unknown) => void;
+  onCancel: () => void;
+}) {
+  const [inputValue, setInputValue] = useState(() => String((request.payload.options as { value?: unknown } | undefined)?.value ?? ""));
+  const message = String(request.payload.message ?? (request.payload.options as { prompt?: unknown; placeHolder?: unknown } | undefined)?.prompt ?? "Extension request");
+  const items = Array.isArray(request.payload.items) ? request.payload.items : [];
+  const title = request.kind === "quickPick" ? "Select an option" : request.kind === "inputBox" ? "Extension input" : "Extension notification";
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/45 px-4">
+      <div className="w-full max-w-md overflow-hidden rounded-lg border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-[color:var(--ide-border)] px-4 py-2">
+          <div>
+            <div className="text-[12px] font-semibold text-[color:var(--ide-text-strong)]">{title}</div>
+            <div className="text-[10px] text-[color:var(--ide-muted)]">{request.extensionId}</div>
+          </div>
+          <button onClick={onCancel} className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text)]" aria-label="Dismiss extension request">
+            <X size={14} />
+          </button>
+        </div>
+        <div className="space-y-3 px-4 py-3">
+          <div className="text-[12px] text-[color:var(--ide-text)]">{message}</div>
+          {request.kind === "quickPick" && (
+            <div className="max-h-72 overflow-auto rounded border border-[color:var(--ide-border)]">
+              {items.length === 0 ? (
+                <div className="px-3 py-2 text-[11px] text-[color:var(--ide-muted)]">No quick pick items were provided.</div>
+              ) : items.map((item, index) => {
+                const label = quickPickLabel(item, index);
+                const detail = quickPickDetail(item);
+                return (
+                  <button key={`${label}:${index}`} onClick={() => onResolve(item)} className="block w-full border-b border-[color:var(--ide-border)] px-3 py-2 text-left last:border-b-0 hover:bg-[color:var(--ide-hover)]">
+                    <div className="text-[12px] text-[color:var(--ide-text-strong)]">{label}</div>
+                    {detail && <div className="text-[10px] text-[color:var(--ide-muted)]">{detail}</div>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {request.kind === "inputBox" && (
+            <form onSubmit={(event) => { event.preventDefault(); onResolve(inputValue); }} className="space-y-3">
+              <input
+                autoFocus
+                value={inputValue}
+                onChange={(event) => setInputValue(event.target.value)}
+                placeholder={String((request.payload.options as { placeHolder?: unknown } | undefined)?.placeHolder ?? "")}
+                className="w-full rounded border border-[color:var(--ide-border)] bg-[color:var(--ide-bg)] px-3 py-2 text-[12px] text-[color:var(--ide-text)] outline-none focus:border-[color:var(--ide-primary)]"
+              />
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={onCancel} className="rounded px-3 py-1.5 text-[11px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]">Cancel</button>
+                <button type="submit" className="rounded bg-[color:var(--ide-primary)] px-3 py-1.5 text-[11px] text-white">OK</button>
+              </div>
+            </form>
+          )}
+          {request.kind === "notification" && (
+            <div className="flex flex-wrap justify-end gap-2">
+              <button onClick={onCancel} className="rounded px-3 py-1.5 text-[11px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]">Dismiss</button>
+              {items.map((item, index) => (
+                <button key={`${quickPickLabel(item, index)}:${index}`} onClick={() => onResolve(item)} className="rounded bg-[color:var(--ide-primary)] px-3 py-1.5 text-[11px] text-white">
+                  {quickPickLabel(item, index)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function quickPickLabel(item: unknown, index: number): string {
+  if (typeof item === "string") return item;
+  if (item && typeof item === "object" && "label" in item && typeof (item as { label?: unknown }).label === "string") return (item as { label: string }).label;
+  return `Item ${index + 1}`;
+}
+
+function quickPickDetail(item: unknown): string | null {
+  if (!item || typeof item !== "object") return null;
+  const record = item as { description?: unknown; detail?: unknown };
+  return typeof record.detail === "string" ? record.detail : typeof record.description === "string" ? record.description : null;
 }
 
 function Placeholder({

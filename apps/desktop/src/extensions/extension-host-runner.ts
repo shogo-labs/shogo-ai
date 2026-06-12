@@ -16,15 +16,28 @@ type HostExtension = {
   workspaceStoragePath: string
 }
 
+type UriLike = { scheme: string; fsPath: string; path: string; toString?: () => string }
+type WorkspaceFolderSnapshot = { uri: UriLike; name: string; index: number }
+type TextDocumentSnapshot = { uri: UriLike; fileName: string; languageId: string; version: number; text: string; isDirty?: boolean }
+type TextEditorSnapshot = { document: TextDocumentSnapshot; selection?: unknown; selections?: unknown[] }
+type WorkspaceStateSnapshot = {
+  workspaceFolders?: WorkspaceFolderSnapshot[]
+  textDocuments?: TextDocumentSnapshot[]
+  activeTextEditor?: TextEditorSnapshot | null
+  visibleTextEditors?: TextEditorSnapshot[]
+  configuration?: Record<string, unknown>
+}
+
 type InitMessage = { type: 'init'; workspaceRoot?: string; extensions: HostExtension[] }
 type ExecuteCommandMessage = { type: 'executeCommand'; requestId: string; commandId: string; args?: unknown[] }
 type ActivateEventMessage = { type: 'activateEvent'; requestId: string; event: string }
 type GetViewMessage = { type: 'getView'; requestId: string; viewId: string; itemHandle?: string }
 type GetStatusBarItemsMessage = { type: 'getStatusBarItems'; requestId: string }
 type GetWebviewPanelsMessage = { type: 'getWebviewPanels'; requestId: string }
+type WorkspaceStateMessage = { type: 'workspaceState'; state: WorkspaceStateSnapshot }
 type UiResponseMessage = { type: 'uiResponse'; requestId: string; ok: boolean; result?: unknown; error?: string }
 type DeactivateMessage = { type: 'deactivate'; requestId: string }
-type HostMessage = InitMessage | ExecuteCommandMessage | ActivateEventMessage | GetViewMessage | GetStatusBarItemsMessage | GetWebviewPanelsMessage | UiResponseMessage | DeactivateMessage
+type HostMessage = InitMessage | ExecuteCommandMessage | ActivateEventMessage | GetViewMessage | GetStatusBarItemsMessage | GetWebviewPanelsMessage | WorkspaceStateMessage | UiResponseMessage | DeactivateMessage
 
 type RegisteredCommand = (...args: unknown[]) => unknown | Promise<unknown>
 type RuntimeStatusBarItem = {
@@ -84,7 +97,13 @@ const activated = new Map<string, { deactivate?: () => unknown | Promise<unknown
 const activating = new Map<string, Promise<void>>()
 const pendingUiRequests = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>()
 let workspaceRoot: string | undefined
+let workspaceState: WorkspaceStateSnapshot = {}
 let activeExtensionId: string | null = null
+const activeEditorEmitter = createEmitter<TextEditorSnapshot | undefined>()
+const visibleEditorsEmitter = createEmitter<TextEditorSnapshot[]>()
+const openDocumentEmitter = createEmitter<TextDocumentSnapshot>()
+const changeDocumentEmitter = createEmitter<{ document: TextDocumentSnapshot; contentChanges: Array<{ text: string }> }>()
+const closeDocumentEmitter = createEmitter<TextDocumentSnapshot>()
 
 function post(message: unknown): void {
   if (parentPort) parentPort.postMessage(message)
@@ -93,8 +112,6 @@ function post(message: unknown): void {
 
 function makeVscodeApi(extension: HostExtension) {
   const subscriptions: Array<{ dispose?: () => void }> = []
-  const globalState = createMemento(path.join(extension.globalStoragePath, 'globalState.json'))
-  const workspaceState = createMemento(path.join(extension.workspaceStoragePath, 'workspaceState.json'))
   return {
     commands: {
       registerCommand(commandId: string, callback: RegisteredCommand) {
@@ -112,6 +129,11 @@ function makeVscodeApi(extension: HostExtension) {
       },
     },
     window: {
+      get activeTextEditor() { return serializeTextEditor(workspaceState.activeTextEditor ?? undefined) },
+      get visibleTextEditors() { return (workspaceState.visibleTextEditors ?? []).map(serializeTextEditor) },
+      onDidChangeActiveTextEditor: activeEditorEmitter.event,
+      onDidChangeVisibleTextEditors: visibleEditorsEmitter.event,
+      showTextDocument: (documentOrUri: unknown) => Promise.resolve(serializeTextEditor(editorForDocument(documentOrUri))),
       showInformationMessage: (message: string, ...items: unknown[]) => requestUi(extension, 'notification', { level: 'info', message, items }),
       showWarningMessage: (message: string, ...items: unknown[]) => requestUi(extension, 'notification', { level: 'warning', message, items }),
       showErrorMessage: (message: string, ...items: unknown[]) => requestUi(extension, 'notification', { level: 'error', message, items }),
@@ -144,19 +166,20 @@ function makeVscodeApi(extension: HostExtension) {
       },
     },
     workspace: {
-      workspaceFolders: workspaceRoot ? [{ uri: { fsPath: workspaceRoot, scheme: 'file' }, name: path.basename(workspaceRoot), index: 0 }] : [],
-      getConfiguration: () => ({
-        get: () => undefined,
-        has: () => false,
-        inspect: () => undefined,
-        update: () => Promise.resolve(),
-      }),
+      get workspaceFolders() { return workspaceFoldersSnapshot() },
+      get textDocuments() { return (workspaceState.textDocuments ?? []).map(serializeTextDocument) },
+      onDidOpenTextDocument: openDocumentEmitter.event,
+      onDidChangeTextDocument: changeDocumentEmitter.event,
+      onDidCloseTextDocument: closeDocumentEmitter.event,
+      openTextDocument: (uriOrPath: unknown) => Promise.resolve(openTextDocumentSnapshot(uriOrPath)),
+      getConfiguration: (section?: string) => createConfiguration(section),
       fs: createWorkspaceFs(),
     },
     Uri: {
       file: (fsPath: string) => ({ scheme: 'file', fsPath, path: fsPath, toString: () => pathToFileURL(fsPath).toString() }),
     },
     StatusBarAlignment: { Left: 1, Right: 2 },
+    FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
     ExtensionContext: undefined,
     Disposable: class Disposable {
       constructor(private readonly fn: () => void) {}
@@ -175,6 +198,141 @@ moduleWithPrivateLoad._load = function patchedLoad(this: unknown, request: strin
     return makeVscodeApi(extension)
   }
   return originalLoad.call(this, request, parent, isMain)
+}
+
+function createEmitter<T>() {
+  const listeners = new Set<(event: T) => unknown>()
+  return {
+    event(listener: (event: T) => unknown) {
+      listeners.add(listener)
+      return { dispose: () => listeners.delete(listener) }
+    },
+    fire(event: T) {
+      for (const listener of [...listeners]) {
+        try { listener(event) } catch (err) { post({ type: 'listenerError', error: err instanceof Error ? err.message : String(err) }) }
+      }
+    },
+  }
+}
+
+function workspaceFoldersSnapshot(): WorkspaceFolderSnapshot[] {
+  if (workspaceState.workspaceFolders?.length) return workspaceState.workspaceFolders.map(serializeWorkspaceFolder)
+  return workspaceRoot ? [serializeWorkspaceFolder({ uri: uriFromFsPath(workspaceRoot), name: path.basename(workspaceRoot), index: 0 })] : []
+}
+
+function serializeWorkspaceFolder(folder: WorkspaceFolderSnapshot): WorkspaceFolderSnapshot {
+  return { ...folder, uri: serializeUri(folder.uri) }
+}
+
+function serializeUri(uri: UriLike): UriLike {
+  const fsPath = uri.fsPath
+  const scheme = uri.scheme || 'file'
+  const uriPath = uri.path || fsPath
+  return { scheme, fsPath, path: uriPath, toString: () => scheme === 'file' ? pathToFileURL(fsPath).toString() : `${scheme}:${uriPath}` }
+}
+
+function uriFromFsPath(fsPath: string): UriLike {
+  return { scheme: 'file', fsPath, path: fsPath, toString: () => pathToFileURL(fsPath).toString() }
+}
+
+function serializeTextDocument(document: TextDocumentSnapshot): TextDocumentSnapshot & { getText: () => string; lineAt: (line: number) => { text: string; lineNumber: number } } {
+  const text = document.text ?? ''
+  return {
+    ...document,
+    uri: serializeUri(document.uri),
+    getText: () => text,
+    lineAt: (line: number) => {
+      const lines = text.split(/\r?\n/)
+      return { text: lines[line] ?? '', lineNumber: line }
+    },
+  }
+}
+
+function serializeTextEditor(editor: TextEditorSnapshot | undefined): (TextEditorSnapshot & { document: ReturnType<typeof serializeTextDocument> }) | undefined {
+  if (!editor) return undefined
+  return { ...editor, document: serializeTextDocument(editor.document) }
+}
+
+function editorForDocument(documentOrUri: unknown): TextEditorSnapshot | undefined {
+  const fsPath = uriFsPath(documentOrUri)
+  const document = fsPath
+    ? workspaceState.textDocuments?.find((candidate) => candidate.uri.fsPath === fsPath || candidate.fileName === fsPath) ?? openTextDocumentSnapshot(documentOrUri)
+    : isRecord(documentOrUri) && isRecord(documentOrUri.document)
+      ? documentOrUri.document as TextDocumentSnapshot
+      : workspaceState.activeTextEditor?.document
+  return document ? { document } : workspaceState.activeTextEditor ?? undefined
+}
+
+function openTextDocumentSnapshot(uriOrPath: unknown): TextDocumentSnapshot {
+  const fsPath = uriFsPath(uriOrPath) ?? (typeof uriOrPath === 'string' ? uriOrPath : undefined)
+  const existing = fsPath ? workspaceState.textDocuments?.find((document) => document.uri.fsPath === fsPath || document.fileName === fsPath) : undefined
+  if (existing) return serializeTextDocument(existing)
+  if (!fsPath) throw new Error('openTextDocument requires a file path or URI')
+  const allowed = assertWorkspacePath(fsPath)
+  const text = fs.readFileSync(allowed, 'utf8')
+  return serializeTextDocument({ uri: uriFromFsPath(allowed), fileName: allowed, languageId: languageFromPath(allowed), version: 1, text, isDirty: false })
+}
+
+function uriFsPath(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (isRecord(value) && typeof value.fsPath === 'string') return value.fsPath
+  if (isRecord(value) && isRecord(value.uri) && typeof value.uri.fsPath === 'string') return value.uri.fsPath
+  return undefined
+}
+
+function languageFromPath(file: string): string {
+  const ext = path.extname(file).toLowerCase().slice(1)
+  if (ext === 'ts' || ext === 'tsx') return 'typescript'
+  if (ext === 'js' || ext === 'jsx' || ext === 'mjs' || ext === 'cjs') return 'javascript'
+  if (ext === 'json') return 'json'
+  if (ext === 'md') return 'markdown'
+  if (ext === 'py') return 'python'
+  if (ext === 'css') return 'css'
+  if (ext === 'html') return 'html'
+  return ext || 'plaintext'
+}
+
+function createConfiguration(section?: string) {
+  const all = workspaceState.configuration ?? {}
+  const sectionValue = section ? getConfigValue(all, section) : all
+  return {
+    get: (key?: string, defaultValue?: unknown) => {
+      const value = key ? getConfigValue(sectionValue, key) : sectionValue
+      return value === undefined ? defaultValue : value
+    },
+    has: (key: string) => getConfigValue(sectionValue, key) !== undefined,
+    inspect: (key: string) => {
+      const value = getConfigValue(sectionValue, key)
+      return value === undefined ? undefined : { key, globalValue: value, workspaceValue: value }
+    },
+    update: () => Promise.resolve(),
+  }
+}
+
+function getConfigValue(source: unknown, key: string): unknown {
+  if (!isRecord(source)) return undefined
+  if (Object.prototype.hasOwnProperty.call(source, key)) return source[key]
+  return key.split('.').reduce<unknown>((current, part) => isRecord(current) ? current[part] : undefined, source)
+}
+
+function applyWorkspaceState(next: WorkspaceStateSnapshot): void {
+  const previousDocuments = new Map((workspaceState.textDocuments ?? []).map((document) => [document.uri.fsPath, document]))
+  const previousActive = workspaceState.activeTextEditor?.document.uri.fsPath
+  workspaceState = next
+  const currentDocuments = new Map((workspaceState.textDocuments ?? []).map((document) => [document.uri.fsPath, document]))
+  for (const [fsPath, document] of currentDocuments) {
+    const previous = previousDocuments.get(fsPath)
+    if (!previous) openDocumentEmitter.fire(serializeTextDocument(document))
+    else if (previous.version !== document.version || previous.text !== document.text || previous.isDirty !== document.isDirty) {
+      changeDocumentEmitter.fire({ document: serializeTextDocument(document), contentChanges: [{ text: document.text }] })
+    }
+  }
+  for (const [fsPath, document] of previousDocuments) {
+    if (!currentDocuments.has(fsPath)) closeDocumentEmitter.fire(serializeTextDocument(document))
+  }
+  const currentActive = workspaceState.activeTextEditor?.document.uri.fsPath
+  if (previousActive !== currentActive) activeEditorEmitter.fire(serializeTextEditor(workspaceState.activeTextEditor ?? undefined))
+  visibleEditorsEmitter.fire((workspaceState.visibleTextEditors ?? []).map((editor) => serializeTextEditor(editor)).filter((editor): editor is TextEditorSnapshot & { document: ReturnType<typeof serializeTextDocument> } => !!editor))
 }
 
 function unsupported(method: string) {
@@ -467,6 +625,7 @@ function onMessage(raw: { data?: HostMessage } | HostMessage): void {
   const message = 'data' in raw && raw.data ? raw.data : raw as HostMessage
   if (message.type === 'init') {
     workspaceRoot = message.workspaceRoot
+    workspaceState = { workspaceFolders: workspaceRoot ? [{ uri: uriFromFsPath(workspaceRoot), name: path.basename(workspaceRoot), index: 0 }] : [], textDocuments: [], visibleTextEditors: [], activeTextEditor: null, configuration: {} }
     extensions.clear()
     commandOwners.clear()
     viewOwners.clear()
@@ -495,6 +654,8 @@ function onMessage(raw: { data?: HostMessage } | HostMessage): void {
     respondStatusBarItems(message.requestId)
   } else if (message.type === 'getWebviewPanels') {
     respondWebviewPanels(message.requestId)
+  } else if (message.type === 'workspaceState') {
+    applyWorkspaceState(message.state)
   } else if (message.type === 'uiResponse') {
     const pending = pendingUiRequests.get(message.requestId)
     if (!pending) return
@@ -777,6 +938,20 @@ function createWorkspaceFs() {
       const dir = assertWorkspacePath(uri.fsPath)
       const entries = await fs.promises.readdir(dir, { withFileTypes: true })
       return entries.map((entry) => [entry.name, entry.isDirectory() ? 2 : 1] as const)
+    },
+    createDirectory: async (uri: { fsPath?: string }) => fs.promises.mkdir(assertWorkspacePath(uri.fsPath), { recursive: true }),
+    delete: async (uri: { fsPath?: string }, options?: { recursive?: boolean }) => fs.promises.rm(assertWorkspacePath(uri.fsPath), { recursive: !!options?.recursive, force: true }),
+    rename: async (oldUri: { fsPath?: string }, newUri: { fsPath?: string }, options?: { overwrite?: boolean }) => {
+      const oldPath = assertWorkspacePath(oldUri.fsPath)
+      const newPath = assertWorkspacePath(newUri.fsPath)
+      if (options?.overwrite) await fs.promises.rm(newPath, { recursive: true, force: true })
+      await fs.promises.rename(oldPath, newPath)
+    },
+    copy: async (source: { fsPath?: string }, destination: { fsPath?: string }, options?: { overwrite?: boolean }) => {
+      const sourcePath = assertWorkspacePath(source.fsPath)
+      const destinationPath = assertWorkspacePath(destination.fsPath)
+      if (options?.overwrite) await fs.promises.rm(destinationPath, { recursive: true, force: true })
+      await fs.promises.cp(sourcePath, destinationPath, { recursive: true, force: false })
     },
   }
 }
