@@ -6,14 +6,17 @@ import os from 'os'
 import path from 'path'
 import { ExtensionInstallService, type ExtensionEnableScope } from './install-service'
 import { ExtensionRegistryService } from './registry-service'
+import { ExtensionHostManager } from './host-manager'
 
 let installService: ExtensionInstallService | null = null
 let registryService: ExtensionRegistryService | null = null
+let hostManager: ExtensionHostManager | null = null
 
-function services(): { install: ExtensionInstallService; registry: ExtensionRegistryService } {
+function services(): { install: ExtensionInstallService; registry: ExtensionRegistryService; host: ExtensionHostManager } {
   if (!installService) installService = new ExtensionInstallService()
   if (!registryService) registryService = new ExtensionRegistryService(installService)
-  return { install: installService, registry: registryService }
+  if (!hostManager) hostManager = new ExtensionHostManager(installService)
+  return { install: installService, registry: registryService, host: hostManager }
 }
 
 export function registerExtensionsIpcHandlers(): void {
@@ -90,10 +93,10 @@ export function registerExtensionsIpcHandlers(): void {
     try { return services().install.setEnabled(id, false, scope, workspaceRoot) } catch (err) { return failure(err) }
   })
 
-  ipcMain.handle('extensions:restartHost', () => {
+  ipcMain.handle('extensions:restartHost', async (_event, args?: { workspaceRoot?: string }) => {
     try {
-      services().install.clearRestartRequired()
-      return { ok: true, restarted: false, message: 'No extension host is running yet. Restart-required state was cleared.' }
+      const result = await services().host.restart(args?.workspaceRoot)
+      return { ok: true, ...result, message: 'Extension host restarted.' }
     } catch (err) {
       return failure(err)
     }
@@ -104,12 +107,26 @@ export function registerExtensionsIpcHandlers(): void {
   })
 
   ipcMain.handle('extensions:update', () => ({ ok: false, error: 'Extension updates are not implemented yet' }))
-  ipcMain.handle('extensions:runCommand', () => ({ ok: false, error: 'Extension command host is not implemented yet' }))
-  ipcMain.handle('extensions:showRunningExtensions', () => ({ ok: true, running: [], message: 'No extension host is running yet' }))
+  ipcMain.handle('extensions:runCommand', async (_event, commandId: string, args?: unknown[], options?: { workspaceRoot?: string }) => {
+    try {
+      return { ok: true, result: await services().host.executeCommand(commandId, args ?? [], options?.workspaceRoot) }
+    } catch (err) {
+      return failure(err)
+    }
+  })
+  ipcMain.handle('extensions:showRunningExtensions', () => {
+    try {
+      const running = services().host.getRunningExtensions()
+      return { ok: true, running, message: running.length === 0 ? 'No extension commands have activated yet.' : undefined }
+    } catch (err) {
+      return failure(err)
+    }
+  })
   ipcMain.handle('extensions:startBisect', () => ({ ok: false, error: 'Extension bisect requires the extension host milestone' }))
 }
 
 export function disposeExtensionsIpcHandlers(): void {
+  if (hostManager) void hostManager.stop()
   for (const channel of [
     'extensions:listInstalled', 'extensions:getContributions', 'extensions:search', 'extensions:installFromVsix',
     'extensions:installFromRegistry', 'extensions:uninstall', 'extensions:enable', 'extensions:disable',

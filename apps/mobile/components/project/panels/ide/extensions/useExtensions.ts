@@ -116,7 +116,7 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
   const restartHost = useCallback(async () => {
     if (!bridge) return;
     setError(null);
-    const response = await bridge.restartHost();
+    const response = await bridge.restartHost(workspaceRoot ?? undefined);
     if (!response.ok) {
       setError(response.error ?? "Failed to restart extensions");
       return;

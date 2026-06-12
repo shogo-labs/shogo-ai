@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { app } from 'electron'
+import electron from 'electron'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { unzipSync } from 'fflate'
@@ -258,7 +259,7 @@ export class ExtensionInstallService {
 }
 
 export function defaultExtensionsRoot(): string {
-  return path.join(app.getPath('userData'), 'extensions')
+  return path.join(electron.app.getPath('userData'), 'extensions')
 }
 
 function validateArchiveEntryPath(entryName: string): void {
@@ -266,7 +267,7 @@ function validateArchiveEntryPath(entryName: string): void {
   if (entryName.includes('\\')) throw new Error(`Unsafe VSIX path: ${entryName}`)
   const rel = entryName.slice('extension/'.length)
   if (!rel) return
-  safeJoin('/', rel)
+  safeJoin(path.join(os.tmpdir(), 'shogo-vsix-entry-root'), rel)
 }
 
 function safeJoin(root: string, relPath: string): string {
