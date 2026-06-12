@@ -74,7 +74,7 @@ export function registerExtensionsIpcHandlers(): void {
       fs.mkdirSync(downloadsDir, { recursive: true })
       const file = path.join(downloadsDir, `${publisher}.${name}-${metadata.version ?? version ?? Date.now()}.vsix`)
       fs.writeFileSync(file, bytes)
-      const record = services().install.installFromVsix(file)
+      const record = services().install.installFromVsix(file, 'open-vsx')
       return { ok: true, extension: record, restartRequired: true }
     } catch (err) {
       return failure(err)
