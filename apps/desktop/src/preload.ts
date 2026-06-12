@@ -269,6 +269,40 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('fs:readFile', root, relPath),
   },
 
+  // Desktop IDE extension management. Milestone A exposes safe install/list/
+  // enable/disable state only; extension code execution is added behind the
+  // same bridge in later milestones.
+  extensions: {
+    listInstalled: (workspaceRoot?: string): Promise<{ ok: boolean; extensions?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:listInstalled', { workspaceRoot }),
+    search: (query: string, options?: { size?: number }): Promise<{ ok: boolean; results?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:search', query, options),
+    installFromVsix: (): Promise<{ ok: boolean; extension?: unknown; restartRequired?: boolean; cancelled?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:installFromVsix'),
+    installFromRegistry: (id: string, version?: string): Promise<{ ok: boolean; extension?: unknown; restartRequired?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:installFromRegistry', id, version),
+    uninstall: (id: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:uninstall', id),
+    enable: (id: string, scope?: 'global' | 'workspace', workspaceRoot?: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:enable', id, scope, workspaceRoot),
+    disable: (id: string, scope?: 'global' | 'workspace', workspaceRoot?: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:disable', id, scope, workspaceRoot),
+    restartHost: (): Promise<{ ok: boolean; restarted?: boolean; message?: string; error?: string }> =>
+      ipcRenderer.invoke('extensions:restartHost'),
+    checkUpdates: (): Promise<{ ok: boolean; updates?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:checkUpdates'),
+    update: (id: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:update', id),
+    getContributions: (workspaceRoot?: string): Promise<{ ok: boolean; extensions?: unknown[]; contributions?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:getContributions', { workspaceRoot }),
+    runCommand: (commandId: string, args?: unknown[]): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:runCommand', commandId, args),
+    showRunningExtensions: (): Promise<{ ok: boolean; running?: unknown[]; message?: string; error?: string }> =>
+      ipcRenderer.invoke('extensions:showRunningExtensions'),
+    startBisect: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:startBisect'),
+  },
+
   // --- Git (G1: read-only awareness) ------------------------------------
   // Backed by `apps/desktop/src/git/` in main. Shells out to the user's
   // installed `git` CLI in the workspace root and streams porcelain v2

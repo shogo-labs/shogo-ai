@@ -54,6 +54,8 @@ import { OutlinePanel } from "./OutlinePanel";
 import { getDocumentSymbols } from "./monaco/lspProviders";
 import type { DocumentSymbolLike } from "./outline-model";
 import { SettingsPane } from "./SettingsPane";
+import { ExtensionsViewlet } from "./extensions/ExtensionsViewlet";
+import { getDesktopExtensionsBridge, useExtensions } from "./extensions/useExtensions";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
@@ -246,6 +248,7 @@ export function Workbench({
       "git",
       "checkpoint",
       "debug",
+      "extensions",
       "settings",
     ]);
     const apply = (id: string) => {
@@ -1697,6 +1700,8 @@ export function Workbench({
     };
   }, [projectId, folderPath]);
   const gitSnapshot = useGitStatus(gitWorkspaceRoot);
+  const extensionsBridgeAvailable = getDesktopExtensionsBridge() !== null;
+  const extensionsSummary = useExtensions({ workspaceRoot: gitWorkspaceRoot });
 
   // ─── G4: git gutter markers + inline blame + conflict CodeLens ─────
   // Attach Monaco decorations + a code lens provider for the active
@@ -1740,6 +1745,11 @@ export function Workbench({
     const out: Partial<Record<ActivityId, BadgeData>> = {};
     const gitN = gitChangeCount(gitSnapshot);
     if (gitN > 0) out.git = { count: gitN, tone: "neutral" };
+    if (extensionsSummary.restartRequired) {
+      out.extensions = { count: 1, tone: "warn" };
+    } else if (extensionsSummary.installed.length > 0) {
+      out.extensions = { count: extensionsSummary.installed.length, tone: "neutral" };
+    }
     if (problemsBadgeResult.count > 0) {
       const tone = problemsBadgeResult.severity === "error" ? "error" : "warn";
       // Shogo surfaces the Problems pane under the Files (Explorer)
@@ -1749,7 +1759,7 @@ export function Workbench({
       out.files = { count: problemsBadgeResult.count, tone };
     }
     return Object.keys(out).length === 0 ? null : out;
-  }, [desktopBadgesEnabled, gitSnapshot, problemsBadgeResult.count, problemsBadgeResult.severity, isExternalProject]);
+  }, [desktopBadgesEnabled, gitSnapshot, problemsBadgeResult.count, problemsBadgeResult.severity, extensionsSummary.restartRequired, extensionsSummary.installed.length, isExternalProject]);
 
   return (
     <GitStatusProvider snapshot={gitSnapshot}>
@@ -1964,6 +1974,9 @@ export function Workbench({
               {activity === "debug" && (
                 <RunDebugPanel workspaceRoot={gitWorkspaceRoot} />
               )}
+              {activity === "extensions" && (
+                <ExtensionsViewlet workspaceRoot={gitWorkspaceRoot} />
+              )}
               {activity === "settings" && (
                 <SettingsPane settings={settings} onChange={setSettings} />
               )}
@@ -1976,7 +1989,7 @@ export function Workbench({
           sidebarOpen={sidebarOpen}
           terminalOpen={bottomPanelOpen}
           badges={activityBadges}
-          hiddenItemIds={[]}
+          hiddenItemIds={extensionsBridgeAvailable ? [] : ["extensions"]}
           onSelect={(id) => {
             setActivity(id);
             if (!sidebarOpen) setSidebarOpen(true);
