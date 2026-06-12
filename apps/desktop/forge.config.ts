@@ -111,16 +111,22 @@ const extraResource = [
 // private key is non-exportable, so we can't use the legacy
 // `certificateFile`/`certificatePassword` flow. Instead the CI workflow
 // installs the KeyLocker KSP, syncs the cert into the Windows store, and
-// exports WINDOWS_SIGN_WITH_PARAMS (the signtool `/sha1 <thumbprint> ...`
-// args). `signWithParams` overrides the legacy cert fields and is the
-// supported path for HSM/cloud certs; signtool calls the KSP so the key
-// never leaves the HSM. Shared between packagerConfig (app binaries) and
-// the Squirrel maker (Shogo-Setup.exe). Undefined -> unsigned build (forks
-// / local dev). See .github/workflows/desktop-release-windows.yml.
+// exports WINDOWS_SIGN_WITH_PARAMS — which must contain ONLY the cert
+// selector (`/sha1 <thumbprint>`). @electron/windows-sign always appends
+// its own `/fd` (from `hashes`) and `/tr`+`/td` (from `timestampServer`),
+// so including those in signWithParams makes signtool fail with "You
+// cannot use the /fd option twice". signtool resolves the synced cert via
+// the thumbprint and signs through the KSP, so the key never leaves the
+// HSM. `hashes: ['sha256']` pins single SHA-256 signing — the default is
+// [sha1, sha256], and the deprecated SHA-1 pass is rejected by DigiCert.
+// Shared between packagerConfig (app binaries) and the Squirrel maker
+// (Shogo-Setup.exe). Undefined -> unsigned build (forks / local dev).
+// See .github/workflows/desktop-release-windows.yml.
 const windowsSign = process.env.WINDOWS_SIGN_WITH_PARAMS
   ? {
       signWithParams: process.env.WINDOWS_SIGN_WITH_PARAMS,
       timestampServer: 'http://timestamp.digicert.com',
+      hashes: ['sha256'],
       ...(process.env.SIGNTOOL_PATH ? { signToolPath: process.env.SIGNTOOL_PATH } : {}),
     }
   : undefined

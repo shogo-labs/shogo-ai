@@ -314,8 +314,10 @@ jobs:
         shell: pwsh
         run: |
           smctl windows certsync --keypair-alias=${{ vars.SM_KEYPAIR_ALIAS }}
-          # RSA-3072 / SHA-256 cert -> sign + timestamp with SHA-256.
-          "WINDOWS_SIGN_WITH_PARAMS=/sha1 ${{ vars.SM_CODE_SIGNING_CERT_SHA1_HASH }} /tr http://timestamp.digicert.com /td sha256 /fd sha256" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # ONLY the cert selector. @electron/windows-sign appends /fd, /tr
+          # and /td itself (from hashes + timestampServer in forge.config.ts);
+          # adding them here makes signtool fail "cannot use /fd option twice".
+          "WINDOWS_SIGN_WITH_PARAMS=/sha1 ${{ vars.SM_CODE_SIGNING_CERT_SHA1_HASH }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Package with Electron Forge
         working-directory: apps/desktop
