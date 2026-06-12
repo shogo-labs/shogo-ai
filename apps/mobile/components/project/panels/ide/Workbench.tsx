@@ -51,8 +51,10 @@ import {
 import { broadcastEditorFontChange } from "./useEditorFont";
 import { SearchPane } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
-import { ExtensionsViewlet } from "./extensions/ExtensionsViewlet";
+import { ExtensionsViewlet, TrustPublisherDialog, isPublisherTrusted, trustPublisher } from "./extensions/ExtensionsViewlet";
+import { collectRuntimeContainers, ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
 import { getDesktopExtensionsBridge, useExtensions } from "./extensions/useExtensions";
+import type { ExtensionSearchResult, InstalledExtension } from "./extensions/types";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
@@ -231,6 +233,7 @@ export function Workbench({
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
   const [graphOpen, setGraphOpen] = useState<boolean>(false);
+  const [pendingExtensionInstall, setPendingExtensionInstall] = useState<ExtensionSearchResult | null>(null);
 
   // Deep-link: let surfaces outside the Workbench (e.g. the top-bar Publish
   // popover's "View history" link) switch the active activity — notably
@@ -1315,6 +1318,58 @@ export function Workbench({
   );
 
   const extensionsSummary = useExtensions({ workspaceRoot: gitWorkspaceRootRef.current });
+  const extensionRuntimeContainers = useMemo(
+    () => collectRuntimeContainers(extensionsSummary.installed),
+    [extensionsSummary.installed],
+  );
+  const activeExtensionRuntimeContainer = useMemo(
+    () => extensionRuntimeContainers.find((container) => container.activityId === activity),
+    [activity, extensionRuntimeContainers],
+  );
+  const openExtensionDetailsTab = useCallback((item: InstalledExtension | ExtensionSearchResult) => {
+    const id = `extension:${item.id}`;
+    const name = `Extension: ${item.displayName || item.name}`;
+    const existing = findOpenLocation(id);
+    if (existing) {
+      setActiveGroupIdx(existing.groupIdx);
+      updateGroup(existing.groupIdx, (g) => ({
+        ...g,
+        activeId: id,
+        files: g.files.map((file) => file.id === id ? { ...file, name, extensionDetail: item } : file),
+      }));
+      return;
+    }
+    const tab: OpenFile = {
+      id,
+      rootId: "__extensions__",
+      name,
+      path: `Extensions/${item.displayName || item.name}`,
+      language: "extension-detail",
+      content: "",
+      savedContent: "",
+      dirty: false,
+      extensionDetail: item,
+    };
+    updateGroup(activeGroupIdx, (g) => ({ ...g, files: [...g.files, tab], activeId: id }));
+    setActiveGroupIdx(activeGroupIdx);
+  }, [activeGroupIdx, findOpenLocation, updateGroup]);
+
+  const requestExtensionInstall = useCallback((item: ExtensionSearchResult) => {
+    if (isPublisherTrusted(item.publisher)) {
+      void extensionsSummary.installFromRegistry(item.id, item.version);
+    } else {
+      setPendingExtensionInstall(item);
+    }
+  }, [extensionsSummary]);
+  const trustAndInstallExtension = useCallback(() => {
+    if (!pendingExtensionInstall) return;
+    trustPublisher(pendingExtensionInstall.publisher);
+    void extensionsSummary.installFromRegistry(pendingExtensionInstall.id, pendingExtensionInstall.version);
+    setPendingExtensionInstall(null);
+  }, [extensionsSummary, pendingExtensionInstall]);
+  const runExtensionCommand = useCallback((commandId: string) => {
+    void extensionsSummary.runCommand(commandId);
+  }, [extensionsSummary]);
 
   // ─── Commands ────────────────────────────────────────────────────────
   const commands: Command[] = useMemo(() => {
@@ -1737,7 +1792,7 @@ export function Workbench({
               {graphOpen && projectId && (
                 <div className="absolute inset-0 z-30 flex flex-col bg-[color:var(--ide-bg)]">
                   <div className="flex items-center gap-2 px-3 h-9 border-b border-[color:var(--ide-border)] bg-[color:var(--ide-surface)]">
-                    <GitBranch size={13} className="text-[color:var(--ide-muted)]" />
+                    <GitBranch size={13} color="var(--ide-muted)" />
                     <span className="text-[12px] text-[color:var(--ide-text-strong)]">Commit Graph</span>
                     <span className="flex-1" />
                     <button
@@ -1786,6 +1841,13 @@ export function Workbench({
                       onChange={handleChangeFor(i)}
                       onCursor={(line, col) => setCursor({ line, col })}
                       settings={settings}
+                      installedExtensions={extensionsSummary.installed}
+                      extensionInstallingId={extensionsSummary.installingId}
+                      onInstallExtension={requestExtensionInstall}
+                      onEnableExtension={(id) => void extensionsSummary.setEnabled(id, true)}
+                      onDisableExtension={(id) => void extensionsSummary.setEnabled(id, false)}
+                      onUninstallExtension={(id) => void extensionsSummary.uninstall(id)}
+                      onRunExtensionCommand={runExtensionCommand}
                       onEditorMount={(ed, monaco) => {
                         editorRefs.current[g.id] = ed;
                         if (monaco && monacoNsRef.current !== monaco) {
@@ -1920,7 +1982,14 @@ export function Workbench({
                 <RunDebugPanel workspaceRoot={gitWorkspaceRoot} />
               )}
               {activity === "extensions" && (
-                <ExtensionsViewlet workspaceRoot={gitWorkspaceRoot} />
+                <ExtensionsViewlet workspaceRoot={gitWorkspaceRoot} onOpenDetails={openExtensionDetailsTab} />
+              )}
+              {activeExtensionRuntimeContainer && (
+                <ExtensionRuntimeViewlet
+                  container={activeExtensionRuntimeContainer}
+                  onRunCommand={runExtensionCommand}
+                  onOpenDetails={openExtensionDetailsTab}
+                />
               )}
               {activity === "settings" && (
                 <SettingsPane settings={settings} onChange={setSettings} />
@@ -1935,6 +2004,7 @@ export function Workbench({
           terminalOpen={bottomPanelOpen}
           badges={activityBadges}
           hiddenItemIds={extensionsBridgeAvailable ? [] : ["extensions"]}
+          extensionContainers={extensionRuntimeContainers}
           onSelect={(id) => {
             setActivity(id);
             if (!sidebarOpen) setSidebarOpen(true);
@@ -1952,6 +2022,17 @@ export function Workbench({
         git={gitSnapshot}
         workspaceRoot={gitWorkspaceRoot}
       />
+
+
+      {pendingExtensionInstall && (
+        <div className="absolute inset-0 z-50">
+          <TrustPublisherDialog
+            extension={pendingExtensionInstall}
+            onCancel={() => setPendingExtensionInstall(null)}
+            onTrust={trustAndInstallExtension}
+          />
+        </div>
+      )}
 
       {palette === "command" && (
         <Palette
@@ -2099,7 +2180,7 @@ function FilesPane({
             title="Refresh All"
             className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
           >
-            <RefreshCw size={13} className={anyLoading ? "animate-spin" : ""} />
+            <RefreshCw size={13} />
           </button>
           {onCollapse && (
             <button

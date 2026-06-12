@@ -37,7 +37,7 @@ export interface ShogoContributionPoints {
   menus?: Record<string, ShogoMenuContribution[]>
   keybindings?: Array<Record<string, unknown>>
   views?: Record<string, ShogoViewContribution[]>
-  viewsContainers?: { activitybar?: ShogoViewContainerContribution[] }
+  viewsContainers?: { activitybar?: ShogoViewContainerContribution[]; panel?: ShogoViewContainerContribution[] }
   viewsWelcome?: Array<Record<string, unknown>>
   configuration?: Record<string, unknown> | Record<string, unknown>[]
   languages?: Array<Record<string, unknown>>
@@ -266,6 +266,7 @@ function collectPathFields(manifest: ShogoExtensionManifest): Record<string, str
     }
   }
   for (const container of manifest.contributes?.viewsContainers?.activitybar ?? []) add('contributes.viewsContainers.activitybar.icon', container.icon)
+  for (const container of manifest.contributes?.viewsContainers?.panel ?? []) add('contributes.viewsContainers.panel.icon', container.icon)
   for (const views of Object.values(manifest.contributes?.views ?? {})) {
     for (const view of views) add('contributes.views.icon', view.icon)
   }

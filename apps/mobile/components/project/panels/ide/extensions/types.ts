@@ -1,5 +1,34 @@
 export type ExtensionInstallSource = "vsix" | "open-vsx" | "private";
 
+export interface ExtensionCommandContribution {
+  command: string;
+  title: string;
+  category?: string;
+  icon?: string | { light?: string; dark?: string };
+}
+
+export interface ExtensionViewContribution {
+  id: string;
+  name: string;
+  when?: string;
+  icon?: string;
+  contextualTitle?: string;
+  visibility?: "visible" | "collapsed" | "hidden";
+}
+
+export interface ExtensionViewContainerContribution {
+  id: string;
+  title: string;
+  icon?: string;
+}
+
+export interface ExtensionMenuContribution {
+  command: string;
+  when?: string;
+  group?: string;
+  alt?: string;
+}
+
 export interface ExtensionManifestSummary {
   id: string;
   publisher: string;
@@ -10,8 +39,14 @@ export interface ExtensionManifestSummary {
   categories?: string[];
   activationEvents?: string[];
   contributes?: {
-    commands?: Array<{ command: string; title: string; category?: string }>;
-    views?: Record<string, Array<{ id: string; name: string }>>;
+    commands?: ExtensionCommandContribution[];
+    menus?: Record<string, ExtensionMenuContribution[]>;
+    views?: Record<string, ExtensionViewContribution[]>;
+    viewsContainers?: {
+      activitybar?: ExtensionViewContainerContribution[];
+      panel?: ExtensionViewContainerContribution[];
+    };
+    viewsWelcome?: Array<Record<string, unknown>>;
     [key: string]: unknown;
   };
 }

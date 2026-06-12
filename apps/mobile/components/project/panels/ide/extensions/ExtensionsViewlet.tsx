@@ -2,14 +2,18 @@ import type { ReactNode } from "react";
 import { Filter, RefreshCw, Search, X } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import { ExtensionActionsMenu } from "./ExtensionActionsMenu";
-import { ExtensionDetails } from "./ExtensionDetails";
 import { InstalledExtensionListItem, SearchExtensionListItem } from "./ExtensionListItem";
 import { useExtensions } from "./useExtensions";
 import type { ExtensionSearchResult, InstalledExtension } from "./types";
 
-export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | null }) {
+export function ExtensionsViewlet({
+  workspaceRoot,
+  onOpenDetails,
+}: {
+  workspaceRoot?: string | null;
+  onOpenDetails?: (item: InstalledExtension | ExtensionSearchResult) => void;
+}) {
   const extensions = useExtensions({ workspaceRoot });
-  const [selected, setSelected] = useState<InstalledExtension | ExtensionSearchResult | null>(null);
   const [pendingInstall, setPendingInstall] = useState<ExtensionSearchResult | null>(null);
   const installed = extensions.installed;
   const installedIds = useMemo(() => new Set(installed.map((extension) => extension.id)), [installed]);
@@ -26,7 +30,6 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
     );
   }
 
-  const selectedInstalled = selected ? installed.find((extension) => extension.id === selected.id) : undefined;
   const requestInstall = (result: ExtensionSearchResult) => {
     if (isPublisherTrusted(result.publisher)) {
       void extensions.installFromRegistry(result.id, result.version);
@@ -40,29 +43,6 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
     void extensions.installFromRegistry(pendingInstall.id, pendingInstall.version);
     setPendingInstall(null);
   };
-
-  if (selected) return (
-    <div className="relative h-full">
-      <ExtensionDetails
-        item={selected}
-        installedItem={selectedInstalled}
-        installing={extensions.installingId === selected.id}
-        onBack={() => setSelected(null)}
-        onInstall={!selectedInstalled && !("manifest" in selected) ? () => requestInstall(selected) : undefined}
-        onEnable={selectedInstalled ? () => void extensions.setEnabled(selectedInstalled.id, true) : undefined}
-        onDisable={selectedInstalled ? () => void extensions.setEnabled(selectedInstalled.id, false) : undefined}
-        onUninstall={selectedInstalled ? () => void extensions.uninstall(selectedInstalled.id) : undefined}
-        onRunCommand={(commandId) => void extensions.runCommand(commandId)}
-      />
-      {pendingInstall && (
-        <TrustPublisherDialog
-          extension={pendingInstall}
-          onCancel={() => setPendingInstall(null)}
-          onTrust={trustAndInstall}
-        />
-      )}
-    </div>
-  );
 
   return (
     <div className="relative flex h-full flex-col bg-[color:var(--ide-surface)]">
@@ -83,7 +63,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
 
       <div className="border-b border-[color:var(--ide-border)] p-2">
         <form onSubmit={(event) => { event.preventDefault(); void extensions.runSearch(); }} className="flex items-center gap-1 rounded border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] px-2 py-1">
-          <Search size={13} className="text-[color:var(--ide-muted)]" />
+          <Search size={13} color="var(--ide-muted)" />
           <input
             value={extensions.query}
             onChange={(event) => extensions.setQuery(event.target.value)}
@@ -95,7 +75,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
               <X size={13} />
             </button>
           )}
-          <Filter size={13} className="text-[color:var(--ide-muted)]" />
+          <Filter size={13} color="var(--ide-muted)" />
         </form>
       </div>
 
@@ -121,7 +101,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
                 result={result}
                 installed={installedIds.has(result.id)}
                 installing={extensions.installingId === result.id}
-                onSelect={() => setSelected(result)}
+                onSelect={() => onOpenDetails?.(result)}
                 onInstall={() => requestInstall(result)}
               />
             ))}
@@ -134,7 +114,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
             <InstalledExtensionListItem
               key={extension.id}
               extension={extension}
-              onSelect={() => setSelected(extension)}
+              onSelect={() => onOpenDetails?.(extension)}
               onEnable={() => void extensions.setEnabled(extension.id, true)}
               onDisable={() => void extensions.setEnabled(extension.id, false)}
               onUninstall={() => void extensions.uninstall(extension.id)}
@@ -148,7 +128,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
               <InstalledExtensionListItem
                 key={extension.id}
                 extension={extension}
-                onSelect={() => setSelected(extension)}
+                onSelect={() => onOpenDetails?.(extension)}
                 onEnable={() => void extensions.setEnabled(extension.id, true)}
                 onDisable={() => void extensions.setEnabled(extension.id, false)}
                 onUninstall={() => void extensions.uninstall(extension.id)}
@@ -166,7 +146,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
                 result={result}
                 installed={installedIds.has(result.id)}
                 installing={extensions.installingId === result.id}
-                onSelect={() => setSelected(result)}
+                onSelect={() => onOpenDetails?.(result)}
                 onInstall={() => requestInstall(result)}
               />
             ))}
@@ -180,7 +160,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
             extensions.running.map((status) => (
               <div key={status.id} className="border-b border-[color:var(--ide-border)] px-3 py-2 text-[11px] text-[color:var(--ide-text)]">
                 <div className="font-semibold text-[color:var(--ide-text-strong)]">{status.id}</div>
-                <div className="text-[color:var(--ide-muted)]">
+                <div color="var(--ide-muted)">
                   {status.activationReason ?? "activated"} · {status.activationTimeMs ?? 0}ms · crashes {status.crashCount}
                 </div>
               </div>
@@ -199,7 +179,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
   );
 }
 
-function TrustPublisherDialog({ extension, onCancel, onTrust }: { extension: ExtensionSearchResult; onCancel: () => void; onTrust: () => void }) {
+export function TrustPublisherDialog({ extension, onCancel, onTrust }: { extension: ExtensionSearchResult; onCancel: () => void; onTrust: () => void }) {
   return (
     <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 p-4">
       <div className="w-full max-w-sm rounded-lg border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] p-4 shadow-2xl">
@@ -219,7 +199,7 @@ function TrustPublisherDialog({ extension, onCancel, onTrust }: { extension: Ext
 
 const TRUSTED_PUBLISHERS_KEY = "shogo.desktop.extensions.trustedPublishers";
 
-function isPublisherTrusted(publisher: string): boolean {
+export function isPublisherTrusted(publisher: string): boolean {
   if (typeof window === "undefined") return false;
   try {
     const trusted = JSON.parse(window.localStorage.getItem(TRUSTED_PUBLISHERS_KEY) ?? "[]") as unknown;
@@ -229,7 +209,7 @@ function isPublisherTrusted(publisher: string): boolean {
   }
 }
 
-function trustPublisher(publisher: string): void {
+export function trustPublisher(publisher: string): void {
   if (typeof window === "undefined") return;
   try {
     const trusted = JSON.parse(window.localStorage.getItem(TRUSTED_PUBLISHERS_KEY) ?? "[]") as unknown;
