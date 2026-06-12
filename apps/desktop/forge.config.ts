@@ -131,6 +131,17 @@ const windowsSign = process.env.WINDOWS_SIGN_WITH_PARAMS
     }
   : undefined
 
+// node-pty ships prebuilt binaries for EVERY platform under prebuilds/
+// (darwin-arm64, darwin-x64, linux-x64, win32-x64, ...). On Windows,
+// @electron/windows-sign recursively signs every *.node file and signtool
+// dies on the macOS/Linux Mach-O/ELF binaries with "This file format
+// cannot be signed because it is not recognized." Only the current
+// platform's prebuild is ever loaded at runtime (node-gyp-build resolves
+// by platform-arch), so strip the foreign ones from the package. The
+// negative lookahead keeps `prebuilds/<process.platform>-*` and drops the
+// rest; matches e.g. /node_modules/node-pty/prebuilds/darwin-arm64/pty.node.
+const foreignNodePtyPrebuilds = new RegExp(`/node-pty/prebuilds/(?!${process.platform}-)`)
+
 const config: ForgeConfig = {
   packagerConfig: {
     name: 'Shogo',
@@ -166,6 +177,10 @@ const config: ForgeConfig = {
       // runtime (pty-core ships only src/*.ts, and preload imports it as a
       // type-only import). So exclude the whole @shogo namespace from packaging.
       /^\/node_modules\/@shogo(\/|$)/,
+      // Drop node-pty's non-current-platform prebuilt binaries so Windows
+      // code signing (which recursively signs every *.node) doesn't choke
+      // on the macOS/Linux binaries. See foreignNodePtyPrebuilds above.
+      foreignNodePtyPrebuilds,
     ],
   },
   makers: [
