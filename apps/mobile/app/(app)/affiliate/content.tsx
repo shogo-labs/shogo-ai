@@ -199,6 +199,8 @@ export default function AffiliateContentScreen() {
               <Text className="text-sm text-foreground flex-1">{errorMsg}</Text>
             </CardContent>
           </Card>
+        ) : summary && summary.programStatus === 'pending' ? (
+          <PendingReview summary={summary} />
         ) : summary ? (
           <>
             <ProgramStatusCard
@@ -247,14 +249,91 @@ export default function AffiliateContentScreen() {
             ) : null}
 
             <Text className="text-[10px] text-muted-foreground text-center px-4 leading-4">
-              The video-creator program requires approval before you can earn or
-              be paid. Connect and verify a handle, then apply. Once an admin
-              approves you, new views are checked hourly and earnings are paid
-              out manually with your other commissions.
+              The video-creator program is approval-only. Connect and verify a
+              handle, then apply. Once an admin approves you and sets your CPM,
+              new views are checked hourly and earnings are paid out manually
+              with your other commissions.
             </Text>
           </>
         ) : null}
       </ScrollView>
+    </View>
+  )
+}
+
+/**
+ * Full-screen "under review" takeover shown while the creator's application is
+ * pending. Replaces the earnings/handles/posts dashboard so it's unmistakable
+ * that nothing earns yet — pull-to-refresh (owned by the parent ScrollView)
+ * picks up an admin's decision.
+ */
+function PendingReview({ summary }: { summary: AffiliateContentSummary }) {
+  const steps: { label: string; done: boolean }[] = [
+    { label: 'Connect & verify a handle', done: true },
+    { label: 'Submit your application', done: true },
+    { label: 'Admin reviews your application', done: false },
+    { label: 'Approved — start earning on new views', done: false },
+  ]
+  return (
+    <View className="gap-5 pt-8">
+      <View className="items-center gap-3">
+        <View className="h-16 w-16 rounded-full bg-amber-500/10 items-center justify-center">
+          <Clock size={30} className="text-amber-500" />
+        </View>
+        <Text className="text-xl font-semibold text-foreground text-center">Application under review</Text>
+        <Text className="text-sm text-muted-foreground text-center max-w-sm leading-5">
+          Thanks for applying to the video-creator program. An admin is reviewing
+          your account{summary.appliedAt ? ` (applied ${new Date(summary.appliedAt).toLocaleDateString()})` : ''}.
+          You'll start earning a CPM on new views as soon as you're approved.
+        </Text>
+        <Text className="text-xs text-muted-foreground text-center">Pull down to refresh.</Text>
+      </View>
+
+      <Card>
+        <CardContent className="gap-3 p-4">
+          <Text className="text-xs uppercase text-muted-foreground tracking-wide">What happens next</Text>
+          {steps.map((s) => (
+            <View key={s.label} className="flex-row items-center gap-2">
+              {s.done ? (
+                <CheckCircle2 size={16} className="text-emerald-500" />
+              ) : (
+                <Clock size={16} className="text-muted-foreground" />
+              )}
+              <Text className={s.done ? 'text-sm text-foreground' : 'text-sm text-muted-foreground'}>
+                {s.label}
+              </Text>
+            </View>
+          ))}
+        </CardContent>
+      </Card>
+
+      {summary.accounts.length > 0 ? (
+        <View className="gap-2">
+          <Text className="text-xs uppercase text-muted-foreground tracking-wide">Submitted handles</Text>
+          {summary.accounts.map((a) => {
+            const verified = a.verificationStatus === 'verified'
+            return (
+              <Card key={a.id}>
+                <CardContent className="flex-row items-center gap-2 p-3">
+                  <Text className="text-foreground font-medium capitalize">{a.platform}</Text>
+                  <Text className="text-foreground">@{a.handle}</Text>
+                  <View className="flex-1" />
+                  <Badge variant={verified ? 'default' : 'secondary'}>
+                    <View className="flex-row items-center gap-1">
+                      {verified ? (
+                        <CheckCircle2 size={12} className="text-primary-foreground" />
+                      ) : (
+                        <Clock size={12} className="text-foreground" />
+                      )}
+                      <Text className="text-xs">{verified ? 'Verified' : 'Pending'}</Text>
+                    </View>
+                  </Badge>
+                </CardContent>
+              </Card>
+            )
+          })}
+        </View>
+      ) : null}
     </View>
   )
 }
@@ -325,7 +404,7 @@ function ProgramStatusCard({
         <Text className="text-xs text-muted-foreground">
           {rejected
             ? 'Your previous application was not approved. You can update your handles and re-apply.'
-            : 'Earn a CPM on new views of content you post. Connect and verify at least one handle, then apply — an admin reviews every creator before earning or payouts begin.'}
+            : 'Earn a CPM on new views of content you post. Connect and verify at least one handle, then apply — an admin reviews every creator and sets your CPM before earning begins.'}
         </Text>
         {rejected && summary.rejectionReason ? (
           <View className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2">

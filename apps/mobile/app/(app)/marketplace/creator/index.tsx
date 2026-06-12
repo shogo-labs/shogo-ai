@@ -274,7 +274,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
               <ArrowLeft size={20} color="#71717a" />
             </Pressable>
             <Text className="text-base font-semibold text-foreground flex-1">
-              Creator Program
+              Publishing
             </Text>
           </View>
         ) : null}
@@ -284,11 +284,11 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
               <Award size={28} color="#e27927" />
             </View>
             <Text className="text-2xl font-bold text-foreground mb-2 text-center">
-              Become a Creator
+              Publish your agents
             </Text>
             <Text className="text-sm text-muted-foreground text-center max-w-md leading-5">
-              Share your agents with the Shogo community and earn from every install.
-              Set up your creator profile to get started.
+              List your agents in the Shogo marketplace and earn from every
+              install. Set up your publishing profile to get started.
             </Text>
           </View>
 
@@ -335,7 +335,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
             )}
           </Pressable>
           <Text className="text-[11px] text-muted-foreground text-center mt-3">
-            Free to join. You can publish your first listing in minutes.
+            Free to join. You can publish your first agent in minutes.
           </Text>
         </ScrollView>
       </View>

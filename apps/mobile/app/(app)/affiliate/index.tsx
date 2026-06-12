@@ -136,7 +136,7 @@ export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
           <Pressable onPress={() => router.back()} hitSlop={8}>
             <ArrowLeft size={22} className="text-foreground" />
           </Pressable>
-          <Text className="text-lg font-semibold text-foreground">Affiliate Program</Text>
+          <Text className="text-lg font-semibold text-foreground">Referrals</Text>
         </View>
       ) : null}
 
@@ -195,7 +195,7 @@ export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
               <NavRow
                 icon={<Video size={18} className="text-foreground" />}
                 title="Content earnings"
-                subtitle="Connect Instagram / TikTok, earn per view"
+                subtitle="Connect Instagram / TikTok and earn a CPM on your views"
                 onPress={() => router.push('/(app)/affiliate/content')}
               />
             </View>
@@ -216,11 +216,12 @@ function NotEnrolledCard({ onEnroll }: { onEnroll: () => void }) {
         <Text className="text-lg font-semibold text-foreground">Refer Shogo and earn</Text>
         <Text className="text-sm text-muted-foreground">
           Share your link. When someone signs up and pays, you earn 20% of their
-          seat subscription for the first 12 months, then 10% forever after.
-          Opt in to get your unique link.
+          seat subscription for the first 12 months, then 10% for as long as they
+          stay. You can also earn a CPM on videos you post. Opt in to get your
+          link.
         </Text>
         <Button onPress={onEnroll}>
-          <Text className="text-primary-foreground font-medium">Become an affiliate</Text>
+          <Text className="text-primary-foreground font-medium">Join Referrals</Text>
         </Button>
       </CardContent>
     </Card>
@@ -353,7 +354,8 @@ function PayoutSetupCard({
       <CardContent className="gap-2 p-4">
         <Text className="text-sm font-semibold text-foreground">Payout setup</Text>
         <Text className="text-xs text-muted-foreground">
-          We pay commissions to a Stripe-connected bank account. Status: <Text className="text-foreground">{status}</Text>
+          Referral and content earnings are paid to a Stripe-connected bank
+          account. Status: <Text className="text-foreground">{status}</Text>
         </Text>
         {!verified && (
           <Button variant="secondary" onPress={onboard} disabled={working}>

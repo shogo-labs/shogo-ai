@@ -175,6 +175,11 @@ function AffiliateCard({
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [showReject, setShowReject] = useState(false)
   const [reason, setReason] = useState('')
+  const [showApprove, setShowApprove] = useState(false)
+  // Dollars-per-1k-views as typed by the admin; blank => platform default.
+  const [cpmInput, setCpmInput] = useState(
+    a.contentCpmCents != null ? (a.contentCpmCents / 100).toFixed(2) : '',
+  )
 
   const status = a.contentProgramStatus ?? 'none'
   const statusStyle = CONTENT_STATUS_STYLE[status] ?? CONTENT_STATUS_STYLE.none
@@ -182,6 +187,23 @@ function AffiliateCard({
 
   const review = useCallback(
     async (action: 'approve' | 'reject') => {
+      // On approve, translate the dollars input into integer cents per 1,000
+      // views. Blank => null (platform default). Reject ignores CPM.
+      let contentCpmCents: number | null | undefined
+      if (action === 'approve') {
+        const trimmed = cpmInput.trim()
+        if (trimmed === '') {
+          contentCpmCents = null
+        } else {
+          const dollars = Number(trimmed)
+          if (!Number.isFinite(dollars) || dollars < 0) {
+            setActionError('Enter a valid CPM (e.g. 1.50) or leave blank for platform default.')
+            return
+          }
+          contentCpmCents = Math.round(dollars * 100)
+        }
+      }
+
       setBusy(action)
       setActionError(null)
       setActionMsg(null)
@@ -190,7 +212,11 @@ function AffiliateCard({
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, reason: action === 'reject' ? reason.trim() || undefined : undefined }),
+          body: JSON.stringify({
+            action,
+            reason: action === 'reject' ? reason.trim() || undefined : undefined,
+            ...(action === 'approve' ? { contentCpmCents } : {}),
+          }),
         })
         if (!res.ok) {
           const body = await res.json().catch(() => null)
@@ -198,6 +224,7 @@ function AffiliateCard({
           return
         }
         setShowReject(false)
+        setShowApprove(false)
         setReason('')
         await onChanged()
       } catch {
@@ -206,7 +233,7 @@ function AffiliateCard({
         setBusy(null)
       }
     },
-    [a.id, reason, onChanged],
+    [a.id, reason, cpmInput, onChanged],
   )
 
   const payout = useCallback(async () => {
@@ -271,10 +298,29 @@ function AffiliateCard({
                 className="rounded-md border border-border px-3 py-2 text-sm text-foreground"
               />
             ) : null}
+            {showApprove ? (
+              <View className="gap-1">
+                <Text className="text-[11px] text-muted-foreground">
+                  Content CPM ($ per 1,000 views) — leave blank for platform default
+                </Text>
+                <View className="flex-row items-center gap-2 rounded-md border border-border px-3">
+                  <Text className="text-sm text-muted-foreground">$</Text>
+                  <TextInput
+                    value={cpmInput}
+                    onChangeText={setCpmInput}
+                    placeholder="1.00"
+                    placeholderTextColor="#9ca3af"
+                    keyboardType="decimal-pad"
+                    className="flex-1 py-2 text-sm text-foreground"
+                  />
+                  <Text className="text-[11px] text-muted-foreground">/ 1k</Text>
+                </View>
+              </View>
+            ) : null}
             <View className="flex-row gap-2">
               {status !== 'approved' ? (
                 <Pressable
-                  onPress={() => review('approve')}
+                  onPress={() => (showApprove ? review('approve') : (setShowApprove(true), setShowReject(false)))}
                   disabled={busy !== null}
                   className="flex-row items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 active:opacity-80"
                 >
@@ -283,12 +329,14 @@ function AffiliateCard({
                   ) : (
                     <CheckCircle2 size={14} color="#fff" />
                   )}
-                  <Text className="text-xs font-semibold text-white">Approve</Text>
+                  <Text className="text-xs font-semibold text-white">
+                    {showApprove ? 'Confirm approve' : 'Approve'}
+                  </Text>
                 </Pressable>
               ) : null}
               {status !== 'rejected' ? (
                 <Pressable
-                  onPress={() => (showReject ? review('reject') : setShowReject(true))}
+                  onPress={() => (showReject ? review('reject') : (setShowReject(true), setShowApprove(false)))}
                   disabled={busy !== null}
                   className="flex-row items-center gap-1.5 px-3 py-2 rounded-lg border border-red-500/40 active:opacity-80"
                 >

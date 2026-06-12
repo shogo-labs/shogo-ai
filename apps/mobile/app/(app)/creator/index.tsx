@@ -75,7 +75,8 @@ export default function CreatorHub() {
       <View className="px-4 pt-3 pb-2 border-b border-border">
         <Text className="text-lg font-semibold text-foreground">Creator</Text>
         <Text className="text-xs text-muted-foreground mt-0.5">
-          Publish agents and refer Shogo — one home for everything you create and earn.
+          Two ways to earn: publish agents to the marketplace, or refer Shogo and
+          earn from your content.
         </Text>
         {showTabs ? (
           <View className="flex-row gap-1 mt-3 rounded-lg bg-muted/40 p-1 self-start">
@@ -130,9 +131,9 @@ function SignInToCloud() {
         Sign in to Shogo Cloud
       </Text>
       <Text className="text-sm text-muted-foreground text-center max-w-sm leading-5">
-        The Creator hub manages your cloud marketplace listings and referral
-        earnings. Connect this desktop app to your Shogo Cloud account to
-        publish agents and track referrals from here.
+        Publishing and Referrals both run on your Shogo Cloud account. Connect
+        this desktop app to publish agents to the marketplace and track your
+        referral and content earnings from here.
       </Text>
     </View>
   )

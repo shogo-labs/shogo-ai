@@ -1035,7 +1035,9 @@ export function adminRoutes(): Hono {
    * creators) AND payout of content commissions, so rejecting/revoking here
    * immediately stops further accrual.
    *
-   * Body: { action: 'approve' | 'reject', reason?: string }
+   * Body: { action: 'approve' | 'reject', reason?: string, contentCpmCents?: number | null }
+   * On approve, an optional `contentCpmCents` sets the per-creator CPM (cents
+   * per 1,000 views); null clears the override (platform default applies).
    */
   router.post('/affiliates/:id/content-application', async (c) => {
     const id = c.req.param('id')
@@ -1057,6 +1059,31 @@ export function adminRoutes(): Hono {
     const reason =
       action === 'reject' && typeof body?.reason === 'string' ? body.reason.slice(0, 500) : null
 
+    // On approval, the admin may set the creator's per-creator CPM in the same
+    // action (cents per 1,000 views). Omitted => leave CPM untouched; explicit
+    // null => clear the override so the creator falls back to platform default.
+    let cpmProvided = false
+    let cpmValue: number | null = null
+    if (action === 'approve' && 'contentCpmCents' in body) {
+      cpmProvided = true
+      const raw = body.contentCpmCents
+      if (raw === null) {
+        cpmValue = null
+      } else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0) {
+        cpmValue = raw
+      } else {
+        return c.json(
+          {
+            error: {
+              code: 'invalid_cpm',
+              message: 'contentCpmCents must be null or a non-negative integer (cents per 1,000 views)',
+            },
+          },
+          400,
+        )
+      }
+    }
+
     try {
       const existing = await prisma.affiliate.findUnique({
         where: { id },
@@ -1072,6 +1099,7 @@ export function adminRoutes(): Hono {
           contentReviewedAt: new Date(),
           contentReviewedBy: reviewerId,
           contentRejectionReason: reason,
+          ...(cpmProvided ? { contentCpmCents: cpmValue } : {}),
         },
         select: {
           id: true,
@@ -1079,6 +1107,7 @@ export function adminRoutes(): Hono {
           contentReviewedAt: true,
           contentReviewedBy: true,
           contentRejectionReason: true,
+          contentCpmCents: true,
         },
       })
       return c.json({ ok: true, affiliate: updated })

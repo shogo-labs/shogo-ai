@@ -1526,17 +1526,20 @@ export const api = {
   /**
    * Approve or reject a creator's video-creator (content CPM) program
    * application. Approval is the gate for both earning and payout of content
-   * commissions. Super-admin only.
+   * commissions. On approve, pass `contentCpmCents` to set the per-creator CPM
+   * (cents per 1,000 views); null clears the override (platform default).
+   * Super-admin only.
    */
   async reviewContentApplication(
     http: HttpClient,
     affiliateId: string,
     action: 'approve' | 'reject',
     reason?: string,
+    contentCpmCents?: number | null,
   ) {
     const res = await http.post<{ ok: boolean; affiliate?: any; error?: any }>(
       `/api/admin/affiliates/${encodeURIComponent(affiliateId)}/content-application`,
-      { action, reason },
+      { action, reason, ...(contentCpmCents !== undefined ? { contentCpmCents } : {}) },
     )
     return res.data
   },
