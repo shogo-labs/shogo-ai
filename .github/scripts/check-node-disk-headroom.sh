@@ -17,67 +17,107 @@
 # an immediate, actionable failure ("node X is at 88% disk").
 #
 # Fails the deploy if either:
-#   * any Ready, schedulable node already reports DiskPressure=True, OR
-#   * any such node's root filesystem is at/above THRESHOLD_PCT used.
+#   * any Ready, schedulable node reports DiskPressure=True, OR
+#   * any such node's root filesystem is at/above THRESHOLD_PCT used,
+# AND the condition is still present after re-sampling (see below).
+#
+# Re-sampling (run 27391129442, 2026-06-11): a single momentary DiskPressure
+# flap must NOT abort the whole multi-region deploy. On a busy node the
+# warm-pool churn (pods Terminating, emptyDirs freeing) can spike disk past
+# the kubelet eviction threshold for a few seconds and then recover — in
+# that run node 10.0.10.240 latched DiskPressure=True and cleared it ~40s
+# later, but the gate had already failed on the first instantaneous sample.
+# A *genuinely* disk-starved node stays over threshold (kubelet only clears
+# DiskPressure once usage drops back below the eviction mark), so we re-check
+# a few times and only fail if a node is STILL bad on the final sample. This
+# keeps the original "block a starved cluster before the ksvc patch"
+# guarantee while eliminating false aborts from transient spikes.
 #
 # Usage:
 #   .github/scripts/check-node-disk-headroom.sh [threshold_pct]
 # Env:
-#   THRESHOLD_PCT  default 80  (kubelet's default DiskPressure eviction
-#                               soft threshold is imagefs/nodefs available<15%,
-#                               i.e. ~85% used; 80% leaves margin to deploy)
+#   THRESHOLD_PCT   default 80  (kubelet's default DiskPressure eviction
+#                                soft threshold is imagefs/nodefs available<15%,
+#                                i.e. ~85% used; 80% leaves margin to deploy)
+#   RETRY_ATTEMPTS  default 4   (total samples before giving up)
+#   RETRY_INTERVAL  default 30  (seconds between samples)
 
 set -euo pipefail
 
 THRESHOLD_PCT="${1:-${THRESHOLD_PCT:-80}}"
-rc=0
+RETRY_ATTEMPTS="${RETRY_ATTEMPTS:-4}"
+RETRY_INTERVAL="${RETRY_INTERVAL:-30}"
 
-echo "Checking node disk headroom (fail at >=${THRESHOLD_PCT}% used or DiskPressure=True)..."
+# Evaluates current node disk headroom. Echoes human-readable per-node usage
+# and any error annotations, and returns 0 when the cluster is healthy or
+# non-zero when at least one schedulable node is pressured/over-threshold.
+check_headroom() {
+  local rc=0
 
-# 1) DiskPressure condition — the authoritative kubelet signal.
-pressured=$(kubectl get nodes -o json | jq -r '
-  [.items[]
-    | select((.status.conditions // [])[] | select(.type == "DiskPressure" and .status == "True"))
-    | .metadata.name
-  ] | join(" ")
-')
-if [[ -n "$pressured" ]]; then
-  echo "::error::check-node-disk-headroom: node(s) under DiskPressure: $pressured"
-  rc=1
-fi
-
-# 2) Root filesystem usage per node via the kubelet stats summary API.
-# Skip unschedulable (cordoned) nodes — they're intentionally drained and
-# shouldn't gate a deploy.
-for node in $(kubectl get nodes -o jsonpath='{range .items[?(@.spec.unschedulable!=true)]}{.metadata.name}{"\n"}{end}'); do
-  summary=$(kubectl get --raw "/api/v1/nodes/${node}/proxy/stats/summary" 2>/dev/null || echo "")
-  if [[ -z "$summary" ]]; then
-    echo "  $node: (stats unavailable, relying on DiskPressure condition)"
-    continue
-  fi
-  pct=$(echo "$summary" | jq -r '
-    (.node.fs.usedBytes // 0) as $u
-    | (.node.fs.capacityBytes // 0) as $c
-    | if $c > 0 then (($u / $c) * 100 | floor) else 0 end
+  # 1) DiskPressure condition — the authoritative kubelet signal.
+  local pressured
+  pressured=$(kubectl get nodes -o json | jq -r '
+    [.items[]
+      | select((.status.conditions // [])[] | select(.type == "DiskPressure" and .status == "True"))
+      | .metadata.name
+    ] | join(" ")
   ')
-  echo "  $node: ${pct}% used"
-  if [[ "$pct" -ge "$THRESHOLD_PCT" ]]; then
-    echo "::error::check-node-disk-headroom: node $node at ${pct}% disk (>=${THRESHOLD_PCT}%)"
+  if [[ -n "$pressured" ]]; then
+    echo "::warning::check-node-disk-headroom: node(s) under DiskPressure: $pressured"
     rc=1
   fi
+
+  # 2) Root filesystem usage per node via the kubelet stats summary API.
+  # Skip unschedulable (cordoned) nodes — they're intentionally drained and
+  # shouldn't gate a deploy.
+  local node summary pct
+  for node in $(kubectl get nodes -o jsonpath='{range .items[?(@.spec.unschedulable!=true)]}{.metadata.name}{"\n"}{end}'); do
+    summary=$(kubectl get --raw "/api/v1/nodes/${node}/proxy/stats/summary" 2>/dev/null || echo "")
+    if [[ -z "$summary" ]]; then
+      echo "  $node: (stats unavailable, relying on DiskPressure condition)"
+      continue
+    fi
+    pct=$(echo "$summary" | jq -r '
+      (.node.fs.usedBytes // 0) as $u
+      | (.node.fs.capacityBytes // 0) as $c
+      | if $c > 0 then (($u / $c) * 100 | floor) else 0 end
+    ')
+    echo "  $node: ${pct}% used"
+    if [[ "$pct" -ge "$THRESHOLD_PCT" ]]; then
+      echo "::warning::check-node-disk-headroom: node $node at ${pct}% disk (>=${THRESHOLD_PCT}%)"
+      rc=1
+    fi
+  done
+
+  return "$rc"
+}
+
+echo "Checking node disk headroom (fail at >=${THRESHOLD_PCT}% used or DiskPressure=True; re-sampling up to ${RETRY_ATTEMPTS}x every ${RETRY_INTERVAL}s to ride out transient flaps)..."
+
+attempt=1
+while true; do
+  echo "--- sample ${attempt}/${RETRY_ATTEMPTS} ---"
+  if check_headroom; then
+    echo "✓ all schedulable nodes have disk headroom — safe to roll out"
+    exit 0
+  fi
+  if [[ "$attempt" -ge "$RETRY_ATTEMPTS" ]]; then
+    break
+  fi
+  echo "Node(s) over threshold — re-checking in ${RETRY_INTERVAL}s (transient warm-pool/eviction spikes self-clear; sustained starvation persists)..."
+  sleep "$RETRY_INTERVAL"
+  attempt=$((attempt + 1))
 done
 
-if [[ "$rc" -ne 0 ]]; then
-  echo "::error::Aborting before ksvc patch: a disk-starved cluster cannot roll out a new revision."
-  echo "Remediate node disk first (prune stale runtime images / scale or replace nodes / raise boot volume — see terraform/README.md 'Boot volume remediation')."
-  echo "::group::node images (largest, busiest node)"
-  kubectl get nodes -o json | jq -r '
-    .items
-    | max_by([.status.images[]?.sizeBytes] | add // 0)
-    | .metadata.name as $n
-    | "node \($n): " + (([.status.images[]?.sizeBytes] | add // 0) / 1e9 | tostring) + " GB of images"
-  ' 2>/dev/null || true
-  echo "::endgroup::"
-fi
-
-exit "$rc"
+echo "::error::check-node-disk-headroom: node(s) still over disk threshold after ${RETRY_ATTEMPTS} samples over $(( (RETRY_ATTEMPTS - 1) * RETRY_INTERVAL ))s — this is sustained, not a transient flap."
+echo "::error::Aborting before ksvc patch: a disk-starved cluster cannot roll out a new revision."
+echo "Remediate node disk first (prune stale runtime images / scale or replace nodes / raise boot volume — see terraform/README.md 'Boot volume remediation')."
+echo "::group::node images (largest, busiest node)"
+kubectl get nodes -o json | jq -r '
+  .items
+  | max_by([.status.images[]?.sizeBytes] | add // 0)
+  | .metadata.name as $n
+  | "node \($n): " + (([.status.images[]?.sizeBytes] | add // 0) / 1e9 | tostring) + " GB of images"
+' 2>/dev/null || true
+echo "::endgroup::"
+exit 1
