@@ -10,6 +10,7 @@ import type { ExtensionSearchResult, InstalledExtension } from "./types";
 export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | null }) {
   const extensions = useExtensions({ workspaceRoot });
   const [selected, setSelected] = useState<InstalledExtension | ExtensionSearchResult | null>(null);
+  const [pendingInstall, setPendingInstall] = useState<ExtensionSearchResult | null>(null);
   const installed = extensions.installed;
   const installedIds = useMemo(() => new Set(installed.map((extension) => extension.id)), [installed]);
   const disabled = useMemo(() => installed.filter((extension) => !extension.enabled), [installed]);
@@ -25,10 +26,46 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
     );
   }
 
-  if (selected) return <ExtensionDetails item={selected} onBack={() => setSelected(null)} />;
+  const selectedInstalled = selected ? installed.find((extension) => extension.id === selected.id) : undefined;
+  const requestInstall = (result: ExtensionSearchResult) => {
+    if (isPublisherTrusted(result.publisher)) {
+      void extensions.installFromRegistry(result.id, result.version);
+    } else {
+      setPendingInstall(result);
+    }
+  };
+  const trustAndInstall = () => {
+    if (!pendingInstall) return;
+    trustPublisher(pendingInstall.publisher);
+    void extensions.installFromRegistry(pendingInstall.id, pendingInstall.version);
+    setPendingInstall(null);
+  };
+
+  if (selected) return (
+    <div className="relative h-full">
+      <ExtensionDetails
+        item={selected}
+        installedItem={selectedInstalled}
+        installing={extensions.installingId === selected.id}
+        onBack={() => setSelected(null)}
+        onInstall={!selectedInstalled && !("manifest" in selected) ? () => requestInstall(selected) : undefined}
+        onEnable={selectedInstalled ? () => void extensions.setEnabled(selectedInstalled.id, true) : undefined}
+        onDisable={selectedInstalled ? () => void extensions.setEnabled(selectedInstalled.id, false) : undefined}
+        onUninstall={selectedInstalled ? () => void extensions.uninstall(selectedInstalled.id) : undefined}
+        onRunCommand={(commandId) => void extensions.runCommand(commandId)}
+      />
+      {pendingInstall && (
+        <TrustPublisherDialog
+          extension={pendingInstall}
+          onCancel={() => setPendingInstall(null)}
+          onTrust={trustAndInstall}
+        />
+      )}
+    </div>
+  );
 
   return (
-    <div className="flex h-full flex-col bg-[color:var(--ide-surface)]">
+    <div className="relative flex h-full flex-col bg-[color:var(--ide-surface)]">
       <div className="flex items-center justify-between border-b border-[color:var(--ide-border)] px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">Extensions</span>
         <div className="flex items-center gap-1">
@@ -85,7 +122,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
                 installed={installedIds.has(result.id)}
                 installing={extensions.installingId === result.id}
                 onSelect={() => setSelected(result)}
-                onInstall={() => void extensions.installFromRegistry(result.id, result.version)}
+                onInstall={() => requestInstall(result)}
               />
             ))}
           </Section>
@@ -130,7 +167,7 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
                 installed={installedIds.has(result.id)}
                 installing={extensions.installingId === result.id}
                 onSelect={() => setSelected(result)}
-                onInstall={() => void extensions.installFromRegistry(result.id, result.version)}
+                onInstall={() => requestInstall(result)}
               />
             ))}
           </Section>
@@ -151,8 +188,57 @@ export function ExtensionsViewlet({ workspaceRoot }: { workspaceRoot?: string | 
           )}
         </Section>
       </div>
+      {pendingInstall && (
+        <TrustPublisherDialog
+          extension={pendingInstall}
+          onCancel={() => setPendingInstall(null)}
+          onTrust={trustAndInstall}
+        />
+      )}
     </div>
   );
+}
+
+function TrustPublisherDialog({ extension, onCancel, onTrust }: { extension: ExtensionSearchResult; onCancel: () => void; onTrust: () => void }) {
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 p-4">
+      <div className="w-full max-w-sm rounded-lg border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] p-4 shadow-2xl">
+        <div className="text-[14px] font-semibold text-[color:var(--ide-text-strong)]">Do you trust the publisher “{extension.publisher}”?</div>
+        <p className="mt-3 text-[12px] leading-relaxed text-[color:var(--ide-text)]">
+          The extension <span className="font-semibold text-[color:var(--ide-text-strong)]">{extension.displayName || extension.name}</span> is published by <span className="font-semibold text-[color:var(--ide-text-strong)]">{extension.publisher}</span>. Extensions can run code in your workspace. Proceed only if you trust this publisher.
+        </p>
+        {extension.verified && <p className="mt-2 text-[11px] text-sky-200">✓ Open VSX marks this publisher as verified.</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onCancel} className="rounded border border-[color:var(--ide-border)] px-3 py-1.5 text-[12px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]">Cancel</button>
+          <button onClick={onTrust} className="rounded bg-[color:var(--ide-accent)] px-3 py-1.5 text-[12px] font-semibold text-white hover:opacity-90">Trust Publisher & Install</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const TRUSTED_PUBLISHERS_KEY = "shogo.desktop.extensions.trustedPublishers";
+
+function isPublisherTrusted(publisher: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const trusted = JSON.parse(window.localStorage.getItem(TRUSTED_PUBLISHERS_KEY) ?? "[]") as unknown;
+    return Array.isArray(trusted) && trusted.includes(publisher);
+  } catch {
+    return false;
+  }
+}
+
+function trustPublisher(publisher: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const trusted = JSON.parse(window.localStorage.getItem(TRUSTED_PUBLISHERS_KEY) ?? "[]") as unknown;
+    const next = new Set(Array.isArray(trusted) ? trusted.filter((item): item is string => typeof item === "string") : []);
+    next.add(publisher);
+    window.localStorage.setItem(TRUSTED_PUBLISHERS_KEY, JSON.stringify([...next].sort()));
+  } catch {
+    window.localStorage.setItem(TRUSTED_PUBLISHERS_KEY, JSON.stringify([publisher]));
+  }
 }
 
 function Section({ title, loading, children }: { title: string; loading?: boolean; children: ReactNode }) {
