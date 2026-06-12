@@ -277,9 +277,17 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('extensions:listInstalled', { workspaceRoot }),
     search: (query: string, options?: { size?: number }): Promise<{ ok: boolean; results?: unknown[]; error?: string }> =>
       ipcRenderer.invoke('extensions:search', query, options),
+    listTrustedPublishers: (): Promise<{ ok: boolean; publishers?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:listTrustedPublishers'),
+    trustPublisher: (publisher: string): Promise<{ ok: boolean; publisher?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:trustPublisher', publisher),
+    getWorkspaceTrust: (workspaceRoot?: string): Promise<{ ok: boolean; trust?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:getWorkspaceTrust', workspaceRoot),
+    trustWorkspace: (workspaceRoot: string): Promise<{ ok: boolean; workspace?: unknown; restartRequired?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:trustWorkspace', workspaceRoot),
     installFromVsix: (): Promise<{ ok: boolean; extension?: unknown; restartRequired?: boolean; cancelled?: boolean; error?: string }> =>
       ipcRenderer.invoke('extensions:installFromVsix'),
-    installFromRegistry: (id: string, version?: string): Promise<{ ok: boolean; extension?: unknown; restartRequired?: boolean; error?: string }> =>
+    installFromRegistry: (id: string, version?: string): Promise<{ ok: boolean; extension?: unknown; restartRequired?: boolean; cancelled?: boolean; error?: string }> =>
       ipcRenderer.invoke('extensions:installFromRegistry', id, version),
     uninstall: (id: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }> =>
       ipcRenderer.invoke('extensions:uninstall', id),
@@ -299,8 +307,12 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('extensions:runCommand', commandId, args, { workspaceRoot }),
     activateEvent: (event: string, workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
       ipcRenderer.invoke('extensions:activateEvent', event, { workspaceRoot }),
-    getView: (viewId: string, workspaceRoot?: string): Promise<{ ok: boolean; view?: unknown; error?: string }> =>
-      ipcRenderer.invoke('extensions:getView', viewId, { workspaceRoot }),
+    getView: (viewId: string, workspaceRoot?: string, itemHandle?: string): Promise<{ ok: boolean; view?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:getView', viewId, { workspaceRoot, itemHandle }),
+    getStatusBarItems: (workspaceRoot?: string): Promise<{ ok: boolean; items?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:getStatusBarItems', { workspaceRoot }),
+    getWebviewPanels: (workspaceRoot?: string): Promise<{ ok: boolean; panels?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:getWebviewPanels', { workspaceRoot }),
     showRunningExtensions: (): Promise<{ ok: boolean; running?: unknown[]; message?: string; error?: string }> =>
       ipcRenderer.invoke('extensions:showRunningExtensions'),
     startBisect: (): Promise<{ ok: boolean; error?: string }> =>

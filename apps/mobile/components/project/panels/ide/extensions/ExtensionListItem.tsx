@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { CheckCircle2, Download, Power, PowerOff, Star, Trash2, XCircle } from "lucide-react-native";
+import { AlertTriangle, CheckCircle2, Download, Power, PowerOff, ShieldCheck, Star, Trash2, XCircle } from "lucide-react-native";
 import { CodiconExtensions } from "../icons";
 import type { ExtensionSearchResult, InstalledExtension } from "./types";
 
@@ -24,9 +24,19 @@ export function InstalledExtensionListItem({
           <div className="truncate text-[13px] font-semibold text-[color:var(--ide-text-strong)]">
             {extension.displayName ?? extension.name}
           </div>
-          <div className="truncate text-[11px] font-semibold text-[color:var(--ide-muted)]">
-            {extension.publisher}
+          <div className="flex flex-wrap items-center gap-1 text-[11px] font-semibold text-[color:var(--ide-muted)]">
+            <span className="truncate">{extension.publisher}</span>
+            {extension.trustedPublisher && <TrustBadge />}
+            {extension.disabledByRestrictedMode && <RestrictedBadge />}
+            {extension.restrictedMode && extension.restrictedModeSupport === "limited" && <LimitedRestrictedBadge />}
+            {!extension.hasUsableEntryPoint && <UnsupportedSurfaceBadge />}
           </div>
+          {!extension.hasUsableEntryPoint && extension.unsupportedSurfaceMessage && (
+            <div className="mt-1 flex items-start gap-1 rounded border border-amber-500/20 bg-amber-500/5 px-1.5 py-1 text-[10px] leading-snug text-amber-100">
+              <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+              <span className="line-clamp-2">{extension.unsupportedSurfaceMessage}</span>
+            </div>
+          )}
           {extension.description && (
             <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-[color:var(--ide-text)]">
               {extension.description}
@@ -60,12 +70,14 @@ export function SearchExtensionListItem({
   result,
   installed,
   installing,
+  publisherTrusted,
   onInstall,
   onSelect,
 }: {
   result: ExtensionSearchResult;
   installed?: boolean;
   installing?: boolean;
+  publisherTrusted?: boolean;
   onInstall: () => void;
   onSelect: () => void;
 }) {
@@ -75,8 +87,9 @@ export function SearchExtensionListItem({
         <ExtensionIcon iconUrl={result.iconUrl} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-semibold text-[color:var(--ide-text-strong)]">{result.displayName || result.name}</div>
-          <div className="truncate text-[11px] font-semibold text-[color:var(--ide-muted)]">
-            {result.verified ? "✓ " : ""}{result.publisher}
+          <div className="flex flex-wrap items-center gap-1 text-[11px] font-semibold text-[color:var(--ide-muted)]">
+            <span className="truncate">{result.verified ? "✓ " : ""}{result.publisher}</span>
+            {publisherTrusted && <TrustBadge />}
           </div>
           {result.description && <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-[color:var(--ide-text)]">{result.description}</div>}
         </div>
@@ -99,6 +112,38 @@ export function SearchExtensionListItem({
         )}
       </div>
     </div>
+  );
+}
+
+function TrustBadge() {
+  return (
+    <span className="inline-flex items-center gap-0.5 rounded border border-emerald-500/30 bg-emerald-500/10 px-1 py-0.5 text-[9px] font-semibold text-emerald-200">
+      <ShieldCheck size={9} /> Trusted
+    </span>
+  );
+}
+
+function RestrictedBadge() {
+  return (
+    <span className="inline-flex items-center gap-0.5 rounded border border-amber-500/30 bg-amber-500/10 px-1 py-0.5 text-[9px] font-semibold text-amber-200">
+      Restricted
+    </span>
+  );
+}
+
+function LimitedRestrictedBadge() {
+  return (
+    <span className="inline-flex items-center gap-0.5 rounded border border-sky-500/30 bg-sky-500/10 px-1 py-0.5 text-[9px] font-semibold text-sky-200">
+      Limited
+    </span>
+  );
+}
+
+function UnsupportedSurfaceBadge() {
+  return (
+    <span className="inline-flex items-center gap-0.5 rounded border border-amber-500/30 bg-amber-500/10 px-1 py-0.5 text-[9px] font-semibold text-amber-200">
+      <AlertTriangle size={9} /> No entry point
+    </span>
   );
 }
 

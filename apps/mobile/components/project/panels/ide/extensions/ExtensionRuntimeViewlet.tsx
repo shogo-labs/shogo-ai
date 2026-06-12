@@ -49,29 +49,38 @@ export function ExtensionRuntimeViewlet({
   container: ExtensionRuntimeContainer;
   onRunCommand: (commandId: string, args?: unknown[]) => void;
   onOpenDetails: (extension: InstalledExtension) => void;
-  onLoadView: (viewId: string) => Promise<ExtensionRuntimeViewResult | null>;
+  onLoadView: (viewId: string, itemHandle?: string) => Promise<ExtensionRuntimeViewResult | null>;
 }) {
   const views = container.extension.manifest.contributes?.views?.[container.id] ?? [];
   const commands = container.extension.manifest.contributes?.commands ?? [];
   const viewTitleCommands = container.extension.manifest.contributes?.menus?.["view/title"] ?? [];
   const [loadedViews, setLoadedViews] = useState<Record<string, ExtensionRuntimeViewResult>>({});
+  const [childItems, setChildItems] = useState<Record<string, Record<string, ExtensionRuntimeTreeItem[]>>>({});
+  const [expandedHandles, setExpandedHandles] = useState<Record<string, Record<string, boolean>>>({});
   const [loadingViews, setLoadingViews] = useState<Record<string, boolean>>({});
   const [viewErrors, setViewErrors] = useState<Record<string, string>>({});
 
-  const loadView = useCallback(async (viewId: string) => {
-    setLoadingViews((prev) => ({ ...prev, [viewId]: true }));
+  const loadView = useCallback(async (viewId: string, itemHandle?: string) => {
+    setLoadingViews((prev) => ({ ...prev, [itemHandle ? `${viewId}:${itemHandle}` : viewId]: true }));
     setViewErrors((prev) => {
       const next = { ...prev };
       delete next[viewId];
       return next;
     });
     try {
-      const result = await onLoadView(viewId);
-      if (result) setLoadedViews((prev) => ({ ...prev, [viewId]: result }));
+      const result = await onLoadView(viewId, itemHandle);
+      if (!result) return;
+      if (itemHandle) {
+        setChildItems((prev) => ({ ...prev, [viewId]: { ...(prev[viewId] ?? {}), [itemHandle]: result.items ?? [] } }));
+      } else {
+        setLoadedViews((prev) => ({ ...prev, [viewId]: result }));
+        setChildItems((prev) => ({ ...prev, [viewId]: {} }));
+        setExpandedHandles((prev) => ({ ...prev, [viewId]: {} }));
+      }
     } catch (err) {
       setViewErrors((prev) => ({ ...prev, [viewId]: err instanceof Error ? err.message : String(err) }));
     } finally {
-      setLoadingViews((prev) => ({ ...prev, [viewId]: false }));
+      setLoadingViews((prev) => ({ ...prev, [itemHandle ? `${viewId}:${itemHandle}` : viewId]: false }));
     }
   }, [onLoadView]);
 
@@ -81,6 +90,13 @@ export function ExtensionRuntimeViewlet({
 
   const refreshViews = () => {
     for (const view of views) void loadView(view.id);
+  };
+
+  const toggleTreeItem = (viewId: string, item: ExtensionRuntimeTreeItem) => {
+    if (!item.handle || !item.collapsibleState) return;
+    const isExpanded = !!expandedHandles[viewId]?.[item.handle];
+    setExpandedHandles((prev) => ({ ...prev, [viewId]: { ...(prev[viewId] ?? {}), [item.handle!]: !isExpanded } }));
+    if (!isExpanded && !childItems[viewId]?.[item.handle]) void loadView(viewId, item.handle);
   };
 
   return (
@@ -129,13 +145,15 @@ export function ExtensionRuntimeViewlet({
                 </div>
                 <div className="px-2 pb-2">
                   <RuntimeViewBody
-                    items={loadedViews[view.id]?.items ?? []}
-                    message={loadedViews[view.id]?.message}
+                    view={loadedViews[view.id]}
+                    childItems={childItems[view.id] ?? {}}
+                    expandedHandles={expandedHandles[view.id] ?? {}}
                     error={viewErrors[view.id]}
                     loading={!!loadingViews[view.id]}
                     fallbackCommands={commands}
                     viewName={view.name}
                     onRunCommand={onRunCommand}
+                    onToggleItem={(item) => toggleTreeItem(view.id, item)}
                   />
                 </div>
               </section>
@@ -148,43 +166,56 @@ export function ExtensionRuntimeViewlet({
 }
 
 function RuntimeViewBody({
-  items,
-  message,
+  view,
+  childItems,
+  expandedHandles,
   error,
   loading,
   fallbackCommands,
   viewName,
   onRunCommand,
+  onToggleItem,
 }: {
-  items: ExtensionRuntimeTreeItem[];
-  message?: string;
+  view?: ExtensionRuntimeViewResult;
+  childItems: Record<string, ExtensionRuntimeTreeItem[]>;
+  expandedHandles: Record<string, boolean>;
   error?: string;
   loading: boolean;
   fallbackCommands: Array<{ command: string; title: string; category?: string }>;
   viewName: string;
   onRunCommand: (commandId: string, args?: unknown[]) => void;
+  onToggleItem: (item: ExtensionRuntimeTreeItem) => void;
 }) {
   if (error) return <WelcomeView compact>{error}</WelcomeView>;
+  if (view?.kind === "webview" || view?.html) {
+    return (
+      <iframe
+        title={view.title ?? viewName}
+        srcDoc={view.html ?? ""}
+        sandbox="allow-forms allow-scripts allow-same-origin"
+        className="h-[420px] w-full rounded border border-[color:var(--ide-border)] bg-white"
+      />
+    );
+  }
+  const items = view?.items ?? [];
   if (items.length > 0) {
     return (
       <div className="space-y-0.5">
         {items.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => item.command && onRunCommand(item.command.command, item.command.arguments)}
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)] disabled:cursor-default disabled:hover:bg-transparent"
-            disabled={!item.command}
-            title={item.tooltip || item.label}
-          >
-            <ChevronRight size={12} color="var(--ide-muted)" />
-            <span className="min-w-0 flex-1 truncate">{item.label}</span>
-            {item.description && <span className="truncate text-[10px] text-[color:var(--ide-muted)]">{item.description}</span>}
-          </button>
+          <TreeItemRow
+            key={item.handle ?? item.id}
+            item={item}
+            childItems={childItems}
+            expandedHandles={expandedHandles}
+            depth={0}
+            onRunCommand={onRunCommand}
+            onToggleItem={onToggleItem}
+          />
         ))}
       </div>
     );
   }
-  if (message) return <WelcomeView compact>{message}</WelcomeView>;
+  if (view?.message) return <WelcomeView compact>{view.message}</WelcomeView>;
   if (loading) return <WelcomeView compact>Activating {viewName}…</WelcomeView>;
   if (fallbackCommands.length > 0) {
     return (
@@ -204,6 +235,52 @@ function RuntimeViewBody({
     );
   }
   return <WelcomeView compact>{viewName} activated. No tree items were returned yet.</WelcomeView>;
+}
+
+function TreeItemRow({
+  item,
+  childItems,
+  expandedHandles,
+  depth,
+  onRunCommand,
+  onToggleItem,
+}: {
+  item: ExtensionRuntimeTreeItem;
+  childItems: Record<string, ExtensionRuntimeTreeItem[]>;
+  expandedHandles: Record<string, boolean>;
+  depth: number;
+  onRunCommand: (commandId: string, args?: unknown[]) => void;
+  onToggleItem: (item: ExtensionRuntimeTreeItem) => void;
+}) {
+  const handle = item.handle ?? item.id;
+  const expandable = !!item.collapsibleState;
+  const expanded = !!expandedHandles[handle];
+  const children = childItems[handle] ?? [];
+  return (
+    <div>
+      <button
+        onClick={() => expandable ? onToggleItem(item) : item.command && onRunCommand(item.command.command, item.command.arguments)}
+        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)] disabled:cursor-default disabled:hover:bg-transparent"
+        style={{ paddingLeft: 8 + depth * 14 }}
+        title={item.tooltip || item.label}
+      >
+        {expandable ? (expanded ? <ChevronDown size={12} color="var(--ide-muted)" /> : <ChevronRight size={12} color="var(--ide-muted)" />) : <span className="w-3" />}
+        <span className="min-w-0 flex-1 truncate">{item.label}</span>
+        {item.description && <span className="truncate text-[10px] text-[color:var(--ide-muted)]">{item.description}</span>}
+      </button>
+      {expanded && children.map((child) => (
+        <TreeItemRow
+          key={child.handle ?? child.id}
+          item={child}
+          childItems={childItems}
+          expandedHandles={expandedHandles}
+          depth={depth + 1}
+          onRunCommand={onRunCommand}
+          onToggleItem={onToggleItem}
+        />
+      ))}
+    </div>
+  );
 }
 
 function ToolbarButton({ title, onClick, children }: { title: string; onClick?: () => void; children: ReactNode }) {
