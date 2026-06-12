@@ -525,17 +525,21 @@ function getUsableEntryPoints(manifest: ShogoExtensionManifest): ExtensionUsable
       detail: command.command,
     })
   }
+  const activitybarContainers = new Map((manifest.contributes?.viewsContainers?.activitybar ?? []).map((container) => [container.id, container]))
+  const panelContainers = new Map((manifest.contributes?.viewsContainers?.panel ?? []).map((container) => [container.id, container]))
+  const supportedContainers = new Set([...activitybarContainers.keys(), ...panelContainers.keys()])
   for (const [containerId, views] of Object.entries(manifest.contributes?.views ?? {})) {
+    if (!supportedContainers.has(containerId)) continue
     for (const view of views ?? []) {
       if (!view.id) continue
       entryPoints.push({ kind: 'view', id: view.id, label: view.name || view.id, detail: containerId })
     }
   }
-  for (const container of manifest.contributes?.viewsContainers?.activitybar ?? []) {
-    if (container.id) entryPoints.push({ kind: 'viewContainer', id: container.id, label: container.title || container.id, detail: 'Activity Bar' })
+  for (const [containerId, container] of activitybarContainers) {
+    if (containerId && (manifest.contributes?.views?.[containerId]?.length ?? 0) > 0) entryPoints.push({ kind: 'viewContainer', id: containerId, label: container.title || containerId, detail: 'Activity Bar' })
   }
-  for (const container of manifest.contributes?.viewsContainers?.panel ?? []) {
-    if (container.id) entryPoints.push({ kind: 'viewContainer', id: container.id, label: container.title || container.id, detail: 'Panel' })
+  for (const [containerId, container] of panelContainers) {
+    if (containerId && (manifest.contributes?.views?.[containerId]?.length ?? 0) > 0) entryPoints.push({ kind: 'viewContainer', id: containerId, label: container.title || containerId, detail: 'Panel' })
   }
   if (manifest.main && manifest.activationEvents?.some((event) => event === '*' || event === 'onStartupFinished')) {
     entryPoints.push({ kind: 'startupActivation', id: 'onStartupFinished', label: 'Startup activation', detail: 'May expose runtime status items or webviews after activation' })
@@ -549,6 +553,18 @@ function getUnsupportedSurfaceMessage(record: InstalledExtensionRecord): string 
     .filter((value): value is string => !!value)
   if (unsupportedContributionPoints.length > 0) {
     return `Installed, but Shogo cannot render this extension's declared surface yet: ${unsupportedContributionPoints.join(', ')}. No command, view, status item, or webview entry point is currently reachable.`
+  }
+  const contributedViewContainers = [
+    ...(record.manifest.contributes?.viewsContainers?.activitybar ?? []),
+    ...(record.manifest.contributes?.viewsContainers?.panel ?? []),
+  ]
+  if (contributedViewContainers.length > 0) {
+    return 'Installed, but its contributed view container has no reachable views in Shogo yet. Add commands or views under an Activity Bar/Panel container to make it usable.'
+  }
+  const viewContainerIds = new Set(contributedViewContainers.map((container) => container.id))
+  const unsupportedViews = Object.keys(record.manifest.contributes?.views ?? {}).filter((containerId) => !viewContainerIds.has(containerId))
+  if (unsupportedViews.length > 0) {
+    return `Installed, but its views target unsupported or unrendered containers: ${unsupportedViews.join(', ')}. No view entry point is currently reachable.`
   }
   if (!record.manifest.main && !record.manifest.browser) {
     return 'Installed, but this package does not declare a runtime entry point or Shogo-renderable commands/views. It is not currently usable from the IDE.'

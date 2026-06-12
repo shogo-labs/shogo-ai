@@ -56,6 +56,45 @@ export interface ExtensionWebviewPanel {
   active: boolean
 }
 
+export interface ExtensionOutputChannel {
+  id: string
+  extensionId: string
+  name: string
+  visible: boolean
+  disposed: boolean
+  lines: string
+  updatedAt: number
+}
+
+export interface ExtensionUiRequest {
+  requestId: string
+  extensionId: string
+  kind: 'notification' | 'quickPick' | 'inputBox'
+  payload: Record<string, unknown>
+}
+
+export interface ExtensionWorkspaceDocument {
+  path: string
+  fsPath?: string
+  languageId: string
+  version: number
+  text: string
+  isDirty?: boolean
+}
+
+export interface ExtensionWorkspaceState {
+  workspaceRoot?: string
+  workspaceName?: string
+  activeDocumentPath?: string | null
+  visibleDocumentPaths?: string[]
+  documents?: ExtensionWorkspaceDocument[]
+  configuration?: Record<string, unknown>
+}
+
+type ExtensionHostEvent =
+  | { type: 'outputChanged'; channels: ExtensionOutputChannel[]; changed?: ExtensionOutputChannel }
+  | { type: 'uiRequest'; request: ExtensionUiRequest }
+
 export class ExtensionHostManager {
   private child: UtilityProcess | null = null
   private ready = false
@@ -63,9 +102,12 @@ export class ExtensionHostManager {
   private running = new Map<string, RunningExtensionStatus>()
   private statusBarItems: ExtensionStatusBarItem[] = []
   private webviewPanels: ExtensionWebviewPanel[] = []
+  private outputChannels = new Map<string, ExtensionOutputChannel>()
   private diagnostics: ExtensionHostDiagnostic[] = []
+  private listeners = new Set<(event: ExtensionHostEvent) => void>()
   private crashCount = 0
   private workspaceRoot?: string
+  private latestWorkspaceState?: ExtensionWorkspaceState
 
   constructor(private readonly installService: ExtensionInstallService) {}
 
@@ -100,6 +142,28 @@ export class ExtensionHostManager {
     return await this.request(requestId, { type: 'getWebviewPanels', requestId }) as ExtensionWebviewPanel[]
   }
 
+  async getOutputChannels(workspaceRoot?: string): Promise<ExtensionOutputChannel[]> {
+    await this.ensureStarted(workspaceRoot)
+    return this.outputSnapshot()
+  }
+
+  async updateWorkspaceState(state: ExtensionWorkspaceState): Promise<void> {
+    this.latestWorkspaceState = state
+    const targetWorkspace = state.workspaceRoot ?? this.workspaceRoot
+    await this.ensureStarted(targetWorkspace)
+    this.postWorkspaceState(state)
+  }
+
+  respondToUiRequest(requestId: string, ok: boolean, result?: unknown, error?: string): void {
+    if (!this.child) throw new Error('Extension host is not running')
+    this.child.postMessage({ type: 'uiResponse', requestId, ok, result, error })
+  }
+
+  onEvent(listener: (event: ExtensionHostEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
   async restart(workspaceRoot?: string): Promise<{ restarted: boolean }> {
     await this.stop()
     this.installService.clearRestartRequired()
@@ -120,6 +184,8 @@ export class ExtensionHostManager {
     this.running.clear()
     this.statusBarItems = []
     this.webviewPanels = []
+    this.outputChannels.clear()
+    this.emit({ type: 'outputChanged', channels: [] })
   }
 
   getRunningExtensions(): RunningExtensionStatus[] {
@@ -149,6 +215,7 @@ export class ExtensionHostManager {
     })
     child.postMessage({ type: 'init', workspaceRoot: targetWorkspace, extensions: this.extensionPayload(targetWorkspace) })
     await this.waitUntilReady()
+    if (this.latestWorkspaceState) this.postWorkspaceState(this.latestWorkspaceState)
   }
 
   private extensionPayload(workspaceRoot?: string) {
@@ -182,6 +249,22 @@ export class ExtensionHostManager {
     }
     if (data.type === 'webviewPanelsChanged' && Array.isArray(data.panels)) {
       this.webviewPanels = data.panels as ExtensionWebviewPanel[]
+      return
+    }
+    if (data.type === 'uiRequest' && typeof data.requestId === 'string' && typeof data.extensionId === 'string' && typeof data.kind === 'string') {
+      this.emit({
+        type: 'uiRequest',
+        request: {
+          requestId: data.requestId,
+          extensionId: data.extensionId,
+          kind: data.kind as ExtensionUiRequest['kind'],
+          payload: isRecord(data.payload) ? data.payload : {},
+        },
+      })
+      return
+    }
+    if (typeof data.type === 'string' && ['output', 'outputCleared', 'outputShown', 'outputDisposed'].includes(data.type)) {
+      this.handleOutputMessage(data)
       return
     }
     if (data.type === 'activated' && typeof data.extensionId === 'string') {
@@ -282,6 +365,72 @@ export class ExtensionHostManager {
     if (this.diagnostics.length > 200) this.diagnostics.splice(0, this.diagnostics.length - 200)
   }
 
+  private handleOutputMessage(data: Record<string, unknown>): void {
+    const extensionId = typeof data.extensionId === 'string' ? data.extensionId : 'unknown'
+    const name = typeof data.name === 'string' ? data.name : 'Output'
+    const id = `${extensionId}:${name}`
+    const existing = this.outputChannels.get(id) ?? { id, extensionId, name, visible: false, disposed: false, lines: '', updatedAt: Date.now() }
+    if (data.type === 'output') {
+      existing.lines += typeof data.value === 'string' ? data.value : String(data.value ?? '')
+      existing.disposed = false
+    } else if (data.type === 'outputCleared') {
+      existing.lines = ''
+    } else if (data.type === 'outputShown') {
+      existing.visible = true
+    } else if (data.type === 'outputDisposed') {
+      existing.disposed = true
+      existing.visible = false
+    }
+    existing.updatedAt = Date.now()
+    this.outputChannels.set(id, existing)
+    this.emit({ type: 'outputChanged', channels: this.outputSnapshot(), changed: { ...existing } })
+  }
+
+  private outputSnapshot(): ExtensionOutputChannel[] {
+    return [...this.outputChannels.values()].sort((a, b) => b.updatedAt - a.updatedAt).map((channel) => ({ ...channel }))
+  }
+
+  private postWorkspaceState(state: ExtensionWorkspaceState): void {
+    if (!this.child) return
+    const workspaceRoot = state.workspaceRoot ?? this.workspaceRoot
+    const documents = (state.documents ?? []).map((document) => {
+      const fsPath = this.resolveWorkspacePath(workspaceRoot, document.fsPath ?? document.path)
+      return {
+        uri: { scheme: 'file', fsPath, path: fsPath },
+        fileName: fsPath,
+        languageId: document.languageId,
+        version: document.version,
+        text: document.text,
+        isDirty: !!document.isDirty,
+      }
+    })
+    const byPath = new Map<string, (typeof documents)[number]>()
+    for (const document of documents) byPath.set(document.fileName, document)
+    const activePath = state.activeDocumentPath ? this.resolveWorkspacePath(workspaceRoot, state.activeDocumentPath) : null
+    const activeDocument = activePath ? byPath.get(activePath) : undefined
+    const visiblePaths = state.visibleDocumentPaths?.map((candidate) => this.resolveWorkspacePath(workspaceRoot, candidate)) ?? []
+    const visibleTextEditors = visiblePaths.map((file) => byPath.get(file)).filter((document): document is (typeof documents)[number] => !!document).map((document) => ({ document }))
+    this.child.postMessage({
+      type: 'workspaceState',
+      state: {
+        workspaceFolders: workspaceRoot ? [{ uri: { scheme: 'file', fsPath: workspaceRoot, path: workspaceRoot }, name: state.workspaceName ?? path.basename(workspaceRoot), index: 0 }] : [],
+        textDocuments: documents,
+        activeTextEditor: activeDocument ? { document: activeDocument } : null,
+        visibleTextEditors,
+        configuration: state.configuration ?? {},
+      },
+    })
+  }
+
+  private resolveWorkspacePath(workspaceRoot: string | undefined, candidate: string): string {
+    if (path.isAbsolute(candidate)) return path.resolve(candidate)
+    return workspaceRoot ? path.resolve(workspaceRoot, candidate) : path.resolve(candidate)
+  }
+
+  private emit(event: ExtensionHostEvent): void {
+    for (const listener of this.listeners) listener(event)
+  }
+
   private waitUntilReady(): Promise<void> {
     if (this.ready) return Promise.resolve()
     return new Promise((resolve, reject) => {
@@ -302,4 +451,8 @@ export class ExtensionHostManager {
 
 function hashWorkspace(workspaceRoot: string): string {
   return crypto.createHash('sha256').update(path.resolve(workspaceRoot)).digest('hex').slice(0, 32)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
 }

@@ -70,6 +70,71 @@ describe('ExtensionInstallService', () => {
     expect(fs.existsSync(installed.installPath)).toBe(false)
   })
 
+  test('reports unsupported installed extensions when no reachable entry point exists', () => {
+    const root = makeTempDir()
+    const service = new ExtensionInstallService(path.join(root, 'extensions'))
+    const vsix = writeVsix(root, 'theme-only.vsix', {
+      'extension/package.json': JSON.stringify({
+        publisher: 'shogo',
+        name: 'theme-only',
+        version: '1.0.0',
+        engines: { vscode: '^1.74.0' },
+        contributes: { themes: [{ label: 'Theme', uiTheme: 'vs-dark', path: './theme.json' }] },
+      }),
+      'extension/theme.json': '{}',
+    })
+
+    service.installFromVsix(vsix)
+    const listed = service.listInstalled()[0]
+    expect(listed?.hasUsableEntryPoint).toBe(false)
+    expect(listed?.usableEntryPoints).toEqual([])
+    expect(listed?.unsupportedSurfaceMessage).toContain('not currently usable')
+  })
+
+  test('does not count empty view containers as usable entry points', () => {
+    const root = makeTempDir()
+    const service = new ExtensionInstallService(path.join(root, 'extensions'))
+    const vsix = writeVsix(root, 'empty-container.vsix', {
+      'extension/package.json': JSON.stringify({
+        publisher: 'shogo',
+        name: 'empty-container',
+        version: '1.0.0',
+        engines: { vscode: '^1.74.0' },
+        contributes: { viewsContainers: { panel: [{ id: 'shogo.empty', title: 'Empty' }] } },
+      }),
+    })
+
+    service.installFromVsix(vsix)
+    const listed = service.listInstalled()[0]
+    expect(listed?.hasUsableEntryPoint).toBe(false)
+    expect(listed?.unsupportedSurfaceMessage).toContain('no reachable views')
+  })
+
+  test('reports panel views as usable entry points', () => {
+    const root = makeTempDir()
+    const service = new ExtensionInstallService(path.join(root, 'extensions'))
+    const vsix = writeVsix(root, 'panel-view.vsix', {
+      'extension/package.json': JSON.stringify({
+        publisher: 'shogo',
+        name: 'panel-view',
+        version: '1.0.0',
+        engines: { vscode: '^1.74.0' },
+        main: './extension.js',
+        contributes: {
+          viewsContainers: { panel: [{ id: 'shogo.panel', title: 'Panel' }] },
+          views: { 'shogo.panel': [{ id: 'shogo.panel.view', name: 'Panel View' }] },
+        },
+      }),
+      'extension/extension.js': "exports.activate = function() {};",
+    })
+
+    service.installFromVsix(vsix)
+    const listed = service.listInstalled()[0]
+    expect(listed?.hasUsableEntryPoint).toBe(true)
+    expect(listed?.usableEntryPoints.some((entry) => entry.kind === 'view' && entry.id === 'shogo.panel.view')).toBe(true)
+    expect(listed?.unsupportedSurfaceMessage).toBeUndefined()
+  })
+
   test('allows extensions that opt into untrusted workspaces in Restricted Mode', () => {
     const root = makeTempDir()
     const service = new ExtensionInstallService(path.join(root, 'extensions'))

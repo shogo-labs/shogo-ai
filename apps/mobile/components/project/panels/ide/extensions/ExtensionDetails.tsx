@@ -74,6 +74,7 @@ export function ExtensionDetails({
                 {installed?.disabledByRestrictedMode && <Badge>Restricted Mode Blocked</Badge>}
                 {installed?.restrictedMode && installed.restrictedModeSupport === "limited" && <Badge>Limited in Restricted Mode</Badge>}
                 {installed?.autoUpdate && <Badge>Auto Update</Badge>}
+                {installed && !installed.hasUsableEntryPoint && <Badge><AlertTriangle size={10} /> No usable entry point</Badge>}
               </div>
               <p className="mt-3 max-w-3xl leading-relaxed text-[13px] text-[color:var(--ide-text)]">{item.description || "No description provided."}</p>
               <div className="mt-4 flex flex-wrap gap-2">
@@ -114,6 +115,9 @@ export function ExtensionDetails({
           )}
           {installed?.disabledByRestrictedMode && (
             <Warning>{installed.restrictedModeReason ?? "This extension is blocked because the current workspace is untrusted."}</Warning>
+          )}
+          {installed && !installed.hasUsableEntryPoint && (
+            <Warning>{installed.unsupportedSurfaceMessage ?? "This extension is installed, but no command, view, status item, or webview entry point is currently reachable."}</Warning>
           )}
           {!installed && (
             <div className="mt-4 flex items-start gap-2 rounded border border-sky-500/30 bg-sky-500/10 p-3 text-[12px] text-sky-100">
