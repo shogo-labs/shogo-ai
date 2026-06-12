@@ -205,6 +205,18 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     else setMessage("No extension updates available yet.");
   }, [bridge]);
 
+  const runCommand = useCallback(async (commandId: string) => {
+    if (!bridge) return;
+    setError(null);
+    const response = await bridge.runCommand(commandId, [], workspaceRoot ?? undefined);
+    if (!response.ok) {
+      setError(response.error ?? `Extension command failed: ${commandId}`);
+      return;
+    }
+    setMessage(`Ran ${commandId}`);
+    await loadRunningExtensions();
+  }, [bridge, workspaceRoot, loadRunningExtensions]);
+
   const restartRequired = installed.some((extension) => extension.restartRequired);
   const disabledCount = installed.filter((extension) => !extension.enabled).length;
 
@@ -234,5 +246,6 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     showRunningExtensions,
     startBisect,
     checkUpdates,
+    runCommand,
   };
 }
