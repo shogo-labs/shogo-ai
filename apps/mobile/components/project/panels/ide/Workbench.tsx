@@ -50,9 +50,6 @@ import {
 } from "./types";
 import { broadcastEditorFontChange } from "./useEditorFont";
 import { SearchPane } from "./SearchPane";
-import { OutlinePanel } from "./OutlinePanel";
-import { getDocumentSymbols } from "./monaco/lspProviders";
-import type { DocumentSymbolLike } from "./outline-model";
 import { SettingsPane } from "./SettingsPane";
 import { ExtensionsViewlet } from "./extensions/ExtensionsViewlet";
 import { getDesktopExtensionsBridge, useExtensions } from "./extensions/useExtensions";
@@ -244,7 +241,6 @@ export function Workbench({
     const KNOWN: ReadonlySet<string> = new Set([
       "files",
       "search",
-      "outline",
       "git",
       "checkpoint",
       "debug",
@@ -350,11 +346,6 @@ export function Workbench({
   // refs reactively).
   const [monacoReadyTick, setMonacoReadyTick] = useState(0);
 
-  // FEAT-OUTLINE — document symbols for the active editor, fetched through
-  // the shared backend-LSP (version-keyed cache) only while the Outline view
-  // is open. `null` = not yet fetched / unavailable; `[]` = fetched, no symbols.
-  const [outlineSymbols, setOutlineSymbols] = useState<DocumentSymbolLike[] | null>(null);
-  const [outlineLoading, setOutlineLoading] = useState(false);
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1284,50 +1275,6 @@ export function Workbench({
     [activeGroup],
   );
 
-  // FEAT-OUTLINE — jump the caret to a symbol's selection range.
-  const revealSymbol = useCallback(
-    (line: number, col: number) => {
-      const ed = editorRefs.current[activeGroup?.id ?? ""];
-      if (!ed) return;
-      ed.revealPositionInCenter({ lineNumber: line, column: col });
-      ed.setPosition({ lineNumber: line, column: col });
-      ed.focus();
-    },
-    [activeGroup],
-  );
-
-  // FEAT-OUTLINE — (re)fetch document symbols for the active editor while the
-  // Outline view is open. Keyed on the active file, Monaco readiness, and the
-  // caret line: an edit bumps the model version (invalidating the shared LSP
-  // cache) and also moves the caret, so this refreshes after typing — yet
-  // every navigation-only move is a cheap cache hit. A cancellation guard
-  // drops stale responses from rapid file/caret changes.
-  useEffect(() => {
-    if (activity !== "outline") return;
-    const ed = editorRefs.current[activeGroup?.id ?? ""];
-    const model = ed?.getModel();
-    if (!monacoNsRef.current || !model) {
-      setOutlineSymbols(null);
-      setOutlineLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setOutlineLoading(true);
-    getDocumentSymbols(model)
-      .then((syms) => {
-        if (!cancelled) setOutlineSymbols((syms as DocumentSymbolLike[] | null) ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setOutlineSymbols([]);
-      })
-      .finally(() => {
-        if (!cancelled) setOutlineLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activity, active?.id, monacoReadyTick, cursor.line, activeGroup]);
 
   // Reveal a specific location across any root (used by project search)
   const revealMatch = useCallback(
@@ -1478,15 +1425,6 @@ export function Workbench({
         label: "Search: Find in Files…",
         shortcut: "⌘⇧F",
         run: () => setActivity("search"),
-      },
-      {
-        id: "view.openOutline",
-        label: "View: Show Outline",
-        shortcut: "⌘⇧O",
-        run: () => {
-          setActivity("outline");
-          if (!sidebarOpen) setSidebarOpen(true);
-        },
       },
       {
         id: "view.openSourceControl",
@@ -1953,16 +1891,6 @@ export function Workbench({
                       `Replaced ${matches} match${matches === 1 ? "" : "es"} in ${files} file${files === 1 ? "" : "s"}`,
                     );
                   }}
-                />
-              )}
-              {activity === "outline" && (
-                <OutlinePanel
-                  symbols={outlineSymbols}
-                  loading={outlineLoading}
-                  hasFile={!!active}
-                  activeLine={cursor.line}
-                  onReveal={revealSymbol}
-                  onCollapse={() => setSidebarOpen(false)}
                 />
               )}
               {activity === "git" && (

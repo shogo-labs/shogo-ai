@@ -1,4 +1,4 @@
-import { Files, GitCommit, ListTree, Search, Settings, Terminal as TerminalIcon } from "lucide-react-native";
+import { Files, GitCommit, Search, Settings, Terminal as TerminalIcon } from "lucide-react-native";
 import { CodiconSourceControl, CodiconRunDebug, CodiconExtensions } from "./icons";
 import type { ActivityId } from "./types";
 import { formatBadgeCount, type BadgeData, type BadgeTone } from "./badges/formatBadge";
@@ -6,23 +6,12 @@ import { formatBadgeCount, type BadgeData, type BadgeTone } from "./badges/forma
 const ITEMS: { id: ActivityId; icon: React.ComponentType<{ size?: number }>; label: string; hint?: string }[] = [
   { id: "files",      icon: Files,                label: "Explorer",       hint: "⌘⇧E" },
   { id: "search",     icon: Search,               label: "Search",         hint: "⌘⇧F" },
-  // VS Code parity — Outline (symbol tree for the active editor)
-  { id: "outline",    icon: ListTree,             label: "Outline",        hint: "⌘⇧O" },
-  // VS Code parity — dedicated Source Control glyph (3-circle Y branch)
   { id: "git",        icon: CodiconSourceControl, label: "Source Control", hint: "⌃⇧G" },
-  // VS Code parity — Run and Debug (bug + play triangle)
   { id: "debug",      icon: CodiconRunDebug,      label: "Run and Debug",  hint: "⇧⌘D" },
   { id: "extensions", icon: CodiconExtensions,    label: "Extensions",     hint: "⇧⌘X" },
-  // Shogo-unique — the original `-o-` GitCommit glyph is now reserved
-  // exclusively for the Checkpoint activity. Source Control above gets
-  // the VS Code-style codicon so there is no visual collision.
   { id: "checkpoint", icon: GitCommit,            label: "Checkpoint" },
 ];
 
-/**
- * Per-tone color classes for the badge pill. Kept in module scope so the
- * Tailwind JIT can statically extract them.
- */
 const BADGE_TONE_BG: Record<BadgeTone, string> = {
   neutral: "bg-orange-500 text-white",
   warn:    "bg-amber-500 text-zinc-900",
@@ -43,24 +32,6 @@ function ActivityBadgePill({ data }: { data: BadgeData }) {
   );
 }
 
-/**
- * VS Code / Cursor-parity Activity Bar.
- *
- * Click behaviour:
- *  - clicking an inactive item selects it AND opens the sidebar if collapsed
- *  - clicking the currently-active item toggles the sidebar closed
- *    (same as VS Code — the primary way to hide the file tree)
- *  - Terminal button at the bottom toggles the bottom panel (⌃`)
- *
- * Badges (desktop-only):
- *  - The optional `badges` prop maps each ActivityId to a `{count, tone?}`.
- *    Callers should pass `null` (or omit the prop) on web / mobile so the
- *    badge pills never enter the DOM — that surface is intentionally
- *    badge-free per product direction.
- *  - When `count` is 0 / negative / NaN, the pill renders nothing.
- *  - `formatBadgeCount` caps the rendered label at "99+" for parity with
- *    VS Code's gutter badge.
- */
 export function ActivityBar({
   active,
   sidebarOpen,
@@ -78,7 +49,6 @@ export function ActivityBar({
   onSelect: (id: ActivityId) => void;
   onToggleSidebar: () => void;
   onToggleTerminal: () => void;
-  /** Activity IDs to hide from the bar (currently unused — all items visible). */
   hiddenItemIds?: ActivityId[];
 }) {
   const handleSelect = (id: ActivityId) => {
@@ -91,7 +61,6 @@ export function ActivityBar({
 
   const badgeFor = (id: ActivityId): BadgeData | undefined => badges?.[id];
 
-  // Hide specific items based on project type (passed from Workbench).
   const visibleItems = hiddenItemIds && hiddenItemIds.length > 0
     ? ITEMS.filter(({ id }) => !hiddenItemIds.includes(id))
     : ITEMS;
