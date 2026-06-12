@@ -107,6 +107,24 @@ const extraResource = [
   ...OPTIONAL_RESOURCES.filter((p) => fs.existsSync(p)),
 ].filter((p) => !(isWin32 && p === './resources/vm'))
 
+// Windows code signing via DigiCert KeyLocker (cloud HSM). The cert's
+// private key is non-exportable, so we can't use the legacy
+// `certificateFile`/`certificatePassword` flow. Instead the CI workflow
+// installs the KeyLocker KSP, syncs the cert into the Windows store, and
+// exports WINDOWS_SIGN_WITH_PARAMS (the signtool `/sha1 <thumbprint> ...`
+// args). `signWithParams` overrides the legacy cert fields and is the
+// supported path for HSM/cloud certs; signtool calls the KSP so the key
+// never leaves the HSM. Shared between packagerConfig (app binaries) and
+// the Squirrel maker (Shogo-Setup.exe). Undefined -> unsigned build (forks
+// / local dev). See .github/workflows/desktop-release-windows.yml.
+const windowsSign = process.env.WINDOWS_SIGN_WITH_PARAMS
+  ? {
+      signWithParams: process.env.WINDOWS_SIGN_WITH_PARAMS,
+      timestampServer: 'http://timestamp.digicert.com',
+      ...(process.env.SIGNTOOL_PATH ? { signToolPath: process.env.SIGNTOOL_PATH } : {}),
+    }
+  : undefined
+
 const config: ForgeConfig = {
   packagerConfig: {
     name: 'Shogo',
@@ -120,12 +138,7 @@ const config: ForgeConfig = {
     },
     // Signing and notarization are handled by explicit workflow steps
     // rather than @electron/osx-sign (which has integration bugs with @electron/packager 18.x).
-    ...(process.env.WINDOWS_CERT_PATH && process.env.WINDOWS_CERT_PASSWORD ? {
-      windowsSign: {
-        certificateFile: process.env.WINDOWS_CERT_PATH,
-        certificatePassword: process.env.WINDOWS_CERT_PASSWORD,
-      }
-    } : {}),
+    ...(windowsSign ? { windowsSign } : {}),
     extraResource,
     ignore: [
       /^\/src/,
@@ -157,10 +170,7 @@ const config: ForgeConfig = {
         setupExe: 'Shogo-Setup.exe',
         ...(hasIcon ? { setupIcon: './resources/icon.ico', iconUrl: 'https://raw.githubusercontent.com/shogo-labs/shogo-ai/main/apps/desktop/resources/icon.ico' } : {}),
         ...(hasInstallGif ? { loadingGif: './resources/install-splash.gif' } : {}),
-        ...(process.env.WINDOWS_CERT_PATH && process.env.WINDOWS_CERT_PASSWORD ? {
-          certificateFile: process.env.WINDOWS_CERT_PATH,
-          certificatePassword: process.env.WINDOWS_CERT_PASSWORD,
-        } : {}),
+        ...(windowsSign ? { windowsSign } : {}),
       },
     },
     {
