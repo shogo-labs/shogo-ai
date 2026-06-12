@@ -150,11 +150,13 @@ jobs:
     # gate on `env.SM_API_KEY != ''` because the `secrets` context is not
     # available in step-level `if:` but `env` is. Empty on forks / branches
     # without the secret -> signing steps no-op and the app builds unsigned.
+    # (SM_CLIENT_CERT_FILE is set from the decode step via $GITHUB_ENV — it
+    # can't live here because the `runner` context isn't available in
+    # job-level env.)
     env:
       SM_HOST: ${{ vars.SM_HOST }}
       SM_API_KEY: ${{ secrets.SM_API_KEY }}
       SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
-      SM_CLIENT_CERT_FILE: ${{ runner.temp }}/keylocker-auth.p12
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -302,11 +304,14 @@ jobs:
       # Required GitHub config (signing is skipped if SM_API_KEY is unset):
       #   secrets:   SM_API_KEY, SM_CLIENT_CERT_FILE_B64, SM_CLIENT_CERT_PASSWORD
       #   variables: SM_HOST, SM_KEYPAIR_ALIAS, SM_CODE_SIGNING_CERT_SHA1_HASH
-      # SM_CLIENT_CERT_FILE is the job-level path; decode the secret to it.
+      # Decode the client-auth .p12 and export its path so every later step
+      # (incl. Package with Electron Forge, where the KSP authenticates).
       - name: Decode KeyLocker client authentication certificate
         if: ${{ env.SM_API_KEY != '' }}
         shell: bash
-        run: echo "${{ secrets.SM_CLIENT_CERT_FILE_B64 }}" | base64 -d > "$SM_CLIENT_CERT_FILE"
+        run: |
+          echo "${{ secrets.SM_CLIENT_CERT_FILE_B64 }}" | base64 -d > "$RUNNER_TEMP/keylocker-auth.p12"
+          echo "SM_CLIENT_CERT_FILE=$RUNNER_TEMP/keylocker-auth.p12" >> "$GITHUB_ENV"
 
       # Installs smctl + the KeyLocker KSP. Reads SM_* from the job-level env.
       - name: Setup DigiCert Software Trust Manager (KeyLocker)
