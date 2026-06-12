@@ -32,7 +32,7 @@ export function ExtensionDetails({
   const views = manifest?.contributes?.views ?? {};
   const viewContainers = manifest?.contributes?.viewsContainers;
   const displayName = item.displayName || item.name;
-  const iconUrl = "iconUrl" in item ? item.iconUrl : undefined;
+  const iconUrl = installedItem?.iconUrl ?? ("iconUrl" in item ? item.iconUrl : undefined);
   const rating = "rating" in item ? item.rating : undefined;
   const downloads = "downloads" in item ? item.downloads : undefined;
   const categories = "categories" in item ? item.categories : item.manifest.categories ?? [];

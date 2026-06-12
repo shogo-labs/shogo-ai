@@ -64,7 +64,7 @@ export function registerExtensionsIpcHandlers(): void {
         : `https://open-vsx.org/api/${encodeURIComponent(publisher)}/${encodeURIComponent(name)}`
       const metaRes = await fetch(metadataUrl)
       if (!metaRes.ok) throw new Error(`Open VSX metadata request failed (${metaRes.status})`)
-      const metadata = await metaRes.json() as { files?: { download?: string }; version?: string }
+      const metadata = await metaRes.json() as { files?: { download?: string; icon?: string }; version?: string; iconUrl?: string }
       const downloadUrl = metadata.files?.download
       if (!downloadUrl) throw new Error('Open VSX metadata did not include a VSIX download URL')
       const downloadRes = await fetch(downloadUrl)
@@ -74,7 +74,9 @@ export function registerExtensionsIpcHandlers(): void {
       fs.mkdirSync(downloadsDir, { recursive: true })
       const file = path.join(downloadsDir, `${publisher}.${name}-${metadata.version ?? version ?? Date.now()}.vsix`)
       fs.writeFileSync(file, bytes)
-      const record = services().install.installFromVsix(file, 'open-vsx')
+      const record = services().install.installFromVsix(file, 'open-vsx', {
+        iconUrl: typeof metadata.iconUrl === 'string' ? metadata.iconUrl : metadata.files?.icon,
+      })
       return { ok: true, extension: record, restartRequired: true }
     } catch (err) {
       return failure(err)
