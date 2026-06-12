@@ -1,9 +1,19 @@
+import type { ComponentType } from "react";
 import { Files, GitCommit, Search, Settings, Terminal as TerminalIcon } from "lucide-react-native";
 import { CodiconSourceControl, CodiconRunDebug, CodiconExtensions } from "./icons";
 import type { ActivityId } from "./types";
+import type { ExtensionRuntimeContainer } from "./extensions/ExtensionRuntimeViewlet";
 import { formatBadgeCount, type BadgeData, type BadgeTone } from "./badges/formatBadge";
 
-const ITEMS: { id: ActivityId; icon: React.ComponentType<{ size?: number }>; label: string; hint?: string }[] = [
+type ActivityItem = {
+  id: ActivityId;
+  icon?: ComponentType<{ size?: number }>;
+  iconUrl?: string;
+  label: string;
+  hint?: string;
+};
+
+const ITEMS: ActivityItem[] = [
   { id: "files",      icon: Files,                label: "Explorer",       hint: "⌘⇧E" },
   { id: "search",     icon: Search,               label: "Search",         hint: "⌘⇧F" },
   { id: "git",        icon: CodiconSourceControl, label: "Source Control", hint: "⌃⇧G" },
@@ -41,6 +51,7 @@ export function ActivityBar({
   onToggleSidebar,
   onToggleTerminal,
   hiddenItemIds,
+  extensionContainers = [],
 }: {
   active: ActivityId;
   sidebarOpen: boolean;
@@ -50,6 +61,7 @@ export function ActivityBar({
   onToggleSidebar: () => void;
   onToggleTerminal: () => void;
   hiddenItemIds?: ActivityId[];
+  extensionContainers?: ExtensionRuntimeContainer[];
 }) {
   const handleSelect = (id: ActivityId) => {
     if (active === id && sidebarOpen) {
@@ -61,14 +73,23 @@ export function ActivityBar({
 
   const badgeFor = (id: ActivityId): BadgeData | undefined => badges?.[id];
 
+  const contributedItems: ActivityItem[] = extensionContainers
+    .filter((container) => container.location === "activitybar")
+    .map((container) => ({
+      id: container.activityId,
+      iconUrl: container.icon,
+      label: container.title,
+    }));
+
+  const allItems = [...ITEMS, ...contributedItems];
   const visibleItems = hiddenItemIds && hiddenItemIds.length > 0
-    ? ITEMS.filter(({ id }) => !hiddenItemIds.includes(id))
-    : ITEMS;
+    ? allItems.filter(({ id }) => !hiddenItemIds.includes(id))
+    : allItems;
 
   return (
     <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between bg-[color:var(--ide-panel)] border-l border-[color:var(--ide-border)] py-2">
       <div className="flex flex-col items-center gap-1">
-        {visibleItems.map(({ id, icon: Icon, label, hint }) => {
+        {visibleItems.map(({ id, icon: Icon, iconUrl, label, hint }) => {
           const isActive = active === id && sidebarOpen;
           const badge = badgeFor(id);
           return (
@@ -85,7 +106,7 @@ export function ActivityBar({
               {isActive && (
                 <span className="absolute right-0 top-1/2 h-6 -translate-y-1/2 w-0.5 bg-[color:var(--ide-text-strong)] rounded-l" />
               )}
-              <Icon size={20} />
+              {Icon ? <Icon size={20} /> : iconUrl ? <img src={iconUrl} alt="" className="h-5 w-5 object-contain opacity-90" /> : <CodiconExtensions size={20} />}
               {badge && <ActivityBadgePill data={badge} />}
             </button>
           );
