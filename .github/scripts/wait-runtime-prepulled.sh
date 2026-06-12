@@ -16,6 +16,18 @@
 # naturally blocks on any freshly-joined node whose DaemonSet pod has not
 # pulled yet (rollout status requires numberReady == desiredNumberScheduled).
 #
+# Budget (run 27385477476, 2026-06-11): the gate MUST keep blocking on a
+# freshly-joined node — that is exactly what stops the api/warm-pool
+# revisions from landing on a node where the image is not cached yet. The
+# failure mode there was not the guarantee but the budget: the cluster
+# autoscaler added a cold node ~7 min into the deploy, and that node needed
+# ~1 min for CNI + ~6 min to pull the 8.3 GB runtime image + the postgres
+# pull, which together overran the old 900s window. The default below is
+# sized to absorb one cold-node-join landing partway through the deploy
+# while preserving the "image cached on every node" guarantee. A genuinely
+# stuck node still fails the gate (with per-node diagnostics) once the
+# budget is exhausted.
+#
 # This MUST run AFTER "Deploy Image Prepuller" (which applies the new
 # RUNTIME_IMAGE tag, triggering a rolling update of the DaemonSet) and
 # BEFORE "Deploy Knative services" (which patches the api/warm-pool
@@ -31,7 +43,7 @@
 set -euo pipefail
 
 NS="${1:?system namespace required}"
-TIMEOUT="${2:-900}"
+TIMEOUT="${2:-1800}"
 
 DS=image-prepuller
 
