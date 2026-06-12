@@ -140,12 +140,21 @@ jobs:
     # bump the native-rebuild node-gyp to >=12.1.0 and validate on
     # windows-2025-vs2026.
     runs-on: windows-2022
-    # Mapped to a job-level env so the DigiCert KeyLocker signing steps can
-    # gate on `env.SM_API_KEY != ''` (the `secrets` context is not available
-    # in step-level `if:` conditions, but `env` is). On forks / branches
-    # without the secret the signing steps no-op and the app builds unsigned.
+    # KeyLocker signing credentials are mapped at the JOB level so EVERY
+    # step inherits them — critically `Package with Electron Forge`, where
+    # signtool invokes the DigiCert KSP and the KSP reads SM_HOST /
+    # SM_API_KEY / SM_CLIENT_CERT_FILE / SM_CLIENT_CERT_PASSWORD from the
+    # environment to authenticate to the cloud HSM. Scoping them to only the
+    # certsync step left packaging without the client-cert password, which
+    # surfaced as signtool 0x8009002d ("SignerSign() failed"). Steps also
+    # gate on `env.SM_API_KEY != ''` because the `secrets` context is not
+    # available in step-level `if:` but `env` is. Empty on forks / branches
+    # without the secret -> signing steps no-op and the app builds unsigned.
     env:
+      SM_HOST: ${{ vars.SM_HOST }}
       SM_API_KEY: ${{ secrets.SM_API_KEY }}
+      SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+      SM_CLIENT_CERT_FILE: ${{ runner.temp }}/keylocker-auth.p12
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -293,21 +302,16 @@ jobs:
       # Required GitHub config (signing is skipped if SM_API_KEY is unset):
       #   secrets:   SM_API_KEY, SM_CLIENT_CERT_FILE_B64, SM_CLIENT_CERT_PASSWORD
       #   variables: SM_HOST, SM_KEYPAIR_ALIAS, SM_CODE_SIGNING_CERT_SHA1_HASH
+      # SM_CLIENT_CERT_FILE is the job-level path; decode the secret to it.
       - name: Decode KeyLocker client authentication certificate
         if: ${{ env.SM_API_KEY != '' }}
         shell: bash
-        run: |
-          echo "${{ secrets.SM_CLIENT_CERT_FILE_B64 }}" | base64 -d > "$RUNNER_TEMP/keylocker-auth.p12"
-          echo "SM_CLIENT_CERT_FILE=$RUNNER_TEMP/keylocker-auth.p12" >> "$GITHUB_ENV"
+        run: echo "${{ secrets.SM_CLIENT_CERT_FILE_B64 }}" | base64 -d > "$SM_CLIENT_CERT_FILE"
 
+      # Installs smctl + the KeyLocker KSP. Reads SM_* from the job-level env.
       - name: Setup DigiCert Software Trust Manager (KeyLocker)
         if: ${{ env.SM_API_KEY != '' }}
         uses: digicert/code-signing-software-trust-action@fae23a455ba4bde62b64fd7cb2f81ade788f5a95 # v1.2.1
-        env:
-          SM_HOST: ${{ vars.SM_HOST }}
-          SM_API_KEY: ${{ secrets.SM_API_KEY }}
-          SM_CLIENT_CERT_FILE: ${{ env.SM_CLIENT_CERT_FILE }}
-          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
 
       - name: Sync code signing cert to Windows store and set sign params
         if: ${{ env.SM_API_KEY != '' }}
