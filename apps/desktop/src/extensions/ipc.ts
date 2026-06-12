@@ -114,6 +114,20 @@ export function registerExtensionsIpcHandlers(): void {
       return failure(err)
     }
   })
+  ipcMain.handle('extensions:activateEvent', async (_event, event: string, options?: { workspaceRoot?: string }) => {
+    try {
+      return { ok: true, result: await services().host.activateEvent(event, options?.workspaceRoot) }
+    } catch (err) {
+      return failure(err)
+    }
+  })
+  ipcMain.handle('extensions:getView', async (_event, viewId: string, options?: { workspaceRoot?: string }) => {
+    try {
+      return { ok: true, view: await services().host.getView(viewId, options?.workspaceRoot) }
+    } catch (err) {
+      return failure(err)
+    }
+  })
   ipcMain.handle('extensions:showRunningExtensions', () => {
     try {
       const running = services().host.getRunningExtensions()
@@ -131,7 +145,7 @@ export function disposeExtensionsIpcHandlers(): void {
     'extensions:listInstalled', 'extensions:getContributions', 'extensions:search', 'extensions:installFromVsix',
     'extensions:installFromRegistry', 'extensions:uninstall', 'extensions:enable', 'extensions:disable',
     'extensions:restartHost', 'extensions:checkUpdates', 'extensions:update', 'extensions:runCommand',
-    'extensions:showRunningExtensions', 'extensions:startBisect',
+    'extensions:activateEvent', 'extensions:getView', 'extensions:showRunningExtensions', 'extensions:startBisect',
   ]) ipcMain.removeHandler(channel)
 }
 

@@ -89,6 +89,29 @@ export interface ExtensionSearchResult {
   tags: string[];
 }
 
+export interface ExtensionRuntimeCommand {
+  command: string;
+  title?: string;
+  arguments?: unknown[];
+}
+
+export interface ExtensionRuntimeTreeItem {
+  id: string;
+  label: string;
+  description?: string;
+  tooltip?: string;
+  contextValue?: string;
+  collapsibleState?: number;
+  command?: ExtensionRuntimeCommand;
+}
+
+export interface ExtensionRuntimeViewResult {
+  viewId: string;
+  extensionId: string;
+  items: ExtensionRuntimeTreeItem[];
+  message?: string;
+}
+
 export interface DesktopExtensionsBridge {
   listInstalled(workspaceRoot?: string): Promise<{ ok: boolean; extensions?: InstalledExtension[]; error?: string }>;
   search(query: string, options?: { size?: number }): Promise<{ ok: boolean; results?: ExtensionSearchResult[]; error?: string }>;
@@ -102,6 +125,8 @@ export interface DesktopExtensionsBridge {
   update(id: string): Promise<{ ok: boolean; error?: string }>;
   getContributions(workspaceRoot?: string): Promise<{ ok: boolean; extensions?: InstalledExtension[]; contributions?: unknown[]; error?: string }>;
   runCommand(commandId: string, args?: unknown[], workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }>;
+  activateEvent(event: string, workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }>;
+  getView(viewId: string, workspaceRoot?: string): Promise<{ ok: boolean; view?: ExtensionRuntimeViewResult; error?: string }>;
   showRunningExtensions(): Promise<{ ok: boolean; running?: unknown[]; message?: string; error?: string }>;
   startBisect(): Promise<{ ok: boolean; error?: string }>;
 }

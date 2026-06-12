@@ -297,6 +297,10 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('extensions:getContributions', { workspaceRoot }),
     runCommand: (commandId: string, args?: unknown[], workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
       ipcRenderer.invoke('extensions:runCommand', commandId, args, { workspaceRoot }),
+    activateEvent: (event: string, workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:activateEvent', event, { workspaceRoot }),
+    getView: (viewId: string, workspaceRoot?: string): Promise<{ ok: boolean; view?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:getView', viewId, { workspaceRoot }),
     showRunningExtensions: (): Promise<{ ok: boolean; running?: unknown[]; message?: string; error?: string }> =>
       ipcRenderer.invoke('extensions:showRunningExtensions'),
     startBisect: (): Promise<{ ok: boolean; error?: string }> =>

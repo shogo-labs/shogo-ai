@@ -37,6 +37,18 @@ export class ExtensionHostManager {
     return result
   }
 
+  async activateEvent(event: string, workspaceRoot?: string): Promise<unknown> {
+    await this.ensureStarted(workspaceRoot)
+    const requestId = crypto.randomUUID()
+    return await this.request(requestId, { type: 'activateEvent', requestId, event })
+  }
+
+  async getView(viewId: string, workspaceRoot?: string): Promise<unknown> {
+    await this.ensureStarted(workspaceRoot)
+    const requestId = crypto.randomUUID()
+    return await this.request(requestId, { type: 'getView', requestId, viewId })
+  }
+
   async restart(workspaceRoot?: string): Promise<{ restarted: boolean }> {
     await this.stop()
     this.installService.clearRestartRequired()
@@ -90,6 +102,7 @@ export class ExtensionHostManager {
         main: ext.manifest.main,
         activationEvents: ext.manifest.activationEvents ?? [],
         commands: (ext.manifest.contributes?.commands ?? []).map((command) => command.command),
+        views: Object.values(ext.manifest.contributes?.views ?? {}).flat().map((view) => view.id),
         globalStoragePath: path.join(electron.app.getPath('userData'), 'extensions', 'state', 'global-storage', ext.id),
         workspaceStoragePath: path.join(electron.app.getPath('userData'), 'extensions', 'state', 'workspace-storage', hashWorkspace(workspaceRoot ?? 'no-workspace'), ext.id),
       }))

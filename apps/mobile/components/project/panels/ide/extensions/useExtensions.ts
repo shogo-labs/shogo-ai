@@ -15,7 +15,7 @@ export function getDesktopExtensionsBridge(): DesktopExtensionsBridge | null {
   if (!bridge) return null;
   for (const method of [
     "listInstalled", "search", "installFromVsix", "installFromRegistry", "uninstall", "enable", "disable",
-    "restartHost", "checkUpdates", "update", "getContributions", "runCommand", "showRunningExtensions", "startBisect",
+    "restartHost", "checkUpdates", "update", "getContributions", "runCommand", "activateEvent", "getView", "showRunningExtensions", "startBisect",
   ] as const) {
     if (typeof bridge[method] !== "function") return null;
   }

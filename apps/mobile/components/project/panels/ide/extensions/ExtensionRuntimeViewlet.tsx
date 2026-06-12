@@ -1,6 +1,6 @@
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, ExternalLink, Filter, Plus, RefreshCw, Search } from "lucide-react-native";
-import type { ExtensionViewContainerContribution, InstalledExtension } from "./types";
+import type { ExtensionRuntimeTreeItem, ExtensionRuntimeViewResult, ExtensionViewContainerContribution, InstalledExtension } from "./types";
 
 export interface ExtensionRuntimeContainer {
   activityId: `extension:${string}`;
@@ -44,14 +44,44 @@ export function ExtensionRuntimeViewlet({
   container,
   onRunCommand,
   onOpenDetails,
+  onLoadView,
 }: {
   container: ExtensionRuntimeContainer;
-  onRunCommand: (commandId: string) => void;
+  onRunCommand: (commandId: string, args?: unknown[]) => void;
   onOpenDetails: (extension: InstalledExtension) => void;
+  onLoadView: (viewId: string) => Promise<ExtensionRuntimeViewResult | null>;
 }) {
   const views = container.extension.manifest.contributes?.views?.[container.id] ?? [];
   const commands = container.extension.manifest.contributes?.commands ?? [];
   const viewTitleCommands = container.extension.manifest.contributes?.menus?.["view/title"] ?? [];
+  const [loadedViews, setLoadedViews] = useState<Record<string, ExtensionRuntimeViewResult>>({});
+  const [loadingViews, setLoadingViews] = useState<Record<string, boolean>>({});
+  const [viewErrors, setViewErrors] = useState<Record<string, string>>({});
+
+  const loadView = useCallback(async (viewId: string) => {
+    setLoadingViews((prev) => ({ ...prev, [viewId]: true }));
+    setViewErrors((prev) => {
+      const next = { ...prev };
+      delete next[viewId];
+      return next;
+    });
+    try {
+      const result = await onLoadView(viewId);
+      if (result) setLoadedViews((prev) => ({ ...prev, [viewId]: result }));
+    } catch (err) {
+      setViewErrors((prev) => ({ ...prev, [viewId]: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setLoadingViews((prev) => ({ ...prev, [viewId]: false }));
+    }
+  }, [onLoadView]);
+
+  useEffect(() => {
+    for (const view of views) void loadView(view.id);
+  }, [container.activityId, loadView, views]);
+
+  const refreshViews = () => {
+    for (const view of views) void loadView(view.id);
+  };
 
   return (
     <div className="flex h-full flex-col bg-[color:var(--ide-surface)] text-[12px] text-[color:var(--ide-text)]">
@@ -59,7 +89,7 @@ export function ExtensionRuntimeViewlet({
         <div className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">
           {container.title}
         </div>
-        <ToolbarButton title="Refresh"><RefreshCw size={13} /></ToolbarButton>
+        <ToolbarButton title="Refresh" onClick={refreshViews}><RefreshCw size={13} /></ToolbarButton>
         <ToolbarButton title="Search"><Search size={13} /></ToolbarButton>
         <ToolbarButton title="Filter"><Filter size={13} /></ToolbarButton>
         <ToolbarButton title="New"><Plus size={13} /></ToolbarButton>
@@ -98,25 +128,15 @@ export function ExtensionRuntimeViewlet({
                   })}
                 </div>
                 <div className="px-2 pb-2">
-                  {commands.length > 0 ? (
-                    <div className="space-y-0.5">
-                      {commands.map((command) => (
-                        <button
-                          key={`${view.id}:${command.command}`}
-                          onClick={() => onRunCommand(command.command)}
-                          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
-                        >
-                          <ChevronRight size={12} color="var(--ide-muted)" />
-                          <span className="min-w-0 flex-1 truncate">{command.title}</span>
-                          {command.category && <span className="truncate text-[10px] text-[color:var(--ide-muted)]">{command.category}</span>}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <WelcomeView compact>
-                      {view.name} is ready. The extension has not exposed tree items through Shogo’s runtime API yet.
-                    </WelcomeView>
-                  )}
+                  <RuntimeViewBody
+                    items={loadedViews[view.id]?.items ?? []}
+                    message={loadedViews[view.id]?.message}
+                    error={viewErrors[view.id]}
+                    loading={!!loadingViews[view.id]}
+                    fallbackCommands={commands}
+                    viewName={view.name}
+                    onRunCommand={onRunCommand}
+                  />
                 </div>
               </section>
             );
@@ -125,6 +145,65 @@ export function ExtensionRuntimeViewlet({
       </div>
     </div>
   );
+}
+
+function RuntimeViewBody({
+  items,
+  message,
+  error,
+  loading,
+  fallbackCommands,
+  viewName,
+  onRunCommand,
+}: {
+  items: ExtensionRuntimeTreeItem[];
+  message?: string;
+  error?: string;
+  loading: boolean;
+  fallbackCommands: Array<{ command: string; title: string; category?: string }>;
+  viewName: string;
+  onRunCommand: (commandId: string, args?: unknown[]) => void;
+}) {
+  if (error) return <WelcomeView compact>{error}</WelcomeView>;
+  if (items.length > 0) {
+    return (
+      <div className="space-y-0.5">
+        {items.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => item.command && onRunCommand(item.command.command, item.command.arguments)}
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)] disabled:cursor-default disabled:hover:bg-transparent"
+            disabled={!item.command}
+            title={item.tooltip || item.label}
+          >
+            <ChevronRight size={12} color="var(--ide-muted)" />
+            <span className="min-w-0 flex-1 truncate">{item.label}</span>
+            {item.description && <span className="truncate text-[10px] text-[color:var(--ide-muted)]">{item.description}</span>}
+          </button>
+        ))}
+      </div>
+    );
+  }
+  if (message) return <WelcomeView compact>{message}</WelcomeView>;
+  if (loading) return <WelcomeView compact>Activating {viewName}…</WelcomeView>;
+  if (fallbackCommands.length > 0) {
+    return (
+      <div className="space-y-0.5">
+        {fallbackCommands.map((command) => (
+          <button
+            key={`${viewName}:${command.command}`}
+            onClick={() => onRunCommand(command.command)}
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
+          >
+            <ChevronRight size={12} color="var(--ide-muted)" />
+            <span className="min-w-0 flex-1 truncate">{command.title}</span>
+            {command.category && <span className="truncate text-[10px] text-[color:var(--ide-muted)]">{command.category}</span>}
+          </button>
+        ))}
+      </div>
+    );
+  }
+  return <WelcomeView compact>{viewName} activated. No tree items were returned yet.</WelcomeView>;
 }
 
 function ToolbarButton({ title, onClick, children }: { title: string; onClick?: () => void; children: ReactNode }) {
