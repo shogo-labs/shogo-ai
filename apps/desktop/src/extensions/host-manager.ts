@@ -96,7 +96,7 @@ export class ExtensionHostManager {
   }
 
   private hostEntry(): string {
-    return path.join(__dirname, 'extensions', 'extension-host-runner.js')
+    return path.join(electron.app.getAppPath(), 'dist', 'extensions', 'extension-host-runner.js')
   }
 
   private handleMessage(message: unknown): void {
