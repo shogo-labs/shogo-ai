@@ -219,7 +219,14 @@ export function registerExtensionsIpcHandlers(): void {
   ipcMain.handle('extensions:showRunningExtensions', () => {
     try {
       const running = services().host.getRunningExtensions()
-      return { ok: true, running, message: running.length === 0 ? 'No extension commands have activated yet.' : undefined }
+      const diagnostics = services().host.getDiagnostics()
+      const errorCount = diagnostics.filter((diagnostic) => diagnostic.level === 'error').length
+      return {
+        ok: true,
+        running,
+        diagnostics,
+        message: running.length === 0 && errorCount === 0 ? 'No extension commands have activated yet.' : undefined,
+      }
     } catch (err) {
       return failure(err)
     }

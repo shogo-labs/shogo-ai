@@ -324,7 +324,7 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.on('extensions:event', listener)
       return () => ipcRenderer.removeListener('extensions:event', listener)
     },
-    showRunningExtensions: (): Promise<{ ok: boolean; running?: unknown[]; message?: string; error?: string }> =>
+    showRunningExtensions: (): Promise<{ ok: boolean; running?: unknown[]; diagnostics?: unknown[]; message?: string; error?: string }> =>
       ipcRenderer.invoke('extensions:showRunningExtensions'),
     startBisect: (): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('extensions:startBisect'),

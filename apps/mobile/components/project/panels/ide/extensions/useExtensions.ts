@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { DesktopExtensionsBridge, ExtensionRuntimeStatusBarItem, ExtensionSearchResult, InstalledExtension, TrustedPublisherRecord, WorkspaceTrustState } from "./types";
+import type { DesktopExtensionsBridge, ExtensionHostDiagnostic, ExtensionRuntimeStatusBarItem, ExtensionSearchResult, InstalledExtension, TrustedPublisherRecord, WorkspaceTrustState } from "./types";
 
 export interface RunningExtensionStatus {
   id: string;
@@ -39,6 +39,7 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
   const [results, setResults] = useState<ExtensionSearchResult[]>([]);
   const [recommended, setRecommended] = useState<ExtensionSearchResult[]>([]);
   const [running, setRunning] = useState<RunningExtensionStatus[]>([]);
+  const [diagnostics, setDiagnostics] = useState<ExtensionHostDiagnostic[]>([]);
   const [trustedPublishers, setTrustedPublishers] = useState<TrustedPublisherRecord[]>([]);
   const [workspaceTrust, setWorkspaceTrust] = useState<WorkspaceTrustState>({ trusted: !workspaceRoot, restrictedMode: !!workspaceRoot });
   const [statusBarItems, setStatusBarItems] = useState<ExtensionRuntimeStatusBarItem[]>([]);
@@ -86,7 +87,10 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
   const loadRunningExtensions = useCallback(async () => {
     if (!bridge) return;
     const response = await bridge.showRunningExtensions();
-    if (response.ok) setRunning((response.running ?? []) as RunningExtensionStatus[]);
+    if (response.ok) {
+      setRunning((response.running ?? []) as RunningExtensionStatus[]);
+      setDiagnostics(response.diagnostics ?? []);
+    }
     await loadStatusBarItems();
   }, [bridge, loadStatusBarItems]);
 
@@ -260,7 +264,9 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     if (!response.ok) setError(response.error ?? "Failed to inspect running extensions");
     else {
       setRunning((response.running ?? []) as RunningExtensionStatus[]);
-      setMessage(response.message ?? `${response.running?.length ?? 0} extension(s) active.`);
+      setDiagnostics(response.diagnostics ?? []);
+      const errorCount = (response.diagnostics ?? []).filter((diagnostic) => diagnostic.level === "error").length;
+      setMessage(response.message ?? `${response.running?.length ?? 0} extension(s) active${errorCount ? ` · ${errorCount} host issue(s)` : ""}.`);
       await loadStatusBarItems();
     }
   }, [bridge, loadStatusBarItems]);
@@ -300,6 +306,7 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     results,
     recommended,
     running,
+    diagnostics,
     trustedPublishers,
     workspaceTrust,
     statusBarItems,

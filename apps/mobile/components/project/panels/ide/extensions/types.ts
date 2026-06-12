@@ -163,6 +163,20 @@ export interface ExtensionRuntimeViewResult {
   message?: string;
 }
 
+export interface ExtensionHostDiagnostic {
+  id: string;
+  timestamp: number;
+  level: "info" | "error";
+  type: "activation" | "command" | "view" | "deactivation" | "crash" | "timeout" | "host";
+  message: string;
+  extensionId?: string;
+  event?: string;
+  commandId?: string;
+  viewId?: string;
+  durationMs?: number;
+  error?: string;
+}
+
 export interface ExtensionRuntimeStatusBarItem {
   id: string;
   extensionId: string;
@@ -247,6 +261,6 @@ export interface DesktopExtensionsBridge {
   respondUiRequest(requestId: string, response: { ok: boolean; result?: unknown; error?: string }): Promise<{ ok: boolean; error?: string }>;
   updateWorkspaceState(state: ExtensionWorkspaceState): Promise<{ ok: boolean; error?: string }>;
   onEvent(callback: (event: ExtensionHostEvent) => void): () => void;
-  showRunningExtensions(): Promise<{ ok: boolean; running?: unknown[]; message?: string; error?: string }>;
+  showRunningExtensions(): Promise<{ ok: boolean; running?: unknown[]; diagnostics?: ExtensionHostDiagnostic[]; message?: string; error?: string }>;
   startBisect(): Promise<{ ok: boolean; error?: string }>;
 }
