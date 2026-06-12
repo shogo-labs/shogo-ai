@@ -44,10 +44,62 @@ export interface ExtensionLockState {
   packages: Record<string, { version: string; sha256: string; source: ExtensionInstallSource; installedAt: number }>
 }
 
+export interface TrustedPublisherRecord {
+  publisher: string
+  publisherKey: string
+  trustedAt: number
+  source: 'user' | 'policy'
+}
+
+export interface WorkspaceTrustRecord {
+  workspaceRoot: string
+  workspaceKey: string
+  trusted: boolean
+  trustedAt?: number
+  source: 'user' | 'policy'
+}
+
+export interface WorkspaceTrustState {
+  workspaceRoot?: string
+  workspaceKey?: string
+  trusted: boolean
+  restrictedMode: boolean
+  source?: 'user' | 'policy'
+  trustedAt?: number
+}
+
+export type RestrictedModeSupport = 'full' | 'limited' | 'unsupported'
+export type ExtensionUsableEntryPointKind = 'command' | 'view' | 'viewContainer' | 'startupActivation'
+
+export interface ExtensionUsableEntryPoint {
+  kind: ExtensionUsableEntryPointKind
+  id: string
+  label: string
+  detail?: string
+}
+
+export interface ExtensionPackageInspection {
+  manifest: ShogoExtensionManifest
+  compatible: boolean
+  compatibilityReason?: string
+  warnings: string[]
+  packageHash: string
+}
+
 export interface ExtensionListItem extends InstalledExtensionRecord {
   enabled: boolean
   disabledGlobally: boolean
   disabledForWorkspace: boolean
+  trustedPublisher: boolean
+  trustedPublisherAt?: number
+  workspaceTrusted: boolean
+  restrictedMode: boolean
+  restrictedModeSupport: RestrictedModeSupport
+  disabledByRestrictedMode: boolean
+  restrictedModeReason?: string
+  usableEntryPoints: ExtensionUsableEntryPoint[]
+  hasUsableEntryPoint: boolean
+  unsupportedSurfaceMessage?: string
 }
 
 const MAX_VSIX_FILES = 10000
@@ -79,19 +131,40 @@ export class ExtensionInstallService {
     ensureJsonFile(this.lockPath(), { schemaVersion: 1, packages: {} })
     ensureJsonFile(this.disabledGlobalPath(), [])
     ensureJsonFile(path.join(this.stateDir, 'trusted-publishers.json'), [])
+    ensureJsonFile(this.workspaceTrustPath(), [])
   }
 
   listInstalled(workspaceRoot?: string): ExtensionListItem[] {
     const state = this.readRegistry()
     const disabledGlobal = new Set(this.readStringArray(this.disabledGlobalPath()))
     const disabledWorkspace = new Set(workspaceRoot ? this.readStringArray(this.disabledWorkspacePath(workspaceRoot)) : [])
-    return state.extensions.map((record) => ({
-      ...record,
-      iconUrl: installedIconUrl(record),
-      disabledGlobally: disabledGlobal.has(record.id),
-      disabledForWorkspace: disabledWorkspace.has(record.id),
-      enabled: !record.pendingDelete && !disabledGlobal.has(record.id) && !disabledWorkspace.has(record.id),
-    }))
+    const workspaceTrust = this.getWorkspaceTrust(workspaceRoot)
+    const trustedPublishers = new Map(this.listTrustedPublishers().map((record) => [record.publisherKey, record]))
+    return state.extensions.map((record) => {
+      const trusted = trustedPublishers.get(publisherKey(record.publisher))
+      const restrictedModeSupport = getRestrictedModeSupport(record.manifest)
+      const disabledByRestrictedMode = workspaceTrust.restrictedMode && restrictedModeSupport === 'unsupported'
+      const usableEntryPoints = getUsableEntryPoints(record.manifest)
+      return {
+        ...record,
+        iconUrl: installedIconUrl(record),
+        disabledGlobally: disabledGlobal.has(record.id),
+        disabledForWorkspace: disabledWorkspace.has(record.id),
+        enabled: !record.pendingDelete && !disabledGlobal.has(record.id) && !disabledWorkspace.has(record.id) && !disabledByRestrictedMode,
+        trustedPublisher: !!trusted,
+        trustedPublisherAt: trusted?.trustedAt,
+        workspaceTrusted: workspaceTrust.trusted,
+        restrictedMode: workspaceTrust.restrictedMode,
+        restrictedModeSupport,
+        disabledByRestrictedMode,
+        restrictedModeReason: disabledByRestrictedMode
+          ? 'Blocked in Restricted Mode because this extension does not declare support for untrusted workspaces.'
+          : undefined,
+        usableEntryPoints,
+        hasUsableEntryPoint: usableEntryPoints.length > 0,
+        unsupportedSurfaceMessage: usableEntryPoints.length === 0 ? getUnsupportedSurfaceMessage(record) : undefined,
+      }
+    })
   }
 
   getContributions(workspaceRoot?: string): { extensions: ExtensionListItem[]; contributions: Array<{ extensionId: string; contributes: ShogoExtensionManifest['contributes'] }> } {
@@ -104,21 +177,75 @@ export class ExtensionInstallService {
     }
   }
 
+  inspectVsix(vsixPath: string): ExtensionPackageInspection {
+    const absoluteVsixPath = path.resolve(vsixPath)
+    const packageBytes = fs.readFileSync(absoluteVsixPath)
+    const packageHash = crypto.createHash('sha256').update(packageBytes).digest('hex')
+    const { entries } = readValidatedVsixEntries(packageBytes)
+    const packageJsonBytes = entries['extension/package.json']
+    if (!packageJsonBytes) throw new Error('VSIX is missing extension/package.json')
+    const packageJson = Buffer.from(packageJsonBytes).toString('utf8')
+    const parsed = parseExtensionManifestJson(packageJson)
+    return {
+      manifest: parsed.manifest,
+      compatible: parsed.compatible,
+      compatibilityReason: parsed.compatibilityReason,
+      warnings: parsed.warnings,
+      packageHash,
+    }
+  }
+
+  listTrustedPublishers(): TrustedPublisherRecord[] {
+    return normalizeTrustedPublisherRecords(readJson(this.trustedPublishersPath(), []))
+  }
+
+  isPublisherTrusted(publisher: string): boolean {
+    const key = publisherKey(publisher)
+    return this.listTrustedPublishers().some((record) => record.publisherKey === key)
+  }
+
+  trustPublisher(publisher: string, source: TrustedPublisherRecord['source'] = 'user'): TrustedPublisherRecord {
+    const trimmed = publisher.trim()
+    if (!trimmed) throw new Error('Publisher is required')
+    const key = publisherKey(trimmed)
+    const records = this.listTrustedPublishers()
+    const existing = records.find((record) => record.publisherKey === key)
+    if (existing) return existing
+    const record: TrustedPublisherRecord = { publisher: trimmed, publisherKey: key, trustedAt: Date.now(), source }
+    writeJsonAtomic(this.trustedPublishersPath(), [...records, record].sort((a, b) => a.publisherKey.localeCompare(b.publisherKey)))
+    return record
+  }
+
+  getWorkspaceTrust(workspaceRoot?: string): WorkspaceTrustState {
+    if (!workspaceRoot) return { trusted: true, restrictedMode: false }
+    const normalized = path.resolve(workspaceRoot)
+    const key = hashWorkspace(normalized)
+    const record = this.listWorkspaceTrustRecords().find((item) => item.workspaceKey === key)
+    const trusted = record?.trusted === true
+    return {
+      workspaceRoot: normalized,
+      workspaceKey: key,
+      trusted,
+      restrictedMode: !trusted,
+      source: record?.source,
+      trustedAt: record?.trustedAt,
+    }
+  }
+
+  trustWorkspace(workspaceRoot: string, source: WorkspaceTrustRecord['source'] = 'user'): WorkspaceTrustRecord {
+    const normalized = path.resolve(requiredWorkspace(workspaceRoot))
+    const key = hashWorkspace(normalized)
+    const records = this.listWorkspaceTrustRecords().filter((record) => record.workspaceKey !== key)
+    const record: WorkspaceTrustRecord = { workspaceRoot: normalized, workspaceKey: key, trusted: true, trustedAt: Date.now(), source }
+    writeJsonAtomic(this.workspaceTrustPath(), [...records, record].sort((a, b) => a.workspaceRoot.localeCompare(b.workspaceRoot)))
+    return record
+  }
+
   installFromVsix(vsixPath: string, source: ExtensionInstallSource = 'vsix', metadata: { iconUrl?: string } = {}): InstalledExtensionRecord {
     const absoluteVsixPath = path.resolve(vsixPath)
     const packageBytes = fs.readFileSync(absoluteVsixPath)
     const packageHash = crypto.createHash('sha256').update(packageBytes).digest('hex')
-    const entries = unzipSync(new Uint8Array(packageBytes))
-    const entryNames = Object.keys(entries)
-    if (entryNames.length === 0) throw new Error('VSIX archive is empty')
-    if (entryNames.length > MAX_VSIX_FILES) throw new Error(`VSIX has too many files (${entryNames.length}; max ${MAX_VSIX_FILES})`)
-
-    let totalBytes = 0
-    for (const [entryName, entryBytes] of Object.entries(entries)) {
-      validateArchiveEntryPath(entryName)
-      totalBytes += entryBytes.byteLength
-      if (totalBytes > MAX_VSIX_TOTAL_BYTES) throw new Error('VSIX is too large to install safely')
-    }
+    const { entries } = readValidatedVsixEntries(packageBytes)
 
     const packageJsonBytes = entries['extension/package.json']
     if (!packageJsonBytes) throw new Error('VSIX is missing extension/package.json')
@@ -240,6 +367,8 @@ export class ExtensionInstallService {
 
   private registryPath(): string { return path.join(this.stateDir, 'extensions.json') }
   private lockPath(): string { return path.join(this.stateDir, 'extensions.lock.json') }
+  private trustedPublishersPath(): string { return path.join(this.stateDir, 'trusted-publishers.json') }
+  private workspaceTrustPath(): string { return path.join(this.stateDir, 'workspace-trust.json') }
   private disabledGlobalPath(): string { return path.join(this.stateDir, 'disabled-global.json') }
   private disabledWorkspacePath(workspaceRoot: string): string { return path.join(this.stateDir, 'disabled-workspace', `${hashWorkspace(workspaceRoot)}.json`) }
 
@@ -258,6 +387,10 @@ export class ExtensionInstallService {
   private readStringArray(file: string): string[] {
     const value = readJson(file, [])
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  }
+
+  private listWorkspaceTrustRecords(): WorkspaceTrustRecord[] {
+    return normalizeWorkspaceTrustRecords(readJson(this.workspaceTrustPath(), []))
   }
 }
 
@@ -292,6 +425,21 @@ function iconMimeType(file: string): string {
   }
 }
 
+function readValidatedVsixEntries(packageBytes: Buffer): { entries: Record<string, Uint8Array> } {
+  const entries = unzipSync(new Uint8Array(packageBytes))
+  const entryNames = Object.keys(entries)
+  if (entryNames.length === 0) throw new Error('VSIX archive is empty')
+  if (entryNames.length > MAX_VSIX_FILES) throw new Error(`VSIX has too many files (${entryNames.length}; max ${MAX_VSIX_FILES})`)
+
+  let totalBytes = 0
+  for (const [entryName, entryBytes] of Object.entries(entries)) {
+    validateArchiveEntryPath(entryName)
+    totalBytes += entryBytes.byteLength
+    if (totalBytes > MAX_VSIX_TOTAL_BYTES) throw new Error('VSIX is too large to install safely')
+  }
+  return { entries }
+}
+
 function validateArchiveEntryPath(entryName: string): void {
   if (!entryName.startsWith('extension/')) return
   if (entryName.includes('\\')) throw new Error(`Unsafe VSIX path: ${entryName}`)
@@ -308,6 +456,115 @@ function safeJoin(root: string, relPath: string): string {
   const resolvedRoot = path.resolve(root)
   if (joined !== resolvedRoot && !joined.startsWith(`${resolvedRoot}${path.sep}`)) throw new Error(`Unsafe path traversal: ${relPath}`)
   return joined
+}
+
+function publisherKey(publisher: string): string {
+  return publisher.trim().toLowerCase()
+}
+
+function normalizeTrustedPublisherRecords(value: unknown): TrustedPublisherRecord[] {
+  if (!Array.isArray(value)) return []
+  const records = new Map<string, TrustedPublisherRecord>()
+  for (const item of value) {
+    if (typeof item === 'string') {
+      const publisher = item.trim()
+      if (!publisher) continue
+      const key = publisherKey(publisher)
+      records.set(key, { publisher, publisherKey: key, trustedAt: 0, source: 'user' })
+      continue
+    }
+    if (!item || typeof item !== 'object') continue
+    const raw = item as Record<string, unknown>
+    const publisher = typeof raw.publisher === 'string' ? raw.publisher.trim() : ''
+    if (!publisher) continue
+    const key = typeof raw.publisherKey === 'string' && raw.publisherKey.trim()
+      ? raw.publisherKey.trim().toLowerCase()
+      : publisherKey(publisher)
+    records.set(key, {
+      publisher,
+      publisherKey: key,
+      trustedAt: typeof raw.trustedAt === 'number' && Number.isFinite(raw.trustedAt) ? raw.trustedAt : 0,
+      source: raw.source === 'policy' ? 'policy' : 'user',
+    })
+  }
+  return [...records.values()].sort((a, b) => a.publisherKey.localeCompare(b.publisherKey))
+}
+
+function normalizeWorkspaceTrustRecords(value: unknown): WorkspaceTrustRecord[] {
+  if (!Array.isArray(value)) return []
+  const records = new Map<string, WorkspaceTrustRecord>()
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const raw = item as Record<string, unknown>
+    const workspaceRoot = typeof raw.workspaceRoot === 'string' && raw.workspaceRoot.trim()
+      ? path.resolve(raw.workspaceRoot)
+      : ''
+    if (!workspaceRoot) continue
+    const workspaceKey = typeof raw.workspaceKey === 'string' && raw.workspaceKey.trim()
+      ? raw.workspaceKey.trim()
+      : hashWorkspace(workspaceRoot)
+    records.set(workspaceKey, {
+      workspaceRoot,
+      workspaceKey,
+      trusted: raw.trusted === true,
+      trustedAt: typeof raw.trustedAt === 'number' && Number.isFinite(raw.trustedAt) ? raw.trustedAt : undefined,
+      source: raw.source === 'policy' ? 'policy' : 'user',
+    })
+  }
+  return [...records.values()].sort((a, b) => a.workspaceRoot.localeCompare(b.workspaceRoot))
+}
+
+function getUsableEntryPoints(manifest: ShogoExtensionManifest): ExtensionUsableEntryPoint[] {
+  const entryPoints: ExtensionUsableEntryPoint[] = []
+  for (const command of manifest.contributes?.commands ?? []) {
+    if (!command.command) continue
+    entryPoints.push({
+      kind: 'command',
+      id: command.command,
+      label: command.category ? `${command.category}: ${command.title}` : command.title,
+      detail: command.command,
+    })
+  }
+  for (const [containerId, views] of Object.entries(manifest.contributes?.views ?? {})) {
+    for (const view of views ?? []) {
+      if (!view.id) continue
+      entryPoints.push({ kind: 'view', id: view.id, label: view.name || view.id, detail: containerId })
+    }
+  }
+  for (const container of manifest.contributes?.viewsContainers?.activitybar ?? []) {
+    if (container.id) entryPoints.push({ kind: 'viewContainer', id: container.id, label: container.title || container.id, detail: 'Activity Bar' })
+  }
+  for (const container of manifest.contributes?.viewsContainers?.panel ?? []) {
+    if (container.id) entryPoints.push({ kind: 'viewContainer', id: container.id, label: container.title || container.id, detail: 'Panel' })
+  }
+  if (manifest.main && manifest.activationEvents?.some((event) => event === '*' || event === 'onStartupFinished')) {
+    entryPoints.push({ kind: 'startupActivation', id: 'onStartupFinished', label: 'Startup activation', detail: 'May expose runtime status items or webviews after activation' })
+  }
+  return entryPoints
+}
+
+function getUnsupportedSurfaceMessage(record: InstalledExtensionRecord): string {
+  const unsupportedContributionPoints = record.warnings
+    .map((warning) => /^Unsupported contribution point: (.+)$/.exec(warning)?.[1])
+    .filter((value): value is string => !!value)
+  if (unsupportedContributionPoints.length > 0) {
+    return `Installed, but Shogo cannot render this extension's declared surface yet: ${unsupportedContributionPoints.join(', ')}. No command, view, status item, or webview entry point is currently reachable.`
+  }
+  if (!record.manifest.main && !record.manifest.browser) {
+    return 'Installed, but this package does not declare a runtime entry point or Shogo-renderable commands/views. It is not currently usable from the IDE.'
+  }
+  return 'Installed, but no command, view, status item, or webview entry point is reachable yet. The manifest does not declare a Shogo-renderable surface.'
+}
+
+function getRestrictedModeSupport(manifest: ShogoExtensionManifest): RestrictedModeSupport {
+  const capability = manifest.capabilities?.untrustedWorkspaces
+  if (capability === true) return 'full'
+  if (capability === false || capability === undefined) return 'unsupported'
+  if (typeof capability === 'object') {
+    if (capability.supported === true) return 'full'
+    if (capability.supported === 'limited') return 'limited'
+  }
+  return 'unsupported'
 }
 
 function hashWorkspace(workspaceRoot: string): string {

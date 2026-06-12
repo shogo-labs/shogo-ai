@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from 'electron'
+import { BrowserWindow, dialog, ipcMain, type MessageBoxOptions, type OpenDialogOptions } from 'electron'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -44,10 +44,48 @@ export function registerExtensionsIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('extensions:listTrustedPublishers', () => {
+    try {
+      return { ok: true, publishers: services().install.listTrustedPublishers() }
+    } catch (err) {
+      return failure(err)
+    }
+  })
+
+  ipcMain.handle('extensions:trustPublisher', (_event, publisher: string) => {
+    try {
+      return { ok: true, publisher: services().install.trustPublisher(publisher) }
+    } catch (err) {
+      return failure(err)
+    }
+  })
+
+  ipcMain.handle('extensions:getWorkspaceTrust', (_event, workspaceRoot?: string) => {
+    try {
+      return { ok: true, trust: services().install.getWorkspaceTrust(workspaceRoot) }
+    } catch (err) {
+      return failure(err)
+    }
+  })
+
+  ipcMain.handle('extensions:trustWorkspace', async (_event, workspaceRoot: string) => {
+    try {
+      const workspace = services().install.trustWorkspace(workspaceRoot)
+      await services().host.restart(workspaceRoot)
+      return { ok: true, workspace, restartRequired: false }
+    } catch (err) {
+      return failure(err)
+    }
+  })
+
   ipcMain.handle('extensions:installFromVsix', async (event, args?: { path?: string }) => {
     try {
-      const selectedPath = args?.path ?? await pickVsixPath(BrowserWindow.fromWebContents(event.sender) ?? undefined)
+      const window = BrowserWindow.fromWebContents(event.sender) ?? undefined
+      const selectedPath = args?.path ?? await pickVsixPath(window)
       if (!selectedPath) return { ok: false, cancelled: true, error: 'Install cancelled' }
+      const inspection = services().install.inspectVsix(selectedPath)
+      const trusted = await ensurePublisherTrusted(window, inspection.manifest.publisher, inspection.manifest.displayName ?? inspection.manifest.name)
+      if (!trusted) return { ok: false, cancelled: true, error: `Publisher not trusted: ${inspection.manifest.publisher}` }
       const record = services().install.installFromVsix(selectedPath)
       return { ok: true, extension: record, restartRequired: true }
     } catch (err) {
@@ -55,10 +93,12 @@ export function registerExtensionsIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('extensions:installFromRegistry', async (_event, id: string, version?: string) => {
+  ipcMain.handle('extensions:installFromRegistry', async (event, id: string, version?: string) => {
     try {
       const [publisher, name] = id.split('.')
       if (!publisher || !name) throw new Error('Extension id must be publisher.name')
+      const trusted = await ensurePublisherTrusted(BrowserWindow.fromWebContents(event.sender) ?? undefined, publisher, id)
+      if (!trusted) return { ok: false, cancelled: true, error: `Publisher not trusted: ${publisher}` }
       const metadataUrl = version
         ? `https://open-vsx.org/api/${encodeURIComponent(publisher)}/${encodeURIComponent(name)}/${encodeURIComponent(version)}`
         : `https://open-vsx.org/api/${encodeURIComponent(publisher)}/${encodeURIComponent(name)}`
@@ -123,9 +163,23 @@ export function registerExtensionsIpcHandlers(): void {
       return failure(err)
     }
   })
-  ipcMain.handle('extensions:getView', async (_event, viewId: string, options?: { workspaceRoot?: string }) => {
+  ipcMain.handle('extensions:getView', async (_event, viewId: string, options?: { workspaceRoot?: string; itemHandle?: string }) => {
     try {
-      return { ok: true, view: await services().host.getView(viewId, options?.workspaceRoot) }
+      return { ok: true, view: await services().host.getView(viewId, options?.workspaceRoot, options?.itemHandle) }
+    } catch (err) {
+      return failure(err)
+    }
+  })
+  ipcMain.handle('extensions:getStatusBarItems', async (_event, options?: { workspaceRoot?: string }) => {
+    try {
+      return { ok: true, items: await services().host.getStatusBarItems(options?.workspaceRoot) }
+    } catch (err) {
+      return failure(err)
+    }
+  })
+  ipcMain.handle('extensions:getWebviewPanels', async (_event, options?: { workspaceRoot?: string }) => {
+    try {
+      return { ok: true, panels: await services().host.getWebviewPanels(options?.workspaceRoot) }
     } catch (err) {
       return failure(err)
     }
@@ -144,11 +198,35 @@ export function registerExtensionsIpcHandlers(): void {
 export function disposeExtensionsIpcHandlers(): void {
   if (hostManager) void hostManager.stop()
   for (const channel of [
-    'extensions:listInstalled', 'extensions:getContributions', 'extensions:search', 'extensions:installFromVsix',
+    'extensions:listInstalled', 'extensions:getContributions', 'extensions:search', 'extensions:listTrustedPublishers', 'extensions:trustPublisher', 'extensions:getWorkspaceTrust', 'extensions:trustWorkspace', 'extensions:installFromVsix',
     'extensions:installFromRegistry', 'extensions:uninstall', 'extensions:enable', 'extensions:disable',
     'extensions:restartHost', 'extensions:checkUpdates', 'extensions:update', 'extensions:runCommand',
-    'extensions:activateEvent', 'extensions:getView', 'extensions:showRunningExtensions', 'extensions:startBisect',
+    'extensions:activateEvent', 'extensions:getView', 'extensions:getStatusBarItems', 'extensions:getWebviewPanels', 'extensions:showRunningExtensions', 'extensions:startBisect',
   ]) ipcMain.removeHandler(channel)
+}
+
+async function ensurePublisherTrusted(window: BrowserWindow | undefined, publisher: string, extensionName: string): Promise<boolean> {
+  const install = services().install
+  if (install.isPublisherTrusted(publisher)) return true
+  const result = window
+    ? await dialog.showMessageBox(window, publisherTrustDialogOptions(publisher, extensionName))
+    : await dialog.showMessageBox(publisherTrustDialogOptions(publisher, extensionName))
+  if (result.response !== 1) return false
+  install.trustPublisher(publisher)
+  return true
+}
+
+function publisherTrustDialogOptions(publisher: string, extensionName: string): MessageBoxOptions {
+  return {
+    type: 'warning',
+    title: 'Trust Extension Publisher?',
+    message: `Do you trust the publisher “${publisher}”?`,
+    detail: `The extension “${extensionName}” is published by “${publisher}”. Extensions can run code in your workspace. Only install it if you trust this publisher.`,
+    buttons: ['Cancel', 'Trust Publisher & Install'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  }
 }
 
 async function pickVsixPath(window?: BrowserWindow): Promise<string | null> {

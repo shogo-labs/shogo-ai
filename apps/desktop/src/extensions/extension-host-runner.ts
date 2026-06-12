@@ -19,14 +19,53 @@ type HostExtension = {
 type InitMessage = { type: 'init'; workspaceRoot?: string; extensions: HostExtension[] }
 type ExecuteCommandMessage = { type: 'executeCommand'; requestId: string; commandId: string; args?: unknown[] }
 type ActivateEventMessage = { type: 'activateEvent'; requestId: string; event: string }
-type GetViewMessage = { type: 'getView'; requestId: string; viewId: string }
+type GetViewMessage = { type: 'getView'; requestId: string; viewId: string; itemHandle?: string }
+type GetStatusBarItemsMessage = { type: 'getStatusBarItems'; requestId: string }
+type GetWebviewPanelsMessage = { type: 'getWebviewPanels'; requestId: string }
+type UiResponseMessage = { type: 'uiResponse'; requestId: string; ok: boolean; result?: unknown; error?: string }
 type DeactivateMessage = { type: 'deactivate'; requestId: string }
-type HostMessage = InitMessage | ExecuteCommandMessage | ActivateEventMessage | GetViewMessage | DeactivateMessage
+type HostMessage = InitMessage | ExecuteCommandMessage | ActivateEventMessage | GetViewMessage | GetStatusBarItemsMessage | GetWebviewPanelsMessage | UiResponseMessage | DeactivateMessage
 
 type RegisteredCommand = (...args: unknown[]) => unknown | Promise<unknown>
+type RuntimeStatusBarItem = {
+  id: string
+  extensionId: string
+  text: string
+  tooltip?: string
+  command?: unknown
+  alignment: 'left' | 'right'
+  priority?: number
+  visible: boolean
+}
+
+type RuntimeWebviewPanel = {
+  id: string
+  extensionId: string
+  viewType: string
+  title: string
+  html: string
+  active: boolean
+}
+type RuntimeWebviewView = {
+  id: string
+  extensionId: string
+  viewId: string
+  title: string
+  html: string
+  visible: boolean
+}
 type TreeDataProvider = {
   getChildren?: (element?: unknown) => unknown[] | Promise<unknown[]>
   getTreeItem?: (element: unknown) => unknown | Promise<unknown>
+  onDidChangeTreeData?: (listener: (element?: unknown) => unknown) => { dispose?: () => void }
+}
+type WebviewViewProvider = {
+  resolveWebviewView?: (view: unknown, context?: unknown, token?: unknown) => unknown | Promise<unknown>
+}
+type TreeElementStore = {
+  elements: Map<string, unknown>
+  versions: Map<string, number>
+  nextId: number
 }
 
 const parentPort = (process as unknown as { parentPort?: { on(event: 'message', cb: (message: { data?: HostMessage } | HostMessage) => void): void; postMessage(message: unknown): void } }).parentPort
@@ -35,7 +74,15 @@ const commandOwners = new Map<string, string>()
 const viewOwners = new Map<string, string>()
 const commands = new Map<string, RegisteredCommand>()
 const treeDataProviders = new Map<string, TreeDataProvider>()
+const webviewViewProviders = new Map<string, WebviewViewProvider>()
+const treeElementStores = new Map<string, TreeElementStore>()
+const statusBarItems = new Map<string, RuntimeStatusBarItem>()
+const webviewPanels = new Map<string, RuntimeWebviewPanel>()
+const webviewViews = new Map<string, RuntimeWebviewView>()
+const activationIndex = new Map<string, Set<string>>()
 const activated = new Map<string, { deactivate?: () => unknown | Promise<unknown> }>()
+const activating = new Map<string, Promise<void>>()
+const pendingUiRequests = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>()
 let workspaceRoot: string | undefined
 let activeExtensionId: string | null = null
 
@@ -65,26 +112,17 @@ function makeVscodeApi(extension: HostExtension) {
       },
     },
     window: {
-      showInformationMessage: (message: string) => {
-        post({ type: 'notification', level: 'info', extensionId: extension.id, message })
-        return Promise.resolve(undefined)
-      },
-      showWarningMessage: (message: string) => {
-        post({ type: 'notification', level: 'warning', extensionId: extension.id, message })
-        return Promise.resolve(undefined)
-      },
-      showErrorMessage: (message: string) => {
-        post({ type: 'notification', level: 'error', extensionId: extension.id, message })
-        return Promise.resolve(undefined)
-      },
-      showQuickPick: (items: unknown[]) => Promise.resolve(Array.isArray(items) ? items[0] : undefined),
-      showInputBox: () => Promise.resolve(undefined),
-      createStatusBarItem: unsupported('window.createStatusBarItem'),
+      showInformationMessage: (message: string, ...items: unknown[]) => requestUi(extension, 'notification', { level: 'info', message, items }),
+      showWarningMessage: (message: string, ...items: unknown[]) => requestUi(extension, 'notification', { level: 'warning', message, items }),
+      showErrorMessage: (message: string, ...items: unknown[]) => requestUi(extension, 'notification', { level: 'error', message, items }),
+      showQuickPick: (items: unknown[], options?: unknown) => requestUi(extension, 'quickPick', { items, options }),
+      showInputBox: (options?: unknown) => requestUi(extension, 'inputBox', { options }),
+      createOutputChannel: (name: string) => createOutputChannel(extension, name, subscriptions),
+      createStatusBarItem: (...args: unknown[]) => createStatusBarItem(extension, args, subscriptions),
       createTreeView: (viewId: string, options?: { treeDataProvider?: TreeDataProvider }) => {
-        if (options?.treeDataProvider) treeDataProviders.set(viewId, options.treeDataProvider)
-        viewOwners.set(viewId, extension.id)
-        post({ type: 'viewRegistered', extensionId: extension.id, viewId })
-        const disposable = { dispose: () => treeDataProviders.delete(viewId) }
+        const disposable = options?.treeDataProvider
+          ? registerTreeDataProvider(extension, viewId, options.treeDataProvider)
+          : registerViewOwner(extension, viewId)
         subscriptions.push(disposable)
         return {
           reveal: () => Promise.resolve(),
@@ -94,15 +132,16 @@ function makeVscodeApi(extension: HostExtension) {
         }
       },
       registerTreeDataProvider: (viewId: string, provider: TreeDataProvider) => {
-        treeDataProviders.set(viewId, provider)
-        viewOwners.set(viewId, extension.id)
-        post({ type: 'viewRegistered', extensionId: extension.id, viewId })
-        const disposable = { dispose: () => treeDataProviders.delete(viewId) }
+        const disposable = registerTreeDataProvider(extension, viewId, provider)
         subscriptions.push(disposable)
         return disposable
       },
-      createWebviewPanel: unsupported('window.createWebviewPanel'),
-      registerWebviewViewProvider: unsupported('window.registerWebviewViewProvider'),
+      createWebviewPanel: (viewType: string, title: string) => createWebviewPanel(extension, viewType, title),
+      registerWebviewViewProvider: (viewId: string, provider: WebviewViewProvider) => {
+        const disposable = registerWebviewViewProvider(extension, viewId, provider)
+        subscriptions.push(disposable)
+        return disposable
+      },
     },
     workspace: {
       workspaceFolders: workspaceRoot ? [{ uri: { fsPath: workspaceRoot, scheme: 'file' }, name: path.basename(workspaceRoot), index: 0 }] : [],
@@ -117,6 +156,7 @@ function makeVscodeApi(extension: HostExtension) {
     Uri: {
       file: (fsPath: string) => ({ scheme: 'file', fsPath, path: fsPath, toString: () => pathToFileURL(fsPath).toString() }),
     },
+    StatusBarAlignment: { Left: 1, Right: 2 },
     ExtensionContext: undefined,
     Disposable: class Disposable {
       constructor(private readonly fn: () => void) {}
@@ -143,8 +183,136 @@ function unsupported(method: string) {
   }
 }
 
+function registerViewOwner(extension: HostExtension, viewId: string): { dispose: () => void } {
+  viewOwners.set(viewId, extension.id)
+  post({ type: 'viewRegistered', extensionId: extension.id, viewId })
+  return { dispose: () => viewOwners.delete(viewId) }
+}
+
+function registerTreeDataProvider(extension: HostExtension, viewId: string, provider: TreeDataProvider): { dispose: () => void } {
+  treeDataProviders.set(viewId, provider)
+  treeElementStores.set(viewId, { elements: new Map(), versions: new Map(), nextId: 1 })
+  const ownerDisposable = registerViewOwner(extension, viewId)
+  const refreshDisposable = provider.onDidChangeTreeData?.((element?: unknown) => {
+    const store = treeElementStores.get(viewId)
+    const handle = findTreeElementHandle(store, element) ?? 'root'
+    if (store) {
+      if (handle === 'root') {
+        store.elements.clear()
+        store.nextId = 1
+      }
+      store.versions.set(handle, (store.versions.get(handle) ?? 0) + 1)
+    }
+    post({ type: 'viewChanged', extensionId: extension.id, viewId, reason: 'treeData', itemHandle: handle })
+  })
+  return {
+    dispose: () => {
+      refreshDisposable?.dispose?.()
+      treeDataProviders.delete(viewId)
+      treeElementStores.delete(viewId)
+      ownerDisposable.dispose()
+      post({ type: 'viewDisposed', extensionId: extension.id, viewId })
+    },
+  }
+}
+
+function registerWebviewViewProvider(extension: HostExtension, viewId: string, provider: WebviewViewProvider): { dispose: () => void } {
+  webviewViewProviders.set(viewId, provider)
+  const ownerDisposable = registerViewOwner(extension, viewId)
+  return {
+    dispose: () => {
+      webviewViewProviders.delete(viewId)
+      webviewViews.delete(viewId)
+      ownerDisposable.dispose()
+      post({ type: 'viewDisposed', extensionId: extension.id, viewId })
+    },
+  }
+}
+
+async function requestUi(extension: HostExtension, kind: string, payload: Record<string, unknown>): Promise<unknown> {
+  const requestId = `${extension.id}:${kind}:${Date.now()}:${pendingUiRequests.size + 1}`
+  post({ type: 'uiRequest', requestId, extensionId: extension.id, kind, payload })
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingUiRequests.delete(requestId)
+      resolve(undefined)
+    }, 30000)
+    pendingUiRequests.set(requestId, { resolve, reject, timer })
+  })
+}
+
+function createOutputChannel(extension: HostExtension, name: string, subscriptions: Array<{ dispose?: () => void }>) {
+  const channel = { extensionId: extension.id, name }
+  const append = (value: unknown, newline = false) => post({ type: 'output', ...channel, value: `${String(value ?? '')}${newline ? '\n' : ''}` })
+  const disposable = { dispose: () => post({ type: 'outputDisposed', ...channel }) }
+  subscriptions.push(disposable)
+  return {
+    name,
+    append: (value: unknown) => append(value),
+    appendLine: (value: unknown) => append(value, true),
+    clear: () => post({ type: 'outputCleared', ...channel }),
+    show: () => post({ type: 'outputShown', ...channel }),
+    hide: () => undefined,
+    dispose: disposable.dispose,
+  }
+}
+
+function buildActivationIndex(): void {
+  activationIndex.clear()
+  for (const extension of extensions.values()) {
+    for (const event of extension.activationEvents ?? []) addActivationEvent(event, extension.id)
+    for (const command of extension.commands) addActivationEvent(`onCommand:${command}`, extension.id)
+    for (const view of extension.views) addActivationEvent(`onView:${view}`, extension.id)
+  }
+}
+
+function addActivationEvent(event: string, extensionId: string): void {
+  const key = event.trim()
+  if (!key) return
+  const existing = activationIndex.get(key) ?? new Set<string>()
+  existing.add(extensionId)
+  activationIndex.set(key, existing)
+}
+
+async function activateByEvent(event: string): Promise<{ extensionIds: string[]; durationMs: number }> {
+  const started = Date.now()
+  const extensionIds = [...(activationIndex.get(event) ?? new Set<string>())]
+  const activatedIds: string[] = []
+  for (const extensionId of extensionIds) {
+    const extension = extensions.get(extensionId)
+    if (!extension) continue
+    const activationStarted = Date.now()
+    try {
+      await activateExtension(extension, event)
+      activatedIds.push(extension.id)
+    } catch (err) {
+      post({
+        type: 'activationError',
+        extensionId: extension.id,
+        event,
+        durationMs: Date.now() - activationStarted,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    }
+  }
+  return { extensionIds: activatedIds, durationMs: Date.now() - started }
+}
+
 async function activateExtension(extension: HostExtension, reason: string): Promise<void> {
   if (activated.has(extension.id)) return
+  const pending = activating.get(extension.id)
+  if (pending) return await pending
+  const promise = activateExtensionOnce(extension, reason)
+  activating.set(extension.id, promise)
+  try {
+    await promise
+  } finally {
+    activating.delete(extension.id)
+  }
+}
+
+async function activateExtensionOnce(extension: HostExtension, reason: string): Promise<void> {
   if (!extension.main) throw new Error(`Extension ${extension.id} has no main entry point`)
   const mainPath = safeJoin(extension.installPath, extension.main)
   const started = Date.now()
@@ -172,74 +340,109 @@ async function activateExtension(extension: HostExtension, reason: string): Prom
 }
 
 async function activateStartupExtensions(): Promise<void> {
-  for (const extension of extensions.values()) {
-    const events = extension.activationEvents ?? []
-    if (!events.includes('*') && !events.includes('onStartupFinished')) continue
+  for (const event of ['*', 'onStartupFinished', ...getMatchingWorkspaceContainsEvents()]) {
     try {
-      await activateExtension(extension, events.includes('*') ? '*' : 'onStartupFinished')
-    } catch (err) {
-      post({ type: 'activationError', extensionId: extension.id, error: err instanceof Error ? err.message : String(err) })
+      await activateByEvent(event)
+    } catch (_err) {
+      continue
     }
   }
 }
 
 async function activateEvent(requestId: string, event: string): Promise<void> {
   try {
-    const extension = findExtensionForEvent(event)
-    if (!extension) throw new Error(`No installed extension handles activation event: ${event}`)
-    await activateExtension(extension, event)
-    post({ type: 'response', requestId, ok: true, result: { extensionId: extension.id } })
+    const result = await activateByEvent(event)
+    post({ type: 'response', requestId, ok: true, result })
   } catch (err) {
     post({ type: 'response', requestId, ok: false, error: err instanceof Error ? err.message : String(err) })
   }
 }
 
 async function executeCommand(requestId: string, commandId: string, args: unknown[] = []): Promise<void> {
+  const started = Date.now()
   try {
     let command = commands.get(commandId)
     if (!command) {
-      const ownerId = commandOwners.get(commandId)
-      const extension = ownerId ? extensions.get(ownerId) : [...extensions.values()].find((candidate) => candidate.commands.includes(commandId))
-      if (!extension) throw new Error(`No installed extension contributes command: ${commandId}`)
-      await activateExtension(extension, `onCommand:${commandId}`)
+      await activateByEvent(`onCommand:${commandId}`)
       command = commands.get(commandId)
     }
     if (!command) throw new Error(`Extension did not register command after activation: ${commandId}`)
     const result = await command(...args)
+    post({ type: 'commandExecuted', commandId, durationMs: Date.now() - started })
     post({ type: 'response', requestId, ok: true, result: serializeResult(result) })
   } catch (err) {
+    post({ type: 'commandError', commandId, durationMs: Date.now() - started, error: err instanceof Error ? err.message : String(err) })
     post({ type: 'response', requestId, ok: false, error: err instanceof Error ? err.message : String(err) })
   }
 }
 
-async function getView(requestId: string, viewId: string): Promise<void> {
+function getVisibleStatusBarItems(): RuntimeStatusBarItem[] {
+  return [...statusBarItems.values()]
+    .filter((item) => item.visible && item.text)
+    .sort((a, b) => {
+      if (a.alignment !== b.alignment) return a.alignment === 'left' ? -1 : 1
+      return (b.priority ?? 0) - (a.priority ?? 0)
+    })
+}
+
+function respondStatusBarItems(requestId: string): void {
+  post({ type: 'response', requestId, ok: true, result: getVisibleStatusBarItems() })
+}
+
+function getActiveWebviewPanels(): RuntimeWebviewPanel[] {
+  return [...webviewPanels.values()].filter((panel) => panel.active)
+}
+
+function respondWebviewPanels(requestId: string): void {
+  post({ type: 'response', requestId, ok: true, result: getActiveWebviewPanels() })
+}
+
+async function getView(requestId: string, viewId: string, itemHandle?: string): Promise<void> {
+  const started = Date.now()
   try {
+    await activateByEvent(`onView:${viewId}`)
     const ownerId = viewOwners.get(viewId)
-    const extension = ownerId ? extensions.get(ownerId) : [...extensions.values()].find((candidate) => candidate.views.includes(viewId))
+    const extension = ownerId ? extensions.get(ownerId) : undefined
     if (!extension) throw new Error(`No installed extension contributes view: ${viewId}`)
-    await activateExtension(extension, `onView:${viewId}`)
-    const provider = treeDataProviders.get(viewId)
-    if (!provider?.getChildren) {
-      post({
-        type: 'response',
-        requestId,
-        ok: true,
-        result: {
-          viewId,
-          extensionId: extension.id,
-          items: [],
-          message: 'The extension activated but did not register a tree data provider for this view.',
-        },
-      })
+
+    const treeProvider = treeDataProviders.get(viewId)
+    if (treeProvider?.getChildren) {
+      const store = treeElementStores.get(viewId) ?? { elements: new Map<string, unknown>(), versions: new Map<string, number>(), nextId: 1 }
+      treeElementStores.set(viewId, store)
+      const parent = itemHandle ? store.elements.get(itemHandle) : undefined
+      const children = await treeProvider.getChildren(parent)
+      const items = await Promise.all((Array.isArray(children) ? children : []).map(async (element, index) => {
+        const treeItem = treeProvider.getTreeItem ? await treeProvider.getTreeItem(element) : element
+        return serializeTreeItem(viewId, treeItem, element, index, itemHandle)
+      }))
+      post({ type: 'viewResolved', viewId, extensionId: extension.id, durationMs: Date.now() - started, kind: 'tree', itemHandle })
+      post({ type: 'response', requestId, ok: true, result: { kind: 'tree', viewId, extensionId: extension.id, itemHandle, items } })
       return
     }
-    const children = await provider.getChildren()
-    const items = await Promise.all((Array.isArray(children) ? children : []).map(async (element, index) => {
-      const treeItem = provider.getTreeItem ? await provider.getTreeItem(element) : element
-      return serializeTreeItem(treeItem, element, index)
-    }))
-    post({ type: 'response', requestId, ok: true, result: { viewId, extensionId: extension.id, items } })
+
+    const webviewProvider = webviewViewProviders.get(viewId)
+    if (webviewProvider?.resolveWebviewView) {
+      const view = await resolveWebviewView(extension, viewId, webviewProvider)
+      post({ type: 'viewResolved', viewId, extensionId: extension.id, durationMs: Date.now() - started, kind: 'webview' })
+      post({ type: 'response', requestId, ok: true, result: { kind: 'webview', viewId, extensionId: extension.id, html: view.html, title: view.title } })
+      return
+    }
+
+    post({
+      type: 'response',
+      requestId,
+      ok: true,
+      result: {
+        kind: 'empty',
+        viewId,
+        extensionId: extension.id,
+        items: [],
+        message: 'The extension activated but did not register a tree data provider or webview view provider for this view.',
+      },
+    })
+    post({ type: 'viewResolved', viewId, extensionId: extension.id, durationMs: Date.now() - started, kind: 'empty' })
   } catch (err) {
+    post({ type: 'viewError', viewId, durationMs: Date.now() - started, error: err instanceof Error ? err.message : String(err) })
     post({ type: 'response', requestId, ok: false, error: err instanceof Error ? err.message : String(err) })
   }
 }
@@ -251,6 +454,12 @@ async function deactivateAll(requestId: string): Promise<void> {
   activated.clear()
   commands.clear()
   treeDataProviders.clear()
+  treeElementStores.clear()
+  statusBarItems.clear()
+  webviewPanels.clear()
+  webviewViews.clear()
+  post({ type: 'statusBarItemsChanged', items: [] })
+  post({ type: 'webviewPanelsChanged', panels: [] })
   post({ type: 'response', requestId, ok: true })
 }
 
@@ -262,19 +471,37 @@ function onMessage(raw: { data?: HostMessage } | HostMessage): void {
     commandOwners.clear()
     viewOwners.clear()
     treeDataProviders.clear()
+    treeElementStores.clear()
+    statusBarItems.clear()
+    webviewPanels.clear()
+    webviewViews.clear()
+    post({ type: 'statusBarItemsChanged', items: [] })
+    post({ type: 'webviewPanelsChanged', panels: [] })
     for (const extension of message.extensions) {
       extensions.set(extension.id, extension)
       for (const command of extension.commands) commandOwners.set(command, extension.id)
       for (const view of extension.views) viewOwners.set(view, extension.id)
     }
-    post({ type: 'ready', extensionCount: extensions.size })
+    buildActivationIndex()
+    post({ type: 'ready', extensionCount: extensions.size, activationEventCount: activationIndex.size })
     void activateStartupExtensions()
   } else if (message.type === 'executeCommand') {
     void executeCommand(message.requestId, message.commandId, message.args)
   } else if (message.type === 'activateEvent') {
     void activateEvent(message.requestId, message.event)
   } else if (message.type === 'getView') {
-    void getView(message.requestId, message.viewId)
+    void getView(message.requestId, message.viewId, message.itemHandle)
+  } else if (message.type === 'getStatusBarItems') {
+    respondStatusBarItems(message.requestId)
+  } else if (message.type === 'getWebviewPanels') {
+    respondWebviewPanels(message.requestId)
+  } else if (message.type === 'uiResponse') {
+    const pending = pendingUiRequests.get(message.requestId)
+    if (!pending) return
+    pendingUiRequests.delete(message.requestId)
+    clearTimeout(pending.timer)
+    if (message.ok) pending.resolve(message.result)
+    else pending.reject(new Error(message.error ?? 'Extension UI request failed'))
   } else if (message.type === 'deactivate') {
     void deactivateAll(message.requestId)
   }
@@ -283,26 +510,187 @@ function onMessage(raw: { data?: HostMessage } | HostMessage): void {
 if (parentPort) parentPort.on('message', onMessage)
 else process.on('message', onMessage)
 
-function findExtensionForEvent(event: string): HostExtension | undefined {
-  if (event.startsWith('onCommand:')) {
-    const commandId = event.slice('onCommand:'.length)
-    const ownerId = commandOwners.get(commandId)
-    if (ownerId) return extensions.get(ownerId)
+
+
+function createWebviewApi(onChange: () => void, getHtml: () => string, setHtml: (value: string) => void): Record<string, unknown> {
+  const webview: Record<string, unknown> = {
+    asWebviewUri: (uri: unknown) => uri,
+    postMessage: () => Promise.resolve(true),
+    onDidReceiveMessage: () => ({ dispose: () => undefined }),
+    cspSource: 'shogo-extension-webview',
+    options: {},
   }
-  if (event.startsWith('onView:')) {
-    const viewId = event.slice('onView:'.length)
-    const ownerId = viewOwners.get(viewId)
-    if (ownerId) return extensions.get(ownerId)
-  }
-  return [...extensions.values()].find((extension) =>
-    extension.activationEvents?.includes(event)
-    || extension.activationEvents?.includes('*')
-    || (event.startsWith('onCommand:') && extension.commands.includes(event.slice('onCommand:'.length)))
-    || (event.startsWith('onView:') && extension.views.includes(event.slice('onView:'.length)))
-  )
+  Object.defineProperty(webview, 'html', {
+    get: getHtml,
+    set: (value) => {
+      setHtml(String(value ?? ''))
+      onChange()
+    },
+  })
+  return webview
 }
 
-function serializeTreeItem(treeItem: unknown, element: unknown, index: number): Record<string, unknown> {
+async function resolveWebviewView(extension: HostExtension, viewId: string, provider: WebviewViewProvider): Promise<RuntimeWebviewView> {
+  let view = webviewViews.get(viewId)
+  if (!view) {
+    view = { id: `${extension.id}:${viewId}`, extensionId: extension.id, viewId, title: viewId, html: '', visible: true }
+    webviewViews.set(viewId, view)
+  }
+  const publish = () => post({ type: 'webviewViewChanged', view: { ...view } })
+  const webview = createWebviewApi(publish, () => view.html, (value) => { view.html = value })
+  const apiView: Record<string, unknown> = {
+    viewType: viewId,
+    webview,
+    visible: true,
+    show: () => { view.visible = true; publish() },
+    onDidDispose: () => ({ dispose: () => undefined }),
+    onDidChangeVisibility: () => ({ dispose: () => undefined }),
+  }
+  Object.defineProperty(apiView, 'title', {
+    get: () => view.title,
+    set: (value) => { view.title = String(value ?? viewId); publish() },
+  })
+  await provider.resolveWebviewView?.(apiView, {}, { isCancellationRequested: false })
+  view.visible = true
+  publish()
+  return view
+}
+
+function createWebviewPanel(extension: HostExtension, viewType: string, title: string) {
+  const panel: RuntimeWebviewPanel = {
+    id: `${extension.id}:${viewType}:${Date.now()}:${webviewPanels.size + 1}`,
+    extensionId: extension.id,
+    viewType,
+    title,
+    html: '',
+    active: true,
+  }
+  webviewPanels.set(panel.id, panel)
+  const publish = () => post({ type: 'webviewPanelsChanged', panels: getActiveWebviewPanels() })
+  publish()
+  const webview: Record<string, unknown> = {
+    asWebviewUri: (uri: unknown) => uri,
+    postMessage: () => Promise.resolve(true),
+    onDidReceiveMessage: () => ({ dispose: () => undefined }),
+    cspSource: 'shogo-extension-webview',
+  }
+  Object.defineProperty(webview, 'html', {
+    get: () => panel.html,
+    set: (value) => {
+      panel.html = String(value ?? '')
+      publish()
+    },
+  })
+  const apiPanel: Record<string, unknown> = {
+    viewType,
+    webview,
+    reveal: () => { panel.active = true; publish() },
+    dispose: () => { panel.active = false; publish() },
+    onDidDispose: () => ({ dispose: () => undefined }),
+    onDidChangeViewState: () => ({ dispose: () => undefined }),
+  }
+  Object.defineProperty(apiPanel, 'title', {
+    get: () => panel.title,
+    set: (value) => {
+      panel.title = String(value ?? title)
+      publish()
+    },
+  })
+  return apiPanel
+}
+
+function createStatusBarItem(extension: HostExtension, args: unknown[], subscriptions: Array<{ dispose?: () => void }>) {
+  const hasId = typeof args[0] === 'string'
+  const rawAlignment = hasId ? args[1] : args[0]
+  const rawPriority = hasId ? args[2] : args[1]
+  const item: RuntimeStatusBarItem = {
+    id: hasId ? String(args[0]) : `${extension.id}:${statusBarItems.size + 1}:${Date.now()}`,
+    extensionId: extension.id,
+    text: '',
+    alignment: rawAlignment === 2 ? 'right' : 'left',
+    priority: typeof rawPriority === 'number' ? rawPriority : undefined,
+    visible: false,
+  }
+  const publish = () => post({ type: 'statusBarItemsChanged', items: getVisibleStatusBarItems() })
+  const disposable = {
+    dispose: () => {
+      statusBarItems.delete(item.id)
+      publish()
+    },
+  }
+  subscriptions.push(disposable)
+  const apiItem: Record<string, unknown> = {
+    id: item.id,
+    alignment: item.alignment === 'right' ? 2 : 1,
+    priority: item.priority,
+    show: () => {
+      item.visible = true
+      statusBarItems.set(item.id, item)
+      publish()
+    },
+    hide: () => {
+      item.visible = false
+      publish()
+    },
+    dispose: disposable.dispose,
+  }
+  Object.defineProperties(apiItem, {
+    text: { get: () => item.text, set: (value) => { item.text = String(value ?? ''); if (item.visible) publish() } },
+    tooltip: { get: () => item.tooltip, set: (value) => { item.tooltip = typeof value === 'string' ? value : String(value ?? ''); if (item.visible) publish() } },
+    command: { get: () => item.command, set: (value) => { item.command = value; if (item.visible) publish() } },
+    color: { get: () => undefined, set: () => undefined },
+    backgroundColor: { get: () => undefined, set: () => undefined },
+    name: { get: () => undefined, set: () => undefined },
+    accessibilityInformation: { get: () => undefined, set: () => undefined },
+  })
+  return apiItem
+}
+
+function getMatchingWorkspaceContainsEvents(): string[] {
+  if (!workspaceRoot) return []
+  return [...activationIndex.keys()].filter((event) => {
+    if (!event.startsWith('workspaceContains:')) return false
+    return workspaceContains(event.slice('workspaceContains:'.length))
+  })
+}
+
+function workspaceContains(pattern: string): boolean {
+  if (!workspaceRoot) return false
+  const normalized = pattern.trim()
+  if (!normalized) return false
+  if (!normalized.includes('*')) return fs.existsSync(safeJoin(workspaceRoot, normalized))
+  const matcher = globMatcher(normalized)
+  const stack = ['']
+  while (stack.length) {
+    const relativeDir = stack.pop() ?? ''
+    const absoluteDir = safeJoin(workspaceRoot, relativeDir)
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(absoluteDir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
+      if (matcher(relativePath)) return true
+      if (entry.isDirectory() && entry.name !== 'node_modules' && entry.name !== '.git') stack.push(relativePath)
+    }
+  }
+  return false
+}
+
+function globMatcher(pattern: string): (value: string) => boolean {
+  const placeholder = '\u0000'
+  const escaped = pattern
+    .replace(/\*\*/g, placeholder)
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '[^/]*')
+    .split(placeholder).join('.*')
+  const regex = new RegExp(`^${escaped}$`)
+  return (value: string) => regex.test(value)
+}
+
+function serializeTreeItem(viewId: string, treeItem: unknown, element: unknown, index: number, parentHandle?: string): Record<string, unknown> {
   const item = isRecord(treeItem) ? treeItem : isRecord(element) ? element : {}
   const rawLabel = item.label ?? (isRecord(element) ? element.label : undefined)
   const label = typeof rawLabel === 'string'
@@ -310,8 +698,11 @@ function serializeTreeItem(treeItem: unknown, element: unknown, index: number): 
     : isRecord(rawLabel) && typeof rawLabel.label === 'string'
       ? rawLabel.label
       : String(rawLabel ?? `Item ${index + 1}`)
+  const handle = rememberTreeElement(viewId, element, item, index, label, parentHandle)
   return {
-    id: typeof item.id === 'string' ? item.id : `${index}:${label}`,
+    id: typeof item.id === 'string' ? item.id : handle,
+    handle,
+    parentHandle,
     label,
     description: typeof item.description === 'string' ? item.description : undefined,
     tooltip: typeof item.tooltip === 'string' ? item.tooltip : undefined,
@@ -319,6 +710,25 @@ function serializeTreeItem(treeItem: unknown, element: unknown, index: number): 
     collapsibleState: typeof item.collapsibleState === 'number' ? item.collapsibleState : 0,
     command: serializeCommand(item.command),
   }
+}
+
+function rememberTreeElement(viewId: string, element: unknown, item: Record<string, unknown>, index: number, label: string, parentHandle?: string): string {
+  const store = treeElementStores.get(viewId) ?? { elements: new Map<string, unknown>(), versions: new Map<string, number>(), nextId: 1 }
+  treeElementStores.set(viewId, store)
+  const existing = findTreeElementHandle(store, element)
+  if (existing) return existing
+  const candidate = typeof item.id === 'string' ? item.id : `${parentHandle ?? 'root'}:${index}:${label}`
+  const handle = store.elements.has(candidate) ? `${candidate}:${store.nextId++}` : candidate
+  store.elements.set(handle, element)
+  return handle
+}
+
+function findTreeElementHandle(store: TreeElementStore | undefined, element: unknown): string | undefined {
+  if (!store || element === undefined) return undefined
+  for (const [handle, stored] of store.elements) {
+    if (stored === element) return handle
+  }
+  return undefined
 }
 
 function serializeCommand(command: unknown): unknown {

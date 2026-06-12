@@ -31,15 +31,16 @@ export function ExtensionsViewlet({
   }
 
   const requestInstall = (result: ExtensionSearchResult) => {
-    if (isPublisherTrusted(result.publisher)) {
+    if (extensions.isPublisherTrusted(result.publisher)) {
       void extensions.installFromRegistry(result.id, result.version);
     } else {
       setPendingInstall(result);
     }
   };
-  const trustAndInstall = () => {
+  const trustAndInstall = async () => {
     if (!pendingInstall) return;
-    trustPublisher(pendingInstall.publisher);
+    const trusted = await extensions.trustPublisher(pendingInstall.publisher);
+    if (!trusted) return;
     void extensions.installFromRegistry(pendingInstall.id, pendingInstall.version);
     setPendingInstall(null);
   };
@@ -88,6 +89,18 @@ export function ExtensionsViewlet({
         </div>
       )}
 
+      {extensions.workspaceTrust.restrictedMode && (
+        <div className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100">
+          <div className="font-semibold">Restricted Mode is on for this workspace.</div>
+          <div className="mt-1 text-amber-100/80">Extensions that do not declare untrusted-workspace support are blocked from activating.</div>
+          {workspaceRoot && (
+            <button onClick={() => void extensions.trustWorkspace()} className="mt-2 rounded bg-amber-500 px-2 py-1 font-semibold text-zinc-950 hover:opacity-90">
+              Trust Workspace
+            </button>
+          )}
+        </div>
+      )}
+
       {extensions.error && <Banner tone="error">{extensions.error}</Banner>}
       {extensions.message && <Banner tone="info">{extensions.message}</Banner>}
 
@@ -101,6 +114,7 @@ export function ExtensionsViewlet({
                 result={result}
                 installed={installedIds.has(result.id)}
                 installing={extensions.installingId === result.id}
+                publisherTrusted={extensions.isPublisherTrusted(result.publisher)}
                 onSelect={() => onOpenDetails?.(result)}
                 onInstall={() => requestInstall(result)}
               />
@@ -146,6 +160,7 @@ export function ExtensionsViewlet({
                 result={result}
                 installed={installedIds.has(result.id)}
                 installing={extensions.installingId === result.id}
+                publisherTrusted={extensions.isPublisherTrusted(result.publisher)}
                 onSelect={() => onOpenDetails?.(result)}
                 onInstall={() => requestInstall(result)}
               />
@@ -195,30 +210,6 @@ export function TrustPublisherDialog({ extension, onCancel, onTrust }: { extensi
       </div>
     </div>
   );
-}
-
-const TRUSTED_PUBLISHERS_KEY = "shogo.desktop.extensions.trustedPublishers";
-
-export function isPublisherTrusted(publisher: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const trusted = JSON.parse(window.localStorage.getItem(TRUSTED_PUBLISHERS_KEY) ?? "[]") as unknown;
-    return Array.isArray(trusted) && trusted.includes(publisher);
-  } catch {
-    return false;
-  }
-}
-
-export function trustPublisher(publisher: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    const trusted = JSON.parse(window.localStorage.getItem(TRUSTED_PUBLISHERS_KEY) ?? "[]") as unknown;
-    const next = new Set(Array.isArray(trusted) ? trusted.filter((item): item is string => typeof item === "string") : []);
-    next.add(publisher);
-    window.localStorage.setItem(TRUSTED_PUBLISHERS_KEY, JSON.stringify([...next].sort()));
-  } catch {
-    window.localStorage.setItem(TRUSTED_PUBLISHERS_KEY, JSON.stringify([publisher]));
-  }
 }
 
 function Section({ title, loading, children }: { title: string; loading?: boolean; children: ReactNode }) {

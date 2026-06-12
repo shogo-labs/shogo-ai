@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { DesktopExtensionsBridge, ExtensionSearchResult, InstalledExtension } from "./types";
+import type { DesktopExtensionsBridge, ExtensionRuntimeStatusBarItem, ExtensionSearchResult, InstalledExtension, TrustedPublisherRecord, WorkspaceTrustState } from "./types";
 
 export interface RunningExtensionStatus {
   id: string;
@@ -14,8 +14,8 @@ export function getDesktopExtensionsBridge(): DesktopExtensionsBridge | null {
   const bridge = (window as unknown as { shogoDesktop?: { extensions?: DesktopExtensionsBridge } }).shogoDesktop?.extensions;
   if (!bridge) return null;
   for (const method of [
-    "listInstalled", "search", "installFromVsix", "installFromRegistry", "uninstall", "enable", "disable",
-    "restartHost", "checkUpdates", "update", "getContributions", "runCommand", "activateEvent", "getView", "showRunningExtensions", "startBisect",
+    "listInstalled", "search", "listTrustedPublishers", "trustPublisher", "getWorkspaceTrust", "trustWorkspace", "installFromVsix", "installFromRegistry", "uninstall", "enable", "disable",
+    "restartHost", "checkUpdates", "update", "getContributions", "runCommand", "activateEvent", "getView", "getStatusBarItems", "getWebviewPanels", "showRunningExtensions", "startBisect",
   ] as const) {
     if (typeof bridge[method] !== "function") return null;
   }
@@ -28,6 +28,9 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
   const [results, setResults] = useState<ExtensionSearchResult[]>([]);
   const [recommended, setRecommended] = useState<ExtensionSearchResult[]>([]);
   const [running, setRunning] = useState<RunningExtensionStatus[]>([]);
+  const [trustedPublishers, setTrustedPublishers] = useState<TrustedPublisherRecord[]>([]);
+  const [workspaceTrust, setWorkspaceTrust] = useState<WorkspaceTrustState>({ trusted: !workspaceRoot, restrictedMode: !!workspaceRoot });
+  const [statusBarItems, setStatusBarItems] = useState<ExtensionRuntimeStatusBarItem[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
@@ -51,11 +54,30 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     }
   }, [bridge, workspaceRoot]);
 
+  const loadTrustedPublishers = useCallback(async () => {
+    if (!bridge) return;
+    const response = await bridge.listTrustedPublishers();
+    if (response.ok) setTrustedPublishers(response.publishers ?? []);
+  }, [bridge]);
+
+  const loadWorkspaceTrust = useCallback(async () => {
+    if (!bridge) return;
+    const response = await bridge.getWorkspaceTrust(workspaceRoot ?? undefined);
+    if (response.ok && response.trust) setWorkspaceTrust(response.trust);
+  }, [bridge, workspaceRoot]);
+
+  const loadStatusBarItems = useCallback(async () => {
+    if (!bridge) return;
+    const response = await bridge.getStatusBarItems(workspaceRoot ?? undefined);
+    if (response.ok) setStatusBarItems(response.items ?? []);
+  }, [bridge, workspaceRoot]);
+
   const loadRunningExtensions = useCallback(async () => {
     if (!bridge) return;
     const response = await bridge.showRunningExtensions();
     if (response.ok) setRunning((response.running ?? []) as RunningExtensionStatus[]);
-  }, [bridge]);
+    await loadStatusBarItems();
+  }, [bridge, loadStatusBarItems]);
 
   const loadRecommendations = useCallback(async () => {
     if (!bridge) return;
@@ -73,9 +95,12 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
 
   useEffect(() => {
     void refresh();
+    void loadTrustedPublishers();
+    void loadWorkspaceTrust();
     void loadRecommendations();
     void loadRunningExtensions();
-  }, [refresh, loadRecommendations, loadRunningExtensions]);
+    void loadStatusBarItems();
+  }, [refresh, loadTrustedPublishers, loadWorkspaceTrust, loadRecommendations, loadRunningExtensions, loadStatusBarItems]);
 
   const runSearch = useCallback(async (value = query) => {
     if (!bridge) return;
@@ -111,6 +136,39 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     return () => window.clearTimeout(timer);
   }, [query, runSearch]);
 
+  const trustedPublisherKeys = useMemo(() => new Set(trustedPublishers.map((publisher) => publisher.publisherKey)), [trustedPublishers]);
+
+  const isPublisherTrusted = useCallback((publisher: string) => {
+    return trustedPublisherKeys.has(publisher.trim().toLowerCase());
+  }, [trustedPublisherKeys]);
+
+  const trustPublisher = useCallback(async (publisher: string): Promise<boolean> => {
+    if (!bridge) return false;
+    setError(null);
+    const response = await bridge.trustPublisher(publisher);
+    if (!response.ok) {
+      setError(response.error ?? `Failed to trust publisher: ${publisher}`);
+      return false;
+    }
+    await loadTrustedPublishers();
+    return true;
+  }, [bridge, loadTrustedPublishers]);
+
+  const trustWorkspace = useCallback(async (): Promise<boolean> => {
+    if (!bridge || !workspaceRoot) return false;
+    setError(null);
+    const response = await bridge.trustWorkspace(workspaceRoot);
+    if (!response.ok) {
+      setError(response.error ?? "Failed to trust workspace");
+      return false;
+    }
+    setMessage("Workspace trusted. Restricted Mode is off for this workspace.");
+    await loadWorkspaceTrust();
+    await refresh();
+    await loadRunningExtensions();
+    return true;
+  }, [bridge, workspaceRoot, loadWorkspaceTrust, refresh, loadRunningExtensions]);
+
   const installFromVsix = useCallback(async () => {
     if (!bridge) return;
     setError(null);
@@ -121,8 +179,9 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     }
     setMessage("Extension installed. Restart extensions to apply changes.");
     await refresh();
+    await loadTrustedPublishers();
     await loadRecommendations();
-  }, [bridge, refresh, loadRecommendations]);
+  }, [bridge, refresh, loadTrustedPublishers, loadRecommendations]);
 
   const installFromRegistry = useCallback(async (id: string, version?: string) => {
     if (!bridge) return;
@@ -131,16 +190,17 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     try {
       const response = await bridge.installFromRegistry(id, version);
       if (!response.ok) {
-        setError(response.error ?? "Extension install failed");
+        if (!response.cancelled) setError(response.error ?? "Extension install failed");
         return;
       }
       setMessage("Extension installed. Restart extensions to apply changes.");
       await refresh();
+      await loadTrustedPublishers();
       await loadRecommendations();
     } finally {
       setInstallingId(null);
     }
-  }, [bridge, refresh, loadRecommendations]);
+  }, [bridge, refresh, loadTrustedPublishers, loadRecommendations]);
 
   const setEnabled = useCallback(async (id: string, enabled: boolean) => {
     if (!bridge) return;
@@ -180,7 +240,8 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     setMessage(response.message ?? "Extensions restarted.");
     await refresh();
     await loadRunningExtensions();
-  }, [bridge, refresh, workspaceRoot, loadRunningExtensions]);
+    await loadStatusBarItems();
+  }, [bridge, refresh, workspaceRoot, loadRunningExtensions, loadStatusBarItems]);
 
   const showRunningExtensions = useCallback(async () => {
     if (!bridge) return;
@@ -189,8 +250,9 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     else {
       setRunning((response.running ?? []) as RunningExtensionStatus[]);
       setMessage(response.message ?? `${response.running?.length ?? 0} extension(s) active.`);
+      await loadStatusBarItems();
     }
-  }, [bridge]);
+  }, [bridge, loadStatusBarItems]);
 
   const startBisect = useCallback(async () => {
     if (!bridge) return;
@@ -215,7 +277,8 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     }
     setMessage(`Ran ${commandId}`);
     await loadRunningExtensions();
-  }, [bridge, workspaceRoot, loadRunningExtensions]);
+    await loadStatusBarItems();
+  }, [bridge, workspaceRoot, loadRunningExtensions, loadStatusBarItems]);
 
   const restartRequired = installed.some((extension) => extension.restartRequired);
   const disabledCount = installed.filter((extension) => !extension.enabled).length;
@@ -226,6 +289,9 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     results,
     recommended,
     running,
+    trustedPublishers,
+    workspaceTrust,
+    statusBarItems,
     query,
     loading,
     searching,
@@ -238,12 +304,18 @@ export function useExtensions({ workspaceRoot }: { workspaceRoot?: string | null
     setQuery,
     refresh,
     runSearch,
+    loadTrustedPublishers,
+    loadWorkspaceTrust,
+    isPublisherTrusted,
+    trustPublisher,
+    trustWorkspace,
     installFromVsix,
     installFromRegistry,
     setEnabled,
     uninstall,
     restartHost,
     showRunningExtensions,
+    loadStatusBarItems,
     startBisect,
     checkUpdates,
     runCommand,

@@ -51,6 +51,40 @@ export interface ExtensionManifestSummary {
   };
 }
 
+export interface TrustedPublisherRecord {
+  publisher: string;
+  publisherKey: string;
+  trustedAt: number;
+  source: "user" | "policy";
+}
+
+export interface WorkspaceTrustState {
+  workspaceRoot?: string;
+  workspaceKey?: string;
+  trusted: boolean;
+  restrictedMode: boolean;
+  source?: "user" | "policy";
+  trustedAt?: number;
+}
+
+export interface WorkspaceTrustRecord {
+  workspaceRoot: string;
+  workspaceKey: string;
+  trusted: boolean;
+  trustedAt?: number;
+  source: "user" | "policy";
+}
+
+export type RestrictedModeSupport = "full" | "limited" | "unsupported";
+export type ExtensionUsableEntryPointKind = "command" | "view" | "viewContainer" | "startupActivation";
+
+export interface ExtensionUsableEntryPoint {
+  kind: ExtensionUsableEntryPointKind;
+  id: string;
+  label: string;
+  detail?: string;
+}
+
 export interface InstalledExtension {
   id: string;
   publisher: string;
@@ -70,6 +104,16 @@ export interface InstalledExtension {
   enabled: boolean;
   disabledGlobally: boolean;
   disabledForWorkspace: boolean;
+  trustedPublisher: boolean;
+  trustedPublisherAt?: number;
+  workspaceTrusted: boolean;
+  restrictedMode: boolean;
+  restrictedModeSupport: RestrictedModeSupport;
+  disabledByRestrictedMode: boolean;
+  restrictedModeReason?: string;
+  usableEntryPoints: ExtensionUsableEntryPoint[];
+  hasUsableEntryPoint: boolean;
+  unsupportedSurfaceMessage?: string;
   manifest: ExtensionManifestSummary;
 }
 
@@ -98,6 +142,8 @@ export interface ExtensionRuntimeCommand {
 
 export interface ExtensionRuntimeTreeItem {
   id: string;
+  handle?: string;
+  parentHandle?: string;
   label: string;
   description?: string;
   tooltip?: string;
@@ -107,17 +153,45 @@ export interface ExtensionRuntimeTreeItem {
 }
 
 export interface ExtensionRuntimeViewResult {
+  kind?: "tree" | "webview" | "empty";
   viewId: string;
   extensionId: string;
-  items: ExtensionRuntimeTreeItem[];
+  itemHandle?: string;
+  items?: ExtensionRuntimeTreeItem[];
+  html?: string;
+  title?: string;
   message?: string;
+}
+
+export interface ExtensionRuntimeStatusBarItem {
+  id: string;
+  extensionId: string;
+  text: string;
+  tooltip?: string;
+  command?: string | ExtensionRuntimeCommand;
+  alignment: "left" | "right";
+  priority?: number;
+  visible: boolean;
+}
+
+export interface ExtensionRuntimeWebviewPanel {
+  id: string;
+  extensionId: string;
+  viewType: string;
+  title: string;
+  html: string;
+  active: boolean;
 }
 
 export interface DesktopExtensionsBridge {
   listInstalled(workspaceRoot?: string): Promise<{ ok: boolean; extensions?: InstalledExtension[]; error?: string }>;
   search(query: string, options?: { size?: number }): Promise<{ ok: boolean; results?: ExtensionSearchResult[]; error?: string }>;
+  listTrustedPublishers(): Promise<{ ok: boolean; publishers?: TrustedPublisherRecord[]; error?: string }>;
+  trustPublisher(publisher: string): Promise<{ ok: boolean; publisher?: TrustedPublisherRecord; error?: string }>;
+  getWorkspaceTrust(workspaceRoot?: string): Promise<{ ok: boolean; trust?: WorkspaceTrustState; error?: string }>;
+  trustWorkspace(workspaceRoot: string): Promise<{ ok: boolean; workspace?: WorkspaceTrustRecord; restartRequired?: boolean; error?: string }>;
   installFromVsix(): Promise<{ ok: boolean; extension?: InstalledExtension; restartRequired?: boolean; cancelled?: boolean; error?: string }>;
-  installFromRegistry(id: string, version?: string): Promise<{ ok: boolean; extension?: InstalledExtension; restartRequired?: boolean; error?: string }>;
+  installFromRegistry(id: string, version?: string): Promise<{ ok: boolean; extension?: InstalledExtension; restartRequired?: boolean; cancelled?: boolean; error?: string }>;
   uninstall(id: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }>;
   enable(id: string, scope?: "global" | "workspace", workspaceRoot?: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }>;
   disable(id: string, scope?: "global" | "workspace", workspaceRoot?: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }>;
@@ -127,7 +201,9 @@ export interface DesktopExtensionsBridge {
   getContributions(workspaceRoot?: string): Promise<{ ok: boolean; extensions?: InstalledExtension[]; contributions?: unknown[]; error?: string }>;
   runCommand(commandId: string, args?: unknown[], workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }>;
   activateEvent(event: string, workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }>;
-  getView(viewId: string, workspaceRoot?: string): Promise<{ ok: boolean; view?: ExtensionRuntimeViewResult; error?: string }>;
+  getView(viewId: string, workspaceRoot?: string, itemHandle?: string): Promise<{ ok: boolean; view?: ExtensionRuntimeViewResult; error?: string }>;
+  getStatusBarItems(workspaceRoot?: string): Promise<{ ok: boolean; items?: ExtensionRuntimeStatusBarItem[]; error?: string }>;
+  getWebviewPanels(workspaceRoot?: string): Promise<{ ok: boolean; panels?: ExtensionRuntimeWebviewPanel[]; error?: string }>;
   showRunningExtensions(): Promise<{ ok: boolean; running?: unknown[]; message?: string; error?: string }>;
   startBisect(): Promise<{ ok: boolean; error?: string }>;
 }

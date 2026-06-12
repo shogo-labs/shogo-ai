@@ -79,7 +79,7 @@ export function EditorGroupView({
         onFocus={onFocus}
         groupFocused={focused}
       />
-      {active && active.language !== "extension-detail" && <Breadcrumbs path={active.path} />}
+      {active && active.language !== "extension-detail" && active.language !== "extension-webview" && <Breadcrumbs path={active.path} />}
       <div className="flex-1 min-h-0 relative">
         {active ? (
           active.loading ? (
@@ -92,6 +92,8 @@ export function EditorGroupView({
               <div className="text-[13px]">Could not open {active.name}</div>
               <div className="text-[12px] text-[color:var(--ide-muted)]">{active.error}</div>
             </div>
+          ) : active.language === "extension-webview" ? (
+            <ExtensionWebview html={active.content} title={active.name} />
           ) : active.language === "extension-detail" && active.extensionDetail ? (
             <ExtensionDetails
               item={active.extensionDetail}
@@ -149,5 +151,17 @@ function EmptyGroup() {
         </span>
       </div>
     </div>
+  );
+}
+
+
+function ExtensionWebview({ html, title }: { html: string; title: string }) {
+  return (
+    <iframe
+      title={title}
+      sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+      srcDoc={html || "<html><body style='background:#1e1e1e;color:#cccccc;font-family:sans-serif;padding:16px'>Extension webview is loading…</body></html>"}
+      className="h-full w-full border-0 bg-[color:var(--ide-bg)]"
+    />
   );
 }

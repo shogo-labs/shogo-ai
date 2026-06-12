@@ -34,12 +34,32 @@ describe('ExtensionInstallService', () => {
       'extension/extension.js': "exports.activate = function(vscode) {};",
     })
 
+    const inspection = service.inspectVsix(vsix)
+    expect(inspection.manifest.publisher).toBe('shogo')
+    expect(service.isPublisherTrusted('shogo')).toBe(false)
+    const trusted = service.trustPublisher('shogo')
+    expect(trusted.publisherKey).toBe('shogo')
+    expect(service.isPublisherTrusted('SHOGO')).toBe(true)
+    expect(new ExtensionInstallService(path.join(root, 'extensions')).isPublisherTrusted('shogo')).toBe(true)
+
     const installed = service.installFromVsix(vsix)
     expect(installed.id).toBe('shogo.sample-command')
     expect(installed.restartRequired).toBe(true)
     expect(fs.existsSync(path.join(installed.installPath, 'extension.js'))).toBe(true)
 
     expect(service.listInstalled()[0]?.enabled).toBe(true)
+    expect(service.listInstalled()[0]?.trustedPublisher).toBe(true)
+
+    const workspaceRoot = path.join(root, 'workspace')
+    fs.mkdirSync(workspaceRoot, { recursive: true })
+    expect(service.getWorkspaceTrust(workspaceRoot).restrictedMode).toBe(true)
+    expect(service.listInstalled(workspaceRoot)[0]?.enabled).toBe(false)
+    expect(service.listInstalled(workspaceRoot)[0]?.disabledByRestrictedMode).toBe(true)
+    const trustedWorkspace = service.trustWorkspace(workspaceRoot)
+    expect(trustedWorkspace.trusted).toBe(true)
+    expect(new ExtensionInstallService(path.join(root, 'extensions')).getWorkspaceTrust(workspaceRoot).trusted).toBe(true)
+    expect(service.listInstalled(workspaceRoot)[0]?.enabled).toBe(true)
+
     service.setEnabled(installed.id, false, 'global')
     expect(service.listInstalled()[0]?.enabled).toBe(false)
     service.setEnabled(installed.id, true, 'global')
@@ -48,6 +68,33 @@ describe('ExtensionInstallService', () => {
     service.uninstall(installed.id)
     expect(service.listInstalled()).toHaveLength(0)
     expect(fs.existsSync(installed.installPath)).toBe(false)
+  })
+
+  test('allows extensions that opt into untrusted workspaces in Restricted Mode', () => {
+    const root = makeTempDir()
+    const service = new ExtensionInstallService(path.join(root, 'extensions'))
+    const workspaceRoot = path.join(root, 'workspace')
+    fs.mkdirSync(workspaceRoot, { recursive: true })
+    const vsix = writeVsix(root, 'restricted-safe.vsix', {
+      'extension/package.json': JSON.stringify({
+        publisher: 'shogo',
+        name: 'restricted-safe',
+        version: '1.0.0',
+        engines: { vscode: '^1.74.0' },
+        main: './extension.js',
+        activationEvents: ['onCommand:shogo.safe.hello'],
+        capabilities: { untrustedWorkspaces: { supported: 'limited', description: 'Read-only mode' } },
+        contributes: { commands: [{ command: 'shogo.safe.hello', title: 'Hello in Restricted Mode' }] },
+      }),
+      'extension/extension.js': "exports.activate = function(vscode) {};",
+    })
+
+    service.installFromVsix(vsix)
+    const listed = service.listInstalled(workspaceRoot)[0]
+    expect(listed?.enabled).toBe(true)
+    expect(listed?.restrictedMode).toBe(true)
+    expect(listed?.restrictedModeSupport).toBe('limited')
+    expect(listed?.disabledByRestrictedMode).toBe(false)
   })
 
   test('rejects a traversal VSIX entry', () => {

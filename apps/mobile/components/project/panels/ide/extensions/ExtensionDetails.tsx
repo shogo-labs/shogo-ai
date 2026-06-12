@@ -70,6 +70,9 @@ export function ExtensionDetails({
                 {typeof downloads === "number" && <span>{formatDownloads(downloads)} installs</span>}
                 {typeof rating === "number" && <span className="inline-flex items-center gap-1"><Star size={12} color="#fbbf24" /> {rating.toFixed(1).replace(/\.0$/, "")}</span>}
                 {installed && <Badge>{installed.enabled ? "Enabled" : "Disabled"}</Badge>}
+                {installed?.trustedPublisher && <Badge><ShieldCheck size={10} /> Trusted Publisher</Badge>}
+                {installed?.disabledByRestrictedMode && <Badge>Restricted Mode Blocked</Badge>}
+                {installed?.restrictedMode && installed.restrictedModeSupport === "limited" && <Badge>Limited in Restricted Mode</Badge>}
                 {installed?.autoUpdate && <Badge>Auto Update</Badge>}
               </div>
               <p className="mt-3 max-w-3xl leading-relaxed text-[13px] text-[color:var(--ide-text)]">{item.description || "No description provided."}</p>
@@ -108,6 +111,9 @@ export function ExtensionDetails({
           )}
           {installed && installed.warnings.length > 0 && (
             <Warning>{installed.warnings.join(" ")}</Warning>
+          )}
+          {installed?.disabledByRestrictedMode && (
+            <Warning>{installed.restrictedModeReason ?? "This extension is blocked because the current workspace is untrusted."}</Warning>
           )}
           {!installed && (
             <div className="mt-4 flex items-start gap-2 rounded border border-sky-500/30 bg-sky-500/10 p-3 text-[12px] text-sky-100">
@@ -171,6 +177,9 @@ export function ExtensionDetails({
             <MetaRow label="Identifier">{item.id}</MetaRow>
             <MetaRow label="Version">{item.version}</MetaRow>
             <MetaRow label="Publisher">{item.publisher}</MetaRow>
+            {installed?.trustedPublisher && <MetaRow label="Trust">Trusted publisher{installed.trustedPublisherAt ? ` since ${formatDate(installed.trustedPublisherAt)}` : ""}</MetaRow>}
+            {installed && <MetaRow label="Workspace">{installed.workspaceTrusted ? "Trusted" : "Restricted Mode"}</MetaRow>}
+            {installed && <MetaRow label="Restricted">{installed.restrictedModeSupport}</MetaRow>}
             {installed && <MetaRow label="Installed">{formatDate(installed.installedAt)}</MetaRow>}
             {installed && <MetaRow label="Updated">{formatDate(installed.updatedAt)}</MetaRow>}
             {categories.length > 0 && <MetaRow label="Categories">{categories.join(", ")}</MetaRow>}
@@ -223,7 +232,7 @@ function Empty({ children }: { children: ReactNode }) {
 }
 
 function Badge({ children }: { children: ReactNode }) {
-  return <span className="rounded bg-[color:var(--ide-panel)] px-1.5 py-0.5 text-[10px] text-[color:var(--ide-text)]">{children}</span>;
+  return <span className="inline-flex items-center gap-1 rounded bg-[color:var(--ide-panel)] px-1.5 py-0.5 text-[10px] text-[color:var(--ide-text)]">{children}</span>;
 }
 
 function MetaRow({ label, children }: { label: string; children: ReactNode }) {

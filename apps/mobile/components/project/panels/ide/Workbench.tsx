@@ -51,10 +51,10 @@ import {
 import { broadcastEditorFontChange } from "./useEditorFont";
 import { SearchPane } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
-import { ExtensionsViewlet, TrustPublisherDialog, isPublisherTrusted, trustPublisher } from "./extensions/ExtensionsViewlet";
+import { ExtensionsViewlet, TrustPublisherDialog } from "./extensions/ExtensionsViewlet";
 import { collectRuntimeContainers, ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
 import { getDesktopExtensionsBridge, useExtensions } from "./extensions/useExtensions";
-import type { ExtensionRuntimeViewResult, ExtensionSearchResult, InstalledExtension } from "./extensions/types";
+import type { ExtensionRuntimeViewResult, ExtensionRuntimeWebviewPanel, ExtensionSearchResult, InstalledExtension } from "./extensions/types";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
@@ -1322,6 +1322,10 @@ export function Workbench({
     () => collectRuntimeContainers(extensionsSummary.installed),
     [extensionsSummary.installed],
   );
+  const activityBarExtensionContainers = useMemo(
+    () => extensionRuntimeContainers.filter((container) => container.location === "activitybar"),
+    [extensionRuntimeContainers],
+  );
   const activeExtensionRuntimeContainer = useMemo(
     () => extensionRuntimeContainers.find((container) => container.activityId === activity),
     [activity, extensionRuntimeContainers],
@@ -1354,35 +1358,80 @@ export function Workbench({
     setActiveGroupIdx(activeGroupIdx);
   }, [activeGroupIdx, findOpenLocation, updateGroup]);
 
+  const openExtensionWebviewPanel = useCallback((panel: ExtensionRuntimeWebviewPanel) => {
+    const id = `extension-webview:${panel.id}`;
+    const existing = findOpenLocation(id);
+    const tabName = panel.title || panel.viewType || "Extension Webview";
+    if (existing) {
+      setActiveGroupIdx(existing.groupIdx);
+      updateGroup(existing.groupIdx, (g) => ({
+        ...g,
+        activeId: id,
+        files: g.files.map((file) => file.id === id ? { ...file, name: tabName, content: panel.html, savedContent: panel.html } : file),
+      }));
+      return;
+    }
+    const tab: OpenFile = {
+      id,
+      rootId: "__extensions__",
+      name: tabName,
+      path: `Extensions/${panel.extensionId}/${panel.viewType}`,
+      language: "extension-webview",
+      content: panel.html,
+      savedContent: panel.html,
+      dirty: false,
+    };
+    updateGroup(activeGroupIdx, (g) => ({ ...g, files: [...g.files, tab], activeId: id }));
+    setActiveGroupIdx(activeGroupIdx);
+  }, [activeGroupIdx, findOpenLocation, updateGroup]);
+
   const requestExtensionInstall = useCallback((item: InstalledExtension | ExtensionSearchResult) => {
-    if (isPublisherTrusted(item.publisher)) {
+    if (extensionsSummary.isPublisherTrusted(item.publisher)) {
       void extensionsSummary.installFromRegistry(item.id, item.version);
     } else {
       setPendingExtensionInstall(item);
     }
   }, [extensionsSummary]);
-  const trustAndInstallExtension = useCallback(() => {
+  const trustAndInstallExtension = useCallback(async () => {
     if (!pendingExtensionInstall) return;
-    trustPublisher(pendingExtensionInstall.publisher);
+    const trusted = await extensionsSummary.trustPublisher(pendingExtensionInstall.publisher);
+    if (!trusted) return;
     void extensionsSummary.installFromRegistry(pendingExtensionInstall.id, pendingExtensionInstall.version);
     setPendingExtensionInstall(null);
   }, [extensionsSummary, pendingExtensionInstall]);
   const runExtensionCommand = useCallback((commandId: string, args?: unknown[]) => {
     const bridge = getDesktopExtensionsBridge();
     if (!bridge) return;
-    void bridge.runCommand(commandId, args ?? [], gitWorkspaceRootRef.current ?? undefined).then((response) => {
-      if (!response.ok) console.warn(response.error ?? `Extension command failed: ${commandId}`);
-      else void extensionsSummary.showRunningExtensions();
+    void bridge.runCommand(commandId, args ?? [], gitWorkspaceRootRef.current ?? undefined).then(async (response) => {
+      if (!response.ok) {
+        console.warn(response.error ?? `Extension command failed: ${commandId}`);
+        return;
+      }
+      void extensionsSummary.showRunningExtensions();
+      void extensionsSummary.loadStatusBarItems();
+      const panels = await bridge.getWebviewPanels(gitWorkspaceRootRef.current ?? undefined);
+      if (panels.ok) {
+        for (const panel of panels.panels ?? []) openExtensionWebviewPanel(panel);
+      }
     });
-  }, [extensionsSummary]);
-  const loadExtensionRuntimeView = useCallback(async (viewId: string): Promise<ExtensionRuntimeViewResult | null> => {
+  }, [extensionsSummary, openExtensionWebviewPanel]);
+  const loadExtensionRuntimeView = useCallback(async (viewId: string, itemHandle?: string): Promise<ExtensionRuntimeViewResult | null> => {
     const bridge = getDesktopExtensionsBridge();
     if (!bridge) return null;
-    const response = await bridge.getView(viewId, gitWorkspaceRootRef.current ?? undefined);
+    const response = await bridge.getView(viewId, gitWorkspaceRootRef.current ?? undefined, itemHandle);
     if (!response.ok) throw new Error(response.error ?? `Extension view failed: ${viewId}`);
     void extensionsSummary.showRunningExtensions();
     return response.view ?? null;
   }, [extensionsSummary]);
+
+  useEffect(() => {
+    if (!active?.language || active.rootId === "__extensions__" || PREVIEW_LANGUAGES.has(active.language)) return;
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return;
+    void bridge.activateEvent(`onLanguage:${active.language}`, gitWorkspaceRootRef.current ?? undefined).then(() => {
+      void extensionsSummary.showRunningExtensions();
+    });
+  }, [active?.id, active?.language, active?.rootId, extensionsSummary.showRunningExtensions]);
 
   // ─── Commands ────────────────────────────────────────────────────────
   const commands: Command[] = useMemo(() => {
@@ -1423,15 +1472,19 @@ export function Workbench({
         cmds.push({
           id: `extension:${command.command}`,
           label: `${command.category ? `${command.category}: ` : ""}${command.title}`,
-          category: command.category ?? extension.displayName ?? extension.name,
-          run: async () => {
-            const bridge = getDesktopExtensionsBridge();
-            if (!bridge) return;
-            const response = await bridge.runCommand(command.command, [], gitWorkspaceRootRef.current ?? undefined);
-            if (!response.ok) console.warn(response.error ?? `Extension command failed: ${command.command}`);
-          },
+          run: () => runExtensionCommand(command.command),
         });
       }
+    }
+    for (const container of extensionRuntimeContainers) {
+      cmds.push({
+        id: `extension.view.${container.activityId}`,
+        label: `View: Show ${container.title}`,
+        run: () => {
+          setActivity(container.activityId);
+          if (!sidebarOpen) setSidebarOpen(true);
+        },
+      });
     }
     cmds.push(
       { id: "view.splitRight", label: "View: Split Editor Right", shortcut: "⌘\\", run: splitRight },
@@ -1519,7 +1572,7 @@ export function Workbench({
     handleSave, handleSaveAll, activeGroup, activeGroupIdx, closeInGroup, splitRight,
     closeOtherGroup, focusNextGroup, togglePinInGroup, gotoLine, refreshAllRoots,
     openLocalFolder, closeRoot, fsaSupported, roots, sidebarOpen, bottomPanelOpen,
-    requestNewTerminal, extensionsSummary.installed,
+    requestNewTerminal, extensionsSummary.installed, extensionRuntimeContainers, runExtensionCommand,
   ]);
 
   const commandItems: PaletteItem[] = useMemo(
@@ -2018,7 +2071,7 @@ export function Workbench({
           terminalOpen={bottomPanelOpen}
           badges={activityBadges}
           hiddenItemIds={extensionsBridgeAvailable ? [] : ["extensions"]}
-          extensionContainers={extensionRuntimeContainers}
+          extensionContainers={activityBarExtensionContainers}
           onSelect={(id) => {
             setActivity(id);
             if (!sidebarOpen) setSidebarOpen(true);
@@ -2035,6 +2088,8 @@ export function Workbench({
         saved={!active?.dirty}
         git={gitSnapshot}
         workspaceRoot={gitWorkspaceRoot}
+        extensionItems={extensionsSummary.statusBarItems}
+        onRunExtensionCommand={runExtensionCommand}
       />
 
 
