@@ -1354,6 +1354,17 @@ export function Workbench({
     () => extensionRuntimeContainers.filter((container) => container.location === "activitybar"),
     [extensionRuntimeContainers],
   );
+  const panelExtensionContainers = useMemo(
+    () => extensionRuntimeContainers.filter((container) => container.location === "panel"),
+    [extensionRuntimeContainers],
+  );
+  useEffect(() => {
+    ideBottomPanelStore.setExtensionPanelContainers(panelExtensionContainers.map((container) => ({
+      ...container,
+      location: "panel" as const,
+      workspaceRoot: gitWorkspaceRootRef.current ?? null,
+    })));
+  }, [panelExtensionContainers]);
   const activeExtensionRuntimeContainer = useMemo(
     () => extensionRuntimeContainers.find((container) => container.activityId === activity),
     [activity, extensionRuntimeContainers],
@@ -1429,12 +1440,20 @@ export function Workbench({
   }, [extensionsSummary, pendingExtensionInstall]);
   const runExtensionCommand = useCallback((commandId: string, args?: unknown[]) => {
     const bridge = getDesktopExtensionsBridge();
-    if (!bridge) return;
+    if (!bridge) {
+      showToast("Extension commands are available in Shogo Desktop only", 2500);
+      return;
+    }
+    showToast(`Running ${commandId}…`, 1600);
     void bridge.runCommand(commandId, args ?? [], gitWorkspaceRootRef.current ?? undefined).then(async (response) => {
       if (!response.ok) {
-        console.warn(response.error ?? `Extension command failed: ${commandId}`);
+        const message = response.error ?? `Extension command failed: ${commandId}`;
+        console.warn(message);
+        showToast(message, 3500);
+        void extensionsSummary.showRunningExtensions();
         return;
       }
+      showToast(`Command completed: ${commandId}`, 2200);
       void extensionsSummary.showRunningExtensions();
       void extensionsSummary.loadStatusBarItems();
       const panels = await bridge.getWebviewPanels(gitWorkspaceRootRef.current ?? undefined);
@@ -1442,7 +1461,7 @@ export function Workbench({
         for (const panel of panels.panels ?? []) openExtensionWebviewPanel(panel);
       }
     });
-  }, [extensionsSummary, openExtensionWebviewPanel]);
+  }, [extensionsSummary, openExtensionWebviewPanel, showToast]);
   const loadExtensionRuntimeView = useCallback(async (viewId: string, itemHandle?: string): Promise<ExtensionRuntimeViewResult | null> => {
     const bridge = getDesktopExtensionsBridge();
     if (!bridge) return null;
@@ -1509,6 +1528,10 @@ export function Workbench({
         id: `extension.view.${container.activityId}`,
         label: `View: Show ${container.title}`,
         run: () => {
+          if (container.location === "panel") {
+            ideBottomPanelStore.showExtensionPanelContainer(container.activityId);
+            return;
+          }
           setActivity(container.activityId);
           if (!sidebarOpen) setSidebarOpen(true);
         },

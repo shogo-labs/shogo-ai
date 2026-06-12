@@ -19,6 +19,7 @@ export function ExtensionsViewlet({
   const installedIds = useMemo(() => new Set(installed.map((extension) => extension.id)), [installed]);
   const disabled = useMemo(() => installed.filter((extension) => !extension.enabled), [installed]);
   const enabled = useMemo(() => installed.filter((extension) => extension.enabled), [installed]);
+  const hostIssues = useMemo(() => extensions.diagnostics.filter((diagnostic) => diagnostic.level === "error"), [extensions.diagnostics]);
   const hasQuery = extensions.query.trim().length > 0;
 
   if (!extensions.available) {
@@ -103,6 +104,11 @@ export function ExtensionsViewlet({
 
       {extensions.error && <Banner tone="error">{extensions.error}</Banner>}
       {extensions.message && <Banner tone="info">{extensions.message}</Banner>}
+      {hostIssues.length > 0 && (
+        <Banner tone="error">
+          Extension host issues: {hostIssues.slice(0, 2).map((issue) => issue.error ?? issue.message).join(" · ")}{hostIssues.length > 2 ? ` · +${hostIssues.length - 2} more` : ""}
+        </Banner>
+      )}
 
       <div className="flex-1 overflow-auto">
         {hasQuery && (
@@ -175,9 +181,26 @@ export function ExtensionsViewlet({
             extensions.running.map((status) => (
               <div key={status.id} className="border-b border-[color:var(--ide-border)] px-3 py-2 text-[11px] text-[color:var(--ide-text)]">
                 <div className="font-semibold text-[color:var(--ide-text-strong)]">{status.id}</div>
-                <div color="var(--ide-muted)">
+                <div className="text-[color:var(--ide-muted)]">
                   {status.activationReason ?? "activated"} · {status.activationTimeMs ?? 0}ms · crashes {status.crashCount}
                 </div>
+              </div>
+            ))
+          )}
+        </Section>
+
+        <Section title={`Host Diagnostics (${extensions.diagnostics.length})`}>
+          {extensions.diagnostics.length === 0 ? (
+            <Empty>No extension-host diagnostics yet.</Empty>
+          ) : (
+            extensions.diagnostics.slice(0, 8).map((diagnostic) => (
+              <div key={diagnostic.id} className="border-b border-[color:var(--ide-border)] px-3 py-2 text-[11px] text-[color:var(--ide-text)]">
+                <div className={diagnostic.level === "error" ? "font-semibold text-red-200" : "font-semibold text-[color:var(--ide-text-strong)]"}>{diagnostic.message}</div>
+                <div className="mt-0.5 text-[color:var(--ide-muted)]">
+                  {diagnostic.extensionId ?? diagnostic.commandId ?? diagnostic.viewId ?? diagnostic.event ?? diagnostic.type}
+                  {diagnostic.durationMs != null ? ` · ${diagnostic.durationMs}ms` : ""}
+                </div>
+                {diagnostic.error && <div className="mt-1 break-words text-red-200/90">{diagnostic.error}</div>}
               </div>
             ))
           )}

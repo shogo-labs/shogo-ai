@@ -673,9 +673,9 @@ else process.on('message', onMessage)
 
 
 
-function createWebviewApi(onChange: () => void, getHtml: () => string, setHtml: (value: string) => void): Record<string, unknown> {
+function createWebviewApi(extension: HostExtension, onChange: () => void, getHtml: () => string, setHtml: (value: string) => void): Record<string, unknown> {
   const webview: Record<string, unknown> = {
-    asWebviewUri: (uri: unknown) => uri,
+    asWebviewUri: (uri: unknown) => webviewResourceUri(extension, uri),
     postMessage: () => Promise.resolve(true),
     onDidReceiveMessage: () => ({ dispose: () => undefined }),
     cspSource: 'shogo-extension-webview',
@@ -691,6 +691,39 @@ function createWebviewApi(onChange: () => void, getHtml: () => string, setHtml: 
   return webview
 }
 
+function webviewResourceUri(extension: HostExtension, uri: unknown): unknown {
+  const fsPath = uriFsPath(uri)
+  if (!fsPath) return uri
+  const allowedRoots = [extension.installPath, workspaceRoot].filter((root): root is string => !!root)
+  const resolved = path.resolve(fsPath)
+  if (!allowedRoots.some((root) => isPathInside(resolved, root))) return uri
+  try {
+    const bytes = fs.readFileSync(resolved)
+    return `data:${mimeTypeForPath(resolved)};base64,${bytes.toString('base64')}`
+  } catch {
+    return uri
+  }
+}
+
+function isPathInside(candidate: string, root: string): boolean {
+  const relative = path.relative(path.resolve(root), candidate)
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function mimeTypeForPath(file: string): string {
+  const ext = path.extname(file).toLowerCase()
+  if (ext === '.svg') return 'image/svg+xml'
+  if (ext === '.png') return 'image/png'
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg'
+  if (ext === '.gif') return 'image/gif'
+  if (ext === '.webp') return 'image/webp'
+  if (ext === '.css') return 'text/css'
+  if (ext === '.js' || ext === '.mjs') return 'text/javascript'
+  if (ext === '.html') return 'text/html'
+  if (ext === '.json') return 'application/json'
+  return 'application/octet-stream'
+}
+
 async function resolveWebviewView(extension: HostExtension, viewId: string, provider: WebviewViewProvider): Promise<RuntimeWebviewView> {
   let view = webviewViews.get(viewId)
   if (!view) {
@@ -698,7 +731,7 @@ async function resolveWebviewView(extension: HostExtension, viewId: string, prov
     webviewViews.set(viewId, view)
   }
   const publish = () => post({ type: 'webviewViewChanged', view: { ...view } })
-  const webview = createWebviewApi(publish, () => view.html, (value) => { view.html = value })
+  const webview = createWebviewApi(extension, publish, () => view.html, (value) => { view.html = value })
   const apiView: Record<string, unknown> = {
     viewType: viewId,
     webview,
@@ -729,19 +762,7 @@ function createWebviewPanel(extension: HostExtension, viewType: string, title: s
   webviewPanels.set(panel.id, panel)
   const publish = () => post({ type: 'webviewPanelsChanged', panels: getActiveWebviewPanels() })
   publish()
-  const webview: Record<string, unknown> = {
-    asWebviewUri: (uri: unknown) => uri,
-    postMessage: () => Promise.resolve(true),
-    onDidReceiveMessage: () => ({ dispose: () => undefined }),
-    cspSource: 'shogo-extension-webview',
-  }
-  Object.defineProperty(webview, 'html', {
-    get: () => panel.html,
-    set: (value) => {
-      panel.html = String(value ?? '')
-      publish()
-    },
-  })
+  const webview = createWebviewApi(extension, publish, () => panel.html, (value) => { panel.html = value })
   const apiPanel: Record<string, unknown> = {
     viewType,
     webview,
