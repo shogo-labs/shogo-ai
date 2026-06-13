@@ -2070,6 +2070,7 @@ model Affiliate {
   totalPaidOutCents        Int       @default(0)
   commissionRateBps        Int?
   contentCpmCents          Int?
+  contentPerVideoCapCents  Int?
   termsAcceptedAt          DateTime?
   contentProgramStatus     String    @default("none")
   contentAppliedAt         DateTime?
@@ -2227,6 +2228,7 @@ model AffiliatePost {
   postedAt        DateTime?
   lastViews       Int       @default(0)
   paidViews       Int       @default(0)
+  paidCents       Int       @default(0)
   lastLikes       Int       @default(0)
   lastComments    Int       @default(0)
   lastShares      Int       @default(0)

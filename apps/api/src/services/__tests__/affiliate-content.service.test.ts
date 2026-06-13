@@ -10,6 +10,7 @@
  *   - idempotency (re-poll same views pays nothing)
  *   - downward view revisions never go negative / never claw back
  *   - per-post-per-run view cap (viral spike paid over multiple runs)
+ *   - per-video lifetime $ cap (per-creator + platform default, seal on hit)
  *   - sub-cent deltas don't advance the high-water mark (no lost views)
  *   - ownership verification via the bio code
  *   - handle-uniqueness (one affiliate per handle)
@@ -167,7 +168,14 @@ const prismaStub: any = {
     update: async ({ where, data }: any) => {
       const row = posts.find((p) => p.id === where.id)
       if (!row) throw new Error('post not found')
-      Object.assign(row, data)
+      for (const [k, v] of Object.entries(data)) {
+        if (v && typeof v === 'object' && ('increment' in (v as any) || 'decrement' in (v as any))) {
+          const delta = ('increment' in (v as any) ? (v as any).increment : -(v as any).decrement) as number
+          row[k] = (row[k] ?? 0) + delta
+        } else {
+          row[k] = v as any
+        }
+      }
       return row
     },
   },
@@ -288,6 +296,7 @@ beforeEach(() => {
         userId: 'user-1',
         pendingPayoutCents: 0,
         contentCpmCents: null,
+        contentPerVideoCapCents: null,
         // Approved into the video-creator program — earning is gated on this.
         contentProgramStatus: 'approved',
       },
@@ -472,6 +481,74 @@ describe('pollAccount — CPM math', () => {
   })
 })
 
+describe('pollAccount — per-video earnings cap', () => {
+  test('per-creator cap clamps a single run and seals the post', async () => {
+    // $3.00 lifetime cap; cpm $1.00/1k. 10M views would earn $100, but the cap
+    // clamps this run to $3.00 and seals the post (paidViews jumps to lastViews).
+    affiliates.get('aff-1')!.contentPerVideoCapCents = 300
+    const account = await connectVerified()
+    fakeProvider.postsToReturn = [makePost({ views: 10_000_000 })]
+    const res = await svc.pollAccount(account)
+    expect(res.newCommissionCents).toBe(300)
+    expect(commissions).toHaveLength(1)
+    expect(commissions[0]).toMatchObject({ amountCents: 300 })
+    expect(posts[0].paidCents).toBe(300)
+    expect(posts[0].paidViews).toBe(10_000_000) // sealed to latest views
+    expect(affiliates.get('aff-1')!.pendingPayoutCents).toBe(300)
+  })
+
+  test('accrues normally until the cap, then stops on later runs', async () => {
+    affiliates.get('aff-1')!.contentPerVideoCapCents = 500 // $5.00 cap
+    const account = await connectVerified()
+    // Run 1: 3000 views → $3.00 (under cap).
+    fakeProvider.postsToReturn = [makePost({ views: 3000 })]
+    const res1 = await svc.pollAccount(account)
+    expect(res1.newCommissionCents).toBe(300)
+    expect(posts[0].paidCents).toBe(300)
+    expect(posts[0].paidViews).toBe(3000)
+    // Run 2: grows to 9000 views → would be +$6.00, but only $2.00 of cap left.
+    fakeProvider.postsToReturn = [makePost({ views: 9000 })]
+    const res2 = await svc.pollAccount(account)
+    expect(res2.newCommissionCents).toBe(200)
+    expect(posts[0].paidCents).toBe(500) // cap reached exactly
+    expect(posts[0].paidViews).toBe(9000) // sealed
+    // Run 3: more views, nothing left to pay.
+    fakeProvider.postsToReturn = [makePost({ views: 20000 })]
+    const res3 = await svc.pollAccount(account)
+    expect(res3.newCommissionCents).toBe(0)
+    expect(posts[0].paidCents).toBe(500)
+    expect(affiliates.get('aff-1')!.pendingPayoutCents).toBe(500)
+    expect(commissions).toHaveLength(2)
+  })
+
+  test('platform-default cap applies when the creator has no override', async () => {
+    setContentSetting('affiliate.content.perVideoCapCents', 150) // $1.50 default
+    const account = await connectVerified()
+    fakeProvider.postsToReturn = [makePost({ views: 1_000_000 })]
+    const res = await svc.pollAccount(account)
+    expect(res.newCommissionCents).toBe(150)
+    expect(posts[0].paidCents).toBe(150)
+  })
+
+  test('per-creator cap overrides the platform default', async () => {
+    setContentSetting('affiliate.content.perVideoCapCents', 150) // platform $1.50
+    affiliates.get('aff-1')!.contentPerVideoCapCents = 400 // creator $4.00 wins
+    const account = await connectVerified()
+    fakeProvider.postsToReturn = [makePost({ views: 1_000_000 })]
+    const res = await svc.pollAccount(account)
+    expect(res.newCommissionCents).toBe(400)
+    expect(posts[0].paidCents).toBe(400)
+  })
+
+  test('no cap (null) earns the full CPM amount', async () => {
+    const account = await connectVerified()
+    fakeProvider.postsToReturn = [makePost({ views: 50_000 })]
+    const res = await svc.pollAccount(account)
+    expect(res.newCommissionCents).toBe(5000) // 50k/1k * 100c, uncapped
+    expect(posts[0].paidCents).toBe(5000)
+  })
+})
+
 describe('applyToContentProgram', () => {
   test('moves none → pending when a verified handle exists', async () => {
     affiliates.get('aff-1')!.contentProgramStatus = 'none'
@@ -521,18 +598,6 @@ describe('getContentSummary', () => {
 })
 
 describe('poll-affiliate-content cron', () => {
-  test('short-circuits when the content toggle is off', async () => {
-    setContentSetting('affiliate.content.enabled', 'false')
-    const res = await job.runPollAffiliateContent()
-    expect(res).toMatchObject({ flagDisabled: true })
-  })
-
-  test('short-circuits when the affiliate program env flag is off', async () => {
-    delete process.env.SHOGO_AFFILIATES_NATIVE
-    const res = await job.runPollAffiliateContent()
-    expect(res).toMatchObject({ flagDisabled: true })
-  })
-
   test('polls all verified accounts under the lock', async () => {
     await connectVerified('tiktok', 'creator')
     // an unverified account should be skipped

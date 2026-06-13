@@ -33,9 +33,13 @@ import {
   XCircle,
   Clock,
   Wallet,
+  Plus,
+  AtSign,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL, type AdminCreatorDetail } from '../../../lib/api'
+import { ContentAnalyticsPanel } from '../../../components/analytics/ContentAnalytics'
+import type { ContentAnalytics } from '../../../lib/affiliate-api'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -157,11 +161,16 @@ function AffiliateCard({
 }) {
   const rate = a.commissionRateBps != null ? `${(a.commissionRateBps / 100).toFixed(2)}%` : 'Tier default'
   const cpm = a.contentCpmCents != null ? `$${(a.contentCpmCents / 100).toFixed(2)} / 1k views` : 'Platform default'
+  const cap =
+    a.contentPerVideoCapCents != null
+      ? `$${(a.contentPerVideoCapCents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / video`
+      : 'No cap'
   const rows: { label: string; value: string }[] = [
     { label: 'Referral code', value: a.code },
     { label: 'Status', value: a.status },
     { label: 'L1 commission rate', value: rate },
     { label: 'Content CPM', value: cpm },
+    { label: 'Per-video cap', value: cap },
     { label: 'Referred users', value: a.referralCount.toLocaleString() },
     { label: 'Downline affiliates', value: a.downlineCount.toLocaleString() },
     { label: 'Referral earnings', value: usd(a.referralEarningsUsd) },
@@ -180,6 +189,10 @@ function AffiliateCard({
   const [cpmInput, setCpmInput] = useState(
     a.contentCpmCents != null ? (a.contentCpmCents / 100).toFixed(2) : '',
   )
+  // Per-video lifetime earnings cap in dollars; blank => no/platform cap.
+  const [capInput, setCapInput] = useState(
+    a.contentPerVideoCapCents != null ? (a.contentPerVideoCapCents / 100).toFixed(2) : '',
+  )
 
   const status = a.contentProgramStatus ?? 'none'
   const statusStyle = CONTENT_STATUS_STYLE[status] ?? CONTENT_STATUS_STYLE.none
@@ -190,6 +203,7 @@ function AffiliateCard({
       // On approve, translate the dollars input into integer cents per 1,000
       // views. Blank => null (platform default). Reject ignores CPM.
       let contentCpmCents: number | null | undefined
+      let contentPerVideoCapCents: number | null | undefined
       if (action === 'approve') {
         const trimmed = cpmInput.trim()
         if (trimmed === '') {
@@ -201,6 +215,18 @@ function AffiliateCard({
             return
           }
           contentCpmCents = Math.round(dollars * 100)
+        }
+
+        const capTrimmed = capInput.trim()
+        if (capTrimmed === '') {
+          contentPerVideoCapCents = null
+        } else {
+          const capDollars = Number(capTrimmed)
+          if (!Number.isFinite(capDollars) || capDollars <= 0) {
+            setActionError('Enter a positive per-video cap (e.g. 1000) or leave blank for no cap.')
+            return
+          }
+          contentPerVideoCapCents = Math.round(capDollars * 100)
         }
       }
 
@@ -215,7 +241,7 @@ function AffiliateCard({
           body: JSON.stringify({
             action,
             reason: action === 'reject' ? reason.trim() || undefined : undefined,
-            ...(action === 'approve' ? { contentCpmCents } : {}),
+            ...(action === 'approve' ? { contentCpmCents, contentPerVideoCapCents } : {}),
           }),
         })
         if (!res.ok) {
@@ -233,8 +259,47 @@ function AffiliateCard({
         setBusy(null)
       }
     },
-    [a.id, reason, cpmInput, onChanged],
+    [a.id, reason, cpmInput, capInput, onChanged],
   )
+
+  // Admin-attach a social handle, verified out of band (skips the bio-code
+  // ownership flow). Defaults to TikTok since that's the most common.
+  const [newPlatform, setNewPlatform] = useState<'instagram' | 'tiktok'>('tiktok')
+  const [newHandle, setNewHandle] = useState('')
+  const [socialBusy, setSocialBusy] = useState(false)
+  const [socialError, setSocialError] = useState<string | null>(null)
+  const [socialMsg, setSocialMsg] = useState<string | null>(null)
+
+  const addSocial = useCallback(async () => {
+    const handle = newHandle.trim().replace(/^@+/, '')
+    if (!handle) {
+      setSocialError('Enter a handle.')
+      return
+    }
+    setSocialBusy(true)
+    setSocialError(null)
+    setSocialMsg(null)
+    try {
+      const res = await fetch(`${API_BASE}/affiliates/${encodeURIComponent(a.id)}/social-accounts`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform: newPlatform, handle, verified: true }),
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        setSocialError(body?.error?.message ?? 'Failed to attach handle.')
+        return
+      }
+      setSocialMsg(`@${handle} attached & verified on ${newPlatform}.`)
+      setNewHandle('')
+      await onChanged()
+    } catch {
+      setSocialError('Failed to attach handle. Please try again.')
+    } finally {
+      setSocialBusy(false)
+    }
+  }, [a.id, newPlatform, newHandle, onChanged])
 
   const payout = useCallback(async () => {
     setBusy('payout')
@@ -299,21 +364,40 @@ function AffiliateCard({
               />
             ) : null}
             {showApprove ? (
-              <View className="gap-1">
-                <Text className="text-[11px] text-muted-foreground">
-                  Content CPM ($ per 1,000 views) — leave blank for platform default
-                </Text>
-                <View className="flex-row items-center gap-2 rounded-md border border-border px-3">
-                  <Text className="text-sm text-muted-foreground">$</Text>
-                  <TextInput
-                    value={cpmInput}
-                    onChangeText={setCpmInput}
-                    placeholder="1.00"
-                    placeholderTextColor="#9ca3af"
-                    keyboardType="decimal-pad"
-                    className="flex-1 py-2 text-sm text-foreground"
-                  />
-                  <Text className="text-[11px] text-muted-foreground">/ 1k</Text>
+              <View className="gap-2">
+                <View className="gap-1">
+                  <Text className="text-[11px] text-muted-foreground">
+                    Content CPM ($ per 1,000 views) — leave blank for platform default
+                  </Text>
+                  <View className="flex-row items-center gap-2 rounded-md border border-border px-3">
+                    <Text className="text-sm text-muted-foreground">$</Text>
+                    <TextInput
+                      value={cpmInput}
+                      onChangeText={setCpmInput}
+                      placeholder="1.00"
+                      placeholderTextColor="#9ca3af"
+                      keyboardType="decimal-pad"
+                      className="flex-1 py-2 text-sm text-foreground"
+                    />
+                    <Text className="text-[11px] text-muted-foreground">/ 1k</Text>
+                  </View>
+                </View>
+                <View className="gap-1">
+                  <Text className="text-[11px] text-muted-foreground">
+                    Per-video cap ($ max earnable per video) — leave blank for no cap
+                  </Text>
+                  <View className="flex-row items-center gap-2 rounded-md border border-border px-3">
+                    <Text className="text-sm text-muted-foreground">$</Text>
+                    <TextInput
+                      value={capInput}
+                      onChangeText={setCapInput}
+                      placeholder="1000.00"
+                      placeholderTextColor="#9ca3af"
+                      keyboardType="decimal-pad"
+                      className="flex-1 py-2 text-sm text-foreground"
+                    />
+                    <Text className="text-[11px] text-muted-foreground">/ video</Text>
+                  </View>
                 </View>
               </View>
             ) : null}
@@ -353,6 +437,132 @@ function AffiliateCard({
             </View>
           </View>
         ) : null}
+      </View>
+
+      {/* Connected social handles + admin-attach (verified without bio-code) */}
+      <View className="border-t border-border mt-3 pt-3 gap-2">
+        <Text className="text-[11px] text-muted-foreground uppercase tracking-wide">
+          Connected social handles
+        </Text>
+        {a.socialAccounts.length === 0 ? (
+          <Text className="text-[11px] text-muted-foreground">No social handles connected.</Text>
+        ) : (
+          <View className="gap-1.5">
+            {a.socialAccounts.map((s) => {
+              const verified = s.verificationStatus === 'verified'
+              return (
+                <View
+                  key={s.id}
+                  className="flex-row items-center justify-between rounded-md border border-border/60 px-3 py-2"
+                >
+                  <View className="flex-1 min-w-0">
+                    <View className="flex-row items-center gap-1.5">
+                      <Text className="text-sm text-foreground" numberOfLines={1}>
+                        @{s.handle}
+                      </Text>
+                      <Text className="text-[10px] text-muted-foreground capitalize">· {s.platform}</Text>
+                    </View>
+                    {s.lastError ? (
+                      <Text className="text-[10px] text-red-600" numberOfLines={1}>
+                        {s.lastError}
+                      </Text>
+                    ) : s.lastPolledAt ? (
+                      <Text className="text-[10px] text-muted-foreground">
+                        Last polled {fmtDate(s.lastPolledAt)}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <View className="flex-row items-center gap-1">
+                    {verified ? (
+                      <CheckCircle2 size={13} className="text-emerald-600" />
+                    ) : (
+                      <Clock size={13} className="text-amber-500" />
+                    )}
+                    <Text
+                      className={cn(
+                        'text-[11px] font-semibold capitalize',
+                        verified ? 'text-emerald-600' : 'text-amber-600',
+                      )}
+                    >
+                      {s.verificationStatus}
+                    </Text>
+                  </View>
+                </View>
+              )
+            })}
+          </View>
+        )}
+
+        <Text className="text-[11px] text-muted-foreground uppercase tracking-wide mt-1">
+          Attach social handle (admin-verified)
+        </Text>
+        <View className="flex-row gap-2">
+          {(['tiktok', 'instagram'] as const).map((p) => (
+            <Pressable
+              key={p}
+              onPress={() => setNewPlatform(p)}
+              disabled={socialBusy}
+              className={cn(
+                'px-3 py-2 rounded-lg border active:opacity-80',
+                newPlatform === p ? 'border-primary bg-primary/10' : 'border-border',
+              )}
+            >
+              <Text
+                className={cn(
+                  'text-xs font-semibold capitalize',
+                  newPlatform === p ? 'text-primary' : 'text-muted-foreground',
+                )}
+              >
+                {p}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <View className="flex-row items-center gap-2">
+          <View className="flex-1 flex-row items-center gap-1.5 rounded-md border border-border px-3">
+            <AtSign size={14} className="text-muted-foreground" />
+            <TextInput
+              value={newHandle}
+              onChangeText={setNewHandle}
+              placeholder="handle"
+              placeholderTextColor="#9ca3af"
+              autoCapitalize="none"
+              autoCorrect={false}
+              className="flex-1 py-2 text-sm text-foreground"
+            />
+          </View>
+          <Pressable
+            onPress={addSocial}
+            disabled={socialBusy || newHandle.trim() === ''}
+            className={cn(
+              'flex-row items-center gap-1.5 px-3 py-2 rounded-lg',
+              newHandle.trim() !== '' ? 'bg-primary active:opacity-80' : 'bg-muted',
+            )}
+          >
+            {socialBusy ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Plus
+                size={14}
+                className={newHandle.trim() !== '' ? 'text-primary-foreground' : 'text-muted-foreground'}
+              />
+            )}
+            <Text
+              className={cn(
+                'text-xs font-semibold',
+                newHandle.trim() !== '' ? 'text-primary-foreground' : 'text-muted-foreground',
+              )}
+            >
+              Attach
+            </Text>
+          </Pressable>
+        </View>
+        {socialError ? <Text className="text-[11px] text-red-600">{socialError}</Text> : null}
+        {socialMsg ? <Text className="text-[11px] text-emerald-600">{socialMsg}</Text> : null}
+        <Text className="text-[10px] text-muted-foreground">
+          Marks the handle verified immediately (no bio code). Only do this once you&apos;ve confirmed
+          ownership out of band. Earning still requires the video-creator program to be approved.
+        </Text>
       </View>
 
       {/* Manual payout — owed (approved + unpaid) balance */}
@@ -401,6 +611,28 @@ function AffiliateCard({
       </View>
     </View>
   )
+}
+
+/** Admin content-performance panel for one affiliate (super-admin view). */
+function CreatorContentAnalytics({ affiliateId }: { affiliateId: string }) {
+  const fetcher = useCallback(
+    async (range: { from: string; to: string }): Promise<ContentAnalytics | null> => {
+      const qs = new URLSearchParams({ from: range.from, to: range.to })
+      const res = await fetch(
+        `${API_BASE}/affiliates/${encodeURIComponent(affiliateId)}/content/analytics?${qs.toString()}`,
+        { credentials: 'include' },
+      )
+      if (!res.ok) {
+        const err: any = new Error('Failed to load analytics')
+        err.status = res.status
+        throw err
+      }
+      const body = await res.json().catch(() => null)
+      return body?.analytics ?? null
+    },
+    [affiliateId],
+  )
+  return <ContentAnalyticsPanel fetcher={fetcher} />
 }
 
 export default function AdminCreatorProfile() {
@@ -536,7 +768,10 @@ export default function AdminCreatorProfile() {
 
           {/* Affiliate / commissions */}
           {creator.affiliate ? (
-            <AffiliateCard a={creator.affiliate} onChanged={load} />
+            <>
+              <AffiliateCard a={creator.affiliate} onChanged={load} />
+              <CreatorContentAnalytics affiliateId={creator.affiliate.id} />
+            </>
           ) : (
             <View className="rounded-xl border border-dashed border-border bg-card/50 p-4">
               <View className="flex-row items-center gap-2">

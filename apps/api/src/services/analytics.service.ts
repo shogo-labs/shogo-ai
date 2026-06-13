@@ -326,6 +326,7 @@ export interface ActivityTimeseriesPoint {
   messages: number
   sessions: number
   toolCalls: number
+  activePayingSubscribers: number
 }
 
 /**
@@ -346,7 +347,7 @@ export async function getActivityTimeseries(
   else if (scope.workspaceId) sessionScope.project = { workspaceId: scope.workspaceId }
   const hasSessionScope = Object.keys(sessionScope).length > 0
 
-  const [users, workspaces, projects, messages, sessions, toolCalls] = await Promise.all([
+  const [users, workspaces, projects, messages, sessions, toolCalls, subscriptions] = await Promise.all([
     // newUsers → platform: signups; workspace: new members
     scope.workspaceId
       ? prisma.member.findMany({
@@ -390,6 +391,15 @@ export async function getActivityTimeseries(
       },
       select: { createdAt: true },
     }),
+    // Currently active/trialing subscriptions (paying subscribers), placed on the
+    // timeline by createdAt to approximate the cumulative active count per day.
+    prisma.subscription.findMany({
+      where: {
+        status: { in: ['active', 'trialing'] },
+        ...(scope.workspaceId ? { workspaceId: scope.workspaceId } : {}),
+      },
+      select: { createdAt: true },
+    }),
   ])
 
   const bucket = (rows: { createdAt: Date }[]): Map<string, number> => {
@@ -407,6 +417,15 @@ export async function getActivityTimeseries(
   const sM = bucket(sessions)
   const tM = bucket(toolCalls)
 
+  // Cumulative active subscribers: baseline = subs created before the window,
+  // then add subs created on each day to a running total.
+  let subsRunning = 0
+  const subM = new Map<string, number>()
+  for (const s of subscriptions) {
+    if (s.createdAt < from) subsRunning += 1
+    else subM.set(isoDay(s.createdAt), (subM.get(isoDay(s.createdAt)) ?? 0) + 1)
+  }
+
   const days: ActivityTimeseriesPoint[] = []
   const cursor = new Date(from)
   cursor.setUTCHours(0, 0, 0, 0)
@@ -414,6 +433,7 @@ export async function getActivityTimeseries(
   last.setUTCHours(0, 0, 0, 0)
   while (cursor <= last) {
     const key = isoDay(cursor)
+    subsRunning += subM.get(key) ?? 0
     days.push({
       date: key,
       newUsers: uM.get(key) ?? 0,
@@ -422,6 +442,7 @@ export async function getActivityTimeseries(
       messages: mM.get(key) ?? 0,
       sessions: sM.get(key) ?? 0,
       toolCalls: tM.get(key) ?? 0,
+      activePayingSubscribers: subsRunning,
     })
     cursor.setUTCDate(cursor.getUTCDate() + 1)
   }
@@ -2595,6 +2616,8 @@ export interface CreatorAffiliateSummary {
   commissionRateBps: number | null
   /** Per-creator content-CPM override in cents/1k views (null = platform CPM). */
   contentCpmCents: number | null
+  /** Per-creator per-video lifetime earnings cap in cents (null = no/platform cap). */
+  contentPerVideoCapCents: number | null
   totalEarningsUsd: number
   pendingPayoutUsd: number
   totalPaidOutUsd: number
@@ -2615,6 +2638,20 @@ export interface CreatorAffiliateSummary {
   /** Lifetime commission split by earning channel, in USD. */
   referralEarningsUsd: number
   contentEarningsUsd: number
+  /** Connected Instagram / TikTok handles for the content-CPM program. */
+  socialAccounts: CreatorSocialAccountSummary[]
+}
+
+/** One connected social handle on a creator's affiliate (content-CPM). */
+export interface CreatorSocialAccountSummary {
+  id: string
+  platform: string
+  handle: string
+  verificationStatus: string
+  verifiedAt: string | null
+  lastPolledAt: string | null
+  lastError: string | null
+  createdAt: string
 }
 
 /** Full per-creator profile: stats + published agents + affiliate 360. */
@@ -2681,6 +2718,19 @@ export async function getCreatorProfileDetail(
     include: {
       _count: { select: { attributions: true, children: true } },
       commissions: { select: { source: true, amountCents: true, status: true, payoutId: true } },
+      socialAccounts: {
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          platform: true,
+          handle: true,
+          verificationStatus: true,
+          verifiedAt: true,
+          lastPolledAt: true,
+          lastError: true,
+          createdAt: true,
+        },
+      },
     },
   })
 
@@ -2701,6 +2751,7 @@ export async function getCreatorProfileDetail(
       status: String(affiliate.status),
       commissionRateBps: affiliate.commissionRateBps,
       contentCpmCents: affiliate.contentCpmCents,
+      contentPerVideoCapCents: affiliate.contentPerVideoCapCents,
       totalEarningsUsd: affiliate.totalEarningsCents / 100,
       pendingPayoutUsd: affiliate.pendingPayoutCents / 100,
       totalPaidOutUsd: affiliate.totalPaidOutCents / 100,
@@ -2719,6 +2770,16 @@ export async function getCreatorProfileDetail(
       downlineCount: affiliate._count.children,
       referralEarningsUsd: referralCents / 100,
       contentEarningsUsd: contentCents / 100,
+      socialAccounts: affiliate.socialAccounts.map((s) => ({
+        id: s.id,
+        platform: String(s.platform),
+        handle: s.handle,
+        verificationStatus: String(s.verificationStatus),
+        verifiedAt: s.verifiedAt ? s.verifiedAt.toISOString() : null,
+        lastPolledAt: s.lastPolledAt ? s.lastPolledAt.toISOString() : null,
+        lastError: s.lastError ?? null,
+        createdAt: s.createdAt.toISOString(),
+      })),
     }
   }
 

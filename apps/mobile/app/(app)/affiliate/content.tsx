@@ -34,6 +34,7 @@ import {
   type AffiliateSocialAccount,
   type SocialPlatform,
 } from '../../../lib/affiliate-api'
+import { ContentAnalyticsPanel } from '../../../components/analytics/ContentAnalytics'
 
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
@@ -146,6 +147,11 @@ export default function AffiliateContentScreen() {
     setTimeout(() => setCopiedId(null), 1500)
   }, [])
 
+  const analyticsFetcher = useCallback(
+    (range: { from: string; to: string }) => affiliateApi.getContentAnalytics(http, range),
+    [http],
+  )
+
   const applyToProgram = useCallback(async () => {
     setApplying(true)
     setApplyError(null)
@@ -211,6 +217,9 @@ export default function AffiliateContentScreen() {
               onApply={applyToProgram}
             />
             <EarningsCard summary={summary} />
+            {summary.programStatus === 'approved' ? (
+              <ContentAnalyticsPanel fetcher={analyticsFetcher} />
+            ) : null}
             <AddHandleCard
               platform={platform}
               setPlatform={setPlatform}
@@ -456,6 +465,13 @@ function EarningsCard({ summary }: { summary: AffiliateContentSummary }) {
           <Badge variant="secondary"><Text className="text-xs">{compactNumber(totals.lifetimeViews)} views</Text></Badge>
           <Badge variant="secondary"><Text className="text-xs">{totals.posts} posts</Text></Badge>
           <Badge variant="secondary"><Text className="text-xs">${(summary.cpmCents.tiktok / 100).toFixed(2)}/1k</Text></Badge>
+          {summary.perVideoCapCents != null ? (
+            <Badge variant="secondary">
+              <Text className="text-xs">
+                ${(summary.perVideoCapCents / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}/video cap
+              </Text>
+            </Badge>
+          ) : null}
         </View>
       </CardContent>
     </Card>

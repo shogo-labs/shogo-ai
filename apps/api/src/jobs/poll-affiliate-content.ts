@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Hourly cron — polls every verified affiliate social account for new
+ * Periodic cron (every 4 hours) — polls every verified affiliate social account for new
  * posts and view counts, snapshots the metrics, and accrues CPM
  * commissions on the incremental views. Earnings are written as
  * `AffiliateCommission` rows (`source = 'content'`) so the existing
@@ -13,31 +13,21 @@
  * polling the same account on the same tick would race on the view
  * delta and could double-snapshot / double-pay. Exactly one region wins
  * the lock per tick.
- *
- * Feature-gated: short-circuits unless the affiliate program env flag
- * `SHOGO_AFFILIATES_NATIVE` is 'true' AND the super-admin DB master toggle
- * `affiliate.content.enabled` is set (see isContentCpmEnabled), so stacks
- * without the content rollout never call the data provider or accrue.
  */
 
 import { withGlobalJobLock } from '../lib/global-job-lock'
 import {
-  isContentCpmEnabled,
   pollAllVerifiedAccounts,
   type PollAllSummary,
 } from '../services/affiliate-content.service'
 
 export interface PollAffiliateContentSummary extends Partial<PollAllSummary> {
   lockSkipped?: boolean
-  flagDisabled?: boolean
 }
 
 export async function runPollAffiliateContent(
   opts: { now?: Date } = {},
 ): Promise<PollAffiliateContentSummary> {
-  if (!(await isContentCpmEnabled())) {
-    return { flagDisabled: true }
-  }
   const now = opts.now ?? new Date()
   const lockResult = await withGlobalJobLock('poll-affiliate-content', async () => {
     return pollAllVerifiedAccounts(now)
@@ -49,12 +39,11 @@ export async function runPollAffiliateContent(
 }
 
 /**
- * Schedule the content poll. Hourly by default — matches the cadence the
- * affiliate-facing spec calls for and keeps EnsembleData unit spend
- * bounded (one provider sweep per verified account per hour). Override
- * the interval via the argument in tests.
+ * Schedule the content poll. Every 4 hours by default — keeps EnsembleData
+ * unit spend bounded (one provider sweep per verified account per cycle).
+ * Override the interval via the argument in tests.
  */
-export function startPollAffiliateContentCron(intervalMs: number = 60 * 60 * 1000) {
+export function startPollAffiliateContentCron(intervalMs: number = 4 * 60 * 60 * 1000) {
   setTimeout(() => {
     runPollAffiliateContent().catch((err) =>
       console.error('[PollAffiliateContent] initial run failed:', err),

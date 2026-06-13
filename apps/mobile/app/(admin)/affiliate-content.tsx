@@ -40,6 +40,7 @@ interface ContentSettings {
   holdDays: number
   postsPerAccount: number
   maxViewsPerPostPerRun: number
+  perVideoCapCents: number | null
 }
 
 interface TokenInfo {
@@ -135,6 +136,7 @@ export default function AffiliateContentSettingsPage() {
     holdDays: '',
     postsPerAccount: '',
     maxViewsPerPostPerRun: '',
+    perVideoCapCents: '',
   })
   const [tokenInput, setTokenInput] = useState('')
 
@@ -149,6 +151,7 @@ export default function AffiliateContentSettingsPage() {
       holdDays: String(s.holdDays),
       postsPerAccount: String(s.postsPerAccount),
       maxViewsPerPostPerRun: String(s.maxViewsPerPostPerRun),
+      perVideoCapCents: s.perVideoCapCents != null ? String(s.perVideoCapCents) : '',
     })
     setTokenInfo(r.ensembleDataToken)
   }, [])
@@ -188,6 +191,7 @@ export default function AffiliateContentSettingsPage() {
       holdDays: intOrNull(form.holdDays),
       postsPerAccount: intOrNull(form.postsPerAccount),
       maxViewsPerPostPerRun: intOrNull(form.maxViewsPerPostPerRun),
+      perVideoCapCents: intOrNull(form.perVideoCapCents),
     }
     // Only send a token write when the operator typed one (avoids clobbering
     // an existing token with a blank). Use the explicit Clear button to remove.
@@ -230,6 +234,7 @@ export default function AffiliateContentSettingsPage() {
   }
 
   const cpmGlobal = parseInt(form.cpmCents || '0', 10) || 0
+  const capDefault = parseInt(form.perVideoCapCents || '0', 10) || 0
 
   return (
     <ScrollView
@@ -381,6 +386,17 @@ export default function AffiliateContentSettingsPage() {
               value={form.maxViewsPerPostPerRun}
               onChange={(v) => setForm((f) => ({ ...f, maxViewsPerPostPerRun: v }))}
               hint="Anti-abuse cap; a viral spike pays out over several runs"
+            />
+            <NumField
+              label="Default per-video cap"
+              value={form.perVideoCapCents}
+              onChange={(v) => setForm((f) => ({ ...f, perVideoCapCents: v }))}
+              suffix="¢"
+              hint={
+                capDefault > 0
+                  ? `$${(capDefault / 100).toLocaleString(undefined, { maximumFractionDigits: 2 })} max earnable per video (per-creator override wins)`
+                  : 'Blank = no cap; per-creator override still applies'
+              }
             />
           </View>
         </View>

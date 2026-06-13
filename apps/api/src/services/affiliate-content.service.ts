@@ -46,7 +46,11 @@
 import { randomBytes } from 'node:crypto'
 
 import { prisma } from '../lib/prisma'
-import { getContentSettings, resolveCpmCents } from './affiliate-content-settings.service'
+import {
+  getContentSettings,
+  resolveCpmCents,
+  resolvePerVideoCapCents,
+} from './affiliate-content-settings.service'
 import {
   getSocialContentProvider,
   type SocialPlatform,
@@ -261,6 +265,104 @@ export async function verifyAccount(
   return { verified: found, account: updated }
 }
 
+/**
+ * Admin override: attach a social handle to an affiliate and (by default)
+ * mark it `verified` WITHOUT the bio-code ownership check. Used when an
+ * operator has confirmed ownership out of band (e.g. a manually onboarded
+ * creator) and wants to skip the self-serve verification dance.
+ *
+ * Idempotent: re-running for a handle the affiliate already owns updates
+ * that row in place. A handle already claimed by a DIFFERENT affiliate is
+ * rejected (`handle_taken`) — the `(platform, handle)` uniqueness still
+ * holds. We best-effort capture `providerUserId` so later polls survive a
+ * handle rename, but a provider failure does NOT block the override (the
+ * poller resolves the id on demand for Instagram anyway).
+ */
+export async function adminSetSocialAccount(
+  affiliateId: string,
+  platformRaw: string,
+  handleRaw: string,
+  opts: { verified?: boolean; now?: Date } = {},
+): Promise<any> {
+  const verified = opts.verified ?? true
+  const now = opts.now ?? new Date()
+
+  const platform = platformRaw as SocialPlatform
+  if (!SUPPORTED_PLATFORMS.includes(platform)) {
+    throw new ContentAffiliateError('invalid_platform', `Unsupported platform "${platformRaw}"`)
+  }
+  const handle = normalizeHandleInput(handleRaw)
+  if (!HANDLE_PATTERN.test(handle)) {
+    throw new ContentAffiliateError(
+      'invalid_handle',
+      'Handle must be 1-30 chars: letters, digits, dot, or underscore (no @).',
+    )
+  }
+
+  const affiliate = await prisma.affiliate.findUnique({
+    where: { id: affiliateId },
+    select: { id: true },
+  })
+  if (!affiliate) {
+    throw new ContentAffiliateError('affiliate_not_found', 'Affiliate not found')
+  }
+
+  const existing = await prisma.affiliateSocialAccount.findUnique({
+    where: { platform_handle: { platform, handle } },
+  })
+  if (existing && existing.affiliateId !== affiliateId) {
+    throw new ContentAffiliateError(
+      'handle_taken',
+      `@${handle} on ${platform} is already connected by another affiliate.`,
+    )
+  }
+
+  // Best-effort: capture the stable provider user id so polls survive a
+  // handle rename. Never let a provider hiccup block the admin override.
+  let providerUserId: string | null = null
+  if (verified) {
+    try {
+      const provider = await getSocialContentProvider()
+      const profile = await provider.getProfile(platform, handle)
+      providerUserId = profile.providerUserId
+    } catch (err) {
+      console.warn('[affiliate-content] adminSetSocialAccount: provider lookup failed (continuing):', {
+        platform,
+        handle,
+        err: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  const verifiedFields = verified
+    ? {
+        verificationStatus: 'verified' as const,
+        verifiedAt: now,
+        lastError: null,
+        ...(providerUserId ? { providerUserId } : {}),
+      }
+    : {}
+
+  if (existing) {
+    return prisma.affiliateSocialAccount.update({
+      where: { id: existing.id },
+      data: verifiedFields,
+    })
+  }
+
+  return prisma.affiliateSocialAccount.create({
+    data: {
+      affiliateId,
+      platform,
+      handle,
+      verificationCode: mintVerificationCode(),
+      verificationStatus: verified ? 'verified' : 'pending',
+      verifiedAt: verified ? now : null,
+      ...(providerUserId ? { providerUserId } : {}),
+    },
+  })
+}
+
 // ============================================================================
 // Polling + CPM accrual
 // ============================================================================
@@ -300,7 +402,13 @@ export async function pollAccount(account: any, now: Date = new Date()): Promise
 
   const affiliate = await prisma.affiliate.findUnique({
     where: { id: account.affiliateId },
-    select: { id: true, userId: true, contentCpmCents: true, contentProgramStatus: true },
+    select: {
+      id: true,
+      userId: true,
+      contentCpmCents: true,
+      contentPerVideoCapCents: true,
+      contentProgramStatus: true,
+    },
   })
   if (!affiliate) {
     result.error = 'affiliate_not_found'
@@ -338,6 +446,7 @@ export async function pollAccount(account: any, now: Date = new Date()): Promise
   }
 
   const cpmCents = resolveCpmCents(settings, platform, affiliate.contentCpmCents)
+  const perVideoCapCents = resolvePerVideoCapCents(settings, affiliate.contentPerVideoCapCents)
   const maxViewsPerRun = settings.maxViewsPerPostPerRun
   const holdDays = settings.holdDays
   const eligibleAt = new Date(now.getTime() + holdDays * 24 * 60 * 60 * 1000)
@@ -353,6 +462,7 @@ export async function pollAccount(account: any, now: Date = new Date()): Promise
         platform,
         np,
         cpmCents,
+        perVideoCapCents,
         maxViewsPerRun,
         eligibleAt,
         now,
@@ -383,6 +493,8 @@ interface AccrueArgs {
   platform: SocialPlatform
   np: { providerPostId: string; url: string | null; caption: string | null; postedAt: Date | null; views: number; likes: number; comments: number; shares: number }
   cpmCents: number
+  /** Per-video lifetime earnings cap (cents); null = uncapped. */
+  perVideoCapCents: number | null
   maxViewsPerRun: number
   eligibleAt: Date
   now: Date
@@ -445,6 +557,13 @@ async function accruePost(args: AccrueArgs): Promise<{ paidViews: number; commis
       },
     })
 
+    // Per-video lifetime earnings cap (per-creator). `paidCents` is the dollar
+    // high-water mark; once it reaches the resolved cap the video earns nothing
+    // more. null = uncapped.
+    const paidCents = post.paidCents ?? 0
+    const remainingCapCents =
+      args.perVideoCapCents != null ? Math.max(0, args.perVideoCapCents - paidCents) : null
+
     // Incremental, capped, never negative.
     let delta = Math.max(0, np.views - post.paidViews)
     if (delta > args.maxViewsPerRun) delta = args.maxViewsPerRun
@@ -452,11 +571,30 @@ async function accruePost(args: AccrueArgs): Promise<{ paidViews: number; commis
       return { paidViews: 0, commissionCents: 0 }
     }
 
-    const amountCents = Math.floor((delta * args.cpmCents) / 1000)
+    // Video already hit its lifetime cap: seal it — advance the view
+    // high-water mark to the latest count so we stop reconsidering it every
+    // run, but mint no commission.
+    if (remainingCapCents != null && remainingCapCents <= 0) {
+      await tx.affiliatePost.update({
+        where: { id: post.id },
+        data: { paidViews: np.views },
+      })
+      return { paidViews: 0, commissionCents: 0 }
+    }
+
+    let amountCents = Math.floor((delta * args.cpmCents) / 1000)
     if (amountCents <= 0) {
       // Delta too small to clear a cent — leave paidViews untouched so the
       // residual views roll into the next run instead of being lost.
       return { paidViews: 0, commissionCents: 0 }
+    }
+
+    // Clamp this run's accrual to whatever cap room is left, so a single viral
+    // run can't blow past the per-video cap.
+    let capReached = false
+    if (remainingCapCents != null && amountCents >= remainingCapCents) {
+      amountCents = remainingCapCents
+      capReached = true
     }
 
     try {
@@ -491,14 +629,20 @@ async function accruePost(args: AccrueArgs): Promise<{ paidViews: number; commis
 
     await tx.affiliatePost.update({
       where: { id: post.id },
-      data: { paidViews: post.paidViews + delta },
+      data: {
+        // On the run that crosses the cap, seal the view high-water mark to the
+        // latest count: we paid only `remainingCapCents`, but the video is done
+        // earning so its remaining views shouldn't roll forward.
+        paidViews: capReached ? np.views : post.paidViews + delta,
+        paidCents: { increment: amountCents },
+      },
     })
     await tx.affiliate.update({
       where: { id: args.affiliateId },
       data: { pendingPayoutCents: { increment: amountCents } },
     })
 
-    return { paidViews: delta, commissionCents: amountCents }
+    return { paidViews: capReached ? Math.max(0, np.views - post.paidViews) : delta, commissionCents: amountCents }
   })
 }
 
@@ -570,6 +714,8 @@ export interface ContentSummary {
     paidCents: number
   }
   cpmCents: { instagram: number; tiktok: number }
+  /** Resolved per-video lifetime earnings cap (cents); null = uncapped. */
+  perVideoCapCents: number | null
   /** Video-creator program application gate. Earning + payout require 'approved'. */
   programStatus: 'none' | 'pending' | 'approved' | 'rejected'
   appliedAt: string | null
@@ -601,6 +747,7 @@ export async function getContentSummary(affiliateId: string): Promise<ContentSum
       where: { id: affiliateId },
       select: {
         contentCpmCents: true,
+        contentPerVideoCapCents: true,
         contentProgramStatus: true,
         contentAppliedAt: true,
         contentRejectionReason: true,
@@ -611,6 +758,7 @@ export async function getContentSummary(affiliateId: string): Promise<ContentSum
   const override = affiliate?.contentCpmCents ?? null
   const igCpm = resolveCpmCents(settings, 'instagram', override)
   const ttCpm = resolveCpmCents(settings, 'tiktok', override)
+  const perVideoCapCents = resolvePerVideoCapCents(settings, affiliate?.contentPerVideoCapCents ?? null)
 
   const byStatus: Record<string, number> = {}
   for (const row of contentStats as any[]) byStatus[row.status] = row._sum?.amountCents ?? 0
@@ -630,6 +778,7 @@ export async function getContentSummary(affiliateId: string): Promise<ContentSum
       paidCents: byStatus.paid ?? 0,
     },
     cpmCents: { instagram: igCpm, tiktok: ttCpm },
+    perVideoCapCents,
     programStatus: (affiliate?.contentProgramStatus as ContentSummary['programStatus']) ?? 'none',
     appliedAt: affiliate?.contentAppliedAt ? affiliate.contentAppliedAt.toISOString() : null,
     rejectionReason: affiliate?.contentRejectionReason ?? null,
@@ -687,4 +836,259 @@ export async function applyToContentProgram(
     },
   })
   return { status: 'pending' }
+}
+
+// ============================================================================
+// Performance analytics (per-video stats + time series)
+// ============================================================================
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+export interface ContentAnalyticsTotals {
+  views: number
+  engagement: number
+  likes: number
+  comments: number
+  shares: number
+  posts: number
+}
+
+export interface ContentAnalyticsPoint {
+  /** UTC day, `YYYY-MM-DD`. */
+  date: string
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  engagement: number
+}
+
+export interface ContentAnalyticsVideo {
+  id: string
+  platform: string
+  handle: string
+  url: string | null
+  caption: string | null
+  postedAt: string | null
+  /** Cumulative lifetime metrics (latest poll). */
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  engagement: number
+  /** Views gained within the selected window. */
+  periodViews: number
+  lastPolledAt: string | null
+}
+
+export interface ContentAnalytics {
+  range: { from: string; to: string }
+  totals: ContentAnalyticsTotals
+  previousTotals: ContentAnalyticsTotals
+  /** % change vs the immediately-preceding equal-length window. null = no prior baseline. */
+  deltaPct: {
+    views: number | null
+    engagement: number | null
+    likes: number | null
+    comments: number | null
+    shares: number | null
+    posts: number | null
+  }
+  /** Per-day incremental metrics across the selected window (view-date attribution). */
+  daily: ContentAnalyticsPoint[]
+  videos: ContentAnalyticsVideo[]
+}
+
+function dayKey(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
+function startOfUtcDay(d: Date): Date {
+  return new Date(`${dayKey(d)}T00:00:00.000Z`)
+}
+
+function pctChange(cur: number, prev: number): number | null {
+  if (prev === 0) return cur > 0 ? 100 : null
+  return Math.round(((cur - prev) / prev) * 100)
+}
+
+function emptyTotals(): ContentAnalyticsTotals {
+  return { views: 0, engagement: 0, likes: 0, comments: 0, shares: 0, posts: 0 }
+}
+
+/**
+ * Performance analytics for one affiliate's connected content over a window.
+ *
+ * Time series uses VIEW-DATE attribution: snapshots are cumulative, so we
+ * sum the positive per-poll deltas of each post into the day the views were
+ * observed. The snapshot just inside the previous window seeds each post's
+ * baseline, so the selected window's daily numbers are accurate (only the
+ * very first day of the *previous* window can be under-counted, which never
+ * affects the displayed current-period totals).
+ *
+ * Per-video rows carry cumulative lifetime metrics (the latest poll) plus the
+ * views gained within the window.
+ */
+export async function getContentAnalytics(
+  affiliateId: string,
+  opts: { from?: Date; to?: Date } = {},
+): Promise<ContentAnalytics> {
+  const to = opts.to ?? new Date()
+  const from = opts.from ?? new Date(to.getTime() - 7 * DAY_MS)
+  const spanMs = Math.max(DAY_MS, to.getTime() - from.getTime())
+  const prevFrom = new Date(from.getTime() - spanMs)
+
+  const accounts = await prisma.affiliateSocialAccount.findMany({
+    where: { affiliateId },
+    select: { id: true, platform: true, handle: true },
+  })
+  const accountMeta = new Map(
+    accounts.map((a) => [a.id, { platform: String(a.platform), handle: a.handle }]),
+  )
+  const accountIds = accounts.map((a) => a.id)
+
+  if (accountIds.length === 0) {
+    return {
+      range: { from: from.toISOString(), to: to.toISOString() },
+      totals: emptyTotals(),
+      previousTotals: emptyTotals(),
+      deltaPct: { views: null, engagement: null, likes: null, comments: null, shares: null, posts: null },
+      daily: [],
+      videos: [],
+    }
+  }
+
+  const posts = await prisma.affiliatePost.findMany({
+    where: { socialAccountId: { in: accountIds } },
+    select: {
+      id: true,
+      socialAccountId: true,
+      platform: true,
+      url: true,
+      caption: true,
+      postedAt: true,
+      lastViews: true,
+      lastLikes: true,
+      lastComments: true,
+      lastShares: true,
+      lastPolledAt: true,
+    },
+  })
+  const postIds = posts.map((p) => p.id)
+
+  // Per-UTC-day incremental buckets across [prevFrom, to].
+  const buckets = new Map<string, { views: number; likes: number; comments: number; shares: number }>()
+  const periodViewsByPost = new Map<string, number>()
+
+  if (postIds.length > 0) {
+    const snaps = await prisma.affiliatePostSnapshot.findMany({
+      where: { postId: { in: postIds }, capturedAt: { gte: prevFrom, lte: to } },
+      orderBy: [{ postId: 'asc' }, { capturedAt: 'asc' }],
+      select: { postId: true, views: true, likes: true, comments: true, shares: true, capturedAt: true },
+    })
+
+    let curPost: string | null = null
+    let prev = { views: 0, likes: 0, comments: 0, shares: 0 }
+    for (const s of snaps) {
+      if (s.postId !== curPost) {
+        // First snapshot for this post = baseline; no delta attributed.
+        curPost = s.postId
+        prev = { views: s.views, likes: s.likes, comments: s.comments, shares: s.shares }
+        continue
+      }
+      const dv = Math.max(0, s.views - prev.views)
+      const dl = Math.max(0, s.likes - prev.likes)
+      const dc = Math.max(0, s.comments - prev.comments)
+      const ds = Math.max(0, s.shares - prev.shares)
+      prev = { views: s.views, likes: s.likes, comments: s.comments, shares: s.shares }
+      if (dv === 0 && dl === 0 && dc === 0 && ds === 0) continue
+      const key = dayKey(s.capturedAt)
+      const b = buckets.get(key) ?? { views: 0, likes: 0, comments: 0, shares: 0 }
+      b.views += dv
+      b.likes += dl
+      b.comments += dc
+      b.shares += ds
+      buckets.set(key, b)
+      if (s.capturedAt >= from && s.capturedAt <= to) {
+        periodViewsByPost.set(s.postId, (periodViewsByPost.get(s.postId) ?? 0) + dv)
+      }
+    }
+  }
+
+  // Current window daily series + totals.
+  const daily: ContentAnalyticsPoint[] = []
+  const totals = emptyTotals()
+  for (let t = startOfUtcDay(from).getTime(); t <= to.getTime(); t += DAY_MS) {
+    const key = dayKey(new Date(t))
+    const b = buckets.get(key) ?? { views: 0, likes: 0, comments: 0, shares: 0 }
+    daily.push({
+      date: key,
+      views: b.views,
+      likes: b.likes,
+      comments: b.comments,
+      shares: b.shares,
+      engagement: b.likes + b.comments + b.shares,
+    })
+    totals.views += b.views
+    totals.likes += b.likes
+    totals.comments += b.comments
+    totals.shares += b.shares
+  }
+  totals.engagement = totals.likes + totals.comments + totals.shares
+
+  // Previous window totals: [prevFrom, from).
+  const previousTotals = emptyTotals()
+  for (let t = startOfUtcDay(prevFrom).getTime(); t < from.getTime(); t += DAY_MS) {
+    const b = buckets.get(dayKey(new Date(t)))
+    if (!b) continue
+    previousTotals.views += b.views
+    previousTotals.likes += b.likes
+    previousTotals.comments += b.comments
+    previousTotals.shares += b.shares
+  }
+  previousTotals.engagement = previousTotals.likes + previousTotals.comments + previousTotals.shares
+
+  // Posts counts attributed by upload date.
+  for (const p of posts) {
+    if (!p.postedAt) continue
+    if (p.postedAt >= from && p.postedAt <= to) totals.posts++
+    else if (p.postedAt >= prevFrom && p.postedAt < from) previousTotals.posts++
+  }
+
+  const videos: ContentAnalyticsVideo[] = posts
+    .map((p) => {
+      const meta = accountMeta.get(p.socialAccountId)
+      return {
+        id: p.id,
+        platform: String(p.platform),
+        handle: meta?.handle ?? '',
+        url: p.url,
+        caption: p.caption,
+        postedAt: p.postedAt ? p.postedAt.toISOString() : null,
+        views: p.lastViews,
+        likes: p.lastLikes,
+        comments: p.lastComments,
+        shares: p.lastShares,
+        engagement: p.lastLikes + p.lastComments + p.lastShares,
+        periodViews: periodViewsByPost.get(p.id) ?? 0,
+        lastPolledAt: p.lastPolledAt ? p.lastPolledAt.toISOString() : null,
+      }
+    })
+    .sort((a, b) => b.views - a.views)
+
+  return {
+    range: { from: from.toISOString(), to: to.toISOString() },
+    totals,
+    previousTotals,
+    deltaPct: {
+      views: pctChange(totals.views, previousTotals.views),
+      engagement: pctChange(totals.engagement, previousTotals.engagement),
+      likes: pctChange(totals.likes, previousTotals.likes),
+      comments: pctChange(totals.comments, previousTotals.comments),
+      shares: pctChange(totals.shares, previousTotals.shares),
+      posts: pctChange(totals.posts, previousTotals.posts),
+    },
+    daily,
+    videos,
+  }
 }
