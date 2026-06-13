@@ -108,6 +108,21 @@ export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
     }
   }, [params.connect, syncConnect])
 
+  // Onboarding opens in a separate tab on web, so the return lands there, not
+  // here. Re-sync when this tab regains focus so it catches up too.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return
+    const onFocus = () => {
+      if (document.visibilityState === 'visible') syncConnect()
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [syncConnect])
+
   const referralLink = summary ? buildReferralLink(summary.affiliate.code) : ''
 
   const copyLink = useCallback(async () => {
@@ -330,14 +345,25 @@ function PayoutSetupCard({
   const status = summary.affiliate.payoutStatus ?? 'unverified'
 
   const onboard = useCallback(async () => {
+    // Open the tab synchronously inside the click handler so popup blockers
+    // (which block window.open after an awaited request) allow it.
+    const popup =
+      Platform.OS === 'web' && typeof window !== 'undefined'
+        ? window.open('', '_blank')
+        : null
     setWorking(true)
     try {
       const res = await affiliateApi.onboardStripeConnect(http)
-      if (!res.onboardUrl) return
+      if (!res.onboardUrl) {
+        if (popup) popup.close()
+        return
+      }
       if (Platform.OS === 'web') {
-        // The return_url (set server-side) brings the browser back to
-        // /affiliate?connect=done, where the dashboard re-syncs status.
-        if (typeof window !== 'undefined') window.open(res.onboardUrl, '_self')
+        // The return_url (set server-side) brings the new tab back to
+        // /creator?tab=refer&connect=done, where the dashboard re-syncs
+        // status; this tab re-syncs on focus (see AffiliateReferralPanel).
+        if (popup) popup.location.href = res.onboardUrl
+        else if (typeof window !== 'undefined') window.location.assign(res.onboardUrl)
         return
       }
       // Native: open the hosted onboarding page; when the in-app browser

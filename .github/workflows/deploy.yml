@@ -632,6 +632,7 @@ jobs:
           if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
           if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
           if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_CONNECT_WEBHOOK_SECRET="${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
           if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
           if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi
@@ -1135,6 +1136,7 @@ jobs:
           if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
           if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
           if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_CONNECT_WEBHOOK_SECRET="${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
           if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
           if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi
@@ -1747,6 +1749,7 @@ jobs:
           if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
           if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
           if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_CONNECT_WEBHOOK_SECRET="${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
           if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
           if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi
@@ -2348,6 +2351,7 @@ jobs:
           if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
           if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
           if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_CONNECT_WEBHOOK_SECRET="${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
           if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
           if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi

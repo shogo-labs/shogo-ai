@@ -51,14 +51,17 @@ export default observer(function PayoutSetupScreen() {
   const [working, setWorking] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Re-read the live Connect status (the endpoint re-syncs from Stripe and
+  // persists), so the screen reflects a now-verified/pending account without
+  // waiting on the `account.updated` webhook.
   const loadStatus = useCallback(async () => {
     try {
-      const res = await http.get<{ profile: { payoutStatus: string } }>(
-        '/api/marketplace/creator/profile',
+      const res = await http.get<{ payoutStatus: string }>(
+        '/api/marketplace/creator/connect/status',
       )
-      setPayoutStatus(res.data.profile.payoutStatus)
+      if (res.data?.payoutStatus) setPayoutStatus(res.data.payoutStatus)
     } catch {
-      // Profile may not exist yet; ignore.
+      // Profile/account may not exist yet; ignore.
     } finally {
       setLoading(false)
     }
@@ -76,7 +79,28 @@ export default observer(function PayoutSetupScreen() {
     }
   }, [params.connect, loadStatus])
 
+  // Onboarding now opens in a separate tab on web, so the return lands there,
+  // not here. Re-sync when this tab regains focus so it catches up too.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return
+    const onFocus = () => {
+      if (document.visibilityState === 'visible') loadStatus()
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [loadStatus])
+
   const startOnboarding = useCallback(async () => {
+    // Open the tab synchronously inside the click handler so popup blockers
+    // (which block window.open after an awaited request) allow it.
+    const popup =
+      Platform.OS === 'web' && typeof window !== 'undefined'
+        ? window.open('', '_blank')
+        : null
     setWorking(true)
     setError(null)
     try {
@@ -86,16 +110,19 @@ export default observer(function PayoutSetupScreen() {
       )
       const url = res.data?.onboardUrl
       if (!url) {
+        if (popup) popup.close()
         setError('Could not start payout onboarding. Please try again.')
         return
       }
       if (Platform.OS === 'web') {
-        if (typeof window !== 'undefined') window.open(url, '_self')
+        if (popup) popup.location.href = url
+        else if (typeof window !== 'undefined') window.location.assign(url)
         return
       }
       await WebBrowser.openBrowserAsync(url)
       await loadStatus()
     } catch {
+      if (popup) popup.close()
       setError('Could not start payout onboarding. Please try again.')
     } finally {
       setWorking(false)
@@ -111,6 +138,9 @@ export default observer(function PayoutSetupScreen() {
   }
 
   const verified = payoutStatus === 'verified'
+  // Details submitted; Stripe is still verifying. Don't offer to re-run
+  // onboarding (that just loops through Stripe's review-and-confirm screen).
+  const pending = payoutStatus === 'pending_verification'
 
   return (
     <View className="flex-1 bg-background">
@@ -170,6 +200,15 @@ export default observer(function PayoutSetupScreen() {
             <Text className="text-sm text-foreground flex-1">
               Your payouts are set up. Earnings will be sent to your connected
               bank account.
+            </Text>
+          </View>
+        ) : pending ? (
+          <View className="rounded-2xl border border-yellow-500/30 bg-yellow-500/5 p-4 flex-row items-center gap-3">
+            <ShieldCheck size={18} color="#ca8a04" />
+            <Text className="text-sm text-foreground flex-1">
+              Your details were submitted and Stripe is verifying your account.
+              This can take a little while — you don&apos;t need to do anything
+              else. We&apos;ll enable payouts as soon as it&apos;s approved.
             </Text>
           </View>
         ) : (
