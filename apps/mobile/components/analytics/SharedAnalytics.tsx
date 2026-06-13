@@ -1575,6 +1575,7 @@ export interface ActivityTimeseriesPoint {
   messages: number
   sessions: number
   toolCalls: number
+  activePayingSubscribers: number
 }
 
 const PCT = (n: number) => `${n.toFixed(n < 10 ? 1 : 0)}%`
@@ -1597,10 +1598,12 @@ export function ActivityTrendsChart({
       sessions: d.sessions,
       toolCalls: d.toolCalls,
       newWorkspaces: d.newWorkspaces,
+      activePayingSubscribers: d.activePayingSubscribers,
     },
   }))
   const metrics: TrendMetricOption[] = [
     { id: 'newUsers', label: 'New users', color: STACKED_PALETTE[1], format: formatNumber },
+    { id: 'activePayingSubscribers', label: 'Paid Users', color: STACKED_PALETTE[7], format: formatNumber },
     { id: 'messages', label: 'Messages', color: STACKED_PALETTE[0], format: formatNumber },
     { id: 'newProjects', label: 'Projects', color: STACKED_PALETTE[2], format: formatNumber },
     { id: 'sessions', label: 'Sessions', color: STACKED_PALETTE[3], format: formatNumber },

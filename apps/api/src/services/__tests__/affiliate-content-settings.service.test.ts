@@ -136,6 +136,34 @@ describe('resolveCpmCents', () => {
   })
 })
 
+describe('resolvePerVideoCapCents', () => {
+  test('precedence: creator override > platform default > no cap', async () => {
+    const s = await svc.getContentSettings({ force: true })
+    expect(svc.resolvePerVideoCapCents(s)).toBe(null) // default: uncapped
+    const withDefault = { ...s, perVideoCapCents: 100_000 } // $1,000 platform default
+    expect(svc.resolvePerVideoCapCents(withDefault)).toBe(100_000) // platform default
+    expect(svc.resolvePerVideoCapCents(withDefault, 50_000)).toBe(50_000) // creator wins
+    expect(svc.resolvePerVideoCapCents(withDefault, null)).toBe(100_000) // null override → default
+    // Non-positive values are treated as "no cap" defensively.
+    expect(svc.resolvePerVideoCapCents({ ...s, perVideoCapCents: 0 })).toBe(null)
+    expect(svc.resolvePerVideoCapCents(s, 0)).toBe(null)
+  })
+
+  test('reads and clears the platform default cap setting', async () => {
+    await svc.setContentSettings({ perVideoCapCents: 100_000 }, 'admin-1')
+    expect(store.get('affiliate.content.perVideoCapCents')).toBe('100000')
+    expect((await svc.getContentSettings({ force: true })).perVideoCapCents).toBe(100_000)
+
+    const after = await svc.setContentSettings({ perVideoCapCents: null }, 'admin-1')
+    expect(store.has('affiliate.content.perVideoCapCents')).toBe(false)
+    expect(after.perVideoCapCents).toBe(null)
+  })
+
+  test('rejects a non-positive platform cap', async () => {
+    await expect(svc.setContentSettings({ perVideoCapCents: 0 }, 'admin-1')).rejects.toThrow()
+  })
+})
+
 describe('EnsembleData token', () => {
   test('stores encrypted and reports configured', async () => {
     await svc.setEnsembleDataToken('secret-token', 'admin-1')

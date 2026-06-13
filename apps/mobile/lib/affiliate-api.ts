@@ -113,12 +113,70 @@ export interface AffiliateContentSummary {
   }
   cpmCents: { instagram: number; tiktok: number }
   /**
+   * Resolved per-video lifetime earnings cap (cents); null = uncapped. A video
+   * stops earning once its cumulative content commissions reach this amount.
+   * Optional for older backends that predate the cap.
+   */
+  perVideoCapCents?: number | null
+  /**
    * Video-creator program application gate. Earning AND payout of content
    * commissions require `approved`. Defaults to `none` for older backends.
    */
   programStatus: ContentProgramStatus
   appliedAt: string | null
   rejectionReason: string | null
+}
+
+export interface ContentAnalyticsTotals {
+  views: number
+  engagement: number
+  likes: number
+  comments: number
+  shares: number
+  posts: number
+}
+
+export interface ContentAnalyticsPoint {
+  /** UTC day, `YYYY-MM-DD`. */
+  date: string
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  engagement: number
+}
+
+export interface ContentAnalyticsVideo {
+  id: string
+  platform: SocialPlatform
+  handle: string
+  url: string | null
+  caption: string | null
+  postedAt: string | null
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  engagement: number
+  /** Views gained within the selected window. */
+  periodViews: number
+  lastPolledAt: string | null
+}
+
+export interface ContentAnalytics {
+  range: { from: string; to: string }
+  totals: ContentAnalyticsTotals
+  previousTotals: ContentAnalyticsTotals
+  deltaPct: {
+    views: number | null
+    engagement: number | null
+    likes: number | null
+    comments: number | null
+    shares: number | null
+    posts: number | null
+  }
+  daily: ContentAnalyticsPoint[]
+  videos: ContentAnalyticsVideo[]
 }
 
 export const affiliateApi = {
@@ -216,11 +274,29 @@ export const affiliateApi = {
         posts: [],
         totals: { posts: 0, lifetimeViews: 0, paidViews: 0, pendingCents: 0, approvedCents: 0, paidCents: 0 },
         cpmCents: { instagram: 0, tiktok: 0 },
+        perVideoCapCents: null,
         programStatus: 'none',
         appliedAt: null,
         rejectionReason: null,
       }
     )
+  },
+
+  /**
+   * Per-video stats + a daily performance time series for the caller's
+   * connected content. Optional `from`/`to` (ISO) bound the window;
+   * defaults to the last 7 days server-side.
+   */
+  async getContentAnalytics(
+    http: HttpClient,
+    opts?: { from?: string; to?: string },
+  ): Promise<ContentAnalytics | null> {
+    const qs = new URLSearchParams()
+    if (opts?.from) qs.set('from', opts.from)
+    if (opts?.to) qs.set('to', opts.to)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    const res = await http.get<any>(`/api/affiliates/me/content/analytics${suffix}`)
+    return res.data?.analytics ?? null
   },
 
   /**

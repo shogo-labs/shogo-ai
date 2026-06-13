@@ -48,12 +48,26 @@ import {
   addSocialAccount,
   applyToContentProgram,
   contentErrorStatus,
+  getContentAnalytics,
   getContentSummary,
   isContentCpmEnabled,
   listSocialAccounts,
   removeSocialAccount,
   verifyAccount,
 } from '../services/affiliate-content.service'
+
+/**
+ * Parse optional `from`/`to` ISO query params for analytics windows.
+ * Invalid values are ignored (the service applies its default window).
+ */
+function parseAnalyticsRange(c: any): { from?: Date; to?: Date } {
+  const parse = (raw: string | undefined): Date | undefined => {
+    if (!raw) return undefined
+    const d = new Date(raw)
+    return Number.isNaN(d.getTime()) ? undefined : d
+  }
+  return { from: parse(c.req.query('from')), to: parse(c.req.query('to')) }
+}
 
 function isFlagOn(): boolean {
   return process.env.SHOGO_AFFILIATES_NATIVE === 'true'
@@ -670,6 +684,20 @@ export function affiliateRoutes(): Hono {
     }
     const summary = await getContentSummary(affiliateId)
     return c.json({ ok: true, ...summary })
+  })
+
+  /**
+   * GET /api/affiliates/me/content/analytics — per-video stats + a daily
+   * performance time series for the caller's connected content. Optional
+   * `from`/`to` ISO query params bound the window (default: last 7 days).
+   */
+  router.get('/affiliates/me/content/analytics', async (c) => {
+    const blocked = await contentEnabledOr503(c)
+    if (blocked) return blocked
+    const affiliateId = await callerAffiliateId(c)
+    if (!affiliateId) return c.json({ ok: true, analytics: null })
+    const analytics = await getContentAnalytics(affiliateId, parseAnalyticsRange(c))
+    return c.json({ ok: true, analytics })
   })
 
   /**

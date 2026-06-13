@@ -173,16 +173,19 @@ async function createConnectOnboardingLink(
   returnPath: string,
 ): Promise<string> {
   const base = getFrontendUrl().replace(/\/$/, '');
+  // `returnPath` may already carry a query string (e.g. `/creator?tab=publish`),
+  // so pick the right separator before appending `connect=...`.
+  const sep = returnPath.includes('?') ? '&' : '?';
   if (!isStripeConfigured() || accountId.startsWith('acct_mock')) {
-    return `${base}${returnPath}?connect=mock`;
+    return `${base}${returnPath}${sep}connect=mock`;
   }
 
   const stripe = getStripe();
   const link = await stripe.accountLinks.create({
     account: accountId,
     type: 'account_onboarding',
-    refresh_url: `${base}${returnPath}?connect=refresh`,
-    return_url: `${base}${returnPath}?connect=done`,
+    refresh_url: `${base}${returnPath}${sep}connect=refresh`,
+    return_url: `${base}${returnPath}${sep}connect=done`,
   });
   return link.url;
 }
@@ -195,7 +198,9 @@ export async function createAffiliateOnboardingLink(
   affiliateId: string,
 ): Promise<string> {
   const accountId = await createCustomAccountForAffiliate(affiliateId);
-  return createConnectOnboardingLink(accountId, '/affiliate');
+  // Return into the unified Creator hub's Referrals tab so the `connect=done`
+  // param survives (the legacy `/affiliate` route just redirects and drops it).
+  return createConnectOnboardingLink(accountId, '/creator?tab=refer');
 }
 
 /**
@@ -208,7 +213,9 @@ export async function createCreatorOnboardingLink(
   country = 'US',
 ): Promise<string> {
   const accountId = await createCustomAccount(creatorProfileId, email, country);
-  return createConnectOnboardingLink(accountId, '/marketplace/creator');
+  // Return into the unified Creator hub's Publishing tab so the `connect=done`
+  // param survives (the legacy `/marketplace/creator` route just redirects).
+  return createConnectOnboardingLink(accountId, '/creator?tab=publish');
 }
 
 /**
@@ -235,6 +242,37 @@ export async function syncAffiliatePayoutStatus(
   await prisma.affiliate.update({
     where: { id: affiliateId },
     data: { payoutStatus: payoutStatus as any },
+  });
+  return payoutStatus;
+}
+
+/**
+ * Re-read a creator's Express account from Stripe and persist the derived
+ * `payoutStatus`. Mirror of {@link syncAffiliatePayoutStatus} so the app can
+ * reflect a verified/pending account immediately on return from hosted
+ * onboarding without waiting for the `account.updated` webhook (which remains
+ * the source of truth but may lag or, if the Connect endpoint is
+ * misconfigured, not fire at all).
+ */
+export async function syncCreatorPayoutStatus(
+  creatorProfileId: string,
+): Promise<PayoutStatus> {
+  const profile = await prisma.creatorProfile.findUnique({
+    where: { id: creatorProfileId },
+  });
+  if (!profile?.stripeCustomAccountId) {
+    throw new Error('Creator has no Stripe Connect account');
+  }
+  if (!isStripeConfigured()) {
+    return (profile.payoutStatus as PayoutStatus) ?? PayoutStatus.pending_verification;
+  }
+
+  const stripe = getStripe();
+  const acct = await stripe.accounts.retrieve(profile.stripeCustomAccountId);
+  const payoutStatus = derivePayoutStatusFromAccount(acct);
+  await prisma.creatorProfile.update({
+    where: { id: creatorProfileId },
+    data: { payoutStatus },
   });
   return payoutStatus;
 }
