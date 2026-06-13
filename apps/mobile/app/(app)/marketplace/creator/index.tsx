@@ -9,8 +9,9 @@ import {
   ScrollView,
   ActivityIndicator,
   Image,
+  Platform,
 } from 'react-native'
-import { Redirect, useRouter } from 'expo-router'
+import { Redirect, useRouter, useLocalSearchParams } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft,
@@ -115,13 +116,16 @@ function formatCents(cents: number): string {
 
 function payoutColor(status: string): string {
   if (status === 'verified') return 'bg-green-500'
-  if (status === 'pending') return 'bg-yellow-500'
+  if (status === 'pending_verification' || status === 'requires_update') return 'bg-yellow-500'
+  if (status === 'disabled') return 'bg-red-500'
   return 'bg-gray-400'
 }
 
 function payoutLabel(status: string): string {
   if (status === 'verified') return 'Verified'
-  if (status === 'pending') return 'Pending verification'
+  if (status === 'pending_verification') return 'Pending verification'
+  if (status === 'requires_update') return 'Action required'
+  if (status === 'disabled') return 'Disabled'
   return 'Not set up'
 }
 
@@ -178,6 +182,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
   const router = useRouter()
   const { user } = useAuth()
   const http = useDomainHttp()
+  const params = useLocalSearchParams<{ connect?: string }>()
 
   const [profile, setProfile] = useState<CreatorProfile | null>(null)
   const [dashboardListings, setDashboardListings] = useState<DashboardListing[]>([])
@@ -227,6 +232,40 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
     loadData()
   }, [loadData])
 
+  // Re-read the live Connect status (re-syncs from Stripe + persists), then
+  // refresh the dashboard. Source of truth is the `account.updated` webhook,
+  // but it can lag or, if misconfigured, not fire at all.
+  const syncPayout = useCallback(async () => {
+    try {
+      await http.get('/api/marketplace/creator/connect/status')
+    } catch {
+      // best effort
+    }
+    await loadData()
+  }, [http, loadData])
+
+  // Returning from Stripe-hosted onboarding (return_url adds ?connect=done).
+  useEffect(() => {
+    if (params.connect === 'done' || params.connect === 'refresh') {
+      syncPayout()
+    }
+  }, [params.connect, syncPayout])
+
+  // Onboarding opens in a separate tab on web; re-sync when this tab regains
+  // focus so it catches up after the user finishes in the other tab.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return
+    const onFocus = () => {
+      if (document.visibilityState === 'visible') syncPayout()
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [syncPayout])
+
   const handleBecomeCreator = useCallback(async () => {
     if (!user?.name) return
     setCreating(true)
@@ -260,6 +299,10 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
   // Onboarding step state
   const stepProfile = !!profile
   const stepPayout = profile?.payoutStatus === 'verified'
+  // Details submitted; Stripe is still verifying. Treat as the step being
+  // done-but-pending so we don't show an actionable "Set up payouts" CTA that
+  // just loops the creator back through Stripe's review-and-confirm screen.
+  const stepPayoutPending = profile?.payoutStatus === 'pending_verification'
   const stepListing = dashboardListings.some((l) => l.status === 'published')
   const completedSteps = [stepProfile, stepPayout, stepListing].filter(Boolean).length
   const onboardingComplete = completedSteps === 3
@@ -511,7 +554,12 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
           />
           <ChecklistItem
             done={stepPayout}
-            label="Set up payouts to receive earnings"
+            pending={stepPayoutPending}
+            label={
+              stepPayoutPending
+                ? 'Payouts submitted — pending Stripe verification'
+                : 'Set up payouts to receive earnings'
+            }
             onPress={
               !stepPayout
                 ? () => router.push('/(app)/marketplace/creator/payout-setup' as any)
@@ -700,11 +748,13 @@ function ValueProp({
 
 function ChecklistItem({
   done,
+  pending,
   label,
   onPress,
   isLast,
 }: {
   done: boolean
+  pending?: boolean
   label: string
   onPress?: () => void
   isLast?: boolean
@@ -718,6 +768,8 @@ function ChecklistItem({
     >
       {done ? (
         <CheckCircle2 size={18} color="#22c55e" />
+      ) : pending ? (
+        <Clock size={18} color="#ca8a04" />
       ) : (
         <Circle size={18} color="#a1a1aa" />
       )}

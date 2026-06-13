@@ -242,15 +242,15 @@ describe('createCreatorOnboardingLink', () => {
     expect(url).toBe('https://connect.stripe.com/setup/e/creator123')
     const linkCall = stripeCalls.find((c) => c.method === 'accountLinks.create')!
     expect(linkCall.args[0]).toMatchObject({ account: 'acct_x', type: 'account_onboarding' })
-    expect(linkCall.args[0].return_url).toMatch(/\/marketplace\/creator\?connect=done$/)
-    expect(linkCall.args[0].refresh_url).toMatch(/\/marketplace\/creator\?connect=refresh$/)
+    expect(linkCall.args[0].return_url).toMatch(/\/creator\?tab=publish&connect=done$/)
+    expect(linkCall.args[0].refresh_url).toMatch(/\/creator\?tab=publish&connect=refresh$/)
   })
 
   it('returns an app URL (no Stripe) when unconfigured', async () => {
     delete (process.env as any).STRIPE_SECRET_KEY
     profiles.set('c1', { id: 'c1', userId: 'u1', stripeCustomAccountId: null })
     const url = await sc.createCreatorOnboardingLink('c1', 'me@x.io')
-    expect(url).toMatch(/\/marketplace\/creator\?connect=mock$/)
+    expect(url).toMatch(/\/creator\?tab=publish&connect=mock$/)
   })
 })
 
@@ -373,7 +373,7 @@ describe('createAffiliateOnboardingLink', () => {
     delete (process.env as any).STRIPE_SECRET_KEY
     affiliates.set('a1', { id: 'a1', userId: 'u1', stripeCustomAccountId: null, user: { email: 'x@y.io' } })
     const url = await sc.createAffiliateOnboardingLink('a1')
-    expect(url).toMatch(/\/affiliate\?connect=mock$/)
+    expect(url).toMatch(/\/creator\?tab=refer&connect=mock$/)
     expect(stripeCalls).toHaveLength(0)
   })
 
@@ -388,8 +388,8 @@ describe('createAffiliateOnboardingLink', () => {
       account: 'acct_link_aff',
       type: 'account_onboarding',
     })
-    expect(linkCall.args[0].return_url).toMatch(/\/affiliate\?connect=done$/)
-    expect(linkCall.args[0].refresh_url).toMatch(/\/affiliate\?connect=refresh$/)
+    expect(linkCall.args[0].return_url).toMatch(/\/creator\?tab=refer&connect=done$/)
+    expect(linkCall.args[0].refresh_url).toMatch(/\/creator\?tab=refer&connect=refresh$/)
   })
 
   it('live branch: reuses an existing account id when present', async () => {
@@ -398,6 +398,37 @@ describe('createAffiliateOnboardingLink', () => {
     expect(stripeCalls.some((c) => c.method === 'accounts.create')).toBe(false)
     const linkCall = stripeCalls.find((c) => c.method === 'accountLinks.create')!
     expect(linkCall.args[0].account).toBe('acct_existing_aff')
+  })
+})
+
+describe('syncCreatorPayoutStatus', () => {
+  it('throws when creator has no Stripe account', async () => {
+    profiles.set('c1', { id: 'c1', userId: 'u1', stripeCustomAccountId: null })
+    await expect(sc.syncCreatorPayoutStatus('c1')).rejects.toThrow(/no Stripe Connect account/)
+  })
+
+  it('returns existing status without calling Stripe when unconfigured', async () => {
+    delete (process.env as any).STRIPE_SECRET_KEY
+    profiles.set('c2', { id: 'c2', userId: 'u2', stripeCustomAccountId: 'acct_c', payoutStatus: 'pending_verification' })
+    expect(await sc.syncCreatorPayoutStatus('c2')).toBe('pending_verification')
+    expect(stripeCalls).toHaveLength(0)
+  })
+
+  it('retrieves the account, derives and persists verified status', async () => {
+    profiles.set('c3', { id: 'c3', userId: 'u3', stripeCustomAccountId: 'acct_c', payoutStatus: 'pending_verification' })
+    nextAccountRetrieve = { payouts_enabled: true, details_submitted: true, requirements: {} }
+    const status = await sc.syncCreatorPayoutStatus('c3')
+    expect(status).toBe('verified')
+    expect(profiles.get('c3')?.payoutStatus).toBe('verified')
+    expect(stripeCalls.find((c) => c.method === 'accounts.retrieve')!.args[0]).toBe('acct_c')
+  })
+
+  it('derives pending_verification when details submitted but payouts disabled', async () => {
+    profiles.set('c4', { id: 'c4', userId: 'u4', stripeCustomAccountId: 'acct_c', payoutStatus: 'not_setup' })
+    nextAccountRetrieve = { payouts_enabled: false, details_submitted: true, requirements: {} }
+    const status = await sc.syncCreatorPayoutStatus('c4')
+    expect(status).toBe('pending_verification')
+    expect(profiles.get('c4')?.payoutStatus).toBe('pending_verification')
   })
 })
 

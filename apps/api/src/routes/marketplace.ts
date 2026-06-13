@@ -593,6 +593,35 @@ export function marketplaceRoutes() {
     }
   })
 
+  // Re-reads the creator's Express account from Stripe and persists the derived
+  // payoutStatus, returning it. Lets the app reflect a verified/pending account
+  // immediately on return from hosted onboarding without waiting for the
+  // `account.updated` webhook (which remains the source of truth).
+  app.get('/creator/connect/status', async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    try {
+      const profile = await marketplaceService.getCreatorProfile(authCtx.userId)
+      if (!profile) {
+        return c.json({ error: 'Creator profile not found' }, 404)
+      }
+      if (!profile.stripeCustomAccountId) {
+        return c.json({ payoutStatus: profile.payoutStatus ?? 'not_setup', onboarded: false })
+      }
+      const payoutStatus = await stripeConnect.syncCreatorPayoutStatus(profile.id)
+      return c.json({ payoutStatus, onboarded: true })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('no Stripe Connect account')) {
+        return c.json({ payoutStatus: 'not_setup', onboarded: false })
+      }
+      console.error('[marketplace] syncCreatorPayoutStatus', err)
+      return c.json({ error: 'Failed to load payout status' }, 500)
+    }
+  })
+
   app.get('/creator/payout-status', async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {

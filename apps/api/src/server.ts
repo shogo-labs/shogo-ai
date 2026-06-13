@@ -6634,18 +6634,31 @@ app.post('/api/webhooks/stripe', async (c) => {
 
     const payload = await c.req.text()
     const signature = c.req.header('stripe-signature') || ''
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
-    if (!webhookSecret) {
+    // The platform account endpoint (billing events) and the Connect endpoint
+    // (connected-account events like `account.updated`) point at this same URL
+    // but each has its own signing secret. Try both so either source verifies.
+    const secrets = [
+      process.env.STRIPE_WEBHOOK_SECRET,
+      process.env.STRIPE_CONNECT_WEBHOOK_SECRET,
+    ].filter((s): s is string => !!s)
+    if (secrets.length === 0) {
       console.error('[Stripe] STRIPE_WEBHOOK_SECRET is not configured')
       return c.json({ error: 'Webhook verification not configured' }, 500)
     }
 
-    let event: Stripe.Event
-    try {
-      // Use async version for Bun/SubtleCrypto compatibility
-      event = await stripe.webhooks.constructEventAsync(payload, signature, webhookSecret)
-    } catch (err: any) {
-      console.error('[Webhook] Signature verification failed:', err.message)
+    let event: Stripe.Event | null = null
+    let lastErr: any = null
+    for (const secret of secrets) {
+      try {
+        // Use async version for Bun/SubtleCrypto compatibility
+        event = await stripe.webhooks.constructEventAsync(payload, signature, secret)
+        break
+      } catch (err: any) {
+        lastErr = err
+      }
+    }
+    if (!event) {
+      console.error('[Webhook] Signature verification failed:', lastErr?.message)
       return c.json({ error: 'Invalid signature' }, 400)
     }
 
