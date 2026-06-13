@@ -129,6 +129,20 @@ export interface AdminCreatorAffiliate {
   downlineCount: number
   referralEarningsUsd: number
   contentEarningsUsd: number
+  /** Connected Instagram / TikTok handles for the content-CPM program. */
+  socialAccounts: AdminCreatorSocialAccount[]
+}
+
+/** A connected social handle on a creator's affiliate (content-CPM). */
+export interface AdminCreatorSocialAccount {
+  id: string
+  platform: string
+  handle: string
+  verificationStatus: string
+  verifiedAt: string | null
+  lastPolledAt: string | null
+  lastError: string | null
+  createdAt: string
 }
 
 /** A creator/affiliate owed an approved-but-unpaid balance (admin queue). */

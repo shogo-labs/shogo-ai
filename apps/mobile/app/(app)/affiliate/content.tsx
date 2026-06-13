@@ -34,6 +34,7 @@ import {
   type AffiliateSocialAccount,
   type SocialPlatform,
 } from '../../../lib/affiliate-api'
+import { ContentAnalyticsPanel } from '../../../components/analytics/ContentAnalytics'
 
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
@@ -146,6 +147,11 @@ export default function AffiliateContentScreen() {
     setTimeout(() => setCopiedId(null), 1500)
   }, [])
 
+  const analyticsFetcher = useCallback(
+    (range: { from: string; to: string }) => affiliateApi.getContentAnalytics(http, range),
+    [http],
+  )
+
   const applyToProgram = useCallback(async () => {
     setApplying(true)
     setApplyError(null)
@@ -211,6 +217,9 @@ export default function AffiliateContentScreen() {
               onApply={applyToProgram}
             />
             <EarningsCard summary={summary} />
+            {summary.programStatus === 'approved' ? (
+              <ContentAnalyticsPanel fetcher={analyticsFetcher} />
+            ) : null}
             <AddHandleCard
               platform={platform}
               setPlatform={setPlatform}

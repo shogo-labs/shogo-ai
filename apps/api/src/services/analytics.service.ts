@@ -2615,6 +2615,20 @@ export interface CreatorAffiliateSummary {
   /** Lifetime commission split by earning channel, in USD. */
   referralEarningsUsd: number
   contentEarningsUsd: number
+  /** Connected Instagram / TikTok handles for the content-CPM program. */
+  socialAccounts: CreatorSocialAccountSummary[]
+}
+
+/** One connected social handle on a creator's affiliate (content-CPM). */
+export interface CreatorSocialAccountSummary {
+  id: string
+  platform: string
+  handle: string
+  verificationStatus: string
+  verifiedAt: string | null
+  lastPolledAt: string | null
+  lastError: string | null
+  createdAt: string
 }
 
 /** Full per-creator profile: stats + published agents + affiliate 360. */
@@ -2681,6 +2695,19 @@ export async function getCreatorProfileDetail(
     include: {
       _count: { select: { attributions: true, children: true } },
       commissions: { select: { source: true, amountCents: true, status: true, payoutId: true } },
+      socialAccounts: {
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          platform: true,
+          handle: true,
+          verificationStatus: true,
+          verifiedAt: true,
+          lastPolledAt: true,
+          lastError: true,
+          createdAt: true,
+        },
+      },
     },
   })
 
@@ -2719,6 +2746,16 @@ export async function getCreatorProfileDetail(
       downlineCount: affiliate._count.children,
       referralEarningsUsd: referralCents / 100,
       contentEarningsUsd: contentCents / 100,
+      socialAccounts: affiliate.socialAccounts.map((s) => ({
+        id: s.id,
+        platform: String(s.platform),
+        handle: s.handle,
+        verificationStatus: String(s.verificationStatus),
+        verifiedAt: s.verifiedAt ? s.verifiedAt.toISOString() : null,
+        lastPolledAt: s.lastPolledAt ? s.lastPolledAt.toISOString() : null,
+        lastError: s.lastError ?? null,
+        createdAt: s.createdAt.toISOString(),
+      })),
     }
   }
 
