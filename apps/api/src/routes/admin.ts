@@ -75,19 +75,26 @@ export function adminRoutes(): Hono {
   router.use('/analytics/infra-history', requireSuperAdmin)
   router.use('/heartbeats', requireSuperAdmin)
   router.use('/heartbeats/*', requireSuperAdmin)
-  router.use('/affiliates/*', requireSuperAdmin)
+  // Affiliate program management (creator approval, rate/CPM overrides,
+  // payouts) is delegable to the creators:write scope. Must also be deferred
+  // by requireSuperAdminUnlessScoped (see middleware/admin-access.ts
+  // isScopeGatedAdminPath) so the generated CRUD router's blanket super-admin
+  // gate doesn't 403 scoped admins first.
+  router.use('/affiliates/*', requireAdminScope('creators:write'))
 
   // Assigning admin scopes to a user is itself a privileged action — keep it
   // super_admin-only so partial admins cannot escalate their own access.
   router.use('/users/:id/admin-access', requireSuperAdmin)
 
   // Delegable surfaces, gated by granular scopes. '/creators' is the exact
-  // list path; '/creators/*' covers the per-creator profile detail. Both must
-  // also be deferred by requireSuperAdminUnlessScoped (see
-  // middleware/admin-access.ts isScopeGatedAdminPath) so the generated CRUD
-  // router's blanket super-admin gate doesn't 403 scoped admins first.
-  router.use('/creators', requireAdminScope('creators:read'))
-  router.use('/creators/*', requireAdminScope('creators:read'))
+  // list path; '/creators/*' covers the per-creator profile detail. Viewable
+  // by creators:read and creators:write (write holders manage creators from
+  // the same profile page). Both must also be deferred by
+  // requireSuperAdminUnlessScoped (see middleware/admin-access.ts
+  // isScopeGatedAdminPath) so the generated CRUD router's blanket super-admin
+  // gate doesn't 403 scoped admins first.
+  router.use('/creators', requireAnyScope('creators:read', 'creators:write'))
+  router.use('/creators/*', requireAnyScope('creators:read', 'creators:write'))
 
   // Analytics is split across two pages with independent scopes. The broad
   // entry gate admits any analytics-type scope (so shared endpoints used by

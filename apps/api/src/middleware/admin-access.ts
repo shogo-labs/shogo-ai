@@ -107,13 +107,15 @@ export async function requireAnyAdmin(c: Context, next: Next) {
  * everything else under /api/admin stays super_admin-only.
  *
  * Keep in sync with the scope gates in apps/api/src/routes/admin.ts:
- *   - GET /creators                 → creators:read
- *   - GET /creators/:userId         → creators:read
+ *   - GET /creators                 → creators:read | creators:write
+ *   - GET /creators/:userId         → creators:read | creators:write
+ *   - /affiliates/*                 → creators:write
  *   - GET /analytics/*              → analytics:read
  *   - /analytics/infra-current|history → still super_admin (excluded here)
  */
 export function isScopeGatedAdminPath(path: string): boolean {
   if (path === "/api/admin/creators" || path.startsWith("/api/admin/creators/")) return true
+  if (path === "/api/admin/affiliates" || path.startsWith("/api/admin/affiliates/")) return true
   if (
     path.startsWith("/api/admin/analytics/") &&
     path !== "/api/admin/analytics/infra-current" &&

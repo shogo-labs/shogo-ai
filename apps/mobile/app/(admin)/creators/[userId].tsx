@@ -155,9 +155,12 @@ const CONTENT_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
 function AffiliateCard({
   a,
   onChanged,
+  canManage,
 }: {
   a: NonNullable<AdminCreatorDetail['affiliate']>
   onChanged: () => void | Promise<void>
+  /** Super admin or creators:write — gates all affiliate write actions. */
+  canManage: boolean
 }) {
   const rate = a.commissionRateBps != null ? `${(a.commissionRateBps / 100).toFixed(2)}%` : 'Tier default'
   const cpm = a.contentCpmCents != null ? `$${(a.contentCpmCents / 100).toFixed(2)} / 1k views` : 'Platform default'
@@ -352,7 +355,7 @@ function AffiliateCard({
           <Text className="text-[11px] text-muted-foreground">Applied {fmtDate(a.contentAppliedAt)}</Text>
         ) : null}
 
-        {status === 'pending' || status === 'rejected' || status === 'approved' ? (
+        {canManage && (status === 'pending' || status === 'rejected' || status === 'approved') ? (
           <View className="gap-2">
             {showReject ? (
               <TextInput
@@ -493,6 +496,8 @@ function AffiliateCard({
           </View>
         )}
 
+        {canManage ? (
+        <>
         <Text className="text-[11px] text-muted-foreground uppercase tracking-wide mt-1">
           Attach social handle (admin-verified)
         </Text>
@@ -563,9 +568,12 @@ function AffiliateCard({
           Marks the handle verified immediately (no bio code). Only do this once you&apos;ve confirmed
           ownership out of band. Earning still requires the video-creator program to be approved.
         </Text>
+        </>
+        ) : null}
       </View>
 
       {/* Manual payout — owed (approved + unpaid) balance */}
+      {canManage ? (
       <View className="border-t border-border mt-3 pt-3 gap-2">
         <View className="flex-row items-center justify-between">
           <View>
@@ -609,6 +617,7 @@ function AffiliateCard({
           Payouts are never automatic — releasing pays the creator's approved, unpaid commissions via Stripe.
         </Text>
       </View>
+      ) : null}
     </View>
   )
 }
@@ -644,6 +653,23 @@ export default function AdminCreatorProfile() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  // Affiliate write actions (approve/reject, social attach, payout) require
+  // super_admin or the creators:write scope; creators:read is view-only.
+  const [canManage, setCanManage] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_URL}/api/me`, { credentials: 'include' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (cancelled || !body?.ok) return
+        const role = body.data?.role
+        const scopes: string[] = Array.isArray(body.data?.adminScopes) ? body.data.adminScopes : []
+        setCanManage(role === 'super_admin' || scopes.includes('creators:write'))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   const load = useCallback(async () => {
     if (!userId) return
@@ -769,7 +795,7 @@ export default function AdminCreatorProfile() {
           {/* Affiliate / commissions */}
           {creator.affiliate ? (
             <>
-              <AffiliateCard a={creator.affiliate} onChanged={load} />
+              <AffiliateCard a={creator.affiliate} onChanged={load} canManage={canManage} />
               <CreatorContentAnalytics affiliateId={creator.affiliate.id} />
             </>
           ) : (

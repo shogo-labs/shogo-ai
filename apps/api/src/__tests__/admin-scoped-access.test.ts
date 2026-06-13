@@ -7,7 +7,8 @@
  * prisma + the analytics service are mocked), so it verifies the actual
  * gating wired up in routes/admin.ts:
  *   - analytics usage endpoints  -> analytics:read
- *   - /creators                  -> creators:read
+ *   - /creators                  -> creators:read | creators:write
+ *   - /affiliates/*              -> creators:write
  *   - infra + heartbeats         -> super_admin only
  *
  * Run: bun test apps/api/src/__tests__/admin-scoped-access.test.ts
@@ -23,6 +24,7 @@ const creatorsAdmin = { id: 'c', role: 'user', adminScopes: ['creators:read'] }
 const plainUser = { id: 'd', role: 'user', adminScopes: [] as string[] }
 const marketingAdmin = { id: 'e', role: 'user', adminScopes: ['marketing:read'] }
 const aiAdmin = { id: 'f', role: 'user', adminScopes: ['ai:read'] }
+const creatorsWriteAdmin = { id: 'g', role: 'user', adminScopes: ['creators:write'] }
 
 let currentUser: typeof superAdmin = superAdmin
 
@@ -35,6 +37,12 @@ const mockPrisma = {
   },
   infraSnapshot: {
     findFirst: mock(async () => null),
+  },
+  // Returning null makes the content-application handler respond 404 (affiliate
+  // not found) — which proves the request passed the creators:write gate rather
+  // than being 403'd. Authorization, not handler logic, is what we assert here.
+  affiliate: {
+    findUnique: mock(async () => null),
   },
 }
 
@@ -79,6 +87,16 @@ const CREATORS = '/api/admin/creators'
 const CREATOR_DETAIL = '/api/admin/creators/u_123'
 const INFRA = '/api/admin/analytics/infra-current'
 const HEARTBEATS = '/api/admin/heartbeats/overview'
+const CONTENT_APPLICATION = '/api/admin/affiliates/aff_1/content-application'
+
+/** POST an approve action to the (creators:write-gated) content-application route. */
+function approveCreator(app: Hono) {
+  return app.request(CONTENT_APPLICATION, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'approve' }),
+  })
+}
 
 describe('admin scoped access matrix', () => {
   test('super_admin can reach analytics + creators endpoints', async () => {
@@ -121,7 +139,7 @@ describe('admin scoped access matrix', () => {
     expect((await app.request(INFRA)).status).toBe(403)
   })
 
-  test('creators:read admin sees creators list + detail but not analytics or infra', async () => {
+  test('creators:read admin sees creators list + detail but cannot approve creators', async () => {
     currentUser = creatorsAdmin
     const app = createApp()
     expect((await app.request(CREATORS)).status).toBe(200)
@@ -129,6 +147,33 @@ describe('admin scoped access matrix', () => {
     expect((await app.request(OVERVIEW)).status).toBe(403)
     expect((await app.request(USAGE)).status).toBe(403)
     expect((await app.request(INFRA)).status).toBe(403)
+    // Read-only: the affiliate approval mutation is creators:write-gated.
+    expect((await approveCreator(app)).status).toBe(403)
+  })
+
+  test('creators:write admin can view creators and approve them', async () => {
+    currentUser = creatorsWriteAdmin
+    const app = createApp()
+    // Write holders can also view the creator surfaces (requireAnyScope).
+    expect((await app.request(CREATORS)).status).toBe(200)
+    expect((await app.request(CREATOR_DETAIL)).status).toBe(200)
+    // 404 (affiliate not found) proves the request passed the gate, not 403.
+    expect((await approveCreator(app)).status).toBe(404)
+    // Still scoped: no analytics or infra access.
+    expect((await app.request(OVERVIEW)).status).toBe(403)
+    expect((await app.request(INFRA)).status).toBe(403)
+  })
+
+  test('marketing:read admin cannot approve creators', async () => {
+    currentUser = marketingAdmin
+    const app = createApp()
+    expect((await approveCreator(app)).status).toBe(403)
+  })
+
+  test('super_admin can approve creators', async () => {
+    currentUser = superAdmin
+    const app = createApp()
+    expect((await approveCreator(app)).status).toBe(404)
   })
 
   test('a plain user is forbidden everywhere', async () => {

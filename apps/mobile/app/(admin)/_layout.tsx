@@ -85,9 +85,9 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
     title: 'Growth & Marketing',
     items: [
       { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics', scopes: ['analytics:read', 'marketing:read'] },
-      { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scope: 'creators:read' },
-      { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM' },
-      { href: '/(admin)/affiliate-payouts', icon: Wallet, label: 'Affiliate payouts' },
+      { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scopes: ['creators:read', 'creators:write'] },
+      { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM', scope: 'creators:write' },
+      { href: '/(admin)/affiliate-payouts', icon: Wallet, label: 'Affiliate payouts', scope: 'creators:write' },
     ],
   },
   {

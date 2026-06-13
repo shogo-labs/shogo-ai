@@ -1545,7 +1545,7 @@ export const api = {
    * commissions. On approve, pass `contentCpmCents` to set the per-creator CPM
    * (cents per 1,000 views) and/or `contentPerVideoCapCents` to set the
    * per-creator per-video lifetime earnings cap (cents); null clears either
-   * override (platform default). Super-admin only.
+   * override (platform default). Requires super-admin or the creators:write scope.
    */
   async reviewContentApplication(
     http: HttpClient,
