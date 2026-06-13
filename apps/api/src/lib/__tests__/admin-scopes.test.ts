@@ -39,6 +39,7 @@ describe('ADMIN_SCOPES catalog', () => {
     expect(ADMIN_SCOPE_IDS).toContain('marketing:read')
     expect(ADMIN_SCOPE_IDS).toContain('ai:read')
     expect(ADMIN_SCOPE_IDS).toContain('creators:read')
+    expect(ADMIN_SCOPE_IDS).toContain('creators:write')
   })
 
   it('has a unique id and a non-empty label for every entry', () => {

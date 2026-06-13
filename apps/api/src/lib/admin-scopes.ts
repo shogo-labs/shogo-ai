@@ -46,6 +46,12 @@ export const ADMIN_SCOPES = [
     description:
       "View marketplace creator stats and per-creator platform usage (read-only).",
   },
+  {
+    id: "creators:write",
+    label: "Creator management",
+    description:
+      "Approve/reject creators and manage affiliate program actions: content-program review, rate/CPM overrides, and payouts. Implies creator viewing.",
+  },
 ] as const
 
 export type AdminScope = (typeof ADMIN_SCOPES)[number]["id"]
