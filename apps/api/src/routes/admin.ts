@@ -26,6 +26,12 @@ import {
   type ContentSettingsPatch,
 } from '../services/affiliate-content-settings.service'
 import { payoutAffiliate, type PayoutAffiliateResult } from '../services/affiliate.service'
+import {
+  adminSetSocialAccount,
+  ContentAffiliateError,
+  contentErrorStatus,
+  getContentAnalytics,
+} from '../services/affiliate-content.service'
 import { prisma } from '../lib/prisma'
 
 /** Human-readable message for a failed {@link payoutAffiliate} outcome. */
@@ -1114,6 +1120,73 @@ export function adminRoutes(): Hono {
     } catch (error: any) {
       console.error('[Admin] content-application error:', error)
       return c.json({ error: { code: 'affiliate_update_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /affiliates/:id/social-accounts — attach a social handle to an
+   * affiliate and mark it verified WITHOUT the self-serve bio-code check.
+   * For operator-confirmed creators (ownership verified out of band).
+   *
+   * Body: { platform: 'instagram' | 'tiktok', handle: string, verified?: boolean }
+   * `verified` defaults to true; pass false to attach the handle in the
+   * `pending` state (the affiliate still has to run the bio-code flow).
+   */
+  router.post('/affiliates/:id/social-accounts', async (c) => {
+    const id = c.req.param('id')
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    const platform = body?.platform
+    const handle = body?.handle
+    if (typeof platform !== 'string' || typeof handle !== 'string') {
+      return c.json(
+        { error: { code: 'bad_request', message: 'platform and handle are required strings' } },
+        400,
+      )
+    }
+    const verified = body?.verified === undefined ? true : Boolean(body.verified)
+
+    try {
+      const account = await adminSetSocialAccount(id, platform, handle, { verified })
+      return c.json({ ok: true, account })
+    } catch (error: any) {
+      if (error instanceof ContentAffiliateError) {
+        return c.json(
+          { error: { code: error.code, message: error.message } },
+          contentErrorStatus(error.code) as any,
+        )
+      }
+      console.error('[Admin] set social account error:', error)
+      return c.json({ error: { code: 'social_account_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /affiliates/:id/content/analytics — per-video stats + a daily
+   * performance time series for a creator's connected content. Optional
+   * `from`/`to` ISO query params bound the window (default: last 7 days).
+   */
+  router.get('/affiliates/:id/content/analytics', async (c) => {
+    const id = c.req.param('id')
+    const parse = (raw: string | undefined): Date | undefined => {
+      if (!raw) return undefined
+      const d = new Date(raw)
+      return Number.isNaN(d.getTime()) ? undefined : d
+    }
+    try {
+      const analytics = await getContentAnalytics(id, {
+        from: parse(c.req.query('from')),
+        to: parse(c.req.query('to')),
+      })
+      return c.json({ ok: true, analytics })
+    } catch (error: any) {
+      console.error('[Admin] content analytics error:', error)
+      return c.json({ error: { code: 'content_analytics_failed', message: error.message } }, 500)
     }
   })
 

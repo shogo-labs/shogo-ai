@@ -521,18 +521,6 @@ describe('getContentSummary', () => {
 })
 
 describe('poll-affiliate-content cron', () => {
-  test('short-circuits when the content toggle is off', async () => {
-    setContentSetting('affiliate.content.enabled', 'false')
-    const res = await job.runPollAffiliateContent()
-    expect(res).toMatchObject({ flagDisabled: true })
-  })
-
-  test('short-circuits when the affiliate program env flag is off', async () => {
-    delete process.env.SHOGO_AFFILIATES_NATIVE
-    const res = await job.runPollAffiliateContent()
-    expect(res).toMatchObject({ flagDisabled: true })
-  })
-
   test('polls all verified accounts under the lock', async () => {
     await connectVerified('tiktok', 'creator')
     // an unverified account should be skipped

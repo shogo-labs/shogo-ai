@@ -33,9 +33,13 @@ import {
   XCircle,
   Clock,
   Wallet,
+  Plus,
+  AtSign,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL, type AdminCreatorDetail } from '../../../lib/api'
+import { ContentAnalyticsPanel } from '../../../components/analytics/ContentAnalytics'
+import type { ContentAnalytics } from '../../../lib/affiliate-api'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -236,6 +240,45 @@ function AffiliateCard({
     [a.id, reason, cpmInput, onChanged],
   )
 
+  // Admin-attach a social handle, verified out of band (skips the bio-code
+  // ownership flow). Defaults to TikTok since that's the most common.
+  const [newPlatform, setNewPlatform] = useState<'instagram' | 'tiktok'>('tiktok')
+  const [newHandle, setNewHandle] = useState('')
+  const [socialBusy, setSocialBusy] = useState(false)
+  const [socialError, setSocialError] = useState<string | null>(null)
+  const [socialMsg, setSocialMsg] = useState<string | null>(null)
+
+  const addSocial = useCallback(async () => {
+    const handle = newHandle.trim().replace(/^@+/, '')
+    if (!handle) {
+      setSocialError('Enter a handle.')
+      return
+    }
+    setSocialBusy(true)
+    setSocialError(null)
+    setSocialMsg(null)
+    try {
+      const res = await fetch(`${API_BASE}/affiliates/${encodeURIComponent(a.id)}/social-accounts`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform: newPlatform, handle, verified: true }),
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        setSocialError(body?.error?.message ?? 'Failed to attach handle.')
+        return
+      }
+      setSocialMsg(`@${handle} attached & verified on ${newPlatform}.`)
+      setNewHandle('')
+      await onChanged()
+    } catch {
+      setSocialError('Failed to attach handle. Please try again.')
+    } finally {
+      setSocialBusy(false)
+    }
+  }, [a.id, newPlatform, newHandle, onChanged])
+
   const payout = useCallback(async () => {
     setBusy('payout')
     setActionError(null)
@@ -355,6 +398,132 @@ function AffiliateCard({
         ) : null}
       </View>
 
+      {/* Connected social handles + admin-attach (verified without bio-code) */}
+      <View className="border-t border-border mt-3 pt-3 gap-2">
+        <Text className="text-[11px] text-muted-foreground uppercase tracking-wide">
+          Connected social handles
+        </Text>
+        {a.socialAccounts.length === 0 ? (
+          <Text className="text-[11px] text-muted-foreground">No social handles connected.</Text>
+        ) : (
+          <View className="gap-1.5">
+            {a.socialAccounts.map((s) => {
+              const verified = s.verificationStatus === 'verified'
+              return (
+                <View
+                  key={s.id}
+                  className="flex-row items-center justify-between rounded-md border border-border/60 px-3 py-2"
+                >
+                  <View className="flex-1 min-w-0">
+                    <View className="flex-row items-center gap-1.5">
+                      <Text className="text-sm text-foreground" numberOfLines={1}>
+                        @{s.handle}
+                      </Text>
+                      <Text className="text-[10px] text-muted-foreground capitalize">· {s.platform}</Text>
+                    </View>
+                    {s.lastError ? (
+                      <Text className="text-[10px] text-red-600" numberOfLines={1}>
+                        {s.lastError}
+                      </Text>
+                    ) : s.lastPolledAt ? (
+                      <Text className="text-[10px] text-muted-foreground">
+                        Last polled {fmtDate(s.lastPolledAt)}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <View className="flex-row items-center gap-1">
+                    {verified ? (
+                      <CheckCircle2 size={13} className="text-emerald-600" />
+                    ) : (
+                      <Clock size={13} className="text-amber-500" />
+                    )}
+                    <Text
+                      className={cn(
+                        'text-[11px] font-semibold capitalize',
+                        verified ? 'text-emerald-600' : 'text-amber-600',
+                      )}
+                    >
+                      {s.verificationStatus}
+                    </Text>
+                  </View>
+                </View>
+              )
+            })}
+          </View>
+        )}
+
+        <Text className="text-[11px] text-muted-foreground uppercase tracking-wide mt-1">
+          Attach social handle (admin-verified)
+        </Text>
+        <View className="flex-row gap-2">
+          {(['tiktok', 'instagram'] as const).map((p) => (
+            <Pressable
+              key={p}
+              onPress={() => setNewPlatform(p)}
+              disabled={socialBusy}
+              className={cn(
+                'px-3 py-2 rounded-lg border active:opacity-80',
+                newPlatform === p ? 'border-primary bg-primary/10' : 'border-border',
+              )}
+            >
+              <Text
+                className={cn(
+                  'text-xs font-semibold capitalize',
+                  newPlatform === p ? 'text-primary' : 'text-muted-foreground',
+                )}
+              >
+                {p}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <View className="flex-row items-center gap-2">
+          <View className="flex-1 flex-row items-center gap-1.5 rounded-md border border-border px-3">
+            <AtSign size={14} className="text-muted-foreground" />
+            <TextInput
+              value={newHandle}
+              onChangeText={setNewHandle}
+              placeholder="handle"
+              placeholderTextColor="#9ca3af"
+              autoCapitalize="none"
+              autoCorrect={false}
+              className="flex-1 py-2 text-sm text-foreground"
+            />
+          </View>
+          <Pressable
+            onPress={addSocial}
+            disabled={socialBusy || newHandle.trim() === ''}
+            className={cn(
+              'flex-row items-center gap-1.5 px-3 py-2 rounded-lg',
+              newHandle.trim() !== '' ? 'bg-primary active:opacity-80' : 'bg-muted',
+            )}
+          >
+            {socialBusy ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Plus
+                size={14}
+                className={newHandle.trim() !== '' ? 'text-primary-foreground' : 'text-muted-foreground'}
+              />
+            )}
+            <Text
+              className={cn(
+                'text-xs font-semibold',
+                newHandle.trim() !== '' ? 'text-primary-foreground' : 'text-muted-foreground',
+              )}
+            >
+              Attach
+            </Text>
+          </Pressable>
+        </View>
+        {socialError ? <Text className="text-[11px] text-red-600">{socialError}</Text> : null}
+        {socialMsg ? <Text className="text-[11px] text-emerald-600">{socialMsg}</Text> : null}
+        <Text className="text-[10px] text-muted-foreground">
+          Marks the handle verified immediately (no bio code). Only do this once you&apos;ve confirmed
+          ownership out of band. Earning still requires the video-creator program to be approved.
+        </Text>
+      </View>
+
       {/* Manual payout — owed (approved + unpaid) balance */}
       <View className="border-t border-border mt-3 pt-3 gap-2">
         <View className="flex-row items-center justify-between">
@@ -401,6 +570,28 @@ function AffiliateCard({
       </View>
     </View>
   )
+}
+
+/** Admin content-performance panel for one affiliate (super-admin view). */
+function CreatorContentAnalytics({ affiliateId }: { affiliateId: string }) {
+  const fetcher = useCallback(
+    async (range: { from: string; to: string }): Promise<ContentAnalytics | null> => {
+      const qs = new URLSearchParams({ from: range.from, to: range.to })
+      const res = await fetch(
+        `${API_BASE}/affiliates/${encodeURIComponent(affiliateId)}/content/analytics?${qs.toString()}`,
+        { credentials: 'include' },
+      )
+      if (!res.ok) {
+        const err: any = new Error('Failed to load analytics')
+        err.status = res.status
+        throw err
+      }
+      const body = await res.json().catch(() => null)
+      return body?.analytics ?? null
+    },
+    [affiliateId],
+  )
+  return <ContentAnalyticsPanel fetcher={fetcher} />
 }
 
 export default function AdminCreatorProfile() {
@@ -536,7 +727,10 @@ export default function AdminCreatorProfile() {
 
           {/* Affiliate / commissions */}
           {creator.affiliate ? (
-            <AffiliateCard a={creator.affiliate} onChanged={load} />
+            <>
+              <AffiliateCard a={creator.affiliate} onChanged={load} />
+              <CreatorContentAnalytics affiliateId={creator.affiliate.id} />
+            </>
           ) : (
             <View className="rounded-xl border border-dashed border-border bg-card/50 p-4">
               <View className="flex-row items-center gap-2">
