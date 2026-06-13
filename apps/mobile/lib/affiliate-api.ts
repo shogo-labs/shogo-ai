@@ -113,6 +113,12 @@ export interface AffiliateContentSummary {
   }
   cpmCents: { instagram: number; tiktok: number }
   /**
+   * Resolved per-video lifetime earnings cap (cents); null = uncapped. A video
+   * stops earning once its cumulative content commissions reach this amount.
+   * Optional for older backends that predate the cap.
+   */
+  perVideoCapCents?: number | null
+  /**
    * Video-creator program application gate. Earning AND payout of content
    * commissions require `approved`. Defaults to `none` for older backends.
    */
@@ -268,6 +274,7 @@ export const affiliateApi = {
         posts: [],
         totals: { posts: 0, lifetimeViews: 0, paidViews: 0, pendingCents: 0, approvedCents: 0, paidCents: 0 },
         cpmCents: { instagram: 0, tiktok: 0 },
+        perVideoCapCents: null,
         programStatus: 'none',
         appliedAt: null,
         rejectionReason: null,

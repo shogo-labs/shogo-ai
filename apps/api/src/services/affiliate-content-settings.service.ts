@@ -20,10 +20,13 @@
  *   affiliate.content.holdDays                int   (hold before payable)
  *   affiliate.content.postsPerAccount         int   (posts fetched per poll)
  *   affiliate.content.maxViewsPerPostPerRun   int   (anti-abuse per-run cap)
+ *   affiliate.content.perVideoCapCents        int   (default per-video $ cap)
  *
  * Per-CREATOR CPM overrides live on `Affiliate.contentCpmCents` (the content
  * analogue of `commissionRateBps`) and take precedence over everything here;
- * see `resolveCpmCents`.
+ * see `resolveCpmCents`. Likewise, per-creator per-video earnings caps live on
+ * `Affiliate.contentPerVideoCapCents` and take precedence over the
+ * platform-wide `perVideoCapCents` default; see `resolvePerVideoCapCents`.
  *
  * The EnsembleData API token is NOT here — it is a secret stored encrypted
  * under `provider-key.ensembledata` (see social-content/index.ts). The admin
@@ -52,6 +55,8 @@ export interface ContentSettings {
   holdDays: number
   postsPerAccount: number
   maxViewsPerPostPerRun: number
+  /** Platform-wide per-video lifetime earnings cap (cents); null = no cap. */
+  perVideoCapCents: number | null
 }
 
 export const CONTENT_SETTING_DEFAULTS: ContentSettings = {
@@ -62,6 +67,7 @@ export const CONTENT_SETTING_DEFAULTS: ContentSettings = {
   holdDays: 7,
   postsPerAccount: 30,
   maxViewsPerPostPerRun: 5_000_000,
+  perVideoCapCents: null, // uncapped unless an operator sets a default
 }
 
 export const CONTENT_SETTING_KEYS = {
@@ -73,6 +79,7 @@ export const CONTENT_SETTING_KEYS = {
   holdDays: 'affiliate.content.holdDays',
   postsPerAccount: 'affiliate.content.postsPerAccount',
   maxViewsPerPostPerRun: 'affiliate.content.maxViewsPerPostPerRun',
+  perVideoCapCents: 'affiliate.content.perVideoCapCents',
 } as const
 
 const SETTING_PREFIX = 'affiliate.content.'
@@ -111,6 +118,8 @@ function buildSettings(byKey: Map<string, string>): ContentSettings {
       d.maxViewsPerPostPerRun,
       1,
     ),
+    // A cap of 0 would zero out all earnings, so the floor is 1; absent = no cap.
+    perVideoCapCents: parseOptionalInt(byKey.get(CONTENT_SETTING_KEYS.perVideoCapCents), 1),
   }
 }
 
@@ -163,6 +172,28 @@ export function resolveCpmCents(
   return settings.cpmCents
 }
 
+/**
+ * Resolve the per-video lifetime earnings cap (cents) for one creator.
+ * Precedence:
+ *   1. per-creator override (`Affiliate.contentPerVideoCapCents`)
+ *   2. platform default (`affiliate.content.perVideoCapCents`)
+ *   3. no cap (null)
+ *
+ * Returns null when uncapped. A non-positive value is treated as "no cap"
+ * defensively (a 0 cap would silently zero out earnings).
+ */
+export function resolvePerVideoCapCents(
+  settings: ContentSettings,
+  creatorOverrideCents?: number | null,
+): number | null {
+  if (creatorOverrideCents != null && Number.isFinite(creatorOverrideCents) && creatorOverrideCents > 0) {
+    return creatorOverrideCents
+  }
+  const platform = settings.perVideoCapCents
+  if (platform != null && platform > 0) return platform
+  return null
+}
+
 // ============================================================================
 // Writes (super-admin)
 // ============================================================================
@@ -176,6 +207,7 @@ export interface ContentSettingsPatch {
   holdDays?: number | null
   postsPerAccount?: number | null
   maxViewsPerPostPerRun?: number | null
+  perVideoCapCents?: number | null
 }
 
 async function upsertSetting(key: string, value: string, userId: string): Promise<void> {
@@ -203,6 +235,7 @@ export async function setContentSettings(patch: ContentSettingsPatch, userId: st
     ['holdDays', CONTENT_SETTING_KEYS.holdDays, 0],
     ['postsPerAccount', CONTENT_SETTING_KEYS.postsPerAccount, 1],
     ['maxViewsPerPostPerRun', CONTENT_SETTING_KEYS.maxViewsPerPostPerRun, 1],
+    ['perVideoCapCents', CONTENT_SETTING_KEYS.perVideoCapCents, 1],
   ]
 
   if (patch.enabled !== undefined) {
