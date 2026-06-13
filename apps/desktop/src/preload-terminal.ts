@@ -15,6 +15,9 @@
  */
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as nodePath from 'node:path'
 import type {
   ControlEvent,
   SessionInfo,
@@ -36,6 +39,8 @@ const CH = {
   discardSnapshot: 'shogo:terminal:snapshots:discard',
   restartHost: 'shogo:terminal:host:restart',
   event:  'shogo:terminal:event',
+  publishContext: 'shogo:terminal:publish-context',
+  agentSpawned: 'shogo:terminal:agent-spawned',
   llmStreamCommand: 'shogo:llm:stream-command',
   llmOpenChatWithContext: 'shogo:llm:open-chat-with-context',
   llmDelta: 'shogo:llm:stream-command:delta',
@@ -179,6 +184,45 @@ const bridge = {
   onEvent(cb: (ev: ControlEvent) => void): () => void {
     eventListeners.add(cb)
     return () => { eventListeners.delete(cb) }
+  },
+  async publishTerminalContext(payload: {
+    sessionId: string
+    cwd: string | null
+    content: string
+  }): Promise<void> {
+    await ipcRenderer.invoke(CH.publishContext, payload)
+  },
+  onAgentTerminalSpawned(cb: (payload: {
+    sessionId: string
+    terminalLabel: string
+    cwd: string | null
+  }) => void): () => void {
+    const listener = (_e: IpcRendererEvent, data: { sessionId: string; terminalLabel: string; cwd: string | null }) => cb(data)
+    ipcRenderer.on(CH.agentSpawned, listener)
+    return () => { ipcRenderer.removeListener(CH.agentSpawned, listener) }
+  },
+  async readShellHistory(): Promise<{ zsh: string[]; bash: string[]; fish: string[] }> {
+    async function readLines(file: string): Promise<string[]> {
+      try {
+        const raw = await fs.readFile(file, 'utf8')
+        return raw.split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith('#') && !l.startsWith(': ') && l.length > 1)
+          .reverse()
+      } catch {
+        return []
+      }
+    }
+    const home = os.homedir()
+    const [zsh, bash, fish] = await Promise.all([
+      readLines(nodePath.join(home, '.zsh_history')),
+      readLines(nodePath.join(home, '.bash_history')),
+      // fish stores history as YAML; grab only the `- cmd:` lines
+      fs.readFile(nodePath.join(home, '.local', 'share', 'fish', 'fish_history'), 'utf8')
+        .then((raw) => raw.split('\n').filter((l) => l.startsWith('- cmd:')).map((l) => l.slice(6).trim()).filter(Boolean).reverse())
+        .catch(() => [] as string[]),
+    ])
+    return { zsh, bash, fish }
   },
   llm: {
     async streamCommand(opts: {

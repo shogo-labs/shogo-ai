@@ -50,24 +50,6 @@ export type {
   TrackerListener,
 } from './renderer/osc633-tracker'
 
-// Phase 4 — decorations, navigation, sticky scroll, bg-process warning
-export {
-  CommandDecorations,
-  DEFAULT_STYLES,
-  classify,
-} from './renderer/command-decorations'
-export type {
-  CommandDecorationsOptions,
-  CommandClickHandler,
-  CommandClickEvent,
-  DecorationHost,
-  DecorationHandle,
-  DecorationOptions,
-  DecorationKind,
-  DecorationStyle,
-  OverviewRulerOptions,
-} from './renderer/command-decorations'
-
 export {
   CommandNavigation,
   collectPromptAnchors,
@@ -316,18 +298,6 @@ export type {
 } from './renderer/approval-store'
 
 export {
-  buildDebugContext,
-  debugWithAi,
-  serialiseDebugContext,
-} from './renderer/debug-with-ai'
-export type {
-  BuildDebugContextOptions,
-  DebugContext,
-  DebugEnvSnapshot,
-  DebugWithAiHandler,
-} from './renderer/debug-with-ai'
-
-export {
   CmdKController,
   CmdKPopover,
   useCmdK,
@@ -376,6 +346,25 @@ export type {
   TerminalDiagnostic,
 } from './renderer/problem-matchers'
 
+// Context Aggregator — auto context injection for chat messages
+// Lazy-loaded: only pulled in by terminalContextStore.enrichMessage()
+export {
+  ContextAggregator,
+  serializeContext,
+  formatContextMessage,
+} from './renderer/context-aggregator'
+export type {
+  ActiveFileInfo,
+  AggregatedContext,
+  ContextAggregatorOptions,
+  ContextSource,
+  DiagnosticsContextSource,
+  Diagnostic,
+  EditorContextSource,
+  GitContextSource,
+  GitStatus,
+} from './renderer/context-aggregator'
+
 export {
   SnapshotStore,
   InMemorySnapshotStorage,
@@ -387,6 +376,26 @@ export type {
   SnapshotStorage,
   SnapshotStoreOptions,
 } from './renderer/persistence/snapshot-store'
+
+// Terminal Context — shared store bridging terminal ↔ chat (module singleton)
+export {
+  terminalContextStore,
+} from './renderer/terminal-context-store'
+export type {
+  TerminalContextSnapshot,
+  TerminalContextListener,
+} from './renderer/terminal-context-store'
+
+// TerminalContext — desktop-only React context, import directly from './renderer/terminal-context'
+
+// TerminalCommandExecutor — desktop-only, import directly from './renderer/terminal-command-executor'
+
+// AgentTerminalFactory — desktop-only, import directly from './renderer/agent-terminal-factory'
+// Not re-exported from barrel to avoid pulling pty-core into the Expo web bundle.
+
+// OutputStreamer — desktop-only, import directly from './renderer/output-streamer'
+
+// AgentTerminalPanel — desktop-only, import directly from './renderer/agent-terminal-panel'
 
 export {
   DARK_PLUS_THEME,
@@ -400,3 +409,34 @@ export type {
   UseShogoThemeOptions,
   UseShogoThemeResult,
 } from './renderer/use-shogo-theme'
+
+
+// Add to Chat (Cmd+L)
+export { AddToChatButton, dispatchAddToChat, onAddToChat, ADD_TO_CHAT_EVENT } from './renderer/add-to-chat-button'
+export type { AddToChatButtonProps } from './renderer/add-to-chat-button'
+
+// Terminal Selection (capture for Cmd+L)
+export { captureTerminalText, formatTerminalContextForChat } from './renderer/terminal-selection'
+export type { TerminalSelectionResult } from './renderer/terminal-selection'
+
+
+// Command Classifier (short vs long heuristic)
+export { classifyCommand, isShortCommand } from './renderer/command-classifier'
+export type { CommandKind, ClassificationResult } from './renderer/command-classifier'
+
+// Agent Terminal Tab (infinity icon, read-only, details)
+export { AgentTerminalTab, InfinityIcon, AgentStatusBar } from './renderer/agent-terminal-tab'
+export type { AgentTerminalInfo, AgentTerminalTabProps, AgentStatusBarProps } from './renderer/agent-terminal-tab'
+
+
+// Ready Signal Detector
+export { ReadySignalDetector } from './renderer/ready-signal-detector'
+export type { ReadySignal, ReadySignalListener } from './renderer/ready-signal-detector'
+
+// Background Task Manager
+export { BackgroundTaskManager, backgroundTaskManager } from './renderer/background-task-manager'
+export type { BackgroundTask, BackgroundTaskListener } from './renderer/background-task-manager'
+
+// Background Terminal Indicator (chat UI)
+export { BackgroundTerminalIndicator } from './renderer/background-terminal-indicator'
+export type { BackgroundTerminalIndicatorProps } from './renderer/background-terminal-indicator'
