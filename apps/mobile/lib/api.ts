@@ -112,6 +112,8 @@ export interface AdminCreatorAffiliate {
   status: string
   commissionRateBps: number | null
   contentCpmCents: number | null
+  /** Per-creator per-video lifetime earnings cap in cents (null = no/platform cap). */
+  contentPerVideoCapCents: number | null
   totalEarningsUsd: number
   pendingPayoutUsd: number
   totalPaidOutUsd: number
@@ -1541,8 +1543,9 @@ export const api = {
    * Approve or reject a creator's video-creator (content CPM) program
    * application. Approval is the gate for both earning and payout of content
    * commissions. On approve, pass `contentCpmCents` to set the per-creator CPM
-   * (cents per 1,000 views); null clears the override (platform default).
-   * Super-admin only.
+   * (cents per 1,000 views) and/or `contentPerVideoCapCents` to set the
+   * per-creator per-video lifetime earnings cap (cents); null clears either
+   * override (platform default). Super-admin only.
    */
   async reviewContentApplication(
     http: HttpClient,
@@ -1550,10 +1553,16 @@ export const api = {
     action: 'approve' | 'reject',
     reason?: string,
     contentCpmCents?: number | null,
+    contentPerVideoCapCents?: number | null,
   ) {
     const res = await http.post<{ ok: boolean; affiliate?: any; error?: any }>(
       `/api/admin/affiliates/${encodeURIComponent(affiliateId)}/content-application`,
-      { action, reason, ...(contentCpmCents !== undefined ? { contentCpmCents } : {}) },
+      {
+        action,
+        reason,
+        ...(contentCpmCents !== undefined ? { contentCpmCents } : {}),
+        ...(contentPerVideoCapCents !== undefined ? { contentPerVideoCapCents } : {}),
+      },
     )
     return res.data
   },

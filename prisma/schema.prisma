@@ -2832,6 +2832,14 @@ model Affiliate {
   /// `commissionRateBps`. Null = use the platform `affiliate.content.*`
   /// PlatformSetting (default).
   contentCpmCents       Int?
+  /// Optional per-creator per-video lifetime earnings cap (cents). When set,
+  /// any single connected video/post stops accruing content-CPM commissions
+  /// once its cumulative `source='content'` earnings reach this amount — the
+  /// per-creator analogue of the original "cap $X per video" campaign rule.
+  /// Null = fall back to the platform `affiliate.content.perVideoCapCents`
+  /// PlatformSetting, which itself defaults to no cap. See
+  /// `resolvePerVideoCapCents` and `AffiliatePost.paidCents`.
+  contentPerVideoCapCents Int?
   /// Set when the user accepted the affiliate terms during enroll.
   termsAcceptedAt       DateTime?
   /// Video-creator (content CPM) program application gate. Both EARNING
@@ -3085,6 +3093,12 @@ model AffiliatePost {
   lastViews       Int            @default(0)
   /// Cumulative views already paid CPM on (the high-water mark).
   paidViews       Int            @default(0)
+  /// Cumulative content-CPM commission cents already accrued on this post
+  /// (the dollar high-water mark). Enforces the per-creator per-video
+  /// earnings cap (`Affiliate.contentPerVideoCapCents`): once `paidCents`
+  /// reaches the resolved cap, the post stops accruing. Monotonic, like
+  /// `paidViews`.
+  paidCents       Int            @default(0)
   lastLikes       Int            @default(0)
   lastComments    Int            @default(0)
   lastShares      Int            @default(0)

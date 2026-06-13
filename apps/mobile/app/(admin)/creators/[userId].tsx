@@ -161,11 +161,16 @@ function AffiliateCard({
 }) {
   const rate = a.commissionRateBps != null ? `${(a.commissionRateBps / 100).toFixed(2)}%` : 'Tier default'
   const cpm = a.contentCpmCents != null ? `$${(a.contentCpmCents / 100).toFixed(2)} / 1k views` : 'Platform default'
+  const cap =
+    a.contentPerVideoCapCents != null
+      ? `$${(a.contentPerVideoCapCents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / video`
+      : 'No cap'
   const rows: { label: string; value: string }[] = [
     { label: 'Referral code', value: a.code },
     { label: 'Status', value: a.status },
     { label: 'L1 commission rate', value: rate },
     { label: 'Content CPM', value: cpm },
+    { label: 'Per-video cap', value: cap },
     { label: 'Referred users', value: a.referralCount.toLocaleString() },
     { label: 'Downline affiliates', value: a.downlineCount.toLocaleString() },
     { label: 'Referral earnings', value: usd(a.referralEarningsUsd) },
@@ -184,6 +189,10 @@ function AffiliateCard({
   const [cpmInput, setCpmInput] = useState(
     a.contentCpmCents != null ? (a.contentCpmCents / 100).toFixed(2) : '',
   )
+  // Per-video lifetime earnings cap in dollars; blank => no/platform cap.
+  const [capInput, setCapInput] = useState(
+    a.contentPerVideoCapCents != null ? (a.contentPerVideoCapCents / 100).toFixed(2) : '',
+  )
 
   const status = a.contentProgramStatus ?? 'none'
   const statusStyle = CONTENT_STATUS_STYLE[status] ?? CONTENT_STATUS_STYLE.none
@@ -194,6 +203,7 @@ function AffiliateCard({
       // On approve, translate the dollars input into integer cents per 1,000
       // views. Blank => null (platform default). Reject ignores CPM.
       let contentCpmCents: number | null | undefined
+      let contentPerVideoCapCents: number | null | undefined
       if (action === 'approve') {
         const trimmed = cpmInput.trim()
         if (trimmed === '') {
@@ -205,6 +215,18 @@ function AffiliateCard({
             return
           }
           contentCpmCents = Math.round(dollars * 100)
+        }
+
+        const capTrimmed = capInput.trim()
+        if (capTrimmed === '') {
+          contentPerVideoCapCents = null
+        } else {
+          const capDollars = Number(capTrimmed)
+          if (!Number.isFinite(capDollars) || capDollars <= 0) {
+            setActionError('Enter a positive per-video cap (e.g. 1000) or leave blank for no cap.')
+            return
+          }
+          contentPerVideoCapCents = Math.round(capDollars * 100)
         }
       }
 
@@ -219,7 +241,7 @@ function AffiliateCard({
           body: JSON.stringify({
             action,
             reason: action === 'reject' ? reason.trim() || undefined : undefined,
-            ...(action === 'approve' ? { contentCpmCents } : {}),
+            ...(action === 'approve' ? { contentCpmCents, contentPerVideoCapCents } : {}),
           }),
         })
         if (!res.ok) {
@@ -237,7 +259,7 @@ function AffiliateCard({
         setBusy(null)
       }
     },
-    [a.id, reason, cpmInput, onChanged],
+    [a.id, reason, cpmInput, capInput, onChanged],
   )
 
   // Admin-attach a social handle, verified out of band (skips the bio-code
@@ -342,21 +364,40 @@ function AffiliateCard({
               />
             ) : null}
             {showApprove ? (
-              <View className="gap-1">
-                <Text className="text-[11px] text-muted-foreground">
-                  Content CPM ($ per 1,000 views) — leave blank for platform default
-                </Text>
-                <View className="flex-row items-center gap-2 rounded-md border border-border px-3">
-                  <Text className="text-sm text-muted-foreground">$</Text>
-                  <TextInput
-                    value={cpmInput}
-                    onChangeText={setCpmInput}
-                    placeholder="1.00"
-                    placeholderTextColor="#9ca3af"
-                    keyboardType="decimal-pad"
-                    className="flex-1 py-2 text-sm text-foreground"
-                  />
-                  <Text className="text-[11px] text-muted-foreground">/ 1k</Text>
+              <View className="gap-2">
+                <View className="gap-1">
+                  <Text className="text-[11px] text-muted-foreground">
+                    Content CPM ($ per 1,000 views) — leave blank for platform default
+                  </Text>
+                  <View className="flex-row items-center gap-2 rounded-md border border-border px-3">
+                    <Text className="text-sm text-muted-foreground">$</Text>
+                    <TextInput
+                      value={cpmInput}
+                      onChangeText={setCpmInput}
+                      placeholder="1.00"
+                      placeholderTextColor="#9ca3af"
+                      keyboardType="decimal-pad"
+                      className="flex-1 py-2 text-sm text-foreground"
+                    />
+                    <Text className="text-[11px] text-muted-foreground">/ 1k</Text>
+                  </View>
+                </View>
+                <View className="gap-1">
+                  <Text className="text-[11px] text-muted-foreground">
+                    Per-video cap ($ max earnable per video) — leave blank for no cap
+                  </Text>
+                  <View className="flex-row items-center gap-2 rounded-md border border-border px-3">
+                    <Text className="text-sm text-muted-foreground">$</Text>
+                    <TextInput
+                      value={capInput}
+                      onChangeText={setCapInput}
+                      placeholder="1000.00"
+                      placeholderTextColor="#9ca3af"
+                      keyboardType="decimal-pad"
+                      className="flex-1 py-2 text-sm text-foreground"
+                    />
+                    <Text className="text-[11px] text-muted-foreground">/ video</Text>
+                  </View>
                 </View>
               </View>
             ) : null}

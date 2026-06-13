@@ -953,12 +953,17 @@ export function adminRoutes(): Hono {
       return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
     }
 
-    // Both overrides are optional; only the fields present in the body are
+    // All overrides are optional; only the fields present in the body are
     // touched. `commissionRateBps` is the referral-commission override (bps,
     // 0..10000); `contentCpmCents` is the per-creator content-CPM override
-    // (cents per 1,000 views, >= 0). Pass null on either to clear it and fall
-    // back to the platform default.
-    const data: { commissionRateBps?: number | null; contentCpmCents?: number | null } = {}
+    // (cents per 1,000 views, >= 0); `contentPerVideoCapCents` is the
+    // per-creator per-video lifetime earnings cap (cents, >= 1). Pass null on
+    // any to clear it and fall back to the platform default.
+    const data: {
+      commissionRateBps?: number | null
+      contentCpmCents?: number | null
+      contentPerVideoCapCents?: number | null
+    } = {}
 
     if ('commissionRateBps' in body) {
       const raw = body.commissionRateBps
@@ -998,12 +1003,33 @@ export function adminRoutes(): Hono {
       }
     }
 
+    if ('contentPerVideoCapCents' in body) {
+      const raw = body.contentPerVideoCapCents
+      if (raw === null) {
+        data.contentPerVideoCapCents = null
+      } else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1) {
+        data.contentPerVideoCapCents = raw
+      } else {
+        return c.json(
+          {
+            error: {
+              code: 'invalid_cap',
+              message:
+                'contentPerVideoCapCents must be null or a positive integer (lifetime cents earnable per video)',
+            },
+          },
+          400,
+        )
+      }
+    }
+
     if (Object.keys(data).length === 0) {
       return c.json(
         {
           error: {
             code: 'bad_request',
-            message: 'Provide commissionRateBps and/or contentCpmCents (number or null).',
+            message:
+              'Provide commissionRateBps, contentCpmCents, and/or contentPerVideoCapCents (number or null).',
           },
         },
         400,
@@ -1025,6 +1051,7 @@ export function adminRoutes(): Hono {
           status: true,
           commissionRateBps: true,
           contentCpmCents: true,
+          contentPerVideoCapCents: true,
         },
       })
       return c.json({ ok: true, affiliate: updated })
@@ -1041,9 +1068,11 @@ export function adminRoutes(): Hono {
    * creators) AND payout of content commissions, so rejecting/revoking here
    * immediately stops further accrual.
    *
-   * Body: { action: 'approve' | 'reject', reason?: string, contentCpmCents?: number | null }
+   * Body: { action: 'approve' | 'reject', reason?: string, contentCpmCents?: number | null, contentPerVideoCapCents?: number | null }
    * On approve, an optional `contentCpmCents` sets the per-creator CPM (cents
-   * per 1,000 views); null clears the override (platform default applies).
+   * per 1,000 views) and an optional `contentPerVideoCapCents` sets the
+   * per-creator per-video lifetime earnings cap (cents); null clears either
+   * override (platform default applies).
    */
   router.post('/affiliates/:id/content-application', async (c) => {
     const id = c.req.param('id')
@@ -1090,6 +1119,31 @@ export function adminRoutes(): Hono {
       }
     }
 
+    // Optional per-video lifetime earnings cap (cents). Omitted => leave
+    // untouched; null => clear the override (platform default applies).
+    let capProvided = false
+    let capValue: number | null = null
+    if (action === 'approve' && 'contentPerVideoCapCents' in body) {
+      capProvided = true
+      const raw = body.contentPerVideoCapCents
+      if (raw === null) {
+        capValue = null
+      } else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1) {
+        capValue = raw
+      } else {
+        return c.json(
+          {
+            error: {
+              code: 'invalid_cap',
+              message:
+                'contentPerVideoCapCents must be null or a positive integer (lifetime cents earnable per video)',
+            },
+          },
+          400,
+        )
+      }
+    }
+
     try {
       const existing = await prisma.affiliate.findUnique({
         where: { id },
@@ -1106,6 +1160,7 @@ export function adminRoutes(): Hono {
           contentReviewedBy: reviewerId,
           contentRejectionReason: reason,
           ...(cpmProvided ? { contentCpmCents: cpmValue } : {}),
+          ...(capProvided ? { contentPerVideoCapCents: capValue } : {}),
         },
         select: {
           id: true,
@@ -1114,6 +1169,7 @@ export function adminRoutes(): Hono {
           contentReviewedBy: true,
           contentRejectionReason: true,
           contentCpmCents: true,
+          contentPerVideoCapCents: true,
         },
       })
       return c.json({ ok: true, affiliate: updated })
@@ -1443,6 +1499,7 @@ export function adminRoutes(): Hono {
       'holdDays',
       'postsPerAccount',
       'maxViewsPerPostPerRun',
+      'perVideoCapCents',
     ] as const) {
       if (body?.[field] !== undefined) patch[field] = body[field]
     }

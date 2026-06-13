@@ -46,7 +46,11 @@
 import { randomBytes } from 'node:crypto'
 
 import { prisma } from '../lib/prisma'
-import { getContentSettings, resolveCpmCents } from './affiliate-content-settings.service'
+import {
+  getContentSettings,
+  resolveCpmCents,
+  resolvePerVideoCapCents,
+} from './affiliate-content-settings.service'
 import {
   getSocialContentProvider,
   type SocialPlatform,
@@ -398,7 +402,13 @@ export async function pollAccount(account: any, now: Date = new Date()): Promise
 
   const affiliate = await prisma.affiliate.findUnique({
     where: { id: account.affiliateId },
-    select: { id: true, userId: true, contentCpmCents: true, contentProgramStatus: true },
+    select: {
+      id: true,
+      userId: true,
+      contentCpmCents: true,
+      contentPerVideoCapCents: true,
+      contentProgramStatus: true,
+    },
   })
   if (!affiliate) {
     result.error = 'affiliate_not_found'
@@ -436,6 +446,7 @@ export async function pollAccount(account: any, now: Date = new Date()): Promise
   }
 
   const cpmCents = resolveCpmCents(settings, platform, affiliate.contentCpmCents)
+  const perVideoCapCents = resolvePerVideoCapCents(settings, affiliate.contentPerVideoCapCents)
   const maxViewsPerRun = settings.maxViewsPerPostPerRun
   const holdDays = settings.holdDays
   const eligibleAt = new Date(now.getTime() + holdDays * 24 * 60 * 60 * 1000)
@@ -451,6 +462,7 @@ export async function pollAccount(account: any, now: Date = new Date()): Promise
         platform,
         np,
         cpmCents,
+        perVideoCapCents,
         maxViewsPerRun,
         eligibleAt,
         now,
@@ -481,6 +493,8 @@ interface AccrueArgs {
   platform: SocialPlatform
   np: { providerPostId: string; url: string | null; caption: string | null; postedAt: Date | null; views: number; likes: number; comments: number; shares: number }
   cpmCents: number
+  /** Per-video lifetime earnings cap (cents); null = uncapped. */
+  perVideoCapCents: number | null
   maxViewsPerRun: number
   eligibleAt: Date
   now: Date
@@ -543,6 +557,13 @@ async function accruePost(args: AccrueArgs): Promise<{ paidViews: number; commis
       },
     })
 
+    // Per-video lifetime earnings cap (per-creator). `paidCents` is the dollar
+    // high-water mark; once it reaches the resolved cap the video earns nothing
+    // more. null = uncapped.
+    const paidCents = post.paidCents ?? 0
+    const remainingCapCents =
+      args.perVideoCapCents != null ? Math.max(0, args.perVideoCapCents - paidCents) : null
+
     // Incremental, capped, never negative.
     let delta = Math.max(0, np.views - post.paidViews)
     if (delta > args.maxViewsPerRun) delta = args.maxViewsPerRun
@@ -550,11 +571,30 @@ async function accruePost(args: AccrueArgs): Promise<{ paidViews: number; commis
       return { paidViews: 0, commissionCents: 0 }
     }
 
-    const amountCents = Math.floor((delta * args.cpmCents) / 1000)
+    // Video already hit its lifetime cap: seal it — advance the view
+    // high-water mark to the latest count so we stop reconsidering it every
+    // run, but mint no commission.
+    if (remainingCapCents != null && remainingCapCents <= 0) {
+      await tx.affiliatePost.update({
+        where: { id: post.id },
+        data: { paidViews: np.views },
+      })
+      return { paidViews: 0, commissionCents: 0 }
+    }
+
+    let amountCents = Math.floor((delta * args.cpmCents) / 1000)
     if (amountCents <= 0) {
       // Delta too small to clear a cent — leave paidViews untouched so the
       // residual views roll into the next run instead of being lost.
       return { paidViews: 0, commissionCents: 0 }
+    }
+
+    // Clamp this run's accrual to whatever cap room is left, so a single viral
+    // run can't blow past the per-video cap.
+    let capReached = false
+    if (remainingCapCents != null && amountCents >= remainingCapCents) {
+      amountCents = remainingCapCents
+      capReached = true
     }
 
     try {
@@ -589,14 +629,20 @@ async function accruePost(args: AccrueArgs): Promise<{ paidViews: number; commis
 
     await tx.affiliatePost.update({
       where: { id: post.id },
-      data: { paidViews: post.paidViews + delta },
+      data: {
+        // On the run that crosses the cap, seal the view high-water mark to the
+        // latest count: we paid only `remainingCapCents`, but the video is done
+        // earning so its remaining views shouldn't roll forward.
+        paidViews: capReached ? np.views : post.paidViews + delta,
+        paidCents: { increment: amountCents },
+      },
     })
     await tx.affiliate.update({
       where: { id: args.affiliateId },
       data: { pendingPayoutCents: { increment: amountCents } },
     })
 
-    return { paidViews: delta, commissionCents: amountCents }
+    return { paidViews: capReached ? Math.max(0, np.views - post.paidViews) : delta, commissionCents: amountCents }
   })
 }
 
@@ -668,6 +714,8 @@ export interface ContentSummary {
     paidCents: number
   }
   cpmCents: { instagram: number; tiktok: number }
+  /** Resolved per-video lifetime earnings cap (cents); null = uncapped. */
+  perVideoCapCents: number | null
   /** Video-creator program application gate. Earning + payout require 'approved'. */
   programStatus: 'none' | 'pending' | 'approved' | 'rejected'
   appliedAt: string | null
@@ -699,6 +747,7 @@ export async function getContentSummary(affiliateId: string): Promise<ContentSum
       where: { id: affiliateId },
       select: {
         contentCpmCents: true,
+        contentPerVideoCapCents: true,
         contentProgramStatus: true,
         contentAppliedAt: true,
         contentRejectionReason: true,
@@ -709,6 +758,7 @@ export async function getContentSummary(affiliateId: string): Promise<ContentSum
   const override = affiliate?.contentCpmCents ?? null
   const igCpm = resolveCpmCents(settings, 'instagram', override)
   const ttCpm = resolveCpmCents(settings, 'tiktok', override)
+  const perVideoCapCents = resolvePerVideoCapCents(settings, affiliate?.contentPerVideoCapCents ?? null)
 
   const byStatus: Record<string, number> = {}
   for (const row of contentStats as any[]) byStatus[row.status] = row._sum?.amountCents ?? 0
@@ -728,6 +778,7 @@ export async function getContentSummary(affiliateId: string): Promise<ContentSum
       paidCents: byStatus.paid ?? 0,
     },
     cpmCents: { instagram: igCpm, tiktok: ttCpm },
+    perVideoCapCents,
     programStatus: (affiliate?.contentProgramStatus as ContentSummary['programStatus']) ?? 'none',
     appliedAt: affiliate?.contentAppliedAt ? affiliate.contentAppliedAt.toISOString() : null,
     rejectionReason: affiliate?.contentRejectionReason ?? null,
