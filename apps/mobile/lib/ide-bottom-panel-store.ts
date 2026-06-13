@@ -25,12 +25,25 @@
 
 import { useSyncExternalStore } from 'react'
 
-export type BottomPanelTab =
+export type BuiltInBottomPanelTab =
   | 'Problems'
   | 'Output'
   | 'Debug Console'
   | 'Terminal'
   | 'Ports'
+
+export type ExtensionBottomPanelTab = `extension:${string}`
+export type BottomPanelTab = BuiltInBottomPanelTab | ExtensionBottomPanelTab
+
+export interface ExtensionBottomPanelContainer {
+  activityId: ExtensionBottomPanelTab
+  id: string
+  title: string
+  icon?: string
+  location: 'panel'
+  extension: unknown
+  workspaceRoot?: string | null
+}
 
 /**
  * Tab order matches VS Code 1.95 exactly: Problems → Output → Debug
@@ -40,7 +53,7 @@ export type BottomPanelTab =
  * fallback below) so the existing Workbench keybind (⌘\`) lands the user
  * on a familiar surface.
  */
-export const BOTTOM_PANEL_TABS: readonly BottomPanelTab[] = [
+export const BOTTOM_PANEL_TABS: readonly BuiltInBottomPanelTab[] = [
   'Problems',
   'Output',
   'Debug Console',
@@ -70,6 +83,8 @@ export interface BottomPanelState {
    * session) — re-opens only on next page reload.
    */
   autoOpenedByProject: Record<string, true>
+  /** Extension-contributed `viewsContainers.panel` tabs registered by Workbench. */
+  extensionPanelContainers: ExtensionBottomPanelContainer[]
 }
 
 type Listener = () => void
@@ -98,7 +113,7 @@ function clampSize(n: number): number {
 function readPersistedState(): BottomPanelState {
   const openRaw = safeReadString(KEY_OPEN)
   const sizeRaw = safeReadString(KEY_SIZE)
-  const tabRaw = safeReadString(KEY_TAB) as BottomPanelTab | null
+  const tabRaw = safeReadString(KEY_TAB) as BuiltInBottomPanelTab | null
   return {
     open: openRaw === 'true',
     size: sizeRaw == null ? SIZE_DEFAULT : clampSize(parseInt(sizeRaw, 10)),
@@ -107,6 +122,7 @@ function readPersistedState(): BottomPanelState {
     newTerminalNonce: 0,
     unseenErrorsByProject: {},
     autoOpenedByProject: {},
+    extensionPanelContainers: [],
   }
 }
 
@@ -154,6 +170,18 @@ export const ideBottomPanelStore = {
   setActiveTab(tab: BottomPanelTab): void {
     if (state.activeTab === tab) return
     set({ activeTab: tab })
+  },
+
+  setExtensionPanelContainers(containers: ExtensionBottomPanelContainer[]): void {
+    const activeTabStillExists = !state.activeTab.startsWith('extension:') || containers.some((container) => container.activityId === state.activeTab)
+    set({
+      extensionPanelContainers: containers,
+      activeTab: activeTabStillExists ? state.activeTab : 'Terminal',
+    })
+  },
+
+  showExtensionPanelContainer(activityId: ExtensionBottomPanelTab): void {
+    set({ open: true, activeTab: activityId })
   },
 
   /**

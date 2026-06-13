@@ -5,6 +5,7 @@ import { ChevronDown, X } from 'lucide-react-native'
 import {
   BOTTOM_PANEL_TABS,
   type BottomPanelTab,
+  type ExtensionBottomPanelContainer,
 } from '../../../../lib/ide-bottom-panel-store'
 
 /**
@@ -36,6 +37,7 @@ export interface PanelTabStripProps {
   onSelect(tab: BottomPanelTab): void
   /** Map of tab → badge integer. Zero / missing = no badge. */
   badges?: Partial<Record<BottomPanelTab, number>>
+  extensionTabs?: ExtensionBottomPanelContainer[]
   onHide?(): void
   onClose?(): void
 }
@@ -75,15 +77,20 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
     return () => window.removeEventListener('resize', onResize)
   }, [remeasure])
 
+  const tabs = [
+    ...BOTTOM_PANEL_TABS.map((tab) => ({ id: tab, label: tab })),
+    ...(props.extensionTabs ?? []).map((tab) => ({ id: tab.activityId, label: tab.title })),
+  ]
+
   return (
     <div className="flex items-center justify-between border-b border-[#2a2a2a] pr-2">
       <div
         ref={stripRef}
         role="tablist"
         aria-label="Bottom panel tabs"
-        className="relative flex"
+        className="relative flex min-w-0 overflow-x-auto"
       >
-        {BOTTOM_PANEL_TABS.map((t) => {
+        {tabs.map(({ id: t, label }) => {
           const selected = props.activeTab === t
           const badge = props.badges?.[t] ?? 0
           const showBadge = badge > 0
@@ -101,8 +108,8 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
               aria-controls={`bottompanel-tabpanel-${t}`}
               aria-label={
                 showBadge
-                  ? `${t} (${badge} unseen ${badge === 1 ? 'error' : 'errors'})`
-                  : t
+                  ? `${label} (${badge} unseen ${badge === 1 ? 'error' : 'errors'})`
+                  : label
               }
               tabIndex={selected ? 0 : -1}
               onClick={() => props.onSelect(t)}
@@ -113,8 +120,8 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
               }`}
               style={{ letterSpacing: '0.04em' }}
             >
-              <span className="inline-flex items-center gap-1.5">
-                {t}
+              <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                {label}
                 {showBadge && (
                   <span
                     data-testid={`tab-badge-${t}`}

@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { BranchPicker } from "./git/BranchPicker";
 import type { GitSnapshot } from "./git/bridge";
+import type { ExtensionRuntimeStatusBarItem } from "./extensions/types";
 import { getDesktopGitBridge } from "./git/bridge";
 
 export function StatusBar({
@@ -12,6 +13,8 @@ export function StatusBar({
   saved,
   git,
   workspaceRoot,
+  extensionItems = [],
+  onRunExtensionCommand,
 }: {
   language: string;
   line: number;
@@ -28,6 +31,8 @@ export function StatusBar({
    * overlay and the sync button. Null on web/mobile.
    */
   workspaceRoot?: string | null;
+  extensionItems?: ExtensionRuntimeStatusBarItem[];
+  onRunExtensionCommand?: (commandId: string, args?: unknown[]) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -45,8 +50,11 @@ export function StatusBar({
     if (!r.ok) setTimeout(() => setSyncError(null), 6000);
   };
 
+  const leftExtensionItems = extensionItems.filter((item) => item.alignment !== "right");
+  const rightExtensionItems = extensionItems.filter((item) => item.alignment === "right");
+
   return (
-    <div className="flex h-6 items-center justify-between bg-[color:var(--ide-primary)] px-3 text-[12px] text-white">
+    <div className="flex h-6 items-center justify-between bg-[#1e1e1e] px-3 text-[12px] text-[#cccccc]">
       <div className="flex items-center gap-3">
         {git?.isRepo && git.branch ? (
           <>
@@ -80,7 +88,7 @@ export function StatusBar({
               title="Sync (fetch · pull · push)"
               className="flex items-center gap-1 -mx-1 px-1 py-0.5 rounded hover:bg-white/15 disabled:opacity-60"
             >
-              {syncing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+              {syncing ? <Loader2 size={11} /> : <RefreshCw size={11} />}
             </button>
             {syncError && (
               <span className="text-[10px] bg-rose-500/30 px-1.5 py-0.5 rounded max-w-[280px] truncate" title={syncError}>
@@ -89,8 +97,14 @@ export function StatusBar({
             )}
           </>
         ) : null}
+        {leftExtensionItems.map((item) => (
+          <ExtensionStatusBarButton key={item.id} item={item} onRunCommand={onRunExtensionCommand} />
+        ))}
       </div>
       <div className="flex items-center gap-4">
+        {rightExtensionItems.map((item) => (
+          <ExtensionStatusBarButton key={item.id} item={item} onRunCommand={onRunExtensionCommand} />
+        ))}
         <span>
           Ln {line}, Col {col}
         </span>
@@ -118,4 +132,31 @@ export function StatusBar({
 
 function Circle() {
   return <span className="inline-block h-2 w-2 rounded-full bg-white/80" />;
+}
+
+
+function ExtensionStatusBarButton({
+  item,
+  onRunCommand,
+}: {
+  item: ExtensionRuntimeStatusBarItem;
+  onRunCommand?: (commandId: string, args?: unknown[]) => void;
+}) {
+  const command = typeof item.command === "string" ? { command: item.command, arguments: [] } : item.command;
+  const runnable = !!command?.command && !!onRunCommand;
+  return (
+    <button
+      type="button"
+      disabled={!runnable}
+      title={item.tooltip || item.text || item.extensionId}
+      onClick={() => command?.command && onRunCommand?.(command.command, command.arguments)}
+      className="-mx-1 max-w-[220px] truncate rounded px-1 py-0.5 hover:bg-white/15 disabled:pointer-events-none disabled:opacity-90"
+    >
+      {stripCodicons(item.text)}
+    </button>
+  );
+}
+
+function stripCodicons(text: string): string {
+  return text.replace(/\$\(([^)]+)\)/g, (_match, icon) => `${String(icon).replace(/-/g, " ")} `).trim();
 }

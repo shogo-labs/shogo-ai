@@ -1,12 +1,45 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 //
-// Source Control viewlet. Mounted in the primary side bar when the
-// activity bar's "git" entry is selected. On non-desktop platforms the
-// snapshot is null and we fall back to the existing CheckpointsPanel.
+// VS Code-style Source Control viewlet. Layout:
+//
+// ┌──────────────────────────────────────────┐
+// │ SOURCE CONTROL                    ...     │ ← section header
+// ├──────────────────────────────────────────┤
+// │ repository-name          ↻  (⋯)          │ ← repo header (36px)
+// │ main  origin/main  ↑26 ↓3                │ ← branch row
+// ├──────────────────────────────────────────┤
+// │ Message (⌘Enter to commit...)    ✨      │ ← commit input (32px)
+// │ ✓ Commit               ▼                 │ ← commit button (36px)
+// ├──────────────────────────────────────────┤
+// │ ▼ Staged Changes               1         │ ← section header
+// │   file.ts  dir/               2, M       │ ← file row (22px)
+// ├──────────────────────────────────────────┤
+// │ ▼ Changes                        2       │
+// │   file.ts  dir/               3, M       │
+// ├──────────────────────────────────────────┤
+// │ ▼ GRAPH  ⊕ Auto  ⊙  ↓↓ ↑↑ ↻  (⋯)      │ ← graph toolbar
+// │ ● commit message                         │ ← graph rows (22px)
+// │ ● commit message                         │
+// └──────────────────────────────────────────┘
 
-import { GitBranch, MoreHorizontal, RefreshCw } from "lucide-react-native";
-import { useCallback, useState } from "react";
+import {
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Check,
+  ChevronUp,
+  Circle,
+  CloudDownload,
+  CloudUpload,
+  GitBranch,
+  GitCommitHorizontal,
+  Globe,
+  List,
+  ListTree,
+  MoreHorizontal,
+  RefreshCw,
+} from "lucide-react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { BranchPicker } from "../git/BranchPicker";
 import { useGitStatusContext } from "../git/GitStatusContext";
@@ -16,105 +49,755 @@ import { ChangesList } from "./ChangesList";
 import { CommitInput } from "./CommitInput";
 import { useScmActions } from "./useScmActions";
 
+
+/** localStorage key for persisting graph splitter position. */
+const GRAPH_HEIGHT_KEY = "sourceControl.graphHeight";
+const GRAPH_HEIGHT_DEFAULT = 250;
+const GRAPH_HEIGHT_MIN = 120;
+const GRAPH_HEIGHT_MAX_RATIO = 0.8;
+const CHANGES_MIN_HEIGHT = 100;
+
+/**
+ * Hook that manages the draggable splitter between Changes and Graph sections.
+ * Persists the graph height in localStorage, matching VS Code's behavior.
+ */
+function useGraphSplitter() {
+  const [graphHeight, setGraphHeight] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem(GRAPH_HEIGHT_KEY);
+      if (stored) {
+        const n = Number(stored);
+        if (Number.isFinite(n) && n >= GRAPH_HEIGHT_MIN) return n;
+      }
+    } catch { /* SSR / private browsing */ }
+    return GRAPH_HEIGHT_DEFAULT;
+  });
+  const [dragging, setDragging] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const startYRef = useRef(0);
+  const startHeightRef = useRef(0);
+
+  // Persist on change
+  useEffect(() => {
+    try { localStorage.setItem(GRAPH_HEIGHT_KEY, String(graphHeight)); } catch { /* noop */ }
+  }, [graphHeight]);
+
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    startYRef.current = e.clientY;
+    startHeightRef.current = graphHeight;
+    setDragging(true);
+
+    const container = containerRef.current;
+    const maxGraph = container
+      ? Math.floor(container.clientHeight * GRAPH_HEIGHT_MAX_RATIO)
+      : 800;
+
+    const onMove = (ev: PointerEvent) => {
+      const dy = startYRef.current - ev.clientY; // up = positive = grow graph
+      const newH = Math.max(GRAPH_HEIGHT_MIN, Math.min(maxGraph, startHeightRef.current + dy));
+      // Also ensure Changes min height
+      if (container) {
+        const changesAvailable = container.clientHeight - newH - 4; // 4 = splitter
+        if (changesAvailable < CHANGES_MIN_HEIGHT) {
+          setGraphHeight(container.clientHeight - CHANGES_MIN_HEIGHT - 4);
+          return;
+        }
+      }
+      setGraphHeight(newH);
+    };
+
+    const onUp = () => {
+      setDragging(false);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+  }, [graphHeight]);
+
+  return { graphHeight, dragging, containerRef, onPointerDown };
+}
+
+
+/**
+ * VS Code-style View menu for the header three-dot button.
+ * Contains: View Mode toggle, Collapse All, Auto Refresh, Refresh.
+ */
+function ViewMenu({
+  viewMode,
+  onViewModeToggle,
+  autoRefresh,
+  onToggleAutoRefresh,
+  onRefresh,
+  onClose,
+}: {
+  viewMode: "list" | "tree";
+  onViewModeToggle: () => void;
+  autoRefresh: boolean;
+  onToggleAutoRefresh: () => void;
+  onRefresh: () => void;
+  onClose: () => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Dismiss: outside click, Escape, focus loss
+  useEffect(() => {
+    const handlePointerDown = (e: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
+    };
+    const handleFocusIn = (e: FocusEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
+    };
+    const timer = setTimeout(() => {
+      document.addEventListener("pointerdown", handlePointerDown, true);
+      document.addEventListener("keydown", handleKeyDown, true);
+      document.addEventListener("focusin", handleFocusIn, true);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown, true);
+      document.removeEventListener("focusin", handleFocusIn, true);
+    };
+  }, [onClose]);
+
+  return (
+    <div ref={menuRef} className="absolute right-2 top-9 z-[1000] w-[220px] rounded-md bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] shadow-2xl py-1 text-[13px]">
+      {/* View Mode */}
+      <button
+        onClick={() => { onViewModeToggle(); onClose(); }}
+        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--ide-hover)] text-left text-[color:var(--ide-text)]"
+      >
+        {viewMode === "list" ? <ListTree size={13} /> : <List size={13} />}
+        <span>{viewMode === "list" ? "Tree View" : "List View"}</span>
+      </button>
+
+      <div className="my-0.5 border-t border-[color:var(--ide-border)]/50" />
+
+      {/* Collapse All */}
+      <button
+        onClick={onClose}
+        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--ide-hover)] text-left text-[color:var(--ide-text)]"
+      >
+        <ChevronUp size={13} />
+        <span>Collapse All</span>
+      </button>
+
+      {/* Auto Refresh */}
+      <button
+        onClick={() => { onToggleAutoRefresh(); onClose(); }}
+        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--ide-hover)] text-left text-[color:var(--ide-text)]"
+      >
+        {autoRefresh ? <Check size={13} className="text-[color:var(--ide-primary)]" /> : <span className="w-[13px]" />}
+        <span>Auto Refresh</span>
+      </button>
+
+      <div className="my-0.5 border-t border-[color:var(--ide-border)]/50" />
+
+      {/* Refresh */}
+      <button
+        onClick={() => { onRefresh(); onClose(); }}
+        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--ide-hover)] text-left text-[color:var(--ide-text)]"
+      >
+        <RefreshCw size={13} />
+        <span>Refresh</span>
+      </button>
+    </div>
+  );
+}
+
+/**
+ * VS Code-style section header. Uppercase, 11px, collapsible.
+ */
+function SectionHeader({
+  label,
+  count,
+  collapsed,
+  onToggle,
+  actions,
+}: {
+  label: string;
+  count?: number;
+  collapsed?: boolean;
+  onToggle?: () => void;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div
+      className="flex items-center h-[28px] px-2 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--ide-text-strong)] hover:bg-[color:var(--ide-hover)] select-none group/section"
+      style={{ minHeight: 28 }}
+    >
+      {onToggle && (
+        <button onClick={onToggle} className="mr-1 p-0.5 rounded hover:bg-[color:var(--ide-surface)]">
+          <svg width={12} height={12} viewBox="0 0 12 12" className={`text-[color:var(--ide-muted)] transition-transform ${collapsed ? "-rotate-90" : ""}`}>
+            <path d="M4.5 3L8 6L4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      )}
+      <span className="flex-1">{label}</span>
+      {count !== undefined && (
+        <span className="text-[11px] text-[color:var(--ide-muted)] tabular-nums mr-1">{count}</span>
+      )}
+      <div className="opacity-0 group-hover/section:opacity-100 flex items-center gap-0.5">
+        {actions}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * VS Code-style repository header (36px).
+ */
+function RepoHeader({
+  branch,
+  upstream,
+  ahead,
+  behind,
+  detached,
+  onRefresh,
+  onBranchPicker,
+  onMenuToggle,
+}: {
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  detached: boolean;
+  onRefresh: () => void;
+  onBranchPicker: () => void;
+  onMenuToggle: () => void;
+}) {
+  return (
+    <div className="flex items-center h-[36px] px-3 border-b border-[color:var(--ide-border)]" style={{ minHeight: 36 }}>
+      {/* Branch name + upstream */}
+      <button
+        onClick={onBranchPicker}
+        title="Change branch"
+        className="flex items-center gap-1.5 -mx-1 px-1 py-0.5 rounded text-left hover:bg-[color:var(--ide-hover)]"
+      >
+        <span className="text-[13px] font-medium text-[color:var(--ide-text-strong)]">
+          {detached ? "HEAD detached" : branch ?? "—"}
+        </span>
+      </button>
+      {upstream && (
+        <span className="text-[11px] text-[color:var(--ide-muted)] ml-1.5 truncate max-w-[120px]" title={`Tracking ${upstream}`}>
+          {upstream}
+        </span>
+      )}
+      {ahead > 0 && (
+        <span className="text-[10px] ml-1.5 text-emerald-400" title={`${ahead} ahead`}>↑{ahead}</span>
+      )}
+      {behind > 0 && (
+        <span className="text-[10px] ml-1 text-amber-400" title={`${behind} behind`}>↓{behind}</span>
+      )}
+      <span className="flex-1" />
+      <button
+        title="Sync Changes (Fetch + Pull + Push)"
+        onClick={onRefresh}
+        className="p-1 rounded hover:bg-[color:var(--ide-hover)] text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
+      >
+        <RefreshCw size={13} />
+      </button>
+      <button
+        title="More Actions..."
+        onClick={onMenuToggle}
+        className="p-1 rounded hover:bg-[color:var(--ide-hover)] text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
+      >
+        <MoreHorizontal size={13} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * VS Code-style graph toolbar (28px, sticky).
+ */
+function GraphToolbar({
+  onFetch,
+  onPull,
+  onPush,
+  onRefresh,
+  autoRefresh = true,
+  onToggleAutoRefresh,
+  focusBranch = false,
+  onToggleFocusBranch,
+}: {
+  onFetch: () => void;
+  onPull: () => void;
+  onPush: () => void;
+  onRefresh: () => void;
+  autoRefresh?: boolean;
+  onToggleAutoRefresh?: () => void;
+  focusBranch?: boolean;
+  onToggleFocusBranch?: () => void;
+}) {
+  return (
+    <div className="flex items-center h-[28px] px-2 border-t border-[color:var(--ide-border)] gap-0.5" style={{ minHeight: 28 }}>
+      <SectionHeader label="GRAPH" />
+      <span className="flex-1" />
+      <button
+        title={autoRefresh ? "Auto Refresh: On (click to disable)" : "Auto Refresh: Off (click to enable)"}
+        onClick={onToggleAutoRefresh}
+        className={`p-1 rounded text-[10px] hover:bg-[color:var(--ide-hover)] ${autoRefresh ? "text-[color:var(--ide-text-strong)]" : "text-[color:var(--ide-muted)]"}`}
+      >
+        Auto
+      </button>
+      <button
+        title={focusBranch ? "Show All Branches" : "Focus Current Branch"}
+        onClick={onToggleFocusBranch}
+        className={`p-1 rounded hover:bg-[color:var(--ide-hover)] ${focusBranch ? "text-[color:var(--ide-primary)]" : "text-[color:var(--ide-muted)]"}`}
+      >
+        <Circle size={11} fill={focusBranch ? "currentColor" : "none"} />
+      </button>
+      <button title="Fetch" onClick={onFetch} className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]">
+        <CloudDownload size={12} />
+      </button>
+      <button title="Pull" onClick={onPull} className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]">
+        <ArrowDownToLine size={12} />
+      </button>
+      <button title="Push" onClick={onPush} className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]">
+        <ArrowUpFromLine size={12} />
+      </button>
+      <button title="Refresh" onClick={onRefresh} className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]">
+        <RefreshCw size={11} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * VS Code-style commit graph row (22px).
+ */
+function GraphRow({
+  hash,
+  message,
+  author,
+  time,
+  isMerge,
+  branchLabel,
+  isRemote,
+}: {
+  hash: string;
+  message: string;
+  author?: string;
+  time?: string;
+  isMerge?: boolean;
+  branchLabel?: string;
+  isRemote?: boolean;
+}) {
+  return (
+    <div className="flex items-center h-[22px] px-2 text-[12px] hover:bg-[color:var(--ide-hover)] cursor-pointer" style={{ minHeight: 22 }}>
+      {/* Commit node */}
+      <div className="w-4 flex items-center justify-center shrink-0">
+        {isMerge ? (
+          <div className="w-2.5 h-2.5 rounded-full border-2 border-[color:var(--ide-primary)] bg-[color:var(--ide-bg)]" />
+        ) : (
+          <div className="w-2 h-2 rounded-full bg-[color:var(--ide-primary)]" />
+        )}
+      </div>
+      {/* Commit message */}
+      <span className="flex-1 truncate text-[color:var(--ide-text-strong)] ml-1">
+        {message}
+      </span>
+      {/* Author */}
+      {author && (
+        <span className="text-[10px] text-[color:var(--ide-muted)] ml-2 shrink-0 max-w-[80px] truncate">{author}</span>
+      )}
+      {/* Branch label */}
+      {branchLabel && (
+        <span
+          className={`text-[10px] px-1.5 py-0.5 rounded-full ml-1.5 shrink-0 ${
+            isRemote
+              ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+              : "bg-sky-500/20 text-sky-300 border border-sky-500/30"
+          }`}
+        >
+          {branchLabel}
+        </span>
+      )}
+      {/* Time */}
+      {time && (
+        <span className="text-[10px] text-[color:var(--ide-muted)] ml-2 shrink-0">{time}</span>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Main SourceControlViewlet component
+// ═══════════════════════════════════════════════════════════════════════
+
 export function SourceControlViewlet({
   workspaceRoot,
+  projectName,
   fallback,
   onOpenDiff,
+  onOpenFile,
+  commits,
 }: {
   workspaceRoot: string | null;
-  /** Rendered when no git context is available (no repo, web/mobile, etc.). */
+  projectName?: string;
   fallback?: React.ReactNode;
-  /** Wired by Workbench to open a Monaco diff tab. */
   onOpenDiff: (path: string, group: "staged" | "changes" | "merge") => void;
+  onOpenFile: (path: string) => void;
+  commits?: Array<{
+    hash: string;
+    message: string;
+    author?: string;
+    time?: string;
+    isMerge?: boolean;
+    branchLabel?: string;
+    isRemote?: boolean;
+  }>;
 }) {
   const { snapshot } = useGitStatusContext();
   const actions = useScmActions(workspaceRoot);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [remoteMenuOpen, setRemoteMenuOpen] = useState(false);
   const [branchPickerOpen, setBranchPickerOpen] = useState(false);
   const [stashListOpen, setStashListOpen] = useState(false);
+  const [stagedCollapsed, setStagedCollapsed] = useState(false);
+  const [changesCollapsed, setChangesCollapsed] = useState(false);
+  const [graphCollapsed, setGraphCollapsed] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "tree">("list");
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [focusBranch, setFocusBranch] = useState(false);
+  const { graphHeight, dragging, containerRef, onPointerDown } = useGraphSplitter();
+  const commitInputRef = useRef<HTMLTextAreaElement>(null);
 
   const refresh = useCallback(() => {
     void actions.refresh();
   }, [actions]);
 
+  // ── Auto-refresh effect ──
+  useEffect(() => {
+    if (!autoRefresh || !workspaceRoot) return;
+    const id = setInterval(refresh, 30_000);
+    return () => clearInterval(id);
+  }, [autoRefresh, workspaceRoot, refresh]);
+
+  // ── Keyboard shortcuts ──
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        const ta = document.querySelector<HTMLTextAreaElement>(".shogo-commit-input");
+        if (ta) { e.preventDefault(); ta.focus(); ta.select(); }
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, []);
+
+  // ── Empty state (no repo) ──
   if (!actions.available || !snapshot || !snapshot.isRepo) {
     return (
       <div className="flex flex-col h-full">
-        <div className="px-3 py-2 border-b border-[color:var(--ide-border)] text-[11px] uppercase tracking-wider text-[color:var(--ide-muted)]">
+        <div className="px-3 py-2 text-[11px] uppercase tracking-wider text-[color:var(--ide-muted)] font-semibold">
           Source Control
         </div>
         {fallback ?? (
-          <div className="flex flex-col h-full items-center justify-center gap-2 px-6 text-center text-[color:var(--ide-muted)]">
+          <div className="flex flex-col flex-1 items-center justify-center gap-2 px-6 text-center text-[color:var(--ide-muted)]">
             <GitBranch size={28} />
             <div className="text-[13px]">No git repository in this workspace.</div>
-            <div className="text-[11px]">Open a folder containing a <code>.git</code> directory to enable Source Control.</div>
+            <div className="text-[11px]">Open a folder containing a <code>.git</code> directory.</div>
           </div>
         )}
       </div>
     );
   }
 
-  const stagedCount = 0; // pure-snapshot staged count needs richer porcelain
-                         // tracking — wired in G2.5. The commit button still
-                         // enables when the user types a message.
+  const stagedCount = Object.keys(snapshot.stagedStatus).length;
+  const unstagedCount = Object.keys(snapshot.fileStatus).length - snapshot.conflictPaths.length - stagedCount;
+  const totalUnstagedPlusStaged = Object.keys(snapshot.fileStatus).length - snapshot.conflictPaths.length;
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="relative flex items-center gap-2 px-3 py-2 border-b border-[color:var(--ide-border)]">
+    <div className="flex flex-col h-full text-[12px]">
+      {/* ── SOURCE CONTROL header (28px) ── */}
+      <div className="flex items-center h-[28px] px-3 text-[11px] uppercase tracking-wider text-[color:var(--ide-muted)] font-semibold" style={{ minHeight: 28 }}>
+        <span className="flex-1">Source Control</span>
+      </div>
+
+      {/* ── Section actions row: View Mode + Refresh ── */}
+      <div className="flex items-center h-[28px] px-2 border-b border-[color:var(--ide-border)]" style={{ minHeight: 28 }}>
         <button
-          onClick={() => setBranchPickerOpen(true)}
-          title="Change branch"
-          className="flex items-center gap-1 -mx-1 px-1 py-0.5 rounded text-left hover:bg-[color:var(--ide-hover)]"
+          title={viewMode === "list" ? "View Mode: Tree" : "View Mode: List"}
+          onClick={() => setViewMode((v) => v === "list" ? "tree" : "list")}
+          className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]"
         >
-          <GitBranch size={13} className="text-[color:var(--ide-muted)]" />
-          <span className="text-[12px] text-[color:var(--ide-text-strong)] truncate">
-            {snapshot.detached ? "HEAD detached" : snapshot.branch ?? "—"}
-          </span>
+          {viewMode === "list" ? (
+            <svg width={14} height={14} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
+              <line x1="3" y1="4" x2="11" y2="4" /><line x1="3" y1="7" x2="11" y2="7" /><line x1="3" y1="10" x2="11" y2="10" />
+            </svg>
+          ) : (
+            <ListTree size={14} />
+          )}
         </button>
-        {snapshot.upstream && (
-          <span className="text-[11px] text-[color:var(--ide-muted)] truncate">{snapshot.upstream}</span>
-        )}
         <span className="flex-1" />
         <button
-          title="Refresh"
-          onClick={refresh}
-          className="p-1 rounded hover:bg-[color:var(--ide-hover)] text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
+          title="Commit (⌘Enter)"
+          onClick={() => {
+            const ta = document.querySelector<HTMLTextAreaElement>(".shogo-commit-input");
+            if (ta) { ta.focus(); ta.select(); }
+          }}
+          className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]"
         >
-          <RefreshCw size={12} />
+          <svg width={14} height={14} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <polyline points="3 7 6 10 11 4" />
+          </svg>
+        </button>
+        <button title="Refresh" onClick={refresh} className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]">
+          <RefreshCw size={13} />
         </button>
         <button
-          title="More actions"
-          onClick={() => setMenuOpen((v) => !v)}
-          className="p-1 rounded hover:bg-[color:var(--ide-hover)] text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
+          title="View and More Actions..."
+          onClick={() => { setViewMenuOpen((v) => !v); setRemoteMenuOpen(false); }}
+          className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]"
         >
           <MoreHorizontal size={13} />
         </button>
-        {menuOpen && workspaceRoot && (
-          <ScmMenu
-            workspaceRoot={workspaceRoot}
-            onClose={() => setMenuOpen(false)}
-            onAfterAction={refresh}
-            onOpenBranchPicker={() => setBranchPickerOpen(true)}
-            onOpenStashList={() => setStashListOpen(true)}
+        {viewMenuOpen && (
+          <ViewMenu
+            viewMode={viewMode}
+            onViewModeToggle={() => setViewMode((v) => v === "list" ? "tree" : "list")}
+            autoRefresh={autoRefresh}
+            onToggleAutoRefresh={() => setAutoRefresh((v) => !v)}
+            onRefresh={refresh}
+            onClose={() => setViewMenuOpen(false)}
           />
         )}
       </div>
+
+      {/* ── Commit input (32px textarea + 36px button) ── */}
       <CommitInput
         stagedCount={stagedCount}
+        totalCount={totalUnstagedPlusStaged}
         onCommit={async (message, opts) => {
-          const r = await actions.commit(message, opts)
-          return { ok: r.ok, error: r.ok ? undefined : r.error }
+          const r = await actions.commit(message, opts);
+          return { ok: r.ok, error: r.ok ? undefined : r.error };
         }}
+        onCommitAll={async (message, opts) => {
+          const r = await actions.commitAll(message, opts);
+          return { ok: r.ok, error: r.ok ? undefined : r.error };
+        }}
+        onCommitAndPush={async (message, opts) => {
+          const r = await actions.commitAndPush(message, opts);
+          return { ok: r.ok, error: r.ok ? undefined : r.error };
+        }}
+        onCommitAndSync={async (message, opts) => {
+          const r = await actions.commitAndSync(message, opts);
+          return { ok: r.ok, error: r.ok ? undefined : r.error };
+        }}
+        onUndoLastCommit={async () => {
+          const r = await actions.undoLastCommit();
+          return { ok: r.ok, error: r.ok ? undefined : r.error };
+        }}
+        onGenerateMessage={actions.available ? async () => {
+          const r = await actions.generateCommitMessage();
+          return { ok: r.ok, message: r.ok ? r.message : undefined, error: r.ok ? undefined : r.error };
+        } : undefined}
       />
-      <div className="flex-1 overflow-auto">
-        <ChangesList
-          snapshot={snapshot}
-          onOpenDiff={onOpenDiff}
-          onStage={(paths) => { void actions.stage(paths); }}
-          onUnstage={(paths) => { void actions.unstage(paths); }}
-          onDiscard={(paths) => { void actions.discard(paths); }}
+
+      {/* ── Repository header (36px) ── */}
+      <RepoHeader
+        branch={snapshot.branch}
+        upstream={snapshot.upstream}
+        ahead={snapshot.ahead}
+        behind={snapshot.behind}
+        detached={snapshot.detached}
+        onRefresh={refresh}
+        onBranchPicker={() => setBranchPickerOpen(true)}
+        onMenuToggle={() => { setRemoteMenuOpen((v) => !v); setViewMenuOpen(false); }}
+      />
+      {remoteMenuOpen && workspaceRoot && (
+        <ScmMenu
+          workspaceRoot={workspaceRoot}
+          onClose={() => setRemoteMenuOpen(false)}
+          onAfterAction={refresh}
+          onOpenBranchPicker={() => { setRemoteMenuOpen(false); setBranchPickerOpen(true); }}
+          onOpenStashList={() => { setRemoteMenuOpen(false); setStashListOpen(true); }}
         />
-      </div>
+      )}
+
+      {/* ── Auto-refresh effect ── */}
+      {/* (auto-refresh handled by useEffect below) */}
+
+      {/* ── Resizable split: Changes (top) ←splitter→ Graph (bottom) ── */}
+      <div ref={containerRef} className="flex-1 flex flex-col min-h-0">
+            {/* ── Top panel: Staged + Changes (scrollable) ── */}
+            <div className="flex-1 overflow-auto" style={{ minHeight: CHANGES_MIN_HEIGHT }}>
+              {/* Staged Changes section */}
+        <SectionHeader
+          label="Staged Changes"
+          count={stagedCount}
+          collapsed={stagedCollapsed}
+          onToggle={() => setStagedCollapsed((v) => !v)}
+          actions={
+            stagedCount > 0 && (
+              <>
+                <button
+                  title="Discard All Staged"
+                  onClick={() => {
+                    const paths = Object.keys(snapshot.stagedStatus);
+                    if (paths.length > 0) {
+                      if (window.confirm(`Discard ${paths.length} staged change(s)? This cannot be undone.`)) {
+                        void actions.discard(paths);
+                      }
+                    }
+                  }}
+                  className="p-1 rounded hover:bg-rose-500/20 text-[color:var(--ide-muted)] hover:text-rose-300"
+                >
+                  <svg width={11} height={11} viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2.5 8.5L8.5 2.5M2.5 2.5L8.5 8.5" /></svg>
+                </button>
+              </>
+            )
+          }
+        />
+        {!stagedCollapsed && (
+          <ChangesList
+            snapshot={snapshot}
+            section="staged"
+            viewMode={viewMode}
+            onOpenDiff={onOpenDiff}
+            onOpenFile={onOpenFile}
+            onStage={(paths) => { void actions.stage(paths); }}
+            onUnstage={(paths) => { void actions.unstage(paths); }}
+            onDiscard={(paths) => { void actions.discard(paths); }}
+          />
+        )}
+
+        {/* Changes section */}
+        <SectionHeader
+          label="Changes"
+          count={unstagedCount}
+          collapsed={changesCollapsed}
+          onToggle={() => setChangesCollapsed((v) => !v)}
+          actions={
+            unstagedCount > 0 && (
+              <>
+                <button
+                  title="Stage All"
+                  onClick={() => {
+                    const paths = Object.keys(snapshot.fileStatus).filter(
+                      (p) => !snapshot.conflictPaths.includes(p) && !(p in snapshot.stagedStatus)
+                    );
+                    if (paths.length > 0) void actions.stage(paths);
+                  }}
+                  className="p-1 rounded hover:bg-[color:var(--ide-primary)]/20 text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
+                >
+                  <svg width={11} height={11} viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.5"><line x1="5.5" y1="2" x2="5.5" y2="9" /><line x1="2" y1="5.5" x2="9" y2="5.5" /></svg>
+                </button>
+                <button
+                  title="Discard All"
+                  onClick={() => {
+                    const paths = Object.keys(snapshot.fileStatus).filter(
+                      (p) => !snapshot.conflictPaths.includes(p) && !(p in snapshot.stagedStatus)
+                    );
+                    if (paths.length > 0) {
+                      if (window.confirm(`Discard ${paths.length} unstaged change(s)? This cannot be undone.`)) {
+                        void actions.discard(paths);
+                      }
+                    }
+                  }}
+                  className="p-1 rounded hover:bg-rose-500/20 text-[color:var(--ide-muted)] hover:text-rose-300"
+                >
+                  <RefreshCw size={11} />
+                </button>
+              </>
+            )
+          }
+        />
+        {!changesCollapsed && (
+          <ChangesList
+            snapshot={snapshot}
+            section="changes"
+            viewMode={viewMode}
+            onOpenDiff={onOpenDiff}
+            onOpenFile={onOpenFile}
+            onStage={(paths) => { void actions.stage(paths); }}
+            onUnstage={(paths) => { void actions.unstage(paths); }}
+            onDiscard={(paths) => { void actions.discard(paths); }}
+          />
+        )}
+
+            </div>
+
+            {/* ── Splitter handle ── */}
+            <div
+              onPointerDown={onPointerDown}
+              className="group/splitter relative flex items-center justify-center shrink-0"
+              style={{ height: 5, cursor: "ns-resize" }}
+            >
+              {/* Invisible wider hit area */}
+              <div className="absolute inset-x-0 -top-1 -bottom-1" />
+              {/* Visible line */}
+              <div
+                className={`w-full h-px transition-colors ${
+                  dragging
+                    ? "bg-[color:var(--ide-primary)]"
+                    : "bg-[color:var(--ide-border)] group-hover/splitter:bg-[color:var(--ide-muted)]"
+                }`}
+              />
+              {/* Center grip dots (visible on hover / drag) */}
+              <div
+                className={`absolute flex gap-0.5 transition-opacity ${
+                  dragging ? "opacity-100" : "opacity-0 group-hover/splitter:opacity-100"
+                }`}
+              >
+                <div className="w-1 h-1 rounded-full bg-[color:var(--ide-muted)]" />
+                <div className="w-1 h-1 rounded-full bg-[color:var(--ide-muted)]" />
+                <div className="w-1 h-1 rounded-full bg-[color:var(--ide-muted)]" />
+              </div>
+            </div>
+
+            {/* ── Bottom panel: Graph (fixed height, scrollable) ── */}
+            <div style={{ height: graphHeight, minHeight: GRAPH_HEIGHT_MIN }} className="flex flex-col shrink-0 overflow-hidden">
+              <GraphToolbar
+                onFetch={async () => { await actions.fetchRemote(); await actions.refresh(); }}
+                onPull={async () => { await actions.pullRemote(); await actions.refresh(); }}
+                onPush={async () => { await actions.pushRemote(); await actions.refresh(); }}
+                onRefresh={refresh}
+                autoRefresh={autoRefresh}
+                onToggleAutoRefresh={() => setAutoRefresh((v) => !v)}
+                focusBranch={focusBranch}
+                onToggleFocusBranch={() => setFocusBranch((v) => !v)}
+              />
+              {!graphCollapsed && (
+                <div className="flex-1 overflow-auto divide-y divide-[color:var(--ide-border)]/50">
+                  {commits && commits.length > 0 ? (
+                    commits.map((c) => (
+                      <GraphRow
+                        key={c.hash}
+                        hash={c.hash}
+                        message={c.message}
+                        author={c.author}
+                        time={c.time}
+                        isMerge={c.isMerge}
+                        branchLabel={c.branchLabel}
+                        isRemote={c.isRemote}
+                      />
+                    ))
+                  ) : (
+                    <div className="px-4 py-6 text-center text-[11px] text-[color:var(--ide-muted)]">
+                      <GitCommitHorizontal size={20} className="mx-auto mb-1 opacity-40" />
+                      Loading commit history...
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+      {/* ── Modals ── */}
       {branchPickerOpen && workspaceRoot && (
         <BranchPicker
           workspaceRoot={workspaceRoot}

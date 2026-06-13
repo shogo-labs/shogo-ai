@@ -11,6 +11,7 @@ import type { OpenFile } from "./types";
 import { useDragCancel } from "./useDragCancel";
 import { useTabOverflow } from "./useTabOverflow";
 import { TabOverflowDropdown } from "./TabOverflowDropdown";
+import { CodiconExtensions } from "./icons";
 
 type DropPos = "before" | "after";
 
@@ -212,7 +213,8 @@ export function EditorTabs({
             {showBefore && (
               <span className="pointer-events-none absolute left-0 top-0 h-full w-[2px] bg-[color:var(--ide-active-ring)]" />
             )}
-            {f.pinned && <Pin size={11} className="text-[color:var(--ide-muted)]" />}
+            {f.pinned && <Pin size={11} color="var(--ide-muted)" />}
+            {f.language === "extension-detail" && <CodiconExtensions size={14} />}
             <span className="truncate max-w-[120px] sm:max-w-[160px] lg:max-w-[220px]">{f.name}</span>
             <button
               title={f.pinned ? "Unpin" : f.dirty ? "Close (unsaved)" : "Close"}
@@ -226,11 +228,11 @@ export function EditorTabs({
               onDragStart={(e) => e.preventDefault()}
             >
               {f.pinned ? (
-                <Pin size={11} className="opacity-70 hover:opacity-100" />
+                <Pin size={11} color="currentColor" />
               ) : f.dirty ? (
-                <Circle size={8} className="fill-current" />
+                <Circle size={8} color="currentColor" fill="currentColor" />
               ) : (
-                <X size={12} className="opacity-0 group-hover:opacity-100" />
+                <X size={12} color="currentColor" />
               )}
             </button>
             {showAfter && (
