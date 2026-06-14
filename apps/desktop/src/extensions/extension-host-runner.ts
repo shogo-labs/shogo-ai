@@ -179,6 +179,7 @@ function makeVscodeApi(extension: HostExtension) {
       file: (fsPath: string) => ({ scheme: 'file', fsPath, path: fsPath, toString: () => pathToFileURL(fsPath).toString() }),
     },
     StatusBarAlignment: { Left: 1, Right: 2 },
+    ViewColumn: { Active: -1, Beside: -2, One: 1, Two: 2, Three: 3, Four: 4, Five: 5, Six: 6, Seven: 7, Eight: 8, Nine: 9 },
     FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
     ExtensionContext: undefined,
     Disposable: class Disposable {
