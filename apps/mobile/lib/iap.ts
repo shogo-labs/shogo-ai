@@ -16,7 +16,7 @@
  *     UUIDs in the receipt response — comparing strictly fails otherwise).
  *
  * App Store Connect product IDs (must match exactly):
- *   ai.shogo.{basic|pro|business}.{monthly|annual}
+ *   ai.shogo.app.{basic|pro|business}.{monthly|annual}
  */
 import { Platform } from 'react-native'
 
@@ -209,17 +209,21 @@ export async function purchaseSubscription(args: {
   const appAccountToken = normalizeAccountToken(args.workspaceId)
 
   try {
-    const products = await RNIap.getSubscriptions({ skus: [productId] })
-    if (!Array.isArray(products) || products.length === 0) {
+    const products = await RNIap.getSubscriptions({ skus: ALL_PRODUCT_IDS })
+    const product = Array.isArray(products)
+      ? products.find((p: any) => p?.productId === productId || p?.id === productId)
+      : null
+    if (!product) {
       throw new IapError(
         'product_not_available',
-        `Subscription "${productId}" is not configured in App Store Connect yet.`,
+        'This subscription is temporarily unavailable from the App Store. Please try again in a few minutes.',
       )
     }
 
     const purchase = await RNIap.requestSubscription({
       sku: productId,
       appAccountToken,
+      andDangerouslyFinishTransactionAutomaticallyIOS: false,
     })
 
     const p = Array.isArray(purchase) ? purchase[0] : purchase

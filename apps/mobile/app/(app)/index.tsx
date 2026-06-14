@@ -353,12 +353,10 @@ const HomeScreen = observer(function HomeScreen() {
       })
   }, [currentWorkspace?.id, user?.id])
 
-  // Deep-link: a license-key redeem link stashed before sign-up/onboarding
-  // (lib/pending-license.ts). Now that the user is authenticated with a
-  // workspace, route them to billing with the code prefilled so they can
-  // complete the redemption.
+  // Deep-link: a non-iOS license-key redeem link stashed before
+  // sign-up/onboarding. iOS upgrades must use App Store In-App Purchase only.
   useEffect(() => {
-    if (!currentWorkspace?.id || !user?.id) return
+    if (Platform.OS === 'ios' || !currentWorkspace?.id || !user?.id) return
     const code = getPendingLicenseCode()
     if (!code) return
     clearPendingLicenseCode()
