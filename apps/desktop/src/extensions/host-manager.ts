@@ -106,6 +106,7 @@ export class ExtensionHostManager {
   private diagnostics: ExtensionHostDiagnostic[] = []
   private listeners = new Set<(event: ExtensionHostEvent) => void>()
   private crashCount = 0
+  private stopping = false
   private workspaceRoot?: string
   private latestWorkspaceState?: ExtensionWorkspaceState
 
@@ -177,6 +178,7 @@ export class ExtensionHostManager {
       const requestId = crypto.randomUUID()
       try { await this.request(requestId, { type: 'deactivate', requestId }, 1500) } catch {}
     }
+    this.stopping = true
     this.child.kill()
     this.child = null
     this.ready = false
@@ -184,6 +186,7 @@ export class ExtensionHostManager {
     this.running.clear()
     this.statusBarItems = []
     this.webviewPanels = []
+    this.diagnostics = []
     this.outputChannels.clear()
     this.emit({ type: 'outputChanged', channels: [] })
   }
@@ -206,6 +209,10 @@ export class ExtensionHostManager {
     this.ready = false
     child.on('message', (message) => this.handleMessage(message))
     ;(child as unknown as { once(event: 'exit', listener: (code: number | null, signal: string | null) => void): void }).once('exit', () => {
+      if (this.stopping) {
+        this.stopping = false
+        return
+      }
       this.crashCount++
       this.recordDiagnostic({ level: 'error', type: 'crash', message: 'Extension host process exited unexpectedly.', error: 'Extension host exited' })
       this.child = null
