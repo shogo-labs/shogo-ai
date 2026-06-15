@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * CommitInput — commit message history tests.
  */
@@ -79,5 +80,13 @@ describe("commit split menu contract", () => {
     expect(source).not.toContain('label="Commit All"');
     expect(source).not.toContain('label="Undo Last Commit"');
     expect(source).not.toContain('hint=');
+  });
+
+  test("enables primary commit from total committable changes, not staged changes only", () => {
+    const source = readFileSync("apps/mobile/components/project/panels/ide/scm/CommitInput.tsx", "utf8");
+
+    expect(source).toContain("committableCount = stagedCount");
+    expect(source).toContain("hasMessage && committableCount > 0");
+    expect(source).not.toContain("hasMessage && stagedCount > 0");
   });
 });

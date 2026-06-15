@@ -249,7 +249,7 @@ export function shortCode(f: FileStatus): 'M' | 'A' | 'D' | 'R' | 'C' | 'T' | 'U
   if (f.working === 'renamed' || f.index === 'renamed') return 'R'
   if (f.working === 'copied' || f.index === 'copied') return 'C'
   if (f.working === 'typechange' || f.index === 'typechange') return 'T'
-  if (f.working === 'untracked') return '?'
+  if (f.working === 'untracked') return 'U'
   if (f.working === 'ignored') return '!'
   return '·'
 }

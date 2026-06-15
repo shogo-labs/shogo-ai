@@ -23,6 +23,7 @@ function saveToHistory(message: string) {
 
 export function CommitInput({
   stagedCount,
+  committableCount = stagedCount,
   branch,
   onCommit,
   onCommitAndPush,
@@ -31,6 +32,7 @@ export function CommitInput({
   disabledReason,
 }: {
   stagedCount: number;
+  committableCount?: number;
   branch?: string | null;
   onCommit: (message: string, opts: { amend: boolean; signoff: boolean }) => Promise<{ ok: boolean; error?: string }>;
   onCommitAndPush: (message: string, opts: { amend: boolean; signoff: boolean }) => Promise<{ ok: boolean; error?: string }>;
@@ -78,7 +80,7 @@ export function CommitInput({
   }, [menuOpen]);
 
   const hasMessage = message.trim().length > 0;
-  const canCommit = !disabled && !busy && hasMessage && stagedCount > 0;
+  const canCommit = !disabled && !busy && hasMessage && committableCount > 0;
   const canAmend = !disabled && !busy && hasMessage;
 
   const handleCommit = useCallback(async (

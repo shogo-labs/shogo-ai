@@ -6,7 +6,7 @@
 // `GitWorkspace` instance per absolute path; the registry deduplicates
 // subscriptions across renderer clients.
 
-import { EventEmitter } from 'node:events'
+import chokidar, { type FSWatcher } from 'chokidar'
 import { existsSync } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 
@@ -40,6 +40,22 @@ export interface GitSnapshot {
 const POLL_INTERVAL_MS = 5_000
 const REFRESH_DEBOUNCE_MS = 300
 
+export function buildStatusMaps(files: PorcelainStatus['files']): Pick<GitSnapshot, 'fileStatus' | 'stagedStatus' | 'conflictPaths'> {
+  const fileStatus: Record<string, ReturnType<typeof shortCode>> = {}
+  const stagedStatus: Record<string, ReturnType<typeof shortCode>> = {}
+  const conflictPaths: string[] = []
+  for (const f of files) {
+    if (f.index === 'ignored') continue
+    const code = shortCode(f)
+    fileStatus[f.path] = code
+    if (f.index !== 'unmodified' && !f.isConflict) {
+      stagedStatus[f.path] = code
+    }
+    if (f.isConflict) conflictPaths.push(f.path)
+  }
+  return { fileStatus, stagedStatus, conflictPaths }
+}
+
 /**
  * State for a single workspace path. Shared across all subscribers on that
  * path so we only run one `git status` poll regardless of how many
@@ -48,6 +64,7 @@ const REFRESH_DEBOUNCE_MS = 300
 class GitWorkspace {
   private timer: NodeJS.Timeout | null = null
   private debounceTimer: NodeJS.Timeout | null = null
+  private watcher: FSWatcher | null = null
   private subscribers = new Set<(snap: GitSnapshot) => void>()
   private snapshot: GitSnapshot
   private inflight: Promise<void> | null = null
@@ -80,6 +97,7 @@ class GitWorkspace {
     if (!this.timer && !this.destroyed) {
       this.refresh()
       this.timer = setInterval(() => this.refresh(), POLL_INTERVAL_MS)
+      this.startWatcher()
     }
     return () => {
       this.subscribers.delete(cb)
@@ -89,13 +107,21 @@ class GitWorkspace {
     }
   }
 
-  /** Trigger a refresh now (debounced — multiple calls within 300 ms collapse). */
+  /** Trigger a refresh soon (debounced — multiple calls within 300 ms collapse). */
   requestRefresh(): void {
     if (this.debounceTimer) clearTimeout(this.debounceTimer)
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null
       void this.refresh()
     }, REFRESH_DEBOUNCE_MS)
+  }
+
+  refreshNow(): Promise<void> {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer)
+      this.debounceTimer = null
+    }
+    return this.refresh()
   }
 
   current(): GitSnapshot {
@@ -117,6 +143,28 @@ class GitWorkspace {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = null
     }
+    if (this.watcher) {
+      void this.watcher.close()
+      this.watcher = null
+    }
+  }
+
+  private startWatcher(): void {
+    if (this.watcher || this.destroyed) return
+    const isIgnored = (watchPath: string): boolean => {
+      const normalized = watchPath.replace(/\\/g, '/')
+      return normalized.endsWith('/.git') || normalized.includes('/.git/')
+    }
+    this.watcher = chokidar.watch(this.root, {
+      ignoreInitial: true,
+      ignored: isIgnored,
+      awaitWriteFinish: { stabilityThreshold: 120, pollInterval: 50 },
+      ignorePermissionErrors: true,
+    })
+    this.watcher.on('all', () => this.requestRefresh())
+    this.watcher.on('error', (err) => {
+      this.update({ error: err instanceof Error ? err.message : String(err) })
+    })
   }
 
   private async refresh(): Promise<void> {
@@ -157,19 +205,7 @@ class GitWorkspace {
           return
         }
         const parsed = parsePorcelainV2(res.stdout)
-        const fileStatus: Record<string, ReturnType<typeof shortCode>> = {}
-        const stagedStatus: Record<string, ReturnType<typeof shortCode>> = {}
-        const conflictPaths: string[] = []
-        for (const f of parsed.files) {
-          // Skip ignored files from the broadcast — they spam the decorator
-          // map and the user has no need to see them.
-          if (f.index === 'ignored') continue
-          fileStatus[f.path] = shortCode(f)
-          if (f.index !== 'unmodified' && !f.isConflict) {
-            stagedStatus[f.path] = shortCode(f)
-          }
-          if (f.isConflict) conflictPaths.push(f.path)
-        }
+        const { fileStatus, stagedStatus, conflictPaths } = buildStatusMaps(parsed.files)
         // Fetch per-file change counts (non-blocking if it fails).
         let fileChanges: Record<string, { added: number; removed: number }> = {}
         const numRes = await gitNumStat(this.root)

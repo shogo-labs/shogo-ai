@@ -41,12 +41,16 @@ function formatChangeCount(added?: number, removed?: number): string {
 
 function statusCodeColor(code: GitShortCode | "·"): string {
   switch (code) {
-    case "M": case "T": return "text-[#e2c08d]"; // yellow
-    case "A": case "?": return "text-[#73c991]"; // green
-    case "D": case "U": return "text-[#f48771]"; // red
-    case "R": case "C": return "text-[#7aa6ff]"; // blue
+    case "M": case "T": return "text-[#e2c08d]";
+    case "A": case "U": case "?": return "text-[#73c991]";
+    case "D": return "text-[#f48771]";
+    case "R": case "C": return "text-[#7aa6ff]";
     default: return "text-[color:var(--ide-muted)]";
   }
+}
+
+function displayStatusCode(code: GitShortCode | "·"): string {
+  return code === "?" ? "U" : code;
 }
 
 // ── Extract files for a section from snapshot ──────────────────────
@@ -189,7 +193,7 @@ function FileRow({
       )}
 
       {/* Status badge */}
-      <span className={`text-[11px] font-bold tabular-nums ${statusCodeColor(code)}`}>{code}</span>
+      <span className={`text-[11px] font-bold tabular-nums ${statusCodeColor(code)}`}>{displayStatusCode(code)}</span>
 
       {/* Hover actions — VS Code style */}
       <div className="opacity-0 group-hover/row:opacity-100 flex items-center gap-0.5 ml-1.5">

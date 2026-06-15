@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import {
+  AlertTriangle,
   ArrowDownToLine,
   ArrowUpFromLine,
   Check,
@@ -35,6 +36,8 @@ const GRAPH_HEIGHT_MIN = 120;
 const GRAPH_HEIGHT_MAX_RATIO = 0.8;
 const CHANGES_MIN_HEIGHT = 100;
 const HISTORY_TIMEOUT_MS = 12_000;
+const SYNC_CONFIRMATION_KEY = "shogo.scm.syncConfirmationDismissed";
+const REMOTE_AUTO_FETCH_INTERVAL_MS = 180_000;
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -46,6 +49,32 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
   }
+}
+
+function remoteBranchLabel(upstream: string | null, branch: string | null): string {
+  if (upstream) return upstream;
+  return branch ? `origin/${branch}` : "origin";
+}
+
+function syncCountLabel(behind: number, ahead: number): string {
+  const parts: string[] = [];
+  if (behind > 0) parts.push(`${behind}↓`);
+  if (ahead > 0) parts.push(`${ahead}↑`);
+  return parts.join(" ");
+}
+
+function readSyncConfirmationDismissed(): boolean {
+  try {
+    return localStorage.getItem(SYNC_CONFIRMATION_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function dismissSyncConfirmation() {
+  try {
+    localStorage.setItem(SYNC_CONFIRMATION_KEY, "true");
+  } catch {}
 }
 
 function useGraphSplitter() {
@@ -250,6 +279,80 @@ function GraphRow({
   );
 }
 
+function SyncChangesButton({
+  ahead,
+  behind,
+  disabled,
+  busy,
+  onClick,
+}: {
+  ahead: number;
+  behind: number;
+  disabled?: boolean;
+  busy?: boolean;
+  onClick: () => void;
+}) {
+  const countLabel = syncCountLabel(behind, ahead);
+  if (!countLabel) return null;
+  return (
+    <div className="px-2 pb-2">
+      <button
+        onClick={onClick}
+        disabled={disabled || busy}
+        className="flex h-[34px] w-full items-center justify-center gap-2 rounded-[4px] bg-[#0078d4] text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-[#1a8ae8] disabled:cursor-not-allowed disabled:bg-[#254563] disabled:text-[color:var(--ide-muted)]"
+      >
+        <RefreshCw size={14} className={busy ? "animate-spin" : ""} />
+        Sync Changes {countLabel}
+      </button>
+    </div>
+  );
+}
+
+function SyncConfirmationModal({
+  target,
+  onConfirm,
+  onConfirmDontShowAgain,
+  onCancel,
+}: {
+  target: string;
+  onConfirm: () => void;
+  onConfirmDontShowAgain: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/55 backdrop-blur-[1px]">
+      <div className="w-[280px] rounded-[28px] border border-white/20 bg-[#1f1f1f]/95 px-7 py-6 text-center shadow-2xl">
+        <div className="mx-auto mb-5 flex h-[58px] w-[58px] items-center justify-center rounded-[18px] text-amber-300">
+          <AlertTriangle size={54} strokeWidth={1.8} />
+        </div>
+        <div className="mb-6 text-[15px] font-semibold leading-snug text-white">
+          This action will pull and push commits from and to "{target}".
+        </div>
+        <div className="space-y-2">
+          <button
+            onClick={onConfirm}
+            className="h-[38px] w-full rounded-full bg-[#0a84ff] text-[14px] font-semibold text-white hover:bg-[#2492ff]"
+          >
+            OK
+          </button>
+          <button
+            onClick={onConfirmDontShowAgain}
+            className="h-[38px] w-full rounded-full bg-white/10 text-[13px] font-semibold text-white hover:bg-white/15"
+          >
+            OK, Don&apos;t Show Again
+          </button>
+          <button
+            onClick={onCancel}
+            className="h-[38px] w-full rounded-full bg-white/10 text-[13px] font-semibold text-white hover:bg-white/15"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 export function SourceControlViewlet({
   workspaceRoot,
@@ -283,13 +386,16 @@ export function SourceControlViewlet({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const { graphHeight, dragging, containerRef, onPointerDown } = useGraphSplitter();
   const commitInputRef = useRef<HTMLTextAreaElement>(null);
   const historyRequestIdRef = useRef(0);
 
   const refresh = useCallback(() => {
     void actions.refresh();
-  }, [actions]);
+  }, [actions.refresh]);
 
   const loadHistory = useCallback(async () => {
     const requestId = historyRequestIdRef.current + 1;
@@ -342,11 +448,58 @@ export function SourceControlViewlet({
     void loadHistory();
   }, [refresh, loadHistory]);
 
+  const performSync = useCallback(async () => {
+    setSyncConfirmOpen(false);
+    setSyncError(null);
+    setSyncBusy(true);
+    try {
+      const res = await actions.syncRemote();
+      if (!res.ok) {
+        setSyncError(res.error ?? "Sync failed");
+        return;
+      }
+      await actions.refresh();
+      await loadHistory();
+    } finally {
+      setSyncBusy(false);
+    }
+  }, [actions.refresh, actions.syncRemote, loadHistory]);
+
+  const requestSync = useCallback(() => {
+    if (readSyncConfirmationDismissed()) {
+      void performSync();
+      return;
+    }
+    setSyncConfirmOpen(true);
+  }, [performSync]);
+
+  const confirmSyncAndDismiss = useCallback(() => {
+    dismissSyncConfirmation();
+    void performSync();
+  }, [performSync]);
+
   useEffect(() => {
     if (!autoRefresh || !workspaceRoot) return;
     const id = setInterval(refreshGraph, 30_000);
     return () => clearInterval(id);
   }, [autoRefresh, workspaceRoot, refreshGraph]);
+
+  useEffect(() => {
+    if (!autoRefresh || !workspaceRoot || !snapshot?.isRepo || !snapshot.upstream) return;
+    let cancelled = false;
+    const fetchCounts = async () => {
+      const res = await actions.fetchRemote();
+      if (cancelled || !res.ok) return;
+      await actions.refresh();
+      await loadHistory();
+    };
+    void fetchCounts();
+    const id = setInterval(() => { void fetchCounts(); }, REMOTE_AUTO_FETCH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [actions.fetchRemote, actions.refresh, autoRefresh, loadHistory, snapshot?.isRepo, snapshot?.upstream, workspaceRoot]);
 
   useEffect(() => {
     if (!workspaceRoot || !snapshot?.isRepo) {
@@ -400,6 +553,9 @@ export function SourceControlViewlet({
   const graphCommits = providedCommits ?? historyCommits;
   const graphLoading = providedCommits ? false : historyLoading || !historyLoaded;
   const graphError = providedCommits ? null : historyError;
+  const syncTarget = remoteBranchLabel(snapshot.upstream, snapshot.branch);
+  const hasSyncChanges = snapshot.ahead > 0 || snapshot.behind > 0;
+  const syncDisabled = !hasSyncChanges || syncBusy || conflictCount > 0 || snapshot.detached;
 
   return (
     <div className="flex flex-col h-full text-[12px]">
@@ -484,22 +640,51 @@ export function SourceControlViewlet({
       {!changesGroupCollapsed && (
         <CommitInput
         stagedCount={stagedCount}
+        committableCount={totalUnstagedPlusStaged}
         branch={snapshot.detached ? "HEAD" : snapshot.branch}
         disabled={conflictCount > 0}
         disabledReason={conflictCount > 0 ? `Resolve ${conflictCount} merge conflict${conflictCount === 1 ? "" : "s"} before committing.` : undefined}
         onCommit={async (message, opts) => {
-          const r = await actions.commit(message, opts);
-          return { ok: r.ok, error: r.ok ? undefined : r.error };
+          const r = await actions.commitAll(message, opts);
+          if (!r.ok) return { ok: false, error: r.error };
+          await actions.refresh();
+          await loadHistory();
+          return { ok: true };
         }}
         onCommitAndPush={async (message, opts) => {
-          const r = await actions.commitAndPush(message, opts);
-          return { ok: r.ok, error: r.ok ? undefined : r.error };
+          const committed = await actions.commitAll(message, opts);
+          if (!committed.ok) return { ok: false, error: committed.error };
+          const pushed = await actions.pushRemote();
+          await actions.refresh();
+          await loadHistory();
+          return { ok: pushed.ok, error: pushed.ok ? undefined : pushed.error };
         }}
         onCommitAndSync={async (message, opts) => {
-          const r = await actions.commitAndSync(message, opts);
-          return { ok: r.ok, error: r.ok ? undefined : r.error };
+          const committed = await actions.commitAll(message, opts);
+          if (!committed.ok) return { ok: false, error: committed.error };
+          const synced = await actions.syncRemote();
+          await actions.refresh();
+          await loadHistory();
+          return { ok: synced.ok, error: synced.ok ? undefined : synced.error };
         }}
         />
+      )}
+
+      {!changesGroupCollapsed && hasSyncChanges && (
+        <>
+          <SyncChangesButton
+            ahead={snapshot.ahead}
+            behind={snapshot.behind}
+            busy={syncBusy}
+            disabled={syncDisabled}
+            onClick={requestSync}
+          />
+          {syncError && (
+            <div className="mx-2 mb-2 rounded bg-rose-500/10 border border-rose-500/30 px-2 py-1 text-[10px] text-rose-300 whitespace-pre-wrap">
+              {syncError}
+            </div>
+          )}
+        </>
       )}
 
       {remoteMenuOpen && workspaceRoot && (
@@ -715,6 +900,14 @@ export function SourceControlViewlet({
           workspaceRoot={workspaceRoot}
           onClose={() => setStashListOpen(false)}
           onAfterAction={refresh}
+        />
+      )}
+      {syncConfirmOpen && (
+        <SyncConfirmationModal
+          target={syncTarget}
+          onConfirm={() => { void performSync(); }}
+          onConfirmDontShowAgain={confirmSyncAndDismiss}
+          onCancel={() => setSyncConfirmOpen(false)}
         />
       )}
     </div>
