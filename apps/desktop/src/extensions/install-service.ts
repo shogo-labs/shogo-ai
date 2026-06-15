@@ -69,6 +69,8 @@ export interface WorkspaceTrustState {
 }
 
 export type RestrictedModeSupport = 'full' | 'limited' | 'unsupported'
+export type ExtensionSupportStatus = 'supported' | 'partial' | 'unsupported' | 'requiresRuntime'
+export type ExtensionCapabilityKind = 'declarative' | 'commands' | 'views' | 'formatter' | 'linter' | 'debugger' | 'terminal' | 'task' | 'scm' | 'typescriptServerPlugin'
 export type ExtensionUsableEntryPointKind = 'command' | 'view' | 'viewContainer' | 'startupActivation'
 
 export interface ExtensionUsableEntryPoint {
@@ -100,6 +102,9 @@ export interface ExtensionListItem extends InstalledExtensionRecord {
   usableEntryPoints: ExtensionUsableEntryPoint[]
   hasUsableEntryPoint: boolean
   unsupportedSurfaceMessage?: string
+  supportStatus: ExtensionSupportStatus
+  supportStatusMessage: string
+  capabilityKinds: ExtensionCapabilityKind[]
 }
 
 const MAX_VSIX_FILES = 10000
@@ -145,6 +150,8 @@ export class ExtensionInstallService {
       const restrictedModeSupport = getRestrictedModeSupport(record.manifest)
       const disabledByRestrictedMode = workspaceTrust.restrictedMode && restrictedModeSupport === 'unsupported'
       const usableEntryPoints = getUsableEntryPoints(record.manifest)
+      const capabilityKinds = getCapabilityKinds(record.manifest)
+      const support = getSupportAssessment(record, usableEntryPoints, capabilityKinds)
       return {
         ...record,
         iconUrl: installedIconUrl(record),
@@ -162,7 +169,10 @@ export class ExtensionInstallService {
           : undefined,
         usableEntryPoints,
         hasUsableEntryPoint: usableEntryPoints.length > 0,
-        unsupportedSurfaceMessage: usableEntryPoints.length === 0 ? getUnsupportedSurfaceMessage(record) : undefined,
+        unsupportedSurfaceMessage: support.unsupportedSurfaceMessage,
+        supportStatus: support.status,
+        supportStatusMessage: support.message,
+        capabilityKinds,
       }
     })
   }
@@ -541,10 +551,73 @@ function getUsableEntryPoints(manifest: ShogoExtensionManifest): ExtensionUsable
   for (const [containerId, container] of panelContainers) {
     if (containerId && (manifest.contributes?.views?.[containerId]?.length ?? 0) > 0) entryPoints.push({ kind: 'viewContainer', id: containerId, label: container.title || containerId, detail: 'Panel' })
   }
-  if (manifest.main && manifest.activationEvents?.some((event) => event === '*' || event === 'onStartupFinished')) {
-    entryPoints.push({ kind: 'startupActivation', id: 'onStartupFinished', label: 'Startup activation', detail: 'May expose runtime status items or webviews after activation' })
+  if ((manifest.main || manifest.browser) && manifest.activationEvents?.some((event) => event === '*' || event === 'onStartupFinished')) {
+    entryPoints.push({ kind: 'startupActivation', id: 'onStartupFinished', label: 'Activate extension', detail: 'Runs startup activation and refreshes runtime contributions' })
   }
   return entryPoints
+}
+
+function getCapabilityKinds(manifest: ShogoExtensionManifest): ExtensionCapabilityKind[] {
+  const contributes = manifest.contributes ?? {}
+  const kinds = new Set<ExtensionCapabilityKind>()
+  if ((contributes.commands?.length ?? 0) > 0) kinds.add('commands')
+  if (Object.keys(contributes.views ?? {}).length > 0 || (contributes.viewsContainers?.activitybar?.length ?? 0) > 0 || (contributes.viewsContainers?.panel?.length ?? 0) > 0) kinds.add('views')
+  if ((contributes.languages?.length ?? 0) > 0 || (contributes.grammars?.length ?? 0) > 0 || (contributes.snippets?.length ?? 0) > 0 || (contributes.themes?.length ?? 0) > 0 || (contributes.iconThemes?.length ?? 0) > 0 || (contributes.productIconThemes?.length ?? 0) > 0 || (contributes.jsonValidation?.length ?? 0) > 0) kinds.add('declarative')
+  if ((contributes.debuggers?.length ?? 0) > 0 || (contributes.breakpoints?.length ?? 0) > 0) kinds.add('debugger')
+  if ((contributes.taskDefinitions?.length ?? 0) > 0) kinds.add('task')
+  if (contributes.terminal) kinds.add('terminal')
+  if (Array.isArray((contributes as Record<string, unknown>).typescriptServerPlugins)) kinds.add('typescriptServerPlugin')
+  if (extensionHasFormatterSurface(manifest)) kinds.add('formatter')
+  if (extensionHasLinterSurface(manifest)) kinds.add('linter')
+  if (extensionHasScmSurface(manifest)) kinds.add('scm')
+  return [...kinds]
+}
+
+function getSupportAssessment(record: InstalledExtensionRecord, entryPoints: ExtensionUsableEntryPoint[], capabilityKinds: ExtensionCapabilityKind[]): { status: ExtensionSupportStatus; message: string; unsupportedSurfaceMessage?: string } {
+  const extensionId = record.manifest.id.toLowerCase()
+  if (extensionId === 'esbenp.prettier-vscode' || record.manifest.name.toLowerCase().includes('prettier')) {
+    return { status: 'requiresRuntime', message: 'Requires formatter provider support; installed but not active yet.', unsupportedSurfaceMessage: 'Prettier installs successfully, but formatting requires vscode.languages formatter-provider support and a Monaco formatting bridge before it can change files.' }
+  }
+  if (extensionId === 'dbaeumer.vscode-eslint' || record.manifest.name.toLowerCase().includes('eslint')) {
+    return { status: 'requiresRuntime', message: 'Requires LSP/diagnostics support; installed but not active yet.', unsupportedSurfaceMessage: 'ESLint installs successfully, but linting requires language-client, diagnostics, Problems, and code-action support before it can report or fix issues.' }
+  }
+  if (extensionId === 'mhutchie.git-graph' || record.manifest.name.toLowerCase().includes('git-graph')) {
+    return { status: 'partial', message: 'Requires webview + Git/SCM APIs; command may fail until runtime support is complete.', unsupportedSurfaceMessage: 'Git Graph exposes commands, but it depends on fuller webview, text-document-content, and Git/SCM API support. If the command fails, check Host Diagnostics for the exact missing runtime API.' }
+  }
+  if (!record.compatible) {
+    return { status: 'unsupported', message: record.compatibilityReason ?? 'Requires a newer VS Code API than Shogo currently supports.', unsupportedSurfaceMessage: record.compatibilityReason }
+  }
+  if (capabilityKinds.some((kind) => kind === 'formatter' || kind === 'linter' || kind === 'debugger' || kind === 'task' || kind === 'terminal' || kind === 'typescriptServerPlugin')) {
+    return { status: entryPoints.length > 0 ? 'partial' : 'requiresRuntime', message: 'Requires deeper VS Code runtime support for some contributed features.', unsupportedSurfaceMessage: getUnsupportedSurfaceMessage(record) }
+  }
+  if (capabilityKinds.includes('declarative') && capabilityKinds.length === 1) {
+    return { status: 'requiresRuntime', message: 'Declarative contribution installed; themes, grammars, snippets, and schemas are not wired into the editor yet.', unsupportedSurfaceMessage: 'This extension contributes declarative editor assets, but Shogo does not load themes, grammars, snippets, icon themes, or JSON validation schemas into Monaco yet.' }
+  }
+  if (entryPoints.length > 0) {
+    return { status: capabilityKinds.includes('views') ? 'partial' : 'supported', message: capabilityKinds.includes('views') ? 'Commands/views are reachable; complex VS Code APIs may still be partial.' : 'Commands are reachable from Use, Command Palette, and extension details.' }
+  }
+  return { status: 'unsupported', message: 'No command, view, startup activation, or currently wired declarative surface is reachable.', unsupportedSurfaceMessage: getUnsupportedSurfaceMessage(record) }
+}
+
+function extensionHasFormatterSurface(manifest: ShogoExtensionManifest): boolean {
+  const id = manifest.id.toLowerCase()
+  const name = manifest.name.toLowerCase()
+  const categories = (manifest.categories ?? []).map((category) => category.toLowerCase())
+  const commands = (manifest.contributes?.commands ?? []).map((command) => `${command.command} ${command.title}`.toLowerCase())
+  return id.includes('prettier') || name.includes('prettier') || categories.includes('formatters') || commands.some((command) => command.includes('format'))
+}
+
+function extensionHasLinterSurface(manifest: ShogoExtensionManifest): boolean {
+  const id = manifest.id.toLowerCase()
+  const name = manifest.name.toLowerCase()
+  const commands = (manifest.contributes?.commands ?? []).map((command) => `${command.command} ${command.title}`.toLowerCase())
+  return id.includes('eslint') || name.includes('eslint') || commands.some((command) => command.includes('lint') || command.includes('fix'))
+}
+
+function extensionHasScmSurface(manifest: ShogoExtensionManifest): boolean {
+  const menus = Object.keys(manifest.contributes?.menus ?? {}).map((menu) => menu.toLowerCase())
+  const commands = (manifest.contributes?.commands ?? []).map((command) => `${command.command} ${command.title}`.toLowerCase())
+  return menus.some((menu) => menu.includes('scm')) || commands.some((command) => command.includes('git') || command.includes('source control'))
 }
 
 function getUnsupportedSurfaceMessage(record: InstalledExtensionRecord): string {

@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, Download, Power, PowerOff, ShieldCheck, Star, Trash2, XCircle } from "lucide-react-native";
+import { AlertTriangle, CheckCircle2, Download, Play, Power, PowerOff, ShieldCheck, Star, Trash2, XCircle } from "lucide-react-native";
 import { CodiconExtensions } from "../icons";
-import type { ExtensionSearchResult, InstalledExtension } from "./types";
+import type { ExtensionSearchResult, ExtensionUsableEntryPoint, InstalledExtension } from "./types";
+import { getEntryPointActionLabel } from "./entryPoints";
 
 export function InstalledExtensionListItem({
   extension,
@@ -9,13 +10,17 @@ export function InstalledExtensionListItem({
   onDisable,
   onUninstall,
   onSelect,
+  onUseEntryPoint,
 }: {
   extension: InstalledExtension;
   onEnable: () => void;
   onDisable: () => void;
   onUninstall: () => void;
   onSelect: () => void;
+  onUseEntryPoint?: (entryPoint: ExtensionUsableEntryPoint) => void;
 }) {
+  const canUseEntryPoints = extension.supportStatus === "supported" || extension.supportStatus === "partial";
+  const primaryEntryPoint = canUseEntryPoints ? extension.usableEntryPoints[0] : undefined;
   return (
     <div className="group border-b border-[color:var(--ide-border)] px-3 py-2 hover:bg-[color:var(--ide-hover-subtle)]">
       <button onClick={onSelect} className="flex w-full items-start gap-3 text-left">
@@ -29,12 +34,12 @@ export function InstalledExtensionListItem({
             {extension.trustedPublisher && <TrustBadge />}
             {extension.disabledByRestrictedMode && <RestrictedBadge />}
             {extension.restrictedMode && extension.restrictedModeSupport === "limited" && <LimitedRestrictedBadge />}
-            {!extension.hasUsableEntryPoint && <UnsupportedSurfaceBadge />}
+            <SupportBadge status={extension.supportStatus} />
           </div>
-          {!extension.hasUsableEntryPoint && extension.unsupportedSurfaceMessage && (
+          {extension.supportStatus !== "supported" && (extension.unsupportedSurfaceMessage || extension.supportStatusMessage) && (
             <div className="mt-1 flex items-start gap-1 rounded border border-amber-500/20 bg-amber-500/5 px-1.5 py-1 text-[10px] leading-snug text-amber-100">
               <AlertTriangle size={11} className="mt-0.5 shrink-0" />
-              <span className="line-clamp-2">{extension.unsupportedSurfaceMessage}</span>
+              <span className="line-clamp-2">{extension.unsupportedSurfaceMessage ?? extension.supportStatusMessage}</span>
             </div>
           )}
           {extension.description && (
@@ -49,11 +54,27 @@ export function InstalledExtensionListItem({
         </div>
       </button>
       <div className="mt-2 flex items-center justify-between gap-2 pl-11">
-        <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${extension.enabled ? "text-emerald-300" : "text-[color:var(--ide-muted)]"}`}>
-          {extension.enabled ? <CheckCircle2 size={11} /> : <XCircle size={11} />}
-          {extension.enabled ? "Enabled" : "Disabled"}
-        </span>
+        <div className="min-w-0">
+          <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${extension.enabled ? "text-emerald-300" : "text-[color:var(--ide-muted)]"}`}>
+            {extension.enabled ? <CheckCircle2 size={11} /> : <XCircle size={11} />}
+            {extension.enabled ? "Enabled" : "Disabled"}
+          </span>
+          {primaryEntryPoint && (
+            <div className="mt-1 truncate text-[10px] text-[color:var(--ide-muted)]">
+              {getEntryPointActionLabel(primaryEntryPoint)}{extension.usableEntryPoints.length > 1 ? ` +${extension.usableEntryPoints.length - 1} more` : ""}
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-1 opacity-90 group-hover:opacity-100">
+          {primaryEntryPoint && extension.enabled && (
+            <button
+              title={getEntryPointActionLabel(primaryEntryPoint)}
+              onClick={() => onUseEntryPoint?.(primaryEntryPoint)}
+              className="inline-flex h-6 items-center gap-1 rounded bg-[color:var(--ide-accent)] px-2 text-[10px] font-semibold text-white hover:opacity-90"
+            >
+              <Play size={11} /> Use
+            </button>
+          )}
           {extension.enabled ? (
             <IconButton title="Disable" onClick={onDisable}><PowerOff size={12} /></IconButton>
           ) : (
@@ -139,10 +160,16 @@ function LimitedRestrictedBadge() {
   );
 }
 
-function UnsupportedSurfaceBadge() {
+function SupportBadge({ status }: { status: InstalledExtension["supportStatus"] }) {
+  const label = status === "supported" ? "Supported" : status === "partial" ? "Partial" : status === "requiresRuntime" ? "Needs runtime" : "Unsupported";
+  const cls = status === "supported"
+    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+    : status === "partial"
+      ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
+      : "border-amber-500/30 bg-amber-500/10 text-amber-200";
   return (
-    <span className="inline-flex items-center gap-0.5 rounded border border-amber-500/30 bg-amber-500/10 px-1 py-0.5 text-[9px] font-semibold text-amber-200">
-      <AlertTriangle size={9} /> No entry point
+    <span className={`inline-flex items-center gap-0.5 rounded border px-1 py-0.5 text-[9px] font-semibold ${cls}`}>
+      {status !== "supported" && <AlertTriangle size={9} />} {label}
     </span>
   );
 }

@@ -484,16 +484,11 @@ export function SourceControlViewlet({
       {!changesGroupCollapsed && (
         <CommitInput
         stagedCount={stagedCount}
-        totalCount={totalUnstagedPlusStaged}
         branch={snapshot.detached ? "HEAD" : snapshot.branch}
         disabled={conflictCount > 0}
         disabledReason={conflictCount > 0 ? `Resolve ${conflictCount} merge conflict${conflictCount === 1 ? "" : "s"} before committing.` : undefined}
         onCommit={async (message, opts) => {
           const r = await actions.commit(message, opts);
-          return { ok: r.ok, error: r.ok ? undefined : r.error };
-        }}
-        onCommitAll={async (message, opts) => {
-          const r = await actions.commitAll(message, opts);
           return { ok: r.ok, error: r.ok ? undefined : r.error };
         }}
         onCommitAndPush={async (message, opts) => {
@@ -502,10 +497,6 @@ export function SourceControlViewlet({
         }}
         onCommitAndSync={async (message, opts) => {
           const r = await actions.commitAndSync(message, opts);
-          return { ok: r.ok, error: r.ok ? undefined : r.error };
-        }}
-        onUndoLastCommit={async () => {
-          const r = await actions.undoLastCommit();
           return { ok: r.ok, error: r.ok ? undefined : r.error };
         }}
         />

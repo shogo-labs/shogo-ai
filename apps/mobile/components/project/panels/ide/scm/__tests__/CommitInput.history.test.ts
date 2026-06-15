@@ -2,6 +2,7 @@
  * CommitInput — commit message history tests.
  */
 import { describe, expect, test, beforeEach } from "bun:test";
+import { readFileSync } from "node:fs";
 
 const HISTORY_KEY = "shogo.scm.commitHistory";
 const MAX_HISTORY = 50;
@@ -68,4 +69,15 @@ describe("commit history — loadHistory", () => {
   test("corrupt JSON → empty array", () => expect(loadHistory({ [HISTORY_KEY]: "not-json" })).toEqual([]));
   test("valid JSON → parsed", () => expect(loadHistory({ [HISTORY_KEY]: '["a","b"]' })).toEqual(["a", "b"]));
   test("empty array → empty", () => expect(loadHistory({ [HISTORY_KEY]: "[]" })).toEqual([]));
+});
+
+describe("commit split menu contract", () => {
+  test("matches the VS Code four-action menu", () => {
+    const source = readFileSync("apps/mobile/components/project/panels/ide/scm/CommitInput.tsx", "utf8");
+    const labels = [...source.matchAll(/<MenuItem label=\"([^\"]+)\"/g)].map((match) => match[1]);
+    expect(labels).toEqual(["Commit", "Commit (Amend)", "Commit & Push", "Commit & Sync"]);
+    expect(source).not.toContain('label="Commit All"');
+    expect(source).not.toContain('label="Undo Last Commit"');
+    expect(source).not.toContain('hint=');
+  });
 });

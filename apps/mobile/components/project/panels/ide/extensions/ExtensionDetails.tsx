@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { AlertTriangle, Download, ExternalLink, Play, Power, PowerOff, ShieldCheck, Star, Trash2 } from "lucide-react-native";
 import { CodiconExtensions } from "../icons";
-import type { ExtensionSearchResult, InstalledExtension } from "./types";
+import type { ExtensionSearchResult, ExtensionUsableEntryPoint, InstalledExtension } from "./types";
+import { getEntryPointActionLabel, getEntryPointKindLabel } from "./entryPoints";
 
 type DetailTab = "details" | "features" | "changelog" | "dependencies";
 
@@ -15,6 +16,7 @@ export function ExtensionDetails({
   onDisable,
   onUninstall,
   onRunCommand,
+  onUseEntryPoint,
 }: {
   item: InstalledExtension | ExtensionSearchResult;
   installedItem?: InstalledExtension;
@@ -24,6 +26,7 @@ export function ExtensionDetails({
   onDisable?: () => void;
   onUninstall?: () => void;
   onRunCommand?: (commandId: string) => void;
+  onUseEntryPoint?: (entryPoint: ExtensionUsableEntryPoint) => void;
 }) {
   const [tab, setTab] = useState<DetailTab>("details");
   const installed = installedItem;
@@ -37,6 +40,9 @@ export function ExtensionDetails({
   const downloads = "downloads" in item ? item.downloads : undefined;
   const categories = "categories" in item ? item.categories : item.manifest.categories ?? [];
   const marketplaceUrl = `https://open-vsx.org/extension/${item.publisher}/${item.name}`;
+  const canUseEntryPoints = installed?.supportStatus === "supported" || installed?.supportStatus === "partial";
+  const usableEntryPoints = canUseEntryPoints ? installed?.usableEntryPoints ?? [] : [];
+  const primaryEntryPoint = usableEntryPoints[0];
   const tabs: Array<{ id: DetailTab; label: string }> = [
     { id: "details", label: "Details" },
     { id: "features", label: "Features" },
@@ -74,12 +80,15 @@ export function ExtensionDetails({
                 {installed?.disabledByRestrictedMode && <Badge>Restricted Mode Blocked</Badge>}
                 {installed?.restrictedMode && installed.restrictedModeSupport === "limited" && <Badge>Limited in Restricted Mode</Badge>}
                 {installed?.autoUpdate && <Badge>Auto Update</Badge>}
-                {installed && !installed.hasUsableEntryPoint && <Badge><AlertTriangle size={10} /> No usable entry point</Badge>}
+                {installed && <SupportBadge status={installed.supportStatus} />}
               </div>
               <p className="mt-3 max-w-3xl leading-relaxed text-[13px] text-[color:var(--ide-text)]">{item.description || "No description provided."}</p>
               <div className="mt-4 flex flex-wrap gap-2">
                 {installed ? (
                   <>
+                    {primaryEntryPoint && installed.enabled && (
+                      <ActionButton onClick={() => onUseEntryPoint?.(primaryEntryPoint)} tone="primary"><Play size={13} /> Use</ActionButton>
+                    )}
                     {installed.enabled ? (
                       <ActionButton onClick={onDisable} tone="secondary"><PowerOff size={13} /> Disable</ActionButton>
                     ) : (
@@ -116,8 +125,8 @@ export function ExtensionDetails({
           {installed?.disabledByRestrictedMode && (
             <Warning>{installed.restrictedModeReason ?? "This extension is blocked because the current workspace is untrusted."}</Warning>
           )}
-          {installed && !installed.hasUsableEntryPoint && (
-            <Warning>{installed.unsupportedSurfaceMessage ?? "This extension is installed, but no command, view, status item, or webview entry point is currently reachable."}</Warning>
+          {installed && installed.supportStatus !== "supported" && (
+            <Warning>{installed.unsupportedSurfaceMessage ?? installed.supportStatusMessage}</Warning>
           )}
           {!installed && (
             <div className="mt-4 flex items-start gap-2 rounded border border-sky-500/30 bg-sky-500/10 p-3 text-[12px] text-sky-100">
@@ -127,9 +136,35 @@ export function ExtensionDetails({
           )}
 
           {tab === "details" && (
-            <Section title="Overview">
-              <p className="leading-relaxed">{item.description || "This extension has not published a detailed overview."}</p>
-            </Section>
+            <>
+              {installed && (
+                <Section title="How to use">
+                  {usableEntryPoints.length > 0 ? (
+                    <div className="space-y-1">
+                      {usableEntryPoints.map((entryPoint) => (
+                        <button
+                          key={`${entryPoint.kind}:${entryPoint.id}`}
+                          onClick={() => onUseEntryPoint?.(entryPoint)}
+                          disabled={!installed.enabled}
+                          className="flex w-full items-center justify-between gap-2 rounded bg-[color:var(--ide-panel)] px-2 py-1.5 text-left text-[12px] hover:bg-[color:var(--ide-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium text-[color:var(--ide-text-strong)]">{getEntryPointActionLabel(entryPoint)}</span>
+                            <span className="block truncate text-[10px] text-[color:var(--ide-muted)]">{getEntryPointKindLabel(entryPoint)}{entryPoint.detail ? ` · ${entryPoint.detail}` : ""}</span>
+                          </span>
+                          <Play size={12} className="shrink-0" />
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <Empty>{installed.supportStatusMessage}</Empty>
+                  )}
+                </Section>
+              )}
+              <Section title="Overview">
+                <p className="leading-relaxed">{item.description || "This extension has not published a detailed overview."}</p>
+              </Section>
+            </>
           )}
 
           {tab === "features" && (
@@ -150,10 +185,12 @@ export function ExtensionDetails({
                         <div className="truncate text-[10px] text-[color:var(--ide-muted)]">{command.command}</div>
                       </div>
                       <button
-                        onClick={() => onRunCommand?.(command.command)}
-                        className="inline-flex shrink-0 items-center gap-1 rounded border border-[color:var(--ide-border)] px-2 py-1 text-[10px] text-[color:var(--ide-text-strong)] hover:bg-[color:var(--ide-hover)]"
+                        onClick={() => canUseEntryPoints ? onRunCommand?.(command.command) : undefined}
+                        disabled={!canUseEntryPoints}
+                        title={canUseEntryPoints ? "Run command" : installed.supportStatusMessage}
+                        className="inline-flex shrink-0 items-center gap-1 rounded border border-[color:var(--ide-border)] px-2 py-1 text-[10px] text-[color:var(--ide-text-strong)] hover:bg-[color:var(--ide-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <Play size={11} /> Run
+                        <Play size={11} /> {canUseEntryPoints ? "Run" : "Needs runtime"}
                       </button>
                     </div>
                   ))}
@@ -188,6 +225,8 @@ export function ExtensionDetails({
             {installed && <MetaRow label="Updated">{formatDate(installed.updatedAt)}</MetaRow>}
             {categories.length > 0 && <MetaRow label="Categories">{categories.join(", ")}</MetaRow>}
             {installed && <MetaRow label="Source">{installed.source}</MetaRow>}
+            {installed && <MetaRow label="Support">{installed.supportStatusMessage}</MetaRow>}
+            {installed?.capabilityKinds.length ? <MetaRow label="Capabilities">{installed.capabilityKinds.join(", ")}</MetaRow> : null}
           </div>
           <h3 className="mb-2 mt-5 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">Resources</h3>
           <ResourceLink href={marketplaceUrl}>Marketplace</ResourceLink>
@@ -237,6 +276,16 @@ function Empty({ children }: { children: ReactNode }) {
 
 function Badge({ children }: { children: ReactNode }) {
   return <span className="inline-flex items-center gap-1 rounded bg-[color:var(--ide-panel)] px-1.5 py-0.5 text-[10px] text-[color:var(--ide-text)]">{children}</span>;
+}
+
+function SupportBadge({ status }: { status: InstalledExtension["supportStatus"] }) {
+  const label = status === "supported" ? "Supported" : status === "partial" ? "Partial support" : status === "requiresRuntime" ? "Needs runtime" : "Unsupported";
+  const cls = status === "supported"
+    ? "bg-emerald-500/10 text-emerald-200"
+    : status === "partial"
+      ? "bg-sky-500/10 text-sky-200"
+      : "bg-amber-500/10 text-amber-200";
+  return <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${cls}`}>{status !== "supported" && <AlertTriangle size={10} />}{label}</span>;
 }
 
 function MetaRow({ label, children }: { label: string; children: ReactNode }) {

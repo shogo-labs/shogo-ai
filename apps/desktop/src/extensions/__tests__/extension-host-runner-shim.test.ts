@@ -30,4 +30,23 @@ describe('extension host vscode API shim', () => {
     expect(source).toContain('onDidChangeConfiguration')
     expect(source).toContain('onDidSaveTextDocument')
   })
+
+  test('provides Git Graph-facing URI and text content provider APIs', () => {
+    const source = fs.readFileSync(runnerSource, 'utf8')
+
+    expect(source).toContain('registerTextDocumentContentProvider')
+    expect(source).toContain('textDocumentContentProviders')
+    expect(source).toContain('parse: (value: string) => uriFromString(value)')
+    expect(source).toContain('joinPath: (base: unknown, ...segments: string[]) => joinUriPath(base, ...segments)')
+  })
+
+  test('provides command-extension startup APIs used by marketplace extensions', () => {
+    const source = fs.readFileSync(runnerSource, 'utf8')
+
+    expect(source).toContain('registerTextEditorCommand')
+    expect(source).toContain("commandId === 'setContext'")
+    expect(source).toContain('EventEmitter: class EventEmitter')
+    expect(source).toContain('extensionUri: uriFromFsPath(extension.installPath)')
+  })
+
 })

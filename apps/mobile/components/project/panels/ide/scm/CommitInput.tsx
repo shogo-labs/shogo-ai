@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { Check, ChevronDown, Loader2, RotateCcw } from "lucide-react-native";
+import { Check, ChevronDown, Loader2 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const HISTORY_KEY = "shogo.scm.commitHistory";
@@ -23,24 +23,18 @@ function saveToHistory(message: string) {
 
 export function CommitInput({
   stagedCount,
-  totalCount,
   branch,
   onCommit,
-  onCommitAll,
   onCommitAndPush,
   onCommitAndSync,
-  onUndoLastCommit,
   disabled,
   disabledReason,
 }: {
   stagedCount: number;
-  totalCount: number;
   branch?: string | null;
   onCommit: (message: string, opts: { amend: boolean; signoff: boolean }) => Promise<{ ok: boolean; error?: string }>;
-  onCommitAll: (message: string, opts: { amend: boolean; signoff: boolean }) => Promise<{ ok: boolean; error?: string }>;
   onCommitAndPush: (message: string, opts: { amend: boolean; signoff: boolean }) => Promise<{ ok: boolean; error?: string }>;
   onCommitAndSync: (message: string, opts: { amend: boolean; signoff: boolean }) => Promise<{ ok: boolean; error?: string }>;
-  onUndoLastCommit: () => Promise<{ ok: boolean; error?: string }>;
   disabled?: boolean;
   disabledReason?: string;
 }) {
@@ -48,7 +42,6 @@ export function CommitInput({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [amend, setAmend] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const historyIdxRef = useRef<number>(-1);
 
@@ -84,31 +77,26 @@ export function CommitInput({
     };
   }, [menuOpen]);
 
-  const canCommit = !disabled && !busy && (amend || (message.trim().length > 0 && (stagedCount > 0 || totalCount > 0)));
+  const hasMessage = message.trim().length > 0;
+  const canCommit = !disabled && !busy && hasMessage && stagedCount > 0;
+  const canAmend = !disabled && !busy && hasMessage;
 
-  const handleCommit = useCallback(async (commitFn: typeof onCommit) => {
+  const handleCommit = useCallback(async (
+    commitFn: typeof onCommit,
+    optsOverride?: Partial<{ amend: boolean; signoff: boolean }>,
+  ) => {
     setError(null);
     setBusy(true);
-    const res = await commitFn(message, { amend, signoff: false });
+    const res = await commitFn(message, { amend: optsOverride?.amend ?? false, signoff: optsOverride?.signoff ?? false });
     setBusy(false);
     if (res.ok) {
       saveToHistory(message);
       setMessage("");
-      setAmend(false);
       historyIdxRef.current = -1;
     } else {
       setError(res.error ?? "commit failed");
     }
-  }, [message, amend]);
-
-  const handleUndoLastCommit = useCallback(async () => {
-    setMenuOpen(false);
-    setError(null);
-    setBusy(true);
-    const res = await onUndoLastCommit();
-    setBusy(false);
-    if (!res.ok) setError(res.error ?? "undo failed");
-  }, [onUndoLastCommit]);
+  }, [message]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && canCommit) {
@@ -154,7 +142,7 @@ export function CommitInput({
         />
       </div>
 
-      <div className="flex px-2 pb-2">
+      <div className="relative flex px-2 pb-2" ref={menuRef}>
         <button
           onClick={() => void handleCommit(onCommit)}
           disabled={!canCommit}
@@ -162,9 +150,11 @@ export function CommitInput({
           style={{ height: 34 }}
         >
           {busy ? <Loader2 className="animate-spin" size={12} /> : <Check size={12} />}
-          {amend ? "Amend" : "Commit"}
+          Commit
         </button>
         <button
+          aria-expanded={menuOpen}
+          aria-haspopup="menu"
           onClick={() => setMenuOpen((v) => !v)}
           disabled={disabled || busy}
           className="flex items-center justify-center rounded-r-[4px] bg-[#0078d4] border-l border-white/25 px-2 text-white disabled:bg-[#254563] disabled:text-[color:var(--ide-muted)] disabled:opacity-100 hover:bg-[#1a8ae8] transition-colors"
@@ -175,26 +165,14 @@ export function CommitInput({
 
         {menuOpen && (
           <div
-            ref={menuRef}
-            className="absolute left-2 mt-1 z-[1000] w-[220px] rounded bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] shadow-xl py-1 text-[12px]"
+            role="menu"
+            className="absolute right-2 top-[38px] z-[1000] min-w-[270px] rounded-[10px] bg-[color:var(--ide-surface)]/95 border border-[color:var(--ide-border)] shadow-2xl py-2 text-[14px] backdrop-blur"
           >
-            <MenuItem label="Commit" hint="Stage and commit" onClick={() => { setMenuOpen(false); void handleCommit(onCommit); }} disabled={stagedCount === 0} />
-            <MenuItem label="Commit All" hint="Stage all + commit" onClick={() => { setMenuOpen(false); void handleCommit(onCommitAll); }} disabled={totalCount === 0} />
-            <MenuItem label="Commit & Push" hint="Commit and push to remote" onClick={() => { setMenuOpen(false); void handleCommit(onCommitAndPush); }} disabled={stagedCount === 0} />
-            <MenuItem label="Commit & Sync" hint="Pull + commit + push" onClick={() => { setMenuOpen(false); void handleCommit(onCommitAndSync); }} disabled={stagedCount === 0} />
-            <div className="my-1 border-t border-[color:var(--ide-border)]" />
-            <MenuItem
-              label={amend ? "✓ Amend" : "Amend"}
-              hint="Replace previous commit"
-              onClick={() => { setMenuOpen(false); setAmend((v) => !v); }}
-            />
-            <div className="my-1 border-t border-[color:var(--ide-border)]" />
-            <MenuItem
-              label="Undo Last Commit"
-              hint="git reset --soft HEAD~1"
-              onClick={handleUndoLastCommit}
-              icon={<RotateCcw size={10} />}
-            />
+            <MenuItem label="Commit" onClick={() => { setMenuOpen(false); void handleCommit(onCommit); }} disabled={!canCommit} />
+            <MenuItem label="Commit (Amend)" onClick={() => { setMenuOpen(false); void handleCommit(onCommit, { amend: true }); }} disabled={!canAmend} />
+            <div className="my-1 mx-3 border-t border-[color:var(--ide-border)]" />
+            <MenuItem label="Commit & Push" onClick={() => { setMenuOpen(false); void handleCommit(onCommitAndPush); }} disabled={!canCommit} />
+            <MenuItem label="Commit & Sync" onClick={() => { setMenuOpen(false); void handleCommit(onCommitAndSync); }} disabled={!canCommit} />
           </div>
         )}
       </div>
@@ -216,28 +194,21 @@ export function CommitInput({
 
 function MenuItem({
   label,
-  hint,
   onClick,
-  icon,
   disabled,
 }: {
   label: string;
-  hint?: string;
   onClick: () => void;
-  icon?: React.ReactNode;
   disabled?: boolean;
 }) {
   return (
     <button
+      role="menuitem"
       disabled={disabled}
       onClick={onClick}
-      className="w-full text-left px-3 py-1 hover:bg-[color:var(--ide-hover)] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+      className="w-full text-left px-7 py-1.5 text-[color:var(--ide-text-strong)] hover:bg-[color:var(--ide-hover)] disabled:opacity-40 disabled:cursor-not-allowed"
     >
-      {icon ?? <span className="w-[10px]" />}
-      <div className="flex-1 min-w-0">
-        <div className="text-[color:var(--ide-text-strong)] truncate">{label}</div>
-        {hint && <div className="text-[10px] text-[color:var(--ide-muted)] truncate">{hint}</div>}
-      </div>
+      {label}
     </button>
   );
 }
