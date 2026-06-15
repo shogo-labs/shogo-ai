@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-//
-// Dropdown menu for SCM viewlet header — fetch / pull / push / sync,
-// stash operations, branch picker entry point. Renders inline (no
-// portal) so positioning is dead simple and there's no z-index war.
 
 import { ArrowDown, ArrowUp, Loader2, RefreshCw, X } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,15 +19,12 @@ export function ScmMenu({ workspaceRoot, onClose, onAfterAction, onOpenBranchPic
   const menuRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  // ── Dismiss: outside click ──
   useEffect(() => {
     const handlePointerDown = (e: PointerEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
-    // Use mousedown (fires before focus moves) with a micro-delay to avoid
-    // the click that OPENED the menu from immediately closing it.
     const timer = setTimeout(() => {
       document.addEventListener("pointerdown", handlePointerDown, true);
     }, 0);
@@ -41,7 +34,6 @@ export function ScmMenu({ workspaceRoot, onClose, onAfterAction, onOpenBranchPic
     };
   }, [onClose]);
 
-  // ── Dismiss: Escape key ──
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -54,7 +46,6 @@ export function ScmMenu({ workspaceRoot, onClose, onAfterAction, onOpenBranchPic
     return () => document.removeEventListener("keydown", handleKeyDown, true);
   }, [onClose]);
 
-  // ── Dismiss: focus loss ──
   useEffect(() => {
     const handleFocusIn = (e: FocusEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -84,10 +75,6 @@ export function ScmMenu({ workspaceRoot, onClose, onAfterAction, onOpenBranchPic
 
   if (!bridge) return null;
 
-  // G3.5: route fetch/pull/push through the streaming variants so we
-  // can show live progress in the busy indicator. Sync still uses the
-  // non-streaming wrapper because it's a 3-step composition that
-  // already short-circuits on error.
   const onProgress = (p: { phase: string; percent: number | null }) => setProgress({ phase: p.phase, percent: p.percent });
 
   const items: { label: string; icon: typeof RefreshCw; fn: () => Promise<{ ok: boolean; error?: string; reason?: string }> }[] = [
