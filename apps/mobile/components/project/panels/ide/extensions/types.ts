@@ -76,6 +76,8 @@ export interface WorkspaceTrustRecord {
 }
 
 export type RestrictedModeSupport = "full" | "limited" | "unsupported";
+export type ExtensionSupportStatus = "supported" | "partial" | "unsupported" | "requiresRuntime";
+export type ExtensionCapabilityKind = "declarative" | "commands" | "views" | "formatter" | "linter" | "debugger" | "terminal" | "task" | "scm" | "typescriptServerPlugin";
 export type ExtensionUsableEntryPointKind = "command" | "view" | "viewContainer" | "startupActivation";
 
 export interface ExtensionUsableEntryPoint {
@@ -114,6 +116,9 @@ export interface InstalledExtension {
   usableEntryPoints: ExtensionUsableEntryPoint[];
   hasUsableEntryPoint: boolean;
   unsupportedSurfaceMessage?: string;
+  supportStatus: ExtensionSupportStatus;
+  supportStatusMessage: string;
+  capabilityKinds: ExtensionCapabilityKind[];
   manifest: ExtensionManifestSummary;
 }
 

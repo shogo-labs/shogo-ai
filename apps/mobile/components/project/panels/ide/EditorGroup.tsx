@@ -11,7 +11,7 @@ import {
   VideoPreview,
 } from "./MediaPreview";
 import { ExtensionDetails } from "./extensions/ExtensionDetails";
-import type { ExtensionSearchResult, InstalledExtension } from "./extensions/types";
+import type { ExtensionSearchResult, ExtensionUsableEntryPoint, InstalledExtension } from "./extensions/types";
 import type { EditorGroup as GroupState, EditorSettings, OpenFile } from "./types";
 import type { editor } from "monaco-editor";
 
@@ -37,6 +37,7 @@ export function EditorGroupView({
   onDisableExtension,
   onUninstallExtension,
   onRunExtensionCommand,
+  onUseExtensionEntryPoint,
 }: {
   group: GroupState;
   focused: boolean;
@@ -58,6 +59,7 @@ export function EditorGroupView({
   onDisableExtension?: (id: string) => void;
   onUninstallExtension?: (id: string) => void;
   onRunExtensionCommand?: (commandId: string) => void;
+  onUseExtensionEntryPoint?: (extension: InstalledExtension, entryPoint: ExtensionUsableEntryPoint) => void;
 }) {
   const active: OpenFile | null =
     group.files.find((f) => f.id === group.activeId) ?? null;
@@ -104,6 +106,10 @@ export function EditorGroupView({
               onDisable={installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onDisableExtension?.(active.extensionDetail!.id) : undefined}
               onUninstall={installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onUninstallExtension?.(active.extensionDetail!.id) : undefined}
               onRunCommand={onRunExtensionCommand}
+              onUseEntryPoint={(entryPoint) => {
+                const installed = installedExtensions.find((extension) => extension.id === active.extensionDetail?.id);
+                if (installed) onUseExtensionEntryPoint?.(installed, entryPoint);
+              }}
             />
           ) : active.language === "image" ? (
             <ImagePreview url={active.content} name={active.name} path={active.path} />

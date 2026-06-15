@@ -4,14 +4,16 @@ import { useMemo, useState } from "react";
 import { ExtensionActionsMenu } from "./ExtensionActionsMenu";
 import { InstalledExtensionListItem, SearchExtensionListItem } from "./ExtensionListItem";
 import { useExtensions } from "./useExtensions";
-import type { ExtensionSearchResult, InstalledExtension } from "./types";
+import type { ExtensionSearchResult, ExtensionUsableEntryPoint, InstalledExtension } from "./types";
 
 export function ExtensionsViewlet({
   workspaceRoot,
   onOpenDetails,
+  onUseEntryPoint,
 }: {
   workspaceRoot?: string | null;
   onOpenDetails?: (item: InstalledExtension | ExtensionSearchResult) => void;
+  onUseEntryPoint?: (extension: InstalledExtension, entryPoint: ExtensionUsableEntryPoint) => void;
 }) {
   const extensions = useExtensions({ workspaceRoot });
   const [pendingInstall, setPendingInstall] = useState<ExtensionSearchResult | null>(null);
@@ -138,6 +140,7 @@ export function ExtensionsViewlet({
               onEnable={() => void extensions.setEnabled(extension.id, true)}
               onDisable={() => void extensions.setEnabled(extension.id, false)}
               onUninstall={() => void extensions.uninstall(extension.id)}
+              onUseEntryPoint={(entryPoint) => onUseEntryPoint?.(extension, entryPoint)}
             />
           ))}
         </Section>
@@ -152,6 +155,7 @@ export function ExtensionsViewlet({
                 onEnable={() => void extensions.setEnabled(extension.id, true)}
                 onDisable={() => void extensions.setEnabled(extension.id, false)}
                 onUninstall={() => void extensions.uninstall(extension.id)}
+                onUseEntryPoint={(entryPoint) => onUseEntryPoint?.(extension, entryPoint)}
               />
             ))}
           </Section>

@@ -49,6 +49,8 @@ describe('ExtensionInstallService', () => {
 
     expect(service.listInstalled()[0]?.enabled).toBe(true)
     expect(service.listInstalled()[0]?.trustedPublisher).toBe(true)
+    expect(service.listInstalled()[0]?.supportStatus).toBe('supported')
+    expect(service.listInstalled()[0]?.capabilityKinds).toContain('commands')
 
     const workspaceRoot = path.join(root, 'workspace')
     fs.mkdirSync(workspaceRoot, { recursive: true })
@@ -88,7 +90,10 @@ describe('ExtensionInstallService', () => {
     const listed = service.listInstalled()[0]
     expect(listed?.hasUsableEntryPoint).toBe(false)
     expect(listed?.usableEntryPoints).toEqual([])
-    expect(listed?.unsupportedSurfaceMessage).toContain('not currently usable')
+    expect(listed?.supportStatus).toBe('requiresRuntime')
+    expect(listed?.capabilityKinds).toContain('declarative')
+    expect(listed?.supportStatusMessage).toContain('Declarative contribution installed')
+    expect(listed?.unsupportedSurfaceMessage).toContain('does not load themes')
   })
 
   test('does not count empty view containers as usable entry points', () => {
@@ -132,7 +137,70 @@ describe('ExtensionInstallService', () => {
     const listed = service.listInstalled()[0]
     expect(listed?.hasUsableEntryPoint).toBe(true)
     expect(listed?.usableEntryPoints.some((entry) => entry.kind === 'view' && entry.id === 'shogo.panel.view')).toBe(true)
+    expect(listed?.supportStatus).toBe('partial')
+    expect(listed?.capabilityKinds).toContain('views')
     expect(listed?.unsupportedSurfaceMessage).toBeUndefined()
+  })
+
+  test('classifies known formatter, linter, and SCM extensions with honest runtime status', () => {
+    const root = makeTempDir()
+    const service = new ExtensionInstallService(path.join(root, 'extensions'))
+    const prettier = writeVsix(root, 'prettier.vsix', {
+      'extension/package.json': JSON.stringify({
+        publisher: 'esbenp',
+        name: 'prettier-vscode',
+        version: '1.0.0',
+        engines: { vscode: '^1.74.0' },
+        main: './dist/extension.js',
+        browser: './dist/web-extension.cjs',
+        activationEvents: ['onStartupFinished'],
+        contributes: { commands: [{ command: 'prettier.forceFormatDocument', title: 'Format Document' }] },
+      }),
+      'extension/dist/extension.js': "exports.activate = function() {};",
+      'extension/dist/web-extension.cjs': "exports.activate = function() {};",
+    })
+    const eslint = writeVsix(root, 'eslint.vsix', {
+      'extension/package.json': JSON.stringify({
+        publisher: 'dbaeumer',
+        name: 'vscode-eslint',
+        version: '1.0.0',
+        engines: { vscode: '^1.74.0' },
+        main: './client/out/extension.js',
+        activationEvents: ['onStartupFinished'],
+        contributes: { taskDefinitions: [{ type: 'eslint' }], commands: [{ command: 'eslint.executeAutofix', title: 'Fix all auto-fixable Problems' }] },
+      }),
+      'extension/client/out/extension.js': "exports.activate = function() {};",
+    })
+    const gitGraph = writeVsix(root, 'gitgraph.vsix', {
+      'extension/package.json': JSON.stringify({
+        publisher: 'mhutchie',
+        name: 'git-graph',
+        version: '1.0.0',
+        engines: { vscode: '^1.74.0' },
+        main: './out/extension.js',
+        activationEvents: ['*'],
+        contributes: {
+          commands: [{ command: 'git-graph.view', title: 'View Git Graph', category: 'Git Graph' }],
+          menus: { 'scm/title': [{ command: 'git-graph.view' }] },
+        },
+      }),
+      'extension/out/extension.js': "exports.activate = function() {};",
+    })
+
+    service.installFromVsix(prettier)
+    service.installFromVsix(eslint)
+    service.installFromVsix(gitGraph)
+    const byId = new Map(service.listInstalled().map((extension) => [extension.id, extension]))
+
+    expect(byId.get('esbenp.prettier-vscode')?.supportStatus).toBe('requiresRuntime')
+    expect(byId.get('esbenp.prettier-vscode')?.supportStatusMessage).toContain('formatter provider')
+    expect(byId.get('esbenp.prettier-vscode')?.capabilityKinds).toContain('formatter')
+    expect(byId.get('dbaeumer.vscode-eslint')?.supportStatus).toBe('requiresRuntime')
+    expect(byId.get('dbaeumer.vscode-eslint')?.supportStatusMessage).toContain('LSP/diagnostics')
+    expect(byId.get('dbaeumer.vscode-eslint')?.capabilityKinds).toContain('linter')
+    expect(byId.get('mhutchie.git-graph')?.supportStatus).toBe('partial')
+    expect(byId.get('mhutchie.git-graph')?.supportStatusMessage).toContain('webview + Git/SCM')
+    expect(byId.get('mhutchie.git-graph')?.capabilityKinds).toContain('scm')
   })
 
   test('allows extensions that opt into untrusted workspaces in Restricted Mode', () => {

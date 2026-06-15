@@ -3,7 +3,7 @@
 import fs from 'fs'
 import Module from 'module'
 import path from 'path'
-import { pathToFileURL } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 
 type HostExtension = {
   id: string
@@ -20,6 +20,7 @@ type UriLike = { scheme: string; fsPath: string; path: string; toString?: () => 
 type WorkspaceFolderSnapshot = { uri: UriLike; name: string; index: number }
 type TextDocumentSnapshot = { uri: UriLike; fileName: string; languageId: string; version: number; text: string; isDirty?: boolean }
 type TextEditorSnapshot = { document: TextDocumentSnapshot; selection?: unknown; selections?: unknown[] }
+type TextDocumentContentProvider = { provideTextDocumentContent?: (uri: UriLike, token?: unknown) => string; onDidChange?: (listener: (uri: UriLike) => unknown) => { dispose?: () => void } }
 type WorkspaceStateSnapshot = {
   workspaceFolders?: WorkspaceFolderSnapshot[]
   textDocuments?: TextDocumentSnapshot[]
@@ -88,6 +89,7 @@ const viewOwners = new Map<string, string>()
 const commands = new Map<string, RegisteredCommand>()
 const treeDataProviders = new Map<string, TreeDataProvider>()
 const webviewViewProviders = new Map<string, WebviewViewProvider>()
+const textDocumentContentProviders = new Map<string, { extensionId: string; provider: TextDocumentContentProvider }>()
 const treeElementStores = new Map<string, TreeElementStore>()
 const statusBarItems = new Map<string, RuntimeStatusBarItem>()
 const webviewPanels = new Map<string, RuntimeWebviewPanel>()
@@ -125,7 +127,17 @@ function makeVscodeApi(extension: HostExtension) {
         post({ type: 'commandRegistered', extensionId: extension.id, commandId })
         return disposable
       },
+      registerTextEditorCommand(commandId: string, callback: RegisteredCommand) {
+        const wrapped = (...args: unknown[]) => callback(serializeTextEditor(workspaceState.activeTextEditor ?? undefined), undefined, ...args)
+        commands.set(commandId, wrapped)
+        commandOwners.set(commandId, extension.id)
+        const disposable = { dispose: () => commands.delete(commandId) }
+        subscriptions.push(disposable)
+        post({ type: 'commandRegistered', extensionId: extension.id, commandId })
+        return disposable
+      },
       async executeCommand(commandId: string, ...args: unknown[]) {
+        if (commandId === 'setContext') return undefined
         const command = commands.get(commandId)
         if (!command) throw new Error(`Command not registered: ${commandId}`)
         return await command(...args)
@@ -178,17 +190,32 @@ function makeVscodeApi(extension: HostExtension) {
       onDidChangeWorkspaceFolders: workspaceFoldersEmitter.event,
       onDidChangeConfiguration: configurationEmitter.event,
       openTextDocument: (uriOrPath: unknown) => Promise.resolve(openTextDocumentSnapshot(uriOrPath)),
+      registerTextDocumentContentProvider: (scheme: string, provider: TextDocumentContentProvider) => {
+        textDocumentContentProviders.set(scheme, { extensionId: extension.id, provider })
+        const disposable = { dispose: () => textDocumentContentProviders.delete(scheme) }
+        subscriptions.push(disposable)
+        return disposable
+      },
       getConfiguration: (section?: string) => createConfiguration(section),
       createFileSystemWatcher,
       fs: createWorkspaceFs(),
     },
     Uri: {
-      file: (fsPath: string) => ({ scheme: 'file', fsPath, path: fsPath, toString: () => pathToFileURL(fsPath).toString() }),
+      file: (fsPath: string) => uriFromFsPath(fsPath),
+      parse: (value: string) => uriFromString(value),
+      joinPath: (base: unknown, ...segments: string[]) => joinUriPath(base, ...segments),
     },
     StatusBarAlignment: { Left: 1, Right: 2 },
     ViewColumn: { Active: -1, Beside: -2, One: 1, Two: 2, Three: 3, Four: 4, Five: 5, Six: 6, Seven: 7, Eight: 8, Nine: 9 },
     FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
+    ExtensionMode: { Production: 1, Development: 2, Test: 3 },
     ExtensionContext: undefined,
+    EventEmitter: class EventEmitter<T = unknown> {
+      private readonly emitter = createEmitter<T>()
+      readonly event = this.emitter.event
+      fire(value: T) { this.emitter.fire(value) }
+      dispose() {}
+    },
     Disposable: class Disposable {
       constructor(private readonly fn: () => void) {}
       dispose() { this.fn() }
@@ -243,6 +270,35 @@ function uriFromFsPath(fsPath: string): UriLike {
   return { scheme: 'file', fsPath, path: fsPath, toString: () => pathToFileURL(fsPath).toString() }
 }
 
+function uriFromString(value: string): UriLike {
+  try {
+    const parsed = new URL(value)
+    if (parsed.protocol === 'file:') return uriFromFsPath(fileURLToPath(parsed))
+    const scheme = parsed.protocol.replace(/:$/, '')
+    const uriPath = `${parsed.pathname}${parsed.search}${parsed.hash}`
+    return { scheme, fsPath: uriPath, path: uriPath, toString: () => value }
+  } catch {
+    return uriFromFsPath(path.resolve(workspaceRoot ?? process.cwd(), value))
+  }
+}
+
+function joinUriPath(base: unknown, ...segments: string[]): UriLike {
+  const uri = uriLike(base)
+  if (!uri) return uriFromFsPath(path.join(...segments))
+  if (uri.scheme === 'file') return uriFromFsPath(path.join(uri.fsPath, ...segments))
+  const joined = path.posix.join(uri.path || '/', ...segments)
+  return { scheme: uri.scheme, fsPath: joined, path: joined, toString: () => `${uri.scheme}:${joined.startsWith('/') ? joined : `/${joined}`}` }
+}
+
+function uriLike(value: unknown): UriLike | undefined {
+  if (typeof value === 'string') return uriFromString(value)
+  if (!isRecord(value)) return undefined
+  const scheme = typeof value.scheme === 'string' ? value.scheme : 'file'
+  const fsPath = typeof value.fsPath === 'string' ? value.fsPath : typeof value.path === 'string' ? value.path : ''
+  const uriPath = typeof value.path === 'string' ? value.path : fsPath
+  return { scheme, fsPath, path: uriPath, toString: typeof value.toString === 'function' ? value.toString.bind(value) as () => string : () => scheme === 'file' ? pathToFileURL(fsPath).toString() : `${scheme}:${uriPath}` }
+}
+
 function serializeTextDocument(document: TextDocumentSnapshot): TextDocumentSnapshot & { getText: () => string; lineAt: (line: number) => { text: string; lineNumber: number } } {
   const text = document.text ?? ''
   return {
@@ -272,7 +328,14 @@ function editorForDocument(documentOrUri: unknown): TextEditorSnapshot | undefin
 }
 
 function openTextDocumentSnapshot(uriOrPath: unknown): TextDocumentSnapshot {
-  const fsPath = uriFsPath(uriOrPath) ?? (typeof uriOrPath === 'string' ? uriOrPath : undefined)
+  const uri = uriLike(uriOrPath)
+  if (uri && uri.scheme !== 'file') {
+    const provider = textDocumentContentProviders.get(uri.scheme)?.provider
+    if (!provider?.provideTextDocumentContent) throw new Error(`No text document content provider registered for scheme: ${uri.scheme}`)
+    const text = String(provider.provideTextDocumentContent(serializeUri(uri), { isCancellationRequested: false }) ?? '')
+    return serializeTextDocument({ uri: serializeUri(uri), fileName: uri.toString?.() ?? `${uri.scheme}:${uri.path}`, languageId: languageFromPath(uri.path), version: 1, text, isDirty: false })
+  }
+  const fsPath = uri?.fsPath ?? uriFsPath(uriOrPath) ?? (typeof uriOrPath === 'string' ? uriOrPath : undefined)
   const existing = fsPath ? workspaceState.textDocuments?.find((document) => document.uri.fsPath === fsPath || document.fileName === fsPath) : undefined
   if (existing) return serializeTextDocument(existing)
   if (!fsPath) throw new Error('openTextDocument requires a file path or URI')
@@ -489,12 +552,17 @@ async function activateExtensionOnce(extension: HostExtension, reason: string): 
     const mod = require(mainPath)
     const context = {
       extensionPath: extension.installPath,
+      extensionUri: uriFromFsPath(extension.installPath),
       globalStoragePath: extension.globalStoragePath,
+      globalStorageUri: uriFromFsPath(extension.globalStoragePath),
       storagePath: extension.workspaceStoragePath,
+      storageUri: uriFromFsPath(extension.workspaceStoragePath),
       logPath: path.join(extension.globalStoragePath, 'logs'),
+      logUri: uriFromFsPath(path.join(extension.globalStoragePath, 'logs')),
       subscriptions: [] as Array<{ dispose?: () => void }>,
       globalState: createMemento(path.join(extension.globalStoragePath, 'globalState.json')),
       workspaceState: createMemento(path.join(extension.workspaceStoragePath, 'workspaceState.json')),
+      extensionMode: 1,
       asAbsolutePath: (relativePath: string) => safeJoin(extension.installPath, relativePath),
     }
     const exports = mod.activate ? await mod.activate(context) : undefined
@@ -529,7 +597,12 @@ async function executeCommand(requestId: string, commandId: string, args: unknow
   try {
     let command = commands.get(commandId)
     if (!command) {
-      await activateByEvent(`onCommand:${commandId}`)
+      try {
+        await activateByEvent(`onCommand:${commandId}`)
+      } catch (activationError) {
+        command = commands.get(commandId)
+        if (!command) throw activationError
+      }
       command = commands.get(commandId)
     }
     if (!command) throw new Error(`Extension did not register command after activation: ${commandId}`)
@@ -637,6 +710,7 @@ function onMessage(raw: { data?: HostMessage } | HostMessage): void {
     extensions.clear()
     commandOwners.clear()
     viewOwners.clear()
+    textDocumentContentProviders.clear()
     treeDataProviders.clear()
     treeElementStores.clear()
     statusBarItems.clear()

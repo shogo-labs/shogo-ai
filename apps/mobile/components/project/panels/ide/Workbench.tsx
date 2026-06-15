@@ -54,7 +54,7 @@ import { SettingsPane } from "./SettingsPane";
 import { ExtensionsViewlet, TrustPublisherDialog } from "./extensions/ExtensionsViewlet";
 import { collectRuntimeContainers, ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
 import { getDesktopExtensionsBridge, useExtensions } from "./extensions/useExtensions";
-import type { ExtensionHostEvent, ExtensionRuntimeViewResult, ExtensionRuntimeWebviewPanel, ExtensionSearchResult, ExtensionUiRequest, ExtensionWorkspaceState, InstalledExtension } from "./extensions/types";
+import type { ExtensionHostEvent, ExtensionRuntimeViewResult, ExtensionRuntimeWebviewPanel, ExtensionSearchResult, ExtensionUiRequest, ExtensionUsableEntryPoint, ExtensionWorkspaceState, InstalledExtension } from "./extensions/types";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
@@ -1471,6 +1471,62 @@ export function Workbench({
     return response.view ?? null;
   }, [extensionsSummary]);
 
+  const useExtensionEntryPoint = useCallback((extension: InstalledExtension, entryPoint: ExtensionUsableEntryPoint) => {
+    if (!extension.enabled) {
+      showToast(`${extension.displayName || extension.name} is disabled`, 2500);
+      return;
+    }
+    if (extension.supportStatus !== "supported" && extension.supportStatus !== "partial") {
+      showToast(extension.unsupportedSurfaceMessage ?? extension.supportStatusMessage, 4500);
+      return;
+    }
+    if (entryPoint.kind === "command") {
+      runExtensionCommand(entryPoint.id);
+      return;
+    }
+    const containerId = entryPoint.kind === "view" ? entryPoint.detail : entryPoint.id;
+    const container = extensionRuntimeContainers.find((candidate) => candidate.extension.id === extension.id && candidate.id === containerId);
+    if (container) {
+      if (container.location === "panel") {
+        ideBottomPanelStore.showExtensionPanelContainer(container.activityId);
+      } else {
+        setActivity(container.activityId);
+        if (!sidebarOpen) setSidebarOpen(true);
+      }
+      if (entryPoint.kind === "view") {
+        const bridge = getDesktopExtensionsBridge();
+        void bridge?.activateEvent(`onView:${entryPoint.id}`, gitWorkspaceRootRef.current ?? undefined).then(() => {
+          void extensionsSummary.showRunningExtensions();
+        });
+      }
+      return;
+    }
+    if (entryPoint.kind === "startupActivation") {
+      const bridge = getDesktopExtensionsBridge();
+      if (!bridge) {
+        showToast("Extension activation is available in Shogo Desktop only", 2500);
+        return;
+      }
+      showToast(`Activating ${extension.displayName || extension.name}…`, 1600);
+      void bridge.activateEvent(entryPoint.id, gitWorkspaceRootRef.current ?? undefined).then(async (response) => {
+        if (!response.ok) {
+          showToast(response.error ?? `Extension activation failed: ${extension.id}`, 3500);
+          void extensionsSummary.showRunningExtensions();
+          return;
+        }
+        showToast(`Activated ${extension.displayName || extension.name}`, 2200);
+        void extensionsSummary.showRunningExtensions();
+        void extensionsSummary.loadStatusBarItems();
+        const panels = await bridge.getWebviewPanels(gitWorkspaceRootRef.current ?? undefined);
+        if (panels.ok) {
+          for (const panel of panels.panels ?? []) openExtensionWebviewPanel(panel);
+        }
+      });
+      return;
+    }
+    showToast(`${entryPoint.label} is not reachable in Shogo yet`, 3000);
+  }, [extensionRuntimeContainers, extensionsSummary, openExtensionWebviewPanel, runExtensionCommand, showToast, sidebarOpen]);
+
   useEffect(() => {
     if (!active?.language || active.rootId === "__extensions__" || PREVIEW_LANGUAGES.has(active.language)) return;
     const bridge = getDesktopExtensionsBridge();
@@ -2003,6 +2059,7 @@ export function Workbench({
                       onDisableExtension={(id) => void extensionsSummary.setEnabled(id, false)}
                       onUninstallExtension={(id) => void extensionsSummary.uninstall(id)}
                       onRunExtensionCommand={runExtensionCommand}
+                      onUseExtensionEntryPoint={useExtensionEntryPoint}
                       onEditorMount={(ed, monaco) => {
                         editorRefs.current[g.id] = ed;
                         if (monaco && monacoNsRef.current !== monaco) {
@@ -2144,7 +2201,7 @@ export function Workbench({
                 <RunDebugPanel workspaceRoot={gitWorkspaceRoot} />
               )}
               {activity === "extensions" && (
-                <ExtensionsViewlet workspaceRoot={gitWorkspaceRoot} onOpenDetails={openExtensionDetailsTab} />
+                <ExtensionsViewlet workspaceRoot={gitWorkspaceRoot} onOpenDetails={openExtensionDetailsTab} onUseEntryPoint={useExtensionEntryPoint} />
               )}
               {activeExtensionRuntimeContainer && (
                 <ExtensionRuntimeViewlet
