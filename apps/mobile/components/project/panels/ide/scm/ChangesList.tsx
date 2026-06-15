@@ -50,9 +50,19 @@ function statusCodeColor(code: GitShortCode | "·"): string {
 }
 
 // ── Extract files for a section from snapshot ──────────────────────
-function getFilesForSection(snapshot: GitSnapshot, section: "staged" | "changes"): Array<{ path: string; code: GitShortCode; added?: number; removed?: number }> {
+type ChangesSection = "merge" | "staged" | "changes";
+
+function getFilesForSection(snapshot: GitSnapshot, section: ChangesSection): Array<{ path: string; code: GitShortCode; added?: number; removed?: number }> {
   const result: Array<{ path: string; code: GitShortCode; added?: number; removed?: number }> = [];
   const stagedPaths = new Set(Object.keys(snapshot.stagedStatus));
+
+  if (section === "merge") {
+    for (const path of snapshot.conflictPaths) {
+      const code = snapshot.fileStatus[path] ?? "U";
+      result.push({ path, code });
+    }
+    return result;
+  }
 
   for (const [path, code] of Object.entries(snapshot.fileStatus)) {
     if (snapshot.conflictPaths.includes(path)) continue;
@@ -77,9 +87,9 @@ export function ChangesList({
   onOpenFile,
 }: {
   snapshot: GitSnapshot;
-  section: "staged" | "changes";
+  section: ChangesSection;
   viewMode?: "list" | "tree";
-  onOpenDiff: (path: string, group: "staged" | "changes") => void;
+  onOpenDiff: (path: string, group: ChangesSection) => void;
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
   onDiscard: (paths: string[]) => void;
@@ -133,7 +143,7 @@ function FileRow({
   code: GitShortCode;
   added?: number;
   removed?: number;
-  section: "staged" | "changes";
+  section: ChangesSection;
   onOpenDiff: () => void;
   onStage: () => void;
   onUnstage: () => void;
@@ -183,6 +193,15 @@ function FileRow({
 
       {/* Hover actions — VS Code style */}
       <div className="opacity-0 group-hover/row:opacity-100 flex items-center gap-0.5 ml-1.5">
+        {section === "merge" && (
+          <button
+            title="Open Merge Editor"
+            onClick={(e) => { e.stopPropagation(); onOpenDiff(); }}
+            className="p-0.5 rounded hover:bg-[color:var(--ide-primary)]/20 text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
+          >
+            <ExternalLink size={11} />
+          </button>
+        )}
         {section === "changes" && (
           <button
             title="Discard Changes"

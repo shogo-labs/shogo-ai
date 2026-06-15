@@ -31,6 +31,7 @@ export function CommitInput({
   onCommitAndSync,
   onUndoLastCommit,
   disabled,
+  disabledReason,
 }: {
   stagedCount: number;
   totalCount: number;
@@ -41,6 +42,7 @@ export function CommitInput({
   onCommitAndSync: (message: string, opts: { amend: boolean; signoff: boolean }) => Promise<{ ok: boolean; error?: string }>;
   onUndoLastCommit: () => Promise<{ ok: boolean; error?: string }>;
   disabled?: boolean;
+  disabledReason?: string;
 }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -136,7 +138,7 @@ export function CommitInput({
   }, [canCommit, handleCommit, onCommit, message]);
 
   const branchSuffix = branch ? ` on "${branch}"` : "";
-  const placeholder = `Message (⌘Enter to commit${branchSuffix})`;
+  const placeholder = disabledReason ?? `Message (⌘Enter to commit${branchSuffix})`;
 
   return (
     <div>
@@ -145,7 +147,7 @@ export function CommitInput({
           value={message}
           onChange={(e) => { setMessage(e.target.value); historyIdxRef.current = -1; }}
           placeholder={placeholder}
-          disabled={busy}
+          disabled={busy || disabled}
           onKeyDown={handleKeyDown}
           className="shogo-commit-input w-full rounded-[4px] bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] px-2 text-[12px] text-[color:var(--ide-text-strong)] placeholder-[color:var(--ide-muted)] focus:outline-none focus:border-[color:var(--ide-primary)]"
           style={{ height: 32, fontFamily: "var(--ide-font, system-ui)" }}
@@ -196,6 +198,12 @@ export function CommitInput({
           </div>
         )}
       </div>
+
+      {disabledReason && (
+        <div className="mx-2 mb-2 rounded bg-amber-500/10 border border-amber-500/30 px-2 py-1 text-[10px] text-amber-200 whitespace-pre-wrap">
+          {disabledReason}
+        </div>
+      )}
 
       {error && (
         <div className="mx-2 mb-2 rounded bg-rose-500/10 border border-rose-500/30 px-2 py-1 text-[10px] text-rose-300 whitespace-pre-wrap">
