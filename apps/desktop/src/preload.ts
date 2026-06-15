@@ -437,6 +437,8 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('git:diffMarkers', { workspaceRoot, path, base }),
     blame: (workspaceRoot: string, path: string): Promise<{ ok: boolean; lines?: unknown[]; reason?: string; error?: string }> =>
       ipcRenderer.invoke('git:blame', { workspaceRoot, path }),
+    history: (workspaceRoot: string, opts?: { limit?: number; allBranches?: boolean }): Promise<{ ok: boolean; commits?: unknown[]; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:history', { workspaceRoot, ...(opts ?? {}) }),
     // G4.5 — 3-way merge stages + per-hunk revert.
     mergeStages: (workspaceRoot: string, path: string): Promise<{ ok: boolean; stages?: { base: string | null; ours: string | null; theirs: string | null; working: string }; reason?: string; error?: string }> =>
       ipcRenderer.invoke('git:mergeStages', { workspaceRoot, path }),

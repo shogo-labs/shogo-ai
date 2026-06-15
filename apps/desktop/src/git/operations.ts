@@ -27,6 +27,16 @@ type StringResult =
   | { ok: true; content: string }
   | { ok: false; error: string };
 
+export interface GitCommitHistoryItem {
+  hash: string;
+  message: string;
+  author: string;
+  time: string;
+  isMerge: boolean;
+  branchLabel?: string;
+  isRemote?: boolean;
+}
+
 /** `git add <paths...>` */
 export async function gitStage(root: string, paths: string[]): Promise<OpResult> {
   if (paths.length === 0) return { ok: true };
@@ -138,6 +148,60 @@ export async function gitNumStat(
     }
   }
   return { ok: true, stats };
+}
+
+
+export async function gitCommitHistory(
+  root: string,
+  opts: { limit?: number; allBranches?: boolean } = {},
+): Promise<{ ok: true; commits: GitCommitHistoryItem[] } | { ok: false; error: string }> {
+  const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
+  const args = [
+    "log",
+    `--max-count=${limit}`,
+    "--decorate=short",
+    "--pretty=format:%H%x1f%P%x1f%D%x1f%an%x1f%cr%x1f%s%x1e",
+  ];
+  if (opts.allBranches) args.splice(1, 0, "--all");
+
+  const res = await runGit(args, { cwd: root, timeoutMs: 10_000 });
+  if (!res.ok) {
+    const error = res.stderr.trim() || res.stdout.trim() || `git log exit ${res.code}`;
+    if (
+      error.includes("does not have any commits yet") ||
+      error.includes("bad default revision") ||
+      error.includes("ambiguous argument 'HEAD'")
+    ) {
+      return { ok: true, commits: [] };
+    }
+    return { ok: false, error };
+  }
+
+  const commits: GitCommitHistoryItem[] = [];
+  for (const record of res.stdout.split("\x1e")) {
+    if (!record.trim()) continue;
+    const [hash = "", parentsRaw = "", decorationsRaw = "", author = "", time = "", message = ""] = record
+      .replace(/^\n+/, "")
+      .split("\x1f");
+    if (!hash) continue;
+    const decorations = decorationsRaw
+      .split(",")
+      .map((d) => d.trim())
+      .filter(Boolean);
+    const branchDecoration = decorations.find((d) => !d.startsWith("tag: ") && d !== "HEAD");
+    const branchLabel = branchDecoration?.replace(/^HEAD ->\s*/, "");
+    commits.push({
+      hash: hash.slice(0, 12),
+      message: message || "(no commit message)",
+      author,
+      time,
+      isMerge: parentsRaw.trim().split(/\s+/).filter(Boolean).length > 1,
+      branchLabel,
+      isRemote: Boolean(branchDecoration && !branchDecoration.startsWith("HEAD -> ") && branchDecoration.includes("/")),
+    });
+  }
+
+  return { ok: true, commits };
 }
 
 /**

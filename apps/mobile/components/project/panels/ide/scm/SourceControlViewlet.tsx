@@ -19,6 +19,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { BranchPicker } from "../git/BranchPicker";
+import { getDesktopGitBridge, type GitCommitHistoryItem } from "../git/bridge";
 import { isCountedGitCode } from "../git/git-counting";
 import { useGitStatusContext } from "../git/GitStatusContext";
 import { ScmMenu } from "../git/ScmMenu";
@@ -33,6 +34,19 @@ const GRAPH_HEIGHT_DEFAULT = 250;
 const GRAPH_HEIGHT_MIN = 120;
 const GRAPH_HEIGHT_MAX_RATIO = 0.8;
 const CHANGES_MIN_HEIGHT = 100;
+const HISTORY_TIMEOUT_MS = 12_000;
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
 function useGraphSplitter() {
   const [graphHeight, setGraphHeight] = useState<number>(() => {
@@ -243,22 +257,14 @@ export function SourceControlViewlet({
   fallback,
   onOpenDiff,
   onOpenFile,
-  commits,
+  commits: providedCommits,
 }: {
   workspaceRoot: string | null;
   projectName?: string;
   fallback?: React.ReactNode;
   onOpenDiff: (path: string, group: "staged" | "changes" | "merge") => void;
   onOpenFile: (path: string) => void;
-  commits?: Array<{
-    hash: string;
-    message: string;
-    author?: string;
-    time?: string;
-    isMerge?: boolean;
-    branchLabel?: string;
-    isRemote?: boolean;
-  }>;
+  commits?: GitCommitHistoryItem[];
 }) {
   const { snapshot } = useGitStatusContext();
   const actions = useScmActions(workspaceRoot);
@@ -273,18 +279,85 @@ export function SourceControlViewlet({
   const [viewMode, setViewMode] = useState<"list" | "tree">("list");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [focusBranch, setFocusBranch] = useState(false);
+  const [historyCommits, setHistoryCommits] = useState<GitCommitHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const { graphHeight, dragging, containerRef, onPointerDown } = useGraphSplitter();
   const commitInputRef = useRef<HTMLTextAreaElement>(null);
+  const historyRequestIdRef = useRef(0);
 
   const refresh = useCallback(() => {
     void actions.refresh();
   }, [actions]);
 
+  const loadHistory = useCallback(async () => {
+    const requestId = historyRequestIdRef.current + 1;
+    historyRequestIdRef.current = requestId;
+
+    if (!workspaceRoot) {
+      setHistoryCommits([]);
+      setHistoryLoaded(false);
+      setHistoryLoading(false);
+      setHistoryError(null);
+      return;
+    }
+    const git = getDesktopGitBridge();
+    if (!git) {
+      setHistoryCommits([]);
+      setHistoryLoaded(true);
+      setHistoryLoading(false);
+      setHistoryError("Git history is only available in the desktop app.");
+      return;
+    }
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const res = await withTimeout(
+        git.history(workspaceRoot, { limit: 100, allBranches: !focusBranch }),
+        HISTORY_TIMEOUT_MS,
+        "Git history",
+      );
+      if (historyRequestIdRef.current !== requestId) return;
+      if (!res.ok) {
+        setHistoryCommits([]);
+        setHistoryError(res.error ?? res.reason ?? "Failed to load commit history");
+        return;
+      }
+      setHistoryCommits(res.commits ?? []);
+    } catch (err) {
+      if (historyRequestIdRef.current !== requestId) return;
+      setHistoryCommits([]);
+      setHistoryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (historyRequestIdRef.current === requestId) {
+        setHistoryLoaded(true);
+        setHistoryLoading(false);
+      }
+    }
+  }, [workspaceRoot, focusBranch]);
+
+  const refreshGraph = useCallback(() => {
+    refresh();
+    void loadHistory();
+  }, [refresh, loadHistory]);
+
   useEffect(() => {
     if (!autoRefresh || !workspaceRoot) return;
-    const id = setInterval(refresh, 30_000);
+    const id = setInterval(refreshGraph, 30_000);
     return () => clearInterval(id);
-  }, [autoRefresh, workspaceRoot, refresh]);
+  }, [autoRefresh, workspaceRoot, refreshGraph]);
+
+  useEffect(() => {
+    if (!workspaceRoot || !snapshot?.isRepo) {
+      setHistoryCommits([]);
+      setHistoryLoaded(false);
+      setHistoryLoading(false);
+      setHistoryError(null);
+      return;
+    }
+    void loadHistory();
+  }, [workspaceRoot, snapshot?.isRepo, loadHistory]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -324,6 +397,9 @@ export function SourceControlViewlet({
   const stagedCount = stagedPaths.length;
   const unstagedCount = unstagedPaths.length;
   const totalUnstagedPlusStaged = stagedCount + unstagedCount;
+  const graphCommits = providedCommits ?? historyCommits;
+  const graphLoading = providedCommits ? false : historyLoading || !historyLoaded;
+  const graphError = providedCommits ? null : historyError;
 
   return (
     <div className="flex flex-col h-full text-[12px]">
@@ -599,10 +675,10 @@ export function SourceControlViewlet({
 
             <div style={{ height: graphHeight, minHeight: GRAPH_HEIGHT_MIN }} className="flex flex-col shrink-0 overflow-hidden">
               <GraphToolbar
-                onFetch={async () => { await actions.fetchRemote(); await actions.refresh(); }}
-                onPull={async () => { await actions.pullRemote(); await actions.refresh(); }}
-                onPush={async () => { await actions.pushRemote(); await actions.refresh(); }}
-                onRefresh={refresh}
+                onFetch={async () => { await actions.fetchRemote(); await actions.refresh(); await loadHistory(); }}
+                onPull={async () => { await actions.pullRemote(); await actions.refresh(); await loadHistory(); }}
+                onPush={async () => { await actions.pushRemote(); await actions.refresh(); await loadHistory(); }}
+                onRefresh={refreshGraph}
                 autoRefresh={autoRefresh}
                 onToggleAutoRefresh={() => setAutoRefresh((v) => !v)}
                 focusBranch={focusBranch}
@@ -610,8 +686,8 @@ export function SourceControlViewlet({
               />
               {!graphCollapsed && (
                 <div className="flex-1 overflow-auto divide-y divide-[color:var(--ide-border)]/50">
-                  {commits && commits.length > 0 ? (
-                    commits.map((c) => (
+                  {graphCommits.length > 0 ? (
+                    graphCommits.map((c) => (
                       <GraphRow
                         key={c.hash}
                         hash={c.hash}
@@ -626,7 +702,7 @@ export function SourceControlViewlet({
                   ) : (
                     <div className="px-4 py-6 text-center text-[11px] text-[color:var(--ide-muted)]">
                       <GitCommitHorizontal size={20} className="mx-auto mb-1 opacity-40" />
-                      Loading commit history...
+                      {graphError ? graphError : graphLoading ? "Loading commit history..." : "No commits yet."}
                     </div>
                   )}
                 </div>
