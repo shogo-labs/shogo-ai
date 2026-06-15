@@ -1,0 +1,11 @@
+{
+  "at": "2026-06-15T19:07:15.894Z",
+  "ok": false,
+  "error": "No launchable Shogo IDE executable was found.",
+  "executablePath": null,
+  "workspacePath": "/Users/ashutoshojha/Desktop/shogo-ai/apps/shogo-ide",
+  "launchReady": false,
+  "diagnostics": [
+    "No launchable Shogo IDE executable was found."
+  ]
+}

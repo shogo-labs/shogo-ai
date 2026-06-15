@@ -124,6 +124,12 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   setAppMode: (mode: 'local' | 'cloud') => ipcRenderer.invoke('set-app-mode', mode),
 
+  shogoIde: {
+    getStatus: () => ipcRenderer.invoke('shogo-ide:get-status'),
+    launch: (opts?: { workspacePath?: string }) => ipcRenderer.invoke('shogo-ide:launch', opts ?? {}),
+    openWorkspaceFolder: () => ipcRenderer.invoke('shogo-ide:open-workspace-folder'),
+  },
+
   // Open the native folder picker for external/IDE-style projects.
   // Returns `{ ok: true, paths: string[] }` on selection or
   // `{ ok: false, error?: string }` on cancel/error.

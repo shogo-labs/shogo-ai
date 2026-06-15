@@ -49,6 +49,7 @@ import { registerDebugIpcHandlers, disposeDebugIpc } from './debug-ipc'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
+import { getShogoIdeStatus, launchShogoIde, registerShogoIdeIpcHandlers } from './shogo-ide'
 import { createTray, destroyTray } from './tray'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 import {
@@ -603,6 +604,34 @@ function buildAppMenu(): void {
     {
       label: 'File',
       submenu: [
+        {
+          label: 'Open Shogo IDE Preview...',
+          click: async () => {
+            const result = await launchShogoIde()
+            if (result.ok) return
+            const status = result.status ?? getShogoIdeStatus()
+            await dialog.showMessageBox({
+              type: 'info',
+              title: 'Shogo IDE Preview',
+              message: 'Shogo IDE is not launchable yet.',
+              detail:
+                `${result.error || status.reason}\n\n` +
+                `Workspace: ${status.workspacePath}\n\n` +
+                `Next setup command:\n${status.cloneCommand}`,
+              buttons: ['OK'],
+              defaultId: 0,
+              noLink: true,
+            })
+          },
+        },
+        {
+          label: 'Reveal Shogo IDE Workspace',
+          click: () => {
+            const status = getShogoIdeStatus()
+            void shell.openPath(status.workspacePath)
+          },
+        },
+        { type: 'separator' },
         {
           label: config.mode === 'cloud' ? 'Switch to Local Mode' : 'Switch to Cloud Mode',
           click: () => {
@@ -1383,6 +1412,7 @@ app.whenReady().then(async () => {
   registerTerminalIpcHandlers()
   registerLlmIpcHandlers()
   registerPortsIpcHandlers()
+  registerShogoIdeIpcHandlers()
   buildAppMenu()
 
   const skipLocalServer = !isCloudMode && process.env.SHOGO_SKIP_LOCAL_SERVER === 'true'

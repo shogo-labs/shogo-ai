@@ -1,0 +1,36 @@
+{
+  "name": "Shogo IDE",
+  "phase": 4,
+  "base": "Code - OSS",
+  "strategy": "VSCodium-style shallow distribution patch set",
+  "productTemplate": "../product.shogo.template.json",
+  "generatedProduct": "generated/product.json",
+  "defaultSettings": "defaults/settings.json",
+  "defaultLayout": "defaults/layout.json",
+  "builtinExtensions": [
+    "builtin-extensions/shogo-core.json"
+  ],
+  "extensionGallery": "Open VSX",
+  "telemetryDefault": "off",
+  "protocols": [
+    "shogo-ide://"
+  ],
+  "dataFolders": {
+    "desktop": ".shogo-ide",
+    "server": ".shogo-ide-server"
+  },
+  "coexistence": {
+    "currentDesktopApp": "apps/desktop",
+    "currentMonacoIdeFallback": true,
+    "doesNotReplaceDesktopRuntimeInPhase4": true
+  },
+  "phase4ExitCriteria": [
+    "product metadata can be materialized",
+    "shogo-core extension builds before bundling",
+    "built-in extension mapping points to shogo-core",
+    "Open VSX is configured instead of Microsoft Marketplace",
+    "telemetry is disabled by default",
+    "workspace trust defaults are explicit",
+    "current Desktop launcher remains opt-in fallback"
+  ]
+}

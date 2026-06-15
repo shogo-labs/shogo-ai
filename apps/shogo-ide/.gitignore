@@ -1,0 +1,14 @@
+# Code - OSS is intentionally not vendored in Phase 1.
+# Use scripts/print-code-oss-clone-command.mjs to create a local checkout here.
+upstream/vscode/
+upstream/vscode-oss/
+
+# Local build outputs from Code - OSS / electron-builder experiments.
+.vscode-test/
+.build/
+out*/
+dist/
+extensions/shogo-core/dist/
+.cache/
+node_modules/
+*.log

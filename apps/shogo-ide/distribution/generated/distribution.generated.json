@@ -1,0 +1,150 @@
+{
+  "generatedAt": "2026-06-15T19:05:12.480Z",
+  "phase": 4,
+  "product": {
+    "nameShort": "Shogo",
+    "nameLong": "Shogo IDE",
+    "applicationName": "shogo-ide",
+    "dataFolderName": ".shogo-ide",
+    "urlProtocol": "shogo-ide",
+    "extensionGallery": "https://open-vsx.org/vscode/gallery",
+    "telemetryEnabled": false
+  },
+  "extension": {
+    "id": "shogo.shogo-core",
+    "version": "0.0.0-phase.1",
+    "main": "./dist/extension.js",
+    "browser": "./dist/web.js",
+    "activityContainer": "shogo",
+    "views": [
+      "shogo.chat",
+      "shogo.tasks",
+      "shogo.checkpoints",
+      "shogo.runtime",
+      "shogo.integrations"
+    ],
+    "walkthroughs": [
+      "shogo.getStarted"
+    ]
+  },
+  "defaults": {
+    "settings": {
+      "telemetry.telemetryLevel": "off",
+      "workbench.startupEditor": "welcomePage",
+      "workbench.activityBar.location": "default",
+      "workbench.editor.showTabs": "multiple",
+      "workbench.sideBar.location": "left",
+      "extensions.autoCheckUpdates": false,
+      "extensions.autoUpdate": false,
+      "security.workspace.trust.enabled": true,
+      "security.workspace.trust.startupPrompt": "once",
+      "security.workspace.trust.untrustedFiles": "prompt",
+      "shogo.agentService.url": "http://127.0.0.1:0",
+      "shogo.security.requireApprovalForCommands": true,
+      "shogo.security.allowRestrictedReadOnlyMode": true
+    },
+    "layout": {
+      "version": 1,
+      "description": "Recommended first-run Shogo IDE layout for the Code - OSS distribution.",
+      "activityBar": {
+        "defaultContainer": "shogo",
+        "visibleContainers": [
+          "workbench.view.explorer",
+          "workbench.view.search",
+          "workbench.view.scm",
+          "workbench.view.debug",
+          "workbench.view.extensions",
+          "shogo"
+        ]
+      },
+      "views": {
+        "shogo": [
+          "shogo.chat",
+          "shogo.tasks",
+          "shogo.checkpoints",
+          "shogo.runtime",
+          "shogo.integrations"
+        ]
+      },
+      "panel": {
+        "preserveBuiltIns": [
+          "workbench.panel.terminal",
+          "workbench.panel.output",
+          "workbench.panel.markers"
+        ]
+      },
+      "fallback": {
+        "currentMonacoIdeRemainsAvailable": true,
+        "phase2LauncherRemainsOptIn": true
+      }
+    }
+  },
+  "builtinExtensions": [
+    {
+      "id": "shogo.shogo-core",
+      "publisher": "shogo",
+      "name": "shogo-core",
+      "displayName": "Shogo",
+      "sourcePath": "../../extensions/shogo-core",
+      "targetFolderName": "shogo.shogo-core",
+      "phase": 4,
+      "bundle": {
+        "main": "dist/extension.js",
+        "browser": "dist/web.js",
+        "requiredFiles": [
+          "package.json",
+          "README.md",
+          "media/shogo.svg",
+          "dist/extension.js",
+          "dist/web.js"
+        ]
+      },
+      "defaultVisibility": {
+        "activityContainer": "shogo",
+        "views": [
+          "shogo.chat",
+          "shogo.tasks",
+          "shogo.checkpoints",
+          "shogo.runtime",
+          "shogo.integrations"
+        ]
+      }
+    }
+  ],
+  "sourceManifest": {
+    "name": "Shogo IDE",
+    "phase": 4,
+    "base": "Code - OSS",
+    "strategy": "VSCodium-style shallow distribution patch set",
+    "productTemplate": "../product.shogo.template.json",
+    "generatedProduct": "generated/product.json",
+    "defaultSettings": "defaults/settings.json",
+    "defaultLayout": "defaults/layout.json",
+    "builtinExtensions": [
+      "builtin-extensions/shogo-core.json"
+    ],
+    "extensionGallery": "Open VSX",
+    "telemetryDefault": "off",
+    "protocols": [
+      "shogo-ide://"
+    ],
+    "dataFolders": {
+      "desktop": ".shogo-ide",
+      "server": ".shogo-ide-server"
+    },
+    "coexistence": {
+      "currentDesktopApp": "apps/desktop",
+      "currentMonacoIdeFallback": true,
+      "doesNotReplaceDesktopRuntimeInPhase4": true
+    },
+    "phase4ExitCriteria": [
+      "product metadata can be materialized",
+      "shogo-core extension builds before bundling",
+      "built-in extension mapping points to shogo-core",
+      "Open VSX is configured instead of Microsoft Marketplace",
+      "telemetry is disabled by default",
+      "workspace trust defaults are explicit",
+      "current Desktop launcher remains opt-in fallback"
+    ]
+  }
+}

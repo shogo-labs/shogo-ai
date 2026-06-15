@@ -1,0 +1,55 @@
+{
+  "phase": 6,
+  "channels": {
+    "insiders": {
+      "quality": "insiders",
+      "audience": "internal and early testers",
+      "autoUpdate": true,
+      "crashReporting": "opt-in",
+      "extensionGallery": "Open VSX",
+      "minimumChecks": [
+        "phase1:check",
+        "phase2:check",
+        "phase3:check",
+        "phase4:check",
+        "phase5:check",
+        "phase6:check",
+        "extension:typecheck",
+        "extension:build"
+      ]
+    },
+    "beta": {
+      "quality": "beta",
+      "audience": "trusted Shogo Desktop users",
+      "autoUpdate": true,
+      "crashReporting": "opt-in",
+      "extensionGallery": "Open VSX",
+      "minimumChecks": [
+        "all phase checks",
+        "desktop typecheck",
+        "signed macOS artifact",
+        "notarization receipt",
+        "diagnostics bundle smoke test"
+      ]
+    },
+    "stable": {
+      "quality": "stable",
+      "audience": "production users",
+      "autoUpdate": true,
+      "crashReporting": "opt-in",
+      "extensionGallery": "Open VSX",
+      "minimumChecks": [
+        "all beta checks",
+        "rollback artifact available",
+        "security checklist approved",
+        "extension compatibility smoke matrix",
+        "large repo launch test"
+      ]
+    }
+  },
+  "rollback": {
+    "required": true,
+    "strategy": "Keep the previous signed Shogo IDE artifact and bundled shogo-core VSIX available for one-click downgrade.",
+    "dataSafety": "Never delete .shogo-ide user data during rollback. Disable incompatible bundled extension versions instead."
+  }
+}

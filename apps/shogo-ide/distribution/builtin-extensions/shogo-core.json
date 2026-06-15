@@ -1,0 +1,30 @@
+{
+  "id": "shogo.shogo-core",
+  "publisher": "shogo",
+  "name": "shogo-core",
+  "displayName": "Shogo",
+  "sourcePath": "../../extensions/shogo-core",
+  "targetFolderName": "shogo.shogo-core",
+  "phase": 4,
+  "bundle": {
+    "main": "dist/extension.js",
+    "browser": "dist/web.js",
+    "requiredFiles": [
+      "package.json",
+      "README.md",
+      "media/shogo.svg",
+      "dist/extension.js",
+      "dist/web.js"
+    ]
+  },
+  "defaultVisibility": {
+    "activityContainer": "shogo",
+    "views": [
+      "shogo.chat",
+      "shogo.tasks",
+      "shogo.checkpoints",
+      "shogo.runtime",
+      "shogo.integrations"
+    ]
+  }
+}
