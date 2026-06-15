@@ -16,9 +16,10 @@ import {
   MoreHorizontal,
   RefreshCw,
 } from "lucide-react-native";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { BranchPicker } from "../git/BranchPicker";
+import { isCountedGitCode } from "../git/git-counting";
 import { useGitStatusContext } from "../git/GitStatusContext";
 import { ScmMenu } from "../git/ScmMenu";
 import { StashList } from "../git/StashList";
@@ -265,6 +266,7 @@ export function SourceControlViewlet({
   const [branchPickerOpen, setBranchPickerOpen] = useState(false);
   const [stashListOpen, setStashListOpen] = useState(false);
   const [changesGroupCollapsed, setChangesGroupCollapsed] = useState(false);
+  const [mergeCollapsed, setMergeCollapsed] = useState(false);
   const [stagedCollapsed, setStagedCollapsed] = useState(false);
   const [changesCollapsed, setChangesCollapsed] = useState(false);
   const [graphCollapsed, setGraphCollapsed] = useState(false);
@@ -312,9 +314,16 @@ export function SourceControlViewlet({
     );
   }
 
-  const stagedCount = Object.keys(snapshot.stagedStatus).length;
-  const unstagedCount = Object.keys(snapshot.fileStatus).length - snapshot.conflictPaths.length - stagedCount;
-  const totalUnstagedPlusStaged = Object.keys(snapshot.fileStatus).length - snapshot.conflictPaths.length;
+  const conflictPathSet = new Set(snapshot.conflictPaths);
+  const stagedPaths = Object.keys(snapshot.stagedStatus).filter((path) => !conflictPathSet.has(path));
+  const stagedPathSet = new Set(stagedPaths);
+  const unstagedPaths = Object.entries(snapshot.fileStatus)
+    .filter(([path, code]) => !conflictPathSet.has(path) && !stagedPathSet.has(path) && isCountedGitCode(code))
+    .map(([path]) => path);
+  const conflictCount = snapshot.conflictPaths.length;
+  const stagedCount = stagedPaths.length;
+  const unstagedCount = unstagedPaths.length;
+  const totalUnstagedPlusStaged = stagedCount + unstagedCount;
 
   return (
     <div className="flex flex-col h-full text-[12px]">
@@ -331,9 +340,7 @@ export function SourceControlViewlet({
             <button
               title="Stage All Changes"
               onClick={() => {
-                const paths = Object.keys(snapshot.fileStatus).filter(
-                  (p) => !snapshot.conflictPaths.includes(p) && !(p in snapshot.stagedStatus)
-                );
+                const paths = unstagedPaths;
                 if (paths.length > 0) {
                   void (async () => {
                     await actions.stage(paths);
@@ -349,7 +356,7 @@ export function SourceControlViewlet({
             <button
               title="Unstage All Changes"
               onClick={() => {
-                const paths = Object.keys(snapshot.stagedStatus);
+                const paths = stagedPaths;
                 if (paths.length > 0) {
                   void (async () => {
                     await actions.unstage(paths);
@@ -403,6 +410,8 @@ export function SourceControlViewlet({
         stagedCount={stagedCount}
         totalCount={totalUnstagedPlusStaged}
         branch={snapshot.detached ? "HEAD" : snapshot.branch}
+        disabled={conflictCount > 0}
+        disabledReason={conflictCount > 0 ? `Resolve ${conflictCount} merge conflict${conflictCount === 1 ? "" : "s"} before committing.` : undefined}
         onCommit={async (message, opts) => {
           const r = await actions.commit(message, opts);
           return { ok: r.ok, error: r.ok ? undefined : r.error };
@@ -440,6 +449,38 @@ export function SourceControlViewlet({
       {!changesGroupCollapsed && (
       <div ref={containerRef} className="flex-1 flex flex-col min-h-0">
             <div className="flex-1 overflow-auto" style={{ minHeight: CHANGES_MIN_HEIGHT }}>
+        {conflictCount > 0 && (
+          <>
+            <SectionHeader
+              label="Merge Changes"
+              count={conflictCount}
+              collapsed={mergeCollapsed}
+              onToggle={() => setMergeCollapsed((v) => !v)}
+              actions={
+                <button
+                  title="Refresh"
+                  onClick={refresh}
+                  className="p-1 rounded hover:bg-[color:var(--ide-primary)]/20 text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
+                >
+                  <RefreshCw size={11} />
+                </button>
+              }
+            />
+            {!mergeCollapsed && (
+              <ChangesList
+                snapshot={snapshot}
+                section="merge"
+                viewMode={viewMode}
+                onOpenDiff={onOpenDiff}
+                onOpenFile={onOpenFile}
+                onStage={(paths) => { void actions.stage(paths); }}
+                onUnstage={(paths) => { void actions.unstage(paths); }}
+                onDiscard={(paths) => { void actions.discard(paths); }}
+              />
+            )}
+          </>
+        )}
+
         {stagedCount > 0 && (
           <>
             <SectionHeader
@@ -451,7 +492,7 @@ export function SourceControlViewlet({
                 <button
                   title="Discard All Staged"
                   onClick={() => {
-                    const paths = Object.keys(snapshot.stagedStatus);
+                    const paths = stagedPaths;
                     if (paths.length > 0) {
                       if (window.confirm(`Discard ${paths.length} staged change(s)? This cannot be undone.`)) {
                         void actions.discard(paths);
@@ -479,57 +520,55 @@ export function SourceControlViewlet({
           </>
         )}
 
-        <SectionHeader
-          label="Changes"
-          count={unstagedCount}
-          collapsed={changesCollapsed}
-          onToggle={() => setChangesCollapsed((v) => !v)}
-          actions={
-            unstagedCount > 0 && (
-              <>
-                <button
-                  title="Stage All"
-                  onClick={() => {
-                    const paths = Object.keys(snapshot.fileStatus).filter(
-                      (p) => !snapshot.conflictPaths.includes(p) && !(p in snapshot.stagedStatus)
-                    );
-                    if (paths.length > 0) void actions.stage(paths);
-                  }}
-                  className="p-1 rounded hover:bg-[color:var(--ide-primary)]/20 text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
-                >
-                  <svg width={11} height={11} viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.5"><line x1="5.5" y1="2" x2="5.5" y2="9" /><line x1="2" y1="5.5" x2="9" y2="5.5" /></svg>
-                </button>
-                <button
-                  title="Discard All"
-                  onClick={() => {
-                    const paths = Object.keys(snapshot.fileStatus).filter(
-                      (p) => !snapshot.conflictPaths.includes(p) && !(p in snapshot.stagedStatus)
-                    );
-                    if (paths.length > 0) {
-                      if (window.confirm(`Discard ${paths.length} unstaged change(s)? This cannot be undone.`)) {
-                        void actions.discard(paths);
+        {unstagedCount > 0 && (
+          <>
+            <SectionHeader
+              label="Changes"
+              count={unstagedCount}
+              collapsed={changesCollapsed}
+              onToggle={() => setChangesCollapsed((v) => !v)}
+              actions={
+                <>
+                  <button
+                    title="Stage All"
+                    onClick={() => {
+                      const paths = unstagedPaths;
+                      if (paths.length > 0) void actions.stage(paths);
+                    }}
+                    className="p-1 rounded hover:bg-[color:var(--ide-primary)]/20 text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
+                  >
+                    <svg width={11} height={11} viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.5"><line x1="5.5" y1="2" x2="5.5" y2="9" /><line x1="2" y1="5.5" x2="9" y2="5.5" /></svg>
+                  </button>
+                  <button
+                    title="Discard All"
+                    onClick={() => {
+                      const paths = unstagedPaths;
+                      if (paths.length > 0) {
+                        if (window.confirm(`Discard ${paths.length} unstaged change(s)? This cannot be undone.`)) {
+                          void actions.discard(paths);
+                        }
                       }
-                    }
-                  }}
-                  className="p-1 rounded hover:bg-rose-500/20 text-[color:var(--ide-muted)] hover:text-rose-300"
-                >
-                  <RefreshCw size={11} />
-                </button>
-              </>
-            )
-          }
-        />
-        {!changesCollapsed && (
-          <ChangesList
-            snapshot={snapshot}
-            section="changes"
-            viewMode={viewMode}
-            onOpenDiff={onOpenDiff}
-            onOpenFile={onOpenFile}
-            onStage={(paths) => { void actions.stage(paths); }}
-            onUnstage={(paths) => { void actions.unstage(paths); }}
-            onDiscard={(paths) => { void actions.discard(paths); }}
-          />
+                    }}
+                    className="p-1 rounded hover:bg-rose-500/20 text-[color:var(--ide-muted)] hover:text-rose-300"
+                  >
+                    <RefreshCw size={11} />
+                  </button>
+                </>
+              }
+            />
+            {!changesCollapsed && (
+              <ChangesList
+                snapshot={snapshot}
+                section="changes"
+                viewMode={viewMode}
+                onOpenDiff={onOpenDiff}
+                onOpenFile={onOpenFile}
+                onStage={(paths) => { void actions.stage(paths); }}
+                onUnstage={(paths) => { void actions.unstage(paths); }}
+                onDiscard={(paths) => { void actions.discard(paths); }}
+              />
+            )}
+          </>
         )}
 
             </div>

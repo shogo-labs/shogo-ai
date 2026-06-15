@@ -45,7 +45,7 @@ function buildGroups(snapshot: GitSnapshot): Group[] {
     { id: "staged", label: "Staged Changes", files: staged, emptyHint: "Nothing staged" },
     { id: "changes", label: "Changes", files: working, emptyHint: "Working tree clean" },
   ];
-  return groups.filter((g) => g.files.length > 0 || g.id === "changes" || g.id === "staged");
+  return groups.filter((g) => g.files.length > 0);
 }
 
 interface DirNode {
@@ -122,14 +122,14 @@ describe("buildGroups — staged vs unstaged routing", () => {
 
   test("empty stagedStatus sends everything to Changes", () => {
     const s = snap({ "a.ts": "M", "b.ts": "D" });
-    expect(buildGroups(s).find((g) => g.id === "staged")!.files.length).toBe(0);
+    expect(buildGroups(s).find((g) => g.id === "staged")).toBeUndefined();
     expect(buildGroups(s).find((g) => g.id === "changes")!.files.length).toBe(2);
   });
 
-  test("all files staged = empty Changes group", () => {
+  test("all files staged hides empty Changes group", () => {
     const s = snap({ "a.ts": "M" }, { stagedStatus: { "a.ts": "M" } });
     expect(buildGroups(s).find((g) => g.id === "staged")!.files.length).toBe(1);
-    expect(buildGroups(s).find((g) => g.id === "changes")!.files.length).toBe(0);
+    expect(buildGroups(s).find((g) => g.id === "changes")).toBeUndefined();
   });
 
   test("mixed staged and unstaged", () => {
@@ -179,11 +179,9 @@ describe("buildGroups — BUG-007 exclusions", () => {
     expect(buildGroups(s).find((g) => g.id === "changes")!.files.map((f) => f.path)).toEqual(["real.ts"]);
   });
 
-  test("ONLY ignored → empty Changes (not hidden)", () => {
+  test("ONLY ignored hides Changes", () => {
     const s = snap({ "a": "!", "b": "!" });
-    const changes = buildGroups(s).find((g) => g.id === "changes")!;
-    expect(changes.files.length).toBe(0);
-    expect(changes.emptyHint).toBe("Working tree clean");
+    expect(buildGroups(s).find((g) => g.id === "changes")).toBeUndefined();
   });
 });
 
@@ -191,7 +189,7 @@ describe("buildGroups — conflicts", () => {
   test("conflict paths go to Merge", () => {
     const s = snap({ "c.ts": "U" }, { conflictPaths: ["c.ts"] });
     expect(buildGroups(s).find((g) => g.id === "merge")!.files.map((f) => f.path)).toEqual(["c.ts"]);
-    expect(buildGroups(s).find((g) => g.id === "changes")!.files.length).toBe(0);
+    expect(buildGroups(s).find((g) => g.id === "changes")).toBeUndefined();
   });
 
   test("missing from fileStatus defaults to 'U'", () => {
@@ -207,10 +205,10 @@ describe("buildGroups — visibility", () => {
     expect(buildGroups(snap({ "a": "M" })).find((g) => g.id === "merge")).toBeUndefined();
   });
 
-  test("staged + changes always shown", () => {
+  test("staged + changes hidden when empty", () => {
     const groups = buildGroups(snap({}));
-    expect(groups.find((g) => g.id === "changes")).toBeDefined();
-    expect(groups.find((g) => g.id === "staged")).toBeDefined();
+    expect(groups.find((g) => g.id === "changes")).toBeUndefined();
+    expect(groups.find((g) => g.id === "staged")).toBeUndefined();
   });
 });
 
