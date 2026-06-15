@@ -194,7 +194,8 @@ export function registerGitIpcHandlers(): void {
         cleanup();
       };
       SUBSCRIPTIONS.set(subId, { workspaceRoot: g.root, webContents, dispose: fullCleanup });
-      return { ok: true as const, subId, channel };
+      await ws.refreshNow();
+      return { ok: true as const, subId, channel, snapshot: ws.current() };
     },
   );
 
@@ -208,7 +209,7 @@ export function registerGitIpcHandlers(): void {
   ipcMain.handle("git:refresh", async (_event, args: { workspaceRoot: string }) => {
     const g = guard(args?.workspaceRoot);
     if (!g.ok) return { ok: false as const, reason: g.reason };
-    getOrCreateGitWorkspace(g.root).requestRefresh();
+    await getOrCreateGitWorkspace(g.root).refreshNow();
     return { ok: true as const };
   });
 

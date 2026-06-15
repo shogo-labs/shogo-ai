@@ -132,7 +132,7 @@ export interface DesktopGitBridge {
   subscribe(
     workspaceRoot: string,
     onSnapshot: (snap: GitSnapshot) => void,
-  ): Promise<{ ok: boolean; subId?: string; channel?: string; reason?: string }>
+  ): Promise<{ ok: boolean; subId?: string; channel?: string; snapshot?: GitSnapshot; reason?: string }>
   unsubscribe(subId: string, channel: string): Promise<{ ok: boolean; reason?: string }>
   refresh(workspaceRoot: string): Promise<{ ok: boolean; reason?: string }>
   current(workspaceRoot: string): Promise<{ ok: boolean; snapshot?: GitSnapshot; reason?: string }>

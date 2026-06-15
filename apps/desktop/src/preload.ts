@@ -339,11 +339,12 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   git: {
     probe: (): Promise<{ ok: boolean; available: boolean; version: string | null; supportsPorcelainV2: boolean; error?: string }> =>
       ipcRenderer.invoke('git:probe'),
-    subscribe: (workspaceRoot: string, onSnapshot: (snap: unknown) => void): Promise<{ ok: boolean; subId?: string; channel?: string; reason?: string }> => {
+    subscribe: (workspaceRoot: string, onSnapshot: (snap: unknown) => void): Promise<{ ok: boolean; subId?: string; channel?: string; snapshot?: unknown; reason?: string }> => {
       const result = ipcRenderer.invoke('git:subscribe', { workspaceRoot })
       void result.then((r: any) => {
         if (r?.ok && r.channel) {
           ipcRenderer.on(r.channel, (_event, snap) => onSnapshot(snap))
+          if (r.snapshot) onSnapshot(r.snapshot)
         }
       })
       return result

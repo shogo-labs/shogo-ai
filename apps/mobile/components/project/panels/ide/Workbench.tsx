@@ -1180,7 +1180,11 @@ export function Workbench({
         if (applied) setConflicts((cs) => cs.filter((c) => c.fileId !== id));
         const root = gitWorkspaceRootRef.current;
         if (root) {
-          void maybeAutoStageIfConflictResolved(root, f.path, content);
+          const gitBridge = getDesktopGitBridge();
+          void gitBridge?.refresh(root);
+          void maybeAutoStageIfConflictResolved(root, f.path, content).finally(() => {
+            void gitBridge?.refresh(root);
+          });
         }
         if (!opts?.silent) showToast(`Saved ${f.name}`);
         return true;
