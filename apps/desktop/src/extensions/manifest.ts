@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import path from 'path'
 
-export const SHOGO_VSCODE_COMPATIBILITY = '1.74.0'
+export const SHOGO_VSCODE_COMPATIBILITY = '1.80.0'
 
 export interface ShogoCommandContribution {
   command: string
@@ -295,7 +295,8 @@ function computeCompatibility(engine: string): { compatible: boolean; reason?: s
   if (!versionMatch) return { compatible: true, reason: 'Unable to parse engines.vscode; treated as compatible with warnings' }
   const major = Number(versionMatch[1] ?? versionMatch[4])
   const minor = Number(versionMatch[2] ?? versionMatch[5])
-  if (major > 1 || (major === 1 && minor > 74)) {
+  const [supportedMajor, supportedMinor] = SHOGO_VSCODE_COMPATIBILITY.split('.').map(Number)
+  if (major > supportedMajor || (major === supportedMajor && minor > supportedMinor)) {
     return { compatible: false, reason: `Requires VS Code ${engine}; Shogo currently supports the ${SHOGO_VSCODE_COMPATIBILITY} API subset` }
   }
   return { compatible: true }
