@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { parseExtensionManifestJson, validateRelativePath } from '../manifest'
+import { SHOGO_VSCODE_COMPATIBILITY, parseExtensionManifestJson, validateRelativePath } from '../manifest'
 
 describe('extension manifest parser', () => {
   test('parses JSONC manifests and normalizes id', () => {
@@ -8,7 +8,7 @@ describe('extension manifest parser', () => {
       "publisher": "Acme",
       "name": "hello-world",
       "version": "1.2.3",
-      "engines": { "vscode": "^1.74.0" },
+      "engines": { "vscode": "^1.80.0" },
       "activationEvents": ["onCommand:acme.hello"],
       "contributes": {
         "commands": [{ "command": "acme.hello", "title": "Hello" }],
@@ -31,13 +31,24 @@ describe('extension manifest parser', () => {
     }))).toThrow('escape')
   })
 
+  test('accepts extensions targeting the current Shogo VS Code API subset', () => {
+    const result = parseExtensionManifestJson(JSON.stringify({
+      publisher: 'Acme',
+      name: 'current',
+      version: '1.0.0',
+      engines: { vscode: `^${SHOGO_VSCODE_COMPATIBILITY}` },
+    }))
+    expect(result.compatible).toBe(true)
+  })
+
   test('marks too-new VS Code engines as incompatible', () => {
     const result = parseExtensionManifestJson(JSON.stringify({
       publisher: 'Acme',
       name: 'future',
       version: '1.0.0',
-      engines: { vscode: '^1.90.0' },
+      engines: { vscode: '^1.81.0' },
     }))
     expect(result.compatible).toBe(false)
+    expect(result.compatibilityReason).toContain(SHOGO_VSCODE_COMPATIBILITY)
   })
 })
