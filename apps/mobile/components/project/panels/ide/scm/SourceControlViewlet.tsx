@@ -1,33 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-//
-// VS Code-style Source Control viewlet. Layout:
-//
-// ┌──────────────────────────────────────────┐
-// │ SOURCE CONTROL                    ...     │ ← section header
-// ├──────────────────────────────────────────┤
-// │ repository-name          ↻  (⋯)          │ ← repo header (36px)
-// │ main  origin/main  ↑26 ↓3                │ ← branch row
-// ├──────────────────────────────────────────┤
-// │ Message (⌘Enter to commit...)    ✨      │ ← commit input (32px)
-// │ ✓ Commit               ▼                 │ ← commit button (36px)
-// ├──────────────────────────────────────────┤
-// │ ▼ Staged Changes               1         │ ← section header
-// │   file.ts  dir/               2, M       │ ← file row (22px)
-// ├──────────────────────────────────────────┤
-// │ ▼ Changes                        2       │
-// │   file.ts  dir/               3, M       │
-// ├──────────────────────────────────────────┤
-// │ ▼ GRAPH  ⊕ Auto  ⊙  ↓↓ ↑↑ ↻  (⋯)      │ ← graph toolbar
-// │ ● commit message                         │ ← graph rows (22px)
-// │ ● commit message                         │
-// └──────────────────────────────────────────┘
 
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
   Check,
-  ChevronUp,
   Circle,
   CloudDownload,
   CloudUpload,
@@ -50,17 +27,12 @@ import { CommitInput } from "./CommitInput";
 import { useScmActions } from "./useScmActions";
 
 
-/** localStorage key for persisting graph splitter position. */
 const GRAPH_HEIGHT_KEY = "sourceControl.graphHeight";
 const GRAPH_HEIGHT_DEFAULT = 250;
 const GRAPH_HEIGHT_MIN = 120;
 const GRAPH_HEIGHT_MAX_RATIO = 0.8;
 const CHANGES_MIN_HEIGHT = 100;
 
-/**
- * Hook that manages the draggable splitter between Changes and Graph sections.
- * Persists the graph height in localStorage, matching VS Code's behavior.
- */
 function useGraphSplitter() {
   const [graphHeight, setGraphHeight] = useState<number>(() => {
     try {
@@ -69,7 +41,7 @@ function useGraphSplitter() {
         const n = Number(stored);
         if (Number.isFinite(n) && n >= GRAPH_HEIGHT_MIN) return n;
       }
-    } catch { /* SSR / private browsing */ }
+    } catch {}
     return GRAPH_HEIGHT_DEFAULT;
   });
   const [dragging, setDragging] = useState(false);
@@ -77,9 +49,8 @@ function useGraphSplitter() {
   const startYRef = useRef(0);
   const startHeightRef = useRef(0);
 
-  // Persist on change
   useEffect(() => {
-    try { localStorage.setItem(GRAPH_HEIGHT_KEY, String(graphHeight)); } catch { /* noop */ }
+    try { localStorage.setItem(GRAPH_HEIGHT_KEY, String(graphHeight)); } catch {}
   }, [graphHeight]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
@@ -95,11 +66,10 @@ function useGraphSplitter() {
       : 800;
 
     const onMove = (ev: PointerEvent) => {
-      const dy = startYRef.current - ev.clientY; // up = positive = grow graph
+      const dy = startYRef.current - ev.clientY;
       const newH = Math.max(GRAPH_HEIGHT_MIN, Math.min(maxGraph, startHeightRef.current + dy));
-      // Also ensure Changes min height
       if (container) {
-        const changesAvailable = container.clientHeight - newH - 4; // 4 = splitter
+        const changesAvailable = container.clientHeight - newH - 4;
         if (changesAvailable < CHANGES_MIN_HEIGHT) {
           setGraphHeight(container.clientHeight - CHANGES_MIN_HEIGHT - 4);
           return;
@@ -126,99 +96,6 @@ function useGraphSplitter() {
 }
 
 
-/**
- * VS Code-style View menu for the header three-dot button.
- * Contains: View Mode toggle, Collapse All, Auto Refresh, Refresh.
- */
-function ViewMenu({
-  viewMode,
-  onViewModeToggle,
-  autoRefresh,
-  onToggleAutoRefresh,
-  onRefresh,
-  onClose,
-}: {
-  viewMode: "list" | "tree";
-  onViewModeToggle: () => void;
-  autoRefresh: boolean;
-  onToggleAutoRefresh: () => void;
-  onRefresh: () => void;
-  onClose: () => void;
-}) {
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  // Dismiss: outside click, Escape, focus loss
-  useEffect(() => {
-    const handlePointerDown = (e: PointerEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
-    };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
-    };
-    const handleFocusIn = (e: FocusEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
-    };
-    const timer = setTimeout(() => {
-      document.addEventListener("pointerdown", handlePointerDown, true);
-      document.addEventListener("keydown", handleKeyDown, true);
-      document.addEventListener("focusin", handleFocusIn, true);
-    }, 0);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener("pointerdown", handlePointerDown, true);
-      document.removeEventListener("keydown", handleKeyDown, true);
-      document.removeEventListener("focusin", handleFocusIn, true);
-    };
-  }, [onClose]);
-
-  return (
-    <div ref={menuRef} className="absolute right-2 top-9 z-[1000] w-[220px] rounded-md bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] shadow-2xl py-1 text-[13px]">
-      {/* View Mode */}
-      <button
-        onClick={() => { onViewModeToggle(); onClose(); }}
-        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--ide-hover)] text-left text-[color:var(--ide-text)]"
-      >
-        {viewMode === "list" ? <ListTree size={13} /> : <List size={13} />}
-        <span>{viewMode === "list" ? "Tree View" : "List View"}</span>
-      </button>
-
-      <div className="my-0.5 border-t border-[color:var(--ide-border)]/50" />
-
-      {/* Collapse All */}
-      <button
-        onClick={onClose}
-        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--ide-hover)] text-left text-[color:var(--ide-text)]"
-      >
-        <ChevronUp size={13} />
-        <span>Collapse All</span>
-      </button>
-
-      {/* Auto Refresh */}
-      <button
-        onClick={() => { onToggleAutoRefresh(); onClose(); }}
-        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--ide-hover)] text-left text-[color:var(--ide-text)]"
-      >
-        {autoRefresh ? <Check size={13} className="text-[color:var(--ide-primary)]" /> : <span className="w-[13px]" />}
-        <span>Auto Refresh</span>
-      </button>
-
-      <div className="my-0.5 border-t border-[color:var(--ide-border)]/50" />
-
-      {/* Refresh */}
-      <button
-        onClick={() => { onRefresh(); onClose(); }}
-        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--ide-hover)] text-left text-[color:var(--ide-text)]"
-      >
-        <RefreshCw size={13} />
-        <span>Refresh</span>
-      </button>
-    </div>
-  );
-}
-
-/**
- * VS Code-style section header. Uppercase, 11px, collapsible.
- */
 function SectionHeader({
   label,
   count,
@@ -240,88 +117,21 @@ function SectionHeader({
       {onToggle && (
         <button onClick={onToggle} className="mr-1 p-0.5 rounded hover:bg-[color:var(--ide-surface)]">
           <svg width={12} height={12} viewBox="0 0 12 12" className={`text-[color:var(--ide-muted)] transition-transform ${collapsed ? "-rotate-90" : ""}`}>
-            <path d="M4.5 3L8 6L4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M3 4.5L6 8L9 4.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
       )}
       <span className="flex-1">{label}</span>
-      {count !== undefined && (
-        <span className="text-[11px] text-[color:var(--ide-muted)] tabular-nums mr-1">{count}</span>
-      )}
       <div className="opacity-0 group-hover/section:opacity-100 flex items-center gap-0.5">
         {actions}
       </div>
+      {count !== undefined && (
+        <span className={`ml-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] font-semibold tabular-nums ${count > 0 ? "bg-[#2aa7df] text-white" : "text-[color:var(--ide-muted)]"}`}>{count}</span>
+      )}
     </div>
   );
 }
 
-/**
- * VS Code-style repository header (36px).
- */
-function RepoHeader({
-  branch,
-  upstream,
-  ahead,
-  behind,
-  detached,
-  onRefresh,
-  onBranchPicker,
-  onMenuToggle,
-}: {
-  branch: string | null;
-  upstream: string | null;
-  ahead: number;
-  behind: number;
-  detached: boolean;
-  onRefresh: () => void;
-  onBranchPicker: () => void;
-  onMenuToggle: () => void;
-}) {
-  return (
-    <div className="flex items-center h-[36px] px-3 border-b border-[color:var(--ide-border)]" style={{ minHeight: 36 }}>
-      {/* Branch name + upstream */}
-      <button
-        onClick={onBranchPicker}
-        title="Change branch"
-        className="flex items-center gap-1.5 -mx-1 px-1 py-0.5 rounded text-left hover:bg-[color:var(--ide-hover)]"
-      >
-        <span className="text-[13px] font-medium text-[color:var(--ide-text-strong)]">
-          {detached ? "HEAD detached" : branch ?? "—"}
-        </span>
-      </button>
-      {upstream && (
-        <span className="text-[11px] text-[color:var(--ide-muted)] ml-1.5 truncate max-w-[120px]" title={`Tracking ${upstream}`}>
-          {upstream}
-        </span>
-      )}
-      {ahead > 0 && (
-        <span className="text-[10px] ml-1.5 text-emerald-400" title={`${ahead} ahead`}>↑{ahead}</span>
-      )}
-      {behind > 0 && (
-        <span className="text-[10px] ml-1 text-amber-400" title={`${behind} behind`}>↓{behind}</span>
-      )}
-      <span className="flex-1" />
-      <button
-        title="Sync Changes (Fetch + Pull + Push)"
-        onClick={onRefresh}
-        className="p-1 rounded hover:bg-[color:var(--ide-hover)] text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
-      >
-        <RefreshCw size={13} />
-      </button>
-      <button
-        title="More Actions..."
-        onClick={onMenuToggle}
-        className="p-1 rounded hover:bg-[color:var(--ide-hover)] text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
-      >
-        <MoreHorizontal size={13} />
-      </button>
-    </div>
-  );
-}
-
-/**
- * VS Code-style graph toolbar (28px, sticky).
- */
 function GraphToolbar({
   onFetch,
   onPull,
@@ -375,9 +185,6 @@ function GraphToolbar({
   );
 }
 
-/**
- * VS Code-style commit graph row (22px).
- */
 function GraphRow({
   hash,
   message,
@@ -397,7 +204,6 @@ function GraphRow({
 }) {
   return (
     <div className="flex items-center h-[22px] px-2 text-[12px] hover:bg-[color:var(--ide-hover)] cursor-pointer" style={{ minHeight: 22 }}>
-      {/* Commit node */}
       <div className="w-4 flex items-center justify-center shrink-0">
         {isMerge ? (
           <div className="w-2.5 h-2.5 rounded-full border-2 border-[color:var(--ide-primary)] bg-[color:var(--ide-bg)]" />
@@ -405,15 +211,12 @@ function GraphRow({
           <div className="w-2 h-2 rounded-full bg-[color:var(--ide-primary)]" />
         )}
       </div>
-      {/* Commit message */}
       <span className="flex-1 truncate text-[color:var(--ide-text-strong)] ml-1">
         {message}
       </span>
-      {/* Author */}
       {author && (
         <span className="text-[10px] text-[color:var(--ide-muted)] ml-2 shrink-0 max-w-[80px] truncate">{author}</span>
       )}
-      {/* Branch label */}
       {branchLabel && (
         <span
           className={`text-[10px] px-1.5 py-0.5 rounded-full ml-1.5 shrink-0 ${
@@ -425,7 +228,6 @@ function GraphRow({
           {branchLabel}
         </span>
       )}
-      {/* Time */}
       {time && (
         <span className="text-[10px] text-[color:var(--ide-muted)] ml-2 shrink-0">{time}</span>
       )}
@@ -433,9 +235,6 @@ function GraphRow({
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Main SourceControlViewlet component
-// ═══════════════════════════════════════════════════════════════════════
 
 export function SourceControlViewlet({
   workspaceRoot,
@@ -462,10 +261,10 @@ export function SourceControlViewlet({
 }) {
   const { snapshot } = useGitStatusContext();
   const actions = useScmActions(workspaceRoot);
-  const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [remoteMenuOpen, setRemoteMenuOpen] = useState(false);
   const [branchPickerOpen, setBranchPickerOpen] = useState(false);
   const [stashListOpen, setStashListOpen] = useState(false);
+  const [changesGroupCollapsed, setChangesGroupCollapsed] = useState(false);
   const [stagedCollapsed, setStagedCollapsed] = useState(false);
   const [changesCollapsed, setChangesCollapsed] = useState(false);
   const [graphCollapsed, setGraphCollapsed] = useState(false);
@@ -479,26 +278,23 @@ export function SourceControlViewlet({
     void actions.refresh();
   }, [actions]);
 
-  // ── Auto-refresh effect ──
   useEffect(() => {
     if (!autoRefresh || !workspaceRoot) return;
     const id = setInterval(refresh, 30_000);
     return () => clearInterval(id);
   }, [autoRefresh, workspaceRoot, refresh]);
 
-  // ── Keyboard shortcuts ──
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        const ta = document.querySelector<HTMLTextAreaElement>(".shogo-commit-input");
-        if (ta) { e.preventDefault(); ta.focus(); ta.select(); }
+        const input = document.querySelector<HTMLInputElement>(".shogo-commit-input");
+        if (input) { e.preventDefault(); input.focus(); input.select(); }
       }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
   }, []);
 
-  // ── Empty state (no repo) ──
   if (!actions.available || !snapshot || !snapshot.isRepo) {
     return (
       <div className="flex flex-col h-full">
@@ -522,65 +318,91 @@ export function SourceControlViewlet({
 
   return (
     <div className="flex flex-col h-full text-[12px]">
-      {/* ── SOURCE CONTROL header (28px) ── */}
-      <div className="flex items-center h-[28px] px-3 text-[11px] uppercase tracking-wider text-[color:var(--ide-muted)] font-semibold" style={{ minHeight: 28 }}>
-        <span className="flex-1">Source Control</span>
+      <div className="flex items-center h-[30px] px-3 text-[11px] uppercase tracking-[0.12em] text-[color:var(--ide-muted)] font-semibold" style={{ minHeight: 30 }}>
+        <span className="flex-1">SOURCE CONTROL</span>
       </div>
 
-      {/* ── Section actions row: View Mode + Refresh ── */}
-      <div className="flex items-center h-[28px] px-2 border-b border-[color:var(--ide-border)]" style={{ minHeight: 28 }}>
-        <button
-          title={viewMode === "list" ? "View Mode: Tree" : "View Mode: List"}
-          onClick={() => setViewMode((v) => v === "list" ? "tree" : "list")}
-          className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]"
-        >
-          {viewMode === "list" ? (
-            <svg width={14} height={14} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
-              <line x1="3" y1="4" x2="11" y2="4" /><line x1="3" y1="7" x2="11" y2="7" /><line x1="3" y1="10" x2="11" y2="10" />
-            </svg>
-          ) : (
-            <ListTree size={14} />
-          )}
-        </button>
-        <span className="flex-1" />
-        <button
-          title="Commit (⌘Enter)"
-          onClick={() => {
-            const ta = document.querySelector<HTMLTextAreaElement>(".shogo-commit-input");
-            if (ta) { ta.focus(); ta.select(); }
-          }}
-          className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]"
-        >
-          <svg width={14} height={14} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <polyline points="3 7 6 10 11 4" />
-          </svg>
-        </button>
-        <button title="Refresh" onClick={refresh} className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]">
-          <RefreshCw size={13} />
-        </button>
-        <button
-          title="View and More Actions..."
-          onClick={() => { setViewMenuOpen((v) => !v); setRemoteMenuOpen(false); }}
-          className="p-1 rounded text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]"
-        >
-          <MoreHorizontal size={13} />
-        </button>
-        {viewMenuOpen && (
-          <ViewMenu
-            viewMode={viewMode}
-            onViewModeToggle={() => setViewMode((v) => v === "list" ? "tree" : "list")}
-            autoRefresh={autoRefresh}
-            onToggleAutoRefresh={() => setAutoRefresh((v) => !v)}
-            onRefresh={refresh}
-            onClose={() => setViewMenuOpen(false)}
-          />
-        )}
-      </div>
+      <SectionHeader
+        label="CHANGES"
+        collapsed={changesGroupCollapsed}
+        onToggle={() => setChangesGroupCollapsed((v) => !v)}
+        actions={
+          <>
+            <button
+              title="Stage All Changes"
+              onClick={() => {
+                const paths = Object.keys(snapshot.fileStatus).filter(
+                  (p) => !snapshot.conflictPaths.includes(p) && !(p in snapshot.stagedStatus)
+                );
+                if (paths.length > 0) {
+                  void (async () => {
+                    await actions.stage(paths);
+                    await actions.refresh();
+                  })();
+                }
+              }}
+              disabled={unstagedCount === 0}
+              className="p-1 rounded-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)] disabled:opacity-35 disabled:hover:bg-transparent"
+            >
+              <ArrowDownToLine size={14} />
+            </button>
+            <button
+              title="Unstage All Changes"
+              onClick={() => {
+                const paths = Object.keys(snapshot.stagedStatus);
+                if (paths.length > 0) {
+                  void (async () => {
+                    await actions.unstage(paths);
+                    await actions.refresh();
+                  })();
+                }
+              }}
+              disabled={stagedCount === 0}
+              className="p-1 rounded-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)] disabled:opacity-35 disabled:hover:bg-transparent"
+            >
+              <ArrowUpFromLine size={14} />
+            </button>
+            <button
+              title={viewMode === "list" ? "Tree View" : "List View"}
+              onClick={() => setViewMode((v) => v === "list" ? "tree" : "list")}
+              className="p-1 rounded-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]"
+            >
+              {viewMode === "list" ? <ListTree size={14} /> : <List size={14} />}
+            </button>
+            <button
+              title="Commit"
+              onClick={() => {
+                const commitButton = document.querySelector<HTMLButtonElement>(".shogo-primary-commit-button");
+                if (commitButton && !commitButton.disabled) {
+                  commitButton.click();
+                  return;
+                }
+                const input = document.querySelector<HTMLInputElement>(".shogo-commit-input");
+                if (input) { input.focus(); input.select(); }
+              }}
+              className="p-1 rounded-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]"
+            >
+              <Check size={15} />
+            </button>
+            <button title="Refresh" onClick={refresh} className="p-1 rounded-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]">
+              <RefreshCw size={14} />
+            </button>
+            <button
+              title="More Actions..."
+              onClick={() => setRemoteMenuOpen((v) => !v)}
+              className="p-1 rounded-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]"
+            >
+              <MoreHorizontal size={14} />
+            </button>
+          </>
+        }
+      />
 
-      {/* ── Commit input (32px textarea + 36px button) ── */}
-      <CommitInput
+      {!changesGroupCollapsed && (
+        <CommitInput
         stagedCount={stagedCount}
         totalCount={totalUnstagedPlusStaged}
+        branch={snapshot.detached ? "HEAD" : snapshot.branch}
         onCommit={async (message, opts) => {
           const r = await actions.commit(message, opts);
           return { ok: r.ok, error: r.ok ? undefined : r.error };
@@ -601,23 +423,9 @@ export function SourceControlViewlet({
           const r = await actions.undoLastCommit();
           return { ok: r.ok, error: r.ok ? undefined : r.error };
         }}
-        onGenerateMessage={actions.available ? async () => {
-          const r = await actions.generateCommitMessage();
-          return { ok: r.ok, message: r.ok ? r.message : undefined, error: r.ok ? undefined : r.error };
-        } : undefined}
-      />
+        />
+      )}
 
-      {/* ── Repository header (36px) ── */}
-      <RepoHeader
-        branch={snapshot.branch}
-        upstream={snapshot.upstream}
-        ahead={snapshot.ahead}
-        behind={snapshot.behind}
-        detached={snapshot.detached}
-        onRefresh={refresh}
-        onBranchPicker={() => setBranchPickerOpen(true)}
-        onMenuToggle={() => { setRemoteMenuOpen((v) => !v); setViewMenuOpen(false); }}
-      />
       {remoteMenuOpen && workspaceRoot && (
         <ScmMenu
           workspaceRoot={workspaceRoot}
@@ -628,22 +436,18 @@ export function SourceControlViewlet({
         />
       )}
 
-      {/* ── Auto-refresh effect ── */}
-      {/* (auto-refresh handled by useEffect below) */}
 
-      {/* ── Resizable split: Changes (top) ←splitter→ Graph (bottom) ── */}
+      {!changesGroupCollapsed && (
       <div ref={containerRef} className="flex-1 flex flex-col min-h-0">
-            {/* ── Top panel: Staged + Changes (scrollable) ── */}
             <div className="flex-1 overflow-auto" style={{ minHeight: CHANGES_MIN_HEIGHT }}>
-              {/* Staged Changes section */}
-        <SectionHeader
-          label="Staged Changes"
-          count={stagedCount}
-          collapsed={stagedCollapsed}
-          onToggle={() => setStagedCollapsed((v) => !v)}
-          actions={
-            stagedCount > 0 && (
-              <>
+        {stagedCount > 0 && (
+          <>
+            <SectionHeader
+              label="Staged Changes"
+              count={stagedCount}
+              collapsed={stagedCollapsed}
+              onToggle={() => setStagedCollapsed((v) => !v)}
+              actions={
                 <button
                   title="Discard All Staged"
                   onClick={() => {
@@ -658,24 +462,23 @@ export function SourceControlViewlet({
                 >
                   <svg width={11} height={11} viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2.5 8.5L8.5 2.5M2.5 2.5L8.5 8.5" /></svg>
                 </button>
-              </>
-            )
-          }
-        />
-        {!stagedCollapsed && (
-          <ChangesList
-            snapshot={snapshot}
-            section="staged"
-            viewMode={viewMode}
-            onOpenDiff={onOpenDiff}
-            onOpenFile={onOpenFile}
-            onStage={(paths) => { void actions.stage(paths); }}
-            onUnstage={(paths) => { void actions.unstage(paths); }}
-            onDiscard={(paths) => { void actions.discard(paths); }}
-          />
+              }
+            />
+            {!stagedCollapsed && (
+              <ChangesList
+                snapshot={snapshot}
+                section="staged"
+                viewMode={viewMode}
+                onOpenDiff={onOpenDiff}
+                onOpenFile={onOpenFile}
+                onStage={(paths) => { void actions.stage(paths); }}
+                onUnstage={(paths) => { void actions.unstage(paths); }}
+                onDiscard={(paths) => { void actions.discard(paths); }}
+              />
+            )}
+          </>
         )}
 
-        {/* Changes section */}
         <SectionHeader
           label="Changes"
           count={unstagedCount}
@@ -731,15 +534,12 @@ export function SourceControlViewlet({
 
             </div>
 
-            {/* ── Splitter handle ── */}
             <div
               onPointerDown={onPointerDown}
               className="group/splitter relative flex items-center justify-center shrink-0"
               style={{ height: 5, cursor: "ns-resize" }}
             >
-              {/* Invisible wider hit area */}
               <div className="absolute inset-x-0 -top-1 -bottom-1" />
-              {/* Visible line */}
               <div
                 className={`w-full h-px transition-colors ${
                   dragging
@@ -747,7 +547,6 @@ export function SourceControlViewlet({
                     : "bg-[color:var(--ide-border)] group-hover/splitter:bg-[color:var(--ide-muted)]"
                 }`}
               />
-              {/* Center grip dots (visible on hover / drag) */}
               <div
                 className={`absolute flex gap-0.5 transition-opacity ${
                   dragging ? "opacity-100" : "opacity-0 group-hover/splitter:opacity-100"
@@ -759,7 +558,6 @@ export function SourceControlViewlet({
               </div>
             </div>
 
-            {/* ── Bottom panel: Graph (fixed height, scrollable) ── */}
             <div style={{ height: graphHeight, minHeight: GRAPH_HEIGHT_MIN }} className="flex flex-col shrink-0 overflow-hidden">
               <GraphToolbar
                 onFetch={async () => { await actions.fetchRemote(); await actions.refresh(); }}
@@ -796,8 +594,8 @@ export function SourceControlViewlet({
               )}
             </div>
           </div>
+      )}
 
-      {/* ── Modals ── */}
       {branchPickerOpen && workspaceRoot && (
         <BranchPicker
           workspaceRoot={workspaceRoot}
