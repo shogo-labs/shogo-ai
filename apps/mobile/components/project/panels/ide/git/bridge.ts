@@ -92,6 +92,16 @@ export interface BlameLine {
   summary: string
 }
 
+export interface GitCommitHistoryItem {
+  hash: string
+  message: string
+  author?: string
+  time?: string
+  isMerge?: boolean
+  branchLabel?: string
+  isRemote?: boolean
+}
+
 export interface BranchesBridge {
   list(workspaceRoot: string): Promise<{ ok: boolean; branches?: BranchInfo[]; reason?: string; error?: string }>
   checkout(workspaceRoot: string, name: string): Promise<GitOpResult>
@@ -151,6 +161,7 @@ export interface DesktopGitBridge {
   // G4 — per-file diff markers + blame.
   diffMarkers(workspaceRoot: string, path: string, base?: string): Promise<{ ok: boolean; markers?: DiffMarker[]; reason?: string; error?: string }>
   blame(workspaceRoot: string, path: string): Promise<{ ok: boolean; lines?: BlameLine[]; reason?: string; error?: string }>
+  history(workspaceRoot: string, opts?: { limit?: number; allBranches?: boolean }): Promise<{ ok: boolean; commits?: GitCommitHistoryItem[]; reason?: string; error?: string }>
   // G4.5 — 3-way merge stages + per-hunk revert + streaming progress.
   mergeStages(workspaceRoot: string, path: string): Promise<{ ok: boolean; stages?: { base: string | null; ours: string | null; theirs: string | null; working: string }; reason?: string; error?: string }>
   revertHunk(workspaceRoot: string, path: string, workingStart: number, workingEnd: number, headStart: number | null, headEnd: number | null): Promise<GitOpResult>
@@ -174,7 +185,7 @@ export function getDesktopGitBridge(): DesktopGitBridge | null {
     'probe', 'subscribe', 'unsubscribe', 'refresh', 'current',
     'setProjectRoot', 'unsetProjectRoot', 'resolveProjectRoot',
     'stage', 'unstage', 'discard', 'commit', 'commitAll', 'commitAndPush', 'commitAndSync', 'generateCommitMessage', 'numStat', 'undoLastCommit', 'fileContent',
-    'diffMarkers', 'blame',
+    'diffMarkers', 'blame', 'history',
     'mergeStages', 'revertHunk', 'fetchStreaming', 'pullStreaming', 'pushStreaming',
   ] as const) {
     if (typeof (g as unknown as Record<string, unknown>)[m] !== 'function') return null

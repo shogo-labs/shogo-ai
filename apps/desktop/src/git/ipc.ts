@@ -28,6 +28,7 @@ import {
   gitDiscard,
   gitGenerateCommitMessage,
   gitFileContent,
+  gitCommitHistory,
   gitNumStat,
   gitStage,
   gitUndoLastCommit,
@@ -513,6 +514,18 @@ export function registerGitIpcHandlers(): void {
     const r = await blameFile(g.root, args.path);
     return r.ok
       ? { ok: true as const, lines: r.lines }
+      : { ok: false as const, reason: "git-error" as const, error: r.error };
+  });
+
+  ipcMain.handle("git:history", async (_event, args: { workspaceRoot: string; limit?: number; allBranches?: boolean }) => {
+    const g = guard(args?.workspaceRoot);
+    if (!g.ok) return { ok: false as const, reason: g.reason };
+    const r = await gitCommitHistory(g.root, {
+      limit: typeof args.limit === "number" ? args.limit : undefined,
+      allBranches: Boolean(args.allBranches),
+    });
+    return r.ok
+      ? { ok: true as const, commits: r.commits }
       : { ok: false as const, reason: "git-error" as const, error: r.error };
   });
 
