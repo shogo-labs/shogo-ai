@@ -104,6 +104,9 @@ const visibleEditorsEmitter = createEmitter<TextEditorSnapshot[]>()
 const openDocumentEmitter = createEmitter<TextDocumentSnapshot>()
 const changeDocumentEmitter = createEmitter<{ document: TextDocumentSnapshot; contentChanges: Array<{ text: string }> }>()
 const closeDocumentEmitter = createEmitter<TextDocumentSnapshot>()
+const saveDocumentEmitter = createEmitter<TextDocumentSnapshot>()
+const workspaceFoldersEmitter = createEmitter<{ added: WorkspaceFolderSnapshot[]; removed: WorkspaceFolderSnapshot[] }>()
+const configurationEmitter = createEmitter<{ affectsConfiguration: (section: string) => boolean }>()
 
 function post(message: unknown): void {
   if (parentPort) parentPort.postMessage(message)
@@ -171,8 +174,12 @@ function makeVscodeApi(extension: HostExtension) {
       onDidOpenTextDocument: openDocumentEmitter.event,
       onDidChangeTextDocument: changeDocumentEmitter.event,
       onDidCloseTextDocument: closeDocumentEmitter.event,
+      onDidSaveTextDocument: saveDocumentEmitter.event,
+      onDidChangeWorkspaceFolders: workspaceFoldersEmitter.event,
+      onDidChangeConfiguration: configurationEmitter.event,
       openTextDocument: (uriOrPath: unknown) => Promise.resolve(openTextDocumentSnapshot(uriOrPath)),
       getConfiguration: (section?: string) => createConfiguration(section),
+      createFileSystemWatcher,
       fs: createWorkspaceFs(),
     },
     Uri: {
@@ -925,6 +932,85 @@ function serializeCommand(command: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object'
+}
+
+function createFileSystemWatcher(globPattern: unknown, ignoreCreateEvents = false, ignoreChangeEvents = false, ignoreDeleteEvents = false) {
+  const createEmitterApi = createEmitter<UriLike>()
+  const changeEmitterApi = createEmitter<UriLike>()
+  const deleteEmitterApi = createEmitter<UriLike>()
+  let watcher: fs.FSWatcher | undefined
+
+  try {
+    const watchRoot = resolveWatcherRoot(globPattern)
+    if (watchRoot) {
+      const listener = (eventType: string, filename: string | Buffer | null) => {
+        const changedPath = assertWorkspacePath(filename ? path.join(watchRoot, filename.toString()) : watchRoot)
+        const uri = serializeUri(uriFromFsPath(changedPath))
+        if (eventType === 'rename') {
+          if (fs.existsSync(changedPath)) {
+            if (!ignoreCreateEvents) createEmitterApi.fire(uri)
+          } else if (!ignoreDeleteEvents) {
+            deleteEmitterApi.fire(uri)
+          }
+          return
+        }
+        if (!ignoreChangeEvents) changeEmitterApi.fire(uri)
+      }
+      try {
+        watcher = fs.watch(watchRoot, { recursive: true }, listener)
+      } catch {
+        watcher = fs.watch(watchRoot, listener)
+      }
+      watcher.on('error', (err) => post({ type: 'watcherError', error: err instanceof Error ? err.message : String(err) }))
+    }
+  } catch (err) {
+    post({ type: 'watcherError', error: err instanceof Error ? err.message : String(err) })
+  }
+
+  return {
+    onDidCreate: createEmitterApi.event,
+    onDidChange: changeEmitterApi.event,
+    onDidDelete: deleteEmitterApi.event,
+    dispose: () => watcher?.close(),
+  }
+}
+
+function resolveWatcherRoot(globPattern: unknown): string | undefined {
+  if (!workspaceRoot) return undefined
+  const basePath = isRecord(globPattern)
+    ? uriFsPath(globPattern.baseUri) ?? uriFsPath(globPattern.base)
+    : undefined
+  const pattern = typeof globPattern === 'string'
+    ? globPattern
+    : isRecord(globPattern) && typeof globPattern.pattern === 'string'
+      ? globPattern.pattern
+      : ''
+  const staticPrefix = getStaticGlobPrefix(pattern)
+  const requested = basePath
+    ? path.join(assertWorkspacePath(basePath), staticPrefix)
+    : path.isAbsolute(staticPrefix)
+      ? assertWorkspacePath(staticPrefix)
+      : safeJoin(workspaceRoot, staticPrefix || '.')
+  return nearestExistingWorkspacePath(requested)
+}
+
+function getStaticGlobPrefix(pattern: string): string {
+  const firstGlob = pattern.search(/[\*\?\{\[]/)
+  const prefix = firstGlob === -1 ? pattern : pattern.slice(0, firstGlob)
+  return prefix.replace(/[\\/]+$/, '')
+}
+
+function nearestExistingWorkspacePath(candidate: string): string | undefined {
+  if (!workspaceRoot) return undefined
+  const root = path.resolve(workspaceRoot)
+  let current = assertWorkspacePath(candidate)
+  while (current === root || current.startsWith(`${root}${path.sep}`)) {
+    if (fs.existsSync(current)) return current
+    const next = path.dirname(current)
+    if (next === current) break
+    current = next
+  }
+  return fs.existsSync(root) ? root : undefined
 }
 
 function createMemento(file: string) {

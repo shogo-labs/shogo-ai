@@ -13,4 +13,21 @@ describe('extension host vscode API shim', () => {
     expect(source).toContain('Active: -1')
     expect(source).toContain('Beside: -2')
   })
+
+  test('provides workspace.createFileSystemWatcher for repository extensions', () => {
+    const source = fs.readFileSync(runnerSource, 'utf8')
+
+    expect(source).toContain('createFileSystemWatcher')
+    expect(source).toContain('onDidCreate')
+    expect(source).toContain('onDidChange')
+    expect(source).toContain('onDidDelete')
+  })
+
+  test('provides workspace lifecycle events for repository extensions', () => {
+    const source = fs.readFileSync(runnerSource, 'utf8')
+
+    expect(source).toContain('onDidChangeWorkspaceFolders')
+    expect(source).toContain('onDidChangeConfiguration')
+    expect(source).toContain('onDidSaveTextDocument')
+  })
 })
