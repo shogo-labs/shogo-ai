@@ -1,0 +1,265 @@
+{
+  "name": "shogo-core",
+  "displayName": "Shogo",
+  "description": "Bundled Shogo IDE extension for chat, agent workflows, checkpoints, runtime status, and source-control assistance.",
+  "version": "0.0.0-phase.1",
+  "publisher": "shogo",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "SCM Providers",
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:shogo.chat",
+    "onView:shogo.tasks",
+    "onView:shogo.checkpoints",
+    "onView:shogo.runtime",
+    "onView:shogo.integrations",
+    "onCommand:shogo.chat.focus",
+    "onCommand:shogo.health.check",
+    "onCommand:shogo.context.addSelection",
+    "onCommand:shogo.context.addActiveFile",
+    "onCommand:shogo.context.clear",
+    "onCommand:shogo.patch.preview",
+    "onCommand:shogo.checkpoint.create",
+    "onCommand:shogo.git.reviewChanges",
+    "onCommand:shogo.runtime.openPreview"
+  ],
+  "main": "./dist/extension.js",
+  "browser": "./dist/web.js",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Shogo can explain explicitly selected code in restricted mode. Editing, shell commands, Git writes, package installs, deployments, and integrations require workspace trust."
+    },
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Read-only chat and context display work in virtual workspaces. Local commands, terminal, Git writes, and runtime verification require a trusted workspace agent."
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "shogo",
+          "title": "Shogo",
+          "icon": "media/shogo.svg"
+        }
+      ]
+    },
+    "views": {
+      "shogo": [
+        {
+          "id": "shogo.chat",
+          "name": "Chat",
+          "type": "webview"
+        },
+        {
+          "id": "shogo.tasks",
+          "name": "Agent Tasks"
+        },
+        {
+          "id": "shogo.checkpoints",
+          "name": "Checkpoints"
+        },
+        {
+          "id": "shogo.runtime",
+          "name": "Runtime"
+        },
+        {
+          "id": "shogo.integrations",
+          "name": "Integrations"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "shogo.chat.focus",
+        "title": "Shogo: Focus Chat",
+        "category": "Shogo"
+      },
+      {
+        "command": "shogo.health.check",
+        "title": "Shogo: Check Agent Service Health",
+        "category": "Shogo"
+      },
+      {
+        "command": "shogo.context.addSelection",
+        "title": "Shogo: Add Selection to Context",
+        "category": "Shogo"
+      },
+      {
+        "command": "shogo.context.addActiveFile",
+        "title": "Shogo: Add Active File to Context",
+        "category": "Shogo"
+      },
+      {
+        "command": "shogo.context.clear",
+        "title": "Shogo: Clear Context",
+        "category": "Shogo"
+      },
+      {
+        "command": "shogo.patch.preview",
+        "title": "Shogo: Preview Proposed Patch",
+        "category": "Shogo"
+      },
+      {
+        "command": "shogo.checkpoint.create",
+        "title": "Shogo: Create Checkpoint",
+        "category": "Shogo"
+      },
+      {
+        "command": "shogo.git.reviewChanges",
+        "title": "Shogo: Review Source Control Changes",
+        "category": "Shogo"
+      },
+      {
+        "command": "shogo.runtime.openPreview",
+        "title": "Shogo: Open Runtime Preview",
+        "category": "Shogo"
+      }
+    ],
+    "viewsWelcome": [
+      {
+        "view": "shogo.chat",
+        "contents": "Welcome to Shogo. Start with [Focus Chat](command:shogo.chat.focus), add selected code as context, or check the local agent bridge.\n\n[Check Agent Health](command:shogo.health.check)"
+      },
+      {
+        "view": "shogo.tasks",
+        "contents": "Agent tasks will appear here when the local Shogo agent service is connected.\n\n[Check Agent Health](command:shogo.health.check)"
+      },
+      {
+        "view": "shogo.checkpoints",
+        "contents": "Checkpoints protect multi-file edits before Shogo applies changes.\n\n[Create Checkpoint](command:shogo.checkpoint.create)"
+      },
+      {
+        "view": "shogo.runtime",
+        "contents": "Runtime status, route verification, logs, and previews will appear here.\n\n[Open Runtime Preview](command:shogo.runtime.openPreview)"
+      },
+      {
+        "view": "shogo.integrations",
+        "contents": "Connected tools and integrations will appear here after the agent bridge is wired."
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "shogo.getStarted",
+        "title": "Get Started with Shogo",
+        "description": "Use Shogo IDE to chat with your code, collect context, preview patches, and verify changes.",
+        "steps": [
+          {
+            "id": "shogo.openChat",
+            "title": "Open Shogo Chat",
+            "description": "Open the Shogo activity view and focus the chat panel.",
+            "media": { "image": "media/shogo.svg", "altText": "Shogo logo" },
+            "completionEvents": ["onCommand:shogo.chat.focus"]
+          },
+          {
+            "id": "shogo.addContext",
+            "title": "Add Code Context",
+            "description": "Select code in the editor and add it to Shogo context.",
+            "media": { "image": "media/shogo.svg", "altText": "Context" },
+            "completionEvents": ["onCommand:shogo.context.addSelection"]
+          },
+          {
+            "id": "shogo.checkAgent",
+            "title": "Check Agent Bridge",
+            "description": "Verify whether the local Shogo agent service is connected.",
+            "media": { "image": "media/shogo.svg", "altText": "Agent bridge" },
+            "completionEvents": ["onCommand:shogo.health.check"]
+          }
+        ]
+      }
+    ],
+    "configurationDefaults": {
+      "workbench.startupEditor": "welcomePage",
+      "workbench.activityBar.location": "default",
+      "workbench.editor.showTabs": "multiple",
+      "extensions.autoCheckUpdates": false,
+      "telemetry.telemetryLevel": "off",
+      "shogo.security.requireApprovalForCommands": true,
+      "shogo.security.allowRestrictedReadOnlyMode": true
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "shogo.context.addSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@50"
+        },
+        {
+          "command": "shogo.context.addActiveFile",
+          "group": "navigation@51"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "shogo.git.reviewChanges",
+          "group": "navigation@50"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "shogo.chat.focus"
+        },
+        {
+          "command": "shogo.health.check"
+        },
+        {
+          "command": "shogo.context.addSelection"
+        },
+        {
+          "command": "shogo.context.addActiveFile"
+        },
+        {
+          "command": "shogo.context.clear"
+        },
+        {
+          "command": "shogo.patch.preview"
+        },
+        {
+          "command": "shogo.checkpoint.create"
+        },
+        {
+          "command": "shogo.git.reviewChanges"
+        },
+        {
+          "command": "shogo.runtime.openPreview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Shogo",
+      "properties": {
+        "shogo.agentService.url": {
+          "type": "string",
+          "default": "http://127.0.0.1:0",
+          "description": "Local Shogo agent service URL. Port 0 means the bundled service supervisor should discover or start the service."
+        },
+        "shogo.security.requireApprovalForCommands": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require explicit approval before Shogo runs shell commands."
+        },
+        "shogo.security.allowRestrictedReadOnlyMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow read-only explain/summarize actions in untrusted workspaces."
+        }
+      }
+    }
+  }
+}
