@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-16T12:07:27.256Z",
+  "generatedAt": "2026-06-16T13:47:06.298Z",
   "phase": 8,
   "product": {
     "nameShort": "Shogo",
@@ -16,8 +16,9 @@
       "version": "0.0.0-phase.8",
       "main": "./dist/extension.js",
       "browser": "./dist/extension.js",
-      "activityContainer": "shogo-agent-chat",
+      "activityContainer": null,
       "auxiliaryContainer": null,
+      "chatContainer": "workbench.panel.chat",
       "views": [
         "shogo.agentChat"
       ],
@@ -41,7 +42,7 @@
           ]
         },
         "defaultVisibility": {
-          "activityContainer": "shogo-agent-chat",
+          "chatContainer": "workbench.panel.chat",
           "views": [
             "shogo.agentChat"
           ]
@@ -53,15 +54,10 @@
       "version": "0.0.0-phase.1",
       "main": "./dist/extension.js",
       "browser": "./dist/web.js",
-      "activityContainer": "shogo",
+      "activityContainer": null,
       "auxiliaryContainer": null,
-      "views": [
-        "shogo.chat",
-        "shogo.tasks",
-        "shogo.checkpoints",
-        "shogo.runtime",
-        "shogo.integrations"
-      ],
+      "chatContainer": null,
+      "views": [],
       "walkthroughs": [
         "shogo.getStarted"
       ],
@@ -85,14 +81,8 @@
           ]
         },
         "defaultVisibility": {
-          "activityContainer": "shogo",
-          "views": [
-            "shogo.chat",
-            "shogo.tasks",
-            "shogo.checkpoints",
-            "shogo.runtime",
-            "shogo.integrations"
-          ]
+          "activityContainer": null,
+          "views": []
         }
       }
     }
@@ -102,15 +92,10 @@
     "version": "0.0.0-phase.1",
     "main": "./dist/extension.js",
     "browser": "./dist/web.js",
-    "activityContainer": "shogo",
+    "activityContainer": null,
     "auxiliaryContainer": null,
-    "views": [
-      "shogo.chat",
-      "shogo.tasks",
-      "shogo.checkpoints",
-      "shogo.runtime",
-      "shogo.integrations"
-    ],
+    "chatContainer": null,
+    "views": [],
     "walkthroughs": [
       "shogo.getStarted"
     ],
@@ -134,14 +119,8 @@
         ]
       },
       "defaultVisibility": {
-        "activityContainer": "shogo",
-        "views": [
-          "shogo.chat",
-          "shogo.tasks",
-          "shogo.checkpoints",
-          "shogo.runtime",
-          "shogo.integrations"
-        ]
+        "activityContainer": null,
+        "views": []
       }
     }
   },
@@ -188,27 +167,21 @@
       "version": 1,
       "description": "Recommended first-run Shogo IDE layout for the Code - OSS distribution.",
       "activityBar": {
-        "defaultContainer": "shogo-agent-chat",
+        "defaultContainer": "workbench.view.explorer",
         "visibleContainers": [
           "workbench.view.explorer",
           "workbench.view.search",
           "workbench.view.scm",
           "workbench.view.debug",
-          "workbench.view.extensions",
-          "shogo",
-          "shogo-agent-chat"
-        ],
+          "workbench.view.extensions"
+        ]
+      },
+      "chat": {
+        "defaultContainer": "workbench.panel.chat",
         "autoOpenView": "shogo.agentChat"
       },
       "views": {
-        "shogo": [
-          "shogo.chat",
-          "shogo.tasks",
-          "shogo.checkpoints",
-          "shogo.runtime",
-          "shogo.integrations"
-        ],
-        "shogo-agent-chat": [
+        "workbench.panel.chat": [
           "shogo.agentChat"
         ]
       },
@@ -245,7 +218,7 @@
         ]
       },
       "defaultVisibility": {
-        "activityContainer": "shogo-agent-chat",
+        "chatContainer": "workbench.panel.chat",
         "views": [
           "shogo.agentChat"
         ]
@@ -271,14 +244,8 @@
         ]
       },
       "defaultVisibility": {
-        "activityContainer": "shogo",
-        "views": [
-          "shogo.chat",
-          "shogo.tasks",
-          "shogo.checkpoints",
-          "shogo.runtime",
-          "shogo.integrations"
-        ]
+        "activityContainer": null,
+        "views": []
       }
     }
   ],

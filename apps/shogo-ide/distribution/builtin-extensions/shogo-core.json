@@ -18,13 +18,7 @@
     ]
   },
   "defaultVisibility": {
-    "activityContainer": "shogo",
-    "views": [
-      "shogo.chat",
-      "shogo.tasks",
-      "shogo.checkpoints",
-      "shogo.runtime",
-      "shogo.integrations"
-    ]
+    "activityContainer": null,
+    "views": []
   }
 }

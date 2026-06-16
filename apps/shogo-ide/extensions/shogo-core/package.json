@@ -19,11 +19,6 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:shogo.chat",
-    "onView:shogo.tasks",
-    "onView:shogo.checkpoints",
-    "onView:shogo.runtime",
-    "onView:shogo.integrations",
     "onCommand:shogo.chat.focus",
     "onCommand:shogo.health.check",
     "onCommand:shogo.context.addSelection",
@@ -51,40 +46,6 @@
     }
   },
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "shogo",
-          "title": "Shogo",
-          "icon": "media/shogo.svg"
-        }
-      ]
-    },
-    "views": {
-      "shogo": [
-        {
-          "id": "shogo.chat",
-          "name": "Chat",
-          "type": "webview"
-        },
-        {
-          "id": "shogo.tasks",
-          "name": "Agent Tasks"
-        },
-        {
-          "id": "shogo.checkpoints",
-          "name": "Checkpoints"
-        },
-        {
-          "id": "shogo.runtime",
-          "name": "Runtime"
-        },
-        {
-          "id": "shogo.integrations",
-          "name": "Integrations"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "shogo.chat.focus",
@@ -132,28 +93,6 @@
         "category": "Shogo"
       }
     ],
-    "viewsWelcome": [
-      {
-        "view": "shogo.chat",
-        "contents": "Welcome to Shogo. Start with [Focus Chat](command:shogo.chat.focus), add selected code as context, or check the local agent bridge.\n\n[Check Agent Health](command:shogo.health.check)"
-      },
-      {
-        "view": "shogo.tasks",
-        "contents": "Agent tasks will appear here when the local Shogo agent service is connected.\n\n[Check Agent Health](command:shogo.health.check)"
-      },
-      {
-        "view": "shogo.checkpoints",
-        "contents": "Checkpoints protect multi-file edits before Shogo applies changes.\n\n[Create Checkpoint](command:shogo.checkpoint.create)"
-      },
-      {
-        "view": "shogo.runtime",
-        "contents": "Runtime status, route verification, logs, and previews will appear here.\n\n[Open Runtime Preview](command:shogo.runtime.openPreview)"
-      },
-      {
-        "view": "shogo.integrations",
-        "contents": "Connected tools and integrations will appear here after the agent bridge is wired."
-      }
-    ],
     "walkthroughs": [
       {
         "id": "shogo.getStarted",
@@ -163,7 +102,7 @@
           {
             "id": "shogo.openChat",
             "title": "Open Shogo Chat",
-            "description": "Open the Shogo activity view and focus the chat panel.",
+            "description": "Open the right-side Shogo chat panel.",
             "media": {
               "image": "media/shogo.svg",
               "altText": "Shogo logo"

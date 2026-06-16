@@ -70,8 +70,9 @@ if (extensionPackage) {
 }
 
 if (agentChatPackage) {
-  assert(agentChatPackage.version === '0.0.0-phase.3', 'shogo-agent-chat version must track Phase 3 UI reuse')
-  assert(agentChatPackage.description?.includes('Shogo Desktop chat UI'), 'shogo-agent-chat description must state Desktop chat UI reuse')
+  assert(agentChatPackage.version === '0.0.0-phase.8', 'shogo-agent-chat version must track the current right-panel Shogo chat phase')
+  assert(agentChatPackage.contributes?.views?.['workbench.panel.chat']?.some((view) => view.id === 'shogo.agentChat'), 'shogo-agent-chat must contribute the Shogo webview to the right-side Chat panel')
+  assert(!agentChatPackage.contributes?.chatParticipants, 'shogo-agent-chat must not use proposed native chat participant APIs')
   assert(agentChatPackage.contributes?.configurationDefaults?.['shogo.agentChat.autoOpen'] === true, 'shogo-agent-chat must auto-open by default')
 }
 
@@ -80,9 +81,9 @@ if (tsconfig) {
   assert(tsconfig.compilerOptions?.strict === true, 'extension tsconfig must keep strict mode')
 }
 
-assert(extension.includes('registerWebviewViewProvider'), 'extension activation must register chat webview provider')
-assert(extension.includes('registerTreeViews(context)'), 'extension activation must register tree views')
-assert(extension.includes('registerCommands(context, chatView, services)'), 'extension activation must register commands')
+assert(!extension.includes("registerWebviewViewProvider('shogo.chat'"), 'extension activation must not register the removed left-side chat webview provider')
+assert(!extension.includes('registerTreeViews(context)'), 'extension activation must not register removed left-side Shogo tree views')
+assert(extension.includes('registerCommands(context, services)'), 'extension activation must register commands')
 assert(chatView.includes('Content-Security-Policy'), 'chat webview must include CSP')
 assert(chatView.includes('nonce-'), 'chat webview must use script nonce')
 assert(chatView.includes('sendPrompt'), 'chat webview must support prompt messages')
@@ -92,7 +93,7 @@ assert(agentClient.includes('/health'), 'agent client must support health endpoi
 assert(agentClient.includes('/chat'), 'agent client must support chat endpoint')
 assert(agentClient.includes('Phase 3 Shogo Core extension shell'), 'agent client must have no-agent fallback')
 assert(contextStore.includes('MAX_CONTEXT_TEXT_LENGTH'), 'context store must truncate context')
-assert(treeViews.includes("registerTreeDataProvider('shogo.tasks'"), 'tree views must register tasks provider')
+assert(treeViews.includes("registerTreeDataProvider('shogo.tasks'"), 'tree view helpers may remain available but must not be activated by default')
 assert(types.includes('ShogoContextItem'), 'types must define context item contract')
 assert(web.includes("export { activate, deactivate } from './extension'"), 'web entrypoint must re-export activation')
 assert(agentChatExtension.includes('data-shogo-desktop-chat-ui="true"'), 'agent chat webview must mark the reused Desktop chat UI shell')
@@ -100,7 +101,8 @@ assert(agentChatExtension.includes('desktop-chat-shell'), 'agent chat webview mu
 assert(agentChatExtension.includes('composer-card'), 'agent chat webview must use Desktop-style composer card')
 assert(agentChatExtension.includes('context-chip'), 'agent chat webview must render Desktop-style context chips')
 assert(agentChatExtension.includes('Ask Shogo to fix, explain, refactor, or review this code'), 'agent chat composer must use the Desktop-style Shogo prompt placeholder')
-assert(agentChatExtension.includes('Phase 3 Shogo Agent Chat'), 'agent chat fallback must identify Phase 3 Desktop UI shell')
+assert(agentChatExtension.includes("registerWebviewViewProvider('shogo.agentChat'"), 'agent chat extension must register the Shogo right-panel webview provider')
+assert(!agentChatExtension.includes('createChatParticipant'), 'agent chat extension must not register proposed native chat participants')
 assert(agentChatExtension.includes('<select id="model"'), 'agent chat webview must expose model/mode control in the composer')
 assert(agentChatReadme.includes('reuses the Shogo Desktop chat UI shell'), 'agent chat README must document Desktop chat UI reuse')
 assert(docs.includes('Phase 3 still does not execute shell commands'), 'Phase 3 docs must state non-execution safety')

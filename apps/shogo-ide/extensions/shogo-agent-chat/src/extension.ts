@@ -396,6 +396,10 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.updateNativeStatus()
   }
 
+  getAttachedContext(): ContextItem[] {
+    return Array.from(this.contextItems.values())
+  }
+
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView
     webviewView.webview.options = {
@@ -410,7 +414,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async open(preserveFocus = false): Promise<void> {
-    await vscode.commands.executeCommand('workbench.view.extension.shogo-agent-chat')
+    await ensureShogoChatInRightPanel()
+    await vscode.commands.executeCommand('shogo.agentChat.focus').catch(() => undefined)
     this.view?.show?.(preserveFocus)
     await this.postState()
   }
@@ -1212,9 +1217,16 @@ function createStatusBarItem(): any | null {
   return windowApi.createStatusBarItem('shogo.agentChat.status', alignment, 100)
 }
 
+async function ensureShogoChatInRightPanel(): Promise<void> {
+  await vscode.commands.executeCommand('vscode.moveViews', {
+    viewIds: ['shogo.agentChat'],
+    destinationId: 'workbench.panel.chat',
+  }).catch(() => undefined)
+}
+
 async function openShogoChatOnStartup(provider: ShogoAgentChatViewProvider): Promise<void> {
   await vscode.commands.executeCommand('setContext', 'shogo.agentChat.native', true).catch(() => undefined)
-  await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar').catch(() => undefined)
+  await ensureShogoChatInRightPanel()
   await provider.open(false)
   await provider.focusInput()
   setTimeout(() => {
@@ -1225,6 +1237,7 @@ async function openShogoChatOnStartup(provider: ShogoAgentChatViewProvider): Pro
 export function activate(context: vscode.ExtensionContext) {
   const statusBarItem = createStatusBarItem()
   const provider = new ShogoAgentChatViewProvider(context.extensionUri, statusBarItem)
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('shogo.agentChat', provider),
     vscode.commands.registerCommand('shogo.agentChat.open', () => provider.open()),
