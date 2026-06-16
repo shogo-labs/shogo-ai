@@ -33,7 +33,12 @@ interface IDEPanelProps {
  * subscriptions are not torn down on tab switches.
  */
 export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanelProps) {
-  const [hasShogoIdeBridge] = useState(() => Platform.OS === 'web' && !!getShogoIdeBridge())
+  const [hasShogoIdeBridge] = useState(() => {
+    if (Platform.OS !== 'web') return false
+    if (typeof window === 'undefined') return false
+    const desktop = (window as unknown as { shogoDesktop?: { isDesktop?: boolean } }).shogoDesktop
+    return desktop?.isDesktop === true && !!getShogoIdeBridge()
+  })
   const [legacyIdeOpen, setLegacyIdeOpen] = useState(() => {
     if (typeof window === 'undefined') return false
     return window.localStorage.getItem('shogo.ide.legacyMonaco') === 'true'

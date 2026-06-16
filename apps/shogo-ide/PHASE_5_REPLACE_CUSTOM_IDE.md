@@ -10,13 +10,14 @@ The existing IDE tab now checks for the Electron preload bridge:
 window.shogoDesktop.shogoIde
 ```
 
-When that bridge exists, the IDE tab renders `ShogoIdeReplacementGate` by default instead of mounting the custom Monaco `Workbench`.
+When that bridge exists inside Shogo Desktop, the IDE tab renders `ShogoIdeReplacementGate` by default instead of mounting the custom Monaco `Workbench`. Web and mobile do not enter this Shogo IDE replacement path.
+
+Desktop opens Shogo IDE automatically from the IDE tab. The replacement gate only remains visible while Desktop is preparing or if launch diagnostics need to be shown.
 
 The replacement gate lets users:
 
-- open the Code OSS-based Shogo IDE,
-- reveal the Shogo IDE distribution files,
-- see setup status and clone command,
+- retry opening the Code OSS-based Shogo IDE,
+- see automatic setup/launch diagnostics,
 - explicitly open the old Monaco workbench as **Legacy Monaco IDE**.
 
 ## Files
@@ -30,7 +31,7 @@ apps/mobile/components/project/panels/ide/ShogoIdeReplacementGate.tsx
 
 | Environment | Default IDE behavior |
 | --- | --- |
-| Shogo Desktop with `window.shogoDesktop.shogoIde` | Shogo IDE replacement gate |
+| Shogo Desktop with `window.shogoDesktop.shogoIde` | Automatically opens Shogo IDE; shows diagnostics only if preparation/launch is blocked |
 | Shogo Desktop after user chooses legacy | Legacy Monaco Workbench with return banner |
 | Web browser without desktop bridge | Existing Monaco Workbench |
 | Native mobile | Existing placeholder |
@@ -55,13 +56,13 @@ They are now behind explicit legacy mode on Desktop and remain available for web
 
 - **Use Legacy Monaco IDE** opens the old embedded workbench.
 - **Return to Shogo IDE** clears the legacy preference and returns to the replacement gate.
-- If Code OSS is not cloned/built yet, the gate shows the setup command instead of failing.
+- If Code OSS source setup is incomplete, Desktop starts the setup automatically and shows diagnostics instead of manual commands.
 
 ## Safety
 
 - No Code OSS source is vendored.
-- No executable launches until the user clicks **Open Shogo IDE**.
-- Existing web/mobile behavior remains intact.
+- Desktop opens Shogo IDE automatically from the IDE tab and may run setup automatically when local source metadata is missing.
+- Existing web/mobile behavior remains intact and does not use the Shogo IDE replacement path.
 - Existing Workbench code is not deleted in Phase 5.
 - The current desktop menu launch path remains available.
 
