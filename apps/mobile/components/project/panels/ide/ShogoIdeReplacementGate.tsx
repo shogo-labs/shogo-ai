@@ -57,6 +57,10 @@ export function ShogoIdeReplacementGate({
 
   const launch = async (mode: 'auto' | 'manual' = 'manual') => {
     if (!bridge) return
+    if (!projectRoot) {
+      setMessage('Could not resolve this project folder yet. Open Legacy Monaco or re-open the project after the workspace finishes loading.')
+      return
+    }
     setBusy(true)
     setMessage(mode === 'auto' ? 'Preparing Shogo IDE…' : null)
     try {
@@ -81,7 +85,7 @@ export function ShogoIdeReplacementGate({
       .then((nextStatus) => {
         if (cancelled) return
         setStatus(nextStatus)
-        if (!autoLaunchStarted.current) {
+        if (!autoLaunchStarted.current && projectRoot) {
           autoLaunchStarted.current = true
           void launch('auto')
         }
@@ -90,7 +94,7 @@ export function ShogoIdeReplacementGate({
         if (!cancelled) setMessage(error instanceof Error ? error.message : String(error))
       })
     return () => { cancelled = true }
-  }, [bridge])
+  }, [bridge, projectRoot])
 
   if (!bridge) return null
 

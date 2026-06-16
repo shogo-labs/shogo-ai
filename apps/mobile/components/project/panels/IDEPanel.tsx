@@ -69,20 +69,36 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
   // round-trip to agent-runtime. If no (web build, cloud mode, or external
   // folder-bound project), fall through to plain SdkFs.
   const [agentService, setAgentService] = useState<WorkspaceService | null>(sdkService)
+  const [desktopWorkspaceRoot, setDesktopWorkspaceRoot] = useState<string | null>(null)
+  const [desktopWorkspaceChecked, setDesktopWorkspaceChecked] = useState(false)
   useEffect(() => {
     setAgentService(sdkService)
-    if (!sdkService) return
+    setDesktopWorkspaceRoot(null)
+    setDesktopWorkspaceChecked(false)
+    if (!sdkService) {
+      setDesktopWorkspaceChecked(true)
+      return
+    }
     const bridge = getDesktopFsBridge()
-    if (!bridge) return
+    if (!bridge) {
+      setDesktopWorkspaceChecked(true)
+      return
+    }
     let cancelled = false
-    void bridge.resolveWorkspace(projectId).then((res) => {
-      if (cancelled) return
-      if (res.ok && res.root) {
-        setAgentService(
-          new DesktopFs(bridge, res.root, sdkService, `project/${projectId} (desktop-fast-path)`),
-        )
-      }
-    })
+    void bridge.resolveWorkspace(projectId)
+      .then((res) => {
+        if (cancelled) return
+        if (res.ok && res.root) {
+          setDesktopWorkspaceRoot(res.root)
+          setAgentService(
+            new DesktopFs(bridge, res.root, sdkService, `project/${projectId} (desktop-fast-path)`),
+          )
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setDesktopWorkspaceChecked(true)
+      })
     return () => { cancelled = true }
   }, [sdkService, projectId])
 
@@ -104,10 +120,18 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
 
   if (hasShogoIdeBridge && !legacyIdeOpen) {
     if (!visible) return null
+    if (!desktopWorkspaceChecked) {
+      return (
+        <View className="flex-1 items-center justify-center p-6 bg-background">
+          <Text className="text-muted-foreground text-xs">Resolving project folder…</Text>
+        </View>
+      )
+    }
     return (
       <View style={{ flex: 1, minHeight: 0 }}>
         <ShogoIdeReplacementGate
           projectName={projectName || `project/${projectId}`}
+          projectRoot={desktopWorkspaceRoot}
           onOpenLegacy={openLegacyIde}
         />
       </View>
