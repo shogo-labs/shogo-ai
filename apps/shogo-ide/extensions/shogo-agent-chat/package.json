@@ -45,20 +45,11 @@
     }
   },
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "shogo-agent-chat",
-          "title": "Shogo",
-          "icon": "media/shogo.svg"
-        }
-      ]
-    },
     "views": {
-      "shogo-agent-chat": [
+      "workbench.panel.chat": [
         {
           "id": "shogo.agentChat",
-          "name": "Chat",
+          "name": "Shogo",
           "type": "webview"
         }
       ]
@@ -107,12 +98,6 @@
         "icon": "$(wrench)"
       }
     ],
-    "viewsWelcome": [
-      {
-        "view": "shogo.agentChat",
-        "contents": "Ask Shogo about this codebase, attach the current file or selection, and keep the conversation in the right-side chat panel.\n\n[Open Shogo Agent Chat](command:shogo.agentChat.open)"
-      }
-    ],
     "configurationDefaults": {
       "workbench.secondarySideBar.defaultVisibility": "visible",
       "github.copilot.enable": {
@@ -121,6 +106,7 @@
       "github.copilot.chat.enabled": false,
       "chat.disableAIFeatures": true,
       "chat.agent.enabled": false,
+      "chat.agentsControl.enabled": false,
       "chat.titleBar.signIn.enabled": false,
       "shogo.agentChat.autoOpen": true
     },

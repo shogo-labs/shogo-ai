@@ -71,8 +71,8 @@ if (extension) {
   assert(extension.private === true, 'extension must remain private in Phase 1')
   assert(extension.capabilities?.untrustedWorkspaces?.supported === 'limited', 'extension must declare limited untrusted workspace support')
   assert(extension.capabilities?.virtualWorkspaces?.supported === 'limited', 'extension must declare limited virtual workspace support')
-  assert(extension.contributes?.viewsContainers?.activitybar?.some((view) => view.id === 'shogo'), 'extension must contribute the Shogo activity bar container')
-  assert(extension.contributes?.views?.shogo?.some((view) => view.id === 'shogo.chat'), 'extension must contribute shogo.chat view')
+  assert(!extension.contributes?.viewsContainers?.activitybar?.some((view) => view.id === 'shogo'), 'extension must not contribute a left-side Shogo activity bar container')
+  assert(!extension.contributes?.views?.shogo?.length, 'extension must not contribute Shogo views to the left sidebar')
   assert(extension.contributes?.commands?.some((command) => command.command === 'shogo.health.check'), 'extension must contribute shogo.health.check command')
   assert(extension.contributes?.configuration?.properties?.['shogo.security.requireApprovalForCommands']?.default === true, 'command approval must default to true')
 }

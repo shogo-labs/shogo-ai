@@ -1,9 +1,7 @@
 import * as vscode from 'vscode'
 import { ShogoAgentClient } from './agentClient'
-import { ShogoChatViewProvider } from './chatViewProvider'
 import { registerCommands } from './commands'
 import { ShogoContextStore } from './contextStore'
-import { registerTreeViews } from './treeViews'
 
 export function activate(context: vscode.ExtensionContext) {
   const services = {
@@ -11,17 +9,7 @@ export function activate(context: vscode.ExtensionContext) {
     contextStore: new ShogoContextStore(),
   }
 
-  const chatView = new ShogoChatViewProvider(context.extensionUri, services)
-
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('shogo.chat', chatView),
-    vscode.workspace.onDidGrantWorkspaceTrust(() => {
-      void chatView.refresh()
-    }),
-  )
-
-  registerTreeViews(context)
-  registerCommands(context, chatView, services)
+  registerCommands(context, services)
 }
 
 export function deactivate() {}
