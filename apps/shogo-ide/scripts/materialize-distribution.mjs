@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 
 const workspaceRoot = resolve(new URL('..', import.meta.url).pathname)
 const generatedDir = join(workspaceRoot, 'distribution', 'generated')
 const productTemplatePath = join(workspaceRoot, 'product.shogo.template.json')
-const extensionPackagePath = join(workspaceRoot, 'extensions', 'shogo-core', 'package.json')
 const defaultsSettingsPath = join(workspaceRoot, 'distribution', 'defaults', 'settings.json')
 const defaultsLayoutPath = join(workspaceRoot, 'distribution', 'defaults', 'layout.json')
-const builtinDescriptorPath = join(workspaceRoot, 'distribution', 'builtin-extensions', 'shogo-core.json')
+const builtinDescriptorsDir = join(workspaceRoot, 'distribution', 'builtin-extensions')
 const distributionManifestPath = join(workspaceRoot, 'distribution', 'distribution.manifest.json')
 
 function readJson(path) {
@@ -27,46 +26,59 @@ function assertFile(path, label) {
   }
 }
 
+function readBuiltInDescriptors() {
+  assertFile(builtinDescriptorsDir, 'built-in extension descriptors directory')
+  return readdirSync(builtinDescriptorsDir)
+    .filter((file) => file.endsWith('.json'))
+    .sort()
+    .map((file) => {
+      const descriptorPath = join(builtinDescriptorsDir, file)
+      const descriptor = readJson(descriptorPath)
+      const packagePath = join(workspaceRoot, 'extensions', descriptor.name, 'package.json')
+      assertFile(packagePath, `${descriptor.name} package`)
+      return {
+        descriptorPath,
+        descriptor,
+        packageJson: readJson(packagePath),
+      }
+    })
+}
+
 assertFile(productTemplatePath, 'product template')
-assertFile(extensionPackagePath, 'shogo-core package')
 assertFile(defaultsSettingsPath, 'default settings')
 assertFile(defaultsLayoutPath, 'default layout')
-assertFile(builtinDescriptorPath, 'built-in extension descriptor')
 assertFile(distributionManifestPath, 'distribution manifest')
 
 const product = readJson(productTemplatePath)
-const extensionPackage = readJson(extensionPackagePath)
 const settings = readJson(defaultsSettingsPath)
 const layout = readJson(defaultsLayoutPath)
-const builtinDescriptor = readJson(builtinDescriptorPath)
+const builtIns = readBuiltInDescriptors()
 const distributionManifest = readJson(distributionManifestPath)
 
 const productJson = {
   ...product,
-  builtInExtensions: [
-    {
-      name: extensionPackage.name,
-      version: extensionPackage.version,
-      repo: 'https://github.com/shogo-labs/shogo-ai',
-      metadata: {
-        id: `${extensionPackage.publisher}.${extensionPackage.name}`,
-        publisherId: extensionPackage.publisher,
-        publisherDisplayName: 'Shogo Labs',
-      },
+  builtInExtensions: builtIns.map(({ packageJson }) => ({
+    name: packageJson.name,
+    version: packageJson.version,
+    repo: 'https://github.com/shogo-labs/shogo-ai',
+    metadata: {
+      id: `${packageJson.publisher}.${packageJson.name}`,
+      publisherId: packageJson.publisher,
+      publisherDisplayName: 'Shogo Labs',
     },
-  ],
+  })),
   shogoDistribution: {
-    phase: 4,
+    phase: 8,
     defaultSettingsPath: 'distribution/defaults/settings.json',
     defaultLayoutPath: 'distribution/defaults/layout.json',
-    builtinExtensionDescriptors: ['distribution/builtin-extensions/shogo-core.json'],
+    builtinExtensionDescriptors: builtIns.map(({ descriptorPath }) => relative(workspaceRoot, descriptorPath)),
     currentDesktopFallback: true,
   },
 }
 
 const generatedManifest = {
   generatedAt: new Date().toISOString(),
-  phase: 4,
+  phase: 8,
   product: {
     nameShort: productJson.nameShort,
     nameLong: productJson.nameLong,
@@ -76,22 +88,27 @@ const generatedManifest = {
     extensionGallery: productJson.extensionsGallery?.serviceUrl ?? null,
     telemetryEnabled: productJson.enableTelemetry === true,
   },
-  extension: {
-    id: `${extensionPackage.publisher}.${extensionPackage.name}`,
-    version: extensionPackage.version,
-    main: extensionPackage.main,
-    browser: extensionPackage.browser,
-    activityContainer: extensionPackage.contributes?.viewsContainers?.activitybar?.[0]?.id ?? null,
-    views: extensionPackage.contributes?.views?.shogo?.map((view) => view.id) ?? [],
-    walkthroughs: extensionPackage.contributes?.walkthroughs?.map((walkthrough) => walkthrough.id) ?? [],
-  },
+  extensions: builtIns.map(({ descriptor, packageJson }) => ({
+    id: `${packageJson.publisher}.${packageJson.name}`,
+    version: packageJson.version,
+    main: packageJson.main,
+    browser: packageJson.browser,
+    activityContainer: packageJson.contributes?.viewsContainers?.activitybar?.[0]?.id ?? null,
+    auxiliaryContainer: packageJson.contributes?.viewsContainers?.auxiliarybar?.[0]?.id ?? null,
+    views: Object.values(packageJson.contributes?.views ?? {}).flat().map((view) => view.id),
+    walkthroughs: packageJson.contributes?.walkthroughs?.map((walkthrough) => walkthrough.id) ?? [],
+    descriptor,
+  })),
+  extension: null,
   defaults: {
     settings,
     layout,
   },
-  builtinExtensions: [builtinDescriptor],
+  builtinExtensions: builtIns.map(({ descriptor }) => descriptor),
   sourceManifest: distributionManifest,
 }
+
+generatedManifest.extension = generatedManifest.extensions.find((extension) => extension.id === 'shogo.shogo-core') ?? generatedManifest.extensions[0] ?? null
 
 writeJson(join(generatedDir, 'product.json'), productJson)
 writeJson(join(generatedDir, 'distribution.generated.json'), generatedManifest)

@@ -14,8 +14,8 @@
     "phase6:check": "node scripts/phase6-check.mjs",
     "distribution:materialize": "node scripts/materialize-distribution.mjs",
     "hardening:report": "node scripts/generate-hardening-report.mjs",
-    "extension:build": "bun run --cwd extensions/shogo-core build",
-    "extension:typecheck": "bun run --cwd extensions/shogo-core typecheck",
+    "extension:build": "bun run --cwd extensions/shogo-core build && bun run --cwd extensions/shogo-agent-chat build",
+    "extension:typecheck": "bun run --cwd extensions/shogo-core typecheck && bun run --cwd extensions/shogo-agent-chat typecheck",
     "codeoss:clone:print": "node scripts/print-code-oss-clone-command.mjs"
   }
 }
