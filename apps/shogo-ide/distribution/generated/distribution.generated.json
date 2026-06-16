@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-15T19:05:12.480Z",
-  "phase": 4,
+  "generatedAt": "2026-06-16T12:07:27.256Z",
+  "phase": 8,
   "product": {
     "nameShort": "Shogo",
     "nameLong": "Shogo IDE",
@@ -10,12 +10,100 @@
     "extensionGallery": "https://open-vsx.org/vscode/gallery",
     "telemetryEnabled": false
   },
+  "extensions": [
+    {
+      "id": "shogo.shogo-agent-chat",
+      "version": "0.0.0-phase.8",
+      "main": "./dist/extension.js",
+      "browser": "./dist/extension.js",
+      "activityContainer": "shogo-agent-chat",
+      "auxiliaryContainer": null,
+      "views": [
+        "shogo.agentChat"
+      ],
+      "walkthroughs": [],
+      "descriptor": {
+        "id": "shogo.shogo-agent-chat",
+        "publisher": "shogo",
+        "name": "shogo-agent-chat",
+        "displayName": "Shogo Chat",
+        "sourcePath": "../../extensions/shogo-agent-chat",
+        "targetFolderName": "shogo.shogo-agent-chat",
+        "phase": 8,
+        "bundle": {
+          "main": "dist/extension.js",
+          "browser": "dist/extension.js",
+          "requiredFiles": [
+            "package.json",
+            "README.md",
+            "media/shogo.svg",
+            "dist/extension.js"
+          ]
+        },
+        "defaultVisibility": {
+          "activityContainer": "shogo-agent-chat",
+          "views": [
+            "shogo.agentChat"
+          ]
+        }
+      }
+    },
+    {
+      "id": "shogo.shogo-core",
+      "version": "0.0.0-phase.1",
+      "main": "./dist/extension.js",
+      "browser": "./dist/web.js",
+      "activityContainer": "shogo",
+      "auxiliaryContainer": null,
+      "views": [
+        "shogo.chat",
+        "shogo.tasks",
+        "shogo.checkpoints",
+        "shogo.runtime",
+        "shogo.integrations"
+      ],
+      "walkthroughs": [
+        "shogo.getStarted"
+      ],
+      "descriptor": {
+        "id": "shogo.shogo-core",
+        "publisher": "shogo",
+        "name": "shogo-core",
+        "displayName": "Shogo",
+        "sourcePath": "../../extensions/shogo-core",
+        "targetFolderName": "shogo.shogo-core",
+        "phase": 4,
+        "bundle": {
+          "main": "dist/extension.js",
+          "browser": "dist/web.js",
+          "requiredFiles": [
+            "package.json",
+            "README.md",
+            "media/shogo.svg",
+            "dist/extension.js",
+            "dist/web.js"
+          ]
+        },
+        "defaultVisibility": {
+          "activityContainer": "shogo",
+          "views": [
+            "shogo.chat",
+            "shogo.tasks",
+            "shogo.checkpoints",
+            "shogo.runtime",
+            "shogo.integrations"
+          ]
+        }
+      }
+    }
+  ],
   "extension": {
     "id": "shogo.shogo-core",
     "version": "0.0.0-phase.1",
     "main": "./dist/extension.js",
     "browser": "./dist/web.js",
     "activityContainer": "shogo",
+    "auxiliaryContainer": null,
     "views": [
       "shogo.chat",
       "shogo.tasks",
@@ -25,12 +113,42 @@
     ],
     "walkthroughs": [
       "shogo.getStarted"
-    ]
+    ],
+    "descriptor": {
+      "id": "shogo.shogo-core",
+      "publisher": "shogo",
+      "name": "shogo-core",
+      "displayName": "Shogo",
+      "sourcePath": "../../extensions/shogo-core",
+      "targetFolderName": "shogo.shogo-core",
+      "phase": 4,
+      "bundle": {
+        "main": "dist/extension.js",
+        "browser": "dist/web.js",
+        "requiredFiles": [
+          "package.json",
+          "README.md",
+          "media/shogo.svg",
+          "dist/extension.js",
+          "dist/web.js"
+        ]
+      },
+      "defaultVisibility": {
+        "activityContainer": "shogo",
+        "views": [
+          "shogo.chat",
+          "shogo.tasks",
+          "shogo.checkpoints",
+          "shogo.runtime",
+          "shogo.integrations"
+        ]
+      }
+    }
   },
   "defaults": {
     "settings": {
       "telemetry.telemetryLevel": "off",
-      "workbench.startupEditor": "welcomePage",
+      "workbench.startupEditor": "none",
       "workbench.activityBar.location": "default",
       "workbench.editor.showTabs": "multiple",
       "workbench.sideBar.location": "left",
@@ -41,21 +159,46 @@
       "security.workspace.trust.untrustedFiles": "prompt",
       "shogo.agentService.url": "http://127.0.0.1:0",
       "shogo.security.requireApprovalForCommands": true,
-      "shogo.security.allowRestrictedReadOnlyMode": true
+      "shogo.security.allowRestrictedReadOnlyMode": true,
+      "workbench.secondarySideBar.defaultVisibility": "visible",
+      "workbench.secondarySideBar.showLabels": true,
+      "workbench.panel.defaultLocation": "bottom",
+      "github.copilot.enable": {
+        "*": false
+      },
+      "github.copilot.chat.enabled": false,
+      "chat.disableAIFeatures": true,
+      "chat.agent.enabled": false,
+      "chat.agentsControl.enabled": false,
+      "chat.extensionTools.enabled": false,
+      "chat.plugins.enabled": false,
+      "chat.mcp.enabled": false,
+      "chat.mcp.discovery.enabled": false,
+      "chat.mcp.gallery.enabled": false,
+      "chat.restoreLastPanelSession": false,
+      "chat.titleBar.signIn.enabled": false,
+      "chat.titleBar.openInAgentsWindow.enabled": false,
+      "chat.viewSessions.enabled": false,
+      "chat.commandCenter.enabled": false,
+      "extensions.ignoreRecommendations": true,
+      "extensions.showRecommendationsOnlyOnDemand": true,
+      "shogo.agentChat.autoOpen": true
     },
     "layout": {
       "version": 1,
       "description": "Recommended first-run Shogo IDE layout for the Code - OSS distribution.",
       "activityBar": {
-        "defaultContainer": "shogo",
+        "defaultContainer": "shogo-agent-chat",
         "visibleContainers": [
           "workbench.view.explorer",
           "workbench.view.search",
           "workbench.view.scm",
           "workbench.view.debug",
           "workbench.view.extensions",
-          "shogo"
-        ]
+          "shogo",
+          "shogo-agent-chat"
+        ],
+        "autoOpenView": "shogo.agentChat"
       },
       "views": {
         "shogo": [
@@ -64,6 +207,9 @@
           "shogo.checkpoints",
           "shogo.runtime",
           "shogo.integrations"
+        ],
+        "shogo-agent-chat": [
+          "shogo.agentChat"
         ]
       },
       "panel": {
@@ -80,6 +226,31 @@
     }
   },
   "builtinExtensions": [
+    {
+      "id": "shogo.shogo-agent-chat",
+      "publisher": "shogo",
+      "name": "shogo-agent-chat",
+      "displayName": "Shogo Chat",
+      "sourcePath": "../../extensions/shogo-agent-chat",
+      "targetFolderName": "shogo.shogo-agent-chat",
+      "phase": 8,
+      "bundle": {
+        "main": "dist/extension.js",
+        "browser": "dist/extension.js",
+        "requiredFiles": [
+          "package.json",
+          "README.md",
+          "media/shogo.svg",
+          "dist/extension.js"
+        ]
+      },
+      "defaultVisibility": {
+        "activityContainer": "shogo-agent-chat",
+        "views": [
+          "shogo.agentChat"
+        ]
+      }
+    },
     {
       "id": "shogo.shogo-core",
       "publisher": "shogo",
@@ -121,7 +292,8 @@
     "defaultSettings": "defaults/settings.json",
     "defaultLayout": "defaults/layout.json",
     "builtinExtensions": [
-      "builtin-extensions/shogo-core.json"
+      "builtin-extensions/shogo-core.json",
+      "builtin-extensions/shogo-agent-chat.json"
     ],
     "extensionGallery": "Open VSX",
     "telemetryDefault": "off",
@@ -144,7 +316,9 @@
       "Open VSX is configured instead of Microsoft Marketplace",
       "telemetry is disabled by default",
       "workspace trust defaults are explicit",
-      "current Desktop launcher remains opt-in fallback"
+      "current Desktop launcher remains opt-in fallback",
+      "shogo-agent-chat extension builds before bundling",
+      "built-in extension mapping points to shogo-agent-chat"
     ]
   }
 }

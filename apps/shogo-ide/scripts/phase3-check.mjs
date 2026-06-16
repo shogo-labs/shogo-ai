@@ -31,6 +31,7 @@ function assert(condition, message) {
 }
 
 const extensionPackage = readJson('apps/shogo-ide/extensions/shogo-core/package.json')
+const agentChatPackage = readJson('apps/shogo-ide/extensions/shogo-agent-chat/package.json')
 const tsconfig = readJson('apps/shogo-ide/extensions/shogo-core/tsconfig.json')
 const extension = read('apps/shogo-ide/extensions/shogo-core/src/extension.ts')
 const chatView = read('apps/shogo-ide/extensions/shogo-core/src/chatViewProvider.ts')
@@ -40,9 +41,12 @@ const contextStore = read('apps/shogo-ide/extensions/shogo-core/src/contextStore
 const treeViews = read('apps/shogo-ide/extensions/shogo-core/src/treeViews.ts')
 const types = read('apps/shogo-ide/extensions/shogo-core/src/types.ts')
 const web = read('apps/shogo-ide/extensions/shogo-core/src/web.ts')
+const agentChatExtension = read('apps/shogo-ide/extensions/shogo-agent-chat/src/extension.ts')
+const agentChatReadme = read('apps/shogo-ide/extensions/shogo-agent-chat/README.md')
 const docs = read('apps/shogo-ide/PHASE_3_SHOGO_CORE_EXTENSION.md')
 
 read('apps/shogo-ide/extensions/shogo-core/src/vscode.d.ts')
+read('apps/shogo-ide/extensions/shogo-agent-chat/src/vscode.d.ts')
 
 if (extensionPackage) {
   assert(extensionPackage.scripts?.build === 'tsc -p tsconfig.json', 'shogo-core must expose build script')
@@ -65,6 +69,12 @@ if (extensionPackage) {
   }
 }
 
+if (agentChatPackage) {
+  assert(agentChatPackage.version === '0.0.0-phase.3', 'shogo-agent-chat version must track Phase 3 UI reuse')
+  assert(agentChatPackage.description?.includes('Shogo Desktop chat UI'), 'shogo-agent-chat description must state Desktop chat UI reuse')
+  assert(agentChatPackage.contributes?.configurationDefaults?.['shogo.agentChat.autoOpen'] === true, 'shogo-agent-chat must auto-open by default')
+}
+
 if (tsconfig) {
   assert(tsconfig.compilerOptions?.outDir === 'dist', 'extension tsconfig must emit to dist')
   assert(tsconfig.compilerOptions?.strict === true, 'extension tsconfig must keep strict mode')
@@ -85,6 +95,14 @@ assert(contextStore.includes('MAX_CONTEXT_TEXT_LENGTH'), 'context store must tru
 assert(treeViews.includes("registerTreeDataProvider('shogo.tasks'"), 'tree views must register tasks provider')
 assert(types.includes('ShogoContextItem'), 'types must define context item contract')
 assert(web.includes("export { activate, deactivate } from './extension'"), 'web entrypoint must re-export activation')
+assert(agentChatExtension.includes('data-shogo-desktop-chat-ui="true"'), 'agent chat webview must mark the reused Desktop chat UI shell')
+assert(agentChatExtension.includes('desktop-chat-shell'), 'agent chat webview must use Desktop chat shell layout class')
+assert(agentChatExtension.includes('composer-card'), 'agent chat webview must use Desktop-style composer card')
+assert(agentChatExtension.includes('context-chip'), 'agent chat webview must render Desktop-style context chips')
+assert(agentChatExtension.includes('Ask Shogo to fix, explain, refactor, or review this code'), 'agent chat composer must use the Desktop-style Shogo prompt placeholder')
+assert(agentChatExtension.includes('Phase 3 Shogo Agent Chat'), 'agent chat fallback must identify Phase 3 Desktop UI shell')
+assert(agentChatExtension.includes('<select id="model"'), 'agent chat webview must expose model/mode control in the composer')
+assert(agentChatReadme.includes('reuses the Shogo Desktop chat UI shell'), 'agent chat README must document Desktop chat UI reuse')
 assert(docs.includes('Phase 3 still does not execute shell commands'), 'Phase 3 docs must state non-execution safety')
 
 if (errors.length > 0) {

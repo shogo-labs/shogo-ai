@@ -9,6 +9,7 @@ upstream/vscode-oss/
 out*/
 dist/
 extensions/shogo-core/dist/
+extensions/shogo-agent-chat/dist/
 hardening/runtime/
 hardening/runtime-smoke/
 .cache/

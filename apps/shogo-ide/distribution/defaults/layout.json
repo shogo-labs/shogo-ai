@@ -2,15 +2,17 @@
   "version": 1,
   "description": "Recommended first-run Shogo IDE layout for the Code - OSS distribution.",
   "activityBar": {
-    "defaultContainer": "shogo",
+    "defaultContainer": "shogo-agent-chat",
     "visibleContainers": [
       "workbench.view.explorer",
       "workbench.view.search",
       "workbench.view.scm",
       "workbench.view.debug",
       "workbench.view.extensions",
-      "shogo"
-    ]
+      "shogo",
+      "shogo-agent-chat"
+    ],
+    "autoOpenView": "shogo.agentChat"
   },
   "views": {
     "shogo": [
@@ -19,6 +21,9 @@
       "shogo.checkpoints",
       "shogo.runtime",
       "shogo.integrations"
+    ],
+    "shogo-agent-chat": [
+      "shogo.agentChat"
     ]
   },
   "panel": {

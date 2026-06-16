@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { getApiUrl } from './local-server'
 
 export interface ShogoIdeStatus {
   ok: true
@@ -51,6 +52,30 @@ const DEFAULT_EXECUTABLE_NAMES = process.platform === 'darwin'
     : ['shogo-ide']
 
 const CODE_OSS_NODE_VERSION = '24.15.0'
+const SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS = [
+  'GitHub.copilot',
+  'GitHub.copilot-chat',
+  'vscode.github',
+  'vscode.github-authentication',
+  'vscode.microsoft-authentication',
+] as const
+const SHOGO_IDE_DISABLED_UPSTREAM_AI_SETTINGS = {
+  'github.copilot.enable': { '*': false },
+  'github.copilot.chat.enabled': false,
+  'chat.disableAIFeatures': true,
+  'chat.agent.enabled': false,
+  'chat.agentsControl.enabled': false,
+  'chat.extensionTools.enabled': false,
+  'chat.plugins.enabled': false,
+  'chat.mcp.enabled': false,
+  'chat.mcp.discovery.enabled': false,
+  'chat.mcp.gallery.enabled': false,
+  'chat.restoreLastPanelSession': false,
+  'chat.titleBar.signIn.enabled': false,
+  'chat.titleBar.openInAgentsWindow.enabled': false,
+  'chat.viewSessions.enabled': false,
+  'chat.commandCenter.enabled': false,
+} as const
 
 let setupPromise: Promise<void> | null = null
 
@@ -275,12 +300,11 @@ function ensureShogoIdeRuntimeProfile(workspacePath: string): {
     'extensions.autoUpdate': false,
     'workbench.startupEditor': 'none',
     'security.workspace.trust.enabled': false,
-    'github.copilot.enable': { '*': false },
-    'github.copilot.chat.enabled': false,
-    'chat.agent.enabled': false,
-    'chat.mcp.enabled': false,
-    'chat.mcp.discovery.enabled': false,
-    'chat.mcp.gallery.enabled': false,
+    'workbench.panel.defaultLocation': 'bottom',
+    'workbench.secondarySideBar.defaultVisibility': 'visible',
+    'shogo.agentChat.autoOpen': true,
+    'shogo.agentChat.bridgeUrl': getApiUrl(),
+    ...SHOGO_IDE_DISABLED_UPSTREAM_AI_SETTINGS,
   }
   fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
 
@@ -291,6 +315,8 @@ function resolveSourceRunnerLaunch(status: ShogoIdeStatus, workspaceArg: string)
   const runtime = ensureShogoIdeRuntimeProfile(status.workspacePath)
   const executablePath = resolveCodeOssDevExecutablePath(status.codeOssCheckoutPath)
   const launchPath = isExecutableFile(executablePath) ? executablePath! : status.launchPath!
+  const shogoCoreExtensionPath = path.join(status.workspacePath, 'extensions', 'shogo-core')
+  const shogoAgentChatExtensionPath = path.join(status.workspacePath, 'extensions', 'shogo-agent-chat')
 
   return {
     launchPath,
@@ -303,17 +329,14 @@ function resolveSourceRunnerLaunch(status: ShogoIdeStatus, workspaceArg: string)
       '--disable-workspace-trust',
       '--disable-gpu',
       '--disable-gpu-sandbox',
-      '--disable-extensions',
       '--user-data-dir', runtime.userDataDir,
       '--extensions-dir', runtime.extensionsDir,
       '--agents-user-data-dir', runtime.agentsUserDataDir,
       '--agents-extensions-dir', runtime.agentsExtensionsDir,
       '--crash-reporter-directory', runtime.crashReporterDirectory,
-      '--disable-extension=GitHub.copilot',
-      '--disable-extension=GitHub.copilot-chat',
-      '--disable-extension=vscode.github',
-      '--disable-extension=vscode.github-authentication',
-      '--disable-extension=vscode.microsoft-authentication',
+      '--extensionDevelopmentPath', shogoCoreExtensionPath,
+      '--extensionDevelopmentPath', shogoAgentChatExtensionPath,
+      ...SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS.map((extensionId) => `--disable-extension=${extensionId}`),
       workspaceArg,
     ],
   }
@@ -369,6 +392,7 @@ export function getShogoIdeStatus(): ShogoIdeStatus {
   const workspacePath = path.join(repoRoot, 'apps', 'shogo-ide')
   const productTemplatePath = path.join(workspacePath, 'product.shogo.template.json')
   const extensionManifestPath = path.join(workspacePath, 'extensions', 'shogo-core', 'package.json')
+  const agentChatExtensionManifestPath = path.join(workspacePath, 'extensions', 'shogo-agent-chat', 'package.json')
   const generatedProductPath = path.join(workspacePath, 'distribution', 'generated', 'product.json')
   const hardeningReportPath = path.join(workspacePath, 'hardening', 'generated', 'production-readiness.json')
   const codeOssCheckoutPath = path.join(workspacePath, 'upstream', 'vscode')
@@ -377,6 +401,7 @@ export function getShogoIdeStatus(): ShogoIdeStatus {
   const devRunnerPath = resolveDevRunnerPath(workspacePath)
   const productTemplateExists = fs.existsSync(productTemplatePath)
   const extensionManifestExists = fs.existsSync(extensionManifestPath)
+  const agentChatExtensionManifestExists = fs.existsSync(agentChatExtensionManifestPath)
   const generatedProductExists = fs.existsSync(generatedProductPath)
   const hardeningReportExists = fs.existsSync(hardeningReportPath)
   const codeOssCheckoutExists = fs.existsSync(codeOssCheckoutPath)
@@ -388,11 +413,12 @@ export function getShogoIdeStatus(): ShogoIdeStatus {
   const launchMode = executableExecutable ? 'packaged' : devRunnerExecutable ? 'source-runner' : null
   const setupInProgress = !!setupPromise
   const autoSetupAvailable = true
-  const launchReady = productTemplateExists && extensionManifestExists && generatedProductExists && hardeningReportExists && !!launchPath
+  const launchReady = productTemplateExists && extensionManifestExists && agentChatExtensionManifestExists && generatedProductExists && hardeningReportExists && !!launchPath
   const diagnostics: string[] = []
 
   if (!productTemplateExists) diagnostics.push('Missing Shogo product template.')
   if (!extensionManifestExists) diagnostics.push('Missing shogo-core extension manifest.')
+  if (!agentChatExtensionManifestExists) diagnostics.push('Missing shogo-agent-chat extension manifest.')
   if (!generatedProductExists) diagnostics.push('Missing generated Code OSS product metadata; Shogo Desktop will materialize it automatically.')
   if (!hardeningReportExists) diagnostics.push('Missing production-readiness report; Shogo Desktop will generate it automatically.')
   if (!codeOssCheckoutExists) diagnostics.push('Code - OSS checkout is not present; Shogo Desktop will clone it automatically.')
@@ -485,6 +511,7 @@ export async function launchShogoIde(opts?: { workspacePath?: string }): Promise
         PATH: node24BinDir ? `${node24BinDir}${path.delimiter}${process.env.PATH ?? ''}` : process.env.PATH,
         SHOGO_IDE_PHASE: '6',
         SHOGO_IDE_WORKSPACE: status.workspacePath,
+        SHOGO_AGENT_BRIDGE_URL: getApiUrl(),
         VSCODE_DEV: status.launchMode === 'source-runner' ? '1' : process.env.VSCODE_DEV,
         VSCODE_SKIP_PRELAUNCH: status.launchMode === 'source-runner' ? '1' : process.env.VSCODE_SKIP_PRELAUNCH,
       },

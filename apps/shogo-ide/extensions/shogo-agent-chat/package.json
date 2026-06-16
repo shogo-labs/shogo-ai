@@ -1,0 +1,237 @@
+{
+  "name": "shogo-agent-chat",
+  "displayName": "Shogo Chat",
+  "description": "Native Shogo IDE chat surface that auto-opens in Code OSS, sends rich IDE context to Shogo, and supports confirmed edit/run actions.",
+  "version": "0.0.0-phase.8",
+  "publisher": "shogo",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:shogo.agentChat",
+    "onCommand:shogo.agentChat.open",
+    "onCommand:shogo.agentChat.focusInput",
+    "onCommand:shogo.agentChat.newChat",
+    "onCommand:shogo.agentChat.addSelection",
+    "onCommand:shogo.agentChat.addActiveFile",
+    "onCommand:shogo.agentChat.explainSelection",
+    "onCommand:shogo.agentChat.fixSelection"
+  ],
+  "main": "./dist/extension.js",
+  "browser": "./dist/extension.js",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Shogo Agent Chat can discuss selected context in restricted mode. File edits and commands require trust and the Desktop agent bridge."
+    },
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Read-only chat shell and context display work in virtual workspaces. Local file and terminal actions require a local Shogo Desktop bridge."
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "shogo-agent-chat",
+          "title": "Shogo",
+          "icon": "media/shogo.svg"
+        }
+      ]
+    },
+    "views": {
+      "shogo-agent-chat": [
+        {
+          "id": "shogo.agentChat",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "shogo.agentChat.open",
+        "title": "Shogo: Open Chat",
+        "category": "Shogo",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "shogo.agentChat.focusInput",
+        "title": "Shogo: Focus Chat Input",
+        "category": "Shogo",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "shogo.agentChat.newChat",
+        "title": "Shogo: New Chat",
+        "category": "Shogo",
+        "icon": "$(add)"
+      },
+      {
+        "command": "shogo.agentChat.addSelection",
+        "title": "Shogo: Attach Selection",
+        "category": "Shogo",
+        "icon": "$(selection)"
+      },
+      {
+        "command": "shogo.agentChat.addActiveFile",
+        "title": "Shogo: Attach Active File",
+        "category": "Shogo",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "shogo.agentChat.explainSelection",
+        "title": "Shogo: Explain Selection",
+        "category": "Shogo",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "shogo.agentChat.fixSelection",
+        "title": "Shogo: Fix Selection",
+        "category": "Shogo",
+        "icon": "$(wrench)"
+      }
+    ],
+    "viewsWelcome": [
+      {
+        "view": "shogo.agentChat",
+        "contents": "Ask Shogo about this codebase, attach the current file or selection, and keep the conversation in the right-side chat panel.\n\n[Open Shogo Agent Chat](command:shogo.agentChat.open)"
+      }
+    ],
+    "configurationDefaults": {
+      "workbench.secondarySideBar.defaultVisibility": "visible",
+      "github.copilot.enable": {
+        "*": false
+      },
+      "github.copilot.chat.enabled": false,
+      "chat.disableAIFeatures": true,
+      "chat.agent.enabled": false,
+      "chat.titleBar.signIn.enabled": false,
+      "shogo.agentChat.autoOpen": true
+    },
+    "configuration": {
+      "title": "Shogo Agent Chat",
+      "properties": {
+        "shogo.agentChat.autoOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open Shogo Chat when Shogo IDE starts."
+        },
+        "shogo.agentChat.bridgeUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Local Shogo Desktop agent backend URL. Shogo Desktop writes this automatically when launching Shogo IDE."
+        },
+        "shogo.agentChat.bridgeToken": {
+          "type": "string",
+          "default": "",
+          "description": "Short-lived token for the local Shogo Desktop agent bridge."
+        }
+      }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "shogo.agentChat.open"
+        },
+        {
+          "command": "shogo.agentChat.focusInput"
+        },
+        {
+          "command": "shogo.agentChat.newChat"
+        },
+        {
+          "command": "shogo.agentChat.addSelection"
+        },
+        {
+          "command": "shogo.agentChat.addActiveFile"
+        },
+        {
+          "command": "shogo.agentChat.explainSelection",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "shogo.agentChat.fixSelection",
+          "when": "editorHasSelection"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "shogo.agentChat.newChat",
+          "when": "view == shogo.agentChat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "shogo.agentChat.addActiveFile",
+          "when": "view == shogo.agentChat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "shogo.agentChat.addSelection",
+          "when": "view == shogo.agentChat && editorHasSelection",
+          "group": "navigation@3"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "shogo.agentChat.addActiveFile",
+          "group": "navigation@80"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "shogo.agentChat.explainSelection",
+          "when": "editorHasSelection",
+          "group": "shogo@1"
+        },
+        {
+          "command": "shogo.agentChat.fixSelection",
+          "when": "editorHasSelection",
+          "group": "shogo@2"
+        },
+        {
+          "command": "shogo.agentChat.addSelection",
+          "when": "editorHasSelection",
+          "group": "shogo@3"
+        },
+        {
+          "command": "shogo.agentChat.addActiveFile",
+          "group": "shogo@4"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "shogo.agentChat.open",
+        "key": "ctrl+alt+;",
+        "mac": "cmd+alt+;"
+      },
+      {
+        "command": "shogo.agentChat.focusInput",
+        "key": "ctrl+alt+'",
+        "mac": "cmd+alt+'"
+      },
+      {
+        "command": "shogo.agentChat.addSelection",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorHasSelection"
+      }
+    ]
+  }
+}
