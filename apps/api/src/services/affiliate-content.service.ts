@@ -648,6 +648,8 @@ async function accruePost(args: AccrueArgs): Promise<{ paidViews: number; commis
 
 export interface PollAllSummary {
   accountsPolled: number
+  /** Accounts that were verified+approved but skipped because they were polled within the interval. */
+  accountsSkipped: number
   postsSeen: number
   snapshots: number
   paidViews: number
@@ -656,19 +658,42 @@ export interface PollAllSummary {
 }
 
 /**
- * Poll every verified account. Called by the hourly cron (under a global
- * job lock). Accounts are processed sequentially to keep provider unit
- * spend predictable and avoid hammering the API.
+ * Poll every verified account that is DUE for a refresh. Called by the
+ * 4-hourly cron (under a global job lock). Accounts are processed
+ * sequentially to keep provider unit spend predictable and avoid hammering
+ * the API.
+ *
+ * Frequency throttle (this is load-bearing, not an optimization): every API
+ * pod in every region boots its own `setInterval` for this cron, and the
+ * global job lock only prevents two ticks from running *concurrently* — it is
+ * released the instant a sweep finishes. Because the pods' timers are anchored
+ * to their own boot times, their ticks land at staggered wall-clock offsets,
+ * each acquiring the (already-released) lock cleanly. Without a per-account
+ * "due" gate, every one of those staggered ticks would re-sweep every account,
+ * multiplying EnsembleData unit spend by the pod count (and a rolling deploy's
+ * initial-run-on-boot makes it worse). We therefore only poll accounts whose
+ * `lastPolledAt` is null or older than `minPollIntervalMinutes`, so a handle is
+ * hit at most once per interval cluster-wide regardless of pod/tick count.
  */
 export async function pollAllVerifiedAccounts(now: Date = new Date()): Promise<PollAllSummary> {
   const summary: PollAllSummary = {
     accountsPolled: 0,
+    accountsSkipped: 0,
     postsSeen: 0,
     snapshots: 0,
     paidViews: 0,
     newCommissionCents: 0,
     errors: 0,
   }
+
+  const settings = await getContentSettings()
+  const intervalMs = settings.minPollIntervalMinutes * 60_000
+  // Small skew tolerance so an account polled exactly one interval ago still
+  // qualifies on a slightly-early/jittery tick (setInterval drift, staggered
+  // pods). Capped so it never erodes more than 10% of short intervals; the net
+  // effect is "at most once per ~interval", never "twice per interval".
+  const skewMs = Math.min(10 * 60_000, Math.floor(intervalMs * 0.1))
+  const dueBefore = new Date(now.getTime() - intervalMs + skewMs)
 
   // Oldest-connected first. (Kept portable across PG/SQLite — no
   // nulls-ordering clause, which SQLite rejects.)
@@ -678,13 +703,28 @@ export async function pollAllVerifiedAccounts(now: Date = new Date()): Promise<P
   // longer earns — the affiliate must `apply` and a super admin must approve
   // (`contentProgramStatus = 'approved'`). Unapproved affiliates accrue
   // nothing, so there is never a content commission to pay out for them.
+  //
+  // Due gate: skip handles polled within the interval (see the throttle note
+  // in the function doc) so staggered per-pod ticks can't re-sweep them.
   const accounts: any[] = await prisma.affiliateSocialAccount.findMany({
     where: {
       verificationStatus: 'verified',
       affiliate: { contentProgramStatus: 'approved' },
+      OR: [{ lastPolledAt: null }, { lastPolledAt: { lte: dueBefore } }],
     },
     orderBy: { createdAt: 'asc' },
   })
+
+  // Observability: how many eligible handles we throttled this tick. A non-zero
+  // value on most ticks is the expected steady state (only the first tick per
+  // interval finds accounts due) — that's the throttle doing its job.
+  const eligibleTotal = await prisma.affiliateSocialAccount.count({
+    where: {
+      verificationStatus: 'verified',
+      affiliate: { contentProgramStatus: 'approved' },
+    },
+  })
+  summary.accountsSkipped = Math.max(0, eligibleTotal - accounts.length)
 
   for (const account of accounts) {
     const res = await pollAccount(account, now)

@@ -21,6 +21,9 @@
  *   affiliate.content.postsPerAccount         int   (posts fetched per poll)
  *   affiliate.content.maxViewsPerPostPerRun   int   (anti-abuse per-run cap)
  *   affiliate.content.perVideoCapCents        int   (default per-video $ cap)
+ *   affiliate.content.minPollIntervalMinutes  int   (min minutes between provider
+ *                                                    polls of the same account —
+ *                                                    throttles EnsembleData spend)
  *
  * Per-CREATOR CPM overrides live on `Affiliate.contentCpmCents` (the content
  * analogue of `commissionRateBps`) and take precedence over everything here;
@@ -57,6 +60,16 @@ export interface ContentSettings {
   maxViewsPerPostPerRun: number
   /** Platform-wide per-video lifetime earnings cap (cents); null = no cap. */
   perVideoCapCents: number | null
+  /**
+   * Minimum minutes that must elapse before the SAME account is polled again.
+   * The cron fires every 4h, but every API pod in every region runs its own
+   * timer; without this throttle the staggered ticks would each re-sweep every
+   * account (the global job lock only prevents *concurrent* runs, not
+   * frequency), multiplying EnsembleData unit spend by the pod count.
+   * `pollAllVerifiedAccounts` only polls accounts whose `lastPolledAt` is older
+   * than this, so a handle is hit at most once per interval cluster-wide.
+   */
+  minPollIntervalMinutes: number
 }
 
 export const CONTENT_SETTING_DEFAULTS: ContentSettings = {
@@ -68,6 +81,7 @@ export const CONTENT_SETTING_DEFAULTS: ContentSettings = {
   postsPerAccount: 30,
   maxViewsPerPostPerRun: 5_000_000,
   perVideoCapCents: null, // uncapped unless an operator sets a default
+  minPollIntervalMinutes: 240, // 4h — matches the cron cadence
 }
 
 export const CONTENT_SETTING_KEYS = {
@@ -80,6 +94,7 @@ export const CONTENT_SETTING_KEYS = {
   postsPerAccount: 'affiliate.content.postsPerAccount',
   maxViewsPerPostPerRun: 'affiliate.content.maxViewsPerPostPerRun',
   perVideoCapCents: 'affiliate.content.perVideoCapCents',
+  minPollIntervalMinutes: 'affiliate.content.minPollIntervalMinutes',
 } as const
 
 const SETTING_PREFIX = 'affiliate.content.'
@@ -120,6 +135,13 @@ function buildSettings(byKey: Map<string, string>): ContentSettings {
     ),
     // A cap of 0 would zero out all earnings, so the floor is 1; absent = no cap.
     perVideoCapCents: parseOptionalInt(byKey.get(CONTENT_SETTING_KEYS.perVideoCapCents), 1),
+    // Floor of 1 minute: 0 would disable the throttle and let every staggered
+    // pod tick re-poll, which is exactly the regression this guards against.
+    minPollIntervalMinutes: parseIntOr(
+      byKey.get(CONTENT_SETTING_KEYS.minPollIntervalMinutes),
+      d.minPollIntervalMinutes,
+      1,
+    ),
   }
 }
 
@@ -208,6 +230,7 @@ export interface ContentSettingsPatch {
   postsPerAccount?: number | null
   maxViewsPerPostPerRun?: number | null
   perVideoCapCents?: number | null
+  minPollIntervalMinutes?: number | null
 }
 
 async function upsertSetting(key: string, value: string, userId: string): Promise<void> {
@@ -236,6 +259,7 @@ export async function setContentSettings(patch: ContentSettingsPatch, userId: st
     ['postsPerAccount', CONTENT_SETTING_KEYS.postsPerAccount, 1],
     ['maxViewsPerPostPerRun', CONTENT_SETTING_KEYS.maxViewsPerPostPerRun, 1],
     ['perVideoCapCents', CONTENT_SETTING_KEYS.perVideoCapCents, 1],
+    ['minPollIntervalMinutes', CONTENT_SETTING_KEYS.minPollIntervalMinutes, 1],
   ]
 
   if (patch.enabled !== undefined) {
