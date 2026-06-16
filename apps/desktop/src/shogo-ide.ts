@@ -168,7 +168,7 @@ function isExecutableFile(filePath: string | null): boolean {
 
 function writeLaunchDiagnostic(status: ShogoIdeStatus, result: { ok: boolean; error?: string; actualLaunchPath?: string; launchArgs?: string[] }): void {
   try {
-    const diagnosticsDir = path.join(status.workspacePath, 'hardening', 'generated')
+    const diagnosticsDir = path.join(status.workspacePath, 'hardening', 'runtime', 'diagnostics')
     fs.mkdirSync(diagnosticsDir, { recursive: true })
     const diagnosticPath = path.join(diagnosticsDir, 'last-launch.json')
     fs.writeFileSync(diagnosticPath, `${JSON.stringify({
