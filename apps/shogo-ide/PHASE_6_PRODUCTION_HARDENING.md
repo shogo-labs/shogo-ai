@@ -49,7 +49,7 @@ executable is executable by current user
 If launch fails or is blocked, the diagnostic is written to:
 
 ```text
-apps/shogo-ide/hardening/generated/last-launch.json
+apps/shogo-ide/hardening/runtime/diagnostics/last-launch.json
 ```
 
 ## Security posture
