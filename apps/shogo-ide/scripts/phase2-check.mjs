@@ -31,7 +31,12 @@ assert(desktopBridge.includes("ipcMain.handle('shogo-ide:get-status'"), 'desktop
 assert(desktopBridge.includes("ipcMain.handle('shogo-ide:launch'"), 'desktop bridge must register launch IPC')
 assert(desktopBridge.includes('SHOGO_IDE_EXECUTABLE'), 'desktop bridge must support executable override')
 assert(desktopBridge.includes('SHOGO_REPO_ROOT'), 'desktop bridge must support repo-root override')
-assert(desktopBridge.includes('spawn(status.executablePath'), 'desktop bridge must launch only discovered executable path')
+assert(desktopBridge.includes('spawn(actualLaunchPath'), 'desktop bridge must launch the resolved packaged executable or hardened source runner')
+assert(desktopBridge.includes('resolveDevRunnerPath'), 'desktop bridge must support Code OSS source runner fallback')
+assert(desktopBridge.includes('isCodeOssElectronRuntimeHealthy'), 'desktop bridge must validate and repair the Code OSS Electron runtime before launch')
+assert(desktopBridge.includes('ensureShogoIdeRuntimeProfile'), 'desktop bridge must launch Code OSS with an isolated Shogo runtime profile')
+assert(desktopBridge.includes('--disable-extensions'), 'desktop bridge must disable unstable upstream built-in extensions for source-runner launches')
+assert(desktopBridge.includes('--disable-extension=GitHub.copilot-chat'), 'desktop bridge must disable unstable upstream Copilot first-run flow for source-runner launches')
 
 assert(main.includes("from './shogo-ide'"), 'main.ts must import shogo-ide bridge')
 assert(main.includes('registerShogoIdeIpcHandlers()'), 'main.ts must register shogo-ide IPC handlers')
@@ -45,10 +50,10 @@ assert(preload.includes("ipcRenderer.invoke('shogo-ide:launch'"), 'preload must 
 assert(idePanel.includes('ShogoIdeReplacementGate'), 'IDEPanel must render the Shogo IDE replacement gate after Phase 5')
 assert(launcher.includes('window as unknown as { shogoDesktop?: { shogoIde?'), 'Phase 2 launcher must keep using desktop preload bridge while retained for reference')
 assert(launcher.includes('The Monaco IDE stays available as fallback'), 'launcher must communicate fallback behavior')
-assert(launcher.includes('status.cloneCommand'), 'launcher must surface setup clone command')
+assert(launcher.includes('status.cloneCommand'), 'Phase 2 reference launcher may keep showing the setup command')
 
 assert(docs.includes('Legacy Monaco IDE'), 'Phase 2 docs must state Monaco fallback after Phase 5 supersedes the overlay')
-assert(docs.includes('No process is spawned until the user explicitly clicks launch'), 'Phase 2 docs must state launch safety')
+assert(docs.includes('Desktop can automatically start Shogo IDE setup'), 'Phase 2 docs must state automatic desktop setup behavior')
 
 if (errors.length > 0) {
   console.error('Phase 2 check failed:')

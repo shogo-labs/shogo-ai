@@ -36,10 +36,10 @@ assert(!idePanel.includes('<ShogoIdePhase2Launcher'), 'IDEPanel must no longer r
 assert(replacementGate.includes('export function getShogoIdeBridge'), 'replacement gate must export bridge detection')
 assert(replacementGate.includes('window as unknown as { shogoDesktop?: { shogoIde?'), 'replacement gate must use the Electron preload bridge')
 assert(replacementGate.includes('Open Shogo IDE'), 'replacement gate must expose Open Shogo IDE action')
-assert(replacementGate.includes('Reveal IDE files'), 'replacement gate must expose reveal-files action')
+assert(replacementGate.includes("void launch('auto')"), 'replacement gate must auto-launch Shogo IDE on Desktop')
 assert(replacementGate.includes('Use Legacy Monaco IDE'), 'replacement gate must expose legacy fallback action')
-assert(replacementGate.includes('status.cloneCommand'), 'replacement gate must show setup clone command')
-assert(replacementGate.includes('The custom Monaco workbench has been moved behind a legacy fallback'), 'replacement gate must communicate replacement behavior')
+assert(!replacementGate.includes('Next setup command'), 'replacement gate must not show manual setup commands')
+assert(replacementGate.includes('Web and mobile keep using the existing Monaco path'), 'replacement gate must communicate Desktop-only behavior')
 
 assert(desktopBridge.includes("ipcMain.handle('shogo-ide:launch'"), 'desktop bridge launch IPC must remain wired')
 assert(desktopBridge.includes('launchReady'), 'desktop bridge must keep launch readiness status')
@@ -47,7 +47,7 @@ assert(phase2Check.includes('ShogoIdeReplacementGate'), 'Phase 2 check must be u
 
 assert(docs.includes('Shogo IDE first, Monaco workbench as legacy fallback'), 'Phase 5 docs must state replacement posture')
 assert(docs.includes('Behavior matrix'), 'Phase 5 docs must include behavior matrix')
-assert(docs.includes('No executable launches until the user clicks'), 'Phase 5 docs must state launch safety')
+assert(docs.includes('Desktop opens Shogo IDE automatically'), 'Phase 5 docs must state automatic Desktop launch behavior')
 
 if (errors.length > 0) {
   console.error('Phase 5 check failed:')

@@ -1,11 +1,41 @@
 {
-  "at": "2026-06-15T19:07:15.894Z",
-  "ok": false,
-  "error": "No launchable Shogo IDE executable was found.",
+  "at": "2026-06-16T04:40:43.922Z",
+  "ok": true,
+  "error": null,
   "executablePath": null,
+  "launchPath": "/Users/ashutoshojha/Desktop/shogo-ai/apps/shogo-ide/upstream/vscode/scripts/code.sh",
+  "actualLaunchPath": "/Users/ashutoshojha/Desktop/shogo-ai/apps/shogo-ide/upstream/vscode/.build/electron/Code - OSS.app/Contents/MacOS/Code - OSS",
+  "launchArgs": [
+    ".",
+    "--new-window",
+    "--skip-welcome",
+    "--disable-telemetry",
+    "--disable-crash-reporter",
+    "--disable-workspace-trust",
+    "--disable-gpu",
+    "--disable-gpu-sandbox",
+    "--disable-extensions",
+    "--user-data-dir",
+    "/Users/ashutoshojha/Desktop/shogo-ai/apps/shogo-ide/hardening/runtime/user-data",
+    "--extensions-dir",
+    "/Users/ashutoshojha/Desktop/shogo-ai/apps/shogo-ide/hardening/runtime/extensions",
+    "--agents-user-data-dir",
+    "/Users/ashutoshojha/Desktop/shogo-ai/apps/shogo-ide/hardening/runtime/agents-user-data",
+    "--agents-extensions-dir",
+    "/Users/ashutoshojha/Desktop/shogo-ai/apps/shogo-ide/hardening/runtime/agents-extensions",
+    "--crash-reporter-directory",
+    "/Users/ashutoshojha/Desktop/shogo-ai/apps/shogo-ide/hardening/runtime/crash-reports",
+    "--disable-extension=GitHub.copilot",
+    "--disable-extension=GitHub.copilot-chat",
+    "--disable-extension=vscode.github",
+    "--disable-extension=vscode.github-authentication",
+    "--disable-extension=vscode.microsoft-authentication",
+    "/Users/ashutoshojha/Desktop/shogo-ai"
+  ],
+  "launchMode": "source-runner",
   "workspacePath": "/Users/ashutoshojha/Desktop/shogo-ai/apps/shogo-ide",
-  "launchReady": false,
+  "launchReady": true,
   "diagnostics": [
-    "No launchable Shogo IDE executable was found."
+    "Using Code OSS source runner until a packaged Shogo IDE executable is available."
   ]
 }

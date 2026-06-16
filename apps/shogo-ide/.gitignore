@@ -9,6 +9,8 @@ upstream/vscode-oss/
 out*/
 dist/
 extensions/shogo-core/dist/
+hardening/runtime/
+hardening/runtime-smoke/
 .cache/
 node_modules/
 *.log

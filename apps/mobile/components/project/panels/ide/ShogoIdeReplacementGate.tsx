@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Code2, ExternalLink, FolderOpen, Loader2 } from 'lucide-react-native'
+import { useEffect, useRef, useState } from 'react'
+import { Code2, ExternalLink, Loader2 } from 'lucide-react-native'
 
 interface ShogoIdeStatus {
   phase: number
@@ -9,9 +9,14 @@ interface ShogoIdeStatus {
   executableExecutable?: boolean
   generatedProductExists?: boolean
   hardeningReportExists?: boolean
+  launchPath?: string | null
+  launchMode?: 'packaged' | 'source-runner' | null
   launchReady: boolean
   reason: string
   diagnostics?: string[]
+  setupInProgress?: boolean
+  setupLogPath?: string
+  autoSetupAvailable?: boolean
   cloneCommand: string
 }
 
@@ -48,13 +53,38 @@ export function ShogoIdeReplacementGate({
   const [status, setStatus] = useState<ShogoIdeStatus | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const autoLaunchStarted = useRef(false)
+
+  const launch = async (mode: 'auto' | 'manual' = 'manual') => {
+    if (!bridge) return
+    setBusy(true)
+    setMessage(mode === 'auto' ? 'Preparing Shogo IDE…' : null)
+    try {
+      const result = await bridge.launch(projectRoot ? { workspacePath: projectRoot } : undefined)
+      setStatus(result.status)
+      if (result.ok) {
+        setMessage(result.status.launchMode === 'source-runner' ? 'Opening Shogo IDE from the Code OSS source runner…' : 'Opening Shogo IDE…')
+      } else {
+        setMessage(result.error || result.status.reason)
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   useEffect(() => {
     if (!bridge) return
     let cancelled = false
     bridge.getStatus()
       .then((nextStatus) => {
-        if (!cancelled) setStatus(nextStatus)
+        if (cancelled) return
+        setStatus(nextStatus)
+        if (!autoLaunchStarted.current) {
+          autoLaunchStarted.current = true
+          void launch('auto')
+        }
       })
       .catch((error) => {
         if (!cancelled) setMessage(error instanceof Error ? error.message : String(error))
@@ -64,37 +94,9 @@ export function ShogoIdeReplacementGate({
 
   if (!bridge) return null
 
-  const launch = async () => {
-    setBusy(true)
-    setMessage(null)
-    try {
-      const result = await bridge.launch(projectRoot ? { workspacePath: projectRoot } : undefined)
-      setStatus(result.status)
-      setMessage(result.ok ? 'Shogo IDE launch requested.' : result.error || result.status.reason)
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const reveal = async () => {
-    setBusy(true)
-    setMessage(null)
-    try {
-      const result = await bridge.openWorkspaceFolder()
-      setStatus(result.status)
-      setMessage(result.ok ? 'Opened Shogo IDE workspace folder.' : result.error || 'Could not reveal Shogo IDE workspace.')
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const readyLabel = status?.launchReady ? 'Ready to launch' : 'Setup required'
+  const readyLabel = busy || status?.setupInProgress ? 'Preparing automatically' : status?.launchReady ? 'Opening' : 'Preparing'
   const setupReason = status?.reason ?? 'Checking Shogo IDE distribution status…'
-  const diagnostics = status?.diagnostics ?? []
+  const diagnostics = status?.launchReady ? [] : status?.diagnostics ?? []
 
   return (
     <div className="flex h-full min-h-0 items-center justify-center bg-[color:var(--ide-bg,#0f1115)] p-6 text-[color:var(--ide-text,#d4d4d4)]">
@@ -105,12 +107,12 @@ export function ShogoIdeReplacementGate({
               <div className="flex items-center gap-3">
                 <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-orange-500 text-lg font-bold text-white shadow-lg shadow-orange-950/30">⌘</span>
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-orange-300">Phase 5 replacement</p>
-                  <h2 className="text-2xl font-semibold text-[color:var(--ide-text-strong,#fff)]">Shogo IDE is now the desktop IDE path</h2>
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-orange-300">Desktop IDE</p>
+                  <h2 className="text-2xl font-semibold text-[color:var(--ide-text-strong,#fff)]">Opening Shogo IDE</h2>
                 </div>
               </div>
               <p className="mt-4 max-w-2xl text-sm leading-6 text-[color:var(--ide-muted,#9ca3af)]">
-                The custom Monaco workbench has been moved behind a legacy fallback for Desktop. Open the Code OSS-based Shogo IDE for {projectName || 'this project'}, or use the fallback only if you need the old embedded editor during migration.
+                Shogo Desktop opens the Code OSS-based Shogo IDE automatically for {projectName || 'this project'}. Web and mobile keep using the existing Monaco path and never enter this Desktop-only launcher.
               </p>
             </div>
             <span className="rounded-full border border-[color:var(--ide-border,#2d2d2d)] px-3 py-1 text-xs font-medium text-[color:var(--ide-muted,#9ca3af)]">
@@ -143,12 +145,9 @@ export function ShogoIdeReplacementGate({
               </div>
             </div>
 
-            {status && !status.launchReady && (
-              <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-4">
-                <h3 className="text-sm font-semibold text-orange-200">Next setup command</h3>
-                <div className="mt-2 select-text overflow-x-auto rounded-lg bg-black/30 px-3 py-2 font-mono text-xs leading-5 text-orange-100">
-                  {status.cloneCommand}
-                </div>
+            {status?.setupLogPath && !status.launchReady && (
+              <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-4 text-xs leading-5 text-orange-100">
+                Shogo Desktop is handling setup automatically. Diagnostic log: {status.setupLogPath}
               </div>
             )}
           </div>
@@ -157,20 +156,11 @@ export function ShogoIdeReplacementGate({
             <button
               type="button"
               disabled={busy || !status}
-              onClick={launch}
+              onClick={() => void launch('manual')}
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? <Loader2 size={16} /> : <ExternalLink size={16} />}
-              Open Shogo IDE
-            </button>
-            <button
-              type="button"
-              disabled={busy || !status}
-              onClick={reveal}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-[color:var(--ide-border,#2d2d2d)] px-4 py-3 text-sm font-medium text-[color:var(--ide-text-strong,#fff)] transition-colors hover:bg-[color:var(--ide-bg,#0f1115)] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <FolderOpen size={16} />
-              Reveal IDE files
+              {busy ? 'Preparing…' : 'Open Shogo IDE'}
             </button>
             <button
               type="button"
@@ -180,7 +170,7 @@ export function ShogoIdeReplacementGate({
               Use Legacy Monaco IDE
             </button>
             <p className="text-center text-[11px] leading-4 text-[color:var(--ide-muted,#9ca3af)]">
-              Legacy mode is temporary and keeps the old custom IDE available while Code OSS packaging is finalized.
+              Legacy mode is a Desktop-only fallback. Web and mobile keep their existing IDE behavior.
             </p>
           </div>
         </div>
