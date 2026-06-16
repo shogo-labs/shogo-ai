@@ -1507,6 +1507,7 @@ export function adminRoutes(): Hono {
       'postsPerAccount',
       'maxViewsPerPostPerRun',
       'perVideoCapCents',
+      'minPollIntervalMinutes',
     ] as const) {
       if (body?.[field] !== undefined) patch[field] = body[field]
     }
