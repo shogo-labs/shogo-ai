@@ -238,6 +238,12 @@ module "publish_hosting" {
   enable_custom_domains = var.enable_custom_domains
   custom_domains_zone   = var.custom_domains_zone
 
+  # Server-backed published apps (run server.tsx in production). Gated +
+  # defaulted off; when enabled, set kourier_origin to a DNS-only host that
+  # terminates at this region's Knative (Kourier) ingress.
+  enable_server_backed_publish = var.enable_server_backed_publish
+  kourier_origin               = var.kourier_origin
+
   # OCI Object Storage's PAR API has eventual consistency against bucket
   # creation. Without this depends_on, terraform parallelizes the
   # published_apps bucket creation and the PAR creation, and the PAR

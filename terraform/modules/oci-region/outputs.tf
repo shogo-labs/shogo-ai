@@ -112,6 +112,11 @@ output "published_apps_bucket" {
   value       = local.is_full ? module.object_storage[0].published_apps_bucket : null
 }
 
+output "published_data_bucket" {
+  description = "Published-app writable-state bucket for server-backed apps (null for Tier 2). Wire into the api ksvc as PUBLISH_DATA_BUCKET."
+  value       = local.is_full ? module.object_storage[0].published_data_bucket : null
+}
+
 output "file_system_export_path" {
   description = "NFS export path (null for Tier 2)"
   value       = local.is_full ? module.file_storage[0].export_path : null
@@ -135,6 +140,11 @@ output "custom_domains_kv_namespace_id" {
 output "custom_domain_fallback_origin" {
   description = "Fallback-origin hostname customers CNAME at (null when disabled). Wire into the api ksvc as CUSTOM_DOMAIN_FALLBACK_ORIGIN."
   value       = one(module.publish_hosting[*].custom_domain_fallback_origin)
+}
+
+output "server_backed_kv_namespace_id" {
+  description = "Workers KV namespace id flagging server-backed published subdomains (null when disabled). Wire into the api ksvc as CF_SERVER_BACKED_KV_NAMESPACE_ID."
+  value       = one(module.publish_hosting[*].server_backed_kv_namespace_id)
 }
 
 # -----------------------------------------------------------------------------
