@@ -73,6 +73,18 @@ variable "custom_domain_fallback_hostname" {
   default     = null
 }
 
+variable "enable_server_backed_publish" {
+  description = "Turn on server-backed published apps. When true the module creates a `SERVER_BACKED` Workers KV map (subdomain -> '1') that the API writes when it publishes an app whose backend (server.tsx) must run in production. The subdomain-router Worker then proxies dynamic `/api/*` requests for those apps to `kourier_origin` (the in-cluster Knative ingress) instead of Object Storage. Static-only apps are unaffected. Defaults to false."
+  type        = bool
+  default     = false
+}
+
+variable "kourier_origin" {
+  description = "Origin URL the subdomain-router Worker proxies server-backed `/api/*` traffic to. Must be a DNS-only (NON-proxied / external) hostname that terminates at the cluster's Knative (Kourier) ingress LB which serves the `{subdomain}.shogo.one` DomainMappings. The Worker rewrites the subrequest Host header to `{subdomain}.${publish_domain}` so the DomainMapping routes it to `published-{projectId}`. Leave null to disable server-backed proxying even when the KV map exists."
+  type        = string
+  default     = null
+}
+
 variable "oci_region" {
   description = "OCI region (e.g. us-ashburn-1)"
   type        = string
@@ -223,6 +235,21 @@ resource "cloudflare_workers_kv_namespace" "custom_domains" {
 }
 
 # -----------------------------------------------------------------------------
+# Workers KV — server-backed publish map
+# -----------------------------------------------------------------------------
+# Maps a published subdomain (e.g. `august-29th-celebration-portal`) to a flag
+# marking it as SERVER-BACKED. Written by the API (apps/api/src/routes/
+# publish.ts) when it publishes an app whose backend (server.tsx) must run in
+# production, deleted on unpublish / static republish. Read by the
+# subdomain-router Worker below to decide whether to proxy `/api/*` to the
+# Knative ingress (`kourier_origin`) instead of serving it from Object Storage.
+resource "cloudflare_workers_kv_namespace" "server_backed" {
+  count      = var.enable_server_backed_publish ? 1 : 0
+  account_id = var.cloudflare_account_id
+  title      = "shogo-server-backed-${var.environment}"
+}
+
+# -----------------------------------------------------------------------------
 # Cloudflare Worker — Subdomain Router
 # Routes *.shogo.one requests to the correct path in Object Storage.
 # Equivalent to the CloudFront Function in the AWS module.
@@ -246,6 +273,26 @@ resource "cloudflare_worker_script" "subdomain_router" {
     content {
       name         = "CUSTOM_DOMAINS"
       namespace_id = cloudflare_workers_kv_namespace.custom_domains[0].id
+    }
+  }
+
+  # Bind the server-backed publish map + the Knative ingress origin so the
+  # Worker can proxy dynamic `/api/*` traffic to the project's running
+  # server.tsx. Both guard with `env.SERVER_BACKED` / `env.KOURIER_ORIGIN`
+  # presence, so the script content is identical whether or not they're set.
+  dynamic "kv_namespace_binding" {
+    for_each = var.enable_server_backed_publish ? [1] : []
+    content {
+      name         = "SERVER_BACKED"
+      namespace_id = cloudflare_workers_kv_namespace.server_backed[0].id
+    }
+  }
+
+  dynamic "plain_text_binding" {
+    for_each = var.kourier_origin != null && var.kourier_origin != "" ? [1] : []
+    content {
+      name = "KOURIER_ORIGIN"
+      text = var.kourier_origin
     }
   }
   # The OCI PAR `access_uri` returned by the provider ends in `/o/`
@@ -307,6 +354,16 @@ resource "cloudflare_worker_script" "subdomain_router" {
       return { subdomain: raw, canonical: null };
     }
 
+    // Path prefixes that must hit the project's live backend (server.tsx)
+    // for SERVER-BACKED published apps, rather than Object Storage. Anything
+    // not matched here keeps serving as a static asset (with SPA fallback).
+    const DYNAMIC_PREFIXES = ['/api/'];
+    function isDynamicPath(p) {
+      return DYNAMIC_PREFIXES.some(function (pre) {
+        return p === pre.slice(0, -1) || p.indexOf(pre) === 0;
+      });
+    }
+
     export default {
       async fetch(request, env) {
         const url = new URL(request.url);
@@ -353,6 +410,29 @@ resource "cloudflare_worker_script" "subdomain_router" {
             'https://' + canonical + url.pathname + url.search,
             308,
           );
+        }
+
+        // SERVER-BACKED apps: proxy dynamic `/api/*` to the project's running
+        // server.tsx via the Knative ingress instead of Object Storage. The
+        // backend is reached at KOURIER_ORIGIN (a DNS-only host that lands on
+        // Kourier); we rewrite the Host header to the published hostname so the
+        // `{subdomain}.PUBLISH_DOMAIN` DomainMapping routes to published-{id}.
+        // Static assets keep serving from OCI below (CDN-fast, scale-to-zero
+        // safe). Falls through to static when the app isn't server-backed, the
+        // origin is unconfigured, or the path isn't dynamic.
+        const KOURIER_ORIGIN = (env.KOURIER_ORIGIN || '').replace(/\/+$/, '');
+        if (KOURIER_ORIGIN && env.SERVER_BACKED && isDynamicPath(url.pathname)) {
+          const flag = await env.SERVER_BACKED.get(subdomain);
+          if (flag) {
+            const publishedHost = subdomain + '.' + PUBLISH_DOMAIN;
+            const backendUrl = KOURIER_ORIGIN + url.pathname + url.search;
+            const backendReq = new Request(backendUrl, request);
+            // Host drives Knative DomainMapping resolution at the ingress.
+            backendReq.headers.set('Host', publishedHost);
+            backendReq.headers.set('X-Forwarded-Host', publishedHost);
+            backendReq.headers.set('X-Forwarded-Proto', 'https');
+            return fetch(backendReq);
+          }
         }
 
         const originUrl = buildOriginUrl(subdomain, url.pathname);
@@ -517,4 +597,14 @@ output "custom_domains_kv_namespace_id" {
 output "custom_domain_fallback_origin" {
   description = "Fallback-origin hostname that customers CNAME their domains at (null when disabled). Wire into the api ksvc as CUSTOM_DOMAIN_FALLBACK_ORIGIN."
   value       = local.custom_domain_fallback_hostname
+}
+
+output "server_backed_publish_enabled" {
+  description = "Whether server-backed published apps are provisioned for this environment."
+  value       = var.enable_server_backed_publish
+}
+
+output "server_backed_kv_namespace_id" {
+  description = "Workers KV namespace id for the server-backed publish map (null when disabled). Wire into the api ksvc as CF_SERVER_BACKED_KV_NAMESPACE_ID so publish.ts can flag/unflag server-backed subdomains."
+  value       = var.enable_server_backed_publish ? cloudflare_workers_kv_namespace.server_backed[0].id : null
 }

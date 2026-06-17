@@ -36,6 +36,8 @@ import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
   createS3SyncForProject,
+  createPublishedDataSyncFromEnv,
+  type PublishedDataSync,
   initializePostgresBackup,
   configureAIProxy,
   StreamBufferStore,
@@ -119,6 +121,7 @@ import { TeamsAdapter } from './channels/teams'
 import { saveUploadedFileParts, buildUploadedFilesNote } from './upload-attachments'
 import { buildReferencedContext } from './reference-context'
 import { maybeRunInteractive } from './interactive/entry'
+import { evaluateServerBacked } from './published-detect'
 
 // Interactive CLI mode. When this binary is invoked as `agent-runtime
 // interactive` (or with SHOGO_INTERACTIVE=1) it runs the in-process REPL and
@@ -163,6 +166,19 @@ const WORKING_MODE: 'managed' | 'external' =
  */
 const IS_WORKSPACE_RUNTIME = isWorkspaceRuntimeMode()
 const WORKSPACE_RUNTIME_PROJECT_IDS = workspaceAttachedProjectIds()
+
+/**
+ * Server-backed published mode. When `SHOGO_PUBLISHED_MODE=true` this pod is
+ * NOT a dev/agent runtime — it serves a *published* app at
+ * `{PUBLISHED_SUBDOMAIN}.shogo.one`. We hydrate the source read-only from the
+ * durable git repo (pinned to the published commit), run the project's
+ * `server.tsx` so `/api/*` works in production, and persist only the writable
+ * runtime state (the SQLite DB + upload dirs) to the published-data bucket via
+ * `PublishedDataSync`. The agent gateway / loop and all editing surfaces stay
+ * OFF — published pods never run the agent. See `initializePublished()`.
+ */
+const IS_PUBLISHED_MODE = process.env.SHOGO_PUBLISHED_MODE === 'true'
+const PUBLISHED_SUBDOMAIN = process.env.PUBLISHED_SUBDOMAIN || ''
 
 /**
  * The list of host folders the agent is allowed to read/write inside,
@@ -312,6 +328,8 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 let gitSyncInstance: GitWorkspaceSync | null = null
+/** Writable-state sync for server-backed published apps (SHOGO_PUBLISHED_MODE). */
+let publishedDataSyncInstance: PublishedDataSync | null = null
 /**
  * Per-member S3 sync instances in WORKSPACE mode (cloud). Each member project
  * lives under `<WORKSPACE_DIR>/<id>/` with its own S3 prefix, so a single
@@ -4562,6 +4580,87 @@ app.get('/agent/dist-files', (c) => {
 })
 
 /**
+ * Return the project's writable runtime state (the SQLite DB + any upload
+ * dirs) as a gzipped tar, base64-encoded. Called by the publish flow
+ * (apps/api/src/routes/publish.ts) to SEED the published-data bucket on first
+ * publish so a server-backed published app boots with the builder's data
+ * (e.g. a guest list) instead of an empty DB.
+ *
+ * The archive layout is rooted at the workspace dir (entries like
+ * `prisma/dev.db`), matching what `PublishedDataSync.restore()` extracts.
+ * Lives under the runtime-owned `/agent/*` namespace (auth-gated by
+ * `x-runtime-token`), same as `/agent/dist-files`.
+ */
+const PUBLISHED_DATA_WRITABLE_PATHS = [
+  'prisma/dev.db',
+  'prisma/dev.db-wal',
+  'prisma/dev.db-shm',
+  'uploads',
+  'public/uploads',
+  'storage',
+]
+app.get('/agent/published-data-archive', async (c) => {
+  const present = PUBLISHED_DATA_WRITABLE_PATHS.filter((p) =>
+    existsSync(join(WORKSPACE_DIR, p)),
+  )
+  if (present.length === 0) {
+    return c.json(
+      { error: 'no_writable_state', message: 'No prisma/dev.db or upload dirs to archive' },
+      404,
+    )
+  }
+  const tar = await import('tar')
+  const fsp = await import('fs/promises')
+  const os = await import('os')
+  const tmpDir = await fsp.mkdtemp(join(os.tmpdir(), 'shogo-pubdata-seed-'))
+  const archivePath = join(tmpDir, 'data.tar.gz')
+  try {
+    await tar.create(
+      { gzip: true, file: archivePath, cwd: WORKSPACE_DIR, portable: true },
+      present,
+    )
+    const buf = await fsp.readFile(archivePath)
+    return c.json({ archive: buf.toString('base64'), paths: present })
+  } catch (err: any) {
+    return c.json({ error: 'archive_failed', message: err?.message ?? String(err) }, 500)
+  } finally {
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+/**
+ * Report whether this project needs a SERVER-BACKED publish — i.e. whether its
+ * backend (`server.tsx`) does real work that a static export can't reproduce.
+ * Consumed by the publish flow (apps/api/src/routes/publish.ts) to decide
+ * between a static publish (Object Storage only) and a server-backed publish
+ * (a running `server.tsx` pod fronting `/api/*`).
+ *
+ * Heuristic — an app is server-backed when EITHER:
+ *   - `prisma/schema.prisma` declares at least one `model` (it has a DB the
+ *     app reads/writes at runtime), OR
+ *   - `custom-routes.ts` registers any route (`app.get/post/put/...`).
+ *
+ * `server.tsx` alone is NOT a signal: the template always ships one, so a
+ * purely-static app (no models, no custom routes) stays on the static path.
+ */
+app.get('/agent/server-info', (c) => {
+  const readIfExists = (rel: string): string | null => {
+    try {
+      const p = join(WORKSPACE_DIR, rel)
+      return existsSync(p) ? readFileSync(p, 'utf-8') : null
+    } catch {
+      return null
+    }
+  }
+  const result = evaluateServerBacked({
+    schemaSource: readIfExists(join('prisma', 'schema.prisma')),
+    customRoutesSource: readIfExists('custom-routes.ts'),
+    hasServerFile: existsSync(join(WORKSPACE_DIR, 'server.tsx')),
+  })
+  return c.json(result)
+})
+
+/**
  * Force an immediate, AWAITED git sync of the workspace and return the
  * resulting HEAD sha. Called by the publish flow (apps/api/src/routes/
  * publish.ts) so the published source is committed + persisted to the
@@ -5301,6 +5400,105 @@ async function initialize(): Promise<void> {
   await startGateway()
 }
 
+/**
+ * Best-effort checkout of the stable `published/<subdomain>` pointer tag so a
+ * published pod serves exactly what was published, not whatever HEAD the
+ * durable repo currently points at (which a later in-IDE edit could move).
+ * Detached-HEAD is fine — published pods never commit. Falls back silently to
+ * the restored HEAD when the tag is missing (e.g. legacy repos).
+ */
+async function checkoutPublishedTag(subdomain: string): Promise<void> {
+  if (!subdomain) return
+  const { execFile } = await import('child_process')
+  await new Promise<void>((resolve) => {
+    execFile(
+      'git',
+      ['-C', WORKSPACE_DIR, 'checkout', '--quiet', `published/${subdomain}`],
+      (err) => {
+        if (err) {
+          console.warn(`[agent-runtime] published-mode: could not checkout published/${subdomain} (using HEAD): ${err.message}`)
+        } else {
+          logTiming(`Published source pinned to tag published/${subdomain}`)
+        }
+        resolve()
+      },
+    )
+  })
+}
+
+/**
+ * Server-backed published initialization (SHOGO_PUBLISHED_MODE). Hydrates the
+ * source read-only, overlays the durable writable state, runs `server.tsx`
+ * via the PreviewManager (so `/api/*` is live), then arms the published-data
+ * uploader. The agent gateway is deliberately NOT started.
+ */
+async function initializePublished(): Promise<void> {
+  logTiming(`Published mode: initializing for subdomain=${PUBLISHED_SUBDOMAIN}`)
+
+  // 1. Seed template files (idempotent) so a brand-new emptyDir has the base
+  //    layout; git/S3 hydration below overlays the real published app.
+  ensureWorkspaceFiles()
+
+  // 2. Hydrate source read-only. Prefer the durable git repo (carries the
+  //    published tag + the builder's seed DB); fall back to the S3 project
+  //    archive. We deliberately do NOT start any source uploader/watcher —
+  //    published source is immutable for the life of the pod.
+  let hydrated = false
+  const repoCfg = repoStoreConfigFromEnv()
+  if (repoCfg) {
+    try {
+      const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
+      hydrated = res.restored
+      if (hydrated) {
+        await checkoutPublishedTag(PUBLISHED_SUBDOMAIN)
+        logTiming('Published mode: source restored from git repo store')
+      }
+    } catch (err: any) {
+      console.error('[agent-runtime] Published mode: git restore failed:', err?.message ?? err)
+    }
+  }
+  if (!hydrated && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
+    try {
+      const sync = createS3SyncForProject(WORKSPACE_DIR, process.env.PROJECT_ID || '', {
+        watchEnabled: false,
+        syncInterval: 0,
+        suppressProjectArchive: true,
+      })
+      if (sync) {
+        const stats = await sync.downloadAll()
+        hydrated = stats.errors.length === 0
+        logTiming(`Published mode: source restored from S3 (downloaded=${stats.downloaded}, errors=${stats.errors.length})`)
+      }
+    } catch (err: any) {
+      console.error('[agent-runtime] Published mode: S3 restore failed:', err?.message ?? err)
+    }
+  }
+  if (!hydrated) {
+    console.error('[agent-runtime] Published mode: NO source hydrated — the published app will not serve correctly')
+  }
+
+  // 3. Overlay durable writable state (end-user writes accumulated since the
+  //    last cold start). Absent on first boot — the git seed DB is used then.
+  publishedDataSyncInstance = createPublishedDataSyncFromEnv(WORKSPACE_DIR)
+  if (publishedDataSyncInstance) {
+    await publishedDataSyncInstance.restore()
+  }
+
+  // 4. Run the project's backend (deps install + prisma + build + server.tsx).
+  //    The runtime's `/api/*` proxy + static `dist/` serve then front it.
+  try {
+    await getPreviewManager().start()
+    logTiming('Published mode: preview/server pipeline started')
+  } catch (err: any) {
+    console.error('[agent-runtime] Published mode: preview start failed:', err?.message ?? err)
+  }
+
+  // 5. Arm the writable-state uploader (periodic + debounced DB watcher).
+  if (publishedDataSyncInstance) {
+    publishedDataSyncInstance.startAutoFlush()
+  }
+}
+
 // =============================================================================
 // In-Flight Request Tracking
 // =============================================================================
@@ -5340,6 +5538,16 @@ async function gracefulShutdown(signal: string): Promise<void> {
   }
 
   streamBufferStore.dispose()
+
+  // Published mode: flush the writable-state archive (the SQLite DB + upload
+  // dirs) before exit so end-user writes survive scale-to-zero / redeploys.
+  if (publishedDataSyncInstance) {
+    try {
+      await publishedDataSyncInstance.flushAndShutdown(10_000)
+    } catch (err: any) {
+      console.error('[agent-runtime] Published data flush during shutdown failed:', err?.message ?? err)
+    }
+  }
 
   // Cloud sync shutdown order matters in `git_only` mode:
   //   1. GitWorkspaceSync.flushAndShutdown — last attempt at a clean push.
@@ -5489,6 +5697,16 @@ if (state.isPoolMode && !state.poolAssigned) {
       console.error('[agent-runtime] Pool skill-server pre-warm failed:', err?.message ?? err)
     }
   })
+} else if (IS_PUBLISHED_MODE) {
+  // Server-backed published app: run the project's server.tsx in production
+  // without the agent gateway. No pool, no editing — serve-only.
+  initializePublished()
+    .then(() => {
+      logTiming(`Published server listening on port ${PORT}`)
+    })
+    .catch((error) => {
+      console.error('[agent-runtime] Published initialization failed:', error)
+    })
 } else {
   // Runs for both normal (non-pool) startup AND self-assigned cold-start pods.
   // Self-assigned pods have poolAssigned=true and need full init to restore
