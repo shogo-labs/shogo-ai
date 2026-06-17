@@ -68,14 +68,20 @@ provider "cloudflare" {
 # apps to the prod-us Knative (Kourier) ingress LB, rewriting the Host header
 # to `{subdomain}.shogo.one` so the DomainMapping routes to published-{id}.
 #
-# CRITICAL — the Worker proxies to the LB by raw IP, NOT a `*.shogo.one`
-# hostname. Cloudflare applies the `*.shogo.one/*` Worker route to the Worker's
-# OWN outbound subrequests (even to a DNS-only record), so proxying to e.g.
-# `kourier-us.shogo.one` re-enters this same Worker, which treats `kourier-us`
-# as an unknown published app and 404s. An IP literal isn't matched by the
-# route, so the subrequest goes straight to the LB. The `kourier-us.shogo.one`
-# record below is kept only as a human-facing/named pointer at the LB (handy
-# for ops + documents the IP source); the Worker does not use it.
+# Two Cloudflare gotchas shape this wiring:
+#   1. CF Workers cannot `fetch()` a raw IP literal (error 1003), so the origin
+#      MUST be a hostname — `kourier-us.shogo.one`, a DNS-only (gray-cloud)
+#      record pointing straight at the LB.
+#   2. CF applies the `*.shogo.one/*` Worker route to the Worker's OWN outbound
+#      subrequests (even to a DNS-only record), so a naive proxy to
+#      `kourier-us.shogo.one` re-enters this same Worker — which treats
+#      `kourier-us` as an unknown published app and 404s. The `kourier_bypass`
+#      route below (a more-specific pattern with NO script) disables the Worker
+#      for that exact host, so the subrequest resolves the DNS-only record and
+#      lands directly on the LB.
+# HTTP (not HTTPS): Kourier presents a Cloudflare Origin CA cert (`*.shogo.ai`)
+# that a direct Worker subrequest can't validate; the Worker sets
+# `X-Forwarded-Proto: https` so the app still treats the request as secure.
 #
 # The LB IP is a stable OCI-assigned address for the long-lived `kourier`
 # Service in `kourier-system` (not terraform-managed here, hence the literal).
@@ -94,7 +100,16 @@ resource "cloudflare_record" "kourier_us" {
   type    = "A"
   proxied = false
   ttl     = 300
-  comment = "Named pointer at the prod-us Kourier LB (server-backed publish origin uses the IP directly to avoid the Worker-route loop)"
+  comment = "DNS-only origin for server-backed published /api/* proxying (prod-us Kourier LB)"
+}
+
+# More-specific Worker route with NO script ⇒ bypass the subdomain-router
+# Worker for the Kourier origin host, breaking the self-subrequest loop. See
+# the note above. Takes precedence over the module's `*.shogo.one/*` route.
+resource "cloudflare_worker_route" "kourier_bypass" {
+  zone_id = data.cloudflare_zone.publish.id
+  pattern = "${cloudflare_record.kourier_us.hostname}/*"
+  # script_name intentionally omitted → Workers skipped for this host.
 }
 
 data "oci_containerengine_cluster_kube_config" "main" {
@@ -261,12 +276,9 @@ module "us" {
 
   # Server-backed published apps (run server.tsx in production) proxy their
   # `/api/*` traffic from the subdomain-router Worker to this region's Knative
-  # (Kourier) ingress LB by raw IP (see the locals note above for why a
-  # hostname can't be used here). HTTP (not HTTPS) because Kourier presents a
-  # Cloudflare Origin CA cert (`*.shogo.ai`) that a direct Worker subrequest
-  # can't validate; the Worker sets `X-Forwarded-Proto: https` so the app still
-  # treats the request as secure.
-  kourier_origin = "http://${local.prod_us_kourier_lb_ip}"
+  # (Kourier) ingress via the DNS-only `kourier-us.shogo.one` host (see the
+  # locals note above for the IP-fetch + Worker-loop gotchas this avoids).
+  kourier_origin = "http://${cloudflare_record.kourier_us.hostname}"
 
   # Bring-your-own custom hostnames (Cloudflare for SaaS). Off until a
   # DEDICATED zone (separate from shogo.one) is supplied — see variables.tf.
@@ -359,8 +371,8 @@ output "published_data_bucket" {
   value       = module.us.published_data_bucket
 }
 output "kourier_origin" {
-  description = "Origin the subdomain-router Worker proxies server-backed /api/* to (prod-us Kourier LB by IP)."
-  value       = "http://${local.prod_us_kourier_lb_ip}"
+  description = "Origin the subdomain-router Worker proxies server-backed /api/* to (DNS-only host at the prod-us Kourier LB)."
+  value       = "http://${cloudflare_record.kourier_us.hostname}"
 }
 output "rpc_eu_id" {
   value = var.enable_drg_peering_to_eu ? module.drg_to_eu[0].rpc_id : null
