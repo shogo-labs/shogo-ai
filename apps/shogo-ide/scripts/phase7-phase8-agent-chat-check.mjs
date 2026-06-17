@@ -37,7 +37,7 @@ const layout = readJson('apps/shogo-ide/distribution/defaults/layout.json')
 const materializer = read('apps/shogo-ide/scripts/materialize-distribution.mjs')
 
 assert(manifest?.displayName === 'Shogo Chat', 'extension display name must be native Shogo Chat')
-assert(manifest?.version === '0.0.0-phase.8', 'extension manifest must report Phase 8')
+assert(/^0\.0\.0-phase\.(8|9|10)$/.test(manifest?.version || ''), 'extension manifest must report Phase 8 or later')
 assert(manifest?.contributes?.commands?.some((command) => command.command === 'shogo.agentChat.focusInput'), 'manifest must contribute focus input command')
 assert(manifest?.contributes?.commands?.some((command) => command.command === 'shogo.agentChat.explainSelection'), 'manifest must contribute explain selection command')
 assert(manifest?.contributes?.commands?.some((command) => command.command === 'shogo.agentChat.fixSelection'), 'manifest must contribute fix selection command')
@@ -60,7 +60,7 @@ assert(!extension.includes('workbench.panel.chat'), 'extension must not target a
 assert(extension.includes('prefillPrompt'), 'extension must support native prefill actions')
 assert(extension.includes('focusComposer'), 'webview must support native composer focus')
 assert(extension.includes('pendingComposerText'), 'extension must preserve pending native composer text')
-assert(extension.includes('nativePhase: 8'), 'webview state must report native Phase 8')
+assert(/nativePhase: (8|9|10)/.test(extension), 'webview state must report native Phase 8 or later')
 
 assert(settings?.['shogo.agentChat.autoOpen'] === true, 'default settings must auto-open Shogo Chat')
 assert(settings?.['workbench.secondarySideBar.defaultVisibility'] === 'visible', 'secondary side bar must be visible by default')
@@ -74,7 +74,7 @@ assert(layout?.chat?.defaultContainer === 'shogo-agent-chat', 'default chat cont
 assert(layout?.chat?.autoOpenView === 'shogo.agentChat', 'layout must auto-open the Shogo Chat webview')
 assert(layout?.views?.['shogo-agent-chat']?.includes('shogo.agentChat'), 'layout must include Shogo Chat in the auxiliary container')
 assert(!layout?.views?.shogo?.length, 'layout must not include any left-side Shogo views')
-assert(materializer.includes('phase: 8'), 'generated distribution metadata must materialize Phase 8')
+assert(/phase: (8|9|10)/.test(materializer), 'generated distribution metadata must materialize Phase 8 or later')
 
 if (errors.length > 0) {
   console.error('Shogo Agent Chat Phase 7/8 check failed:')

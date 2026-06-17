@@ -1,8 +1,8 @@
 {
   "name": "shogo-agent-chat",
   "displayName": "Shogo Chat",
-  "description": "Native Shogo IDE chat surface that auto-opens in Code OSS, sends rich IDE context to Shogo, and supports confirmed edit/run actions.",
-  "version": "0.0.0-phase.8",
+  "description": "Native Shogo IDE chat surface with rich typed IDE context, real Ask/Edit/Agent/Plan mode contracts, planner handoff, agent operation controls, Chat Debug payloads, and reviewed edit/run actions.",
+  "version": "0.0.0-phase.10",
   "publisher": "shogo",
   "license": "MIT",
   "private": true,
@@ -23,6 +23,7 @@
     "onCommand:shogo.agentChat.open",
     "onCommand:shogo.agentChat.focusInput",
     "onCommand:shogo.agentChat.newChat",
+    "onCommand:shogo.agentChat.openContextPicker",
     "onCommand:shogo.agentChat.addSelection",
     "onCommand:shogo.agentChat.addActiveFile",
     "onCommand:shogo.agentChat.explainSelection",
@@ -81,6 +82,12 @@
         "title": "Shogo: New Chat",
         "category": "Shogo",
         "icon": "$(add)"
+      },
+      {
+        "command": "shogo.agentChat.openContextPicker",
+        "title": "Shogo: Attach Context...",
+        "category": "Shogo",
+        "icon": "$(references)"
       },
       {
         "command": "shogo.agentChat.addSelection",
@@ -151,6 +158,9 @@
           "command": "shogo.agentChat.newChat"
         },
         {
+          "command": "shogo.agentChat.openContextPicker"
+        },
+        {
           "command": "shogo.agentChat.addSelection"
         },
         {
@@ -172,17 +182,26 @@
           "group": "navigation@1"
         },
         {
-          "command": "shogo.agentChat.addActiveFile",
+          "command": "shogo.agentChat.openContextPicker",
           "when": "view == shogo.agentChat",
           "group": "navigation@2"
         },
         {
+          "command": "shogo.agentChat.addActiveFile",
+          "when": "view == shogo.agentChat",
+          "group": "navigation@3"
+        },
+        {
           "command": "shogo.agentChat.addSelection",
           "when": "view == shogo.agentChat && editorHasSelection",
-          "group": "navigation@3"
+          "group": "navigation@4"
         }
       ],
       "editor/title": [
+        {
+          "command": "shogo.agentChat.openContextPicker",
+          "group": "navigation@79"
+        },
         {
           "command": "shogo.agentChat.addActiveFile",
           "group": "navigation@80"
@@ -207,6 +226,10 @@
         {
           "command": "shogo.agentChat.addActiveFile",
           "group": "shogo@4"
+        },
+        {
+          "command": "shogo.agentChat.openContextPicker",
+          "group": "shogo@5"
         }
       ]
     },

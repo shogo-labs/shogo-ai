@@ -2,9 +2,20 @@ import * as vscode from 'vscode'
 
 type Role = 'system' | 'user' | 'assistant'
 
-type IdeActionStatus = 'pending' | 'running' | 'completed' | 'failed'
+type IdeActionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'rejected' | 'undone'
 
 type IdeActionKind = 'workspaceEdit' | 'writeFile' | 'runCommand' | 'openFile'
+type ChatMode = 'ask' | 'edit' | 'agent' | 'plan'
+
+interface ModeContract {
+  mode: ChatMode
+  label: string
+  description: string
+  readOnly: boolean
+  allowedActions: IdeActionKind[]
+  requiresReview: boolean
+  handoff?: { targetMode: ChatMode; label: string }
+}
 
 interface IdeAction {
   id: string
@@ -23,6 +34,19 @@ interface IdeAction {
   cwd?: string
   result?: string
   error?: string
+  reviewSummary?: string
+  hasCheckpoint?: boolean
+}
+
+interface ActionReview {
+  actionId: string
+  targetLabel: string
+  uri: vscode.Uri
+  originalText: string
+  proposedText: string
+  originalUri: vscode.Uri
+  proposedUri: vscode.Uri
+  applied: boolean
 }
 
 interface ChatMessage {
@@ -33,12 +57,49 @@ interface ChatMessage {
   actions?: IdeAction[]
 }
 
+type RequestStatus = 'idle' | 'running' | 'stopping'
+
+interface QueuedPrompt {
+  prompt: string
+  mode: ChatMode
+  model?: string
+}
+
+interface OperationTimelineItem {
+  id: string
+  kind: 'request' | 'stream' | 'action' | 'queue' | 'steer' | 'debug' | 'subagent'
+  title: string
+  detail?: string
+  createdAt: string
+}
+
+interface DebugSnapshot {
+  createdAt: string
+  bridgeUrl: string
+  requestBody: string
+  headers: Record<string, string>
+}
+
+type ContextKind = 'selection' | 'activeFile' | 'file' | 'folder' | 'symbol' | 'diagnostic' | 'terminal'
+
+interface ContextRange {
+  start: { line: number; character: number }
+  end: { line: number; character: number }
+}
+
 interface ContextItem {
   id: string
-  kind: 'selection' | 'activeFile'
+  kind: ContextKind
   label: string
   uri: string
+  detail?: string
   text?: string
+  range?: ContextRange
+  stale?: boolean
+}
+
+interface ContextSuggestion extends ContextItem {
+  score: number
 }
 
 interface RichIdeContext {
@@ -74,7 +135,11 @@ interface WebviewMessage {
   type: string
   prompt?: string
   model?: string
+  mode?: string
   actionId?: string
+  contextId?: string
+  query?: string
+  operation?: 'queue' | 'steer'
 }
 
 interface BridgeResponse {
@@ -125,6 +190,8 @@ function createAction(input: Partial<IdeAction> & { kind: IdeActionKind }): IdeA
     cwd: input.cwd,
     result: input.result,
     error: input.error,
+    reviewSummary: input.reviewSummary,
+    hasCheckpoint: input.hasCheckpoint,
   }
 }
 
@@ -137,6 +204,81 @@ function titleForAction(kind: IdeActionKind): string {
 
 function isIdeActionKind(value: unknown): value is IdeActionKind {
   return value === 'workspaceEdit' || value === 'writeFile' || value === 'runCommand' || value === 'openFile'
+}
+
+function isEditAction(action: IdeAction): boolean {
+  return action.kind === 'workspaceEdit' || action.kind === 'writeFile'
+}
+
+function isChatMode(value: unknown): value is ChatMode {
+  return value === 'ask' || value === 'edit' || value === 'agent' || value === 'plan'
+}
+
+function modeContract(mode: ChatMode): ModeContract {
+  if (mode === 'ask') {
+    return {
+      mode,
+      label: 'Ask',
+      description: 'Answer and explain using attached IDE context. Do not modify files or run commands.',
+      readOnly: true,
+      allowedActions: ['openFile'],
+      requiresReview: false,
+    }
+  }
+  if (mode === 'edit') {
+    return {
+      mode,
+      label: 'Edit',
+      description: 'Focus on concrete file edits. Propose workspaceEdit/writeFile actions and avoid shell commands.',
+      readOnly: false,
+      allowedActions: ['workspaceEdit', 'writeFile', 'openFile'],
+      requiresReview: true,
+    }
+  }
+  if (mode === 'plan') {
+    return {
+      mode,
+      label: 'Plan',
+      description: 'Create an implementation plan only. Use read-only reasoning and do not propose file edits or commands.',
+      readOnly: true,
+      allowedActions: ['openFile'],
+      requiresReview: false,
+      handoff: { targetMode: 'agent', label: 'Implement plan' },
+    }
+  }
+  return {
+    mode,
+    label: 'Agent',
+    description: 'Use tools for multi-step implementation. Edits require review and commands require explicit confirmation.',
+    readOnly: false,
+    allowedActions: ['workspaceEdit', 'writeFile', 'runCommand', 'openFile'],
+    requiresReview: true,
+  }
+}
+
+function allModeContracts(): ModeContract[] {
+  return ['ask', 'edit', 'agent', 'plan'].map((mode) => modeContract(mode as ChatMode))
+}
+
+function buildModeInstruction(contract: ModeContract): string {
+  const allowed = contract.allowedActions.length ? contract.allowedActions.join(', ') : 'none'
+  return [
+    `[Shogo chat mode: ${contract.label}]`,
+    contract.description,
+    `Allowed IDE actions: ${allowed}.`,
+    contract.readOnly ? 'Read-only mode is active: do not create writeFile, workspaceEdit, runCommand, install, migration, or deployment actions.' : 'Side effects must stay inside the advertised action protocol and wait for user review/confirmation.',
+    contract.mode === 'plan' ? 'Return a concise implementation plan with ordered tasks, risks, and a handoff-ready implementation prompt. Do not edit files.' : '',
+    contract.mode === 'edit' ? 'Prefer minimal, reviewable file edits over broad agentic exploration.' : '',
+    contract.mode === 'ask' ? 'Prefer explanation, references to attached context, and suggested next steps over implementation.' : '',
+  ].filter(Boolean).join('\n')
+}
+
+function actionAllowedInMode(action: IdeAction, mode: ChatMode): boolean {
+  return modeContract(mode).allowedActions.includes(action.kind)
+}
+
+function blockedActionMessage(action: IdeAction, mode: ChatMode): string {
+  return `${action.kind} was blocked because ${modeContract(mode).label} mode only allows ${modeContract(mode).allowedActions.join(', ') || 'read-only responses'}. Switch to Agent mode to run broader tool actions.`
 }
 
 function escapeHtml(value: string): string {
@@ -178,6 +320,42 @@ function buildSessionId(): string {
 
 let lastTextEditor: vscode.TextEditor | null = null
 const lastSelections = new Map<string, vscode.Selection>()
+const actionReviews = new Map<string, ActionReview>()
+const reviewDocuments = new Map<string, string>()
+
+function normalizeQuery(value: string | undefined): string {
+  return (value ?? '').trim().toLowerCase()
+}
+
+function contextIcon(kind: ContextKind): string {
+  if (kind === 'selection') return '⌁'
+  if (kind === 'folder') return '▣'
+  if (kind === 'symbol') return '◇'
+  if (kind === 'diagnostic') return '⚠'
+  if (kind === 'terminal') return '▹'
+  return '□'
+}
+
+function contextKindLabel(kind: ContextKind): string {
+  if (kind === 'activeFile') return 'active file'
+  return kind
+}
+
+function contextMatches(item: ContextItem, query: string): boolean {
+  if (!query) return true
+  return [item.kind, item.label, item.detail, item.uri].filter(Boolean).join(' ').toLowerCase().includes(query)
+}
+
+function dedupeContextItems(items: ContextSuggestion[]): ContextSuggestion[] {
+  const seen = new Set<string>()
+  const output: ContextSuggestion[] = []
+  for (const item of items.sort((a, b) => b.score - a.score)) {
+    if (seen.has(item.id)) continue
+    seen.add(item.id)
+    output.push(item)
+  }
+  return output
+}
 
 function rememberTextEditor(editor: vscode.TextEditor | undefined): void {
   if (!editor) return
@@ -223,6 +401,7 @@ async function collectActiveFile(): Promise<ContextItem | null> {
     kind: 'activeFile',
     label: relativePath(document.uri),
     uri: document.uri.toString(),
+    detail: document.languageId,
     text: document.getText().slice(0, 24000),
   }
 }
@@ -237,11 +416,48 @@ function collectSelection(): ContextItem | null {
   if (!text.trim()) return null
   lastSelections.set(document.uri.toString(), selection)
   return {
-    id: `selection:${document.uri.toString()}:${selection.start.line}:${selection.start.character}:${Date.now()}`,
+    id: `selection:${document.uri.toString()}:${selection.start.line}:${selection.start.character}:${selection.end.line}:${selection.end.character}`,
     kind: 'selection',
     label: `${relativePath(document.uri)}:${selection.start.line + 1}`,
     uri: document.uri.toString(),
+    detail: `${selection.start.line + 1}:${selection.start.character + 1}–${selection.end.line + 1}:${selection.end.character + 1}`,
     text: text.slice(0, 24000),
+    range: {
+      start: { line: selection.start.line, character: selection.start.character },
+      end: { line: selection.end.line, character: selection.end.character },
+    },
+  }
+}
+
+async function readContextFileText(uri: vscode.Uri): Promise<string> {
+  const workspaceApi = vscode.workspace as any
+  try {
+    if (workspaceApi.fs?.readFile) return new TextDecoder().decode(await workspaceApi.fs.readFile(uri)).slice(0, 24000)
+    const document = await workspaceApi.openTextDocument(uri)
+    return document.getText().slice(0, 24000)
+  } catch {
+    return ''
+  }
+}
+
+async function createFileContextItem(uri: vscode.Uri, kind: 'file' | 'activeFile' = 'file'): Promise<ContextItem> {
+  return {
+    id: `${kind}:${uri.toString()}`,
+    kind,
+    label: relativePath(uri),
+    uri: uri.toString(),
+    text: await readContextFileText(uri),
+  }
+}
+
+function createFolderContextItem(folder: vscode.WorkspaceFolder): ContextItem {
+  return {
+    id: `folder:${folder.uri.toString()}`,
+    kind: 'folder',
+    label: folder.name,
+    uri: folder.uri.toString(),
+    detail: relativePath(folder.uri),
+    text: `Workspace folder: ${folder.name}\nURI: ${folder.uri.toString()}`,
   }
 }
 
@@ -351,7 +567,7 @@ function collectStreamActions(data: Record<string, any>): IdeAction[] {
   return candidates.map(normalizeIdeAction).filter((action): action is IdeAction => Boolean(action))
 }
 
-async function readAgentStream(response: Response, onText: (text: string) => void, onAction: (action: IdeAction) => void): Promise<AgentStreamResult> {
+async function readAgentStream(response: Response, onText: (text: string) => void, onAction: (action: IdeAction) => void, onEvent?: (event: Record<string, any>) => void): Promise<AgentStreamResult> {
   const reader = response.body?.getReader()
   if (!reader) return { text: '', actions: [] }
 
@@ -377,6 +593,7 @@ async function readAgentStream(response: Response, onText: (text: string) => voi
 
         try {
           const data = JSON.parse(dataText) as Record<string, any>
+          onEvent?.(data)
           const nextActions = collectStreamActions(data)
           for (const action of nextActions) {
             actions.push(action)
@@ -413,10 +630,19 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | null = null
   private chatSessionId = buildSessionId()
   private pendingComposerText = ''
+  private currentMode: ChatMode = 'agent'
+  private lastPlanText = ''
+  private requestStatus: RequestStatus = 'idle'
+  private activeAbortController: AbortController | null = null
+  private queuedPrompt: QueuedPrompt | null = null
+  private readonly steeringNotes: string[] = []
+  private readonly operationTimeline: OperationTimelineItem[] = []
+  private debugSnapshot: DebugSnapshot | null = null
   private readonly messages: ChatMessage[] = [
     createMessage('assistant', 'Hi, I’m Shogo. This chat is bridged to the local Shogo Desktop agent backend. Ask about this project, attach context, and keep working from the right-side IDE panel.'),
   ]
   private readonly contextItems = new Map<string, ContextItem>()
+  private readonly contextSuggestions = new Map<string, ContextSuggestion>()
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly statusBarItem: any | null = null) {
     this.updateNativeStatus()
@@ -428,8 +654,37 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.messages.push(createMessage('system', text))
   }
 
+  private addTimeline(kind: OperationTimelineItem['kind'], title: string, detail?: string): void {
+    this.operationTimeline.push({
+      id: `op:${Date.now()}:${Math.random().toString(16).slice(2)}`,
+      kind,
+      title,
+      detail,
+      createdAt: new Date().toISOString(),
+    })
+    if (this.operationTimeline.length > 80) this.operationTimeline.splice(0, this.operationTimeline.length - 80)
+  }
+
+  private setDebugSnapshot(bridgeUrl: string, requestBody: string, headers: Record<string, string>): void {
+    this.debugSnapshot = {
+      createdAt: new Date().toISOString(),
+      bridgeUrl,
+      requestBody,
+      headers: { ...headers, ...(headers.authorization ? { authorization: 'Bearer •••' } : {}) },
+    }
+    this.addTimeline('debug', 'Captured request payload', `${requestBody.length} bytes`)
+  }
+
   getAttachedContext(): ContextItem[] {
     return Array.from(this.contextItems.values())
+  }
+
+  private setContextItem(item: ContextItem): void {
+    this.contextItems.set(item.id, item)
+  }
+
+  private removeContextItem(contextId: string): void {
+    this.contextItems.delete(contextId)
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -457,10 +712,24 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     await this.view?.webview.postMessage({ type: 'focusComposer' })
   }
 
-  async prefillPrompt(text: string): Promise<void> {
+  async prefillPrompt(text: string, mode?: ChatMode): Promise<void> {
     this.pendingComposerText = text
+    if (mode) this.currentMode = mode
     await this.open(false)
-    await this.view?.webview.postMessage({ type: 'prefillPrompt', text })
+    await this.view?.webview.postMessage({ type: 'prefillPrompt', text, mode })
+    await this.postState()
+  }
+
+  async handoffPlanToAgent(): Promise<void> {
+    const plan = this.lastPlanText || [...this.messages].reverse().find((message) => message.role === 'assistant' && message.text.trim() && message.text !== 'Thinking…')?.text || ''
+    if (!plan.trim()) {
+      this.pushSystemMessage('No planner response is available to hand off yet.')
+      await this.postState()
+      return
+    }
+    await this.prefillPrompt(`Implement this plan from the previous planner response. Keep changes minimal, use reviewed edit actions, and explain verification steps.\n\nPlan:\n${plan}`, 'agent')
+    this.pushSystemMessage('Planner handoff prepared in Agent mode. Review the prompt, then send when ready.')
+    await this.postState()
   }
 
   async askAboutSelection(intent: 'explain' | 'fix'): Promise<void> {
@@ -470,19 +739,27 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       await this.focusInput()
       return
     }
-    this.contextItems.set(item.id, item)
+    this.setContextItem(item)
     const prompt = intent === 'fix'
       ? `Fix the selected code in ${item.label}. Propose an edit action when you are confident.`
       : `Explain the selected code in ${item.label}. Include key behavior, edge cases, and any risks.`
     this.pushSystemMessage(`Added selection context: ${item.label}`)
-    await this.prefillPrompt(prompt)
+    await this.prefillPrompt(prompt, intent === 'fix' ? 'edit' : 'ask')
     await this.postState()
   }
 
   async newChat(): Promise<void> {
+    this.activeAbortController?.abort()
+    this.activeAbortController = null
+    this.requestStatus = 'idle'
+    this.queuedPrompt = null
+    this.steeringNotes.splice(0, this.steeringNotes.length)
+    this.operationTimeline.splice(0, this.operationTimeline.length)
+    this.debugSnapshot = null
     this.chatSessionId = buildSessionId()
     this.messages.splice(0, this.messages.length, createMessage('assistant', 'Started a new Shogo Agent Chat. Add context or ask about the workspace.'))
     this.contextItems.clear()
+    this.addTimeline('request', 'Started new chat', this.chatSessionId)
     await this.postState()
   }
 
@@ -491,7 +768,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     if (!item) {
       this.pushSystemMessage('Select code in the editor before adding selection context.')
     } else {
-      this.contextItems.set(item.id, item)
+      this.setContextItem(item)
       this.pushSystemMessage(`Added selection context: ${item.label}`)
     }
     await this.open()
@@ -502,10 +779,194 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     if (!item) {
       this.pushSystemMessage('Open a file before adding active file context.')
     } else {
-      this.contextItems.set(item.id, item)
+      this.setContextItem(item)
       this.pushSystemMessage(`Added active file context: ${item.label}`)
     }
     await this.open()
+  }
+
+  async openContextPicker(): Promise<void> {
+    const suggestions = await this.collectContextSuggestions('', 40)
+    const pickerItems = suggestions.map((item) => ({
+      label: `${contextIcon(item.kind)} ${item.label}`,
+      description: contextKindLabel(item.kind),
+      detail: item.detail || item.uri,
+      item,
+    }))
+    const picked = await (vscode.window as any).showQuickPick?.(pickerItems, {
+      placeHolder: 'Attach context to Shogo Chat',
+      matchOnDescription: true,
+      matchOnDetail: true,
+    })
+    if (picked?.item) {
+      this.setContextItem(picked.item)
+      this.pushSystemMessage(`Attached ${contextKindLabel(picked.item.kind)} context: ${picked.item.label}`)
+      await this.open()
+    }
+  }
+
+  removeDeletedContext(files: readonly vscode.Uri[]): void {
+    const deleted = new Set(files.map((uri) => uri.toString()))
+    let removed = 0
+    for (const item of this.contextItems.values()) {
+      if ((item.kind === 'file' || item.kind === 'activeFile' || item.kind === 'selection' || item.kind === 'folder' || item.kind === 'symbol' || item.kind === 'diagnostic') && deleted.has(item.uri)) {
+        this.contextItems.delete(item.id)
+        removed += 1
+      }
+    }
+    if (removed > 0) {
+      this.pushSystemMessage(`Removed ${removed} stale context attachment${removed === 1 ? '' : 's'} after file deletion.`)
+      void this.postState()
+    }
+  }
+
+  private async addSuggestionContext(contextId: string): Promise<void> {
+    const item = this.contextSuggestions.get(contextId)
+    if (!item) return
+    this.setContextItem(item)
+    this.pushSystemMessage(`Attached ${contextKindLabel(item.kind)} context: ${item.label}`)
+    await this.postState()
+  }
+
+  private async postContextSuggestions(query: string | undefined): Promise<void> {
+    const suggestions = await this.collectContextSuggestions(query ?? '', 12)
+    this.contextSuggestions.clear()
+    for (const suggestion of suggestions) this.contextSuggestions.set(suggestion.id, suggestion)
+    await this.view?.webview.postMessage({
+      type: 'contextSuggestions',
+      suggestions: suggestions.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        label: item.label,
+        detail: item.detail || item.uri,
+      })),
+    })
+  }
+
+  private async collectContextSuggestions(queryValue: string, limit: number): Promise<ContextSuggestion[]> {
+    const query = normalizeQuery(queryValue)
+    const suggestions: ContextSuggestion[] = []
+    const activeFile = await collectActiveFile()
+    if (activeFile) suggestions.push({ ...activeFile, score: 100 })
+    const selection = collectSelection()
+    if (selection) suggestions.push({ ...selection, score: 98 })
+    for (const folder of vscode.workspace.workspaceFolders ?? []) suggestions.push({ ...createFolderContextItem(folder), score: 82 })
+
+    const workspaceApi = vscode.workspace as any
+    if (workspaceApi.findFiles) {
+      const files = await workspaceApi.findFiles(query ? `**/*${query}*` : '**/*', '**/{node_modules,.git,dist,out,build}/**', 12).catch(() => [])
+      for (const uri of files as vscode.Uri[]) {
+        suggestions.push({ ...(await createFileContextItem(uri, 'file')), score: 76 })
+      }
+    }
+
+    const symbolProvider = await vscode.commands.executeCommand<any[]>('vscode.executeWorkspaceSymbolProvider', query || '').catch(() => [])
+    for (const symbol of (symbolProvider ?? []).slice(0, 8)) {
+      const uri = symbol.location?.uri
+      if (!uri) continue
+      suggestions.push({
+        id: `symbol:${uri.toString()}:${symbol.name ?? ''}:${symbol.location?.range?.start?.line ?? 0}`,
+        kind: 'symbol',
+        label: String(symbol.name ?? relativePath(uri)),
+        uri: uri.toString(),
+        detail: `${relativePath(uri)} · ${String(symbol.containerName ?? symbol.kind ?? 'symbol')}`,
+        text: await readContextFileText(uri),
+        range: symbol.location?.range ? {
+          start: { line: Number(symbol.location.range.start.line ?? 0), character: Number(symbol.location.range.start.character ?? 0) },
+          end: { line: Number(symbol.location.range.end.line ?? 0), character: Number(symbol.location.range.end.character ?? 0) },
+        } : undefined,
+        score: 70,
+      })
+    }
+
+    const diagnostics = typeof (vscode as any).languages?.getDiagnostics === 'function' ? ((vscode as any).languages.getDiagnostics() ?? []) as Array<[vscode.Uri, any[]]> : []
+    for (const [uri, items] of diagnostics) {
+      for (const diagnostic of items.slice(0, 5)) {
+        suggestions.push({
+          id: `diagnostic:${uri.toString()}:${diagnostic.range?.start?.line ?? 0}:${String(diagnostic.message ?? '').slice(0, 80)}`,
+          kind: 'diagnostic',
+          label: `${relativePath(uri)}:${Number(diagnostic.range?.start?.line ?? 0) + 1}`,
+          uri: uri.toString(),
+          detail: String(diagnostic.message ?? '').slice(0, 160),
+          text: `Diagnostic in ${relativePath(uri)}:${Number(diagnostic.range?.start?.line ?? 0) + 1}\n${String(diagnostic.message ?? '')}`,
+          range: diagnostic.range ? {
+            start: { line: Number(diagnostic.range.start.line ?? 0), character: Number(diagnostic.range.start.character ?? 0) },
+            end: { line: Number(diagnostic.range.end.line ?? 0), character: Number(diagnostic.range.end.character ?? 0) },
+          } : undefined,
+          score: 66,
+        })
+      }
+    }
+
+    const terminals = (((vscode.window as any).terminals ?? []) as Array<{ name?: string; state?: { isInteractedWith?: boolean } }>).slice(0, 8)
+    for (const terminal of terminals) {
+      const name = terminal.name || 'Terminal'
+      suggestions.push({
+        id: `terminal:${name}`,
+        kind: 'terminal',
+        label: name,
+        uri: `shogo-terminal://${encodeURIComponent(name)}`,
+        detail: terminal.state?.isInteractedWith ? 'active terminal' : 'idle terminal',
+        text: `Terminal: ${name} (${terminal.state?.isInteractedWith ? 'active' : 'idle'})`,
+        score: 58,
+      })
+    }
+
+    return dedupeContextItems(suggestions.filter((item) => contextMatches(item, query))).slice(0, limit)
+  }
+
+  private async openContextItem(contextId: string): Promise<void> {
+    const item = this.contextItems.get(contextId)
+    if (!item || item.kind === 'terminal') return
+    const uri = vscode.Uri.parse(item.uri)
+    if (item.kind === 'folder') {
+      await vscode.commands.executeCommand('revealInExplorer', uri).catch(() => undefined)
+      return
+    }
+    const document = await (vscode.workspace as any).openTextDocument(uri)
+    const options: any = { preview: false }
+    if (item.range) {
+      const rangeFactory = (vscode as any).Range
+      if (rangeFactory) options.selection = new rangeFactory(item.range.start.line, item.range.start.character, item.range.end.line, item.range.end.character)
+    }
+    await (vscode.window as any).showTextDocument(document, options)
+  }
+
+  private queuePrompt(prompt: string, mode: ChatMode, model?: string): void {
+    this.queuedPrompt = { prompt, mode, model }
+    this.addTimeline('queue', 'Queued follow-up prompt', `${modeContract(mode).label} · ${prompt.slice(0, 140)}`)
+    this.pushSystemMessage('Queued your follow-up. Shogo will send it after the current request finishes.')
+  }
+
+  private steerRequest(prompt: string): void {
+    this.steeringNotes.push(prompt)
+    this.queuedPrompt = {
+      prompt: `Steering note while the previous request was running:\n${prompt}\n\nContinue from the latest assistant result and adjust course accordingly.`,
+      mode: this.currentMode,
+      model: undefined,
+    }
+    this.addTimeline('steer', 'Captured steering note', prompt.slice(0, 160))
+    this.pushSystemMessage('Captured steering note and queued it as the next turn.')
+  }
+
+  private async stopRequest(): Promise<void> {
+    if (!this.activeAbortController || this.requestStatus !== 'running') {
+      this.pushSystemMessage('No Shogo request is currently running.')
+      await this.postState()
+      return
+    }
+    this.requestStatus = 'stopping'
+    this.addTimeline('request', 'Stop requested', 'Aborting the active Shogo bridge request.')
+    this.activeAbortController.abort()
+    await this.postState()
+  }
+
+  private async runQueuedPrompt(): Promise<void> {
+    const queued = this.queuedPrompt
+    if (!queued || this.requestStatus !== 'idle') return
+    this.queuedPrompt = null
+    this.addTimeline('queue', 'Sending queued follow-up', `${modeContract(queued.mode).label} · ${queued.prompt.slice(0, 140)}`)
+    await this.startPromptRequest(queued.prompt, queued.model, queued.mode)
   }
 
   private async handleMessage(raw: unknown): Promise<void> {
@@ -522,6 +983,29 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       return
     }
 
+    if (msg.type === 'modeChanged') {
+      if (isChatMode(msg.mode)) this.currentMode = msg.mode
+      await this.postState()
+      return
+    }
+
+    if (msg.type === 'handoffPlan') {
+      await this.handoffPlanToAgent()
+      return
+    }
+
+    if (msg.type === 'stopRequest') {
+      await this.stopRequest()
+      return
+    }
+
+    if (msg.type === 'clearTimeline') {
+      this.operationTimeline.splice(0, this.operationTimeline.length)
+      this.addTimeline('debug', 'Cleared operation timeline')
+      await this.postState()
+      return
+    }
+
     if (msg.type === 'addSelection') {
       await this.addSelection()
       return
@@ -532,10 +1016,51 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       return
     }
 
+    if (msg.type === 'openContextPicker') {
+      await this.openContextPicker()
+      return
+    }
+
+    if (msg.type === 'requestContextSuggestions') {
+      await this.postContextSuggestions(msg.query)
+      return
+    }
+
+    if (msg.type === 'addContextSuggestion') {
+      if (typeof msg.contextId === 'string') await this.addSuggestionContext(msg.contextId)
+      return
+    }
+
+    if (msg.type === 'removeContext') {
+      if (typeof msg.contextId === 'string') this.removeContextItem(msg.contextId)
+      await this.postState()
+      return
+    }
+
+    if (msg.type === 'openContext') {
+      if (typeof msg.contextId === 'string') await this.openContextItem(msg.contextId)
+      return
+    }
+
     if (msg.type === 'clearContext') {
       this.contextItems.clear()
       this.messages.push(createMessage('system', 'Context cleared.'))
       await this.postState()
+      return
+    }
+
+    if (msg.type === 'previewAction') {
+      if (typeof msg.actionId === 'string') await this.previewAction(msg.actionId)
+      return
+    }
+
+    if (msg.type === 'rejectAction') {
+      if (typeof msg.actionId === 'string') await this.rejectAction(msg.actionId)
+      return
+    }
+
+    if (msg.type === 'undoAction') {
+      if (typeof msg.actionId === 'string') await this.undoAction(msg.actionId)
       return
     }
 
@@ -546,49 +1071,81 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
 
     if (msg.type === 'sendPrompt') {
       const prompt = typeof msg.prompt === 'string' ? msg.prompt.trim() : ''
+      const mode = isChatMode(msg.mode) ? msg.mode : this.currentMode
+      this.currentMode = mode
       if (!prompt) return
-      this.pendingComposerText = ''
-      this.messages.push(createMessage('user', prompt))
-      const assistantMessage = createMessage('assistant', 'Thinking…')
-      this.messages.push(assistantMessage)
-      await this.postState()
-      const response = await this.sendPrompt(prompt, msg.model, (text) => {
-        assistantMessage.text = text || 'Thinking…'
-        void this.postState()
-      }, (action) => {
-        assistantMessage.actions = [...(assistantMessage.actions ?? []), action]
-        void this.postState()
-      })
-      if (response.ok === false) {
-        assistantMessage.role = 'system'
-        assistantMessage.text = response.error || 'Shogo Agent Chat request failed.'
-      } else {
-        assistantMessage.text = response.message || 'Shogo returned an empty response.'
-        if (response.actions?.length) assistantMessage.actions = response.actions
+      if (this.requestStatus === 'running' || this.requestStatus === 'stopping') {
+        if (msg.operation === 'steer') this.steerRequest(prompt)
+        else this.queuePrompt(prompt, mode, msg.model)
+        await this.postState()
+        return
       }
-      await this.postState()
+      await this.startPromptRequest(prompt, msg.model, mode)
     }
   }
 
-  private buildAgentMessages(prompt: string): Array<{ role: 'user' | 'assistant'; parts: Array<{ type: 'text'; text: string }> }> {
+  private async startPromptRequest(prompt: string, model: string | undefined, mode: ChatMode): Promise<void> {
+    this.currentMode = mode
+    this.pendingComposerText = ''
+    this.requestStatus = 'running'
+    this.activeAbortController = new AbortController()
+    this.addTimeline('request', `Started ${modeContract(mode).label} request`, prompt.slice(0, 160))
+    this.messages.push(createMessage('user', prompt))
+    const assistantMessage = createMessage('assistant', 'Thinking…')
+    this.messages.push(assistantMessage)
+    await this.postState()
+    const response = await this.sendPrompt(prompt, model, mode, this.activeAbortController.signal, (text) => {
+      assistantMessage.text = text || 'Thinking…'
+      void this.postState()
+    }, (action) => {
+      this.addTimeline('action', action.title || action.kind, `${action.kind} · ${action.filePath || action.uri || action.command || 'pending'}`)
+      if (!actionAllowedInMode(action, mode)) {
+        assistantMessage.actions = [...(assistantMessage.actions ?? []), { ...action, status: 'rejected', error: blockedActionMessage(action, mode), reviewSummary: `Blocked by ${modeContract(mode).label} mode contract.` }]
+      } else {
+        assistantMessage.actions = [...(assistantMessage.actions ?? []), action]
+      }
+      void this.postState()
+    }, (event) => {
+      if (event.type && event.type !== 'text-delta' && event.type !== 'text') this.addTimeline('stream', String(event.type), event.toolName || event.message || event.kind)
+    })
+    if (response.ok === false) {
+      assistantMessage.role = 'system'
+      assistantMessage.text = response.error || 'Shogo Agent Chat request failed.'
+      this.addTimeline('request', 'Request failed', assistantMessage.text)
+    } else {
+      assistantMessage.text = response.message || 'Shogo returned an empty response.'
+      if (response.actions?.length) assistantMessage.actions = response.actions.map((action) => actionAllowedInMode(action, mode) ? action : { ...action, status: 'rejected', error: blockedActionMessage(action, mode), reviewSummary: `Blocked by ${modeContract(mode).label} mode contract.` })
+      if (mode === 'plan') this.lastPlanText = assistantMessage.text
+      this.addTimeline('request', 'Request completed', `${assistantMessage.text.length} chars · ${response.actions?.length ?? 0} action(s)`)
+    }
+    this.activeAbortController = null
+    this.requestStatus = 'idle'
+    await this.postState()
+    await this.runQueuedPrompt()
+  }
+
+  private buildAgentMessages(prompt: string, mode: ChatMode): Array<{ role: 'user' | 'assistant'; parts: Array<{ type: 'text'; text: string }> }> {
     const context = Array.from(this.contextItems.values())
     const contextText = summarizeContextForPrompt(context)
+    const modeText = `\n\n${buildModeInstruction(modeContract(mode))}`
+    const steeringText = this.steeringNotes.length ? `\n\n[Shogo steering notes captured while previous requests were running]\n${this.steeringNotes.map((note, index) => `${index + 1}. ${note}`).join('\n')}` : ''
     const history = this.messages
       .filter((message) => (message.role === 'user' || message.role === 'assistant') && message.text.trim() && message.text !== 'Thinking…')
       .map((message) => toAgentMessage(message.role as 'user' | 'assistant', message.text))
 
     if (history.length === 0 || history[history.length - 1].role !== 'user') {
-      history.push(toAgentMessage('user', `${prompt}${contextText}`))
+      history.push(toAgentMessage('user', `${prompt}${contextText}${modeText}${steeringText}`))
     } else {
       const last = history[history.length - 1]
-      last.parts = [{ type: 'text', text: `${prompt}${contextText}` }]
+      last.parts = [{ type: 'text', text: `${prompt}${contextText}${modeText}${steeringText}` }]
     }
 
     return history
   }
 
-  private async sendPrompt(prompt: string, model: string | undefined, onText: (text: string) => void, onAction: (action: IdeAction) => void): Promise<BridgeResponse> {
+  private async sendPrompt(prompt: string, model: string | undefined, mode: ChatMode, signal: AbortSignal, onText: (text: string) => void, onAction: (action: IdeAction) => void, onEvent: (event: Record<string, any>) => void): Promise<BridgeResponse> {
     const bridge = getBridgeConfig()
+    const contract = modeContract(mode)
     const context = Array.from(this.contextItems.values())
     const ideContext = collectRichIdeContext(context)
     if (!bridge.url) {
@@ -599,38 +1156,72 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     const requestBody = JSON.stringify({
-      messages: this.buildAgentMessages(prompt),
+      messages: this.buildAgentMessages(prompt, mode),
       chatSessionId: this.chatSessionId,
-      interactionMode: 'agent',
+      interactionMode: mode,
+      chatMode: mode,
+      modeContract: contract,
+      availableModes: allModeContracts(),
       ...(model && model !== 'auto' ? { agentMode: model } : {}),
       ide: ideContext,
       ideContext,
       ideActionProtocol: {
-        version: 1,
-        actions: ['workspaceEdit', 'writeFile', 'runCommand', 'openFile'],
+        version: 2,
+        actions: contract.allowedActions,
+        modeContracts: allModeContracts(),
         delivery: 'stream-event',
         eventTypes: ['ide-action', 'shogo-ide-action'],
         requiresUserConfirmation: true,
         shellCommandsRequireWorkspaceTrust: true,
+        contextAttachments: {
+          hashMentions: true,
+          picker: true,
+          types: ['selection', 'activeFile', 'file', 'folder', 'symbol', 'diagnostic', 'terminal'],
+          dedupe: true,
+          staleFileWatch: true,
+        },
+        editReview: {
+          diffPreview: true,
+          checkpoints: true,
+          rejectBeforeApply: true,
+          undoAfterApply: true,
+        },
+        planHandoff: {
+          enabled: true,
+          sourceMode: 'plan',
+          targetMode: 'agent',
+          reviewBeforeSend: true,
+        },
+        agentOperations: {
+          stop: true,
+          queueFollowUps: true,
+          steeringNotes: true,
+          operationTimeline: true,
+          debugPayload: true,
+          subagents: { enabled: true, handoffOnly: true },
+        },
       },
     })
-    const headers = {
+    const headers: Record<string, string> = {
       'content-type': 'application/json',
       'x-chat-session-id': this.chatSessionId,
       ...(bridge.token ? { authorization: `Bearer ${bridge.token}` } : {}),
     }
+    this.setDebugSnapshot(bridge.url, requestBody, headers)
 
     try {
       let response = await fetch(`${bridge.url}/agent/chat`, {
         method: 'POST',
         headers,
         body: requestBody,
+        signal,
       })
       if (response.status === 404 || response.status === 401) {
         response = await fetch(`${bridge.url}/api/agent/chat`, {
           method: 'POST',
           headers,
           body: requestBody,
+          signal,
         })
       }
       if (!response.ok) {
@@ -638,10 +1229,11 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
         return { ok: false, error: body.error || `Shogo agent backend returned HTTP ${response.status}.` }
       }
 
-      const stream = await readAgentStream(response, onText, onAction)
+      const stream = await readAgentStream(response, onText, onAction, onEvent)
       if (stream.error) return { ok: false, error: stream.error, actions: stream.actions }
       return { ok: true, message: stream.text || 'Shogo returned an empty response.', actions: stream.actions }
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return { ok: false, error: 'Shogo request stopped by user.' }
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   }
@@ -670,13 +1262,100 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     return uriFactory(fullPath)
   }
 
+  private async readTextFile(uri: vscode.Uri): Promise<string> {
+    const workspaceApi = vscode.workspace as any
+    const fsApi = workspaceApi.fs
+    if (fsApi?.readFile) {
+      try {
+        return new TextDecoder().decode(await fsApi.readFile(uri))
+      } catch {
+        return ''
+      }
+    }
+    try {
+      const document = await workspaceApi.openTextDocument(uri)
+      return document.getText()
+    } catch {
+      return ''
+    }
+  }
+
   private async writeTextFile(uri: vscode.Uri, content: string): Promise<void> {
     const fsApi = (vscode.workspace as any).fs
     if (!fsApi?.writeFile) throw new Error('VS Code workspace file API is unavailable.')
     await fsApi.writeFile(uri, new TextEncoder().encode(content))
   }
 
+  private buildReviewUri(actionId: string, side: 'original' | 'proposed'): vscode.Uri {
+    return vscode.Uri.parse(`shogo-review:/${encodeURIComponent(actionId)}/${side}.txt`)
+  }
+
+  private async createActionReview(action: IdeAction): Promise<ActionReview> {
+    const existing = actionReviews.get(action.id)
+    if (existing) return existing
+    const uri = this.resolveActionUri(action)
+    const originalText = await this.readTextFile(uri)
+    let proposedText = ''
+    if (action.kind === 'writeFile') {
+      if (typeof action.content !== 'string') throw new Error('writeFile action is missing content.')
+      proposedText = action.content
+    } else {
+      if (typeof action.content === 'string' && !action.find) {
+        proposedText = action.content
+      } else {
+        if (!action.find) throw new Error('workspaceEdit action needs either content or find/replace text.')
+        if (!originalText.includes(action.find)) throw new Error(`Could not find requested text in ${action.filePath || action.uri}.`)
+        proposedText = originalText.replace(action.find, action.replace ?? '')
+      }
+    }
+    const originalUri = this.buildReviewUri(action.id, 'original')
+    const proposedUri = this.buildReviewUri(action.id, 'proposed')
+    const targetLabel = action.filePath || action.uri || uri.toString()
+    const review: ActionReview = {
+      actionId: action.id,
+      targetLabel,
+      uri,
+      originalText,
+      proposedText,
+      originalUri,
+      proposedUri,
+      applied: false,
+    }
+    actionReviews.set(action.id, review)
+    reviewDocuments.set(originalUri.toString(), originalText)
+    reviewDocuments.set(proposedUri.toString(), proposedText)
+    action.hasCheckpoint = true
+    action.reviewSummary = `Review ready · ${targetLabel} · ${originalText.length} → ${proposedText.length} chars`
+    return review
+  }
+
+  private async previewActionReview(action: IdeAction): Promise<string> {
+    if (!isEditAction(action)) return 'Only edit actions have a diff preview.'
+    const review = await this.createActionReview(action)
+    await vscode.commands.executeCommand('vscode.diff', review.originalUri, review.proposedUri, `Shogo review: ${review.targetLabel}`)
+    action.reviewSummary = `Diff preview opened · ${review.targetLabel}`
+    return `Opened Shogo diff preview for ${review.targetLabel}.`
+  }
+
+  private async rejectActionReview(action: IdeAction): Promise<string> {
+    if (action.status !== 'pending') throw new Error('Only pending actions can be rejected.')
+    action.status = 'rejected'
+    action.result = `Rejected ${action.title}. No files were changed.`
+    return action.result
+  }
+
+  private async undoActionCheckpoint(action: IdeAction): Promise<string> {
+    const review = actionReviews.get(action.id)
+    if (!review || !review.applied) throw new Error('No applied checkpoint is available for this action.')
+    await this.writeTextFile(review.uri, review.originalText)
+    review.applied = false
+    action.status = 'undone'
+    action.result = `Restored checkpoint for ${review.targetLabel}.`
+    return action.result
+  }
+
   private async executeIdeAction(action: IdeAction): Promise<string> {
+    if (!actionAllowedInMode(action, this.currentMode)) throw new Error(blockedActionMessage(action, this.currentMode))
     if ((action.kind === 'workspaceEdit' || action.kind === 'writeFile' || action.kind === 'runCommand') && !vscode.workspace.isTrusted) {
       throw new Error('Workspace trust is required before Shogo can edit files or run commands.')
     }
@@ -687,24 +1366,18 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       return `Opened ${action.filePath || action.uri}.`
     }
 
-    if (action.kind === 'writeFile') {
-      if (typeof action.content !== 'string') throw new Error('writeFile action is missing content.')
-      await this.writeTextFile(this.resolveActionUri(action), action.content)
-      return `Wrote ${action.filePath || action.uri}.`
-    }
-
-    if (action.kind === 'workspaceEdit') {
-      if (typeof action.content === 'string' && !action.find) {
-        await this.writeTextFile(this.resolveActionUri(action), action.content)
-        return `Updated ${action.filePath || action.uri}.`
+    if (isEditAction(action)) {
+      const review = await this.createActionReview(action)
+      const currentText = await this.readTextFile(review.uri)
+      if (currentText !== review.originalText) {
+        const approved = await vscode.window.showWarningMessage(`The file changed after Shogo prepared this edit. Apply the reviewed version anyway?\n\n${review.targetLabel}`, 'Apply anyway', 'Cancel')
+        if (approved !== 'Apply anyway') throw new Error('Edit was cancelled because the file changed.')
       }
-      if (!action.find) throw new Error('workspaceEdit action needs either content or find/replace text.')
-      const uri = this.resolveActionUri(action)
-      const document = await (vscode.workspace as any).openTextDocument(uri)
-      const original = document.getText()
-      if (!original.includes(action.find)) throw new Error(`Could not find requested text in ${action.filePath || action.uri}.`)
-      await this.writeTextFile(uri, original.replace(action.find, action.replace ?? ''))
-      return `Applied edit to ${action.filePath || action.uri}.`
+      await this.writeTextFile(review.uri, review.proposedText)
+      review.applied = true
+      action.hasCheckpoint = true
+      action.reviewSummary = `Applied with checkpoint · ${review.targetLabel}`
+      return `Applied reviewed edit to ${review.targetLabel}.`
     }
 
     if (!action.command) throw new Error('runCommand action is missing a command.')
@@ -718,9 +1391,48 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     return `Started command: ${action.command}.`
   }
 
+  private async previewAction(actionId: string): Promise<void> {
+    const action = this.findAction(actionId)
+    if (!action || !isEditAction(action) || action.status !== 'pending') return
+    try {
+      const result = await this.previewActionReview(action)
+      this.messages.push(createMessage('system', result))
+    } catch (error) {
+      action.error = error instanceof Error ? error.message : String(error)
+      this.messages.push(createMessage('system', `Review failed: ${action.error}`))
+    }
+    await this.postState()
+  }
+
+  private async rejectAction(actionId: string): Promise<void> {
+    const action = this.findAction(actionId)
+    if (!action || action.status !== 'pending') return
+    try {
+      const result = await this.rejectActionReview(action)
+      this.messages.push(createMessage('system', result))
+    } catch (error) {
+      action.error = error instanceof Error ? error.message : String(error)
+      this.messages.push(createMessage('system', `Reject failed: ${action.error}`))
+    }
+    await this.postState()
+  }
+
+  private async undoAction(actionId: string): Promise<void> {
+    const action = this.findAction(actionId)
+    if (!action || !isEditAction(action)) return
+    try {
+      const result = await this.undoActionCheckpoint(action)
+      this.messages.push(createMessage('system', result))
+    } catch (error) {
+      action.error = error instanceof Error ? error.message : String(error)
+      this.messages.push(createMessage('system', `Undo failed: ${action.error}`))
+    }
+    await this.postState()
+  }
+
   private async runAction(actionId: string): Promise<void> {
     const action = this.findAction(actionId)
-    if (!action || action.status === 'running') return
+    if (!action || action.status === 'running' || action.status === 'rejected' || action.status === 'undone') return
     action.status = 'running'
     action.error = undefined
     action.result = undefined
@@ -759,7 +1471,15 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
         bridgeUrl: bridge.url,
         chatSessionId: this.chatSessionId,
         pendingComposerText: this.pendingComposerText,
-        nativePhase: 8,
+        mode: this.currentMode,
+        modes: allModeContracts(),
+        canHandoffPlan: Boolean(this.lastPlanText),
+        requestStatus: this.requestStatus,
+        queuedPrompt: this.queuedPrompt ? { prompt: this.queuedPrompt.prompt, mode: this.queuedPrompt.mode } : null,
+        steeringNotes: this.steeringNotes,
+        operationTimeline: this.operationTimeline,
+        debugSnapshot: this.debugSnapshot,
+        nativePhase: 10,
         workspaceTrusted: vscode.workspace.isTrusted,
         workspaceFolders: getWorkspaceFolders(),
         richContext: collectRichIdeContext(Array.from(this.contextItems.values())),
@@ -767,6 +1487,9 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
           id: item.id,
           kind: item.kind,
           label: item.label,
+          detail: item.detail,
+          uri: item.uri,
+          stale: item.stale,
         })),
         messages: this.messages,
       },
@@ -830,7 +1553,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
       background: var(--vscode-sideBarSectionHeader-background, var(--vscode-sideBar-background));
     }
-    .brand-wrap { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .brand-wrap { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 145px; }
     .brand-mark {
       width: 34px;
       height: 34px;
@@ -856,7 +1579,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     .title-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
     .title { font-size: 14px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .status-dot { width: 7px; height: 7px; border-radius: 999px; background: #22c55e; box-shadow: 0 0 0 3px color-mix(in srgb, #22c55e 20%, transparent); }
-    .header-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+    .header-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; flex: 0 1 auto; min-width: 0; }
     .icon-button, .text-button, .send-button, .chip-button {
       border: 1px solid transparent;
       color: var(--vscode-button-secondaryForeground);
@@ -885,7 +1608,10 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       margin-bottom: 12px;
     }
     .session-card { padding: 12px; }
-    .session-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .session-top { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+    .session-top > div { min-width: 0; }
+    .session-top > div:first-child { flex: 1 1 220px; }
+    .session-top > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 1 1 160px; }
     .session-title { font-weight: 750; margin-bottom: 4px; }
     .session-subtitle { color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.45; }
     .bridge-pill {
@@ -913,6 +1639,46 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       line-height: 1;
     }
     .context-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .context-chip[data-open-context-id] { cursor: pointer; }
+    .context-remove {
+      border: 0;
+      width: 16px;
+      height: 16px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
+      padding: 0;
+      line-height: 1;
+    }
+    .context-remove:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground, var(--vscode-button-secondaryBackground)); }
+    .mention-popover {
+      margin: 0 8px 8px;
+      max-height: 210px;
+      overflow: auto;
+      border: 1px solid var(--vscode-focusBorder, var(--vscode-panel-border));
+      border-radius: 12px;
+      background: var(--vscode-quickInput-background, var(--vscode-editor-background));
+      box-shadow: var(--shogo-shadow);
+    }
+    .mention-popover[hidden] { display: none; }
+    .mention-item {
+      width: 100%;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 8px;
+      align-items: center;
+      border: 0;
+      border-bottom: 1px solid color-mix(in srgb, var(--vscode-panel-border) 55%, transparent);
+      color: var(--vscode-quickInput-foreground, var(--vscode-foreground));
+      background: transparent;
+      padding: 8px 10px;
+      text-align: left;
+    }
+    .mention-item:hover, .mention-item.active { background: var(--vscode-list-hoverBackground, var(--vscode-button-secondaryBackground)); }
+    .mention-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+    .mention-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .turns { display: flex; flex-direction: column; gap: 12px; }
     .turn { display: grid; gap: 7px; }
     .turn.user { justify-items: end; }
@@ -975,8 +1741,13 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     .action-top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
     .action-title { font-weight: 750; font-size: 12px; }
     .action-meta { color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 3px; overflow-wrap: anywhere; }
-    .action-button {
+    .action-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
       margin-top: 8px;
+    }
+    .action-button {
       border: 1px solid var(--vscode-button-border, transparent);
       border-radius: 9px;
       padding: 5px 8px;
@@ -984,7 +1755,16 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-button-background);
       font-size: 12px;
     }
+    .action-button.secondary {
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
+    }
+    .action-button.danger {
+      color: var(--vscode-errorForeground, var(--vscode-button-secondaryForeground));
+      background: color-mix(in srgb, var(--vscode-errorForeground, #f87171) 12%, var(--vscode-button-secondaryBackground));
+    }
     .action-button[disabled] { opacity: .62; cursor: default; }
+    .action-review { color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 6px; }
     .composer-wrap {
       padding: 12px;
       border-top: 1px solid var(--vscode-panel-border);
@@ -1014,12 +1794,21 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     .composer-toolbar {
       display: flex;
       justify-content: space-between;
-      gap: 10px;
+      flex-wrap: wrap;
+      gap: 8px;
       align-items: center;
       padding: 8px;
       border-top: 1px solid color-mix(in srgb, var(--vscode-panel-border) 62%, transparent);
     }
-    .left-tools, .right-tools { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .left-tools, .right-tools {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-width: 0;
+    }
+    .left-tools { flex: 999 1 260px; }
+    .right-tools { flex: 1 1 260px; justify-content: flex-end; }
     .chip-button {
       display: inline-flex;
       align-items: center;
@@ -1039,6 +1828,40 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       padding: 0 8px;
       outline: none;
     }
+    .mode-select.primary {
+      border-color: color-mix(in srgb, var(--shogo-orange) 55%, var(--vscode-button-secondaryBackground));
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--shogo-orange) 16%, var(--vscode-button-secondaryBackground));
+    }
+    .mode-handoff { margin-left: 0; }
+    .mode-note { color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 4px; }
+    .ops-panel {
+      margin-top: 10px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 13px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-button-secondaryBackground));
+      overflow: hidden;
+    }
+    .ops-panel[hidden] { display: none; }
+    .ops-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--vscode-panel-border); }
+    .ops-title { font-weight: 750; font-size: 12px; }
+    .ops-body { display: grid; gap: 8px; padding: 10px; }
+    .timeline { display: grid; gap: 6px; max-height: 150px; overflow: auto; }
+    .timeline-item { border-left: 2px solid var(--shogo-orange); padding: 2px 0 2px 8px; color: var(--vscode-descriptionForeground); font-size: 11px; }
+    .timeline-item strong { display: block; color: var(--vscode-foreground); font-size: 11.5px; }
+    .debug-pre {
+      max-height: 210px;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      border-radius: 10px;
+      padding: 8px;
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 11px;
+    }
+    .queued-note { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .send-button {
       min-height: 34px;
       padding: 7px 12px;
@@ -1055,14 +1878,27 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       color: var(--vscode-descriptionForeground);
       font-size: 11px;
     }
+    @media (max-width: 620px) {
+      .composer-wrap { padding: 10px; }
+      .left-tools, .right-tools { flex: 1 1 100%; }
+      .left-tools { justify-content: flex-start; }
+      .right-tools { justify-content: flex-end; }
+    }
     @media (max-width: 430px) {
-      .chat-header { padding: 9px 10px; }
+      .chat-header { padding: 9px 10px; flex-wrap: wrap; }
       .eyebrow { display: none; }
       .title { font-size: 13px; }
+      .header-actions { width: 100%; justify-content: space-between; }
       .composer-toolbar { align-items: stretch; flex-direction: column; }
       .left-tools, .right-tools { justify-content: space-between; }
-      .mode-select { flex: 1; max-width: none; }
-      .send-button { flex: 1; }
+      .chip-button, .mode-select, .send-button { flex: 1 1 auto; }
+      .mode-select { max-width: none; }
+      .hint-row { flex-direction: column; }
+    }
+    @media (max-width: 330px) {
+      .composer-wrap { padding: 8px; }
+      .chip-button, .send-button { padding-left: 7px; padding-right: 7px; }
+      .icon-button { width: 28px; height: 28px; }
     }
   </style>
 </head>
@@ -1078,6 +1914,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       </div>
       <div class="header-actions">
         <button id="newChat" class="icon-button" title="New chat" aria-label="New chat">＋</button>
+        <button id="openContextPickerTop" class="icon-button" title="Pick context" aria-label="Pick context">#</button>
         <button id="addActiveFileTop" class="icon-button" title="Attach active file" aria-label="Attach active file">□</button>
         <button id="addSelectionTop" class="icon-button" title="Attach selection" aria-label="Attach selection">⌁</button>
       </div>
@@ -1089,35 +1926,61 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
           <div>
             <div class="session-title">Ask Shogo about your code</div>
             <div id="status" class="session-subtitle">Loading workspace context…</div>
+            <div id="modeNote" class="mode-note">Agent can edit and run reviewed actions.</div>
           </div>
-          <div id="bridgePill" class="bridge-pill">Local</div>
+          <div>
+            <div id="bridgePill" class="bridge-pill">Local</div>
+            <button id="handoffPlan" class="chip-button mode-handoff" title="Implement the last plan in Agent mode" hidden>Implement plan</button>
+            <button id="toggleOps" class="chip-button mode-handoff" title="Show timeline and debug payload">Ops</button>
+          </div>
         </div>
         <div id="context" class="context-strip"></div>
+        <section id="opsPanel" class="ops-panel" hidden>
+          <div class="ops-header"><span class="ops-title">Agent operations</span><button id="clearTimeline" class="chip-button">Clear</button></div>
+          <div class="ops-body">
+            <div id="queuedNote" class="queued-note"></div>
+            <div id="timeline" class="timeline"></div>
+            <details>
+              <summary class="queued-note">Chat Debug / last request payload</summary>
+              <pre id="debugPayload" class="debug-pre">No request captured yet.</pre>
+            </details>
+          </div>
+        </section>
       </section>
       <section id="messages" class="turns" aria-live="polite"></section>
     </section>
 
     <section class="composer-wrap">
       <div class="composer-card">
-        <textarea id="prompt" placeholder="Ask Shogo to fix, explain, refactor, or review this code"></textarea>
+        <textarea id="prompt" placeholder="Ask Shogo to fix, explain, refactor, or review this code — type # to attach files, folders, symbols, diagnostics, or terminals"></textarea>
+        <div id="contextSuggest" class="mention-popover" hidden></div>
         <div class="composer-toolbar">
           <div class="left-tools">
+            <button id="openContextPicker" class="chip-button" title="Pick context"># Context</button>
             <button id="addSelection" class="chip-button" title="Attach selected code">＋ Selection</button>
             <button id="addActiveFile" class="chip-button" title="Attach active file">File</button>
           </div>
           <div class="right-tools">
+            <select id="mode" class="mode-select primary" title="Chat mode">
+              <option value="ask">Ask</option>
+              <option value="edit">Edit</option>
+              <option value="agent" selected>Agent</option>
+              <option value="plan">Plan</option>
+            </select>
             <select id="model" class="mode-select" title="Model">
               <option value="auto">Auto</option>
               <option value="fast">Fast</option>
               <option value="capable">Capable</option>
             </select>
+            <button id="steer" class="chip-button" title="Steer the running request" hidden>Steer</button>
+            <button id="stop" class="chip-button" title="Stop the running request" hidden>Stop</button>
             <button id="send" class="send-button">Send</button>
           </div>
         </div>
       </div>
       <div class="hint-row">
-        <span>⌘/Ctrl + Enter to send</span>
-        <span>Agent mode</span>
+        <span>⌘/Ctrl + Enter to send · type # for context</span>
+        <span id="modeHint">Agent mode</span>
       </div>
     </section>
   </main>
@@ -1126,11 +1989,44 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     const vscode = acquireVsCodeApi();
     const statusEl = document.getElementById('status');
     const bridgePillEl = document.getElementById('bridgePill');
+    const modeNoteEl = document.getElementById('modeNote');
+    const modeHintEl = document.getElementById('modeHint');
+    const handoffPlanEl = document.getElementById('handoffPlan');
+    const toggleOpsEl = document.getElementById('toggleOps');
+    const opsPanelEl = document.getElementById('opsPanel');
+    const queuedNoteEl = document.getElementById('queuedNote');
+    const timelineEl = document.getElementById('timeline');
+    const debugPayloadEl = document.getElementById('debugPayload');
+    const clearTimelineEl = document.getElementById('clearTimeline');
     const contextEl = document.getElementById('context');
     const messagesEl = document.getElementById('messages');
     const scrollEl = document.getElementById('scroll');
     const promptEl = document.getElementById('prompt');
+    const modeEl = document.getElementById('mode');
     const modelEl = document.getElementById('model');
+    const steerEl = document.getElementById('steer');
+    const stopEl = document.getElementById('stop');
+    const sendEl = document.getElementById('send');
+    const contextSuggestEl = document.getElementById('contextSuggest');
+    let mentionStart = -1;
+    let mentionQuery = '';
+    let contextSuggestDebounce = 0;
+    let pendingState = null;
+    let stateFrame = 0;
+
+    function modeLabel(mode) {
+      if (mode === 'ask') return 'Ask';
+      if (mode === 'edit') return 'Edit';
+      if (mode === 'plan') return 'Plan';
+      return 'Agent';
+    }
+
+    function modeDescription(mode) {
+      if (mode === 'ask') return 'Ask mode is read-only: explain, answer, and suggest next steps.';
+      if (mode === 'edit') return 'Edit mode allows reviewed file edits, but blocks shell commands.';
+      if (mode === 'plan') return 'Plan mode is read-only and prepares an implementation handoff.';
+      return 'Agent mode allows reviewed edits, open-file actions, and confirmed commands.';
+    }
 
     function escapeHtml(value) {
       return String(value).replace(/[&<>'"]/g, function(ch) {
@@ -1158,27 +2054,112 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       return 'S.';
     }
 
+    function contextIcon(kind) {
+      if (kind === 'selection') return '⌁';
+      if (kind === 'folder') return '▣';
+      if (kind === 'symbol') return '◇';
+      if (kind === 'diagnostic') return '⚠';
+      if (kind === 'terminal') return '▹';
+      return '□';
+    }
+
+    function contextKindLabel(kind) {
+      return kind === 'activeFile' ? 'active file' : kind;
+    }
+
     function renderContext(items) {
       if (!items.length) {
         contextEl.innerHTML = '<span class="context-chip"><span>No context attached</span></span>';
         return;
       }
       contextEl.innerHTML = items.map(function(item) {
-        const icon = item.kind === 'selection' ? '⌁' : '□';
-        return '<span class="context-chip"><strong>' + icon + '</strong><span>' + escapeHtml(item.label) + '</span></span>';
+        const icon = contextIcon(item.kind);
+        const title = contextKindLabel(item.kind) + ': ' + item.label + (item.detail ? ' — ' + item.detail : '');
+        return '<span class="context-chip" title="' + escapeHtml(title) + '" data-open-context-id="' + escapeHtml(item.id) + '"><strong>' + icon + '</strong><span>' + escapeHtml(item.label) + '</span><button class="context-remove" title="Remove context" aria-label="Remove context" data-remove-context-id="' + escapeHtml(item.id) + '">×</button></span>';
       }).join('');
+    }
+
+    function currentMention() {
+      const cursor = promptEl.selectionStart || 0;
+      const before = promptEl.value.slice(0, cursor);
+      const match = before.match(/(^|\s)#([\w./:-]*)$/);
+      if (!match) return null;
+      return { start: cursor - match[2].length - 1, query: match[2] };
+    }
+
+    function requestContextSuggestions() {
+      const mention = currentMention();
+      if (!mention) {
+        mentionStart = -1;
+        mentionQuery = '';
+        contextSuggestEl.hidden = true;
+        return;
+      }
+      mentionStart = mention.start;
+      mentionQuery = mention.query;
+      window.clearTimeout(contextSuggestDebounce);
+      contextSuggestDebounce = window.setTimeout(function() {
+        vscode.postMessage({ type: 'requestContextSuggestions', query: mentionQuery });
+      }, 80);
+    }
+
+    function renderContextSuggestions(suggestions) {
+      if (!suggestions || !suggestions.length || mentionStart < 0) {
+        contextSuggestEl.hidden = true;
+        return;
+      }
+      contextSuggestEl.hidden = false;
+      contextSuggestEl.innerHTML = suggestions.map(function(item) {
+        return '<button class="mention-item" data-add-context-id="' + escapeHtml(item.id) + '"><strong>' + contextIcon(item.kind) + '</strong><span><span class="mention-label">' + escapeHtml(item.label) + '</span><span class="mention-detail">' + escapeHtml(contextKindLabel(item.kind) + (item.detail ? ' · ' + item.detail : '')) + '</span></span><span>#</span></button>';
+      }).join('');
+    }
+
+    function replaceMentionWithChipLabel(label) {
+      if (mentionStart < 0) return;
+      const cursor = promptEl.selectionStart || 0;
+      promptEl.value = promptEl.value.slice(0, mentionStart) + '#' + label + ' ' + promptEl.value.slice(cursor);
+      contextSuggestEl.hidden = true;
+      mentionStart = -1;
+      promptEl.focus();
     }
 
     function renderAction(action) {
       const target = action.filePath || action.uri || action.command || '';
-      const disabled = action.status !== 'pending';
-      const label = action.status === 'pending' ? (action.kind === 'runCommand' ? 'Run' : action.kind === 'openFile' ? 'Open' : 'Apply') : action.status;
+      const isEdit = action.kind === 'workspaceEdit' || action.kind === 'writeFile';
+      const pending = action.status === 'pending';
+      const canUndo = isEdit && action.status === 'completed' && action.hasCheckpoint;
+      const runLabel = pending ? (action.kind === 'runCommand' ? 'Run' : action.kind === 'openFile' ? 'Open' : 'Apply') : action.status;
       const detail = action.error || action.result || action.description || target;
+      const review = action.reviewSummary ? '<div class="action-review">' + escapeHtml(action.reviewSummary) + '</div>' : '';
+      const buttons = [];
+      if (pending && isEdit) buttons.push('<button class="action-button secondary" data-preview-action-id="' + escapeHtml(action.id) + '">Preview diff</button>');
+      buttons.push('<button class="action-button" data-action-id="' + escapeHtml(action.id) + '"' + (!pending ? ' disabled' : '') + '>' + escapeHtml(runLabel) + '</button>');
+      if (pending && isEdit) buttons.push('<button class="action-button danger" data-reject-action-id="' + escapeHtml(action.id) + '">Reject</button>');
+      if (canUndo) buttons.push('<button class="action-button secondary" data-undo-action-id="' + escapeHtml(action.id) + '">Undo checkpoint</button>');
       return '<div class="action-card">'
         + '<div class="action-top"><div><div class="action-title">' + escapeHtml(action.title || action.kind) + '</div><div class="action-meta">' + escapeHtml(action.kind + (target ? ' · ' + target : '')) + '</div></div><span class="bridge-pill">' + escapeHtml(action.status) + '</span></div>'
         + (detail ? '<div class="action-meta">' + escapeHtml(detail) + '</div>' : '')
-        + '<button class="action-button" data-action-id="' + escapeHtml(action.id) + '"' + (disabled ? ' disabled' : '') + '>' + escapeHtml(label) + '</button>'
+        + review
+        + '<div class="action-buttons">' + buttons.join('') + '</div>'
         + '</div>';
+    }
+
+    function renderTimeline(items) {
+      if (!items || !items.length) {
+        timelineEl.innerHTML = '<div class="queued-note">No operation events yet.</div>';
+        return;
+      }
+      timelineEl.innerHTML = items.slice().reverse().map(function(item) {
+        return '<div class="timeline-item"><strong>' + escapeHtml(item.kind + ' · ' + item.title) + '</strong><span>' + escapeHtml(formatTime(item.createdAt) + (item.detail ? ' · ' + item.detail : '')) + '</span></div>';
+      }).join('');
+    }
+
+    function renderDebugPayload(snapshot) {
+      if (!snapshot) {
+        debugPayloadEl.textContent = 'No request captured yet.';
+        return;
+      }
+      debugPayloadEl.textContent = JSON.stringify({ createdAt: snapshot.createdAt, bridgeUrl: snapshot.bridgeUrl, headers: snapshot.headers, request: JSON.parse(snapshot.requestBody) }, null, 2);
     }
 
     function renderMessages(messages) {
@@ -1193,14 +2174,37 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       scrollEl.scrollTop = scrollEl.scrollHeight;
     }
 
+    function scheduleRenderState(state) {
+      pendingState = state;
+      if (stateFrame) return;
+      stateFrame = window.requestAnimationFrame(function() {
+        stateFrame = 0;
+        const nextState = pendingState;
+        pendingState = null;
+        if (nextState) renderState(nextState);
+      });
+    }
+
     function renderState(state) {
       const folder = state.workspaceFolders && state.workspaceFolders.length ? state.workspaceFolders[0] : 'No workspace folder';
       const contextCount = state.contextItems.length;
       const diagnosticsCount = state.richContext && state.richContext.diagnostics ? state.richContext.diagnostics.length : 0;
       const visibleCount = state.richContext && state.richContext.visibleEditors ? state.richContext.visibleEditors.length : 0;
-      bridgePillEl.textContent = state.bridgeConfigured ? 'Agent' : 'Offline';
+      if (state.mode && modeEl.value !== state.mode) modeEl.value = state.mode;
+      bridgePillEl.textContent = state.bridgeConfigured ? modeLabel(state.mode || 'agent') : 'Offline';
+      modeNoteEl.textContent = modeDescription(state.mode || 'agent');
+      modeHintEl.textContent = modeLabel(state.mode || 'agent') + ' mode';
+      handoffPlanEl.hidden = !state.canHandoffPlan;
+      const running = state.requestStatus === 'running' || state.requestStatus === 'stopping';
+      steerEl.hidden = !running;
+      stopEl.hidden = !running;
+      sendEl.textContent = running ? 'Queue' : 'Send';
+      sendEl.title = running ? 'Queue as the next follow-up' : 'Send prompt';
+      queuedNoteEl.textContent = state.queuedPrompt ? 'Queued: ' + modeLabel(state.queuedPrompt.mode) + ' · ' + state.queuedPrompt.prompt : (running ? 'Request running. Send queues a follow-up; Steer queues a course-correction note; Stop aborts the request.' : 'Idle. Send starts a new request.');
+      renderTimeline(state.operationTimeline || []);
+      renderDebugPayload(state.debugSnapshot);
       statusEl.textContent = state.bridgeConfigured
-        ? 'Connected to Shogo Desktop agent backend. Context: ' + contextCount + ' item' + (contextCount === 1 ? '' : 's') + ', ' + visibleCount + ' visible editor' + (visibleCount === 1 ? '' : 's') + ', ' + diagnosticsCount + ' diagnostic' + (diagnosticsCount === 1 ? '' : 's') + '.'
+        ? 'Connected to Shogo Desktop agent backend. ' + (running ? 'Request running. ' : '') + 'Context: ' + contextCount + ' item' + (contextCount === 1 ? '' : 's') + ', ' + visibleCount + ' visible editor' + (visibleCount === 1 ? '' : 's') + ', ' + diagnosticsCount + ' diagnostic' + (diagnosticsCount === 1 ? '' : 's') + '.'
         : 'No local Shogo agent bridge configured. Workspace: ' + folder + '. Context: ' + contextCount + ' item' + (contextCount === 1 ? '' : 's') + '.';
       renderContext(state.contextItems);
       renderMessages(state.messages);
@@ -1213,34 +2217,106 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     function sendPrompt() {
       const prompt = promptEl.value.trim();
       if (!prompt) return;
-      vscode.postMessage({ type: 'sendPrompt', prompt: prompt, model: modelEl.value });
+      contextSuggestEl.hidden = true;
+      vscode.postMessage({ type: 'sendPrompt', prompt: prompt, mode: modeEl.value, model: modelEl.value, operation: 'queue' });
       promptEl.value = '';
       promptEl.focus();
     }
 
-    document.getElementById('send').addEventListener('click', sendPrompt);
+    sendEl.addEventListener('click', sendPrompt);
+    steerEl.addEventListener('click', function() {
+      const prompt = promptEl.value.trim();
+      if (!prompt) return;
+      contextSuggestEl.hidden = true;
+      vscode.postMessage({ type: 'sendPrompt', prompt: prompt, mode: modeEl.value, model: modelEl.value, operation: 'steer' });
+      promptEl.value = '';
+      promptEl.focus();
+    });
+    stopEl.addEventListener('click', function() { vscode.postMessage({ type: 'stopRequest' }); });
+    toggleOpsEl.addEventListener('click', function() { opsPanelEl.hidden = !opsPanelEl.hidden; });
+    clearTimelineEl.addEventListener('click', function() { vscode.postMessage({ type: 'clearTimeline' }); });
+    modeEl.addEventListener('change', function() {
+      modeNoteEl.textContent = modeDescription(modeEl.value);
+      modeHintEl.textContent = modeLabel(modeEl.value) + ' mode';
+      vscode.postMessage({ type: 'modeChanged', mode: modeEl.value });
+    });
+    handoffPlanEl.addEventListener('click', function() { vscode.postMessage({ type: 'handoffPlan' }); });
+    contextEl.addEventListener('click', function(event) {
+      const target = event.target;
+      if (!target || !target.dataset) return;
+      if (target.dataset.removeContextId) {
+        event.stopPropagation();
+        vscode.postMessage({ type: 'removeContext', contextId: target.dataset.removeContextId });
+        return;
+      }
+      const chip = target.closest ? target.closest('[data-open-context-id]') : null;
+      if (chip && chip.dataset.openContextId) vscode.postMessage({ type: 'openContext', contextId: chip.dataset.openContextId });
+    });
+    contextSuggestEl.addEventListener('click', function(event) {
+      const target = event.target && event.target.closest ? event.target.closest('[data-add-context-id]') : null;
+      if (!target || !target.dataset.addContextId) return;
+      const labelEl = target.querySelector('.mention-label');
+      replaceMentionWithChipLabel(labelEl ? labelEl.textContent || '' : 'context');
+      vscode.postMessage({ type: 'addContextSuggestion', contextId: target.dataset.addContextId });
+    });
     messagesEl.addEventListener('click', function(event) {
       const target = event.target;
-      if (!target || !target.dataset || !target.dataset.actionId) return;
-      vscode.postMessage({ type: 'runAction', actionId: target.dataset.actionId });
+      if (!target || !target.dataset) return;
+      if (target.dataset.previewActionId) {
+        vscode.postMessage({ type: 'previewAction', actionId: target.dataset.previewActionId });
+        return;
+      }
+      if (target.dataset.rejectActionId) {
+        vscode.postMessage({ type: 'rejectAction', actionId: target.dataset.rejectActionId });
+        return;
+      }
+      if (target.dataset.undoActionId) {
+        vscode.postMessage({ type: 'undoAction', actionId: target.dataset.undoActionId });
+        return;
+      }
+      if (target.dataset.actionId) vscode.postMessage({ type: 'runAction', actionId: target.dataset.actionId });
     });
     promptEl.addEventListener('keydown', function(event) {
+      if (event.key === 'Enter' && !event.metaKey && !event.ctrlKey && !contextSuggestEl.hidden) {
+        const first = contextSuggestEl.querySelector('[data-add-context-id]');
+        if (first) {
+          event.preventDefault();
+          const labelEl = first.querySelector('.mention-label');
+          replaceMentionWithChipLabel(labelEl ? labelEl.textContent || '' : 'context');
+          vscode.postMessage({ type: 'addContextSuggestion', contextId: first.dataset.addContextId });
+        }
+        return;
+      }
+      if (event.key === 'Escape' && !contextSuggestEl.hidden) {
+        event.preventDefault();
+        contextSuggestEl.hidden = true;
+        return;
+      }
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         sendPrompt();
       }
     });
+    promptEl.addEventListener('input', requestContextSuggestions);
     document.getElementById('newChat').addEventListener('click', function() { vscode.postMessage({ type: 'newChat' }); });
+    document.getElementById('openContextPicker').addEventListener('click', function() { vscode.postMessage({ type: 'openContextPicker' }); });
+    document.getElementById('openContextPickerTop').addEventListener('click', function() { vscode.postMessage({ type: 'openContextPicker' }); });
     document.getElementById('addSelection').addEventListener('click', function() { vscode.postMessage({ type: 'addSelection' }); });
     document.getElementById('addSelectionTop').addEventListener('click', function() { vscode.postMessage({ type: 'addSelection' }); });
     document.getElementById('addActiveFile').addEventListener('click', function() { vscode.postMessage({ type: 'addActiveFile' }); });
     document.getElementById('addActiveFileTop').addEventListener('click', function() { vscode.postMessage({ type: 'addActiveFile' }); });
     window.addEventListener('message', function(event) {
       if (!event.data) return;
-      if (event.data.type === 'state') renderState(event.data.state);
+      if (event.data.type === 'state') scheduleRenderState(event.data.state);
+      if (event.data.type === 'contextSuggestions') renderContextSuggestions(event.data.suggestions || []);
       if (event.data.type === 'focusComposer') promptEl.focus();
-      if (event.data.type === 'prefillPrompt') {
-        promptEl.value = event.data.text || '';
+      if (event.data.type === 'prefillPrompt' && typeof event.data.text === 'string') {
+        promptEl.value = event.data.text;
+        if (event.data.mode) {
+          modeEl.value = event.data.mode;
+          modeNoteEl.textContent = modeDescription(modeEl.value);
+          modeHintEl.textContent = modeLabel(modeEl.value) + ' mode';
+        }
         promptEl.focus();
       }
     });
@@ -1257,6 +2333,16 @@ function createStatusBarItem(): any | null {
   if (typeof windowApi.createStatusBarItem !== 'function') return null
   const alignment = (vscode as any).StatusBarAlignment?.Right ?? 2
   return windowApi.createStatusBarItem('shogo.agentChat.status', alignment, 100)
+}
+
+function registerReviewDocumentProvider(): vscode.Disposable {
+  const workspaceApi = vscode.workspace as any
+  if (typeof workspaceApi.registerTextDocumentContentProvider !== 'function') return { dispose() {} }
+  return workspaceApi.registerTextDocumentContentProvider('shogo-review', {
+    provideTextDocumentContent(uri: vscode.Uri) {
+      return reviewDocuments.get(uri.toString()) ?? ''
+    },
+  })
 }
 
 async function showShogoChatContainer(): Promise<void> {
@@ -1280,16 +2366,19 @@ export function activate(context: vscode.ExtensionContext) {
   const provider = new ShogoAgentChatViewProvider(context.extensionUri, statusBarItem)
 
   context.subscriptions.push(
+    registerReviewDocumentProvider(),
     vscode.window.registerWebviewViewProvider('shogo.agentChat', provider),
     vscode.commands.registerCommand('shogo.agentChat.open', () => provider.open()),
     vscode.commands.registerCommand('shogo.agentChat.focusInput', () => provider.focusInput()),
     vscode.commands.registerCommand('shogo.agentChat.newChat', () => provider.newChat()),
     vscode.commands.registerCommand('shogo.agentChat.addSelection', () => provider.addSelection()),
     vscode.commands.registerCommand('shogo.agentChat.addActiveFile', () => provider.addActiveFile()),
+    vscode.commands.registerCommand('shogo.agentChat.openContextPicker', () => provider.openContextPicker()),
     vscode.commands.registerCommand('shogo.agentChat.explainSelection', () => provider.askAboutSelection('explain')),
     vscode.commands.registerCommand('shogo.agentChat.fixSelection', () => provider.askAboutSelection('fix')),
     windowApi.onDidChangeActiveTextEditor?.((editor: vscode.TextEditor | undefined) => rememberTextEditor(editor)) ?? ({ dispose() {} } as vscode.Disposable),
     windowApi.onDidChangeTextEditorSelection?.((event: { textEditor?: vscode.TextEditor }) => rememberTextEditor(event.textEditor)) ?? ({ dispose() {} } as vscode.Disposable),
+    (vscode.workspace as any).onDidDeleteFiles?.((event: { files: readonly vscode.Uri[] }) => provider.removeDeletedContext(event.files)) ?? ({ dispose() {} } as vscode.Disposable),
     vscode.workspace.onDidGrantWorkspaceTrust(() => provider.open()),
     ...(statusBarItem ? [statusBarItem] : []),
   )

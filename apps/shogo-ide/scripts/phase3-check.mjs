@@ -70,7 +70,7 @@ if (extensionPackage) {
 }
 
 if (agentChatPackage) {
-  assert(agentChatPackage.version === '0.0.0-phase.8', 'shogo-agent-chat version must track the current Shogo chat phase')
+  assert(/^0\.0\.0-phase\.(8|9|10)$/.test(agentChatPackage.version || ''), 'shogo-agent-chat version must track the current Shogo chat phase')
   assert(agentChatPackage.contributes?.viewsContainers?.auxiliarybar?.some((container) => container.id === 'shogo-agent-chat'), 'shogo-agent-chat must contribute the Shogo auxiliary container')
   assert(agentChatPackage.contributes?.views?.['shogo-agent-chat']?.some((view) => view.id === 'shogo.agentChat'), 'shogo-agent-chat must contribute the Shogo webview to its auxiliary container')
   assert(!agentChatPackage.contributes?.chatParticipants, 'shogo-agent-chat must not use proposed native chat participant APIs')
