@@ -80,7 +80,7 @@ variable "custom_domain_fallback_hostname" {
 # to. When it's unset the Worker can't proxy (no origin), so server-backed apps
 # fall back to static serving until the ingress host is configured.
 variable "kourier_origin" {
-  description = "Origin URL the subdomain-router Worker proxies server-backed `/api/*` traffic to. Must be a DNS-only (NON-proxied / external) hostname that terminates at the cluster's Knative (Kourier) ingress LB which serves the `{subdomain}.shogo.one` DomainMappings. The Worker rewrites the subrequest Host header to `{subdomain}.{publish_domain}` so the DomainMapping routes it to `published-{projectId}`. Leave null to disable server-backed proxying even when the KV map exists."
+  description = "Origin URL whose HOSTNAME the subdomain-router Worker uses as a `resolveOverride` target for server-backed `/api/*` traffic. The hostname must be an ORANGE-CLOUDED (proxied) record in the publish zone whose origin is the cluster's Knative (Kourier) ingress LB serving the `{subdomain}.shogo.one` DomainMappings. The Worker keeps the published host in the request URL (so Cloudflare sends `Host: {subdomain}.{publish_domain}`, which the DomainMapping routes to `published-{projectId}`) and only overrides DNS resolution to this host — Cloudflare ignores a manually-set Host header, and resolveOverride requires both hosts to be proxied in the same zone. The scheme is ignored (the Worker reuses the inbound request scheme). Leave null to disable server-backed proxying even when the KV map exists."
   type        = string
   default     = null
 }
@@ -432,13 +432,21 @@ resource "cloudflare_worker_script" "subdomain_router" {
           const flag = await env.SERVER_BACKED.get(subdomain);
           if (flag) {
             const publishedHost = subdomain + '.' + PUBLISH_DOMAIN;
-            const backendUrl = KOURIER_ORIGIN + url.pathname + url.search;
+            // Kourier routes by Host to the `{subdomain}.PUBLISH_DOMAIN`
+            // DomainMapping (→ published-{projectId}). Cloudflare derives the
+            // upstream Host from the subrequest URL and IGNORES a manually-set
+            // Host header, so we keep the published host IN THE URL (correct
+            // Host) and use `resolveOverride` to send the connection to the
+            // Kourier ingress host instead of the published host's own (dummy
+            // wildcard) origin. resolveOverride requires both the URL host and
+            // the override host to be orange-clouded in this zone; same-zone
+            // subrequests skip the Worker, so there is no self-loop.
+            const kourierHost = KOURIER_ORIGIN.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+            const backendUrl = url.protocol + '//' + publishedHost + url.pathname + url.search;
             const backendReq = new Request(backendUrl, request);
-            // Host drives Knative DomainMapping resolution at the ingress.
-            backendReq.headers.set('Host', publishedHost);
             backendReq.headers.set('X-Forwarded-Host', publishedHost);
             backendReq.headers.set('X-Forwarded-Proto', 'https');
-            return fetch(backendReq);
+            return fetch(backendReq, { cf: { resolveOverride: kourierHost } });
           }
         }
 

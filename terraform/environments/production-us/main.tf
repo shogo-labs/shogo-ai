@@ -68,23 +68,19 @@ provider "cloudflare" {
 # apps to the prod-us Knative (Kourier) ingress LB, rewriting the Host header
 # to `{subdomain}.shogo.one` so the DomainMapping routes to published-{id}.
 #
-# Two Cloudflare gotchas shape this wiring:
-#   1. CF Workers cannot `fetch()` a raw IP literal (error 1003), so the origin
-#      MUST be a hostname — `kourier-us.shogo.one`, a DNS-only (gray-cloud)
-#      record pointing straight at the LB.
-#   2. CF applies the `*.shogo.one/*` Worker route to the Worker's OWN outbound
-#      subrequests (even to a DNS-only record), so a naive proxy to
-#      `kourier-us.shogo.one` re-enters this same Worker — which treats
-#      `kourier-us` as an unknown published app and 404s. The `kourier_bypass`
-#      route below (a more-specific pattern with NO script) disables the Worker
-#      for that exact host, so the subrequest resolves the DNS-only record and
-#      lands directly on the LB.
-# HTTP (not HTTPS): Kourier presents a Cloudflare Origin CA cert (`*.shogo.ai`)
-# that a direct Worker subrequest can't validate; the Worker sets
-# `X-Forwarded-Proto: https` so the app still treats the request as secure.
-#
-# The LB IP is a stable OCI-assigned address for the long-lived `kourier`
-# Service in `kourier-system` (not terraform-managed here, hence the literal).
+# How the Worker reaches Kourier (Cloudflare constraints):
+#   - CF Workers cannot `fetch()` a raw IP literal (error 1003), and CF derives
+#     the upstream Host from the subrequest URL (a manually-set Host header is
+#     ignored). So the Worker keeps the published host in the URL — giving the
+#     correct `Host: {subdomain}.shogo.one` that Kourier's DomainMapping needs —
+#     and uses `cf.resolveOverride` to send the connection to `kourier-us`.
+#   - resolveOverride only works when BOTH the URL host and the override host
+#     are ORANGE-CLOUDED (proxied) in the same zone, so this record is proxied
+#     (not DNS-only). Same-zone subrequests skip the Worker, so there's no loop.
+# Because the record is proxied, requests flow CF edge → `kourier_bypass` route
+# (no Worker) → origin pull to the LB. The LB IP is a stable OCI-assigned
+# address for the long-lived `kourier` Service in `kourier-system` (not
+# terraform-managed here, hence the literal).
 locals {
   prod_us_kourier_lb_ip = "152.70.192.220"
 }
@@ -98,14 +94,14 @@ resource "cloudflare_record" "kourier_us" {
   name    = "kourier-us"
   content = local.prod_us_kourier_lb_ip
   type    = "A"
-  proxied = false
-  ttl     = 300
-  comment = "DNS-only origin for server-backed published /api/* proxying (prod-us Kourier LB)"
+  proxied = true
+  ttl     = 1
+  comment = "Proxied resolveOverride target for server-backed published /api/* proxying (prod-us Kourier LB)"
 }
 
 # More-specific Worker route with NO script ⇒ bypass the subdomain-router
-# Worker for the Kourier origin host, breaking the self-subrequest loop. See
-# the note above. Takes precedence over the module's `*.shogo.one/*` route.
+# Worker for the Kourier origin host so the proxied edge → origin-pull path
+# never re-runs the Worker. Takes precedence over the module's `*.shogo.one/*`.
 resource "cloudflare_worker_route" "kourier_bypass" {
   zone_id = data.cloudflare_zone.publish.id
   pattern = "${cloudflare_record.kourier_us.hostname}/*"
