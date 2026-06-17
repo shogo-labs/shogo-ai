@@ -16,7 +16,7 @@
  */
 
 import { Hono } from "hono"
-import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3"
+import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
 import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
 import { recordCheckpointForCommit } from "../services/checkpoint.service"
@@ -53,6 +53,11 @@ import {
 // `shogo-published-apps-production` — every published app served
 // `ObjectNotFound`. uploadToS3() now also asserts at call time.
 const PUBLISH_BUCKET = process.env.PUBLISH_BUCKET || "shogo-published-apps-LOCAL-DEV"
+// Writable-state bucket for SERVER-BACKED published apps (the SQLite DB +
+// upload dirs the running server.tsx persists). Separate from PUBLISH_BUCKET
+// (static dist). Unset → server-backed publishing degrades to "no durable
+// writes" but still serves dynamic /api/* from the source-seed DB.
+const PUBLISH_DATA_BUCKET = process.env.PUBLISH_DATA_BUCKET || process.env.S3_PUBLISHED_DATA_BUCKET || ""
 const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || "shogo.one"
 const AWS_REGION = process.env.S3_REGION || process.env.AWS_REGION || "us-east-1"
 
@@ -441,6 +446,111 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
 }
 
 /**
+ * Ask the runtime pod whether this project needs a SERVER-BACKED publish (its
+ * server.tsx does real work a static export can't reproduce — DB models or
+ * custom routes). Defaults to false (static) on any error so a flaky probe can
+ * never silently switch a working static app onto the heavier server path.
+ */
+async function detectServerBacked(projectId: string): Promise<boolean> {
+  try {
+    const { getProjectPodUrl } = await import("../lib/knative-project-manager")
+    const podUrl = await getProjectPodUrl(projectId)
+    const response = await fetch(`${podUrl}/agent/server-info`, {
+      headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
+      signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
+    })
+    if (!response.ok) {
+      console.warn(`[Publish] server-info returned ${response.status} for ${projectId} — treating as static`)
+      return false
+    }
+    const info = (await response.json()) as { serverBacked?: boolean }
+    console.log(`[Publish] server-info for ${projectId}:`, info)
+    return info.serverBacked === true
+  } catch (err: any) {
+    console.warn(`[Publish] server-info detection failed for ${projectId} (treating as static):`, err?.message ?? err)
+    return false
+  }
+}
+
+/**
+ * Seed the published-data bucket with the project's CURRENT writable state
+ * (prisma/dev.db + upload dirs) so a server-backed app boots with the builder's
+ * data (e.g. a guest list) instead of an empty DB. Only seeds when no archive
+ * exists yet for this subdomain — republishes must NOT clobber writes that
+ * end users have accumulated since the first publish. Best-effort.
+ */
+async function seedPublishedData(subdomain: string, projectId: string): Promise<void> {
+  if (!PUBLISH_DATA_BUCKET) {
+    console.warn('[Publish] PUBLISH_DATA_BUCKET unset — skipping published-data seed')
+    return
+  }
+  const key = `${subdomain}/data.tar.gz`
+  try {
+    await s3Client.send(new HeadObjectCommand({ Bucket: PUBLISH_DATA_BUCKET, Key: key }))
+    console.log(`[Publish] published-data archive ${key} already exists — preserving end-user writes`)
+    return
+  } catch {
+    // Not found → seed below.
+  }
+  try {
+    const { getProjectPodUrl } = await import("../lib/knative-project-manager")
+    const podUrl = await getProjectPodUrl(projectId)
+    const response = await fetch(`${podUrl}/agent/published-data-archive`, {
+      headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
+      signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
+    })
+    if (response.status === 404) {
+      console.log(`[Publish] No writable state to seed for ${projectId} (fresh DB on first boot)`)
+      return
+    }
+    if (!response.ok) {
+      console.warn(`[Publish] published-data-archive returned ${response.status} for ${projectId}`)
+      return
+    }
+    const { archive } = (await response.json()) as { archive?: string }
+    if (!archive) return
+    const buf = Buffer.from(archive, 'base64')
+    await s3Client.send(new PutObjectCommand({
+      Bucket: PUBLISH_DATA_BUCKET,
+      Key: key,
+      Body: buf,
+      ContentType: 'application/gzip',
+      CacheControl: 'no-store',
+    }))
+    console.log(`[Publish] Seeded published-data ${key} (${buf.length} bytes)`)
+  } catch (err: any) {
+    console.warn(`[Publish] seedPublishedData failed for ${projectId} (non-fatal):`, err?.message ?? err)
+  }
+}
+
+/**
+ * Provision the right published service for a project: a server-backed
+ * Knative pod (running server.tsx) when the app needs a backend, else the
+ * static nginx service. Either way the `{subdomain}.shogo.one` DomainMapping
+ * is (re)created and the SERVER_BACKED Worker KV flag is set/cleared so the
+ * edge routes `/api/*` correctly. Shared by publish + republish.
+ */
+async function configurePublishedService(projectId: string, subdomain: string): Promise<void> {
+  const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+  const { setServerBackedFlag, clearServerBackedFlag } = await import("../lib/cloudflare-server-backed-kv")
+  const manager = getKnativeProjectManager()
+
+  const serverBacked = await detectServerBacked(projectId)
+  if (serverBacked) {
+    const serviceUrl = await manager.createPublishedServerService(projectId, subdomain)
+    console.log(`[Publish] Server-backed published service ready: ${serviceUrl}`)
+    await manager.createPublishedDomainMapping(subdomain, projectId)
+    await seedPublishedData(subdomain, projectId)
+    await setServerBackedFlag(subdomain)
+  } else {
+    const serviceUrl = await manager.createPublishedService(projectId, subdomain)
+    console.log(`[Publish] Static published service ready: ${serviceUrl}`)
+    await manager.createPublishedDomainMapping(subdomain, projectId)
+    await clearServerBackedFlag(subdomain)
+  }
+}
+
+/**
  * Force the runtime pod to flush its git sync so the published source is
  * committed + pushed into the durable repo before we tag HEAD. Best-effort
  * — a pod in legacy `s3` mode (or with git sync inactive) returns
@@ -769,16 +879,11 @@ export function publishRoutes() {
             }, 500)
           }
 
-          // Step 4: Create/update published Knative service (nginx + S3 init container)
+          // Step 4+5: Provision the published service (server-backed pod OR
+          // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
           await setPublishStatus(projectId, 'configuring')
           try {
-            const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
-            const manager = getKnativeProjectManager()
-            const serviceUrl = await manager.createPublishedService(projectId, subdomain)
-            console.log(`[Publish] Published service created: ${serviceUrl}`)
-
-            // Step 5: Create DomainMapping {subdomain}.shogo.one -> published-{projectId}
-            await manager.createPublishedDomainMapping(subdomain, projectId)
+            await configurePublishedService(projectId, subdomain)
           } catch (err: any) {
             console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
             await setPublishStatus(projectId, 'failed', 'configure_failed')
@@ -901,6 +1006,16 @@ export function publishRoutes() {
           console.warn("[Publish] Failed to delete published service:", err.message)
         }
 
+        // Clear the server-backed edge flag so the Worker stops trying to
+        // proxy /api/* for this subdomain. The published-data archive is
+        // intentionally kept so a later republish restores end-user writes.
+        try {
+          const { clearServerBackedFlag } = await import("../lib/cloudflare-server-backed-kv")
+          await clearServerBackedFlag(project.publishedSubdomain)
+        } catch (err: any) {
+          console.warn("[Publish] Failed to clear server-backed flag:", err.message)
+        }
+
         try {
           await deleteFromS3(project.publishedSubdomain)
         } catch (err) {
@@ -994,14 +1109,17 @@ export function publishRoutes() {
           await setPublishStatus(projectId, 'uploading')
           await uploadToS3(subdomain, files)
 
-          // Force a new Knative revision so the init container re-syncs from S3
+          // Re-provision the published service. configurePublishedService
+          // re-creates the right service type (which bumps the Knative
+          // revision / re-syncs content) and handles static<->server-backed
+          // transitions, the DomainMapping, and the SERVER_BACKED edge flag.
+          // seedPublishedData is a no-op when an archive already exists, so a
+          // republish never clobbers accumulated end-user writes.
           await setPublishStatus(projectId, 'configuring')
           try {
-            const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
-            const manager = getKnativeProjectManager()
-            await manager.forcePublishedRevision(projectId)
+            await configurePublishedService(projectId, subdomain)
           } catch (err: any) {
-            console.warn("[Publish] Failed to force new revision:", err.message)
+            console.warn("[Publish] Failed to reconfigure published service:", err.message)
           }
         } finally {
           await releasePublishLock(projectId)

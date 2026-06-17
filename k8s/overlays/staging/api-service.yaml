@@ -184,6 +184,14 @@ spec:
             # K8s mode — see the post-2026-05-26 comment there.
             - name: PUBLISH_BUCKET
               value: "shogo-published-apps-staging"
+            # Writable-state bucket for SERVER-BACKED published apps (the
+            # SQLite DB + uploads their server.tsx persists). publish.ts seeds
+            # `{subdomain}/data.tar.gz` here and injects it into the published
+            # Knative pod env (createPublishedServerService) as
+            # S3_PUBLISHED_DATA_BUCKET. Must match
+            # `shogo-published-data-${var.environment}`.
+            - name: PUBLISH_DATA_BUCKET
+              value: "shogo-published-data-staging"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             # --- Custom domains (Cloudflare for SaaS) ----------------------
@@ -220,6 +228,17 @@ spec:
                 secretKeyRef:
                   name: custom-domains-config
                   key: CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID
+                  optional: true
+            # Workers KV namespace that flags server-backed subdomains so the
+            # *.shogo.one Worker proxies their /api/* to the Knative ingress.
+            # From the publish-hosting-oci output `server_backed_kv_namespace_id`
+            # (set enable_server_backed_publish + kourier_origin). Optional —
+            # absent => server-backed publishing degrades to static-only edge.
+            - name: CF_SERVER_BACKED_KV_NAMESPACE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_SERVER_BACKED_KV_NAMESPACE_ID
                   optional: true
             - name: CUSTOM_DOMAIN_FALLBACK_ORIGIN
               valueFrom:
