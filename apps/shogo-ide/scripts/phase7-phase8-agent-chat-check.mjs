@@ -30,7 +30,51 @@ function assert(condition, message) {
   if (!condition) errors.push(message)
 }
 
+function renderedWebviewScript(source) {
+  const startMarker = '    return `<!doctype html>'
+  const start = source.indexOf(startMarker)
+  if (start < 0) {
+    errors.push('webview render template is missing')
+    return ''
+  }
+  const bodyStart = start + '    return `'.length
+  const end = source.indexOf('`\n  }\n}', bodyStart)
+  if (end < 0) {
+    errors.push('webview render template is not closed as expected')
+    return ''
+  }
+  try {
+    const templateBody = source.slice(bodyStart, end)
+    const html = Function('scriptNonce', 'csp', `return \`${templateBody}\``)('phase-check', "default-src 'none'; script-src 'nonce-phase-check'")
+    const scriptStartMarker = '  <script nonce="phase-check">'
+    const scriptStart = html.indexOf(scriptStartMarker)
+    const scriptEnd = html.indexOf('  </script>', scriptStart)
+    if (scriptStart < 0 || scriptEnd < 0) {
+      errors.push('rendered webview script tag is missing')
+      return ''
+    }
+    return html.slice(scriptStart + scriptStartMarker.length, scriptEnd)
+  } catch (error) {
+    errors.push(`rendered webview template failed to evaluate: ${error.message}`)
+    return ''
+  }
+}
+
 const extension = read('apps/shogo-ide/extensions/shogo-agent-chat/src/extension.ts')
+const webviewScript = renderedWebviewScript(extension)
+if (webviewScript) {
+  try {
+    Function(webviewScript)
+  } catch (error) {
+    errors.push(`rendered webview script must be valid JavaScript: ${error.message}`)
+  }
+  assert(webviewScript.includes('before.match(/(^|\\s)\\/([\\w-]*)$/)'), 'rendered slash command regex must preserve whitespace, slash, and word escapes')
+  assert(webviewScript.includes('before.match(/(^|\\s)([#@])([\\w./:-]*)$/)'), 'rendered context mention regex must preserve whitespace and word escapes')
+  assert(webviewScript.includes('replace(/^\\s*/,'), 'rendered slash command cleanup must trim whitespace')
+  assert(webviewScript.includes('replace(/\\n+$/,'), 'rendered Enter fallback must trim inserted newlines')
+  assert(!webviewScript.includes('before.match(/(^|s)/([w-]*)$/)'), 'rendered slash command regex must not lose escapes')
+  assert(!webviewScript.includes('replace(/^s*/,'), 'rendered slash command cleanup must not lose whitespace escape')
+}
 const manifest = readJson('apps/shogo-ide/extensions/shogo-agent-chat/package.json')
 const settings = readJson('apps/shogo-ide/distribution/defaults/settings.json')
 const layout = readJson('apps/shogo-ide/distribution/defaults/layout.json')
@@ -60,6 +104,11 @@ assert(!extension.includes('workbench.panel.chat'), 'extension must not target a
 assert(extension.includes('prefillPrompt'), 'extension must support native prefill actions')
 assert(extension.includes('focusComposer'), 'webview must support native composer focus')
 assert(extension.includes('pendingComposerText'), 'extension must preserve pending native composer text')
+assert(extension.includes("promptEl.addEventListener('beforeinput'") && extension.includes("event.inputType === 'insertLineBreak'"), 'webview must prevent raw Enter from inserting a newline before send')
+assert(extension.includes("promptEl.addEventListener('input'") && extension.includes("promptEl.value.replace(/\\\\n+$/"), 'webview must fall back when Enter inserts a newline before handlers win')
+assert(extension.includes("document.addEventListener('keydown'") && extension.includes('handlePromptEnter(event)'), 'webview must capture Enter-to-send reliably')
+assert(extension.includes('allowNextLineBreak'), 'webview must preserve Shift+Enter newline behavior')
+assert(extension.includes("msg.type === 'webviewError'") && extension.includes('reportWebviewError'), 'webview must report runtime errors visibly')
 assert(/nativePhase: (8|9|10)/.test(extension), 'webview state must report native Phase 8 or later')
 
 assert(settings?.['shogo.agentChat.autoOpen'] === true, 'default settings must auto-open Shogo Chat')
