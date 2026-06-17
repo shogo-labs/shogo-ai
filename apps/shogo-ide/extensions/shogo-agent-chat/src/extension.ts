@@ -153,8 +153,9 @@ function getBridgeConfig(): { url: string | null; token: string | null } {
   const config = vscode.workspace.getConfiguration('shogo.agentChat')
   const configuredUrl = config.get<string>('bridgeUrl')?.trim() || process.env.SHOGO_AGENT_BRIDGE_URL || ''
   const configuredToken = config.get<string>('bridgeToken')?.trim() || process.env.SHOGO_AGENT_BRIDGE_TOKEN || ''
+  const normalizedUrl = configuredUrl.replace(/\/+$/, '').replace(/\/api$/, '')
   return {
-    url: configuredUrl ? configuredUrl.replace(/\/$/, '') : null,
+    url: normalizedUrl || null,
     token: configuredToken || null,
   }
 }
@@ -175,6 +176,26 @@ function buildSessionId(): string {
   return `shogo-ide:${safeFolder}:${Date.now().toString(36)}:${Math.random().toString(16).slice(2)}`
 }
 
+let lastTextEditor: vscode.TextEditor | null = null
+const lastSelections = new Map<string, vscode.Selection>()
+
+function rememberTextEditor(editor: vscode.TextEditor | undefined): void {
+  if (!editor) return
+  lastTextEditor = editor
+  if (!editor.selection.isEmpty) lastSelections.set(editor.document.uri.toString(), editor.selection)
+}
+
+function getContextTextEditor(): vscode.TextEditor | null {
+  const activeEditor = vscode.window.activeTextEditor
+  if (activeEditor) rememberTextEditor(activeEditor)
+  return activeEditor ?? lastTextEditor
+}
+
+function getContextSelection(editor: vscode.TextEditor): vscode.Selection | null {
+  if (!editor.selection.isEmpty) return editor.selection
+  return lastSelections.get(editor.document.uri.toString()) ?? null
+}
+
 function toAgentMessage(role: 'user' | 'assistant', text: string): { role: 'user' | 'assistant'; parts: Array<{ type: 'text'; text: string }> } {
   return { role, parts: [{ type: 'text', text }] }
 }
@@ -193,8 +214,9 @@ function summarizeContextForPrompt(context: ContextItem[]): string {
 }
 
 async function collectActiveFile(): Promise<ContextItem | null> {
-  const editor = vscode.window.activeTextEditor
+  const editor = getContextTextEditor()
   if (!editor) return null
+  rememberTextEditor(editor)
   const document = editor.document
   return {
     id: `activeFile:${document.uri.toString()}`,
@@ -206,14 +228,18 @@ async function collectActiveFile(): Promise<ContextItem | null> {
 }
 
 function collectSelection(): ContextItem | null {
-  const editor = vscode.window.activeTextEditor
-  if (!editor || editor.selection.isEmpty) return null
+  const editor = getContextTextEditor()
+  if (!editor) return null
+  const selection = getContextSelection(editor)
+  if (!selection) return null
   const document = editor.document
-  const text = document.getText(editor.selection)
+  const text = document.getText(selection)
+  if (!text.trim()) return null
+  lastSelections.set(document.uri.toString(), selection)
   return {
-    id: `selection:${document.uri.toString()}:${editor.selection.start.line}:${editor.selection.start.character}:${Date.now()}`,
+    id: `selection:${document.uri.toString()}:${selection.start.line}:${selection.start.character}:${Date.now()}`,
     kind: 'selection',
-    label: `${relativePath(document.uri)}:${editor.selection.start.line + 1}`,
+    label: `${relativePath(document.uri)}:${selection.start.line + 1}`,
     uri: document.uri.toString(),
     text: text.slice(0, 24000),
   }
@@ -228,9 +254,9 @@ function severityLabel(value: unknown): string {
 }
 
 function collectRichIdeContext(contextItems: ContextItem[]): RichIdeContext {
-  const activeEditor = vscode.window.activeTextEditor
+  const activeEditor = getContextTextEditor()
   const activeDocument = activeEditor?.document
-  const activeSelection = activeEditor?.selection
+  const activeSelection = activeEditor ? getContextSelection(activeEditor) : null
   const visibleEditors = ((vscode.window as any).visibleTextEditors ?? []) as vscode.TextEditor[]
   const languages = (vscode as any).languages
   const diagnostics = typeof languages?.getDiagnostics === 'function'
@@ -396,6 +422,12 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.updateNativeStatus()
   }
 
+  private pushSystemMessage(text: string): void {
+    const lastMessage = this.messages[this.messages.length - 1]
+    if (lastMessage?.role === 'system' && lastMessage.text === text) return
+    this.messages.push(createMessage('system', text))
+  }
+
   getAttachedContext(): ContextItem[] {
     return Array.from(this.contextItems.values())
   }
@@ -414,7 +446,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async open(preserveFocus = false): Promise<void> {
-    await ensureShogoChatInRightPanel()
+    await showShogoChatContainer()
     await vscode.commands.executeCommand('shogo.agentChat.focus').catch(() => undefined)
     this.view?.show?.(preserveFocus)
     await this.postState()
@@ -434,7 +466,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   async askAboutSelection(intent: 'explain' | 'fix'): Promise<void> {
     const item = collectSelection()
     if (!item) {
-      this.messages.push(createMessage('system', 'Select code in the editor before asking Shogo about it.'))
+      this.pushSystemMessage('Select code in the editor before asking Shogo about it.')
       await this.focusInput()
       return
     }
@@ -442,7 +474,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     const prompt = intent === 'fix'
       ? `Fix the selected code in ${item.label}. Propose an edit action when you are confident.`
       : `Explain the selected code in ${item.label}. Include key behavior, edge cases, and any risks.`
-    this.messages.push(createMessage('system', `Added selection context: ${item.label}`))
+    this.pushSystemMessage(`Added selection context: ${item.label}`)
     await this.prefillPrompt(prompt)
     await this.postState()
   }
@@ -457,10 +489,10 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   async addSelection(): Promise<void> {
     const item = collectSelection()
     if (!item) {
-      this.messages.push(createMessage('system', 'Select code in the editor before adding selection context.'))
+      this.pushSystemMessage('Select code in the editor before adding selection context.')
     } else {
       this.contextItems.set(item.id, item)
-      this.messages.push(createMessage('system', `Added selection context: ${item.label}`))
+      this.pushSystemMessage(`Added selection context: ${item.label}`)
     }
     await this.open()
   }
@@ -468,10 +500,10 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   async addActiveFile(): Promise<void> {
     const item = await collectActiveFile()
     if (!item) {
-      this.messages.push(createMessage('system', 'Open a file before adding active file context.'))
+      this.pushSystemMessage('Open a file before adding active file context.')
     } else {
       this.contextItems.set(item.id, item)
-      this.messages.push(createMessage('system', `Added active file context: ${item.label}`))
+      this.pushSystemMessage(`Added active file context: ${item.label}`)
     }
     await this.open()
   }
@@ -566,31 +598,41 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
+    const requestBody = JSON.stringify({
+      messages: this.buildAgentMessages(prompt),
+      chatSessionId: this.chatSessionId,
+      interactionMode: 'agent',
+      ...(model && model !== 'auto' ? { agentMode: model } : {}),
+      ide: ideContext,
+      ideContext,
+      ideActionProtocol: {
+        version: 1,
+        actions: ['workspaceEdit', 'writeFile', 'runCommand', 'openFile'],
+        delivery: 'stream-event',
+        eventTypes: ['ide-action', 'shogo-ide-action'],
+        requiresUserConfirmation: true,
+        shellCommandsRequireWorkspaceTrust: true,
+      },
+    })
+    const headers = {
+      'content-type': 'application/json',
+      'x-chat-session-id': this.chatSessionId,
+      ...(bridge.token ? { authorization: `Bearer ${bridge.token}` } : {}),
+    }
+
     try {
-      const response = await fetch(`${bridge.url}/agent/chat`, {
+      let response = await fetch(`${bridge.url}/agent/chat`, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-chat-session-id': this.chatSessionId,
-          ...(bridge.token ? { authorization: `Bearer ${bridge.token}` } : {}),
-        },
-        body: JSON.stringify({
-          messages: this.buildAgentMessages(prompt),
-          chatSessionId: this.chatSessionId,
-          interactionMode: 'agent',
-          ...(model && model !== 'auto' ? { agentMode: model } : {}),
-          ide: ideContext,
-          ideContext,
-          ideActionProtocol: {
-            version: 1,
-            actions: ['workspaceEdit', 'writeFile', 'runCommand', 'openFile'],
-            delivery: 'stream-event',
-            eventTypes: ['ide-action', 'shogo-ide-action'],
-            requiresUserConfirmation: true,
-            shellCommandsRequireWorkspaceTrust: true,
-          },
-        }),
+        headers,
+        body: requestBody,
       })
+      if (response.status === 404 || response.status === 401) {
+        response = await fetch(`${bridge.url}/api/agent/chat`, {
+          method: 'POST',
+          headers,
+          body: requestBody,
+        })
+      }
       if (!response.ok) {
         const body = await response.json().catch(() => ({})) as BridgeResponse
         return { ok: false, error: body.error || `Shogo agent backend returned HTTP ${response.status}.` }
@@ -1217,16 +1259,13 @@ function createStatusBarItem(): any | null {
   return windowApi.createStatusBarItem('shogo.agentChat.status', alignment, 100)
 }
 
-async function ensureShogoChatInRightPanel(): Promise<void> {
-  await vscode.commands.executeCommand('vscode.moveViews', {
-    viewIds: ['shogo.agentChat'],
-    destinationId: 'workbench.panel.chat',
-  }).catch(() => undefined)
+async function showShogoChatContainer(): Promise<void> {
+  await vscode.commands.executeCommand('workbench.view.extension.shogo-agent-chat').catch(() => undefined)
 }
 
 async function openShogoChatOnStartup(provider: ShogoAgentChatViewProvider): Promise<void> {
   await vscode.commands.executeCommand('setContext', 'shogo.agentChat.native', true).catch(() => undefined)
-  await ensureShogoChatInRightPanel()
+  await showShogoChatContainer()
   await provider.open(false)
   await provider.focusInput()
   setTimeout(() => {
@@ -1235,6 +1274,8 @@ async function openShogoChatOnStartup(provider: ShogoAgentChatViewProvider): Pro
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  rememberTextEditor(vscode.window.activeTextEditor)
+  const windowApi = vscode.window as any
   const statusBarItem = createStatusBarItem()
   const provider = new ShogoAgentChatViewProvider(context.extensionUri, statusBarItem)
 
@@ -1247,6 +1288,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('shogo.agentChat.addActiveFile', () => provider.addActiveFile()),
     vscode.commands.registerCommand('shogo.agentChat.explainSelection', () => provider.askAboutSelection('explain')),
     vscode.commands.registerCommand('shogo.agentChat.fixSelection', () => provider.askAboutSelection('fix')),
+    windowApi.onDidChangeActiveTextEditor?.((editor: vscode.TextEditor | undefined) => rememberTextEditor(editor)) ?? ({ dispose() {} } as vscode.Disposable),
+    windowApi.onDidChangeTextEditorSelection?.((event: { textEditor?: vscode.TextEditor }) => rememberTextEditor(event.textEditor)) ?? ({ dispose() {} } as vscode.Disposable),
     vscode.workspace.onDidGrantWorkspaceTrust(() => provider.open()),
     ...(statusBarItem ? [statusBarItem] : []),
   )

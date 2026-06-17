@@ -70,8 +70,9 @@ if (extensionPackage) {
 }
 
 if (agentChatPackage) {
-  assert(agentChatPackage.version === '0.0.0-phase.8', 'shogo-agent-chat version must track the current right-panel Shogo chat phase')
-  assert(agentChatPackage.contributes?.views?.['workbench.panel.chat']?.some((view) => view.id === 'shogo.agentChat'), 'shogo-agent-chat must contribute the Shogo webview to the right-side Chat panel')
+  assert(agentChatPackage.version === '0.0.0-phase.8', 'shogo-agent-chat version must track the current Shogo chat phase')
+  assert(agentChatPackage.contributes?.viewsContainers?.auxiliarybar?.some((container) => container.id === 'shogo-agent-chat'), 'shogo-agent-chat must contribute the Shogo auxiliary container')
+  assert(agentChatPackage.contributes?.views?.['shogo-agent-chat']?.some((view) => view.id === 'shogo.agentChat'), 'shogo-agent-chat must contribute the Shogo webview to its auxiliary container')
   assert(!agentChatPackage.contributes?.chatParticipants, 'shogo-agent-chat must not use proposed native chat participant APIs')
   assert(agentChatPackage.contributes?.configurationDefaults?.['shogo.agentChat.autoOpen'] === true, 'shogo-agent-chat must auto-open by default')
 }
@@ -101,7 +102,7 @@ assert(agentChatExtension.includes('desktop-chat-shell'), 'agent chat webview mu
 assert(agentChatExtension.includes('composer-card'), 'agent chat webview must use Desktop-style composer card')
 assert(agentChatExtension.includes('context-chip'), 'agent chat webview must render Desktop-style context chips')
 assert(agentChatExtension.includes('Ask Shogo to fix, explain, refactor, or review this code'), 'agent chat composer must use the Desktop-style Shogo prompt placeholder')
-assert(agentChatExtension.includes("registerWebviewViewProvider('shogo.agentChat'"), 'agent chat extension must register the Shogo right-panel webview provider')
+assert(agentChatExtension.includes("registerWebviewViewProvider('shogo.agentChat'"), 'agent chat extension must register the Shogo webview provider')
 assert(!agentChatExtension.includes('createChatParticipant'), 'agent chat extension must not register proposed native chat participants')
 assert(agentChatExtension.includes('<select id="model"'), 'agent chat webview must expose model/mode control in the composer')
 assert(agentChatReadme.includes('reuses the Shogo Desktop chat UI shell'), 'agent chat README must document Desktop chat UI reuse')
