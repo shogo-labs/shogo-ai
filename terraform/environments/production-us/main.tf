@@ -61,6 +61,32 @@ provider "cloudflare" {
   api_token = var.cloudflare_api_token
 }
 
+# =============================================================================
+# Server-backed publish: Kourier ingress origin (DNS-only)
+# =============================================================================
+# The subdomain-router Worker proxies `/api/*` for server-backed published
+# apps to this record, which points straight at the prod-us Knative (Kourier)
+# ingress LB. It MUST stay DNS-only (gray cloud): the Worker fetches it
+# directly and rewrites the Host header to `{subdomain}.shogo.one`, so the
+# Knative DomainMapping routes the request to `published-{projectId}`. Routing
+# it through Cloudflare instead would re-enter the `*.shogo.one` Worker route
+# and loop. The LB IP is a stable OCI-assigned address for the long-lived
+# `kourier` Service in `kourier-system` (not terraform-managed here, hence the
+# literal). See modules/publish-hosting-oci `kourier_origin`.
+data "cloudflare_zone" "publish" {
+  name = "shogo.one"
+}
+
+resource "cloudflare_record" "kourier_us" {
+  zone_id = data.cloudflare_zone.publish.id
+  name    = "kourier-us"
+  content = "152.70.192.220"
+  type    = "A"
+  proxied = false
+  ttl     = 300
+  comment = "DNS-only origin for server-backed published /api/* proxying (prod-us Kourier LB)"
+}
+
 data "oci_containerengine_cluster_kube_config" "main" {
   cluster_id = module.us.cluster_id
 }
@@ -223,6 +249,15 @@ module "us" {
   enable_publish_hosting = true
   publish_zone           = null # defaults to publish_domain="shogo.one"
 
+  # Server-backed published apps (run server.tsx in production) proxy their
+  # `/api/*` traffic from the subdomain-router Worker to this region's Knative
+  # (Kourier) ingress. The origin is the DNS-only `kourier-us.shogo.one` record
+  # below, which lands directly on the prod-us Kourier LB. HTTP (not HTTPS)
+  # because Kourier presents a Cloudflare Origin CA cert (`*.shogo.ai`) that a
+  # direct, non-proxied Worker subrequest cannot validate; the Worker sets
+  # `X-Forwarded-Proto: https` so the app still treats the request as secure.
+  kourier_origin = "http://${cloudflare_record.kourier_us.hostname}"
+
   # Bring-your-own custom hostnames (Cloudflare for SaaS). Off until a
   # DEDICATED zone (separate from shogo.one) is supplied — see variables.tf.
   enable_custom_domains = var.enable_custom_domains
@@ -301,6 +336,22 @@ output "cluster_endpoint" { value = module.us.cluster_endpoint }
 output "cluster_id" { value = module.us.cluster_id }
 output "ocir_prefix" { value = module.us.ocir_prefix }
 output "s3_endpoint" { value = module.us.s3_endpoint }
+
+# Server-backed publish wiring. `server_backed_kv_namespace_id` must be set as
+# the api ksvc env `CF_SERVER_BACKED_KV_NAMESPACE_ID` (via the custom-domains
+# secret) so the API can flag which subdomains proxy `/api/*`.
+output "server_backed_kv_namespace_id" {
+  description = "Workers KV namespace id for the server-backed publish map. Wire into the api ksvc as CF_SERVER_BACKED_KV_NAMESPACE_ID."
+  value       = module.us.server_backed_kv_namespace_id
+}
+output "published_data_bucket" {
+  description = "OCI bucket holding writable state (prisma/dev.db + uploads) for server-backed published apps."
+  value       = module.us.published_data_bucket
+}
+output "kourier_origin" {
+  description = "DNS-only origin the subdomain-router Worker proxies server-backed /api/* to."
+  value       = "http://${cloudflare_record.kourier_us.hostname}"
+}
 output "rpc_eu_id" {
   value = var.enable_drg_peering_to_eu ? module.drg_to_eu[0].rpc_id : null
 }
