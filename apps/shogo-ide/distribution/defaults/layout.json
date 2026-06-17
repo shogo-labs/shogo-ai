@@ -12,11 +12,11 @@
     ]
   },
   "chat": {
-    "defaultContainer": "workbench.panel.chat",
+    "defaultContainer": "shogo-agent-chat",
     "autoOpenView": "shogo.agentChat"
   },
   "views": {
-    "workbench.panel.chat": [
+    "shogo-agent-chat": [
       "shogo.agentChat"
     ]
   },

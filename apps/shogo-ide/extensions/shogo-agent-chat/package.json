@@ -45,8 +45,17 @@
     }
   },
   "contributes": {
+    "viewsContainers": {
+      "auxiliarybar": [
+        {
+          "id": "shogo-agent-chat",
+          "title": "Shogo Chat",
+          "icon": "media/shogo.svg"
+        }
+      ]
+    },
     "views": {
-      "workbench.panel.chat": [
+      "shogo-agent-chat": [
         {
           "id": "shogo.agentChat",
           "name": "Shogo",

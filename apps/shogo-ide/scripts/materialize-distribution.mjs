@@ -95,7 +95,7 @@ const generatedManifest = {
     browser: packageJson.browser,
     activityContainer: packageJson.contributes?.viewsContainers?.activitybar?.[0]?.id ?? null,
     auxiliaryContainer: packageJson.contributes?.viewsContainers?.auxiliarybar?.[0]?.id ?? null,
-    chatContainer: packageJson.contributes?.views?.['workbench.panel.chat'] ? 'workbench.panel.chat' : null,
+    chatContainer: descriptor.defaultVisibility?.chatContainer ?? null,
     views: Object.values(packageJson.contributes?.views ?? {}).flat().map((view) => view.id),
     walkthroughs: packageJson.contributes?.walkthroughs?.map((walkthrough) => walkthrough.id) ?? [],
     descriptor,

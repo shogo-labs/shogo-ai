@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-16T13:47:06.298Z",
+  "generatedAt": "2026-06-17T04:45:46.751Z",
   "phase": 8,
   "product": {
     "nameShort": "Shogo",
@@ -17,8 +17,8 @@
       "main": "./dist/extension.js",
       "browser": "./dist/extension.js",
       "activityContainer": null,
-      "auxiliaryContainer": null,
-      "chatContainer": "workbench.panel.chat",
+      "auxiliaryContainer": "shogo-agent-chat",
+      "chatContainer": "shogo-agent-chat",
       "views": [
         "shogo.agentChat"
       ],
@@ -42,7 +42,7 @@
           ]
         },
         "defaultVisibility": {
-          "chatContainer": "workbench.panel.chat",
+          "chatContainer": "shogo-agent-chat",
           "views": [
             "shogo.agentChat"
           ]
@@ -177,11 +177,11 @@
         ]
       },
       "chat": {
-        "defaultContainer": "workbench.panel.chat",
+        "defaultContainer": "shogo-agent-chat",
         "autoOpenView": "shogo.agentChat"
       },
       "views": {
-        "workbench.panel.chat": [
+        "shogo-agent-chat": [
           "shogo.agentChat"
         ]
       },
@@ -218,7 +218,7 @@
         ]
       },
       "defaultVisibility": {
-        "chatContainer": "workbench.panel.chat",
+        "chatContainer": "shogo-agent-chat",
         "views": [
           "shogo.agentChat"
         ]

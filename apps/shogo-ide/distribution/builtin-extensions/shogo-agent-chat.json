@@ -17,7 +17,7 @@
     ]
   },
   "defaultVisibility": {
-    "chatContainer": "workbench.panel.chat",
+    "chatContainer": "shogo-agent-chat",
     "views": [
       "shogo.agentChat"
     ]
