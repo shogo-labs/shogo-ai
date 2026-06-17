@@ -1712,12 +1712,20 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   <title>Shogo Agent Chat</title>
   <style>
     :root {
-      color-scheme: dark light;
+      color-scheme: dark;
       --shogo-orange: #f97316;
       --shogo-orange-strong: #fb923c;
+      --shogo-orange-soft: rgba(249, 115, 22, .14);
+      --shogo-orange-border: rgba(249, 115, 22, .38);
+      --shogo-black: #0b0b0c;
+      --shogo-panel: #121212;
+      --shogo-panel-soft: #171514;
+      --shogo-panel-raised: #1d1916;
+      --shogo-border: #2d2621;
+      --shogo-muted: #a8a29e;
       --shogo-radius-lg: 18px;
       --shogo-radius-md: 13px;
-      --shogo-shadow: 0 18px 55px rgba(0, 0, 0, .25);
+      --shogo-shadow: 0 18px 55px rgba(0, 0, 0, .34);
     }
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
@@ -1726,21 +1734,25 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       height: 100vh;
       overflow: hidden;
       color: var(--vscode-foreground);
-      background: var(--vscode-editor-background);
+      background:
+        radial-gradient(circle at 50% 100%, rgba(249, 115, 22, .11), transparent 34%),
+        linear-gradient(180deg, var(--shogo-panel) 0%, var(--shogo-black) 72%);
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
     }
     button, textarea, select { font: inherit; }
     button { cursor: pointer; }
     button:focus-visible, textarea:focus-visible, select:focus-visible {
-      outline: 1px solid var(--vscode-focusBorder);
+      outline: 1px solid var(--shogo-orange-strong);
       outline-offset: 2px;
     }
     .desktop-chat-shell {
       height: 100vh;
       display: grid;
       grid-template-rows: minmax(0, 1fr);
-      background: var(--vscode-sideBar-background);
+      background:
+        linear-gradient(180deg, rgba(249, 115, 22, .045), transparent 30%),
+        var(--shogo-black);
     }
     .send-button, .chip-button {
       border: 1px solid transparent;
@@ -1749,7 +1761,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       border-radius: 10px;
     }
     .chip-button:hover {
-      background: var(--vscode-toolbar-hoverBackground, var(--vscode-button-secondaryBackground));
+      background: var(--shogo-orange-soft);
+      border-color: var(--shogo-orange-border);
       color: var(--vscode-foreground);
     }
     .conversation {
@@ -1767,9 +1780,9 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       padding-top: 14px;
     }
     .desktop-card {
-      border: 1px solid var(--vscode-panel-border);
+      border: 1px solid var(--shogo-border);
       border-radius: 12px;
-      background: var(--vscode-editor-background);
+      background: var(--shogo-panel);
       overflow: hidden;
       margin-bottom: 12px;
     }
@@ -1782,10 +1795,10 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       max-height: min(520px, calc(100% - 24px));
       overflow: auto;
       padding: 12px;
-      border-color: color-mix(in srgb, var(--vscode-panel-border) 82%, var(--vscode-foreground));
+      border-color: color-mix(in srgb, var(--shogo-border) 78%, var(--shogo-orange));
       border-radius: 14px;
-      background: var(--vscode-quickInput-background, var(--vscode-editor-background));
-      box-shadow: 0 18px 48px rgba(0, 0, 0, .28);
+      background: linear-gradient(180deg, var(--shogo-panel-raised), var(--shogo-panel));
+      box-shadow: var(--shogo-shadow);
     }
     .session-card[hidden] { display: none; }
     .session-top { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
@@ -1795,9 +1808,9 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     .session-title { font-weight: 700; margin-bottom: 4px; }
     .session-subtitle { color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.45; }
     .bridge-pill {
-      border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
-      color: var(--vscode-descriptionForeground);
-      background: var(--vscode-button-secondaryBackground);
+      border: 1px solid var(--shogo-orange-border);
+      color: color-mix(in srgb, var(--shogo-orange-strong) 82%, var(--vscode-foreground));
+      background: var(--shogo-orange-soft);
       border-radius: 999px;
       padding: 4px 8px;
       font-size: 11px;
@@ -1810,11 +1823,11 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       gap: 6px;
       max-width: 100%;
       min-width: 0;
-      border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
+      border: 1px solid color-mix(in srgb, var(--shogo-border) 76%, var(--shogo-orange));
       border-radius: 999px;
       padding: 5px 9px;
-      color: var(--vscode-descriptionForeground);
-      background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 50%, transparent);
+      color: color-mix(in srgb, var(--vscode-descriptionForeground) 82%, var(--shogo-orange-strong));
+      background: color-mix(in srgb, var(--shogo-panel-raised) 82%, var(--shogo-orange) 10%);
       font-size: 11px;
       line-height: 1;
     }
@@ -1837,10 +1850,10 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       margin: 0 12px 8px;
       max-height: 260px;
       overflow: auto;
-      border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+      border: 1px solid color-mix(in srgb, var(--shogo-border) 82%, var(--shogo-orange));
       border-radius: 12px;
-      background: var(--vscode-quickInput-background, var(--vscode-editor-background));
-      box-shadow: 0 16px 40px rgba(0, 0, 0, .32);
+      background: linear-gradient(180deg, var(--shogo-panel-raised), var(--shogo-panel));
+      box-shadow: var(--shogo-shadow);
     }
     .mention-popover[hidden] { display: none; }
     .mention-item {
@@ -1855,8 +1868,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       padding: 8px 10px;
       text-align: left;
     }
-    .mention-item + .mention-item { border-top: 1px solid color-mix(in srgb, var(--vscode-panel-border) 45%, transparent); }
-    .mention-item:hover, .mention-item.active { background: var(--vscode-list-hoverBackground, var(--vscode-button-secondaryBackground)); }
+    .mention-item + .mention-item { border-top: 1px solid color-mix(in srgb, var(--shogo-border) 68%, transparent); }
+    .mention-item:hover, .mention-item.active { background: var(--shogo-orange-soft); }
     .mention-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
     .mention-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .turns {
@@ -1905,7 +1918,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       padding-left: 4px;
     }
     .user .bubble {
-      background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 82%, transparent);
+      border: 1px solid color-mix(in srgb, var(--shogo-border) 82%, var(--shogo-orange));
+      background: color-mix(in srgb, var(--shogo-panel-raised) 86%, var(--shogo-orange) 8%);
     }
     .system .bubble {
       max-width: 100%;
@@ -1934,16 +1948,18 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       margin-top: 8px;
     }
     .action-button {
-      border: 1px solid var(--vscode-button-border, transparent);
+      border: 1px solid var(--shogo-orange-border);
       border-radius: 9px;
       padding: 5px 8px;
-      color: var(--vscode-button-foreground);
-      background: var(--vscode-button-background);
+      color: #111111;
+      background: linear-gradient(135deg, var(--shogo-orange-strong), var(--shogo-orange));
       font-size: 12px;
+      font-weight: 700;
     }
     .action-button.secondary {
       color: var(--vscode-button-secondaryForeground);
-      background: var(--vscode-button-secondaryBackground);
+      background: var(--shogo-panel-raised);
+      border-color: var(--shogo-border);
     }
     .action-button.danger {
       color: var(--vscode-errorForeground, var(--vscode-button-secondaryForeground));
@@ -1959,7 +1975,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       max-width: 820px;
       margin: auto auto 0;
       padding: 8px 0 0;
-      background: linear-gradient(to top, var(--vscode-sideBar-background) 76%, transparent);
+      background: linear-gradient(to top, var(--shogo-black) 76%, transparent);
     }
     .desktop-chat-shell.is-empty .composer-wrap {
       position: relative;
@@ -1973,19 +1989,21 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       position: relative;
       min-height: 86px;
       padding-bottom: 34px;
-      border: 1px solid color-mix(in srgb, var(--vscode-input-border, var(--vscode-panel-border)) 72%, transparent);
+      border: 1px solid color-mix(in srgb, var(--shogo-border) 82%, var(--shogo-orange));
       border-radius: 18px;
-      background: color-mix(in srgb, var(--vscode-input-background) 94%, var(--vscode-editor-background));
+      background:
+        linear-gradient(180deg, rgba(249, 115, 22, .035), transparent 42%),
+        var(--shogo-panel);
       overflow: hidden;
-      box-shadow: 0 8px 28px color-mix(in srgb, #000 12%, transparent);
+      box-shadow: 0 8px 28px color-mix(in srgb, #000 18%, transparent);
       transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
     }
     .composer-card:focus-within, .composer-card.is-drag-over {
-      border-color: color-mix(in srgb, var(--vscode-focusBorder) 72%, var(--vscode-panel-border));
-      box-shadow: 0 10px 32px color-mix(in srgb, #000 16%, transparent);
+      border-color: color-mix(in srgb, var(--shogo-orange) 78%, var(--shogo-border));
+      box-shadow: 0 0 0 1px rgba(249, 115, 22, .14), 0 14px 36px color-mix(in srgb, #000 22%, transparent);
     }
     .composer-card.is-drag-over {
-      background: color-mix(in srgb, var(--vscode-input-background) 86%, var(--shogo-orange));
+      background: linear-gradient(180deg, rgba(249, 115, 22, .15), var(--shogo-panel));
     }
     .drop-hint {
       position: absolute;
@@ -2079,19 +2097,20 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     }
     .pill-button {
       color: var(--vscode-foreground);
-      background: var(--vscode-button-secondaryBackground);
+      background: var(--shogo-panel-raised);
+      border: 1px solid var(--shogo-border);
       border-radius: 999px;
       font-weight: 650;
     }
     .ops-panel {
       margin-top: 10px;
-      border: 1px solid var(--vscode-panel-border);
+      border: 1px solid var(--shogo-border);
       border-radius: 13px;
-      background: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-button-secondaryBackground));
+      background: var(--shogo-panel-soft);
       overflow: hidden;
     }
     .ops-panel[hidden] { display: none; }
-    .ops-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--vscode-panel-border); }
+    .ops-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--shogo-border); }
     .ops-title { font-weight: 750; font-size: 12px; }
     .ops-body { display: grid; gap: 8px; padding: 10px; }
     .timeline { display: grid; gap: 6px; max-height: 150px; overflow: auto; }
@@ -2114,13 +2133,15 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       min-width: 34px;
       min-height: 34px;
       padding: 6px 10px;
-      color: var(--vscode-button-foreground);
+      color: #111111;
       background: linear-gradient(135deg, var(--shogo-orange-strong), var(--shogo-orange));
+      border: 1px solid color-mix(in srgb, var(--shogo-orange-strong) 72%, #000);
       border-radius: 12px;
       font-weight: 800;
       font-size: 14px;
+      box-shadow: 0 8px 24px rgba(249, 115, 22, .22);
     }
-    .send-button:hover { filter: brightness(1.08); }
+    .send-button:hover { filter: brightness(1.08); box-shadow: 0 10px 28px rgba(249, 115, 22, .28); }
     @media (max-width: 620px) {
       .conversation { padding: 14px 10px 10px; }
       .composer-wrap { max-width: none; }
