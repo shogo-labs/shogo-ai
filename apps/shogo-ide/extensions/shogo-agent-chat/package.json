@@ -180,31 +180,6 @@
           "command": "shogo.agentChat.newChat",
           "when": "view == shogo.agentChat",
           "group": "navigation@1"
-        },
-        {
-          "command": "shogo.agentChat.openContextPicker",
-          "when": "view == shogo.agentChat",
-          "group": "navigation@2"
-        },
-        {
-          "command": "shogo.agentChat.addActiveFile",
-          "when": "view == shogo.agentChat",
-          "group": "navigation@3"
-        },
-        {
-          "command": "shogo.agentChat.addSelection",
-          "when": "view == shogo.agentChat && editorHasSelection",
-          "group": "navigation@4"
-        }
-      ],
-      "editor/title": [
-        {
-          "command": "shogo.agentChat.openContextPicker",
-          "group": "navigation@79"
-        },
-        {
-          "command": "shogo.agentChat.addActiveFile",
-          "group": "navigation@80"
         }
       ],
       "editor/context": [
