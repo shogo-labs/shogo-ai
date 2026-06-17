@@ -199,6 +199,9 @@ spec:
             # K8s mode — see the post-2026-05-26 comment there.
             - name: PUBLISH_BUCKET
               value: "shogo-published-apps-production"
+            # Writable-state bucket for SERVER-BACKED published apps.
+            - name: PUBLISH_DATA_BUCKET
+              value: "shogo-published-data-production"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             # --- Custom domains (Cloudflare for SaaS) ----------------------
@@ -237,6 +240,14 @@ spec:
                 secretKeyRef:
                   name: custom-domains-config
                   key: CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID
+                  optional: true
+            # Server-backed publish KV namespace (publish-hosting-oci output
+            # `server_backed_kv_namespace_id`). Optional.
+            - name: CF_SERVER_BACKED_KV_NAMESPACE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_SERVER_BACKED_KV_NAMESPACE_ID
                   optional: true
             - name: CUSTOM_DOMAIN_FALLBACK_ORIGIN
               valueFrom:
