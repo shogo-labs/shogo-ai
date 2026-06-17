@@ -80,7 +80,7 @@ variable "custom_domain_fallback_hostname" {
 # to. When it's unset the Worker can't proxy (no origin), so server-backed apps
 # fall back to static serving until the ingress host is configured.
 variable "kourier_origin" {
-  description = "Origin URL the subdomain-router Worker proxies server-backed `/api/*` traffic to. Must be a DNS-only (NON-proxied / external) hostname that terminates at the cluster's Knative (Kourier) ingress LB which serves the `{subdomain}.shogo.one` DomainMappings. The Worker rewrites the subrequest Host header to `{subdomain}.${publish_domain}` so the DomainMapping routes it to `published-{projectId}`. Leave null to disable server-backed proxying even when the KV map exists."
+  description = "Origin URL the subdomain-router Worker proxies server-backed `/api/*` traffic to. Must be a DNS-only (NON-proxied / external) hostname that terminates at the cluster's Knative (Kourier) ingress LB which serves the `{subdomain}.shogo.one` DomainMappings. The Worker rewrites the subrequest Host header to `{subdomain}.{publish_domain}` so the DomainMapping routes it to `published-{projectId}`. Leave null to disable server-backed proxying even when the KV map exists."
   type        = string
   default     = null
 }
