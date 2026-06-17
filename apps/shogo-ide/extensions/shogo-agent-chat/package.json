@@ -249,6 +249,12 @@
         "key": "ctrl+alt+l",
         "mac": "cmd+alt+l",
         "when": "editorHasSelection"
+      },
+      {
+        "command": "shogo.agentChat.explainSelection",
+        "key": "ctrl+alt+e",
+        "mac": "cmd+alt+e",
+        "when": "editorTextFocus && editorHasSelection"
       }
     ]
   }

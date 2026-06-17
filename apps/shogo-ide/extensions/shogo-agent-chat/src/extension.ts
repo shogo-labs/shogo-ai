@@ -62,7 +62,6 @@ type RequestStatus = 'idle' | 'running' | 'stopping'
 interface QueuedPrompt {
   prompt: string
   mode: ChatMode
-  model?: string
 }
 
 interface OperationTimelineItem {
@@ -134,13 +133,23 @@ interface RichIdeContext {
 interface WebviewMessage {
   type: string
   prompt?: string
-  model?: string
   mode?: string
   actionId?: string
   contextId?: string
   query?: string
   message?: string
   operation?: 'queue' | 'steer'
+  droppedFiles?: DroppedFilePayload[]
+}
+
+interface DroppedFilePayload {
+  name?: string
+  type?: string
+  size?: number
+  uri?: string
+  text?: string
+  truncated?: boolean
+  error?: string
 }
 
 interface BridgeResponse {
@@ -279,7 +288,7 @@ function actionAllowedInMode(action: IdeAction, mode: ChatMode): boolean {
 }
 
 function blockedActionMessage(action: IdeAction, mode: ChatMode): string {
-  return `${action.kind} was blocked because ${modeContract(mode).label} mode only allows ${modeContract(mode).allowedActions.join(', ') || 'read-only responses'}. Switch to Agent mode to run broader tool actions.`
+  return `${action.kind} was blocked because this request only allows ${modeContract(mode).allowedActions.join(', ') || 'read-only responses'}. Start a new request to run broader tool actions.`
 }
 
 function escapeHtml(value: string): string {
@@ -311,6 +320,60 @@ function relativePath(uri: vscode.Uri): string {
   const asRelativePath = (vscode.workspace as any).asRelativePath as undefined | ((pathOrUri: string | vscode.Uri, includeWorkspaceFolder?: boolean) => string)
   if (asRelativePath) return asRelativePath(uri, false)
   return uri.fsPath || uri.toString()
+}
+
+const CONTEXT_TEXT_LIMIT = 24000
+const MAX_DROPPED_FILES = 12
+const BINARY_FILE_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.bmp', '.pdf', '.zip', '.gz', '.tar', '.7z', '.rar',
+  '.mp3', '.mp4', '.mov', '.avi', '.wav', '.flac', '.ttf', '.otf', '.woff', '.woff2', '.exe', '.dll', '.dylib', '.so',
+])
+const TEXT_FILE_EXTENSIONS = new Set([
+  '.txt', '.md', '.mdx', '.json', '.jsonc', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.css', '.scss', '.sass', '.less',
+  '.html', '.xml', '.svg', '.yml', '.yaml', '.toml', '.ini', '.env', '.gitignore', '.gitattributes', '.prisma', '.py', '.rb',
+  '.go', '.rs', '.java', '.kt', '.kts', '.swift', '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.php', '.sh', '.bash', '.zsh',
+  '.fish', '.sql', '.graphql', '.gql', '.csv', '.tsv', '.log', '.lock', '.dockerfile', '.makefile', '.gradle', '.properties',
+])
+
+function basename(value: string | undefined): string {
+  const safe = String(value || 'Dropped file').replace(/\\/g, '/')
+  return safe.split('/').filter(Boolean).pop() || 'Dropped file'
+}
+
+function extensionOf(value: string): string {
+  const name = basename(value).toLowerCase()
+  if (name === 'dockerfile' || name === 'makefile') return `.${name}`
+  const index = name.lastIndexOf('.')
+  return index >= 0 ? name.slice(index) : ''
+}
+
+function isProbablyTextFile(name: string, mimeType?: string): boolean {
+  const normalizedType = String(mimeType || '').toLowerCase()
+  if (normalizedType.startsWith('text/')) return true
+  if (normalizedType.includes('json') || normalizedType.includes('xml') || normalizedType.includes('javascript')) return true
+  const ext = extensionOf(name)
+  if (BINARY_FILE_EXTENSIONS.has(ext)) return false
+  if (TEXT_FILE_EXTENSIONS.has(ext)) return true
+  return !ext
+}
+
+function formatBytes(value: number | undefined): string {
+  const size = Math.max(0, Number(value || 0))
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${Math.round(size / 102.4) / 10} KB`
+  return `${Math.round(size / 1024 / 102.4) / 10} MB`
+}
+
+function droppedFileId(label: string, size: number | undefined, uri?: string): string {
+  if (uri) return `file:${uri}`
+  return `droppedFile:${encodeURIComponent(label)}:${Number(size || 0)}`
+}
+
+function parseDroppedUri(value: string): vscode.Uri {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return vscode.Uri.parse(value)
+  const uriApi = vscode.Uri as any
+  if (typeof uriApi.file === 'function') return uriApi.file(value)
+  return vscode.Uri.parse(`file://${value}`)
 }
 
 function buildSessionId(): string {
@@ -742,7 +805,6 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     const prompt = intent === 'fix'
       ? `Fix the selected code in ${item.label}. Propose an edit action when you are confident.`
       : `Explain the selected code in ${item.label}. Include key behavior, edge cases, and any risks.`
-    this.pushSystemMessage(`Added selection context: ${item.label}`)
     await this.prefillPrompt(prompt, intent === 'fix' ? 'edit' : 'ask')
     await this.postState()
   }
@@ -768,7 +830,6 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       this.pushSystemMessage('Select code in the editor before adding selection context.')
     } else {
       this.setContextItem(item)
-      this.pushSystemMessage(`Added selection context: ${item.label}`)
     }
     await this.open()
   }
@@ -779,7 +840,6 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       this.pushSystemMessage('Open a file before adding active file context.')
     } else {
       this.setContextItem(item)
-      this.pushSystemMessage(`Added active file context: ${item.label}`)
     }
     await this.open()
   }
@@ -799,9 +859,79 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     })
     if (picked?.item) {
       this.setContextItem(picked.item)
-      this.pushSystemMessage(`Attached ${contextKindLabel(picked.item.kind)} context: ${picked.item.label}`)
       await this.open()
     }
+  }
+
+  private async addDroppedFiles(files: DroppedFilePayload[]): Promise<void> {
+    const dropped = Array.isArray(files) ? files : []
+    if (dropped.length === 0) {
+      this.pushSystemMessage('No files were found in that drop. Drag files from Explorer, Finder, or your file manager onto the chat box.')
+      await this.postState()
+      return
+    }
+
+    const accepted: string[] = []
+    const rejected: string[] = []
+    const limited = dropped.slice(0, MAX_DROPPED_FILES)
+    if (dropped.length > MAX_DROPPED_FILES) rejected.push(`${dropped.length - MAX_DROPPED_FILES} extra file${dropped.length - MAX_DROPPED_FILES === 1 ? '' : 's'} over the ${MAX_DROPPED_FILES}-file limit`)
+
+    for (const payload of limited) {
+      const label = basename(payload.name || payload.uri)
+      if (payload.error) {
+        rejected.push(`${label}: ${payload.error}`)
+        continue
+      }
+      if (!isProbablyTextFile(label, payload.type)) {
+        rejected.push(`${label}: unsupported binary file type`)
+        continue
+      }
+
+      let uri = payload.uri
+      let text = typeof payload.text === 'string' ? payload.text.slice(0, CONTEXT_TEXT_LIMIT) : ''
+      let detail = `${formatBytes(payload.size)} · dragged file context`
+
+      if (uri) {
+        try {
+          const parsed = parseDroppedUri(uri)
+          const stat = (vscode.workspace as any).fs?.stat ? await (vscode.workspace as any).fs.stat(parsed).catch(() => null) : null
+          const directoryType = (vscode as any).FileType?.Directory
+          if (stat && directoryType !== undefined && (stat.type & directoryType) === directoryType) {
+            rejected.push(`${label}: folders are not attachable yet; drop individual files`)
+            continue
+          }
+          text = await readContextFileText(parsed)
+          uri = parsed.toString()
+          detail = `${relativePath(parsed)} · ${formatBytes(payload.size || stat?.size)}${text.length >= CONTEXT_TEXT_LIMIT ? ' · truncated' : ''}`
+        } catch (error) {
+          rejected.push(`${label}: ${error instanceof Error ? error.message : 'could not read file'}`)
+          continue
+        }
+      }
+
+      if (!text.trim()) {
+        rejected.push(`${label}: no readable text content`)
+        continue
+      }
+
+      const item: ContextItem = {
+        id: droppedFileId(label, payload.size, uri),
+        kind: 'file',
+        label,
+        uri: uri || `shogo-dropped-file://${encodeURIComponent(label)}`,
+        detail: `${detail}${payload.truncated || text.length >= CONTEXT_TEXT_LIMIT ? ' · content capped' : ''}`,
+        text,
+      }
+      this.setContextItem(item)
+      accepted.push(label)
+    }
+
+    if (rejected.length) {
+      this.pushSystemMessage(`Skipped ${rejected.length}: ${rejected.slice(0, 4).join('; ')}${rejected.length > 4 ? '; …' : ''}`)
+    } else if (accepted.length === 0) {
+      this.pushSystemMessage('No readable files were attached.')
+    }
+    await this.postState()
   }
 
   removeDeletedContext(files: readonly vscode.Uri[]): void {
@@ -823,7 +953,6 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     const item = this.contextSuggestions.get(contextId)
     if (!item) return
     this.setContextItem(item)
-    this.pushSystemMessage(`Attached ${contextKindLabel(item.kind)} context: ${item.label}`)
     await this.postState()
   }
 
@@ -917,6 +1046,11 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   private async openContextItem(contextId: string): Promise<void> {
     const item = this.contextItems.get(contextId)
     if (!item || item.kind === 'terminal') return
+    if (item.uri.startsWith('shogo-dropped-file://')) {
+      const document = await (vscode.workspace as any).openTextDocument({ content: item.text || '', language: extensionOf(item.label).slice(1) || 'plaintext' })
+      await (vscode.window as any).showTextDocument(document, { preview: false })
+      return
+    }
     const uri = vscode.Uri.parse(item.uri)
     if (item.kind === 'folder') {
       await vscode.commands.executeCommand('revealInExplorer', uri).catch(() => undefined)
@@ -931,8 +1065,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     await (vscode.window as any).showTextDocument(document, options)
   }
 
-  private queuePrompt(prompt: string, mode: ChatMode, model?: string): void {
-    this.queuedPrompt = { prompt, mode, model }
+  private queuePrompt(prompt: string, mode: ChatMode): void {
+    this.queuedPrompt = { prompt, mode }
     this.addTimeline('queue', 'Queued follow-up prompt', `${modeContract(mode).label} · ${prompt.slice(0, 140)}`)
     this.pushSystemMessage('Queued your follow-up. Shogo will send it after the current request finishes.')
   }
@@ -942,7 +1076,6 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.queuedPrompt = {
       prompt: `Steering note while the previous request was running:\n${prompt}\n\nContinue from the latest assistant result and adjust course accordingly.`,
       mode: this.currentMode,
-      model: undefined,
     }
     this.addTimeline('steer', 'Captured steering note', prompt.slice(0, 160))
     this.pushSystemMessage('Captured steering note and queued it as the next turn.')
@@ -965,7 +1098,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     if (!queued || this.requestStatus !== 'idle') return
     this.queuedPrompt = null
     this.addTimeline('queue', 'Sending queued follow-up', `${modeContract(queued.mode).label} · ${queued.prompt.slice(0, 140)}`)
-    await this.startPromptRequest(queued.prompt, queued.model, queued.mode)
+    await this.startPromptRequest(queued.prompt, queued.mode)
   }
 
   private async handleMessage(raw: unknown): Promise<void> {
@@ -997,11 +1130,6 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       return
     }
 
-    if (msg.type === 'handoffPlan') {
-      await this.handoffPlanToAgent()
-      return
-    }
-
     if (msg.type === 'stopRequest') {
       await this.stopRequest()
       return
@@ -1011,6 +1139,11 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       this.operationTimeline.splice(0, this.operationTimeline.length)
       this.addTimeline('debug', 'Cleared operation timeline')
       await this.postState()
+      return
+    }
+
+    if (msg.type === 'handoffPlan') {
+      await this.handoffPlanToAgent()
       return
     }
 
@@ -1026,6 +1159,11 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
 
     if (msg.type === 'openContextPicker') {
       await this.openContextPicker()
+      return
+    }
+
+    if (msg.type === 'attachDroppedFiles') {
+      await this.addDroppedFiles(msg.droppedFiles ?? [])
       return
     }
 
@@ -1084,15 +1222,15 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       if (!prompt) return
       if (this.requestStatus === 'running' || this.requestStatus === 'stopping') {
         if (msg.operation === 'steer') this.steerRequest(prompt)
-        else this.queuePrompt(prompt, mode, msg.model)
+        else this.queuePrompt(prompt, mode)
         await this.postState()
         return
       }
-      await this.startPromptRequest(prompt, msg.model, mode)
+      await this.startPromptRequest(prompt, mode)
     }
   }
 
-  private async startPromptRequest(prompt: string, model: string | undefined, mode: ChatMode): Promise<void> {
+  private async startPromptRequest(prompt: string, mode: ChatMode): Promise<void> {
     this.currentMode = mode
     this.pendingComposerText = ''
     this.requestStatus = 'running'
@@ -1102,7 +1240,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     const assistantMessage = createMessage('assistant', 'Thinking…')
     this.messages.push(assistantMessage)
     await this.postState()
-    const response = await this.sendPrompt(prompt, model, mode, this.activeAbortController.signal, (text) => {
+    const response = await this.sendPrompt(prompt, mode, this.activeAbortController.signal, (text) => {
       assistantMessage.text = text || 'Thinking…'
       void this.postState()
     }, (action) => {
@@ -1151,7 +1289,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     return history
   }
 
-  private async sendPrompt(prompt: string, model: string | undefined, mode: ChatMode, signal: AbortSignal, onText: (text: string) => void, onAction: (action: IdeAction) => void, onEvent: (event: Record<string, any>) => void): Promise<BridgeResponse> {
+  private async sendPrompt(prompt: string, mode: ChatMode, signal: AbortSignal, onText: (text: string) => void, onAction: (action: IdeAction) => void, onEvent: (event: Record<string, any>) => void): Promise<BridgeResponse> {
     const bridge = getBridgeConfig()
     const contract = modeContract(mode)
     const context = Array.from(this.contextItems.values())
@@ -1170,7 +1308,6 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       chatMode: mode,
       modeContract: contract,
       availableModes: allModeContracts(),
-      ...(model && model !== 'auto' ? { agentMode: model } : {}),
       ide: ideContext,
       ideContext,
       ideActionProtocol: {
@@ -1551,62 +1688,16 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     .desktop-chat-shell {
       height: 100vh;
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
       background: var(--vscode-sideBar-background);
     }
-    .chat-header {
-      display: flex;
-      align-items: stretch;
-      justify-content: space-between;
-      gap: 10px;
-      min-height: 48px;
-      padding: 0 8px;
-      border-bottom: 1px solid color-mix(in srgb, var(--vscode-panel-border) 72%, transparent);
-      background: var(--vscode-sideBar-background);
-    }
-    .brand-wrap {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 0;
-      max-width: 260px;
-      padding: 0 12px;
-      border-left: 1px solid transparent;
-      border-right: 1px solid color-mix(in srgb, var(--vscode-panel-border) 55%, transparent);
-      color: var(--vscode-foreground);
-      background: color-mix(in srgb, var(--vscode-sideBar-background) 92%, var(--vscode-editor-background));
-    }
-    .brand-mark {
-      width: 22px;
-      height: 22px;
-      display: grid;
-      place-items: center;
-      flex: none;
-      color: var(--vscode-descriptionForeground);
-      font-size: 18px;
-      line-height: 1;
-    }
-    .brand-copy { min-width: 0; }
-    .eyebrow, .status-dot { display: none; }
-    .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .title { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .title-close { color: var(--vscode-descriptionForeground); font-size: 18px; line-height: 1; }
-    .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex: 0 0 auto; min-width: 0; }
-    .icon-button, .text-button, .send-button, .chip-button {
+    .send-button, .chip-button {
       border: 1px solid transparent;
       color: var(--vscode-button-secondaryForeground);
       background: transparent;
       border-radius: 10px;
     }
-    .icon-button {
-      width: 32px;
-      height: 32px;
-      padding: 0;
-      display: grid;
-      place-items: center;
-      font-size: 18px;
-    }
-    .icon-button:hover, .text-button:hover, .chip-button:hover {
+    .chip-button:hover {
       background: var(--vscode-toolbar-hoverBackground, var(--vscode-button-secondaryBackground));
       color: var(--vscode-foreground);
     }
@@ -1822,61 +1913,121 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     .desktop-chat-shell.is-empty .composer-wrap {
       position: relative;
       bottom: auto;
-      max-width: 760px;
+      max-width: 720px;
       margin: 0 auto;
       padding: 0;
       background: transparent;
     }
     .composer-card {
-      border: 1px solid color-mix(in srgb, var(--vscode-input-border, var(--vscode-panel-border)) 82%, var(--vscode-foreground));
-      border-radius: 22px;
-      background: color-mix(in srgb, var(--vscode-input-background) 92%, var(--vscode-editor-background));
+      position: relative;
+      min-height: 86px;
+      padding-bottom: 34px;
+      border: 1px solid color-mix(in srgb, var(--vscode-input-border, var(--vscode-panel-border)) 72%, transparent);
+      border-radius: 18px;
+      background: color-mix(in srgb, var(--vscode-input-background) 94%, var(--vscode-editor-background));
       overflow: hidden;
-      box-shadow: none;
+      box-shadow: 0 8px 28px color-mix(in srgb, #000 12%, transparent);
+      transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
     }
-    .composer-card:focus-within {
-      border-color: color-mix(in srgb, var(--vscode-focusBorder) 74%, var(--vscode-panel-border));
+    .composer-card:focus-within, .composer-card.is-drag-over {
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 72%, var(--vscode-panel-border));
+      box-shadow: 0 10px 32px color-mix(in srgb, #000 16%, transparent);
+    }
+    .composer-card.is-drag-over {
+      background: color-mix(in srgb, var(--vscode-input-background) 86%, var(--shogo-orange));
+    }
+    .drop-hint {
+      position: absolute;
+      inset: 8px;
+      z-index: 8;
+      display: grid;
+      place-items: center;
+      border: 1px dashed color-mix(in srgb, var(--shogo-orange) 72%, var(--vscode-focusBorder));
+      border-radius: 14px;
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--vscode-editor-background) 76%, transparent);
+      pointer-events: none;
+      font-weight: 700;
+      text-align: center;
+    }
+    .drop-hint small {
+      display: block;
+      margin-top: 4px;
+      color: var(--vscode-descriptionForeground);
+      font-weight: 500;
     }
     textarea {
       width: 100%;
-      min-height: 76px;
-      max-height: 240px;
-      resize: vertical;
+      height: 44px;
+      min-height: 44px;
+      max-height: 132px;
+      resize: none;
       display: block;
       border: 0;
       outline: none;
-      padding: 14px 16px 8px;
+      padding: 12px 18px 2px;
       color: var(--vscode-input-foreground);
       background: transparent;
-      line-height: 1.45;
+      line-height: 1.35;
       font-size: 14px;
+      overflow-y: auto;
     }
     .desktop-chat-shell.is-empty textarea {
-      min-height: clamp(178px, 28vh, 260px);
-      padding: 20px 20px 10px;
-      font-size: 15px;
+      height: 44px;
+      min-height: 44px;
+      padding: 12px 20px 2px;
+      font-size: 14px;
     }
-    textarea::placeholder { color: color-mix(in srgb, var(--vscode-input-placeholderForeground) 86%, transparent); }
+    textarea::placeholder { color: color-mix(in srgb, var(--vscode-input-placeholderForeground) 78%, transparent); }
     .composer-toolbar {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      bottom: 8px;
       display: flex;
       justify-content: space-between;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       gap: 8px;
-      align-items: center;
-      padding: 8px 12px 12px;
+      align-items: flex-end;
+      padding: 0;
       border-top: 0;
+      pointer-events: none;
     }
-    .left-tools, .right-tools {
+    .left-tools,
+    .right-tools {
       display: flex;
       align-items: center;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      justify-content: flex-end;
       gap: 7px;
       min-width: 0;
+      flex: 1 1 auto;
+      pointer-events: auto;
     }
-    .left-tools { flex: 999 1 260px; }
-    .right-tools { flex: 1 1 250px; justify-content: flex-end; }
-    .desktop-chat-shell.is-empty .left-tools { flex: 0 1 auto; }
-    .desktop-chat-shell.is-empty .right-tools { flex: 1 1 auto; }
+    .left-tools {
+      justify-content: flex-start;
+      flex: 0 0 auto;
+    }
+    .attach-button {
+      width: 30px;
+      padding: 0;
+      font-size: 18px;
+    }
+    .mode-select {
+      height: 30px;
+      max-width: 82px;
+      padding: 0 6px;
+      border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+      border-radius: 10px;
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 72%, transparent);
+      font: inherit;
+      font-size: 11px;
+      outline: none;
+    }
+    .mode-select:focus {
+      border-color: var(--vscode-focusBorder);
+    }
     .chip-button {
       display: inline-flex;
       align-items: center;
@@ -1887,25 +2038,12 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       font-size: 12px;
       white-space: nowrap;
     }
-    .pill-button, .mode-select.primary {
+    .pill-button {
       color: var(--vscode-foreground);
       background: var(--vscode-button-secondaryBackground);
       border-radius: 999px;
       font-weight: 650;
     }
-    .mode-select {
-      min-height: 30px;
-      max-width: 150px;
-      border: 1px solid transparent;
-      color: var(--vscode-button-secondaryForeground);
-      background: transparent;
-      border-radius: 9px;
-      padding: 0 5px;
-      outline: none;
-    }
-    .mode-select:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-button-secondaryBackground)); }
-    .mode-handoff { margin-left: 0; }
-    .mode-note { color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 4px; }
     .ops-panel {
       margin-top: 10px;
       border: 1px solid var(--vscode-panel-border);
@@ -1944,73 +2082,36 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       font-size: 14px;
     }
     .send-button:hover { filter: brightness(1.08); }
-    .hint-row {
-      display: flex;
-      justify-content: space-between;
-      gap: 8px;
-      margin-top: 7px;
-      color: var(--vscode-descriptionForeground);
-      font-size: 11px;
-    }
     @media (max-width: 620px) {
       .conversation { padding: 14px 10px 10px; }
       .composer-wrap { max-width: none; }
-      .left-tools, .right-tools { flex: 1 1 100%; }
-      .left-tools { justify-content: flex-start; }
-      .right-tools { justify-content: flex-end; }
-      .desktop-chat-shell.is-empty .composer-toolbar { align-items: stretch; flex-direction: column; }
+      .right-tools { flex: 1 1 auto; }
     }
     @media (max-width: 430px) {
-      .chat-header { padding: 0 6px; }
-      .brand-wrap { padding: 0 8px; }
-      .title { font-size: 14px; }
-      .header-actions { gap: 2px; }
-      .composer-toolbar { align-items: stretch; flex-direction: column; }
-      .left-tools, .right-tools { justify-content: space-between; }
-      .chip-button, .mode-select, .send-button { flex: 1 1 auto; }
-      .mode-select { max-width: none; }
-      .hint-row { flex-direction: column; }
+      .right-tools { justify-content: flex-end; }
+      .chip-button, .send-button { flex: 0 0 auto; }
     }
     @media (max-width: 330px) {
       .conversation { padding: 10px 8px 8px; }
       .chip-button, .send-button { padding-left: 7px; padding-right: 7px; }
-      .icon-button { width: 28px; height: 28px; }
     }
   </style>
 </head>
 <body>
   <main id="shell" class="desktop-chat-shell is-empty" data-shogo-desktop-chat-ui="true">
-    <header class="chat-header">
-      <div class="brand-wrap" aria-label="Current chat tab">
-        <div class="brand-mark" aria-hidden="true">▱</div>
-        <div class="brand-copy">
-          <div class="eyebrow">Shogo Agent</div>
-          <div class="title-row"><span class="title">New Agent</span><span class="title-close" aria-hidden="true">×</span></div>
-        </div>
-      </div>
-      <div class="header-actions">
-        <button id="newChat" class="icon-button" title="New chat" aria-label="New chat">＋</button>
-        <button id="toggleOps" class="icon-button" title="History and operations" aria-label="History and operations">◷</button>
-        <button id="openContextPickerTop" class="icon-button" title="Pick context" aria-label="Pick context">@</button>
-        <button id="addActiveFileTop" class="icon-button" title="Attach active file" aria-label="Attach active file">□</button>
-      </div>
-    </header>
-
     <section id="scroll" class="conversation">
       <section id="statusPanel" class="desktop-card session-card" hidden>
         <div class="session-top">
           <div>
             <div class="session-title">Chat context</div>
             <div id="status" class="session-subtitle">Loading workspace context…</div>
-            <div id="modeNote" class="mode-note">Agent can edit and run reviewed actions.</div>
           </div>
           <div>
             <div id="bridgePill" class="bridge-pill">Local</div>
-            <button id="handoffPlan" class="chip-button mode-handoff" title="Implement the last plan in Agent mode" hidden>Implement plan</button>
           </div>
         </div>
         <section id="opsPanel" class="ops-panel">
-          <div class="ops-header"><span class="ops-title">Recent activity</span><button id="clearTimeline" class="chip-button">Clear</button></div>
+          <div class="ops-header"><span class="ops-title">Recent activity</span><span><button id="handoffPlan" class="chip-button">Plan → Agent</button><button id="clearTimeline" class="chip-button">Clear</button></span></div>
           <div class="ops-body">
             <div id="queuedNote" class="queued-note"></div>
             <div id="timeline" class="timeline"></div>
@@ -2025,37 +2126,27 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       <section id="messages" class="turns" aria-live="polite"></section>
 
       <section class="composer-wrap" aria-label="Chat composer">
-        <div class="composer-card">
+        <div id="composerCard" class="composer-card">
+          <div id="dropHint" class="drop-hint" hidden>Drop files to attach as context<small>Multiple text/code files supported</small></div>
           <textarea id="prompt" placeholder="Plan, Build, / for skills, @ for context" aria-label="Message Shogo"></textarea>
           <div id="contextSuggest" class="mention-popover" role="listbox" hidden></div>
           <div id="context" class="context-strip" aria-label="Attached context"></div>
           <div class="composer-toolbar">
             <div class="left-tools">
-              <button id="openContextPicker" class="chip-button" title="Pick context">@ Context</button>
-              <button id="addSelection" class="chip-button" title="Attach selected code">＋ Selection</button>
-              <button id="addActiveFile" class="chip-button" title="Attach active file">File</button>
+              <button id="attach" class="chip-button attach-button" type="button" title="Attach file as context" aria-label="Attach file as context">＋</button>
             </div>
             <div class="right-tools">
-              <select id="mode" class="mode-select primary" title="Chat mode" aria-label="Chat mode">
-                <option value="agent" selected>∞ Agent</option>
+              <select id="mode" class="mode-select" title="Chat mode" aria-label="Chat mode">
+                <option value="agent" selected>Agent</option>
                 <option value="plan">Plan</option>
                 <option value="edit">Edit</option>
                 <option value="ask">Ask</option>
-              </select>
-              <select id="model" class="mode-select" title="Model" aria-label="Model">
-                <option value="auto">Auto</option>
-                <option value="fast">Fast</option>
-                <option value="capable">Composer 2.5</option>
               </select>
               <button id="steer" class="chip-button" title="Steer the running request" hidden>Steer</button>
               <button id="stop" class="chip-button" title="Stop the running request" hidden>Stop</button>
               <button id="send" class="send-button" type="button" title="Send with Enter" aria-label="Send message">↵</button>
             </div>
           </div>
-        </div>
-        <div class="hint-row">
-          <span>Enter to send · Shift+Enter for newline · @ or # for context · / for skills</span>
-          <span id="modeHint">Agent mode</span>
         </div>
       </section>
     </section>
@@ -2073,21 +2164,19 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     const statusPanelEl = document.getElementById('statusPanel');
     const statusEl = document.getElementById('status');
     const bridgePillEl = document.getElementById('bridgePill');
-    const modeNoteEl = document.getElementById('modeNote');
-    const modeHintEl = document.getElementById('modeHint');
-    const handoffPlanEl = document.getElementById('handoffPlan');
-    const toggleOpsEl = document.getElementById('toggleOps');
-    const opsPanelEl = document.getElementById('opsPanel');
     const queuedNoteEl = document.getElementById('queuedNote');
     const timelineEl = document.getElementById('timeline');
     const debugPayloadEl = document.getElementById('debugPayload');
+    const handoffPlanEl = document.getElementById('handoffPlan');
     const clearTimelineEl = document.getElementById('clearTimeline');
     const contextEl = document.getElementById('context');
     const messagesEl = document.getElementById('messages');
     const scrollEl = document.getElementById('scroll');
+    const composerCardEl = document.getElementById('composerCard');
+    const dropHintEl = document.getElementById('dropHint');
     const promptEl = document.getElementById('prompt');
+    const attachEl = document.getElementById('attach');
     const modeEl = document.getElementById('mode');
-    const modelEl = document.getElementById('model');
     const steerEl = document.getElementById('steer');
     const stopEl = document.getElementById('stop');
     const sendEl = document.getElementById('send');
@@ -2102,20 +2191,6 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     let contextSuggestDebounce = 0;
     let pendingState = null;
     let stateFrame = 0;
-
-    function modeLabel(mode) {
-      if (mode === 'ask') return 'Ask';
-      if (mode === 'edit') return 'Edit';
-      if (mode === 'plan') return 'Plan';
-      return 'Agent';
-    }
-
-    function modeDescription(mode) {
-      if (mode === 'ask') return 'Ask mode is read-only: explain, answer, and suggest next steps.';
-      if (mode === 'edit') return 'Edit mode allows reviewed file edits, but blocks shell commands.';
-      if (mode === 'plan') return 'Plan mode is read-only and prepares an implementation handoff.';
-      return 'Agent mode allows reviewed edits, open-file actions, and confirmed commands.';
-    }
 
     function escapeHtml(value) {
       return String(value).replace(/[&<>'"]/g, function(ch) {
@@ -2178,6 +2253,85 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       return { start: cursor - match[3].length - 1, prefix: match[2], query: match[3] };
     }
 
+    function syncPromptHeight() {
+      promptEl.style.height = '';
+      const maxHeight = Number.parseInt(getComputedStyle(promptEl).maxHeight, 10) || 180;
+      const nextHeight = Math.min(promptEl.scrollHeight, maxHeight);
+      promptEl.style.height = nextHeight + 'px';
+      promptEl.style.overflowY = promptEl.scrollHeight > maxHeight ? 'auto' : 'hidden';
+    }
+
+    function setDropActive(active) {
+      composerCardEl.classList.toggle('is-drag-over', Boolean(active));
+      dropHintEl.hidden = !active;
+    }
+
+    function isProbablyTextDrop(file) {
+      const type = String(file.type || '').toLowerCase();
+      const name = String(file.name || '').toLowerCase();
+      if (type.indexOf('text/') === 0 || type.indexOf('json') >= 0 || type.indexOf('xml') >= 0 || type.indexOf('javascript') >= 0) return true;
+      if (/\.(png|jpe?g|gif|webp|avif|ico|bmp|pdf|zip|gz|tar|7z|rar|mp[34]|mov|avi|wav|flac|ttf|otf|woff2?|exe|dll|dylib|so)$/.test(name)) return false;
+      return /\.(txt|mdx?|jsonc?|jsx?|tsx?|mjs|cjs|css|s[ac]ss|less|html?|xml|svg|ya?ml|toml|ini|env|prisma|py|rb|go|rs|java|kts?|swift|c|cc|cpp|h|hpp|cs|php|sh|bash|zsh|fish|sql|gql|graphql|csv|tsv|log|lock|properties)$/.test(name) || name.indexOf('.') < 0 || new RegExp('(^|/)(dockerfile|makefile|\\.gitignore|\\.gitattributes)$', 'i').test(name);
+    }
+
+    function readDroppedFile(file) {
+      const maxBytes = 1024 * 1024;
+      if (!isProbablyTextDrop(file)) {
+        return Promise.resolve({ name: file.name, type: file.type, size: file.size, error: 'unsupported binary file type' });
+      }
+      return new Promise(function(resolve) {
+        const reader = new FileReader();
+        const slice = file.size > maxBytes ? file.slice(0, maxBytes) : file;
+        reader.onload = function() {
+          resolve({
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            uri: file.path || file.uri || '',
+            text: String(reader.result || '').slice(0, 24000),
+            truncated: file.size > maxBytes,
+          });
+        };
+        reader.onerror = function() {
+          resolve({ name: file.name, type: file.type, size: file.size, error: 'could not read file' });
+        };
+        reader.readAsText(slice);
+      });
+    }
+
+    function extractDroppedUris(dataTransfer) {
+      const values = [];
+      const uriList = dataTransfer.getData('text/uri-list') || '';
+      uriList.split(/\\r?\\n/).forEach(function(line) {
+        const value = line.trim();
+        if (value && value.charAt(0) !== '#') values.push(value);
+      });
+      const text = dataTransfer.getData('text/plain') || '';
+      text.split(/\\r?\\n/).forEach(function(line) {
+        const value = line.trim();
+        if (value.indexOf('file://') === 0 && values.indexOf(value) < 0) values.push(value);
+      });
+      Array.from(dataTransfer.types || []).forEach(function(type) {
+        try {
+          const raw = dataTransfer.getData(type) || '';
+          const matches = raw.match(new RegExp('file://[^\\s"\\']+', 'g')) || [];
+          matches.forEach(function(uri) {
+            if (values.indexOf(uri) < 0) values.push(uri);
+          });
+        } catch {}
+      });
+      return values;
+    }
+
+    async function attachDroppedFiles(dataTransfer) {
+      const files = Array.from(dataTransfer.files || []);
+      const payloads = await Promise.all(files.map(readDroppedFile));
+      extractDroppedUris(dataTransfer).forEach(function(uri) {
+        if (!payloads.some(function(item) { return item.uri === uri; })) payloads.push({ name: decodeURIComponent(uri.split('/').pop() || 'Dropped file'), uri: uri });
+      });
+      vscode.postMessage({ type: 'attachDroppedFiles', droppedFiles: payloads });
+    }
+
     function requestContextSuggestions() {
       const mention = currentMention();
       if (!mention) {
@@ -2190,11 +2344,11 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       mentionStart = mention.start;
       mentionQuery = mention.query;
       mentionPrefix = mention.prefix || '@';
-      suggestMode = mentionPrefix === '/' ? 'slash' : 'context';
+      suggestMode = 'context';
       activeSuggestionIndex = 0;
       window.clearTimeout(contextSuggestDebounce);
-      if (suggestMode === 'slash') {
-        renderSlashSuggestions(mentionQuery);
+      if (mentionPrefix === '/') {
+        contextSuggestEl.hidden = true;
         return;
       }
       contextSuggestDebounce = window.setTimeout(function() {
@@ -2214,26 +2368,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       }).join('');
     }
 
-    function renderSlashSuggestions(query) {
-      const commands = [
-        { id: 'agent', label: 'Agent', detail: 'Plan and execute reviewed workspace actions', mode: 'agent' },
-        { id: 'plan', label: 'Plan', detail: 'Create an implementation plan before editing', mode: 'plan' },
-        { id: 'edit', label: 'Edit', detail: 'Apply reviewed file edits only', mode: 'edit' },
-        { id: 'ask', label: 'Ask', detail: 'Read-only explanation and review', mode: 'ask' }
-      ].filter(function(command) { return !query || command.id.indexOf(query.toLowerCase()) === 0 || command.label.toLowerCase().indexOf(query.toLowerCase()) === 0; });
-      if (!commands.length) {
-        contextSuggestEl.hidden = true;
-        return;
-      }
-      contextSuggestEl.hidden = false;
-      contextSuggestEl.innerHTML = commands.map(function(command, index) {
-        const active = index === activeSuggestionIndex ? ' active' : '';
-        return '<button class="mention-item' + active + '" data-slash-mode="' + escapeHtml(command.mode) + '" role="option"><strong>/</strong><span><span class="mention-label">' + escapeHtml(command.label) + '</span><span class="mention-detail">' + escapeHtml(command.detail) + '</span></span><span>↵</span></button>';
-      }).join('');
-    }
-
     function suggestionItems() {
-      return Array.from(contextSuggestEl.querySelectorAll('[data-add-context-id], [data-slash-mode]'));
+      return Array.from(contextSuggestEl.querySelectorAll('[data-add-context-id]'));
     }
 
     function moveActiveSuggestion(delta) {
@@ -2242,19 +2378,6 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       activeSuggestionIndex = (activeSuggestionIndex + delta + items.length) % items.length;
       items.forEach(function(item, index) { item.classList.toggle('active', index === activeSuggestionIndex); });
       items[activeSuggestionIndex].scrollIntoView({ block: 'nearest' });
-    }
-
-    function applySlashCommand(mode) {
-      if (mentionStart < 0) return;
-      const cursor = promptEl.selectionStart || 0;
-      promptEl.value = promptEl.value.slice(0, mentionStart) + promptEl.value.slice(cursor).replace(/^\\s*/, '');
-      modeEl.value = mode;
-      modeNoteEl.textContent = modeDescription(modeEl.value);
-      modeHintEl.textContent = modeLabel(modeEl.value) + ' mode';
-      vscode.postMessage({ type: 'modeChanged', mode: modeEl.value });
-      contextSuggestEl.hidden = true;
-      mentionStart = -1;
-      promptEl.focus();
     }
 
     function replaceMentionWithChipLabel(label) {
@@ -2333,48 +2456,45 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       const contextCount = state.contextItems.length;
       const diagnosticsCount = state.richContext && state.richContext.diagnostics ? state.richContext.diagnostics.length : 0;
       const visibleCount = state.richContext && state.richContext.visibleEditors ? state.richContext.visibleEditors.length : 0;
-      if (state.mode && modeEl.value !== state.mode) modeEl.value = state.mode;
-      bridgePillEl.textContent = state.bridgeConfigured ? modeLabel(state.mode || 'agent') : 'Offline';
-      modeNoteEl.textContent = modeDescription(state.mode || 'agent');
-      modeHintEl.textContent = modeLabel(state.mode || 'agent') + ' mode';
-      handoffPlanEl.hidden = !state.canHandoffPlan;
+      bridgePillEl.textContent = state.bridgeConfigured ? 'Local' : 'Offline';
       const running = state.requestStatus === 'running' || state.requestStatus === 'stopping';
       runtimeRequestRunning = running;
       steerEl.hidden = !running;
       stopEl.hidden = !running;
       sendEl.textContent = running ? 'Queue' : '↵';
       sendEl.title = running ? 'Queue as the next follow-up' : 'Send prompt with Enter';
-      queuedNoteEl.textContent = state.queuedPrompt ? 'Queued: ' + modeLabel(state.queuedPrompt.mode) + ' · ' + state.queuedPrompt.prompt : (running ? 'Request running. Send queues a follow-up; Steer queues a course-correction note; Stop aborts the request.' : 'Idle. Send starts a new request.');
+      queuedNoteEl.textContent = state.queuedPrompt ? 'Queued: ' + state.queuedPrompt.prompt : (running ? 'Request running. Send queues a follow-up; Steer queues a course-correction note; Stop aborts the request.' : 'Idle. Send starts a new request.');
       renderTimeline(state.operationTimeline || []);
       renderDebugPayload(state.debugSnapshot);
       statusEl.textContent = state.bridgeConfigured
         ? 'Connected to Shogo Desktop agent backend. ' + (running ? 'Request running. ' : '') + 'Context: ' + contextCount + ' item' + (contextCount === 1 ? '' : 's') + ', ' + visibleCount + ' visible editor' + (visibleCount === 1 ? '' : 's') + ', ' + diagnosticsCount + ' diagnostic' + (diagnosticsCount === 1 ? '' : 's') + '.'
         : 'No local Shogo agent bridge configured. Workspace: ' + folder + '. Context: ' + contextCount + ' item' + (contextCount === 1 ? '' : 's') + '.';
+      if (state.mode && modeEl.value !== state.mode) modeEl.value = state.mode;
       renderContext(state.contextItems);
       renderMessages(state.messages);
       shellEl.classList.toggle('is-empty', !state.messages || state.messages.length === 0);
       if (state.pendingComposerText && !promptEl.value.trim()) {
         promptEl.value = state.pendingComposerText;
+        syncPromptHeight();
         promptEl.focus();
+      } else {
+        syncPromptHeight();
       }
     }
 
     function sendPrompt() {
-      const prompt = promptEl.value.trim();
+      const prompt = promptEl.value.replace(/^\\s*/, '').trim();
       if (!prompt) return;
       contextSuggestEl.hidden = true;
-      vscode.postMessage({ type: 'sendPrompt', prompt: prompt, mode: modeEl.value, model: modelEl.value, operation: runtimeRequestRunning ? 'queue' : undefined });
+      vscode.postMessage({ type: 'sendPrompt', prompt: prompt, mode: modeEl.value, operation: runtimeRequestRunning ? 'queue' : undefined });
       promptEl.value = '';
+      syncPromptHeight();
       promptEl.focus();
     }
 
     function chooseActiveSuggestion() {
       const active = suggestionItems()[activeSuggestionIndex] || suggestionItems()[0];
       if (!active) return false;
-      if (active.dataset.slashMode) {
-        applySlashCommand(active.dataset.slashMode);
-        return true;
-      }
       if (active.dataset.addContextId) {
         const labelEl = active.querySelector('.mention-label');
         replaceMentionWithChipLabel(labelEl ? labelEl.textContent || '' : 'context');
@@ -2408,22 +2528,35 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       const prompt = promptEl.value.trim();
       if (!prompt) return;
       contextSuggestEl.hidden = true;
-      vscode.postMessage({ type: 'sendPrompt', prompt: prompt, mode: modeEl.value, model: modelEl.value, operation: 'steer' });
+      vscode.postMessage({ type: 'sendPrompt', prompt: prompt, mode: modeEl.value, operation: 'steer' });
       promptEl.value = '';
+      syncPromptHeight();
       promptEl.focus();
     });
     stopEl.addEventListener('click', function() { vscode.postMessage({ type: 'stopRequest' }); });
-    toggleOpsEl.addEventListener('click', function() {
-      statusPanelEl.hidden = !statusPanelEl.hidden;
-      opsPanelEl.hidden = false;
-    });
-    clearTimelineEl.addEventListener('click', function() { vscode.postMessage({ type: 'clearTimeline' }); });
-    modeEl.addEventListener('change', function() {
-      modeNoteEl.textContent = modeDescription(modeEl.value);
-      modeHintEl.textContent = modeLabel(modeEl.value) + ' mode';
-      vscode.postMessage({ type: 'modeChanged', mode: modeEl.value });
-    });
     handoffPlanEl.addEventListener('click', function() { vscode.postMessage({ type: 'handoffPlan' }); });
+    clearTimelineEl.addEventListener('click', function() { vscode.postMessage({ type: 'clearTimeline' }); });
+    attachEl.addEventListener('click', function() { vscode.postMessage({ type: 'openContextPicker' }); });
+    modeEl.addEventListener('change', function() { vscode.postMessage({ type: 'modeChanged', mode: modeEl.value }); });
+    composerCardEl.addEventListener('dragenter', function(event) {
+      event.preventDefault();
+      setDropActive(true);
+    });
+    composerCardEl.addEventListener('dragover', function(event) {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      setDropActive(true);
+    });
+    composerCardEl.addEventListener('dragleave', function(event) {
+      if (!composerCardEl.contains(event.relatedTarget)) setDropActive(false);
+    });
+    composerCardEl.addEventListener('drop', function(event) {
+      event.preventDefault();
+      setDropActive(false);
+      contextSuggestEl.hidden = true;
+      if (event.dataTransfer) void attachDroppedFiles(event.dataTransfer);
+      promptEl.focus();
+    });
     contextEl.addEventListener('click', function(event) {
       const target = event.target;
       if (!target || !target.dataset) return;
@@ -2436,13 +2569,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       if (chip && chip.dataset.openContextId) vscode.postMessage({ type: 'openContext', contextId: chip.dataset.openContextId });
     });
     contextSuggestEl.addEventListener('click', function(event) {
-      const target = event.target && event.target.closest ? event.target.closest('[data-add-context-id], [data-slash-mode]') : null;
-      if (!target || !target.dataset) return;
-      if (target.dataset.slashMode) {
-        applySlashCommand(target.dataset.slashMode);
-        return;
-      }
-      if (!target.dataset.addContextId) return;
+      const target = event.target && event.target.closest ? event.target.closest('[data-add-context-id]') : null;
+      if (!target || !target.dataset || !target.dataset.addContextId) return;
       const labelEl = target.querySelector('.mention-label');
       replaceMentionWithChipLabel(labelEl ? labelEl.textContent || '' : 'context');
       vscode.postMessage({ type: 'addContextSuggestion', contextId: target.dataset.addContextId });
@@ -2509,6 +2637,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       }
     }, true);
     promptEl.addEventListener('input', function(event) {
+      syncPromptHeight();
       if (event.inputType === 'insertLineBreak') {
         if (allowNextLineBreak) {
           allowNextLineBreak = false;
@@ -2521,16 +2650,10 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       }
       requestContextSuggestions();
     });
-    document.getElementById('newChat').addEventListener('click', function() { vscode.postMessage({ type: 'newChat' }); });
-    document.getElementById('openContextPicker').addEventListener('click', function() { vscode.postMessage({ type: 'openContextPicker' }); });
-    document.getElementById('openContextPickerTop').addEventListener('click', function() { vscode.postMessage({ type: 'openContextPicker' }); });
-    document.getElementById('addSelection').addEventListener('click', function() { vscode.postMessage({ type: 'addSelection' }); });
-    document.getElementById('addActiveFile').addEventListener('click', function() { vscode.postMessage({ type: 'addActiveFile' }); });
-    document.getElementById('addActiveFileTop').addEventListener('click', function() { vscode.postMessage({ type: 'addActiveFile' }); });
     document.addEventListener('click', function(event) {
       const target = event.target;
       if (target && target.closest && !target.closest('.composer-card')) contextSuggestEl.hidden = true;
-      if (target && target.closest && !target.closest('#statusPanel') && !target.closest('#toggleOps')) statusPanelEl.hidden = true;
+      if (target && target.closest && !target.closest('#statusPanel')) statusPanelEl.hidden = true;
     });
     window.addEventListener('message', function(event) {
       if (!event.data) return;
@@ -2539,14 +2662,12 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       if (event.data.type === 'focusComposer') promptEl.focus();
       if (event.data.type === 'prefillPrompt' && typeof event.data.text === 'string') {
         promptEl.value = event.data.text;
-        if (event.data.mode) {
-          modeEl.value = event.data.mode;
-          modeNoteEl.textContent = modeDescription(modeEl.value);
-          modeHintEl.textContent = modeLabel(modeEl.value) + ' mode';
-        }
+        if (event.data.mode) modeEl.value = event.data.mode;
+        syncPromptHeight();
         promptEl.focus();
       }
     });
+    syncPromptHeight();
     vscode.postMessage({ type: 'ready' });
     promptEl.focus();
   </script>
