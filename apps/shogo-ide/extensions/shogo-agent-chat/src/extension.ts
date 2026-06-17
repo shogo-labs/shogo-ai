@@ -639,9 +639,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   private readonly steeringNotes: string[] = []
   private readonly operationTimeline: OperationTimelineItem[] = []
   private debugSnapshot: DebugSnapshot | null = null
-  private readonly messages: ChatMessage[] = [
-    createMessage('assistant', 'Hi, I’m Shogo. This chat is bridged to the local Shogo Desktop agent backend. Ask about this project, attach context, and keep working from the right-side IDE panel.'),
-  ]
+  private readonly messages: ChatMessage[] = []
   private readonly contextItems = new Map<string, ContextItem>()
   private readonly contextSuggestions = new Map<string, ContextSuggestion>()
 
@@ -758,7 +756,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.operationTimeline.splice(0, this.operationTimeline.length)
     this.debugSnapshot = null
     this.chatSessionId = buildSessionId()
-    this.messages.splice(0, this.messages.length, createMessage('assistant', 'Started a new Shogo Agent Chat. Add context or ask about the workspace.'))
+    this.messages.splice(0, this.messages.length)
     this.contextItems.clear()
     this.addTimeline('request', 'Started new chat', this.chatSessionId)
     await this.postState()

@@ -78,6 +78,8 @@ const SHOGO_IDE_DISABLED_UPSTREAM_AI_SETTINGS = {
 } as const
 
 let setupPromise: Promise<void> | null = null
+const launchedShogoIdePids = new Set<number>()
+const launchedShogoIdeUserDataDirs = new Set<string>()
 
 function resolveRepoRoot(): string {
   if (process.env.SHOGO_REPO_ROOT) return path.resolve(process.env.SHOGO_REPO_ROOT)
@@ -100,6 +102,85 @@ function appendSetupLog(workspacePath: string, message: string): void {
   const logPath = resolveSetupLogPath(workspacePath)
   fs.mkdirSync(path.dirname(logPath), { recursive: true })
   fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`)
+}
+
+function forgetLaunchedShogoIde(pid: number | undefined): void {
+  if (typeof pid === 'number') launchedShogoIdePids.delete(pid)
+}
+
+function terminateProcessTree(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform === 'win32') {
+    const args = ['/PID', String(pid), '/T']
+    if (signal === 'SIGKILL') args.push('/F')
+    spawnSync('taskkill', args, { stdio: 'ignore' })
+    return
+  }
+
+  try {
+    process.kill(-pid, signal)
+    return
+  } catch (error) {
+    const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: unknown }).code) : ''
+    if (code !== 'ESRCH') console.warn(`[Desktop] Failed to signal Shogo IDE process group pid=${pid}:`, error)
+  }
+
+  try {
+    process.kill(pid, signal)
+  } catch (error) {
+    const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: unknown }).code) : ''
+    if (code !== 'ESRCH') console.warn(`[Desktop] Failed to signal Shogo IDE pid=${pid}:`, error)
+  }
+}
+
+function findShogoIdePidsByUserDataDir(userDataDir: string): number[] {
+  if (process.platform === 'win32') return []
+
+  const result = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' })
+  if (result.status !== 0 || !result.stdout) return []
+
+  const currentPid = process.pid
+  return result.stdout
+    .split('\n')
+    .map((line) => {
+      const match = line.trim().match(/^(\d+)\s+(.+)$/)
+      if (!match) return null
+      const pid = Number(match[1])
+      const command = match[2]
+      return Number.isFinite(pid) && pid !== currentPid && command.includes(userDataDir) ? pid : null
+    })
+    .filter((pid): pid is number => typeof pid === 'number')
+}
+
+function terminateMatchingShogoIdeProcesses(signal: NodeJS.Signals): void {
+  for (const userDataDir of launchedShogoIdeUserDataDirs) {
+    for (const pid of findShogoIdePidsByUserDataDir(userDataDir)) {
+      terminateProcessTree(pid, signal)
+    }
+  }
+}
+
+function findArgValue(args: string[], name: string): string | null {
+  const index = args.indexOf(name)
+  return index >= 0 ? args[index + 1] ?? null : null
+}
+
+export async function terminateLaunchedShogoIdeProcesses(): Promise<void> {
+  const pids = [...launchedShogoIdePids]
+  const userDataDirs = [...launchedShogoIdeUserDataDirs]
+  if (!pids.length && !userDataDirs.length) return
+
+  console.log(`[Desktop] Closing launched Shogo IDE process(es): ${pids.join(', ') || 'matching runtime profile'}`)
+  for (const pid of pids) terminateProcessTree(pid, 'SIGTERM')
+  terminateMatchingShogoIdeProcesses('SIGTERM')
+
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+
+  for (const pid of pids) {
+    if (launchedShogoIdePids.has(pid)) terminateProcessTree(pid, 'SIGKILL')
+    launchedShogoIdePids.delete(pid)
+  }
+  terminateMatchingShogoIdeProcesses('SIGKILL')
+  launchedShogoIdeUserDataDirs.clear()
 }
 
 function runSetupCommand(workspacePath: string, command: string, args: string[], cwd: string): Promise<void> {
@@ -516,6 +597,13 @@ export async function launchShogoIde(opts?: { workspacePath?: string }): Promise
         VSCODE_SKIP_PRELAUNCH: status.launchMode === 'source-runner' ? '1' : process.env.VSCODE_SKIP_PRELAUNCH,
       },
     })
+    const userDataDir = findArgValue(launchArgs, '--user-data-dir')
+    if (userDataDir) launchedShogoIdeUserDataDirs.add(userDataDir)
+    if (typeof child.pid === 'number') {
+      launchedShogoIdePids.add(child.pid)
+      child.once('exit', () => forgetLaunchedShogoIde(child.pid))
+      child.once('error', () => forgetLaunchedShogoIde(child.pid))
+    }
     child.unref()
     writeLaunchDiagnostic(status, { ok: true, actualLaunchPath, launchArgs })
     return { ok: true, status }

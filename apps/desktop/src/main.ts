@@ -49,7 +49,7 @@ import { registerDebugIpcHandlers, disposeDebugIpc } from './debug-ipc'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
-import { getShogoIdeStatus, launchShogoIde, registerShogoIdeIpcHandlers } from './shogo-ide'
+import { getShogoIdeStatus, launchShogoIde, registerShogoIdeIpcHandlers, terminateLaunchedShogoIdeProcesses } from './shogo-ide'
 import { createTray, destroyTray } from './tray'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 import {
@@ -1488,6 +1488,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
+  void terminateLaunchedShogoIdeProcesses().catch((err) => console.error('[Desktop] Shogo IDE cleanup error:', err))
   if (process.platform !== 'darwin') {
     app.quit()
   }
@@ -1496,7 +1497,11 @@ app.on('window-all-closed', () => {
 let isQuitting = false
 app.on('before-quit', (event) => {
   console.log(`[Desktop] before-quit fired, isQuitting=${isQuitting}, isCloudMode=${isCloudMode}, applyingUpdate=${getIsApplyingUpdate()}`)
-  if (isQuitting || isCloudMode) return
+  if (isQuitting) return
+  if (isCloudMode) {
+    void terminateLaunchedShogoIdeProcesses().catch((err) => console.error('[Desktop] Shogo IDE cleanup error:', err))
+    return
+  }
   isQuitting = true
 
   if (getIsApplyingUpdate()) {
@@ -1509,6 +1514,7 @@ app.on('before-quit', (event) => {
     disposeGitIpc()
     disposeRunIpc()
     disposeDebugIpc()
+    void terminateLaunchedShogoIdeProcesses().catch((err) => console.error('[Desktop] Shogo IDE cleanup error:', err))
     stopLocalServer().catch(() => {})
     return
   }
@@ -1522,7 +1528,7 @@ app.on('before-quit', (event) => {
   disposeGitIpc()
     disposeRunIpc()
     disposeDebugIpc()
-  Promise.allSettled([disposeTerminalIpc(), stopLocalServer()])
+  Promise.allSettled([terminateLaunchedShogoIdeProcesses(), disposeTerminalIpc(), stopLocalServer()])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))
     .finally(() => {
