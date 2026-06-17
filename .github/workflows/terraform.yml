@@ -49,6 +49,11 @@ on:
         options:
           - plan
           - apply
+      extra_args:
+        description: 'Extra args appended to terraform plan/apply (e.g. -target=... for a surgical apply). Leave empty for a full plan/apply.'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -276,7 +281,7 @@ jobs:
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
           KUBE_CONFIG_PATH: /home/runner/.kube/config
-        run: terraform plan -no-color
+        run: terraform plan -no-color ${{ inputs.extra_args }}
 
       - name: terraform apply
         if: inputs.action == 'apply'
@@ -300,4 +305,4 @@ jobs:
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
           KUBE_CONFIG_PATH: /home/runner/.kube/config
-        run: terraform apply -no-color -auto-approve
+        run: terraform apply -no-color -auto-approve ${{ inputs.extra_args }}
