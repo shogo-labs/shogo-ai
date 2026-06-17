@@ -101,7 +101,7 @@ assert(agentChatExtension.includes('data-shogo-desktop-chat-ui="true"'), 'agent 
 assert(agentChatExtension.includes('desktop-chat-shell'), 'agent chat webview must use Desktop chat shell layout class')
 assert(agentChatExtension.includes('composer-card'), 'agent chat webview must use Desktop-style composer card')
 assert(agentChatExtension.includes('context-chip'), 'agent chat webview must render Desktop-style context chips')
-assert(agentChatExtension.includes('Ask Shogo to fix, explain, refactor, or review this code'), 'agent chat composer must use the Desktop-style Shogo prompt placeholder')
+assert(agentChatExtension.includes('Plan, Build, / for skills, @ for context'), 'agent chat composer must use the Cursor-style Shogo prompt placeholder')
 assert(agentChatExtension.includes("registerWebviewViewProvider('shogo.agentChat'"), 'agent chat extension must register the Shogo webview provider')
 assert(!agentChatExtension.includes('createChatParticipant'), 'agent chat extension must not register proposed native chat participants')
 assert(agentChatExtension.includes('<select id="model"'), 'agent chat webview must expose model/mode control in the composer')

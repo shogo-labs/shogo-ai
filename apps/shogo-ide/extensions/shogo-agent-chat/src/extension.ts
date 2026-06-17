@@ -139,6 +139,7 @@ interface WebviewMessage {
   actionId?: string
   contextId?: string
   query?: string
+  message?: string
   operation?: 'queue' | 'steer'
 }
 
@@ -974,6 +975,15 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     if (!msg || typeof msg.type !== 'string') return
 
     if (msg.type === 'ready') {
+      this.addTimeline('debug', 'Chat UI script loaded', 'Handlers attached')
+      await this.postState()
+      return
+    }
+
+    if (msg.type === 'webviewError') {
+      const message = typeof msg.message === 'string' ? msg.message : 'Unknown webview error'
+      this.pushSystemMessage(`Chat UI error: ${message}`)
+      this.addTimeline('debug', 'Chat UI error', message)
       await this.postState()
       return
     }
@@ -1175,6 +1185,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
         shellCommandsRequireWorkspaceTrust: true,
         contextAttachments: {
           hashMentions: true,
+          atMentions: true,
+          slashCommands: true,
           picker: true,
           types: ['selection', 'activeFile', 'file', 'folder', 'symbol', 'diagnostic', 'terminal'],
           dedupe: true,
@@ -1522,6 +1534,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       --shogo-shadow: 0 18px 55px rgba(0, 0, 0, .25);
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
       margin: 0;
       height: 100vh;
@@ -1540,101 +1553,128 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     .desktop-chat-shell {
       height: 100vh;
       display: grid;
-      grid-template-rows: auto 1fr auto;
+      grid-template-rows: auto minmax(0, 1fr);
       background: var(--vscode-sideBar-background);
     }
     .chat-header {
       display: flex;
-      align-items: center;
+      align-items: stretch;
       justify-content: space-between;
-      gap: 12px;
-      min-height: 58px;
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
-      background: var(--vscode-sideBarSectionHeader-background, var(--vscode-sideBar-background));
+      gap: 10px;
+      min-height: 48px;
+      padding: 0 8px;
+      border-bottom: 1px solid color-mix(in srgb, var(--vscode-panel-border) 72%, transparent);
+      background: var(--vscode-sideBar-background);
     }
-    .brand-wrap { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 145px; }
+    .brand-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      max-width: 260px;
+      padding: 0 12px;
+      border-left: 1px solid transparent;
+      border-right: 1px solid color-mix(in srgb, var(--vscode-panel-border) 55%, transparent);
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 92%, var(--vscode-editor-background));
+    }
     .brand-mark {
-      width: 34px;
-      height: 34px;
-      border-radius: 12px;
+      width: 22px;
+      height: 22px;
       display: grid;
       place-items: center;
       flex: none;
-      background: linear-gradient(135deg, var(--shogo-orange-strong), var(--shogo-orange));
-      color: white;
-      font-weight: 900;
-      letter-spacing: -.08em;
-      box-shadow: 0 10px 28px color-mix(in srgb, var(--shogo-orange) 34%, transparent);
+      color: var(--vscode-descriptionForeground);
+      font-size: 18px;
+      line-height: 1;
     }
     .brand-copy { min-width: 0; }
-    .eyebrow {
-      color: var(--shogo-orange-strong);
-      font-size: 10px;
-      font-weight: 800;
-      letter-spacing: .24em;
-      text-transform: uppercase;
-      line-height: 1.2;
-    }
-    .title-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
-    .title { font-size: 14px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .status-dot { width: 7px; height: 7px; border-radius: 999px; background: #22c55e; box-shadow: 0 0 0 3px color-mix(in srgb, #22c55e 20%, transparent); }
-    .header-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; flex: 0 1 auto; min-width: 0; }
+    .eyebrow, .status-dot { display: none; }
+    .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .title { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .title-close { color: var(--vscode-descriptionForeground); font-size: 18px; line-height: 1; }
+    .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex: 0 0 auto; min-width: 0; }
     .icon-button, .text-button, .send-button, .chip-button {
       border: 1px solid transparent;
       color: var(--vscode-button-secondaryForeground);
-      background: var(--vscode-button-secondaryBackground);
+      background: transparent;
       border-radius: 10px;
     }
     .icon-button {
-      width: 31px;
-      height: 31px;
+      width: 32px;
+      height: 32px;
       padding: 0;
       display: grid;
       place-items: center;
-      font-size: 15px;
+      font-size: 18px;
     }
-    .icon-button:hover, .text-button:hover, .chip-button:hover { background: var(--vscode-button-hoverBackground); color: var(--vscode-button-foreground); }
+    .icon-button:hover, .text-button:hover, .chip-button:hover {
+      background: var(--vscode-toolbar-hoverBackground, var(--vscode-button-secondaryBackground));
+      color: var(--vscode-foreground);
+    }
     .conversation {
+      position: relative;
       min-height: 0;
       overflow: auto;
-      padding: 14px 12px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 18px 14px 14px;
+      scroll-behavior: smooth;
+    }
+    .desktop-chat-shell.is-empty .conversation {
+      justify-content: flex-start;
+      padding-top: clamp(20px, 7vh, 64px);
     }
     .desktop-card {
       border: 1px solid var(--vscode-panel-border);
-      border-radius: 8px;
+      border-radius: 12px;
       background: var(--vscode-editor-background);
       overflow: hidden;
       margin-bottom: 12px;
     }
-    .session-card { padding: 12px; }
+    .session-card {
+      position: absolute;
+      z-index: 20;
+      top: 10px;
+      right: 12px;
+      left: 12px;
+      max-height: min(520px, calc(100% - 24px));
+      overflow: auto;
+      padding: 12px;
+      border-color: color-mix(in srgb, var(--vscode-panel-border) 82%, var(--vscode-foreground));
+      border-radius: 14px;
+      background: var(--vscode-quickInput-background, var(--vscode-editor-background));
+      box-shadow: 0 18px 48px rgba(0, 0, 0, .28);
+    }
+    .session-card[hidden] { display: none; }
     .session-top { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
     .session-top > div { min-width: 0; }
     .session-top > div:first-child { flex: 1 1 220px; }
     .session-top > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 1 1 160px; }
-    .session-title { font-weight: 750; margin-bottom: 4px; }
+    .session-title { font-weight: 700; margin-bottom: 4px; }
     .session-subtitle { color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.45; }
     .bridge-pill {
-      border: 1px solid color-mix(in srgb, var(--shogo-orange) 35%, var(--vscode-panel-border));
-      color: color-mix(in srgb, var(--shogo-orange-strong) 80%, var(--vscode-foreground));
-      background: color-mix(in srgb, var(--shogo-orange) 10%, transparent);
+      border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-button-secondaryBackground);
       border-radius: 999px;
       padding: 4px 8px;
       font-size: 11px;
       white-space: nowrap;
     }
-    .context-strip { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+    .context-strip { display: flex; flex-wrap: wrap; gap: 7px; min-height: 0; padding: 0 12px 2px; }
     .context-chip {
       display: inline-flex;
       align-items: center;
       gap: 6px;
       max-width: 100%;
       min-width: 0;
-      border: 1px solid var(--vscode-button-secondaryBackground);
+      border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
       border-radius: 999px;
       padding: 5px 9px;
       color: var(--vscode-descriptionForeground);
-      background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 55%, transparent);
+      background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 50%, transparent);
       font-size: 11px;
       line-height: 1;
     }
@@ -1654,32 +1694,40 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     }
     .context-remove:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground, var(--vscode-button-secondaryBackground)); }
     .mention-popover {
-      margin: 0 8px 8px;
-      max-height: 210px;
+      margin: 0 12px 8px;
+      max-height: 260px;
       overflow: auto;
-      border: 1px solid var(--vscode-focusBorder, var(--vscode-panel-border));
+      border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
       border-radius: 12px;
       background: var(--vscode-quickInput-background, var(--vscode-editor-background));
-      box-shadow: var(--shogo-shadow);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, .32);
     }
     .mention-popover[hidden] { display: none; }
     .mention-item {
       width: 100%;
       display: grid;
       grid-template-columns: auto 1fr auto;
-      gap: 8px;
+      gap: 9px;
       align-items: center;
       border: 0;
-      border-bottom: 1px solid color-mix(in srgb, var(--vscode-panel-border) 55%, transparent);
       color: var(--vscode-quickInput-foreground, var(--vscode-foreground));
       background: transparent;
       padding: 8px 10px;
       text-align: left;
     }
+    .mention-item + .mention-item { border-top: 1px solid color-mix(in srgb, var(--vscode-panel-border) 45%, transparent); }
     .mention-item:hover, .mention-item.active { background: var(--vscode-list-hoverBackground, var(--vscode-button-secondaryBackground)); }
     .mention-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
     .mention-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); font-size: 11px; }
-    .turns { display: flex; flex-direction: column; gap: 12px; }
+    .turns {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      width: 100%;
+      max-width: 820px;
+      margin: 0 auto;
+    }
+    .desktop-chat-shell.is-empty .turns { display: none; }
     .turn { display: grid; gap: 7px; }
     .turn.user { justify-items: end; }
     .turn.assistant, .turn.system { justify-items: start; }
@@ -1704,27 +1752,25 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     }
     .assistant .avatar { background: linear-gradient(135deg, var(--shogo-orange-strong), var(--shogo-orange)); color: #fff; }
     .bubble {
-      max-width: min(640px, 94%);
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 16px;
-      padding: 10px 11px;
-      line-height: 1.48;
+      max-width: min(680px, 94%);
+      border: 0;
+      border-radius: 18px;
+      padding: 11px 13px;
+      line-height: 1.5;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
     .assistant .bubble {
-      background: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--shogo-orange) 8%);
-      border-color: color-mix(in srgb, var(--shogo-orange) 22%, var(--vscode-panel-border));
+      background: transparent;
+      padding-left: 4px;
     }
     .user .bubble {
-      background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 88%, var(--shogo-orange) 5%);
-      border-color: transparent;
+      background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 82%, transparent);
     }
     .system .bubble {
       max-width: 100%;
       color: var(--vscode-descriptionForeground);
-      background: var(--vscode-textBlockQuote-background);
-      border-style: dashed;
+      background: transparent;
       font-size: 12px;
     }
     .action-list {
@@ -1766,73 +1812,100 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     .action-button[disabled] { opacity: .62; cursor: default; }
     .action-review { color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 6px; }
     .composer-wrap {
-      padding: 12px;
-      border-top: 1px solid var(--vscode-panel-border);
-      background: color-mix(in srgb, var(--vscode-sideBar-background) 94%, #000);
+      position: sticky;
+      bottom: 0;
+      z-index: 10;
+      width: 100%;
+      max-width: 820px;
+      margin: auto auto 0;
+      padding: 8px 0 0;
+      background: linear-gradient(to top, var(--vscode-sideBar-background) 76%, transparent);
+    }
+    .desktop-chat-shell.is-empty .composer-wrap {
+      position: relative;
+      bottom: auto;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 0;
+      background: transparent;
     }
     .composer-card {
-      border: 1px solid var(--vscode-focusBorder, var(--vscode-panel-border));
-      border-radius: var(--shogo-radius-lg);
-      background: var(--vscode-input-background);
+      border: 1px solid color-mix(in srgb, var(--vscode-input-border, var(--vscode-panel-border)) 82%, var(--vscode-foreground));
+      border-radius: 22px;
+      background: color-mix(in srgb, var(--vscode-input-background) 92%, var(--vscode-editor-background));
       overflow: hidden;
-      box-shadow: 0 12px 32px rgba(0, 0, 0, .18);
+      box-shadow: none;
+    }
+    .composer-card:focus-within {
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 74%, var(--vscode-panel-border));
     }
     textarea {
       width: 100%;
-      min-height: 86px;
-      max-height: 210px;
+      min-height: 76px;
+      max-height: 240px;
       resize: vertical;
       display: block;
       border: 0;
       outline: none;
-      padding: 13px 14px 8px;
+      padding: 14px 16px 8px;
       color: var(--vscode-input-foreground);
       background: transparent;
       line-height: 1.45;
+      font-size: 14px;
     }
-    textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
+    .desktop-chat-shell.is-empty textarea {
+      min-height: clamp(178px, 28vh, 260px);
+      padding: 20px 20px 10px;
+      font-size: 15px;
+    }
+    textarea::placeholder { color: color-mix(in srgb, var(--vscode-input-placeholderForeground) 86%, transparent); }
     .composer-toolbar {
       display: flex;
       justify-content: space-between;
       flex-wrap: wrap;
       gap: 8px;
       align-items: center;
-      padding: 8px;
-      border-top: 1px solid color-mix(in srgb, var(--vscode-panel-border) 62%, transparent);
+      padding: 8px 12px 12px;
+      border-top: 0;
     }
     .left-tools, .right-tools {
       display: flex;
       align-items: center;
       flex-wrap: wrap;
-      gap: 6px;
+      gap: 7px;
       min-width: 0;
     }
     .left-tools { flex: 999 1 260px; }
-    .right-tools { flex: 1 1 260px; justify-content: flex-end; }
+    .right-tools { flex: 1 1 250px; justify-content: flex-end; }
+    .desktop-chat-shell.is-empty .left-tools { flex: 0 1 auto; }
+    .desktop-chat-shell.is-empty .right-tools { flex: 1 1 auto; }
     .chip-button {
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 6px;
-      min-height: 31px;
-      padding: 6px 9px;
+      min-height: 30px;
+      padding: 5px 9px;
       font-size: 12px;
       white-space: nowrap;
     }
-    .mode-select {
-      min-height: 31px;
-      max-width: 142px;
-      border: 1px solid var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
+    .pill-button, .mode-select.primary {
+      color: var(--vscode-foreground);
       background: var(--vscode-button-secondaryBackground);
-      border-radius: 10px;
-      padding: 0 8px;
+      border-radius: 999px;
+      font-weight: 650;
+    }
+    .mode-select {
+      min-height: 30px;
+      max-width: 150px;
+      border: 1px solid transparent;
+      color: var(--vscode-button-secondaryForeground);
+      background: transparent;
+      border-radius: 9px;
+      padding: 0 5px;
       outline: none;
     }
-    .mode-select.primary {
-      border-color: color-mix(in srgb, var(--shogo-orange) 55%, var(--vscode-button-secondaryBackground));
-      color: var(--vscode-foreground);
-      background: color-mix(in srgb, var(--shogo-orange) 16%, var(--vscode-button-secondaryBackground));
-    }
+    .mode-select:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-button-secondaryBackground)); }
     .mode-handoff { margin-left: 0; }
     .mode-note { color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 4px; }
     .ops-panel {
@@ -1863,32 +1936,37 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     }
     .queued-note { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .send-button {
+      min-width: 34px;
       min-height: 34px;
-      padding: 7px 12px;
+      padding: 6px 10px;
       color: var(--vscode-button-foreground);
       background: linear-gradient(135deg, var(--shogo-orange-strong), var(--shogo-orange));
-      font-weight: 750;
+      border-radius: 12px;
+      font-weight: 800;
+      font-size: 14px;
     }
     .send-button:hover { filter: brightness(1.08); }
     .hint-row {
       display: flex;
       justify-content: space-between;
       gap: 8px;
-      margin-top: 8px;
+      margin-top: 7px;
       color: var(--vscode-descriptionForeground);
       font-size: 11px;
     }
     @media (max-width: 620px) {
-      .composer-wrap { padding: 10px; }
+      .conversation { padding: 14px 10px 10px; }
+      .composer-wrap { max-width: none; }
       .left-tools, .right-tools { flex: 1 1 100%; }
       .left-tools { justify-content: flex-start; }
       .right-tools { justify-content: flex-end; }
+      .desktop-chat-shell.is-empty .composer-toolbar { align-items: stretch; flex-direction: column; }
     }
     @media (max-width: 430px) {
-      .chat-header { padding: 9px 10px; flex-wrap: wrap; }
-      .eyebrow { display: none; }
-      .title { font-size: 13px; }
-      .header-actions { width: 100%; justify-content: space-between; }
+      .chat-header { padding: 0 6px; }
+      .brand-wrap { padding: 0 8px; }
+      .title { font-size: 14px; }
+      .header-actions { gap: 2px; }
       .composer-toolbar { align-items: stretch; flex-direction: column; }
       .left-tools, .right-tools { justify-content: space-between; }
       .chip-button, .mode-select, .send-button { flex: 1 1 auto; }
@@ -1896,47 +1974,45 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       .hint-row { flex-direction: column; }
     }
     @media (max-width: 330px) {
-      .composer-wrap { padding: 8px; }
+      .conversation { padding: 10px 8px 8px; }
       .chip-button, .send-button { padding-left: 7px; padding-right: 7px; }
       .icon-button { width: 28px; height: 28px; }
     }
   </style>
 </head>
 <body>
-  <main class="desktop-chat-shell" data-shogo-desktop-chat-ui="true">
+  <main id="shell" class="desktop-chat-shell is-empty" data-shogo-desktop-chat-ui="true">
     <header class="chat-header">
-      <div class="brand-wrap">
-        <div class="brand-mark">S.</div>
+      <div class="brand-wrap" aria-label="Current chat tab">
+        <div class="brand-mark" aria-hidden="true">▱</div>
         <div class="brand-copy">
           <div class="eyebrow">Shogo Agent</div>
-          <div class="title-row"><span class="title">Chat</span><span class="status-dot" aria-hidden="true"></span></div>
+          <div class="title-row"><span class="title">New Agent</span><span class="title-close" aria-hidden="true">×</span></div>
         </div>
       </div>
       <div class="header-actions">
         <button id="newChat" class="icon-button" title="New chat" aria-label="New chat">＋</button>
-        <button id="openContextPickerTop" class="icon-button" title="Pick context" aria-label="Pick context">#</button>
+        <button id="toggleOps" class="icon-button" title="History and operations" aria-label="History and operations">◷</button>
+        <button id="openContextPickerTop" class="icon-button" title="Pick context" aria-label="Pick context">@</button>
         <button id="addActiveFileTop" class="icon-button" title="Attach active file" aria-label="Attach active file">□</button>
-        <button id="addSelectionTop" class="icon-button" title="Attach selection" aria-label="Attach selection">⌁</button>
       </div>
     </header>
 
     <section id="scroll" class="conversation">
-      <section class="desktop-card session-card">
+      <section id="statusPanel" class="desktop-card session-card" hidden>
         <div class="session-top">
           <div>
-            <div class="session-title">Ask Shogo about your code</div>
+            <div class="session-title">Chat context</div>
             <div id="status" class="session-subtitle">Loading workspace context…</div>
             <div id="modeNote" class="mode-note">Agent can edit and run reviewed actions.</div>
           </div>
           <div>
             <div id="bridgePill" class="bridge-pill">Local</div>
             <button id="handoffPlan" class="chip-button mode-handoff" title="Implement the last plan in Agent mode" hidden>Implement plan</button>
-            <button id="toggleOps" class="chip-button mode-handoff" title="Show timeline and debug payload">Ops</button>
           </div>
         </div>
-        <div id="context" class="context-strip"></div>
-        <section id="opsPanel" class="ops-panel" hidden>
-          <div class="ops-header"><span class="ops-title">Agent operations</span><button id="clearTimeline" class="chip-button">Clear</button></div>
+        <section id="opsPanel" class="ops-panel">
+          <div class="ops-header"><span class="ops-title">Recent activity</span><button id="clearTimeline" class="chip-button">Clear</button></div>
           <div class="ops-body">
             <div id="queuedNote" class="queued-note"></div>
             <div id="timeline" class="timeline"></div>
@@ -1947,46 +2023,56 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
           </div>
         </section>
       </section>
-      <section id="messages" class="turns" aria-live="polite"></section>
-    </section>
 
-    <section class="composer-wrap">
-      <div class="composer-card">
-        <textarea id="prompt" placeholder="Ask Shogo to fix, explain, refactor, or review this code — type # to attach files, folders, symbols, diagnostics, or terminals"></textarea>
-        <div id="contextSuggest" class="mention-popover" hidden></div>
-        <div class="composer-toolbar">
-          <div class="left-tools">
-            <button id="openContextPicker" class="chip-button" title="Pick context"># Context</button>
-            <button id="addSelection" class="chip-button" title="Attach selected code">＋ Selection</button>
-            <button id="addActiveFile" class="chip-button" title="Attach active file">File</button>
-          </div>
-          <div class="right-tools">
-            <select id="mode" class="mode-select primary" title="Chat mode">
-              <option value="ask">Ask</option>
-              <option value="edit">Edit</option>
-              <option value="agent" selected>Agent</option>
-              <option value="plan">Plan</option>
-            </select>
-            <select id="model" class="mode-select" title="Model">
-              <option value="auto">Auto</option>
-              <option value="fast">Fast</option>
-              <option value="capable">Capable</option>
-            </select>
-            <button id="steer" class="chip-button" title="Steer the running request" hidden>Steer</button>
-            <button id="stop" class="chip-button" title="Stop the running request" hidden>Stop</button>
-            <button id="send" class="send-button">Send</button>
+      <section id="messages" class="turns" aria-live="polite"></section>
+
+      <section class="composer-wrap" aria-label="Chat composer">
+        <div class="composer-card">
+          <textarea id="prompt" placeholder="Plan, Build, / for skills, @ for context" aria-label="Message Shogo"></textarea>
+          <div id="contextSuggest" class="mention-popover" role="listbox" hidden></div>
+          <div id="context" class="context-strip" aria-label="Attached context"></div>
+          <div class="composer-toolbar">
+            <div class="left-tools">
+              <button id="openContextPicker" class="chip-button" title="Pick context">@ Context</button>
+              <button id="addSelection" class="chip-button" title="Attach selected code">＋ Selection</button>
+              <button id="addActiveFile" class="chip-button" title="Attach active file">File</button>
+            </div>
+            <div class="right-tools">
+              <select id="mode" class="mode-select primary" title="Chat mode" aria-label="Chat mode">
+                <option value="agent" selected>∞ Agent</option>
+                <option value="plan">Plan</option>
+                <option value="edit">Edit</option>
+                <option value="ask">Ask</option>
+              </select>
+              <select id="model" class="mode-select" title="Model" aria-label="Model">
+                <option value="auto">Auto</option>
+                <option value="fast">Fast</option>
+                <option value="capable">Composer 2.5</option>
+              </select>
+              <button id="steer" class="chip-button" title="Steer the running request" hidden>Steer</button>
+              <button id="stop" class="chip-button" title="Stop the running request" hidden>Stop</button>
+              <button id="send" class="send-button" type="button" title="Send with Enter" aria-label="Send message">↵</button>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="hint-row">
-        <span>⌘/Ctrl + Enter to send · type # for context</span>
-        <span id="modeHint">Agent mode</span>
-      </div>
+        <div class="hint-row">
+          <span>Enter to send · Shift+Enter for newline · @ or # for context · / for skills</span>
+          <span id="modeHint">Agent mode</span>
+        </div>
+      </section>
     </section>
   </main>
 
   <script nonce="${scriptNonce}">
     const vscode = acquireVsCodeApi();
+    function reportWebviewError(error) {
+      const message = error && error.message ? error.message : String(error || 'Unknown webview error');
+      try { vscode.postMessage({ type: 'webviewError', message: message }); } catch {}
+    }
+    window.addEventListener('error', function(event) { reportWebviewError(event.error || event.message); });
+    window.addEventListener('unhandledrejection', function(event) { reportWebviewError(event.reason); });
+    const shellEl = document.getElementById('shell');
+    const statusPanelEl = document.getElementById('statusPanel');
     const statusEl = document.getElementById('status');
     const bridgePillEl = document.getElementById('bridgePill');
     const modeNoteEl = document.getElementById('modeNote');
@@ -2010,6 +2096,11 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     const contextSuggestEl = document.getElementById('contextSuggest');
     let mentionStart = -1;
     let mentionQuery = '';
+    let mentionPrefix = '@';
+    let suggestMode = 'context';
+    let activeSuggestionIndex = 0;
+    let runtimeRequestRunning = false;
+    let allowNextLineBreak = false;
     let contextSuggestDebounce = 0;
     let pendingState = null;
     let stateFrame = 0;
@@ -2069,7 +2160,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
 
     function renderContext(items) {
       if (!items.length) {
-        contextEl.innerHTML = '<span class="context-chip"><span>No context attached</span></span>';
+        contextEl.innerHTML = '';
         return;
       }
       contextEl.innerHTML = items.map(function(item) {
@@ -2082,9 +2173,11 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     function currentMention() {
       const cursor = promptEl.selectionStart || 0;
       const before = promptEl.value.slice(0, cursor);
-      const match = before.match(/(^|\s)#([\w./:-]*)$/);
+      const slash = before.match(/(^|\\s)\\/([\\w-]*)$/);
+      if (slash) return { start: cursor - slash[2].length - 1, prefix: '/', query: slash[2] };
+      const match = before.match(/(^|\\s)([#@])([\\w./:-]*)$/);
       if (!match) return null;
-      return { start: cursor - match[2].length - 1, query: match[2] };
+      return { start: cursor - match[3].length - 1, prefix: match[2], query: match[3] };
     }
 
     function requestContextSuggestions() {
@@ -2093,11 +2186,19 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
         mentionStart = -1;
         mentionQuery = '';
         contextSuggestEl.hidden = true;
+        activeSuggestionIndex = 0;
         return;
       }
       mentionStart = mention.start;
       mentionQuery = mention.query;
+      mentionPrefix = mention.prefix || '@';
+      suggestMode = mentionPrefix === '/' ? 'slash' : 'context';
+      activeSuggestionIndex = 0;
       window.clearTimeout(contextSuggestDebounce);
+      if (suggestMode === 'slash') {
+        renderSlashSuggestions(mentionQuery);
+        return;
+      }
       contextSuggestDebounce = window.setTimeout(function() {
         vscode.postMessage({ type: 'requestContextSuggestions', query: mentionQuery });
       }, 80);
@@ -2110,14 +2211,58 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       }
       contextSuggestEl.hidden = false;
       contextSuggestEl.innerHTML = suggestions.map(function(item) {
-        return '<button class="mention-item" data-add-context-id="' + escapeHtml(item.id) + '"><strong>' + contextIcon(item.kind) + '</strong><span><span class="mention-label">' + escapeHtml(item.label) + '</span><span class="mention-detail">' + escapeHtml(contextKindLabel(item.kind) + (item.detail ? ' · ' + item.detail : '')) + '</span></span><span>#</span></button>';
+        const active = suggestions.indexOf(item) === activeSuggestionIndex ? ' active' : '';
+        return '<button class="mention-item' + active + '" data-add-context-id="' + escapeHtml(item.id) + '" role="option"><strong>' + contextIcon(item.kind) + '</strong><span><span class="mention-label">' + escapeHtml(item.label) + '</span><span class="mention-detail">' + escapeHtml(contextKindLabel(item.kind) + (item.detail ? ' · ' + item.detail : '')) + '</span></span><span>' + escapeHtml(mentionPrefix) + '</span></button>';
       }).join('');
+    }
+
+    function renderSlashSuggestions(query) {
+      const commands = [
+        { id: 'agent', label: 'Agent', detail: 'Plan and execute reviewed workspace actions', mode: 'agent' },
+        { id: 'plan', label: 'Plan', detail: 'Create an implementation plan before editing', mode: 'plan' },
+        { id: 'edit', label: 'Edit', detail: 'Apply reviewed file edits only', mode: 'edit' },
+        { id: 'ask', label: 'Ask', detail: 'Read-only explanation and review', mode: 'ask' }
+      ].filter(function(command) { return !query || command.id.indexOf(query.toLowerCase()) === 0 || command.label.toLowerCase().indexOf(query.toLowerCase()) === 0; });
+      if (!commands.length) {
+        contextSuggestEl.hidden = true;
+        return;
+      }
+      contextSuggestEl.hidden = false;
+      contextSuggestEl.innerHTML = commands.map(function(command, index) {
+        const active = index === activeSuggestionIndex ? ' active' : '';
+        return '<button class="mention-item' + active + '" data-slash-mode="' + escapeHtml(command.mode) + '" role="option"><strong>/</strong><span><span class="mention-label">' + escapeHtml(command.label) + '</span><span class="mention-detail">' + escapeHtml(command.detail) + '</span></span><span>↵</span></button>';
+      }).join('');
+    }
+
+    function suggestionItems() {
+      return Array.from(contextSuggestEl.querySelectorAll('[data-add-context-id], [data-slash-mode]'));
+    }
+
+    function moveActiveSuggestion(delta) {
+      const items = suggestionItems();
+      if (!items.length) return;
+      activeSuggestionIndex = (activeSuggestionIndex + delta + items.length) % items.length;
+      items.forEach(function(item, index) { item.classList.toggle('active', index === activeSuggestionIndex); });
+      items[activeSuggestionIndex].scrollIntoView({ block: 'nearest' });
+    }
+
+    function applySlashCommand(mode) {
+      if (mentionStart < 0) return;
+      const cursor = promptEl.selectionStart || 0;
+      promptEl.value = promptEl.value.slice(0, mentionStart) + promptEl.value.slice(cursor).replace(/^\\s*/, '');
+      modeEl.value = mode;
+      modeNoteEl.textContent = modeDescription(modeEl.value);
+      modeHintEl.textContent = modeLabel(modeEl.value) + ' mode';
+      vscode.postMessage({ type: 'modeChanged', mode: modeEl.value });
+      contextSuggestEl.hidden = true;
+      mentionStart = -1;
+      promptEl.focus();
     }
 
     function replaceMentionWithChipLabel(label) {
       if (mentionStart < 0) return;
       const cursor = promptEl.selectionStart || 0;
-      promptEl.value = promptEl.value.slice(0, mentionStart) + '#' + label + ' ' + promptEl.value.slice(cursor);
+      promptEl.value = promptEl.value.slice(0, mentionStart) + mentionPrefix + label + ' ' + promptEl.value.slice(cursor);
       contextSuggestEl.hidden = true;
       mentionStart = -1;
       promptEl.focus();
@@ -2196,10 +2341,11 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       modeHintEl.textContent = modeLabel(state.mode || 'agent') + ' mode';
       handoffPlanEl.hidden = !state.canHandoffPlan;
       const running = state.requestStatus === 'running' || state.requestStatus === 'stopping';
+      runtimeRequestRunning = running;
       steerEl.hidden = !running;
       stopEl.hidden = !running;
-      sendEl.textContent = running ? 'Queue' : 'Send';
-      sendEl.title = running ? 'Queue as the next follow-up' : 'Send prompt';
+      sendEl.textContent = running ? 'Queue' : '↵';
+      sendEl.title = running ? 'Queue as the next follow-up' : 'Send prompt with Enter';
       queuedNoteEl.textContent = state.queuedPrompt ? 'Queued: ' + modeLabel(state.queuedPrompt.mode) + ' · ' + state.queuedPrompt.prompt : (running ? 'Request running. Send queues a follow-up; Steer queues a course-correction note; Stop aborts the request.' : 'Idle. Send starts a new request.');
       renderTimeline(state.operationTimeline || []);
       renderDebugPayload(state.debugSnapshot);
@@ -2208,6 +2354,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
         : 'No local Shogo agent bridge configured. Workspace: ' + folder + '. Context: ' + contextCount + ' item' + (contextCount === 1 ? '' : 's') + '.';
       renderContext(state.contextItems);
       renderMessages(state.messages);
+      shellEl.classList.toggle('is-empty', !state.messages || state.messages.length === 0);
       if (state.pendingComposerText && !promptEl.value.trim()) {
         promptEl.value = state.pendingComposerText;
         promptEl.focus();
@@ -2218,12 +2365,47 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       const prompt = promptEl.value.trim();
       if (!prompt) return;
       contextSuggestEl.hidden = true;
-      vscode.postMessage({ type: 'sendPrompt', prompt: prompt, mode: modeEl.value, model: modelEl.value, operation: 'queue' });
+      vscode.postMessage({ type: 'sendPrompt', prompt: prompt, mode: modeEl.value, model: modelEl.value, operation: runtimeRequestRunning ? 'queue' : undefined });
       promptEl.value = '';
       promptEl.focus();
     }
 
-    sendEl.addEventListener('click', sendPrompt);
+    function chooseActiveSuggestion() {
+      const active = suggestionItems()[activeSuggestionIndex] || suggestionItems()[0];
+      if (!active) return false;
+      if (active.dataset.slashMode) {
+        applySlashCommand(active.dataset.slashMode);
+        return true;
+      }
+      if (active.dataset.addContextId) {
+        const labelEl = active.querySelector('.mention-label');
+        replaceMentionWithChipLabel(labelEl ? labelEl.textContent || '' : 'context');
+        vscode.postMessage({ type: 'addContextSuggestion', contextId: active.dataset.addContextId });
+        return true;
+      }
+      return false;
+    }
+
+    function handlePromptEnter(event) {
+      if (event.shiftKey) {
+        allowNextLineBreak = true;
+        return false;
+      }
+      if (!contextSuggestEl.hidden && chooseActiveSuggestion()) {
+        event.preventDefault();
+        event.stopPropagation();
+        return true;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      sendPrompt();
+      return true;
+    }
+
+    sendEl.addEventListener('click', function(event) {
+      event.preventDefault();
+      sendPrompt();
+    });
     steerEl.addEventListener('click', function() {
       const prompt = promptEl.value.trim();
       if (!prompt) return;
@@ -2233,7 +2415,10 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       promptEl.focus();
     });
     stopEl.addEventListener('click', function() { vscode.postMessage({ type: 'stopRequest' }); });
-    toggleOpsEl.addEventListener('click', function() { opsPanelEl.hidden = !opsPanelEl.hidden; });
+    toggleOpsEl.addEventListener('click', function() {
+      statusPanelEl.hidden = !statusPanelEl.hidden;
+      opsPanelEl.hidden = false;
+    });
     clearTimelineEl.addEventListener('click', function() { vscode.postMessage({ type: 'clearTimeline' }); });
     modeEl.addEventListener('change', function() {
       modeNoteEl.textContent = modeDescription(modeEl.value);
@@ -2253,8 +2438,13 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       if (chip && chip.dataset.openContextId) vscode.postMessage({ type: 'openContext', contextId: chip.dataset.openContextId });
     });
     contextSuggestEl.addEventListener('click', function(event) {
-      const target = event.target && event.target.closest ? event.target.closest('[data-add-context-id]') : null;
-      if (!target || !target.dataset.addContextId) return;
+      const target = event.target && event.target.closest ? event.target.closest('[data-add-context-id], [data-slash-mode]') : null;
+      if (!target || !target.dataset) return;
+      if (target.dataset.slashMode) {
+        applySlashCommand(target.dataset.slashMode);
+        return;
+      }
+      if (!target.dataset.addContextId) return;
       const labelEl = target.querySelector('.mention-label');
       replaceMentionWithChipLabel(labelEl ? labelEl.textContent || '' : 'context');
       vscode.postMessage({ type: 'addContextSuggestion', contextId: target.dataset.addContextId });
@@ -2277,34 +2467,73 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       if (target.dataset.actionId) vscode.postMessage({ type: 'runAction', actionId: target.dataset.actionId });
     });
     promptEl.addEventListener('keydown', function(event) {
-      if (event.key === 'Enter' && !event.metaKey && !event.ctrlKey && !contextSuggestEl.hidden) {
-        const first = contextSuggestEl.querySelector('[data-add-context-id]');
-        if (first) {
+      if (!contextSuggestEl.hidden && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+        event.preventDefault();
+        moveActiveSuggestion(event.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
+      if (event.key === 'Enter' && !contextSuggestEl.hidden) {
+        handlePromptEnter(event);
+        return;
+      }
+      if (event.key === 'Escape') {
+        if (!contextSuggestEl.hidden) {
           event.preventDefault();
-          const labelEl = first.querySelector('.mention-label');
-          replaceMentionWithChipLabel(labelEl ? labelEl.textContent || '' : 'context');
-          vscode.postMessage({ type: 'addContextSuggestion', contextId: first.dataset.addContextId });
+          contextSuggestEl.hidden = true;
+          return;
         }
-        return;
+        if (!statusPanelEl.hidden) {
+          event.preventDefault();
+          statusPanelEl.hidden = true;
+          return;
+        }
       }
-      if (event.key === 'Escape' && !contextSuggestEl.hidden) {
-        event.preventDefault();
-        contextSuggestEl.hidden = true;
-        return;
-      }
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
-        sendPrompt();
+      if (event.key === 'Enter') {
+        handlePromptEnter(event);
       }
     });
-    promptEl.addEventListener('input', requestContextSuggestions);
+    promptEl.addEventListener('beforeinput', function(event) {
+      if (event.inputType === 'insertLineBreak') {
+        if (allowNextLineBreak) {
+          allowNextLineBreak = false;
+          return;
+        }
+        handlePromptEnter(event);
+      }
+    });
+    document.addEventListener('keydown', function(event) {
+      if (event.target === promptEl && event.key === 'Enter') {
+        if (event.shiftKey) {
+          allowNextLineBreak = true;
+          return;
+        }
+        handlePromptEnter(event);
+      }
+    }, true);
+    promptEl.addEventListener('input', function(event) {
+      if (event.inputType === 'insertLineBreak') {
+        if (allowNextLineBreak) {
+          allowNextLineBreak = false;
+          requestContextSuggestions();
+          return;
+        }
+        promptEl.value = promptEl.value.replace(/\\n+$/, '');
+        sendPrompt();
+        return;
+      }
+      requestContextSuggestions();
+    });
     document.getElementById('newChat').addEventListener('click', function() { vscode.postMessage({ type: 'newChat' }); });
     document.getElementById('openContextPicker').addEventListener('click', function() { vscode.postMessage({ type: 'openContextPicker' }); });
     document.getElementById('openContextPickerTop').addEventListener('click', function() { vscode.postMessage({ type: 'openContextPicker' }); });
     document.getElementById('addSelection').addEventListener('click', function() { vscode.postMessage({ type: 'addSelection' }); });
-    document.getElementById('addSelectionTop').addEventListener('click', function() { vscode.postMessage({ type: 'addSelection' }); });
     document.getElementById('addActiveFile').addEventListener('click', function() { vscode.postMessage({ type: 'addActiveFile' }); });
     document.getElementById('addActiveFileTop').addEventListener('click', function() { vscode.postMessage({ type: 'addActiveFile' }); });
+    document.addEventListener('click', function(event) {
+      const target = event.target;
+      if (target && target.closest && !target.closest('.composer-card')) contextSuggestEl.hidden = true;
+      if (target && target.closest && !target.closest('#statusPanel') && !target.closest('#toggleOps')) statusPanelEl.hidden = true;
+    });
     window.addEventListener('message', function(event) {
       if (!event.data) return;
       if (event.data.type === 'state') scheduleRenderState(event.data.state);
