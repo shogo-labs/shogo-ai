@@ -332,7 +332,13 @@ export function createPublishedDataSyncFromEnv(localDir: string): PublishedDataS
     localDir,
     endpoint: process.env.S3_ENDPOINT,
     region: process.env.S3_REGION,
-    forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+    // Default to PATH-style addressing. OCI Object Storage's S3-compat endpoint
+    // only presents a cert for `*.compat.objectstorage.<region>.oraclecloud.com`,
+    // so virtual-hosted-style (`<bucket>.<ns>.compat.objectstorage…`) fails TLS
+    // with ERR_TLS_CERT_ALTNAME_INVALID — which silently broke restore()/flush()
+    // (published-app data never persisted). Only opt OUT when explicitly set to
+    // 'false' (e.g. a real AWS S3 backend). Matches workspace S3Sync behavior.
+    forcePathStyle: process.env.S3_FORCE_PATH_STYLE !== 'false',
     paths,
     syncInterval: parseInt(process.env.PUBLISHED_DATA_SYNC_INTERVAL || '30000', 10),
     watchEnabled: process.env.PUBLISHED_DATA_WATCH !== 'false',
