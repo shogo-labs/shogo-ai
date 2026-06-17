@@ -1970,6 +1970,7 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
           span.setAttribute('resolve.method', 'warm_pool_assigned_grace')
           span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
           span.setStatus({ code: SpanStatusCode.OK })
+          warmPool.touchProject(projectId)
           console.log(`[KnativeProjectManager] Project ${projectId} served by warm pool (grace period, assigned ${Math.round(assignmentAgeMs / 1000)}s ago, elapsed: ${Date.now() - totalStartTime}ms)`)
           return warmUrl
         }
@@ -1984,6 +1985,7 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
             span.setAttribute('resolve.method', 'warm_pool_assigned')
             span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
             span.setStatus({ code: SpanStatusCode.OK })
+            warmPool.touchProject(projectId)
             console.log(`[KnativeProjectManager] Project ${projectId} served by warm pool (elapsed: ${Date.now() - totalStartTime}ms)`)
             return warmUrl
           }
@@ -2016,6 +2018,7 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
           span.setAttribute('resolve.method', 'db_mapping')
           span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
           span.setStatus({ code: SpanStatusCode.OK })
+          warmPool.touchProject(projectId)
           console.log(`[KnativeProjectManager] Project ${projectId} resolved via DB mapping to ${projectRecord.knativeServiceName} (elapsed: ${Date.now() - totalStartTime}ms)`)
           return dbUrl
         }
@@ -2187,6 +2190,35 @@ async function tryClaimWarmPod(
       const envVars = await warmPool.buildProjectEnv(projectId)
       const envTime = Date.now()
       console.log(`[KnativeProjectManager] buildProjectEnv for ${projectId}: ${envTime - t0}ms`)
+
+      // Enforce the per-user claimed-pod cap (scaled by the workspace plan)
+      // before claiming, mirroring the desktop VM warm pool's per-host LRU
+      // cap. Best-effort: a failure here must never block the claim.
+      try {
+        const { getProjectOwnerUserId } = await import('./project-user-context')
+        const ownerUserId = await getProjectOwnerUserId(projectId)
+        if (ownerUserId && ownerUserId !== 'system') {
+          const projectRow = await prisma.project.findUnique({
+            where: { id: projectId },
+            select: { workspaceId: true },
+          })
+          const { getEffectivePlanId } = await import('../services/billing.service')
+          const planId = projectRow?.workspaceId
+            ? await getEffectivePlanId(projectRow.workspaceId)
+            : 'free'
+          const capResult = await warmPool.enforcePerUserClaimedCap(projectId, ownerUserId, planId)
+          if (capResult.evicted.length > 0) {
+            console.log(
+              `[KnativeProjectManager] Per-user cap for ${projectId}: evicted ${capResult.evicted.length} LRU pod(s) (owner had ${capResult.count}/${capResult.cap})`,
+            )
+          }
+        }
+      } catch (capErr: any) {
+        console.error(
+          `[KnativeProjectManager] Per-user cap enforcement failed for ${projectId} (non-fatal):`,
+          capErr.message,
+        )
+      }
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         const pod = warmPool.claim()

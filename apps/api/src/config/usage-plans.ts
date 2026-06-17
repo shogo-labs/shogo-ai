@@ -138,6 +138,57 @@ export function comparePlanRank(
 }
 
 /**
+ * Offset added to a plan's tier rank to compute its concurrent claimed
+ * warm-pod cap: `cap = PLAN_RANK[tier] + CLAIMED_POD_CAP_BASE`. With the
+ * default base of 2 this yields the linear ladder
+ * free:2, basic:3, pro:4, business:5, enterprise:6 — mirroring the
+ * desktop VM warm pool's per-host concurrency cap, but scaled by plan.
+ */
+const CLAIMED_POD_CAP_BASE = 2
+
+/**
+ * Parse the optional per-tier cap override from
+ * `WARM_POOL_CLAIMED_CAP_BY_TIER` (JSON, e.g. `{"free":1,"pro":5}`). Any
+ * tier present wins over the linear default. Parsed on each call so env
+ * changes (and per-test mutation) are picked up; malformed JSON is
+ * ignored (logged) so a bad env var can never crash the claim path.
+ */
+function parseClaimedPodCapOverrides(): Partial<Record<PlanId, number>> {
+  const raw = process.env.WARM_POOL_CLAIMED_CAP_BY_TIER
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const out: Partial<Record<PlanId, number>> = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      const tier = normalizePlanId(key)
+      const n = typeof value === 'number' ? value : parseInt(String(value), 10)
+      if (tier && Number.isFinite(n) && n >= 0) out[tier] = Math.floor(n)
+    }
+    return out
+  } catch (err) {
+    console.warn(
+      `[usage-plans] Ignoring malformed WARM_POOL_CLAIMED_CAP_BY_TIER: ${(err as Error).message}`,
+    )
+    return {}
+  }
+}
+
+/**
+ * Maximum number of concurrent claimed (promoted) warm pods a single
+ * workspace/user may hold, derived from the workspace's effective plan.
+ * Linear in tier rank by default (`PLAN_RANK + 2`): free:2 … enterprise:6.
+ * Overridable per tier via `WARM_POOL_CLAIMED_CAP_BY_TIER`. Unknown /
+ * unresolved plan ids fall back to the free tier so brand-new workspaces
+ * get the most conservative cap.
+ */
+export function getClaimedPodCapForPlan(planId: string | null | undefined): number {
+  const tier = normalizePlanId(planId) ?? 'free'
+  const override = parseClaimedPodCapOverrides()[tier]
+  if (override !== undefined) return override
+  return PLAN_RANK[tier] + CLAIMED_POD_CAP_BASE
+}
+
+/**
  * Rolling usage-window durations, in milliseconds. Usage is gated by two
  * independent windows that run in parallel (modeled on how Codex / Claude
  * Code time-gate "unlimited" plans): a short burst window and a longer

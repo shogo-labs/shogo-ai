@@ -342,6 +342,62 @@ export async function bootstrapProSubscriptionViaApi(
   return body?.ok === true
 }
 
+/** A project that currently holds a claimed/assigned warm pod. */
+export interface ClaimedPod {
+  id: string
+  name: string
+  knativeServiceName: string
+  lastMessageAt: string | null
+}
+
+/**
+ * Query the per-user claimed-pod diagnostic backdoor
+ * (`GET /api/internal/e2e/claimed-pods`). Returns the workspace's currently
+ * claimed pods (oldest-first), or `null` if the backdoor isn't available
+ * (secret unset / endpoint disabled) so callers can skip cleanly.
+ */
+export async function getClaimedPodsViaApi(
+  page: Page,
+  user: TestUser,
+): Promise<{ claimedCount: number; claimed: ClaimedPod[] } | null> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return null
+
+  const base = bootstrapApiBase()
+  const res = await page.request
+    .get(`${base}/api/internal/e2e/claimed-pods`, {
+      headers: { "x-e2e-bootstrap-secret": secret },
+      params: { userEmail: user.email },
+    })
+    .catch(() => null)
+  if (!res || res.status() === 503 || !res.ok()) return null
+  const body = await res.json().catch(() => null)
+  if (!body?.ok) return null
+  return { claimedCount: body.claimedCount, claimed: body.claimed }
+}
+
+/**
+ * Poll the claimed-pod diagnostic until the workspace's claimed count is
+ * `<= expectedMax`, or the timeout elapses. Returns the final reading.
+ * Used to wait out the eviction + DB-mapping clear that the per-user cap
+ * performs asynchronously during a claim.
+ */
+export async function waitForClaimedPodCount(
+  page: Page,
+  user: TestUser,
+  expectedMax: number,
+  timeoutMs = 30_000,
+): Promise<{ claimedCount: number; claimed: ClaimedPod[] } | null> {
+  const deadline = Date.now() + timeoutMs
+  let last: { claimedCount: number; claimed: ClaimedPod[] } | null = null
+  while (Date.now() < deadline) {
+    last = await getClaimedPodsViaApi(page, user)
+    if (last && last.claimedCount <= expectedMax) return last
+    await page.waitForTimeout(2000)
+  }
+  return last
+}
+
 export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<void> {
   await signUpAndOnboard(page, user)
 

@@ -56,6 +56,10 @@ const poolKeepAliveCounter = meter.createCounter('warm_pool.keep_alive_pings', {
   description:
     'Keep-alive HTTP pings sent to warm-pool ksvcs to refresh their scale-to-zero retention timer. Labelled by `outcome` (`ok` | `error`).',
 })
+const poolPerUserCapEvictionCounter = meter.createCounter('warm_pool.per_user_cap_evictions', {
+  description:
+    'Claimed (promoted) warm pods LRU-evicted to enforce the per-user concurrent claimed-pod cap derived from the workspace plan. Labelled by `tier` and `source` (`claim` | `gc`).',
+})
 const poolBrokenDetectedCounter = meter.createCounter('warm_pool.broken_detected', {
   description: 'Warm pool services detected as broken (image pull, scheduling, or revision failure)',
 })
@@ -130,6 +134,18 @@ const COLD_CLAIM_THRESHOLD_MS = parseInt(
 
 // Promoted pod GC: clean up orphaned/idle promoted pods
 const PROMOTED_POD_GC_ENABLED = process.env.PROMOTED_POD_GC_ENABLED !== 'false'
+
+// Per-user claimed-pod cap: when a user opens a project and is already at the
+// concurrent claimed-pod cap derived from their workspace plan (see
+// getClaimedPodCapForPlan), LRU-evict their oldest claimed pod to free a slot.
+// Mirrors the desktop VM warm pool's per-host concurrency cap, scaled by plan.
+// A periodic sweep (enforcePerUserCapsSweep) is the cross-replica backstop for
+// the per-project advisory lock. Disable with WARM_POOL_PER_USER_CAP_ENABLED=false.
+// Read live (not a module constant) so the kill switch takes effect without a
+// redeploy and is unit-testable.
+function perUserCapEnabled(): boolean {
+  return process.env.WARM_POOL_PER_USER_CAP_ENABLED !== 'false'
+}
 
 // Periodic reconcile of promoted-but-orphaned pods. Disabled by default —
 // the per-callsite self-heal helper (apps/api/src/lib/warm-pool-self-heal.ts)
@@ -234,6 +250,12 @@ export interface PromotedPodInfo {
   /** Unix ms when this pod was first observed as promoted in this process (used for grace period) */
   promotedAt: number
   ready: boolean
+  /**
+   * Unix ms when this project's pod was last served (set via touchProject).
+   * Used as a least-recently-used signal for the per-user claimed-pod cap.
+   * Optional: absent on freshly-discovered pods until they're served.
+   */
+  lastTouchedAt?: number
 }
 
 /**
@@ -364,6 +386,16 @@ export class WarmPoolController {
 
   /** Promoted pods discovered during discoverExistingPods(), used by GC and admin API */
   private promotedPods: PromotedPodInfo[] = []
+
+  /**
+   * projectId -> Unix ms when the project's pod was last served / assigned.
+   * Drives least-recently-used victim selection for the per-user claimed-pod
+   * cap. In-memory (per replica) and best-effort; the DB `lastMessageAt` /
+   * `updatedAt` are used as the cross-replica fallback when no local touch is
+   * recorded. Refreshed by {@link touchProject} from getProjectPodUrl and on
+   * a successful {@link assign}.
+   */
+  private lastTouchedByProject = new Map<string, number>()
 
   /** Cumulative GC statistics for observability */
   private gcStats: GcStats = { orphansDeleted: 0, idleEvictions: 0, namespaceServicesDeleted: 0, orphanedDomainMappingsDeleted: 0, lastGcRun: null, lastNamespaceGcRun: null, lastPublishLockLogMs: 0 }
@@ -611,6 +643,19 @@ export class WarmPoolController {
     await this.gcPromotedPods().catch((err) => {
       console.error('[WarmPool] Promoted pod GC failed (non-fatal):', err.message)
     })
+
+    // Backstop the per-user claimed-pod cap across replicas (the claim path
+    // only holds a per-project advisory lock). Cheap when no owner is over
+    // their cap; bounded eviction per cycle.
+    await this.enforcePerUserCapsSweep()
+      .then((s) => {
+        if (s.evicted > 0) {
+          console.log(`[WarmPool] Per-user cap sweep: evicted ${s.evicted} (scanned ${s.scanned})`)
+        }
+      })
+      .catch((err) => {
+        console.error('[WarmPool] Per-user cap sweep failed (non-fatal):', err.message)
+      })
 
     // Periodic sweep for promoted-but-orphaned pods. Opt-in.
     if (
@@ -994,6 +1039,7 @@ export class WarmPoolController {
 
         pod.assignedAt = Date.now()
         this.assigned.set(projectId, pod)
+        this.lastTouchedByProject.set(projectId, pod.assignedAt)
         this.claimedServiceNames.delete(pod.serviceName)
         const duration = Date.now() - startTime
         span.setAttribute('assign.duration_ms', duration)
@@ -1263,9 +1309,200 @@ export class WarmPoolController {
       })()
     }
 
+    this.lastTouchedByProject.delete(projectId)
+
     const mode = deleteService ? 'hard-evicted' : 'soft-evicted (service kept)'
     console.log(`[WarmPool] evictProject: ${mode} project ${projectId} from ${oldServiceName || '(not found)'}`)
     return { evicted: !!oldServiceName, oldService: oldServiceName }
+  }
+
+  /**
+   * Record that a project's pod was just served (or assigned), refreshing its
+   * least-recently-used timestamp for the per-user claimed-pod cap. Cheap and
+   * idempotent; safe to call on every getProjectPodUrl hit.
+   */
+  touchProject(projectId: string): void {
+    const now = Date.now()
+    this.lastTouchedByProject.set(projectId, now)
+    const promoted = this.promotedPods.find((p) => p.projectId === projectId)
+    if (promoted) promoted.lastTouchedAt = now
+  }
+
+  /**
+   * Least-recently-used timestamp for a claimed project: prefer the in-memory
+   * touch record, then the DB `lastMessageAt`, then `updatedAt`. Lower = older
+   * = more eligible for eviction.
+   */
+  private claimedLruTimestamp(p: {
+    id: string
+    lastMessageAt: Date | null
+    updatedAt: Date
+  }): number {
+    const touched = this.lastTouchedByProject.get(p.id)
+    if (touched !== undefined) return touched
+    if (p.lastMessageAt) return p.lastMessageAt.getTime()
+    return p.updatedAt.getTime()
+  }
+
+  /**
+   * Enforce a per-user cap on concurrent claimed (promoted) warm pods, scaled
+   * by the workspace plan tier (see {@link getClaimedPodCapForPlan}). Called
+   * from the claim path BEFORE a new pod is claimed: if the owner is already
+   * at/over their cap, the least-recently-used claimed project is hard-evicted
+   * (ksvc deleted, `knativeServiceName` cleared) to free a slot. The evicted
+   * project re-claims a warm pod (or cold-starts) on its next visit, mirroring
+   * the desktop VM warm pool's LRU eviction.
+   *
+   * Counting is keyed on the workspace OWNER and uses the DB
+   * (`knativeServiceName IS NOT NULL`) as the cluster-wide source of truth so
+   * the cap holds across API replicas. `projectId` (the project being opened,
+   * which does not yet hold a pod) is excluded from the count. Best-effort:
+   * returns a summary for tests/metrics; callers should not let it block a
+   * claim.
+   */
+  async enforcePerUserClaimedCap(
+    projectId: string,
+    ownerUserId: string,
+    planId: string,
+  ): Promise<{ cap: number; count: number; evicted: string[] }> {
+    const evicted: string[] = []
+    if (!perUserCapEnabled()) {
+      return { cap: Number.POSITIVE_INFINITY, count: 0, evicted }
+    }
+
+    const { getClaimedPodCapForPlan, normalizePlanId } = await import('../config/usage-plans')
+    const cap = getClaimedPodCapForPlan(planId)
+    const tier = normalizePlanId(planId) ?? 'free'
+
+    const { prisma } = await import('./prisma')
+    const claimed = await prisma.project.findMany({
+      where: {
+        id: { not: projectId },
+        knativeServiceName: { not: null },
+        workspace: { members: { some: { role: 'owner', userId: ownerUserId } } },
+      },
+      select: { id: true, lastMessageAt: true, updatedAt: true },
+    })
+
+    const count = claimed.length
+    if (count < cap) return { cap, count, evicted }
+
+    // Leave room for the incoming claim: target == cap - 1 so +1 == cap.
+    const target = Math.max(cap - 1, 0)
+    const ordered = [...claimed].sort(
+      (a, b) => this.claimedLruTimestamp(a) - this.claimedLruTimestamp(b),
+    )
+    const toEvict = ordered.slice(0, Math.max(0, count - target))
+
+    for (const victim of toEvict) {
+      try {
+        const res = await this.evictProject(victim.id, { deleteService: true })
+        if (res.evicted) {
+          evicted.push(victim.id)
+          poolPerUserCapEvictionCounter.add(1, { tier, source: 'claim' })
+          console.log(
+            `[WarmPool] Per-user cap: owner ${ownerUserId} at ${count}/${cap} (${tier}) — LRU-evicted ${victim.id} to free a slot for ${projectId}`,
+          )
+        }
+      } catch (err: any) {
+        console.error(
+          `[WarmPool] Per-user cap: failed to evict ${victim.id} (non-fatal):`,
+          err.message,
+        )
+      }
+    }
+    return { cap, count, evicted }
+  }
+
+  /**
+   * Cluster-wide backstop for the per-user claimed-pod cap. The claim path
+   * holds only a per-PROJECT advisory lock, so two different projects of the
+   * same user opened concurrently across replicas can momentarily both push
+   * past the cap. This sweep groups all currently-claimed projects by owner
+   * and LRU-evicts extras for any owner over their (plan-derived) cap.
+   *
+   * Plan lookups are skipped for owners at/under the lowest possible cap (the
+   * common single-project user), so the hot path stays one cheap query.
+   * Per-cycle eviction is bounded like the idle GC. Returns a summary.
+   */
+  async enforcePerUserCapsSweep(): Promise<{ scanned: number; evicted: number }> {
+    if (!perUserCapEnabled()) return { scanned: 0, evicted: 0 }
+
+    const { prisma } = await import('./prisma')
+    const { getClaimedPodCapForPlan, normalizePlanId } = await import('../config/usage-plans')
+    const { getEffectivePlanId } = await import('../services/billing.service')
+
+    const claimed = await prisma.project.findMany({
+      where: { knativeServiceName: { not: null } },
+      select: {
+        id: true,
+        workspaceId: true,
+        lastMessageAt: true,
+        updatedAt: true,
+        workspace: {
+          select: { members: { where: { role: 'owner' }, select: { userId: true }, take: 1 } },
+        },
+      },
+    })
+
+    type ClaimedRow = (typeof claimed)[number]
+    const byOwner = new Map<string, ClaimedRow[]>()
+    for (const p of claimed) {
+      const owner = p.workspace?.members?.[0]?.userId
+      if (!owner) continue
+      const arr = byOwner.get(owner) ?? []
+      arr.push(p)
+      byOwner.set(owner, arr)
+    }
+
+    const lowestCap = getClaimedPodCapForPlan('free')
+    let evicted = 0
+
+    for (const [owner, projects] of byOwner) {
+      if (evicted >= PROMOTED_POD_GC_MAX_IDLE_EVICTIONS_PER_CYCLE) break
+      // Fast path: nobody under the lowest possible cap can be over any cap.
+      if (projects.length <= lowestCap) continue
+
+      // Cap = most generous across the owner's distinct claimed workspaces, so
+      // a paid workspace is never trimmed using a free workspace's cap.
+      const workspaceIds = [...new Set(projects.map((p) => p.workspaceId))]
+      let cap = lowestCap
+      let tier = 'free'
+      for (const ws of workspaceIds) {
+        const plan = await getEffectivePlanId(ws).catch(() => 'free' as const)
+        const wsCap = getClaimedPodCapForPlan(plan)
+        if (wsCap > cap) {
+          cap = wsCap
+          tier = normalizePlanId(plan) ?? 'free'
+        }
+      }
+      if (projects.length <= cap) continue
+
+      const ordered = [...projects].sort(
+        (a, b) => this.claimedLruTimestamp(a) - this.claimedLruTimestamp(b),
+      )
+      const overage = projects.length - cap
+      for (const victim of ordered.slice(0, overage)) {
+        if (evicted >= PROMOTED_POD_GC_MAX_IDLE_EVICTIONS_PER_CYCLE) break
+        try {
+          const res = await this.evictProject(victim.id, { deleteService: true })
+          if (res.evicted) {
+            evicted++
+            poolPerUserCapEvictionCounter.add(1, { tier, source: 'gc' })
+            console.log(
+              `[WarmPool] Per-user cap sweep: owner ${owner} at ${projects.length}/${cap} (${tier}) — LRU-evicted ${victim.id}`,
+            )
+          }
+        } catch (err: any) {
+          console.error(
+            `[WarmPool] Per-user cap sweep: failed to evict ${victim.id} (non-fatal):`,
+            err.message,
+          )
+        }
+      }
+    }
+
+    return { scanned: claimed.length, evicted }
   }
 
   /**

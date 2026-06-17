@@ -253,4 +253,67 @@ app.get('/subscription-state', async (c) => {
   return c.json({ ok: true, subscription, wallet })
 })
 
+/**
+ * GET /api/internal/e2e/claimed-pods
+ *
+ * Diagnostic endpoint for the per-user claimed-pod cap e2e suite. Returns
+ * the projects in a workspace that currently hold a claimed/assigned warm
+ * pod (`knativeServiceName IS NOT NULL`), so the test can assert the cap is
+ * enforced and that the LRU project was evicted.
+ *
+ * Query: `workspaceId` (required).
+ */
+app.get('/claimed-pods', async (c) => {
+  if (!bootstrapEnabled()) {
+    return c.json({ ok: false, error: 'e2e_bootstrap_disabled' }, 503)
+  }
+  if (!secretMatches(c.req.header('x-e2e-bootstrap-secret'))) {
+    return c.json({ ok: false, error: 'unauthorized' }, 401)
+  }
+
+  let workspaceId = c.req.query('workspaceId')?.trim()
+  if (!workspaceId) {
+    const email = c.req.query('userEmail')?.trim().toLowerCase()
+    if (!email) {
+      return c.json({ ok: false, error: 'workspaceId_or_userEmail_required' }, 400)
+    }
+    if (!email.startsWith('e2e-') || !email.endsWith('@mailnull.com')) {
+      return c.json({ ok: false, error: 'userEmail_must_be_e2e_address' }, 400)
+    }
+    const user = await prisma.user.findUnique({
+      where: { email },
+      select: {
+        members: {
+          where: { workspaceId: { not: null }, projectId: null },
+          select: { workspaceId: true },
+          take: 1,
+        },
+      },
+    })
+    const wid = user?.members[0]?.workspaceId ?? null
+    if (!wid) {
+      return c.json({ ok: false, error: 'workspace_not_found_for_user', email }, 404)
+    }
+    workspaceId = wid
+  }
+
+  const projects = await prisma.project.findMany({
+    where: { workspaceId, knativeServiceName: { not: null } },
+    select: { id: true, name: true, knativeServiceName: true, lastMessageAt: true },
+    orderBy: { lastMessageAt: 'asc' },
+  })
+
+  return c.json({
+    ok: true,
+    workspaceId,
+    claimedCount: projects.length,
+    claimed: projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      knativeServiceName: p.knativeServiceName,
+      lastMessageAt: p.lastMessageAt,
+    })),
+  })
+})
+
 export default app
