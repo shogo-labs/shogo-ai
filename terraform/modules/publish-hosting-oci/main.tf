@@ -139,6 +139,16 @@ resource "oci_objectstorage_preauthrequest" "published_apps" {
   time_expires          = timeadd(timestamp(), "8760h") # 1 year
 
   lifecycle {
+    # Create the replacement PAR before destroying the old one. A PAR can be
+    # force-replaced for reasons outside a real config change (e.g. the
+    # `namespace` data source resolving to "known after apply" on a stale
+    # plan). The Worker's static origin (`local.par_base_url`) embeds this
+    # PAR's `access_uri`, so a destroy-before-create replacement would leave
+    # the live Worker pointing at a deleted PAR — 404ing static assets for
+    # EVERY published app until the new PAR + Worker update propagate.
+    # create_before_destroy keeps a valid PAR referenced at all times.
+    create_before_destroy = true
+
     # `bucket_listing_action` is set correctly on create (verified via the
     # OCI CLI) but the provider's Read implementation never populates it
     # back into state, so every subsequent plan sees `null -> "Deny"` and
