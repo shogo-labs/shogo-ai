@@ -95,6 +95,7 @@ interface ContextItem {
   text?: string
   range?: ContextRange
   stale?: boolean
+  automatic?: boolean
 }
 
 interface ContextSuggestion extends ContextItem {
@@ -455,11 +456,29 @@ function summarizeContextForPrompt(context: ContextItem[]): string {
   return `\n\nAttached IDE context:\n\n${sections.join('\n\n')}`
 }
 
+function activeEditorFileContext(): ContextItem | null {
+  const editor = vscode.window.activeTextEditor
+  if (!editor) return null
+  const document = editor.document
+  if (document.uri.scheme !== 'file') return null
+  rememberTextEditor(editor)
+  return {
+    id: `activeFile:${document.uri.toString()}`,
+    kind: 'activeFile',
+    label: relativePath(document.uri),
+    uri: document.uri.toString(),
+    detail: document.languageId,
+    text: document.getText().slice(0, 24000),
+    automatic: true,
+  }
+}
+
 async function collectActiveFile(): Promise<ContextItem | null> {
   const editor = getContextTextEditor()
   if (!editor) return null
   rememberTextEditor(editor)
   const document = editor.document
+  if (document.uri.scheme !== 'file') return null
   return {
     id: `activeFile:${document.uri.toString()}`,
     kind: 'activeFile',
@@ -738,7 +757,11 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   getAttachedContext(): ContextItem[] {
-    return Array.from(this.contextItems.values())
+    return this.getOrderedContextItems()
+  }
+
+  private getOrderedContextItems(): ContextItem[] {
+    return Array.from(this.contextItems.values()).sort((a, b) => Number(Boolean(b.automatic && b.kind === 'activeFile')) - Number(Boolean(a.automatic && a.kind === 'activeFile')))
   }
 
   private setContextItem(item: ContextItem): void {
@@ -746,7 +769,31 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private removeContextItem(contextId: string): void {
+    const item = this.contextItems.get(contextId)
+    if (item?.automatic) return
     this.contextItems.delete(contextId)
+  }
+
+  private syncActiveFileContext(): boolean {
+    const next = activeEditorFileContext()
+    let changed = false
+    for (const [id, item] of Array.from(this.contextItems.entries())) {
+      if (item.kind === 'activeFile' && item.automatic && id !== next?.id) {
+        this.contextItems.delete(id)
+        changed = true
+      }
+    }
+    if (!next) return changed
+    const previous = this.contextItems.get(next.id)
+    if (!previous || previous.label !== next.label || previous.detail !== next.detail || previous.text !== next.text || previous.stale || !previous.automatic) {
+      this.contextItems.set(next.id, next)
+      changed = true
+    }
+    return changed
+  }
+
+  async refreshActiveFileContext(): Promise<void> {
+    if (this.syncActiveFileContext()) await this.postState()
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -1271,7 +1318,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private buildAgentMessages(prompt: string, mode: ChatMode): Array<{ role: 'user' | 'assistant'; parts: Array<{ type: 'text'; text: string }> }> {
-    const context = Array.from(this.contextItems.values())
+    this.syncActiveFileContext()
+    const context = this.getOrderedContextItems()
     const contextText = summarizeContextForPrompt(context)
     const modeText = `\n\n${buildModeInstruction(modeContract(mode))}`
     const steeringText = this.steeringNotes.length ? `\n\n[Shogo steering notes captured while previous requests were running]\n${this.steeringNotes.map((note, index) => `${index + 1}. ${note}`).join('\n')}` : ''
@@ -1290,9 +1338,10 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async sendPrompt(prompt: string, mode: ChatMode, signal: AbortSignal, onText: (text: string) => void, onAction: (action: IdeAction) => void, onEvent: (event: Record<string, any>) => void): Promise<BridgeResponse> {
+    this.syncActiveFileContext()
     const bridge = getBridgeConfig()
     const contract = modeContract(mode)
-    const context = Array.from(this.contextItems.values())
+    const context = this.getOrderedContextItems()
     const ideContext = collectRichIdeContext(context)
     if (!bridge.url) {
       return {
@@ -1609,6 +1658,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async postState(): Promise<void> {
+    this.syncActiveFileContext()
     const bridge = getBridgeConfig()
     this.updateNativeStatus()
     await this.view?.webview.postMessage({
@@ -1629,14 +1679,15 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
         nativePhase: 10,
         workspaceTrusted: vscode.workspace.isTrusted,
         workspaceFolders: getWorkspaceFolders(),
-        richContext: collectRichIdeContext(Array.from(this.contextItems.values())),
-        contextItems: Array.from(this.contextItems.values()).map((item) => ({
+        richContext: collectRichIdeContext(this.getOrderedContextItems()),
+        contextItems: this.getOrderedContextItems().map((item) => ({
           id: item.id,
           kind: item.kind,
           label: item.label,
           detail: item.detail,
           uri: item.uri,
           stale: item.stale,
+          automatic: item.automatic,
         })),
         messages: this.messages,
       },
@@ -1712,8 +1763,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       scroll-behavior: smooth;
     }
     .desktop-chat-shell.is-empty .conversation {
-      justify-content: flex-start;
-      padding-top: clamp(20px, 7vh, 64px);
+      justify-content: flex-end;
+      padding-top: 14px;
     }
     .desktop-card {
       border: 1px solid var(--vscode-panel-border);
@@ -1914,7 +1965,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       position: relative;
       bottom: auto;
       max-width: 720px;
-      margin: 0 auto;
+      margin: auto auto 0;
       padding: 0;
       background: transparent;
     }
@@ -2014,19 +2065,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       font-size: 18px;
     }
     .mode-select {
-      height: 30px;
-      max-width: 82px;
-      padding: 0 6px;
-      border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
-      border-radius: 10px;
-      color: var(--vscode-foreground);
-      background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 72%, transparent);
-      font: inherit;
-      font-size: 11px;
-      outline: none;
-    }
-    .mode-select:focus {
-      border-color: var(--vscode-focusBorder);
+      display: none;
     }
     .chip-button {
       display: inline-flex;
@@ -2239,7 +2278,8 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
       contextEl.innerHTML = items.map(function(item) {
         const icon = contextIcon(item.kind);
         const title = contextKindLabel(item.kind) + ': ' + item.label + (item.detail ? ' — ' + item.detail : '');
-        return '<span class="context-chip" title="' + escapeHtml(title) + '" data-open-context-id="' + escapeHtml(item.id) + '"><strong>' + icon + '</strong><span>' + escapeHtml(item.label) + '</span><button class="context-remove" title="Remove context" aria-label="Remove context" data-remove-context-id="' + escapeHtml(item.id) + '">×</button></span>';
+        const remove = item.automatic ? '' : '<button class="context-remove" title="Remove context" aria-label="Remove context" data-remove-context-id="' + escapeHtml(item.id) + '">×</button>';
+        return '<span class="context-chip" title="' + escapeHtml(title) + '" data-open-context-id="' + escapeHtml(item.id) + '"><strong>' + icon + '</strong><span>' + escapeHtml(item.label) + '</span>' + remove + '</span>';
       }).join('');
     }
 
@@ -2724,10 +2764,19 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('shogo.agentChat.openContextPicker', () => provider.openContextPicker()),
     vscode.commands.registerCommand('shogo.agentChat.explainSelection', () => provider.askAboutSelection('explain')),
     vscode.commands.registerCommand('shogo.agentChat.fixSelection', () => provider.askAboutSelection('fix')),
-    windowApi.onDidChangeActiveTextEditor?.((editor: vscode.TextEditor | undefined) => rememberTextEditor(editor)) ?? ({ dispose() {} } as vscode.Disposable),
-    windowApi.onDidChangeTextEditorSelection?.((event: { textEditor?: vscode.TextEditor }) => rememberTextEditor(event.textEditor)) ?? ({ dispose() {} } as vscode.Disposable),
+    windowApi.onDidChangeActiveTextEditor?.((editor: vscode.TextEditor | undefined) => {
+      rememberTextEditor(editor)
+      void provider.refreshActiveFileContext()
+    }) ?? ({ dispose() {} } as vscode.Disposable),
+    windowApi.onDidChangeTextEditorSelection?.((event: { textEditor?: vscode.TextEditor }) => {
+      rememberTextEditor(event.textEditor)
+      if (event.textEditor === vscode.window.activeTextEditor) void provider.refreshActiveFileContext()
+    }) ?? ({ dispose() {} } as vscode.Disposable),
+    (vscode.workspace as any).onDidChangeTextDocument?.((event: { document?: vscode.TextDocument }) => {
+      if (event.document?.uri.toString() === vscode.window.activeTextEditor?.document.uri.toString()) void provider.refreshActiveFileContext()
+    }) ?? ({ dispose() {} } as vscode.Disposable),
     (vscode.workspace as any).onDidDeleteFiles?.((event: { files: readonly vscode.Uri[] }) => provider.removeDeletedContext(event.files)) ?? ({ dispose() {} } as vscode.Disposable),
-    vscode.workspace.onDidGrantWorkspaceTrust(() => provider.open()),
+    vscode.workspace.onDidGrantWorkspaceTrust(() => provider.refreshActiveFileContext()),
     ...(statusBarItem ? [statusBarItem] : []),
   )
 
