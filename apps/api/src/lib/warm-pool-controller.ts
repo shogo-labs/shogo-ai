@@ -1691,6 +1691,17 @@ export class WarmPoolController {
         if ([...this.assigned.values()].some((p) => p.serviceName === name)) continue
         // Skip system services
         if (name === 'mcp-workspace-1') continue
+        // Skip durable published-app services. These back live published
+        // portals ({subdomain}.shogo.one → published-{projectId}), are managed
+        // by the publish flow (apps/api/src/routes/publish.ts), and
+        // intentionally run at min-scale=0 so they scale to zero when idle.
+        // They are NOT warm-pool/preview services and have no re-provisioning
+        // path — the warm pool never re-creates them on next visit, so the
+        // scaled-to-zero / orphan branches below would PERMANENTLY break the
+        // portal (the 404 / "could not find" failures users saw after a
+        // published app sat idle past the GC grace). Their lifecycle is owned
+        // by publish/unpublish, never this namespace sweep.
+        if (name.startsWith('published-')) continue
 
         const labels = svc.metadata?.labels || {}
         const status = svc.status || {}
