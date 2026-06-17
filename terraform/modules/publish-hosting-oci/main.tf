@@ -73,12 +73,12 @@ variable "custom_domain_fallback_hostname" {
   default     = null
 }
 
-variable "enable_server_backed_publish" {
-  description = "Turn on server-backed published apps. When true the module creates a `SERVER_BACKED` Workers KV map (subdomain -> '1') that the API writes when it publishes an app whose backend (server.tsx) must run in production. The subdomain-router Worker then proxies dynamic `/api/*` requests for those apps to `kourier_origin` (the in-cluster Knative ingress) instead of Object Storage. Static-only apps are unaffected. Defaults to false."
-  type        = bool
-  default     = false
-}
-
+# Server-backed published apps are always on: the `SERVER_BACKED` Workers KV map
+# and its worker binding are created unconditionally (an empty KV map is free),
+# and the API auto-detects which apps need a backend at publish time. The only
+# input is `kourier_origin` — the Knative ingress the Worker proxies `/api/*`
+# to. When it's unset the Worker can't proxy (no origin), so server-backed apps
+# fall back to static serving until the ingress host is configured.
 variable "kourier_origin" {
   description = "Origin URL the subdomain-router Worker proxies server-backed `/api/*` traffic to. Must be a DNS-only (NON-proxied / external) hostname that terminates at the cluster's Knative (Kourier) ingress LB which serves the `{subdomain}.shogo.one` DomainMappings. The Worker rewrites the subrequest Host header to `{subdomain}.${publish_domain}` so the DomainMapping routes it to `published-{projectId}`. Leave null to disable server-backed proxying even when the KV map exists."
   type        = string
@@ -244,7 +244,6 @@ resource "cloudflare_workers_kv_namespace" "custom_domains" {
 # subdomain-router Worker below to decide whether to proxy `/api/*` to the
 # Knative ingress (`kourier_origin`) instead of serving it from Object Storage.
 resource "cloudflare_workers_kv_namespace" "server_backed" {
-  count      = var.enable_server_backed_publish ? 1 : 0
   account_id = var.cloudflare_account_id
   title      = "shogo-server-backed-${var.environment}"
 }
@@ -276,18 +275,16 @@ resource "cloudflare_worker_script" "subdomain_router" {
     }
   }
 
-  # Bind the server-backed publish map + the Knative ingress origin so the
-  # Worker can proxy dynamic `/api/*` traffic to the project's running
-  # server.tsx. Both guard with `env.SERVER_BACKED` / `env.KOURIER_ORIGIN`
-  # presence, so the script content is identical whether or not they're set.
-  dynamic "kv_namespace_binding" {
-    for_each = var.enable_server_backed_publish ? [1] : []
-    content {
-      name         = "SERVER_BACKED"
-      namespace_id = cloudflare_workers_kv_namespace.server_backed[0].id
-    }
+  # Bind the server-backed publish map so the Worker can tell which subdomains
+  # run a backend. Always bound; the Worker still guards on the per-subdomain
+  # flag + `env.KOURIER_ORIGIN`, so an empty map / unset origin is a no-op.
+  kv_namespace_binding {
+    name         = "SERVER_BACKED"
+    namespace_id = cloudflare_workers_kv_namespace.server_backed.id
   }
 
+  # The Knative ingress origin for server-backed `/api/*`. Only bound when
+  # configured; the Worker guards on `env.KOURIER_ORIGIN` presence.
   dynamic "plain_text_binding" {
     for_each = var.kourier_origin != null && var.kourier_origin != "" ? [1] : []
     content {
@@ -599,12 +596,7 @@ output "custom_domain_fallback_origin" {
   value       = local.custom_domain_fallback_hostname
 }
 
-output "server_backed_publish_enabled" {
-  description = "Whether server-backed published apps are provisioned for this environment."
-  value       = var.enable_server_backed_publish
-}
-
 output "server_backed_kv_namespace_id" {
-  description = "Workers KV namespace id for the server-backed publish map (null when disabled). Wire into the api ksvc as CF_SERVER_BACKED_KV_NAMESPACE_ID so publish.ts can flag/unflag server-backed subdomains."
-  value       = var.enable_server_backed_publish ? cloudflare_workers_kv_namespace.server_backed[0].id : null
+  description = "Workers KV namespace id for the server-backed publish map. Wire into the api ksvc as CF_SERVER_BACKED_KV_NAMESPACE_ID so publish.ts can flag/unflag server-backed subdomains."
+  value       = cloudflare_workers_kv_namespace.server_backed.id
 }

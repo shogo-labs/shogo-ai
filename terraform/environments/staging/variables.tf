@@ -84,14 +84,8 @@ variable "custom_domains_zone" {
   default     = null
 }
 
-variable "enable_server_backed_publish" {
-  description = "Enable server-backed published apps (run server.tsx in production for dynamic /api/*). Defaults to false. Requires `kourier_origin` to actually proxy /api/* to the cluster."
-  type        = bool
-  default     = false
-}
-
 variable "kourier_origin" {
-  description = "DNS-only origin host terminating at the staging Knative (Kourier) ingress that serves `{subdomain}.staging.shogo.one`/`{subdomain}.shogo.one` DomainMappings. The subdomain-router Worker proxies server-backed `/api/*` here. Null disables proxying even when enable_server_backed_publish is set."
+  description = "DNS-only origin host terminating at the staging Knative (Kourier) ingress that serves `{subdomain}.staging.shogo.one`/`{subdomain}.shogo.one` DomainMappings. The subdomain-router Worker proxies server-backed `/api/*` here. Null disables proxying (server-backed apps fall back to static serving) until the ingress host is set."
   type        = string
   default     = null
 }

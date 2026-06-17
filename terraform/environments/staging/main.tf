@@ -356,10 +356,10 @@ module "publish_hosting" {
   enable_custom_domains = var.enable_custom_domains
   custom_domains_zone   = var.custom_domains_zone
 
-  # Server-backed published apps (run server.tsx in production). Off until
-  # kourier_origin points at the staging cluster's Knative ingress.
-  enable_server_backed_publish = var.enable_server_backed_publish
-  kourier_origin               = var.kourier_origin
+  # Server-backed published apps (run server.tsx in production) are always on.
+  # Proxying is live once kourier_origin points at the staging cluster's
+  # Knative ingress; until then server-backed apps fall back to static serving.
+  kourier_origin = var.kourier_origin
 
   # The PAR (pre-authenticated request) created inside this module is
   # scoped to `shogo-published-apps-${env}`, which the object_storage

@@ -270,14 +270,8 @@ variable "custom_domains_zone" {
   default     = null
 }
 
-variable "enable_server_backed_publish" {
-  description = "Forwarded to `publish-hosting-oci`: enable server-backed published apps (run server.tsx in production for dynamic /api/*). Defaults to false. Requires `kourier_origin` to actually proxy. Only effective when publish-hosting is enabled for this region."
-  type        = bool
-  default     = false
-}
-
 variable "kourier_origin" {
-  description = "Forwarded to `publish-hosting-oci`: DNS-only origin host that terminates at this region's Knative (Kourier) ingress serving the `{subdomain}.shogo.one` DomainMappings. The subdomain-router Worker proxies server-backed `/api/*` here with the Host header rewritten to the published hostname. Null disables proxying even when enable_server_backed_publish is set."
+  description = "Forwarded to `publish-hosting-oci`: DNS-only origin host that terminates at this region's Knative (Kourier) ingress serving the `{subdomain}.shogo.one` DomainMappings. The subdomain-router Worker proxies server-backed `/api/*` here with the Host header rewritten to the published hostname. Null disables proxying (server-backed apps fall back to static serving) until the ingress host is set."
   type        = string
   default     = null
 }
