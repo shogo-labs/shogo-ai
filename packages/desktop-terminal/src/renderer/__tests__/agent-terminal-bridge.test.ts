@@ -412,3 +412,138 @@ describe('AgentTerminalBridge', () => {
     })
   })
 })
+
+// ── command lifecycle helpers for output-attribution tests ───────────────
+/** Drive A→B→E→C so the command is "started" (active), pausing before D. */
+function startCommand(tracker: Osc633Tracker, cmd: string) {
+  feedRaw(tracker, '\x1b]633;A\x07')
+  feedRaw(tracker, '\x1b]633;B\x07')
+  feedRaw(tracker, `\x1b]633;E;${cmd}\x07`)
+  feedRaw(tracker, '\x1b]633;C\x07') // command-started fires here
+}
+
+function finishCommand(tracker: Osc633Tracker, exitCode = 0) {
+  feedRaw(tracker, `\x1b]633;D;${exitCode}\x07`)
+}
+
+describe('AgentTerminalBridge — feedOutput attribution', () => {
+  it('captures ANSI-stripped output on the result and in history', async () => {
+    const { tracker, bridge } = makeBridge()
+    const p = bridge.sendCommand('echo hi')
+    startCommand(tracker, 'echo hi')
+    bridge.feedOutput('\x1b[32mhello\x1b[0m\n')
+    finishCommand(tracker, 0)
+
+    const r = await p
+    expect(r.output).toBe('hello\n')
+    const id = bridge.getRecentCommands(1)[0].id
+    expect(bridge.getCommandOutput(id)).toBe('hello\n')
+    bridge.dispose()
+  })
+
+  it('drops output fed while no command is active', async () => {
+    const { tracker, bridge } = makeBridge()
+    // No active command yet — this must be ignored, not crash.
+    bridge.feedOutput('orphan output')
+
+    const p = bridge.sendCommand('ls')
+    startCommand(tracker, 'ls')
+    finishCommand(tracker, 0)
+    const r = await p
+    expect(r.output).toBeUndefined()
+    bridge.dispose()
+  })
+
+  it('streams output through the onOutput callback (stripped)', async () => {
+    const { tracker, bridge } = makeBridge()
+    const chunks: string[] = []
+    const p = bridge.sendCommand('build', { onOutput: (c) => chunks.push(c) })
+    startCommand(tracker, 'build')
+    bridge.feedOutput('\x1b[1mfoo\x1b[0m')
+    bridge.feedOutput('bar')
+    finishCommand(tracker, 0)
+    await p
+    expect(chunks).toEqual(['foo', 'bar'])
+    bridge.dispose()
+  })
+
+  it('keeps each sequential command\'s output separate (no fan-out)', async () => {
+    const { tracker, bridge } = makeBridge()
+
+    const p1 = bridge.sendCommand('cmd1')
+    startCommand(tracker, 'cmd1')
+    bridge.feedOutput('out-one')
+    finishCommand(tracker, 0)
+    const r1 = await p1
+    const id1 = bridge.getRecentCommands(1)[0].id
+
+    const p2 = bridge.sendCommand('cmd2')
+    startCommand(tracker, 'cmd2')
+    bridge.feedOutput('out-two')
+    finishCommand(tracker, 0)
+    const r2 = await p2
+    const id2 = bridge.getRecentCommands(1)[0].id
+
+    expect(r1.output).toBe('out-one')
+    expect(r2.output).toBe('out-two')
+    expect(id1).not.toBe(id2)
+    // Earlier command's output never received the later command's bytes.
+    expect(bridge.getCommandOutput(id1)).toBe('out-one')
+    expect(bridge.getCommandOutput(id2)).toBe('out-two')
+    bridge.dispose()
+  })
+
+  it('evicts the oldest captured output beyond the history cap', async () => {
+    const { tracker, bridge } = makeBridge()
+    const ids: number[] = []
+    // OUTPUT_HISTORY_LIMIT is 20; run 21 so the first should be evicted.
+    for (let i = 0; i < 21; i++) {
+      const p = bridge.sendCommand(`c${i}`)
+      startCommand(tracker, `c${i}`)
+      bridge.feedOutput(`o${i}`)
+      finishCommand(tracker, 0)
+      await p
+      ids.push(bridge.getRecentCommands(1)[0].id)
+    }
+    expect(bridge.getCommandOutput(ids[0])).toBeUndefined()
+    expect(bridge.getCommandOutput(ids[20])).toBe('o20')
+    bridge.dispose()
+  })
+})
+
+describe('AgentTerminalBridge — FIFO start correlation', () => {
+  it('ignores command-started for user-typed commands (no queued waiter)', async () => {
+    const { tracker, bridge } = makeBridge()
+    // User runs a command directly; the agent never called sendCommand.
+    simulateCommand(tracker, 'whoami', 0, '/home')
+    expect(bridge.getRecentCommands(1)[0].commandLine).toContain('whoami')
+    // Output fed afterwards has no active agent command and is dropped.
+    bridge.feedOutput('root')
+
+    // A subsequent agent command still correlates correctly.
+    const p = bridge.sendCommand('ls')
+    startCommand(tracker, 'ls')
+    bridge.feedOutput('files')
+    finishCommand(tracker, 0)
+    const r = await p
+    expect(r.output).toBe('files')
+    bridge.dispose()
+  })
+
+  it('correlates an interleaved user command without stealing the agent waiter', async () => {
+    const { tracker, bridge } = makeBridge()
+    const p = bridge.sendCommand('agent-cmd')
+    // The agent's command starts and is bound to the single queued waiter.
+    startCommand(tracker, 'agent-cmd')
+    bridge.feedOutput('agent-output')
+    finishCommand(tracker, 0)
+    const r = await p
+    expect(r.command).toBe('agent-cmd')
+    expect(r.output).toBe('agent-output')
+
+    // After it resolves, a user-typed command produces no pending waiter.
+    simulateCommand(tracker, 'user-cmd', 0)
+    expect(bridge.getRecentCommands(1)[0].commandLine).toContain('user-cmd')
+    bridge.dispose()
+  })
+})

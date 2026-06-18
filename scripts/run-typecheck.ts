@@ -37,6 +37,7 @@ const PACKAGES: readonly string[] = [
   'packages/cli',
   'packages/core',
   'packages/db',
+  'packages/desktop-terminal',
   'packages/email',
   'packages/model-catalog',
   'packages/sdk',

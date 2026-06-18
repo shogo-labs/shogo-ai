@@ -20,7 +20,9 @@ const LONG_RUNNING_PATTERNS = [
   /\bvite\b/,
   /\bexpo\b/,
   /\bmetro\b/,
-  /\bbun\s+run\b/,
+  // Only dev-server-ish `bun run` scripts are long; CI scripts like
+  // `bun run typecheck|test|build|lint` are one-shot (see SHORT_PATTERNS).
+  /\bbun\s+run\s+(dev|start|serve|preview)\b/,
   /\bnpm\s+run\s+(dev|start|serve|preview)\b/,
   /\bnpx\s+((next|vite|expo|metro|webpack).*)\b/,
   /\byarn\s+(dev|start|serve)\b/,
@@ -59,7 +61,7 @@ const SHORT_PATTERNS = [
   /^find\b/,
   /^git\s+(status|diff|log|branch|show|remote|add|commit|push|pull|fetch|stash|checkout|switch|merge|rebase|blame|shortlog)\b/,
   /^npm\s+(test|run\s+test|lint|run\s+lint|run\s+build|build|info|list|outdated)\b/,
-  /^bun\s+(test|lint|build|x\s+)\b/,
+  /^bun\s+(test|lint|build|typecheck|x\s+|run\s+(test|lint|build|typecheck|check|ci))\b/,
   /^yarn\s+(test|lint|build)\b/,
   /^pnpm\s+(test|lint|build)\b/,
   /^tsc\b/,

@@ -21,9 +21,12 @@ import type { Command, Osc633Tracker } from './osc633-tracker'
 
 // ─── public types ───────────────────────────────────────────────────────
 
+/** A tracker command snapshot optionally carrying captured stdout/stderr. */
+export type CommandWithOutput = Command & { output?: string }
+
 export interface AggregatedContext {
   /** Recent command blocks from the terminal tracker. */
-  terminalCommands: Command[]
+  terminalCommands: CommandWithOutput[]
   /** The currently active editor file. */
   activeFile: ActiveFileInfo | null
   /** Git workspace status. */
@@ -96,6 +99,11 @@ export interface ContextAggregatorOptions {
   git: GitContextSource
   diagnostics: DiagnosticsContextSource
   tokenBudget?: number
+  /**
+   * Resolves the captured output for a tracker command (the tracker itself only
+   * holds markers). Typically backed by `AgentTerminalBridge.getCommandOutput`.
+   */
+  getCommandOutput?: (cmd: Command) => string | undefined
 }
 
 export class ContextAggregator {
@@ -104,6 +112,7 @@ export class ContextAggregator {
   private git: GitContextSource
   private diagnostics: DiagnosticsContextSource
   private tokenBudget: number
+  private getCommandOutput?: (cmd: Command) => string | undefined
 
   constructor(opts: ContextAggregatorOptions) {
     this.tracker = opts.tracker
@@ -111,6 +120,7 @@ export class ContextAggregator {
     this.git = opts.git
     this.diagnostics = opts.diagnostics
     this.tokenBudget = opts.tokenBudget ?? DEFAULT_TOKEN_BUDGET
+    this.getCommandOutput = opts.getCommandOutput
   }
 
   /**
@@ -132,16 +142,18 @@ export class ContextAggregator {
     let usedTokens = 0
 
     // Priority 1: Terminal commands — skip shell-integration noise
-    const includedCommands: Command[] = []
+    const includedCommands: CommandWithOutput[] = []
     for (const cmd of recent) {
       // Skip commands that are just shell-integration markers (empty commandLine)
       // These are PROMPT_COMMAND / DEBUG trap emissions, not user actions.
       const cl = (cmd.commandLine ?? '').trim()
       if (!cl) continue
 
-      const tokens = estimateCommandTokens(cmd)
+      const rawOutput = this.getCommandOutput?.(cmd)
+      const output = rawOutput ? truncateOutput(rawOutput) : undefined
+      const tokens = estimateCommandTokens(cmd, output)
       if (usedTokens + tokens > this.tokenBudget) break
-      includedCommands.push(cmd)
+      includedCommands.push(output ? { ...cmd, output } : cmd)
       usedTokens += tokens
     }
     if (includedCommands.length > 0) {
@@ -209,7 +221,7 @@ export class ContextAggregator {
  * [CONTEXT — auto-generated] block and uses it for reasoning.
  */
 /** Serialize recent terminal commands (OSC633) for agent context / IPC bridge. */
-export function serializeTerminalCommands(commands: readonly Command[]): string {
+export function serializeTerminalCommands(commands: readonly CommandWithOutput[]): string {
   const sections: string[] = []
   const usable = commands.filter((c) => (c.commandLine ?? '').trim().length > 0)
   if (usable.length === 0) return ''
@@ -229,9 +241,21 @@ export function serializeTerminalCommands(commands: readonly Command[]): string 
     if (cmd.cwd) sections.push(`  cwd: ${cmd.cwd}`)
     if (duration) sections.push(`  ${exitLabel} (${duration})`)
     else sections.push(`  ${exitLabel}`)
+    const output = cmd.output ? truncateOutput(cmd.output).trimEnd() : ''
+    if (output) {
+      sections.push('  output:')
+      for (const line of output.split('\n')) sections.push(`    ${line}`)
+    }
     sections.push('')
   }
   return sections.join('\n').trimEnd()
+}
+
+/** Clamp captured output to the token budget, keeping the most recent tail. */
+function truncateOutput(output: string): string {
+  if (output.length <= MAX_OUTPUT_CHARS) return output
+  const tail = output.slice(output.length - MAX_OUTPUT_CHARS)
+  return `…[truncated ${output.length - MAX_OUTPUT_CHARS} chars]\n${tail}`
 }
 
 export function serializeContext(ctx: AggregatedContext): string {
@@ -294,13 +318,12 @@ export function formatContextMessage(contextBlock: string, userMessage: string):
 
 // ─── helpers ────────────────────────────────────────────────────────────
 
-function estimateCommandTokens(cmd: Command): number {
-  // Rough: commandLine + output lines between startMarker and endMarker
-  // Since we don't capture output text in the tracker (just markers),
-  // we estimate based on command length + a generous output allowance.
+function estimateCommandTokens(cmd: Command, output?: string): number {
+  // commandLine + captured output (if any). When output is unknown we keep the
+  // old conservative ~200-char allowance so budgeting stays stable.
   const cmdLen = cmd.commandLine.length
-  // Estimate ~200 chars of output per command (conservative)
-  return Math.ceil((cmdLen + 200 + 50) / CHARS_PER_TOKEN)
+  const outputLen = output != null ? Math.min(output.length, MAX_OUTPUT_CHARS) : 200
+  return Math.ceil((cmdLen + outputLen + 50) / CHARS_PER_TOKEN)
 }
 
 function estimateDiagnosticTokens(d: Diagnostic): number {

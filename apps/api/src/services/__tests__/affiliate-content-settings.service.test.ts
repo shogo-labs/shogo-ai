@@ -100,6 +100,25 @@ describe('getContentSettings', () => {
     expect(s.cpmCentsByPlatform.instagram).toBe(200)
     expect(s.cpmCentsByPlatform.tiktok).toBe(null)
   })
+
+  test('defaults postsPerAccount to 20 (recent posts only)', async () => {
+    const s = await svc.getContentSettings({ force: true })
+    expect(s.postsPerAccount).toBe(20)
+    expect(svc.CONTENT_SETTING_DEFAULTS.postsPerAccount).toBe(20)
+  })
+
+  test('clamps a runaway persisted postsPerAccount to the ceiling on read', async () => {
+    // The 2026-06 over-gather: a stored value of 1000 (depth 100) re-fetched
+    // whole back catalogues. Read-time clamp neutralises it without a write.
+    store.set('affiliate.content.postsPerAccount', '1000')
+    const s = await svc.getContentSettings({ force: true })
+    expect(s.postsPerAccount).toBe(svc.POSTS_PER_ACCOUNT_MAX)
+  })
+
+  test('honors a seeded postsPerAccount within range', async () => {
+    store.set('affiliate.content.postsPerAccount', '20')
+    expect((await svc.getContentSettings({ force: true })).postsPerAccount).toBe(20)
+  })
 })
 
 describe('setContentSettings', () => {
@@ -118,6 +137,21 @@ describe('setContentSettings', () => {
   test('rejects invalid numeric input', async () => {
     await expect(svc.setContentSettings({ postsPerAccount: 0 }, 'admin-1')).rejects.toThrow()
     await expect(svc.setContentSettings({ cpmCents: -5 }, 'admin-1')).rejects.toThrow()
+  })
+
+  test('rejects a postsPerAccount above the ceiling', async () => {
+    await expect(
+      svc.setContentSettings({ postsPerAccount: svc.POSTS_PER_ACCOUNT_MAX + 1 }, 'admin-1'),
+    ).rejects.toThrow()
+    // The whole write is rejected — nothing persisted.
+    expect(store.has('affiliate.content.postsPerAccount')).toBe(false)
+  })
+
+  test('accepts postsPerAccount at the ceiling and below', async () => {
+    await svc.setContentSettings({ postsPerAccount: 20 }, 'admin-1')
+    expect(store.get('affiliate.content.postsPerAccount')).toBe('20')
+    await svc.setContentSettings({ postsPerAccount: svc.POSTS_PER_ACCOUNT_MAX }, 'admin-1')
+    expect(store.get('affiliate.content.postsPerAccount')).toBe(String(svc.POSTS_PER_ACCOUNT_MAX))
   })
 })
 

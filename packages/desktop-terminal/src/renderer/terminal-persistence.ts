@@ -10,9 +10,8 @@
  * Lifecycle:
  *   1. Caller creates a TerminalPersistence with a terminal ID
  *   2. On command completion: persistSnapshot() is called
- *   3. On terminal close: persistSnapshot() + final flush
- *   4. Periodic: autoFlush() every 30s
- *   5. Cleanup: autoCleanup() keeps only the last N files
+ *   3. On terminal close: dispose() persists a final snapshot
+ *   4. Cleanup: autoCleanup() keeps only the last N files
  *
  * Usage:
  *   const persistence = new TerminalPersistence({ terminalId: '1', dir: '/path/.shogo/terminals' })
@@ -23,6 +22,7 @@
  */
 
 import type { Command } from './osc633-tracker'
+import { stripAnsi } from './strip-ansi'
 
 // ─── types ──────────────────────────────────────────────────────────────
 
@@ -33,7 +33,11 @@ export interface TerminalPersistenceOptions {
   dir?: string
   /** Max files to keep. Default: 20 */
   maxFiles?: number
-  /** Auto-flush interval in ms. Default: 30000 (30s) */
+  /**
+   * @deprecated No-op. Persistence is now flushed explicitly on command
+   * finish and terminal close (see ShogoTerminalSurface); there is no
+   * background timer. Retained only for call-site/test compatibility.
+   */
   flushIntervalMs?: number
   /** Max commands to keep per snapshot. Default: 50 */
   maxCommands?: number
@@ -70,13 +74,6 @@ export interface SerializedCommand {
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────
-
-/** Strip ANSI escape sequences. */
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1bP[^\x1b]*\x1b\\/g, '')
-}
 
 /** Serialize commands to a human-readable text format. */
 function serializeCommands(
@@ -124,7 +121,6 @@ export class TerminalPersistence {
   private dir: string
   private maxFiles: number
   private maxCommands: number
-  private flushTimer: ReturnType<typeof setInterval> | null = null
   private fs: TerminalFs
   private disposed = false
 
@@ -134,14 +130,6 @@ export class TerminalPersistence {
     this.maxFiles = opts.maxFiles ?? 20
     this.maxCommands = opts.maxCommands ?? 50
     this.fs = opts.fs ?? createNodeFs()
-
-    // Start periodic flush
-    if (opts.flushIntervalMs !== 0) {
-      this.flushTimer = setInterval(() => {
-        // Periodic flush is triggered externally — this just reminds
-        // the caller. The actual snapshot data comes from persistSnapshot().
-      }, opts.flushIntervalMs ?? 30_000)
-    }
   }
 
   /**
@@ -214,15 +202,10 @@ export class TerminalPersistence {
   }
 
   /**
-   * Dispose: stop periodic flush, optionally persist final snapshot.
+   * Dispose: optionally persist a final snapshot, then mark disposed.
    */
   async dispose(finalCommands?: readonly Command[], finalCwd?: string | null): Promise<void> {
     if (this.disposed) return
-
-    if (this.flushTimer) {
-      clearInterval(this.flushTimer)
-      this.flushTimer = null
-    }
 
     // Persist final snapshot if commands provided (BEFORE marking disposed)
     if (finalCommands && finalCommands.length > 0) {

@@ -386,7 +386,9 @@ export type {
   TerminalContextListener,
 } from './renderer/terminal-context-store'
 
-// TerminalContext — desktop-only React context, import directly from './renderer/terminal-context'
+// Terminal ↔ chat bridging is provided solely by `terminalContextStore` above.
+// (The former React-context variant was removed — a module singleton is the
+// single source of truth so cross-tree consumers don't need a shared provider.)
 
 // TerminalCommandExecutor — desktop-only, import directly from './renderer/terminal-command-executor'
 

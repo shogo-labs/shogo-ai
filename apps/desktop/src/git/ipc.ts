@@ -97,6 +97,33 @@ function guard(workspaceRoot: unknown):
   return { ok: true, root: resolved };
 }
 
+/**
+ * Validate caller-supplied repo-relative paths for the mutating SCM ops
+ * (stage / unstage / discard). A compromised renderer (XSS) could otherwise
+ * pass `../../etc/...` or an absolute path and have `git checkout` / the
+ * untracked-file `rm` in gitDiscard touch files outside the workspace. We
+ * reject absolute paths and any path that resolves outside `root`. The `git`
+ * commands already use `--` to block flag injection, so we only need the
+ * traversal/containment check here.
+ */
+function validatePaths(root: string, paths: unknown):
+  | { ok: true; paths: string[] }
+  | { ok: false } {
+  if (!Array.isArray(paths)) return { ok: false };
+  const out: string[] = [];
+  for (const p of paths) {
+    if (typeof p !== "string" || p.length === 0) return { ok: false };
+    if (p.includes("\0")) return { ok: false };
+    // Disallow absolute paths — repo ops are always relative to the root.
+    const resolved = resolvePath(root, p);
+    if (resolved !== root && !resolved.startsWith(root + pathSep)) {
+      return { ok: false };
+    }
+    out.push(p);
+  }
+  return { ok: true, paths: out };
+}
+
 export function registerGitIpcHandlers(): void {
   const channels = [
     "git:probe",
@@ -260,7 +287,9 @@ export function registerGitIpcHandlers(): void {
     async (_event, args: { workspaceRoot: string; paths: string[] }) => {
       const g = guard(args?.workspaceRoot);
       if (!g.ok) return { ok: false as const, reason: g.reason };
-      const res = await gitStage(g.root, args.paths ?? []);
+      const v = validatePaths(g.root, args?.paths ?? []);
+      if (!v.ok) return { ok: false as const, reason: "invalid-input" as const };
+      const res = await gitStage(g.root, v.paths);
       return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
     },
   );
@@ -270,7 +299,9 @@ export function registerGitIpcHandlers(): void {
     async (_event, args: { workspaceRoot: string; paths: string[] }) => {
       const g = guard(args?.workspaceRoot);
       if (!g.ok) return { ok: false as const, reason: g.reason };
-      const res = await gitUnstage(g.root, args.paths ?? []);
+      const v = validatePaths(g.root, args?.paths ?? []);
+      if (!v.ok) return { ok: false as const, reason: "invalid-input" as const };
+      const res = await gitUnstage(g.root, v.paths);
       return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
     },
   );
@@ -280,7 +311,9 @@ export function registerGitIpcHandlers(): void {
     async (_event, args: { workspaceRoot: string; paths: string[] }) => {
       const g = guard(args?.workspaceRoot);
       if (!g.ok) return { ok: false as const, reason: g.reason };
-      const res = await gitDiscard(g.root, args.paths ?? []);
+      const v = validatePaths(g.root, args?.paths ?? []);
+      if (!v.ok) return { ok: false as const, reason: "invalid-input" as const };
+      const res = await gitDiscard(g.root, v.paths);
       return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
     },
   );

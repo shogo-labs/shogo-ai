@@ -1886,13 +1886,20 @@ export class AgentGateway {
     // HTTP handler and passes its URL via TERMINAL_EXEC_URL env var.
     const terminalExecUrl = process.env.TERMINAL_EXEC_URL
     if (terminalExecUrl) {
+      // The bridge requires a per-process token (set by the Electron main
+      // process alongside TERMINAL_EXEC_URL). Without it the server returns 401.
+      const terminalExecToken = process.env.TERMINAL_EXEC_TOKEN ?? ''
+      const bridgeHeaders = (): Record<string, string> => ({
+        'Content-Type': 'application/json',
+        ...(terminalExecToken ? { 'x-shogo-bridge-token': terminalExecToken } : {}),
+      })
       toolContext.terminalExec = async ({ command, cwd, timeoutMs, mode }) => {
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), timeoutMs ?? 130_000)
         try {
           const res = await fetch(`${terminalExecUrl}/terminal/exec`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: bridgeHeaders(),
             body: JSON.stringify({ command, cwd, timeoutMs, mode }),
             signal: controller.signal,
           })
@@ -1911,13 +1918,32 @@ export class AgentGateway {
         try {
           const res = await fetch(`${terminalExecUrl}/terminal/context`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: bridgeHeaders(),
             body: JSON.stringify({ terminalId, cwd, maxChars }),
             signal: controller.signal,
           })
           if (!res.ok) {
             const body = await res.text().catch(() => '')
             throw new Error(`Terminal context read failed (HTTP ${res.status}): ${body}`)
+          }
+          return await res.json()
+        } finally {
+          clearTimeout(timer)
+        }
+      }
+      toolContext.terminalInterrupt = async () => {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 10_000)
+        try {
+          const res = await fetch(`${terminalExecUrl}/terminal/interrupt`, {
+            method: 'POST',
+            headers: bridgeHeaders(),
+            body: '{}',
+            signal: controller.signal,
+          })
+          if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            throw new Error(`Terminal interrupt failed (HTTP ${res.status}): ${body}`)
           }
           return await res.json()
         } finally {

@@ -47,20 +47,10 @@ export interface OutputStreamerState {
 
 // ─── ANSI strip ─────────────────────────────────────────────────────────
 
-/**
- * Strip ANSI escape sequences from a string.
- * Handles: CSI (ESC [), OSC (ESC ]), and DCS (ESC P) sequences.
- */
-export function stripAnsi(s: string): string {
-  // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/\x1bP[^\x1b]*\x1b\\/g, '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/\x1b[()][AB012]/g, '')
-}
+// Re-exported from the shared util so existing importers keep working while
+// there is a single implementation.
+export { stripAnsi } from './strip-ansi'
+import { stripAnsi } from './strip-ansi'
 
 // ─── streamer ───────────────────────────────────────────────────────────
 
@@ -73,8 +63,6 @@ export class OutputStreamer {
   private buffer = ''
   private totalFlushed = 0
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
-  private offData: (() => void) | null = null
-  private offFinish: (() => void) | null = null
   private active = false
   private disposed = false
 
@@ -86,22 +74,13 @@ export class OutputStreamer {
   }
 
   /**
-   * Start collecting output. Subscribes to tracker data events.
-   * Call stop() to pause, start() to resume.
+   * Enable collecting output. The caller drives this streamer by calling
+   * feedOutput() from the terminal's onData handler; this flag gates whether
+   * fed data is buffered. Call stop() to pause, start() to resume.
    */
   start(): void {
     if (this.disposed || this.active) return
     this.active = true
-
-    // Subscribe to terminal data events from the tracker's raw data channel.
-    // The tracker emits 'unknown' events for raw OSC data; we intercept
-    // the underlying data stream instead via a listener on the tracker's
-    // internal event bus for data passthrough.
-    //
-    // Since Osc633Tracker doesn't directly expose raw data events,
-    // we use a different approach: subscribe to the tracker and
-    // accumulate any output data that comes through the command lifecycle.
-    // For raw terminal data, the caller should feed data via feedOutput().
   }
 
   /**
@@ -184,10 +163,6 @@ export class OutputStreamer {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = null
     }
-    this.offData?.()
-    this.offFinish?.()
-    this.offData = null
-    this.offFinish = null
     this.buffer = ''
   }
 

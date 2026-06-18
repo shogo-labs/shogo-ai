@@ -2295,16 +2295,69 @@ export default observer(function ProjectLayout() {
   // enrichMessage: auto-inject terminal context into every chat message.
   // Dynamically imports the desktop terminal store (no-op on mobile/web).
   // Must live before the loading early-return below so hook order is stable.
+  //
+  // Beyond the terminal tracker, we feed REAL git + diagnostics sources so the
+  // model sees branch/working-tree state and current errors without the user
+  // pasting them. Each source is independently guarded: a failure degrades to
+  // null/[] rather than dropping the user's message.
   const enrichMessage = useCallback(async (text: string): Promise<string> => {
     try {
       if (Platform.OS !== 'web') return text
       const { terminalContextStore } = await import('@shogo/desktop-terminal')
       if (!terminalContextStore.isReady()) return text
-      return terminalContextStore.enrichMessage(text)
+
+      const git = {
+        getStatus: async () => {
+          try {
+            if (!projectId) return null
+            const { getDesktopGitBridge } = await import('@/components/project/panels/ide/git/bridge')
+            const bridge = getDesktopGitBridge()
+            if (!bridge) return null
+            const resolved = await bridge.resolveProjectRoot(projectId)
+            const root = resolved.ok ? resolved.root : null
+            if (!root) return null
+            const cur = await bridge.current(root)
+            const snap = cur.ok ? cur.snapshot : null
+            if (!snap || !snap.isRepo) return null
+            const fileCodes = Object.values(snap.fileStatus ?? {})
+            return {
+              branch: snap.branch ?? (snap.detached ? 'HEAD (detached)' : 'unknown'),
+              stagedCount: Object.keys(snap.stagedStatus ?? {}).length,
+              modifiedCount: fileCodes.filter((c) => c !== '?').length,
+              untrackedCount: fileCodes.filter((c) => c === '?').length,
+              conflictCount: snap.conflictPaths?.length ?? 0,
+            }
+          } catch {
+            return null
+          }
+        },
+      }
+
+      const diagnostics = {
+        getDiagnostics: async () => {
+          try {
+            if (!projectId) return []
+            const { fetchDiagnostics } = await import('@/lib/diagnostics-api')
+            const res = await fetchDiagnostics(projectId)
+            if ('unchanged' in res) return []
+            return res.diagnostics.map((d) => ({
+              severity: d.severity === 'error' ? 'error' : d.severity === 'warning' ? 'warning' : 'info',
+              file: d.file,
+              line: d.line,
+              column: d.column,
+              message: d.message,
+            }))
+          } catch {
+            return []
+          }
+        },
+      }
+
+      return terminalContextStore.enrichMessage(text, { git, diagnostics })
     } catch {
       return text
     }
-  }, [])
+  }, [projectId])
 
   // Loading state. We also gate on `runtimeReady` so the panels never
   // render with stale URLs — see `useAgentUrl` for the polling contract.

@@ -23,10 +23,16 @@
  */
 
 import { createServer, type Server } from 'node:http'
-import { BrowserWindow } from 'electron'
+import { randomBytes } from 'node:crypto'
+import electron from 'electron'
 import type { ControlEvent, SessionInfo } from '../pty-host/protocol'
 
 export const TERMINAL_AGENT_SPAWN_CHANNEL = 'shogo:terminal:agent-spawned' as const
+
+/** Header the agent runtime must send to authenticate to the exec bridge. */
+const AUTH_HEADER = 'x-shogo-bridge-token'
+/** Hard cap on request body size (1 MiB) — exec/context payloads are tiny. */
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024
 
 // ─── types ──────────────────────────────────────────────────────────────
 
@@ -81,9 +87,42 @@ interface TerminalContextResponse {
 
 let server: Server | null = null
 let port: number = 0
+let authToken: string = ''
 let serverReady: Promise<string> | null = null
 let offTerminalEvents: (() => void) | null = null
 let terminalEventsSubscribing = false
+
+/**
+ * Per-session serialization: only one foreground command may run in a given
+ * PTY session at a time, otherwise two concurrent agent calls interleave their
+ * sentinel detection and corrupt each other's output. We chain promises per
+ * session id.
+ */
+const sessionExecLocks = new Map<string, Promise<unknown>>()
+
+/** Session id of the most recent foreground command (target for interrupt). */
+let lastForegroundSessionId: string | null = null
+
+/** Background agent terminals spawned by this server — tracked for cleanup. */
+const backgroundSessions = new Set<string>()
+
+/** Run `fn` exclusively per-session, serializing concurrent foreground execs. */
+async function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = sessionExecLocks.get(sessionId) ?? Promise.resolve()
+  const run = prev.catch(() => {}).then(fn)
+  // Keep the chain alive but swallow rejections so one failure doesn't poison
+  // the next queued command.
+  const tail = run.catch(() => {})
+  sessionExecLocks.set(sessionId, tail)
+  try {
+    return await run
+  } finally {
+    // Drop the lock entry once we're the tail, so the map doesn't grow forever.
+    if (sessionExecLocks.get(sessionId) === tail) {
+      sessionExecLocks.delete(sessionId)
+    }
+  }
+}
 
 const TEXT_DECODER = new TextDecoder()
 const MAX_CONTEXT_BYTES_PER_SESSION = 512 * 1024
@@ -131,7 +170,7 @@ function notifyAgentTerminalSpawned(payload: {
   terminalLabel: string
   cwd: string | null
 }): void {
-  for (const win of BrowserWindow.getAllWindows()) {
+  for (const win of electron.BrowserWindow.getAllWindows()) {
     try { win.webContents.send(TERMINAL_AGENT_SPAWN_CHANNEL, payload) } catch { /* gone */ }
   }
 }
@@ -144,17 +183,34 @@ export function startTerminalExecServer(): Promise<string> {
   if (server && port > 0) return Promise.resolve(`http://127.0.0.1:${port}`)
   if (serverReady) return serverReady
 
+  authToken = randomBytes(24).toString('hex')
   ensureTerminalEventSubscription()
 
   server = createServer(async (req, res) => {
-    // CORS — allow the agent-runtime child process
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
       res.end()
+      return
+    }
+
+    // Auth gate — the bridge runs on loopback but any local process can reach
+    // it, so require the per-process token (mirrors recording/bridge.ts). This
+    // is the primary defense against a confused-deputy localhost attacker.
+    if (!authToken || req.headers[AUTH_HEADER] !== authToken) {
+      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'unauthorized' }))
+      return
+    }
+
+    if (req.method === 'POST' && req.url === '/terminal/interrupt') {
+      try {
+        const result = await interruptActiveCommand()
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(result))
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ interrupted: false, error: err?.message ?? String(err) }))
+      }
       return
     }
 
@@ -197,7 +253,7 @@ export function startTerminalExecServer(): Promise<string> {
         return
       }
 
-      const result = await executeViaRenderer(request)
+      const result = await executeAgentCommand(request)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(result))
     } catch (err: any) {
@@ -245,6 +301,7 @@ export function stopTerminalExecServer(): void {
     server.close()
     server = null
     port = 0
+    authToken = ''
     serverReady = null
     if (offTerminalEvents) {
       offTerminalEvents()
@@ -252,6 +309,21 @@ export function stopTerminalExecServer(): void {
     }
     terminalEventsSubscribing = false
     terminalBuffers.clear()
+    rendererContexts.clear()
+    sessionExecLocks.clear()
+    lastForegroundSessionId = null
+    // Best-effort: kill any background agent terminals this server spawned so
+    // they don't linger after shutdown.
+    if (backgroundSessions.size > 0) {
+      const ids = [...backgroundSessions]
+      backgroundSessions.clear()
+      void import('../pty-host-client').then(({ getPtyHostClient }) => {
+        const host = getPtyHostClient()
+        for (const id of ids) {
+          host.kill(id).catch(() => { /* already gone */ })
+        }
+      }).catch(() => { /* host unavailable */ })
+    }
     console.log('[TerminalExecServer] Stopped')
   }
 }
@@ -263,27 +335,48 @@ export function getTerminalExecPort(): number {
   return port
 }
 
-// ─── renderer bridge ────────────────────────────────────────────────────
+/**
+ * Get the auth token clients must send via the `x-shogo-bridge-token` header.
+ * Empty string if the server is not running.
+ */
+export function getTerminalExecToken(): string {
+  return authToken
+}
 
 /**
- * Execute a command in the renderer's terminal via IPC.
- *
- * Flow:
- *   main process → ipcRenderer.invoke(request)
- *   renderer → TerminalCommandExecutor.execute(request)
- *   result → back to main process
- *
- * Falls back to spawning the command directly via PTY host if
- * the renderer is not available (e.g., during startup).
+ * Send SIGINT to the session running the most recent foreground command.
  */
-async function executeViaRenderer(request: TerminalExecRequest): Promise<TerminalExecResponse> {
-  // Electron doesn't have webContents.invoke() — we can't call the renderer
-  // from the main process. Instead, execute directly via the PTY host, which
-  // runs in the main process and has full access to the user's shell.
-  //
-  // The renderer-side bridge (AgentTerminalBridge → TerminalCommandExecutor)
-  // can be used for future UI-visible agent terminals, but for the gateway
-  // tool, PTY host is the correct execution path.
+async function interruptActiveCommand(): Promise<{ interrupted: boolean; error?: string }> {
+  if (!lastForegroundSessionId) {
+    return { interrupted: false, error: 'No active terminal command to interrupt.' }
+  }
+  try {
+    const { getPtyHostClient } = await import('../pty-host-client')
+    await getPtyHostClient().signal(lastForegroundSessionId, 'INT')
+    return { interrupted: true }
+  } catch (err: any) {
+    return { interrupted: false, error: err?.message ?? String(err) }
+  }
+}
+
+// ─── agent command dispatch ─────────────────────────────────────────────
+
+/**
+ * Single execution path for agent terminal commands.
+ *
+ * Electron has no `webContents.invoke()`, so the main process cannot call the
+ * renderer to run a command. The chosen — and only — path is therefore the PTY
+ * host, which runs in the main process and has full access to the user's shell:
+ *
+ *   - `mode: 'background'` → {@link executeInBackground} (detached, polled later)
+ *   - otherwise            → {@link executeViaPtyHost} (foreground, awaited)
+ *
+ * The renderer-side stack (AgentTerminalBridge → TerminalCommandExecutor) is a
+ * separate, UI-visible path used by the renderer itself; it is intentionally
+ * NOT invoked from here. Keep this the sole server-side dispatcher so there is
+ * one place that maps a request to its runner.
+ */
+async function executeAgentCommand(request: TerminalExecRequest): Promise<TerminalExecResponse> {
   if (request.mode === 'background') return executeInBackground(request)
   return executeViaPtyHost(request)
 }
@@ -311,64 +404,71 @@ async function executeViaPtyHost(request: TerminalExecRequest): Promise<Terminal
   const activeSession = chooseBestSession(sessions, request.cwd)
 
   if (activeSession) {
-    // ── Write to the user's visible terminal ──
     const sessionId = activeSession.id
-    let output = ''
-    let exitCode: number | null = null
-    let timedOut = false
+    // Serialize per-session: two concurrent foreground commands writing to the
+    // same PTY would interleave and corrupt each other's sentinel detection.
+    return withSessionLock(sessionId, async () => {
+      lastForegroundSessionId = sessionId
+      let output = ''
+      let exitCode: number | null = null
+      let timedOut = false
 
-    // Use a unique sentinel to detect when the command finishes.
-    // The shell integration PROMPT_COMMAND will emit after the command,
-    // and we detect completion by watching for the next prompt marker.
-    const sentinel = `__SHOGO_EXEC_DONE_${Date.now()}__`
-    const sentinelRe = new RegExp(`${escapeRegExp(sentinel)}:(\\d+)`)
+      // Use a unique sentinel to detect when the command finishes.
+      // The shell integration PROMPT_COMMAND will emit after the command,
+      // and we detect completion by watching for the next prompt marker.
+      const sentinel = `__SHOGO_EXEC_DONE_${Date.now()}__`
+      const sentinelRe = new RegExp(`${escapeRegExp(sentinel)}:(\\d+)`)
 
-    // Collect output from this session
-    const dataHandler = (ev: ControlEvent) => {
-      if (ev.kind === 'session:data' && ev.id === sessionId) {
-        output += decodeSessionData(ev.dataB64)
-      }
-    }
-
-    host.on('event', dataHandler)
-
-    try {
-      // Write the command followed by a sentinel echo to detect completion
-      const command = request.cwd && request.cwd !== activeSession.cwd
-        ? `cd ${shellQuote(request.cwd)} && ${request.command}`
-        : request.command
-      await host.write(sessionId, `${command}; printf '\\n${sentinel}:%s\\n' "$?"\r`)
-
-      // Wait for sentinel to appear in output, or timeout
-      const deadline = startMs + timeoutMs
-      while (!sentinelRe.test(output) && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 100))
+      // Collect output from this session
+      const dataHandler = (ev: ControlEvent) => {
+        if (ev.kind === 'session:data' && ev.id === sessionId) {
+          output += decodeSessionData(ev.dataB64)
+        }
       }
 
-      // Extract output before the sentinel
-      const match = output.match(sentinelRe)
-      const sentinelIdx = match ? output.indexOf(match[0]) : -1
-      if (match && sentinelIdx >= 0) {
-        output = output.substring(0, sentinelIdx)
-        exitCode = Number(match[1])
-      }
+      host.on('event', dataHandler)
 
-      if (exitCode === null) {
-        timedOut = true
-        exitCode = null
-        output += '\n[Timed out after ' + timeoutMs + 'ms]'
-      }
+      try {
+        // Write the command followed by a sentinel echo to detect completion
+        const command = request.cwd && request.cwd !== activeSession.cwd
+          ? `cd ${shellQuote(request.cwd)} && ${request.command}`
+          : request.command
+        await host.write(sessionId, `${command}; printf '\\n${sentinel}:%s\\n' "$?"\r`)
 
-      return {
-        exitCode,
-        output: stripAnsi(output),
-        cwd: request.cwd ?? activeSession.cwd ?? null,
-        durationMs: Date.now() - startMs,
-        timedOut,
+        // Wait for sentinel to appear in output, or timeout
+        const deadline = startMs + timeoutMs
+        while (!sentinelRe.test(output) && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 100))
+        }
+
+        // Extract output before the sentinel
+        const match = output.match(sentinelRe)
+        const sentinelIdx = match ? output.indexOf(match[0]) : -1
+        if (match && sentinelIdx >= 0) {
+          output = output.substring(0, sentinelIdx)
+          exitCode = Number(match[1])
+        }
+
+        if (exitCode === null) {
+          timedOut = true
+          exitCode = null
+          // The command is still running in the user's visible terminal. Send
+          // SIGINT so it doesn't keep occupying the prompt indefinitely.
+          try { await host.signal(sessionId, 'INT') } catch { /* best-effort */ }
+          output += '\n[Timed out after ' + timeoutMs + 'ms]'
+        }
+
+        return {
+          exitCode,
+          output: stripAnsi(output),
+          cwd: request.cwd ?? activeSession.cwd ?? null,
+          durationMs: Date.now() - startMs,
+          timedOut,
+        }
+      } finally {
+        host.removeListener('event', dataHandler)
       }
-    } finally {
-      host.removeListener('event', dataHandler)
-    }
+    })
   }
 
   return executeHiddenOneShot(request, timeoutMs, startMs)
@@ -379,7 +479,16 @@ async function executeViaPtyHost(request: TerminalExecRequest): Promise<Terminal
 function readBody(req: import('node:http').IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
-    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    let size = 0
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > MAX_REQUEST_BODY_BYTES) {
+        reject(new Error('Request body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
     req.on('end', () => resolve(Buffer.concat(chunks).toString()))
     req.on('error', reject)
   })
@@ -653,6 +762,9 @@ async function executeInBackground(request: TerminalExecRequest): Promise<Termin
       SHOGO_AGENT_TERMINAL: '1',
     },
   })
+
+  // Track for shutdown cleanup so background terminals don't leak.
+  backgroundSessions.add(session.id)
 
   // Notify renderer immediately so the tab appears.
   const terminalLabel = 'Shogo'

@@ -47,7 +47,7 @@ import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
 import { registerRunIpcHandlers, disposeRunIpc } from './run-ipc'
 import { registerDebugIpcHandlers, disposeDebugIpc } from './debug-ipc'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
-import { startTerminalExecServer, stopTerminalExecServer } from './ipc/terminal-exec-server'
+import { startTerminalExecServer, stopTerminalExecServer, getTerminalExecToken } from './ipc/terminal-exec-server'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
 import { registerExtensionsIpcHandlers, disposeExtensionsIpcHandlers } from './extensions/ipc'
@@ -1404,6 +1404,7 @@ app.whenReady().then(async () => {
       // Start the terminal exec server for agent -> visible terminal commands
       const terminalExecUrl = await startTerminalExecServer()
       process.env.TERMINAL_EXEC_URL = terminalExecUrl
+      process.env.TERMINAL_EXEC_TOKEN = getTerminalExecToken()
       await startLocalServer()
     } catch (err) {
       writeLogSync('FATAL', '[Desktop] Failed to start local server:', err)

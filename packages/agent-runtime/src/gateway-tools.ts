@@ -4637,6 +4637,33 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
         return textResult({ error: 'command parameter is required for run action.' })
       }
 
+      // terminal_exec runs in the user's REAL login shell with their full
+      // environment — strictly more dangerous than the sandboxed `exec` tool.
+      // Apply the same guards exec uses so prompt-injection can't bypass them:
+      //   1. Workspace Trust (restricted-mode projects refuse shell commands)
+      //   2. Hard-blocked destructive commands
+      //   3. Gateway self-protect (don't let the agent kill its own runtime)
+      // The PermissionEngine ask/allow/deny gate is applied by the `g(..., 'shell')`
+      // wrapper in createTools().
+      const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec', ctx.workspaceDir)
+      if (!execTrust.ok) return textResult({ error: execTrust.message })
+
+      // Constrain an explicit cwd to the trusted workspace — the agent must not
+      // be able to `cd` the user's shell to arbitrary locations.
+      if (cwd) {
+        const cwdTrust = assertAllowedPath(cwd, 'exec', ctx.workspaceDir)
+        if (!cwdTrust.ok) return textResult({ error: cwdTrust.message })
+      }
+
+      if (isBlockedCommand(command)) {
+        return textResult({ error: `Blocked command: ${command}` })
+      }
+
+      const gatewayGuard = commandTargetsGateway(command)
+      if (gatewayGuard.blocked) {
+        return textResult({ error: gatewayKillRefusal(gatewayGuard.reason ?? 'kill targets the runtime') })
+      }
+
       try {
         // Auto-detect long-running commands when mode is not explicitly set
         let effectiveMode: 'foreground' | 'background' = (mode ?? 'foreground') as 'foreground' | 'background'
@@ -4719,7 +4746,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createCreatePlanTool(ctx),
     createUpdatePlanTool(ctx),
     createQuickActionTool(ctx),
-    createTerminalExecTool(ctx),
+    g(createTerminalExecTool(ctx), 'shell'),
     createTerminalReadTool(ctx),
     createReadGuideTool(ctx),
   ]

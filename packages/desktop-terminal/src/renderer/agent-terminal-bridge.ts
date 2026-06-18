@@ -25,6 +25,7 @@
  */
 
 import type { Osc633Tracker, Command } from './osc633-tracker'
+import { stripAnsi } from './strip-ansi'
 
 // ─── types ──────────────────────────────────────────────────────────────
 
@@ -70,6 +71,30 @@ export interface BackgroundTask {
   dispose(): void
 }
 
+/**
+ * One in-flight command. A waiter is created on sendCommand and lives in the
+ * `startWaiters` FIFO until the tracker emits `command-started`, at which point
+ * it is bound to a tracker command id and moved into `pendingByCmd`. The same
+ * waiter (and its timer) covers both the waiting-for-start and running phases,
+ * so there is exactly one timer and one resolve path per command.
+ */
+interface Waiter {
+  command: string
+  timeoutMs: number
+  onOutput?: (chunk: string) => void
+  /** Accumulated, ANSI-stripped output for THIS command only. */
+  output: string
+  resolved: boolean
+  /** Tracker command id once `command-started` has bound this waiter. */
+  cmdId: number | null
+  /** Single timer covering start-wait + run. */
+  timer: ReturnType<typeof setTimeout> | null
+  /** Grace timer used by interruptCommand when the shell exits silently. */
+  graceTimer?: ReturnType<typeof setTimeout>
+  /** Resolves the caller's promise. */
+  resolveFn: (result: CommandResult) => void
+}
+
 // ─── bridge ─────────────────────────────────────────────────────────────
 
 export class AgentTerminalBridge {
@@ -79,23 +104,30 @@ export class AgentTerminalBridge {
   private commandTimeoutMs: number
   private taskCounter = 0
 
-  /** Commands we're currently waiting on (by command ID from the tracker). */
-  private pending = new Map<number, {
-    resolve: (result: CommandResult) => void
-    command: string
-    startedAt: number
-    timer: ReturnType<typeof setTimeout> | null
-    graceTimer?: ReturnType<typeof setTimeout>
-  }>()
+  /**
+   * Commands that have been sent but not yet matched to a `command-started`
+   * event, in send order. Terminals execute sequentially, so FIFO matching
+   * correctly correlates each waiter with the next started command.
+   */
+  private startWaiters: Waiter[] = []
+
+  /** Commands bound to a tracker command id and awaiting completion. */
+  private pendingByCmd = new Map<number, Waiter>()
 
   /** Background tasks by ID. */
   private tasks = new Map<string, BackgroundTask>()
 
-  /** The command ID currently being awaited by sendCommand (only one at a time). */
+  /** The command id of the command currently producing output (most recent start). */
   private activeCommandId: number | null = null
 
-  /** Streaming output callback registered by the current sendCommand. */
-  private onOutputCallback: ((chunk: string) => void) | null = null
+  /**
+   * Captured output of recently finished commands, keyed by tracker command id,
+   * so consumers (context aggregator / enrichMessage) can attach real output to
+   * the tracker's marker-only Command snapshots. Capped to avoid unbounded
+   * growth in long sessions.
+   */
+  private outputHistory = new Map<number, string>()
+  private static readonly OUTPUT_HISTORY_LIMIT = 20
 
   private off: (() => void) | null = null
   private disposed = false
@@ -105,33 +137,29 @@ export class AgentTerminalBridge {
     this._sendRef = { fn: opts.send, signal: opts.signal }
     this.commandTimeoutMs = opts.commandTimeoutMs ?? 120_000
 
-    // Listen for command-finished events to resolve pending promises
+    // ONE permanent listener for the whole bridge lifetime — no per-command
+    // listeners, so there is nothing to leak on timeout/dispose.
     this.off = this.tracker.on((ev) => {
-      if (ev.kind === 'command-finished') {
-        this.onCommandFinished(ev.command)
-      }
+      if (ev.kind === 'command-started') this.onCommandStarted(ev.command)
+      else if (ev.kind === 'command-finished') this.onCommandFinished(ev.command)
     })
   }
 
   /**
-   * Feed raw terminal output data into the active command's output accumulator.
+   * Feed raw terminal output data into the ACTIVE command's output accumulator.
    * Call this from the terminal's onData handler while a command is running.
-   * ANSI sequences are stripped automatically.
+   * ANSI sequences are stripped automatically. Output is attributed to the
+   * single active command, never fanned out to all pending commands.
    */
   feedOutput(data: string): void {
-    // Strip ANSI escape sequences inline
-    const stripped = data.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
-      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-      .replace(/\x1bP[^\x1b]*\x1b\\/g, '')
-      .replace(/\x1b[()][AB012]/g, '')
-    if (stripped.length > 0 && this.activeCommandId != null) {
-      for (const pending of this.pending.values()) {
-        if (!('_output' in pending)) (pending as any)._output = ''
-        ;(pending as any)._output += stripped
-      }
-      // Also call the streaming callback if one was registered
-      this.onOutputCallback?.(stripped)
-    }
+    const stripped = stripAnsi(data)
+    if (!stripped) return
+    const cmdId = this.activeCommandId
+    if (cmdId == null) return
+    const waiter = this.pendingByCmd.get(cmdId)
+    if (!waiter) return
+    waiter.output += stripped
+    waiter.onOutput?.(stripped)
   }
 
   /**
@@ -146,10 +174,8 @@ export class AgentTerminalBridge {
    * Returns a CommandResult with exit code, duration, output, etc.
    *
    * Resolves with `timedOut: true` if the command doesn't finish
-   * within `timeoutMs` (default 120s).
-   *
-   * If `onOutput` is provided, ANSI-stripped output chunks are streamed
-   * as the command runs (debounced, threshold-based).
+   * within `timeoutMs` (default 120s) — including the case where
+   * `command-started` never arrives (no shell integration).
    */
   sendCommand(command: string, options?: SendCommandOptions): Promise<CommandResult> {
     if (this.disposed) {
@@ -157,49 +183,12 @@ export class AgentTerminalBridge {
     }
 
     const timeoutMs = options?.timeoutMs ?? this.commandTimeoutMs
-    const onOutput = options?.onOutput
-    this.onOutputCallback = onOutput ? (chunk) => { outputAccumulator += chunk; onOutput(chunk) } : null
-    let outputAccumulator = ''
-
     return new Promise<CommandResult>((resolve) => {
-      let resolved = false
-      const safeResolve = (result: CommandResult) => {
-        if (resolved) return
-        resolved = true
-        this.onOutputCallback = null
-        resolve({ ...result, output: outputAccumulator || undefined })
-      }
-
-      // Fire the command — use the ref so we always call the latest send
+      const waiter = this.enqueueWaiter(command, timeoutMs, options?.onOutput, resolve)
+      // Fire the command AFTER the waiter is queued so a synchronous tracker
+      // emit (there shouldn't be one, but be safe) finds its waiter.
       this._sendRef.fn(`${command}\r`)
-
-      // Listen for the NEXT command-started event, which gives us
-      // the tracker's Command ID to wait on.
-      const offStart = this.tracker.on((ev) => {
-        if (ev.kind === 'command-started') {
-          offStart()
-
-          const cmdId = ev.command.id
-          this.activeCommandId = cmdId
-          const timer = setTimeout(() => {
-            this.pending.delete(cmdId)
-            safeResolve({
-              command,
-              exitCode: null,
-              cwd: ev.command.cwd,
-              durationMs: timeoutMs,
-              timedOut: true,
-            })
-          }, timeoutMs)
-
-          this.pending.set(cmdId, {
-            resolve: safeResolve,
-            command,
-            startedAt: ev.command.startedAt ?? Date.now(),
-            timer,
-          })
-        }
-      })
+      void waiter
     })
   }
 
@@ -209,53 +198,24 @@ export class AgentTerminalBridge {
    */
   sendCommandBackground(command: string): BackgroundTask {
     const id = `bg_${++this.taskCounter}`
+    let resolveFn!: (result: CommandResult) => void
+    const promise = new Promise<CommandResult>((resolve) => { resolveFn = resolve })
+
+    const waiter = this.enqueueWaiter(command, this.commandTimeoutMs, undefined, (result) => {
+      resolveFn(result)
+      this.tasks.delete(id)
+    })
     this._sendRef.fn(`${command}\r`)
-
-    let resolveResult: (result: CommandResult) => void
-    let settled = false
-    const promise = new Promise<CommandResult>((resolve) => {
-      resolveResult = (r) => { if (!settled) { settled = true; resolve(r) } }
-    })
-
-    const offStart = this.tracker.on((ev) => {
-      if (ev.kind === 'command-started') {
-        offStart()
-
-        const cmdId = ev.command.id
-        const timer = setTimeout(() => {
-          this.pending.delete(cmdId)
-          this.tasks.delete(id)
-          resolveResult!({
-            command,
-            exitCode: null,
-            cwd: ev.command.cwd,
-            durationMs: this.commandTimeoutMs,
-            timedOut: true,
-          })
-        }, this.commandTimeoutMs)
-
-        this.pending.set(cmdId, {
-          resolve: (result) => {
-            resolveResult!(result)
-            this.tasks.delete(id)
-          },
-          command,
-          startedAt: ev.command.startedAt ?? Date.now(),
-          timer,
-        })
-      }
-    })
 
     const task: BackgroundTask = {
       id,
       command,
       promise,
       dispose: () => {
-        offStart()
+        this.finish(waiter, { command, exitCode: null, cwd: null, durationMs: null, timedOut: false })
         this.tasks.delete(id)
       },
     }
-
     this.tasks.set(id, task)
     return task
   }
@@ -271,35 +231,25 @@ export class AgentTerminalBridge {
   /**
    * Interrupt the currently running command by sending SIGINT.
    * If no command is running, returns null immediately.
-   * The pending promise resolves with `exitCode: null` and `timedOut: false`.
+   * The pending promise resolves with `exitCode: null` and `timedOut: false`
+   * either via `command-finished` or, if the shell exits silently, a 2s grace.
    */
   interruptCommand(): CommandResult | null {
     const cmdId = this.activeCommandId
     if (cmdId == null) return null
 
     this.sendSignal('INT')
-    // The pending promise will be resolved by onCommandFinished
-    // when the tracker emits 'command-finished' with exitCode: null.
-    // If the tracker doesn't emit (e.g. SIGINT kills the process silently),
-    // we force-resolve after a short grace period.
-    const pending = this.pending.get(cmdId)
-    if (pending) {
-      const graceTimer = setTimeout(() => {
-        if (this.pending.has(cmdId)) {
-          if (pending.timer) clearTimeout(pending.timer)
-          this.pending.delete(cmdId)
-          this.activeCommandId = null
-          pending.resolve({
-            command: pending.command,
-            exitCode: null,
-            cwd: null,
-            durationMs: null,
-            timedOut: false,
-          })
-        }
+    const waiter = this.pendingByCmd.get(cmdId)
+    if (waiter && !waiter.graceTimer) {
+      waiter.graceTimer = setTimeout(() => {
+        this.finish(waiter, {
+          command: waiter.command,
+          exitCode: null,
+          cwd: null,
+          durationMs: null,
+          timedOut: false,
+        })
       }, 2000)
-      // Store grace timer so we can cancel it if command-finished fires normally
-      pending.graceTimer = graceTimer
     }
     return null
   }
@@ -328,46 +278,102 @@ export class AgentTerminalBridge {
   }
 
   /**
-   * Clean up listeners and reject pending promises.
+   * Clean up listeners and resolve pending promises as cancelled.
    */
   dispose(): void {
     this.disposed = true
     this.off?.()
     this.off = null
-    for (const pending of this.pending.values()) {
-      if (pending.timer) clearTimeout(pending.timer)
-      if (pending.graceTimer) clearTimeout(pending.graceTimer)
+    const all = [...this.startWaiters, ...this.pendingByCmd.values()]
+    for (const waiter of all) {
+      this.finish(waiter, { command: waiter.command, exitCode: null, cwd: null, durationMs: null, timedOut: false })
     }
-    this.pending.clear()
+    this.startWaiters = []
+    this.pendingByCmd.clear()
     this.activeCommandId = null
-    for (const task of this.tasks.values()) {
-      task.dispose()
-    }
     this.tasks.clear()
+    this.outputHistory.clear()
   }
 
   // ─── internals ──────────────────────────────────────────────────
 
+  /** Create a waiter, start its single timeout, and queue it for start-matching. */
+  private enqueueWaiter(
+    command: string,
+    timeoutMs: number,
+    onOutput: ((chunk: string) => void) | undefined,
+    resolveFn: (result: CommandResult) => void,
+  ): Waiter {
+    const waiter: Waiter = {
+      command,
+      timeoutMs,
+      onOutput,
+      output: '',
+      resolved: false,
+      cmdId: null,
+      timer: null,
+      resolveFn,
+    }
+    waiter.timer = setTimeout(() => {
+      this.finish(waiter, { command, exitCode: null, cwd: null, durationMs: timeoutMs, timedOut: true })
+    }, timeoutMs)
+    this.startWaiters.push(waiter)
+    return waiter
+  }
+
+  /** Resolve a waiter exactly once and remove it from every collection. */
+  private finish(waiter: Waiter, result: CommandResult): void {
+    if (waiter.resolved) return
+    waiter.resolved = true
+    if (waiter.timer) { clearTimeout(waiter.timer); waiter.timer = null }
+    if (waiter.graceTimer) { clearTimeout(waiter.graceTimer); waiter.graceTimer = undefined }
+    const qi = this.startWaiters.indexOf(waiter)
+    if (qi >= 0) this.startWaiters.splice(qi, 1)
+    if (waiter.cmdId != null) {
+      this.pendingByCmd.delete(waiter.cmdId)
+      if (this.activeCommandId === waiter.cmdId) this.activeCommandId = null
+      if (waiter.output) this.recordOutput(waiter.cmdId, waiter.output)
+    }
+    waiter.resolveFn({ ...result, output: waiter.output || undefined })
+  }
+
+  /** Persist a finished command's output, evicting the oldest beyond the cap. */
+  private recordOutput(cmdId: number, output: string): void {
+    this.outputHistory.set(cmdId, output)
+    while (this.outputHistory.size > AgentTerminalBridge.OUTPUT_HISTORY_LIMIT) {
+      const oldest = this.outputHistory.keys().next().value
+      if (oldest === undefined) break
+      this.outputHistory.delete(oldest)
+    }
+  }
+
+  /** Captured output for a finished command id, if still retained. */
+  getCommandOutput(cmdId: number): string | undefined {
+    return this.outputHistory.get(cmdId)
+  }
+
+  private onCommandStarted(cmd: Command): void {
+    // FIFO: the oldest unmatched waiter owns this started command. If the queue
+    // is empty the command was typed by the user, not the agent — ignore it.
+    const waiter = this.startWaiters.shift()
+    if (!waiter) return
+    waiter.cmdId = cmd.id
+    this.activeCommandId = cmd.id
+    this.pendingByCmd.set(cmd.id, waiter)
+  }
+
   private onCommandFinished(cmd: Command): void {
-    const pending = this.pending.get(cmd.id)
-    if (!pending) return
-
-    if (pending.timer) clearTimeout(pending.timer)
-    if (pending.graceTimer) clearTimeout(pending.graceTimer)
-    this.pending.delete(cmd.id)
-    if (this.activeCommandId === cmd.id) this.activeCommandId = null
-
+    const waiter = this.pendingByCmd.get(cmd.id)
+    if (!waiter) return
     const durationMs = (cmd.startedAt != null && cmd.finishedAt != null)
       ? cmd.finishedAt - cmd.startedAt
       : null
-
-    pending.resolve({
-      command: pending.command,
+    this.finish(waiter, {
+      command: waiter.command,
       exitCode: cmd.exitCode,
       cwd: cmd.cwd,
       durationMs,
       timedOut: false,
-      output: (pending as any)._output || undefined,
     })
   }
 }

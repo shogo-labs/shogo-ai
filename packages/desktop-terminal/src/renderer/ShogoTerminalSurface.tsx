@@ -251,6 +251,12 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     const ptySessionIdRef = React.useRef(ptySessionId)
     ptySessionIdRef.current = ptySessionId
 
+    // Stable per-surface key for the terminal context store. Prefer the
+    // persistence/PTY session ids when available so the key survives reconnects;
+    // otherwise fall back to a random id that's stable for this mounted surface.
+    const fallbackContextIdRef = React.useRef(`surface_${Math.random().toString(36).slice(2)}`)
+    const contextSessionId = sessionId ?? ptySessionId ?? fallbackContextIdRef.current
+
     const publishContextToMain = React.useCallback(() => {
       const sid = ptySessionIdRef.current
       if (!sid) return
@@ -420,7 +426,8 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           cursorBlink: true,
           fontFamily,
           fontSize,
-          fontLigatures,
+          // `fontLigatures` is not part of xterm's ITerminalOptions (it needs the
+          // ligatures addon); the dedicated effect below applies it on options.
           scrollback: 10_000,
           theme,
           allowProposedApi: true,
@@ -463,7 +470,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           overflow: 'hidden',
         } as CSSStyleDeclaration)
         container.appendChild(gutterEl)
-        container.addEventListener('contextmenu', (ev: MouseEvent) => {
+        const onGutterContextMenu = (ev: MouseEvent) => {
           const rect = container.getBoundingClientRect()
           const relX = ev.clientX - rect.left
           if (relX > GUTTER_W + 12) return
@@ -491,7 +498,8 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           if (bestIdx < snap.commands.length) {
             setCmdMenu({ x: ev.clientX, y: ev.clientY, command: snap.commands[bestIdx] })
           }
-        })
+        }
+        container.addEventListener('contextmenu', onGutterContextMenu)
 
         // ── Dot helpers ─────────────────────────────────────────────────
         // Returns the rendered cell height in CSS pixels (robust across
@@ -915,16 +923,23 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         if (autoFocus && !hidden) term.focus()
 
         // Publish terminal context to the module-level store so the chat
-        // panel can auto-inject terminal context into messages.
-        terminalContextStore.publish({
+        // panel can auto-inject terminal context into messages. Keyed by a
+        // per-surface session id so split terminals / agent tabs don't clobber
+        // each other's context.
+        const bridge = bridgeRef.current
+        if (bridge) {
+          terminalContextStore.publish({
+            sessionId: contextSessionId,
             tracker,
-            bridge: bridgeRef.current ?? undefined,
+            bridge,
             cwd: tracker.snapshot().cwd ?? null,
             publishedAt: Date.now(),
           })
+        }
 
         // Teardown: remove the gutter overlay and its children
         const removeGutter = () => {
+          try { container.removeEventListener('contextmenu', onGutterContextMenu) } catch {}
           try { container.removeChild(gutterEl) } catch {}
           gutterDots.length = 0
           commandBlocksRef.current = []
@@ -952,7 +967,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
           termRef.current = null
           fitRef.current = null
           setSearchController(null)
-          terminalContextStore.withdraw()
+          terminalContextStore.withdraw(contextSessionId)
         }
       })()
 
@@ -1038,7 +1053,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
       openRecent: () => recentCommandPicker.open(),
       sendCommand: (command: string) => { const b = bridgeRef.current; if (!b) throw new Error("terminal disposed"); return b.sendCommand(command) },
       sendCommandBackground: (command: string) => { const b = bridgeRef.current; if (!b) throw new Error("terminal disposed"); return b.sendCommandBackground(command) },
-      interruptCommand: () => { const b = bridgeRef.current; if (!b) throw new Error("terminal disposed"); b.interruptCommand() },
+      interruptCommand: () => { const b = bridgeRef.current; if (!b) throw new Error("terminal disposed"); return b.interruptCommand() },
       getRecentCommands: (limit = 500) => {
         // Keyboard-tracked (current session, always accurate) come first,
         // then fall back to CommandHistorySource for older/disk commands.
