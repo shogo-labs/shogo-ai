@@ -109,6 +109,17 @@ const prismaStub: any = {
           const aff = affiliates.get(a.affiliateId)
           if (!aff || aff.contentProgramStatus !== wantStatus) return false
         }
+        // Due gate: OR of `lastPolledAt == null` / `lastPolledAt <= dueBefore`
+        // (the per-account poll throttle in pollAllVerifiedAccounts).
+        if (Array.isArray(where?.OR)) {
+          const due = where.OR.some((clause: any) => {
+            if ('lastPolledAt' in clause && clause.lastPolledAt === null) return a.lastPolledAt == null
+            const lte = clause?.lastPolledAt?.lte
+            if (lte != null) return a.lastPolledAt != null && +a.lastPolledAt <= +lte
+            return false
+          })
+          if (!due) return false
+        }
         return true
       })
       if (orderBy?.createdAt === 'asc') rows = rows.sort((a, b) => +a.createdAt - +b.createdAt)
@@ -135,6 +146,11 @@ const prismaStub: any = {
       accounts.filter((a) => {
         if (where?.affiliateId && a.affiliateId !== where.affiliateId) return false
         if (where?.verificationStatus && a.verificationStatus !== where.verificationStatus) return false
+        const wantStatus = where?.affiliate?.contentProgramStatus
+        if (wantStatus) {
+          const aff = affiliates.get(a.affiliateId)
+          if (!aff || aff.contentProgramStatus !== wantStatus) return false
+        }
         return true
       }).length,
   },
@@ -615,5 +631,55 @@ describe('poll-affiliate-content cron', () => {
     const res = await job.runPollAffiliateContent()
     expect(res.accountsPolled).toBe(0)
     expect(res.newCommissionCents).toBe(0)
+  })
+
+  test('does not re-poll an account within the min interval (staggered-tick throttle)', async () => {
+    await connectVerified('tiktok', 'creator')
+    fakeProvider.postsToReturn = [makePost({ views: 1000 })]
+
+    // First tick at T0 polls the account.
+    const t0 = new Date('2026-06-16T00:00:00.000Z')
+    const first = await svc.pollAllVerifiedAccounts(t0)
+    expect(first.accountsPolled).toBe(1)
+    expect(first.accountsSkipped).toBe(0)
+
+    // A second pod's tick 30 minutes later (well inside the 4h interval) must
+    // poll nothing — this is the regression: without the due gate every
+    // staggered tick re-swept every account.
+    const t1 = new Date('2026-06-16T00:30:00.000Z')
+    const second = await svc.pollAllVerifiedAccounts(t1)
+    expect(second.accountsPolled).toBe(0)
+    expect(second.accountsSkipped).toBe(1)
+  })
+
+  test('re-polls once the min interval has elapsed', async () => {
+    await connectVerified('tiktok', 'creator')
+    fakeProvider.postsToReturn = [makePost({ views: 1000 })]
+
+    const t0 = new Date('2026-06-16T00:00:00.000Z')
+    await svc.pollAllVerifiedAccounts(t0)
+
+    // 4h later (the default interval) the account is due again.
+    const t1 = new Date('2026-06-16T04:00:00.000Z')
+    const res = await svc.pollAllVerifiedAccounts(t1)
+    expect(res.accountsPolled).toBe(1)
+    expect(res.accountsSkipped).toBe(0)
+  })
+
+  test('honors a custom minPollIntervalMinutes setting', async () => {
+    setContentSetting(settingsSvc.CONTENT_SETTING_KEYS.minPollIntervalMinutes, 60)
+    await connectVerified('tiktok', 'creator')
+    fakeProvider.postsToReturn = [makePost({ views: 1000 })]
+
+    const t0 = new Date('2026-06-16T00:00:00.000Z')
+    await svc.pollAllVerifiedAccounts(t0)
+
+    // 30m later: still throttled under a 60m interval.
+    const stillThrottled = await svc.pollAllVerifiedAccounts(new Date('2026-06-16T00:30:00.000Z'))
+    expect(stillThrottled.accountsPolled).toBe(0)
+
+    // 61m later: due again.
+    const due = await svc.pollAllVerifiedAccounts(new Date('2026-06-16T01:01:00.000Z'))
+    expect(due.accountsPolled).toBe(1)
   })
 })

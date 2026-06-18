@@ -84,6 +84,12 @@ variable "custom_domains_zone" {
   default     = null
 }
 
+variable "kourier_origin" {
+  description = "DNS-only origin host terminating at the staging Knative (Kourier) ingress that serves `{subdomain}.staging.shogo.one`/`{subdomain}.shogo.one` DomainMappings. The subdomain-router Worker proxies server-backed `/api/*` here. Null disables proxying (server-backed apps fall back to static serving) until the ingress host is set."
+  type        = string
+  default     = null
+}
+
 # -----------------------------------------------------------------------------
 # SigNoz (Observability)
 # -----------------------------------------------------------------------------

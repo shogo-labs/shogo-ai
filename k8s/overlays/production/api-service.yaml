@@ -151,6 +151,11 @@ spec:
             # K8s mode — see the post-2026-05-26 comment there.
             - name: PUBLISH_BUCKET
               value: "shogo-published-apps-production"
+            # Writable-state bucket for SERVER-BACKED published apps (their
+            # server.tsx SQLite DB + uploads). Must match
+            # `shogo-published-data-${var.environment}`.
+            - name: PUBLISH_DATA_BUCKET
+              value: "shogo-published-data-production"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             - name: BETTER_AUTH_URL
