@@ -1378,7 +1378,7 @@ export default observer(function ProjectLayout() {
     AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(() => {})
   }, [])
 
-  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['canvas', 'chat-fullscreen', 'app-preview', 'external-preview']), [])
+  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['canvas', 'chat-fullscreen', 'app-preview', 'external-preview', 'ide']), [])
 
   // Storage key bumped to v2 to heal installs that were stuck in
   // 'chat-fullscreen' due to the pre-fix attention/preview conflation. Old v1
@@ -1406,7 +1406,8 @@ export default observer(function ProjectLayout() {
       !requested ||
       (requested !== 'canvas' &&
         requested !== 'chat-fullscreen' &&
-        requested !== 'external-preview')
+        requested !== 'external-preview' &&
+        requested !== 'ide')
     ) {
       return
     }
@@ -1870,6 +1871,54 @@ export default observer(function ProjectLayout() {
     }
   }, [actions, projectId, workspaceRuntimeEnabled, http])
 
+  const openChatWithContextInCurrentWindow = useCallback(async (markdown: string) => {
+    if (!projectId) return
+    const initialMessage = markdown.trim()
+    if (!initialMessage) return
+
+    try {
+      let newId: string | null = null
+      if (workspaceRuntimeEnabled) {
+        const res = await api.createProjectWorkspaceSession(http, projectId, {
+          inferredName: 'Debug with AI',
+        })
+        newId = res.session?.id ?? null
+        if (!newId && res.error) {
+          console.error('[ProjectLayout] Failed to create workspace chat for context:', res.error)
+        }
+      } else {
+        const newSession = await actions.createChatSession({
+          inferredName: 'Debug with AI',
+          contextType: 'project',
+          contextId: projectId,
+        })
+        newId = newSession?.id ?? null
+      }
+      if (!newId) return
+
+      setDebugInitMessages((prev) => ({ ...prev, [newId]: initialMessage }))
+      setOpenChatTabIds((prev) => (prev.includes(newId) ? prev : [...prev, newId]))
+      setChatSessionId(newId)
+      setChatCollapsed(false)
+      setActiveTab('chat')
+      if (!isWide || !canvasEnabled) setPreviewTab('chat-fullscreen')
+      chatSessionEvents.emit({ projectId, activeSessionId: newId, refresh: true })
+    } catch (err) {
+      console.error('[ProjectLayout] Failed to open chat with context:', err)
+    }
+  }, [actions, canvasEnabled, http, isWide, projectId, workspaceRuntimeEnabled])
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ markdown?: string }>).detail
+      const markdown = typeof detail?.markdown === 'string' ? detail.markdown : ''
+      void openChatWithContextInCurrentWindow(markdown)
+    }
+    window.addEventListener('shogo:chat:open-with-context', handler)
+    return () => window.removeEventListener('shogo:chat:open-with-context', handler)
+  }, [openChatWithContextInCurrentWindow])
+
   // Let the sidebar switch this project's chats IN PLACE (no navigation /
   // remount) while the project is already open. The sidebar emits a select
   // request instead of router.push when its row is the active project.
@@ -2292,84 +2341,28 @@ export default observer(function ProjectLayout() {
     [billingHasActive, billingHasAdvanced, billingRefetch],
   )
 
+  const handleOpenCodeWorkbench = useCallback(() => {
+    if (!projectId) return
+    const bridge =
+      Platform.OS === 'web' && typeof window !== 'undefined'
+        ? window.shogoDesktop?.codeWorkbench
+        : undefined
+    if (bridge?.open) {
+      void bridge.open({ projectId: projectId! })
+      return
+    }
+    handlePreviewTabChange('ide')
+  }, [handlePreviewTabChange, projectId])
+
   // Loading state. We also gate on `runtimeReady` so the panels never
   // render with stale URLs — see `useAgentUrl` for the polling contract.
-  // The copy differs once project metadata has loaded but the per-project
-  // runtime is still booting, so the user understands why the wait is
-  // happening (a remote instance pins its own URL via `localAgentUrl`,
-  // which `useAgentUrl` treats as immediately-ready, so this only
-  // surfaces for the host/VM/K8s paths).
-  if (isLoading || !project || (!remoteProjectAgentBaseUrl && !runtimeReady)) {
-    const stillBootingRuntime = !isLoading && project && !remoteProjectAgentBaseUrl && !runtimeReady
-    // After STALL_THRESHOLD_MS (~45s) of polling, or on a 4xx/5xx
-    // response, surface what's happening and offer the user a way out —
-    // retrying in place, going back, or opening on web — instead of
-    // leaving them on an infinite "Starting your project…" spinner like
-    // the v1.0.8 TestFlight build (where the project runtime endpoint
-    // kept returning ready:false after the worklets stub crash + cold
-    // ASC subscription state).
-    const showStalledRecovery = stillBootingRuntime && (runtimeStalled || !!runtimeError)
-    return (
-      <>
-        <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
-        <View className="flex-1 bg-background items-center justify-center px-6">
-          {!showStalledRecovery && (
-            <>
-              <ActivityIndicator size="large" />
-              <Text className="text-muted-foreground mt-3 text-sm">
-                {stillBootingRuntime ? 'Starting your project…' : 'Loading project...'}
-              </Text>
-            </>
-          )}
-          {showStalledRecovery && (
-            <View className="w-full max-w-sm gap-3 items-center">
-              {/* Keep an indicator visible — polling continues in the
-                  background, and the recovery card on its own (no spinner,
-                  no progress) made the app look stuck even though
-                  useAgentUrl was still retrying. See iPad screenshot in
-                  PR #(fix/ios-sentry-launch-crash). */}
-              <ActivityIndicator size="small" />
-              <Text className="text-foreground text-base font-semibold text-center">
-                This is taking longer than expected
-              </Text>
-              <Text className="text-muted-foreground text-sm text-center">
-                {runtimeError
-                  ? `We couldn't reach your project's runtime${runtimeLastStatus ? ` (${runtimeLastStatus})` : ''}. Check your connection or try again.`
-                  : 'Your project runtime is still warming up. You can keep waiting, retry, or open it on the web.'}
-              </Text>
-              <View className="flex-row flex-wrap gap-2 mt-2 justify-center">
-                <Pressable
-                  onPress={() => retryAgentUrl()}
-                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
-                  accessibilityLabel="Retry connecting to your project"
-                >
-                  <Text className="text-foreground text-sm font-medium">Try again</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
-                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
-                  accessibilityLabel="Go back to projects list"
-                >
-                  <Text className="text-foreground text-sm font-medium">Go back</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    void openWebAppSession(`/projects/${projectId}`).catch((err) =>
-                      console.warn('[ProjectLayout] open-on-web failed:', err),
-                    )
-                  }}
-                  className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
-                  accessibilityLabel="Open this project on the web"
-                >
-                  <Text className="text-primary-foreground text-sm font-medium">Open on web</Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
-        </View>
-      </>
-    )
-  }
+  // Keep this as data for the final render branch instead of returning here:
+  // direct new-window loads start in this state, and returning before later
+  // hooks causes React hook-order error #310 when the project finishes loading.
+  const projectRouteLoading = isLoading || !project || (!remoteProjectAgentBaseUrl && !runtimeReady)
+  const stillBootingRuntime = !isLoading && !!project && !remoteProjectAgentBaseUrl && !runtimeReady
+  const showStalledRecovery = stillBootingRuntime && (runtimeStalled || !!runtimeError)
+
 
   /**
    * No tabs are open and we've finished hydrating from storage. This is the
@@ -2432,7 +2425,7 @@ export default observer(function ProjectLayout() {
             <PanelErrorBoundary panelName="Chat">
               <ChatPanel
                 featureId={projectId ?? null}
-                featureName={project.name}
+                featureName={project?.name ?? 'Project'}
                 phase={null}
                 chatSessionId={tabId}
                 onChatSessionChange={handleChatSessionChange}
@@ -2510,7 +2503,7 @@ export default observer(function ProjectLayout() {
   ) : null
 
   const topBarSharedProps = {
-    projectName: project.name,
+    projectName: project?.name ?? 'Project',
     projectId: projectId!,
     projects: allProjects,
     activeTab: effectiveTab,
@@ -2519,8 +2512,8 @@ export default observer(function ProjectLayout() {
     planLabel,
     usageWindows: billingData.usageWindows,
     ownerName: user?.name || '',
-    projectCreatedAt: project.createdAt,
-    projectModifiedAt: project.updatedAt,
+    projectCreatedAt: project?.createdAt,
+    projectModifiedAt: project?.updatedAt,
     isStarred,
     onRenameProject: handleRenameProject,
     onToggleStar: handleToggleStar,
@@ -2533,6 +2526,7 @@ export default observer(function ProjectLayout() {
     workingMode: isExternalProject ? 'external' as const : 'managed' as const,
     trustLevel: projectTrustLevel,
     onToggleTrust: handleToggleTrust,
+    onOpenCodeWorkbench: handleOpenCodeWorkbench,
     trustBusy: trustSubmitting,
     // The app sidebar is now the single home for browsing projects + chats,
     // so the project's own in-split chat-sessions panel and its toggles are
@@ -2564,6 +2558,64 @@ export default observer(function ProjectLayout() {
             if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
           }
         : undefined,
+  }
+
+  if (projectRouteLoading) {
+    return (
+      <>
+        <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
+        <View className="flex-1 bg-background items-center justify-center px-6">
+          {!showStalledRecovery && (
+            <>
+              <ActivityIndicator size="large" />
+              <Text className="text-muted-foreground mt-3 text-sm">
+                {stillBootingRuntime ? 'Starting your project…' : 'Loading project...'}
+              </Text>
+            </>
+          )}
+          {showStalledRecovery && (
+            <View className="w-full max-w-sm gap-3 items-center">
+              <ActivityIndicator size="small" />
+              <Text className="text-foreground text-base font-semibold text-center">
+                This is taking longer than expected
+              </Text>
+              <Text className="text-muted-foreground text-sm text-center">
+                {runtimeError
+                  ? `We couldn't reach your project's runtime${runtimeLastStatus ? ` (${runtimeLastStatus})` : ''}. Check your connection or try again.`
+                  : 'Your project runtime is still warming up. You can keep waiting, retry, or open it on the web.'}
+              </Text>
+              <View className="flex-row flex-wrap gap-2 mt-2 justify-center">
+                <Pressable
+                  onPress={() => retryAgentUrl()}
+                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
+                  accessibilityLabel="Retry connecting to your project"
+                >
+                  <Text className="text-foreground text-sm font-medium">Try again</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
+                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
+                  accessibilityLabel="Go back to projects list"
+                >
+                  <Text className="text-foreground text-sm font-medium">Go back</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    void openWebAppSession(`/projects/${projectId}`).catch((err) =>
+                      console.warn('[ProjectLayout] open-on-web failed:', err),
+                    )
+                  }}
+                  className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
+                  accessibilityLabel="Open this project on the web"
+                >
+                  <Text className="text-primary-foreground text-sm font-medium">Open on web</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+        </View>
+      </>
+    )
   }
 
   return (
@@ -2862,7 +2914,7 @@ export default observer(function ProjectLayout() {
             }
           >
             <PanelErrorBoundary panelName="IDE">
-              <IDEPanel visible={effectiveTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
+              <IDEPanel visible={effectiveTab === 'ide'} projectId={projectId!} projectName={project?.name ?? 'Project'} agentUrl={agentUrl} onOpenCodeWorkbench={handleOpenCodeWorkbench} />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Files">
               <FilesBrowserPanel visible={effectiveTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />

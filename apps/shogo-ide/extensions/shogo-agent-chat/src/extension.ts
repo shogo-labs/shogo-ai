@@ -1346,7 +1346,7 @@ class ShogoAgentChatViewProvider implements vscode.WebviewViewProvider {
     if (!bridge.url) {
       return {
         ok: false,
-        error: `Shogo Desktop agent bridge is not configured. Launch Shogo IDE from Shogo Desktop so it can pass the local agent URL, or set shogo.agentChat.bridgeUrl to ${getWorkspaceFolders()[0] ? 'the local Desktop API URL' : 'http://localhost:39100'}.`,
+        error: `Shogo Desktop agent bridge is not configured. This legacy external IDE extension is developer-only; set shogo.agentChat.bridgeUrl to ${getWorkspaceFolders()[0] ? 'the local Desktop API URL' : 'http://localhost:39100'} when running it manually.`,
       }
     }
 

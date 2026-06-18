@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { Tray, Menu, nativeImage, BrowserWindow, app } from 'electron'
+import { Tray, Menu, nativeImage, app } from 'electron'
 import path from 'path'
 import { startRecording, stopRecording, getRecordingStatus } from './recording'
 import { readConfig, writeConfig } from './config'
 
+interface TrayOptions {
+  openMeetings?: () => void
+}
+
 let tray: Tray | null = null
 let updateTimer: ReturnType<typeof setInterval> | null = null
+let openMeetings: () => void = () => {}
 
 function getTrayIcon(recording: boolean): Electron.NativeImage {
   // Use a template image for macOS menu bar (adapts to light/dark)
@@ -110,12 +115,7 @@ function buildContextMenu(): Menu {
 }
 
 function focusAndNavigate(): void {
-  const win = BrowserWindow.getAllWindows()[0]
-  if (win) {
-    if (win.isMinimized()) win.restore()
-    win.focus()
-    win.webContents.send('navigate', '/meetings')
-  }
+  openMeetings()
 }
 
 function refreshTray(): void {
@@ -133,7 +133,8 @@ function refreshTray(): void {
   }
 }
 
-export function createTray(): void {
+export function createTray(options: TrayOptions = {}): void {
+  if (options.openMeetings) openMeetings = options.openMeetings
   if (tray) return
 
   tray = new Tray(getTrayIcon(false))

@@ -5,6 +5,7 @@ import { AudioCaptureManager, type PcmChunkMessage } from './audio/audio-capture
 
 const portArg = process.argv.find((a) => a.startsWith('--api-port='))
 const apiPort = portArg ? portArg.split('=')[1] : '39100'
+const externalIdeLaunchEnabled = process.env.SHOGO_ENABLE_EXTERNAL_IDE_LAUNCH === 'true'
 
 // --- Recording capture pipeline (runs here, in the renderer) ----------------
 
@@ -116,6 +117,18 @@ window.addEventListener('beforeunload', () => { void stopActive() })
 
 // --- Exposed surface -------------------------------------------------------
 
+const shogoIdeBridge = {
+  getStatus: () => ipcRenderer.invoke('shogo-ide:get-status'),
+  openWorkspaceFolder: () => ipcRenderer.invoke('shogo-ide:open-workspace-folder'),
+  ...(externalIdeLaunchEnabled
+    ? { launch: (opts?: { workspacePath?: string }) => ipcRenderer.invoke('shogo-ide:launch', opts ?? {}) }
+    : {}),
+}
+
+ipcRenderer.on('shogo:chat:open-with-context', (_event, payload: { markdown?: string }) => {
+  window.dispatchEvent(new CustomEvent('shogo:chat:open-with-context', { detail: payload }))
+})
+
 contextBridge.exposeInMainWorld('shogoDesktop', {
   platform: process.platform,
   isDesktop: true,
@@ -124,10 +137,22 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   setAppMode: (mode: 'local' | 'cloud') => ipcRenderer.invoke('set-app-mode', mode),
 
-  shogoIde: {
-    getStatus: () => ipcRenderer.invoke('shogo-ide:get-status'),
-    launch: (opts?: { workspacePath?: string }) => ipcRenderer.invoke('shogo-ide:launch', opts ?? {}),
-    openWorkspaceFolder: () => ipcRenderer.invoke('shogo-ide:open-workspace-folder'),
+  shogoIde: shogoIdeBridge,
+  codeWorkbench: {
+    open: (opts?: { projectId?: string; workspacePath?: string }) => ipcRenderer.invoke('code-workbench:open', opts ?? {}),
+  },
+  ideView: {
+    open: (projectId: string, opts?: { workspacePath?: string }): Promise<{ ok: boolean; url?: string; error?: string }> =>
+      ipcRenderer.invoke('ide-view:open', { projectId, workspacePath: opts?.workspacePath }),
+    close: (projectId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('ide-view:close', { projectId }),
+    setBounds: (
+      projectId: string,
+      bounds: { x: number; y: number; width: number; height: number },
+    ): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('ide-view:set-bounds', { projectId, bounds }),
+    setVisible: (projectId: string, visible: boolean): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('ide-view:set-visible', { projectId, visible }),
   },
 
   // Open the native folder picker for external/IDE-style projects.

@@ -70,7 +70,7 @@ export function ShogoIdeReplacementGate({
   const launch = async () => {
     if (!bridge || busy || workspaceResolved === false) return
     setBusy(true)
-    setMessage(projectRoot ? 'Opening Shogo IDE…' : 'Opening Shogo IDE with the default workspace…')
+    setMessage(projectRoot ? 'Opening external IDE dev runtime…' : 'Opening external IDE dev runtime with the default workspace…')
     try {
       const result = await bridge.launch(projectRoot ? { workspacePath: projectRoot } : undefined)
       setStatus(result.status)
@@ -90,10 +90,10 @@ export function ShogoIdeReplacementGate({
 
   const resolving = workspaceResolved === false
   const disabled = busy || resolving
-  const label = resolving ? 'Resolving…' : busy ? 'Opening…' : 'Open Shogo IDE'
+  const label = resolving ? 'Resolving…' : busy ? 'Opening…' : 'Open external IDE (dev)'
   const title = resolving
     ? 'Resolving the project folder before opening Shogo IDE'
-    : `Open Shogo IDE${projectName ? ` for ${projectName}` : ''}`
+    : `Open external IDE dev runtime${projectName ? ` for ${projectName}` : ''}`
   const setupLogPath = status?.setupLogPath && !status.launchReady ? status.setupLogPath : null
   const diagnostics = message && !status?.launchReady ? status?.diagnostics ?? [] : []
 

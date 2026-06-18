@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useEffect, useMemo, useState } from 'react'
-import { Platform, View, Text } from 'react-native'
+import { Platform, View, Text, Pressable } from 'react-native'
 import { Code2 } from 'lucide-react-native'
 import { Workbench } from './ide/Workbench'
-import { ShogoIdeReplacementGate, getShogoIdeBridge } from './ide/ShogoIdeReplacementGate'
 import { sdkFsFor } from './ide/workspace/sdkFs'
 import { DesktopFs, getDesktopFsBridge } from './ide/workspace/desktopFs'
 import type { WorkspaceService } from './ide/workspace/types'
@@ -15,6 +14,7 @@ interface IDEPanelProps {
   projectId: string
   projectName?: string | null
   agentUrl?: string | null
+  onOpenCodeWorkbench?: () => void
 }
 
 /**
@@ -27,19 +27,10 @@ interface IDEPanelProps {
  * are rendered as "backend-pending" placeholders until the agent-runtime
  * exposes those routes (follow-up phase).
  *
- * In Shogo Desktop, the IDE tab keeps the Monaco Workbench as the default
- * in-app editing surface. The Code OSS-based Shogo IDE is available through a
- * small explicit desktop-only action so switching tabs never opens a second IDE
- * unless the user asks for it.
+ * In Shogo Desktop, this IDE tab is the in-app editing surface. It must not
+ * launch a separate Code OSS/Shogo IDE runtime from normal product UI.
  */
-export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanelProps) {
-  const [hasShogoIdeBridge] = useState(() => {
-    if (Platform.OS !== 'web') return false
-    if (typeof window === 'undefined') return false
-    const desktop = (window as unknown as { shogoDesktop?: { isDesktop?: boolean } }).shogoDesktop
-    return desktop?.isDesktop === true && !!getShogoIdeBridge()
-  })
-
+export function IDEPanel({ visible, projectId, projectName, agentUrl, onOpenCodeWorkbench }: IDEPanelProps) {
   // SdkFs is always-on: it's the canonical backend for writes, search, and
   // SSE subscriptions even when the desktop IPC fast-path is available
   // (DesktopFs wraps and delegates to it). Memo keeps the AgentClient +
@@ -55,35 +46,29 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
   // round-trip to agent-runtime. If no (web build, cloud mode, or external
   // folder-bound project), fall through to plain SdkFs.
   const [agentService, setAgentService] = useState<WorkspaceService | null>(sdkService)
-  const [desktopWorkspaceRoot, setDesktopWorkspaceRoot] = useState<string | null>(null)
-  const [desktopWorkspaceChecked, setDesktopWorkspaceChecked] = useState(false)
+  const [desktopWorkspaceRoot, setDesktopWorkspaceRoot] = useState<string | null | undefined>(undefined)
   useEffect(() => {
     setAgentService(sdkService)
-    setDesktopWorkspaceRoot(null)
-    setDesktopWorkspaceChecked(false)
-    if (!sdkService) {
-      setDesktopWorkspaceChecked(true)
-      return
-    }
+    setDesktopWorkspaceRoot(undefined)
     const bridge = getDesktopFsBridge()
     if (!bridge) {
-      setDesktopWorkspaceChecked(true)
+      setDesktopWorkspaceRoot(null)
       return
     }
     let cancelled = false
     void bridge.resolveWorkspace(projectId)
       .then((res) => {
         if (cancelled) return
-        if (res.ok && res.root) {
-          setDesktopWorkspaceRoot(res.root)
+        const root = res.ok && res.root ? res.root : null
+        setDesktopWorkspaceRoot(root)
+        if (root && sdkService) {
           setAgentService(
-            new DesktopFs(bridge, res.root, sdkService, `project/${projectId} (desktop-fast-path)`),
+            new DesktopFs(bridge, root, sdkService, `project/${projectId} (desktop-fast-path)`),
           )
         }
       })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setDesktopWorkspaceChecked(true)
+      .catch(() => {
+        if (!cancelled) setDesktopWorkspaceRoot(null)
       })
     return () => { cancelled = true }
   }, [sdkService, projectId])
@@ -124,14 +109,16 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
           agentUrl={agentUrl ?? undefined}
           fetchImpl={agentFetch}
         />
-        {hasShogoIdeBridge && visible && (
-          <ShogoIdeReplacementGate
-            projectName={projectName || `project/${projectId}`}
-            projectRoot={desktopWorkspaceRoot}
-            workspaceResolved={desktopWorkspaceChecked}
-          />
-        )}
       </div>
+      {onOpenCodeWorkbench ? (
+        <Pressable
+          onPress={onOpenCodeWorkbench}
+          className="absolute top-3 right-3 z-20 rounded-md border border-orange-500/60 bg-background/90 px-3 py-1.5 shadow-sm active:opacity-80"
+          accessibilityLabel="Open Shogo IDE"
+        >
+          <Text className="text-xs font-semibold text-orange-500">Open Shogo IDE</Text>
+        </Pressable>
+      ) : null}
     </View>
   )
 }

@@ -122,6 +122,7 @@ export interface ProjectTopBarProps {
   projects?: ProjectSwitcherItem[]
   activeTab?: string
   onTabChange?: (tabId: string) => void
+  onOpenCodeWorkbench?: () => void
   onProjectSwitch?: (projectId: string) => void
   hasActiveSubscription?: boolean
   workspaceName?: string
@@ -310,6 +311,7 @@ export function ProjectTopBar({
   projects = [],
   activeTab = 'canvas',
   onTabChange,
+  onOpenCodeWorkbench,
   onProjectSwitch,
   hasActiveSubscription = false,
   workspaceName = '',
@@ -437,7 +439,11 @@ export function ProjectTopBar({
     } else {
       onTabChange?.(tabId)
     }
-  }, [onNarrowTabChange, onTabChange])
+
+    if (tabId === 'ide') {
+      onOpenCodeWorkbench?.()
+    }
+  }, [onNarrowTabChange, onOpenCodeWorkbench, onTabChange])
 
   const getTabActive = useCallback((tabId: string) => {
     if (onNarrowTabChange) {
