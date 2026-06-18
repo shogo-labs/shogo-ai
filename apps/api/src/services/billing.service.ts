@@ -25,6 +25,7 @@ import {
   FIVE_HOUR_MS,
   SEVEN_DAY_MS,
   comparePlanRank,
+  getAlwaysOnAllowance,
   getDailyIncludedForPlan,
   getMonthlyIncludedForPlan,
   getWindowLimitsForPlan,
@@ -368,6 +369,67 @@ export async function isBusinessOrHigherPlan(workspaceId: string): Promise<boole
   if (isLocalMode) return true
   const plan = await getEffectivePlanId(workspaceId)
   return PLAN_RANK[plan] >= PLAN_RANK.business
+}
+
+/**
+ * Total always-on published-app slots a workspace is entitled to, pooled
+ * across all its published projects. Resolves the effective plan + entitled
+ * seats (paid Stripe seats + granted free seats, min 1) and applies the
+ * per-seat allowance from `ALWAYS_ON_SLOTS_PER_SEAT`. Returns `Infinity` for
+ * uncapped plans (enterprise) and `Infinity` in local mode.
+ */
+export async function getAlwaysOnAllowanceForWorkspace(workspaceId: string): Promise<number> {
+  if (isLocalMode) return Infinity
+  const now = new Date()
+  const [plan, sub, grant] = await Promise.all([
+    getEffectivePlanId(workspaceId, now),
+    prisma.subscription.findFirst({
+      where: { workspaceId, status: { in: ['active', 'trialing'] } },
+      select: { seats: true },
+    }),
+    getActiveGrantsForWorkspace(workspaceId, now),
+  ])
+  const seats = Math.max(1, (sub?.seats ?? 0) + (grant.freeSeats ?? 0))
+  return getAlwaysOnAllowance(plan, seats)
+}
+
+/**
+ * Count a workspace's currently-consumed always-on slots: live published
+ * projects with `publishedAlwaysOn = true`. Pass `excludeProjectId` to omit
+ * the project being toggled (so a no-op re-enable doesn't count itself).
+ */
+export async function countAlwaysOnUsed(
+  workspaceId: string,
+  excludeProjectId?: string,
+): Promise<number> {
+  return prisma.project.count({
+    where: {
+      workspaceId,
+      publishedAlwaysOn: true,
+      publishStatus: 'live',
+      ...(excludeProjectId ? { id: { not: excludeProjectId } } : {}),
+    },
+  })
+}
+
+/**
+ * Decide whether `projectId` may enable always-on. Returns the decision plus
+ * the numbers the UI/route need to render an accurate message:
+ *   - `planAllows`  — the plan grants any always-on slots at all (pro+)
+ *   - `allowed`     — there is a free slot remaining for this project
+ *   - `allowance`   — total pooled slots (Infinity = unlimited)
+ *   - `used`        — slots consumed by *other* live projects
+ */
+export async function canEnableAlwaysOn(
+  workspaceId: string,
+  projectId: string,
+): Promise<{ allowed: boolean; planAllows: boolean; allowance: number; used: number }> {
+  if (isLocalMode) return { allowed: true, planAllows: true, allowance: Infinity, used: 0 }
+  const [allowance, used] = await Promise.all([
+    getAlwaysOnAllowanceForWorkspace(workspaceId),
+    countAlwaysOnUsed(workspaceId, projectId),
+  ])
+  return { allowed: used < allowance, planAllows: allowance > 0, allowance, used }
 }
 
 /** Snapshot of one rolling usage window for the usage endpoint / UI. */

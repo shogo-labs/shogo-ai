@@ -952,6 +952,38 @@ export class KnativeProjectManager {
   }
 
   /**
+   * Set the min-scale on a *published* service (`published-{projectId}`)
+   * without a rebuild. Backs the "Always on" toggle: `minScale=1` keeps a
+   * warm replica (no cold start for visitors), `minScale=0` restores
+   * scale-to-zero. Unlike `scaleProject`, the service name is fixed
+   * (`published-{projectId}`) and not resolved from `knativeServiceName`,
+   * which points at the project's preview/runtime service.
+   *
+   * A merge-patch on the template annotation rolls a new revision, so a live
+   * always-on flip reschedules in place. No-ops gracefully (404) if the
+   * published service doesn't exist yet — the publish flow seeds min-scale at
+   * create time from `Project.publishedAlwaysOn`.
+   */
+  async setPublishedMinScale(projectId: string, minScale: number): Promise<void> {
+    const serviceName = `published-${projectId}`
+    const patch = {
+      spec: {
+        template: {
+          metadata: {
+            annotations: {
+              "autoscaling.knative.dev/min-scale": String(minScale),
+            },
+          },
+        },
+      },
+    }
+    await mergePatchKnativeService(this.namespace, serviceName, patch)
+    console.log(
+      `[KnativeProjectManager] Set published service ${serviceName} min-scale=${minScale}`,
+    )
+  }
+
+  /**
    * Resolve the Knative Service name for a project.
    * Checks the DB for a saved knativeServiceName (promoted warm pod),
    * falls back to the project-{id} convention.
@@ -1396,7 +1428,11 @@ export class KnativeProjectManager {
    * An init container syncs files from S3 on pod startup.
    * No database sidecar -- published apps are static sites.
    */
-  async createPublishedService(projectId: string, subdomain: string): Promise<string> {
+  async createPublishedService(
+    projectId: string,
+    subdomain: string,
+    opts?: { minScale?: number },
+  ): Promise<string> {
     const serviceName = `published-${projectId}`
     const api = getCustomApi()
     const publishBucket = process.env.PUBLISH_BUCKET || 'shogo-published-apps-staging'
@@ -1450,7 +1486,9 @@ export class KnativeProjectManager {
         template: {
           metadata: {
             annotations: {
-              "autoscaling.knative.dev/min-scale": "0",
+              // min-scale defaults to 0 (scale-to-zero); always-on published
+              // apps pass minScale=1 to keep a warm replica (no cold start).
+              "autoscaling.knative.dev/min-scale": String(opts?.minScale ?? 0),
               "autoscaling.knative.dev/max-scale": "1",
               "autoscaling.knative.dev/scale-to-zero-pod-retention-period": "1800s",
               "autoscaling.knative.dev/target": "100",
@@ -1553,7 +1591,11 @@ export class KnativeProjectManager {
    * reused unchanged. `min-scale=0` / `max-scale=1` gives scale-to-zero with a
    * single writer (no concurrent DB-archive uploaders).
    */
-  async createPublishedServerService(projectId: string, subdomain: string): Promise<string> {
+  async createPublishedServerService(
+    projectId: string,
+    subdomain: string,
+    opts?: { minScale?: number },
+  ): Promise<string> {
     const serviceName = `published-${projectId}`
     const api = getCustomApi()
     const runtimeImage = RUNTIME_CONFIG.image()
@@ -1660,7 +1702,9 @@ export class KnativeProjectManager {
         template: {
           metadata: {
             annotations: {
-              "autoscaling.knative.dev/min-scale": "0",
+              // min-scale defaults to 0 (scale-to-zero); always-on published
+              // apps pass minScale=1 to keep a warm replica (no cold start).
+              "autoscaling.knative.dev/min-scale": String(opts?.minScale ?? 0),
               "autoscaling.knative.dev/max-scale": "1",
               "autoscaling.knative.dev/scale-to-zero-pod-retention-period": "1800s",
               "autoscaling.knative.dev/target": "10",

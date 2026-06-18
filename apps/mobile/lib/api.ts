@@ -735,6 +735,15 @@ export const api = {
       accessLevel?: string
       publishedCommitSha?: string
       publishedTag?: string
+      publishStatus?: string
+      /** Whether the published app keeps a warm pod (min-scale=1). */
+      alwaysOn?: boolean
+      /** Pooled always-on slots for the workspace; null = unlimited. */
+      alwaysOnAllowance?: number | null
+      /** Always-on slots currently consumed across the workspace. */
+      alwaysOnUsed?: number
+      /** Whether the app has a backend (only then is always-on meaningful). */
+      serverBacked?: boolean
     }>(
       `/api/projects/${projectId}/publish`,
     )
@@ -758,6 +767,32 @@ export const api = {
 
   async unpublishProject(http: HttpClient, projectId: string) {
     await http.post(`/api/projects/${projectId}/unpublish`)
+  },
+
+  // Update mutable publish settings on an already-published project. Today
+  // covers access level, site title/description, and the always-on toggle.
+  // Enabling always-on is entitlement-gated server-side: a 402 surfaces a
+  // `slot_exhausted` / `plan_not_allowed` error the UI uses to prompt upgrade.
+  async updatePublishSettings(
+    http: HttpClient,
+    projectId: string,
+    settings: {
+      accessLevel?: string
+      siteTitle?: string
+      siteDescription?: string
+      alwaysOn?: boolean
+    },
+  ) {
+    const res = await http.patch<{
+      url: string
+      subdomain: string
+      publishedAt?: number
+      accessLevel?: string
+      siteTitle?: string
+      siteDescription?: string
+      alwaysOn?: boolean
+    }>(`/api/projects/${projectId}/publish`, settings)
+    return res.data
   },
 
   // Rebuild + re-upload the current commit to the same subdomain (and re-tag

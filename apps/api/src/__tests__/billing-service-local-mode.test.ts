@@ -45,6 +45,7 @@ mock.module('../config/usage-plans', () => ({
   getMonthlyIncludedForPlan: () => 0,
   normalizePlanId: (p: string | null | undefined) => (p ?? null),
   comparePlanRank: () => 0,
+  getAlwaysOnAllowance: () => 0,
 }))
 
 mock.module('../config/stripe-prices', () => ({
