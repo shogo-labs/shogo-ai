@@ -228,6 +228,17 @@ mock.module('../config/usage-plans', () => ({
     }
     return (rank[norm(a)] ?? 0) - (rank[norm(b)] ?? 0)
   },
+  getAlwaysOnAllowance: (planId: string | null | undefined, seats = 1) => {
+    const lc = String(planId ?? 'free').toLowerCase().trim()
+    const key = lc.startsWith('enterprise') ? 'enterprise'
+      : lc.startsWith('business') ? 'business'
+      : lc.startsWith('pro') ? 'pro'
+      : lc.startsWith('basic') ? 'basic'
+      : 'free'
+    if (key === 'enterprise') return Infinity
+    if (key === 'pro' || key === 'business') return Math.max(1, Math.floor(seats || 1))
+    return 0
+  },
 }))
 
 mock.module('../config/stripe-prices', () => ({

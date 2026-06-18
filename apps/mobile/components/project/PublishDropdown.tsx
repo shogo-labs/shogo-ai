@@ -30,7 +30,9 @@ import {
   ChevronDown,
   History,
   UploadCloud,
+  Zap,
 } from 'lucide-react-native'
+import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   Popover,
@@ -38,6 +40,7 @@ import {
   PopoverBody,
   PopoverContent,
 } from '@/components/ui/popover'
+import { Switch } from '@/components/ui/switch'
 import { api } from '../../lib/api'
 import { useDomainHttp } from '../../contexts/domain'
 import { CustomDomainsSection } from './CustomDomainsSection'
@@ -61,6 +64,7 @@ interface PublishDropdownProps {
 
 export function PublishDropdown({ projectId, projectName, onViewHistory }: PublishDropdownProps) {
   const http = useDomainHttp()
+  const router = useRouter()
   const [isOpen, setIsOpen] = useState(false)
   const [subdomain, setSubdomain] = useState(
     () => projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
@@ -75,6 +79,15 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const [isRepublishing, setIsRepublishing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showAccessPicker, setShowAccessPicker] = useState(false)
+
+  // Always-on (min-scale=1) state. `allowance === null` means unlimited
+  // (enterprise/local). `serverBacked` gates whether the row is shown at all —
+  // a static app gains nothing from a warm pod.
+  const [alwaysOn, setAlwaysOn] = useState(false)
+  const [alwaysOnAllowance, setAlwaysOnAllowance] = useState<number | null>(0)
+  const [alwaysOnUsed, setAlwaysOnUsed] = useState(0)
+  const [serverBacked, setServerBacked] = useState(false)
+  const [isTogglingAlwaysOn, setIsTogglingAlwaysOn] = useState(false)
 
   const [subdomainStatus, setSubdomainStatus] = useState<{
     checking: boolean
@@ -100,6 +113,10 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
         setPublishedCommitSha(data.publishedCommitSha ?? null)
         if (data.accessLevel) setAccessLevel(data.accessLevel as AccessLevel)
       }
+      setAlwaysOn(data.alwaysOn === true)
+      setAlwaysOnAllowance(data.alwaysOnAllowance ?? null)
+      setAlwaysOnUsed(data.alwaysOnUsed ?? 0)
+      setServerBacked(data.serverBacked !== false)
     } catch {}
   }, [http, projectId])
 
@@ -147,11 +164,41 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
       setIsPublished(false)
       setPublishedSubdomain(null)
       setPublishedAt(null)
+      // Unpublishing frees the always-on slot back to the workspace pool.
+      setAlwaysOn(false)
+      setAlwaysOnUsed((u) => Math.max(0, u - (alwaysOn ? 1 : 0)))
     } catch (err: any) {
       setError(err.message || 'Failed to unpublish')
     } finally {
       setIsUnpublishing(false)
     }
+  }
+
+  // Flip the always-on toggle. Optimistic: update immediately, revert + surface
+  // the server message on failure (e.g. 402 slot_exhausted / plan_not_allowed).
+  const handleToggleAlwaysOn = async (next: boolean) => {
+    if (isTogglingAlwaysOn) return
+    setIsTogglingAlwaysOn(true)
+    setError(null)
+    const prevOn = alwaysOn
+    const prevUsed = alwaysOnUsed
+    setAlwaysOn(next)
+    setAlwaysOnUsed((u) => Math.max(0, u + (next ? 1 : -1)))
+    try {
+      const data = await api.updatePublishSettings(http, projectId, { alwaysOn: next })
+      setAlwaysOn(data.alwaysOn === true)
+    } catch (err: any) {
+      setAlwaysOn(prevOn)
+      setAlwaysOnUsed(prevUsed)
+      setError(err?.message || 'Failed to update always-on')
+    } finally {
+      setIsTogglingAlwaysOn(false)
+    }
+  }
+
+  const goToBilling = () => {
+    setIsOpen(false)
+    router.push('/(app)/billing' as any)
   }
 
   // Re-deploy the current HEAD to the SAME subdomain (rebuild + re-tag). Unlike
@@ -185,6 +232,12 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
     !isPublishing
 
   const currentAccess = ACCESS_OPTIONS.find(o => o.value === accessLevel) || ACCESS_OPTIONS[0]
+
+  const unlimitedAlwaysOn = alwaysOnAllowance == null
+  const planAllowsAlwaysOn = unlimitedAlwaysOn || (alwaysOnAllowance ?? 0) > 0
+  const alwaysOnSlotsFull = !unlimitedAlwaysOn && alwaysOnUsed >= (alwaysOnAllowance ?? 0)
+  // Turning OFF is always allowed; turning ON requires a free slot in the pool.
+  const canToggleAlwaysOn = alwaysOn || unlimitedAlwaysOn || !alwaysOnSlotsFull
 
   return (
     <Popover
@@ -320,6 +373,68 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
               </View>
             )}
           </View>
+
+          {/* Always on — only for server-backed published apps (a static app
+              served from the edge gains nothing from a warm pod). Mirrors
+              Heroku's per-app dyno-type choice, made jargon-free. */}
+          {isPublished && serverBacked && (
+            <View className="mb-4 rounded-lg border border-border p-3">
+              {!planAllowsAlwaysOn ? (
+                <Pressable onPress={goToBilling} className="flex-row items-center gap-3">
+                  <Zap size={16} className="text-muted-foreground" />
+                  <View className="flex-1">
+                    <View className="flex-row items-center gap-2">
+                      <Text className="text-sm font-medium text-foreground">Always on</Text>
+                      <View className="rounded px-1.5 bg-primary/10">
+                        <Text className="text-[10px] text-primary font-medium">Pro</Text>
+                      </View>
+                    </View>
+                    <Text className="text-[11px] text-muted-foreground mt-0.5">
+                      Keep your app instant for every visitor — no wake-up delay. Available on Pro & Business.
+                    </Text>
+                  </View>
+                  <ExternalLink size={14} className="text-primary" />
+                </Pressable>
+              ) : (
+                <>
+                  <View className="flex-row items-center justify-between">
+                    <View className="flex-1 pr-3">
+                      <View className="flex-row items-center gap-1.5">
+                        <Zap size={14} className="text-foreground" />
+                        <Text className="text-sm font-medium text-foreground">Always on</Text>
+                      </View>
+                      <Text className="text-[11px] text-muted-foreground mt-0.5">
+                        {alwaysOn
+                          ? 'Instant for every visitor, no wake-up delay.'
+                          : 'Sleeps when idle — the first visit after ~30 min takes a few seconds to wake.'}
+                      </Text>
+                    </View>
+                    {isTogglingAlwaysOn ? (
+                      <ActivityIndicator size="small" />
+                    ) : (
+                      <Switch
+                        value={alwaysOn}
+                        onValueChange={handleToggleAlwaysOn}
+                        disabled={!canToggleAlwaysOn}
+                      />
+                    )}
+                  </View>
+                  <Text className="text-[11px] text-muted-foreground mt-2">
+                    {unlimitedAlwaysOn
+                      ? 'Always-on apps: unlimited'
+                      : `Always-on apps: ${alwaysOnUsed} of ${alwaysOnAllowance} used`}
+                  </Text>
+                  {!alwaysOn && alwaysOnSlotsFull && !unlimitedAlwaysOn && (
+                    <Pressable onPress={goToBilling} className="mt-1">
+                      <Text className="text-[11px] text-primary">
+                        You're using all {alwaysOnAllowance} always-on apps. Upgrade or add a seat.
+                      </Text>
+                    </Pressable>
+                  )}
+                </>
+              )}
+            </View>
+          )}
 
           {/* Custom domains — only meaningful once the app is published.
               `http` is passed down because this dropdown renders inside a

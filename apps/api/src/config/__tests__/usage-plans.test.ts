@@ -14,7 +14,9 @@ import {
   ROLLING_WINDOW_LIMITS,
   SEAT_INCLUDED_USD,
   VOICE_RAW_USD,
+  ALWAYS_ON_SLOTS_PER_SEAT,
   comparePlanRank,
+  getAlwaysOnAllowance,
   getDailyIncludedForPlan,
   getMonthlyIncludedForPlan,
   getMonthlyIncludedEquivalent,
@@ -357,5 +359,43 @@ describe('comparePlanRank', () => {
   it('normalizes decorated ids before comparing', () => {
     expect(comparePlanRank('Pro-Annual', 'business_monthly')).toBeLessThan(0)
     expect(comparePlanRank('Enterprise-XL', 'pro_200')).toBeGreaterThan(0)
+  })
+})
+
+describe('always-on slot allowance', () => {
+  it('ALWAYS_ON_SLOTS_PER_SEAT gates always-on to pro+ with enterprise uncapped', () => {
+    expect(ALWAYS_ON_SLOTS_PER_SEAT.free).toBe(0)
+    expect(ALWAYS_ON_SLOTS_PER_SEAT.basic).toBe(0)
+    expect(ALWAYS_ON_SLOTS_PER_SEAT.pro).toBe(1)
+    expect(ALWAYS_ON_SLOTS_PER_SEAT.business).toBe(1)
+    expect(ALWAYS_ON_SLOTS_PER_SEAT.enterprise).toBeNull()
+  })
+
+  it('free / basic get zero regardless of seats', () => {
+    expect(getAlwaysOnAllowance('free', 5)).toBe(0)
+    expect(getAlwaysOnAllowance('basic', 10)).toBe(0)
+  })
+
+  it('pro / business scale 1 slot per seat (pooled)', () => {
+    expect(getAlwaysOnAllowance('pro', 1)).toBe(1)
+    expect(getAlwaysOnAllowance('pro', 3)).toBe(3)
+    expect(getAlwaysOnAllowance('business', 4)).toBe(4)
+  })
+
+  it('clamps seats to a minimum of 1', () => {
+    expect(getAlwaysOnAllowance('pro', 0)).toBe(1)
+    expect(getAlwaysOnAllowance('pro', -2)).toBe(1)
+  })
+
+  it('enterprise is unlimited (Infinity) at any seat count', () => {
+    expect(getAlwaysOnAllowance('enterprise', 1)).toBe(Infinity)
+    expect(getAlwaysOnAllowance('enterprise', 100)).toBe(Infinity)
+  })
+
+  it('normalizes decorated ids and falls back to free (0) for unknown', () => {
+    expect(getAlwaysOnAllowance('Pro-Annual', 2)).toBe(2)
+    expect(getAlwaysOnAllowance('Enterprise-XL', 1)).toBe(Infinity)
+    expect(getAlwaysOnAllowance('platinum', 5)).toBe(0)
+    expect(getAlwaysOnAllowance(null, 5)).toBe(0)
   })
 })
