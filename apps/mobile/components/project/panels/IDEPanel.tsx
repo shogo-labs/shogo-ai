@@ -27,10 +27,10 @@ interface IDEPanelProps {
  * are rendered as "backend-pending" placeholders until the agent-runtime
  * exposes those routes (follow-up phase).
  *
- * In Shogo Desktop, Phase 5 defaults this tab to the Code OSS-based Shogo IDE
- * replacement gate. The Monaco Workbench is now an explicit Legacy fallback;
- * when that fallback is open it still stays mounted while hidden so live-edit
- * subscriptions are not torn down on tab switches.
+ * In Shogo Desktop, the IDE tab keeps the Monaco Workbench as the default
+ * in-app editing surface. The Code OSS-based Shogo IDE is available through a
+ * small explicit desktop-only action so switching tabs never opens a second IDE
+ * unless the user asks for it.
  */
 export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanelProps) {
   const [hasShogoIdeBridge] = useState(() => {
@@ -39,20 +39,6 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
     const desktop = (window as unknown as { shogoDesktop?: { isDesktop?: boolean } }).shogoDesktop
     return desktop?.isDesktop === true && !!getShogoIdeBridge()
   })
-  const [legacyIdeOpen, setLegacyIdeOpen] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return window.localStorage.getItem('shogo.ide.legacyMonaco') === 'true'
-  })
-
-  const openLegacyIde = () => {
-    if (typeof window !== 'undefined') window.localStorage.setItem('shogo.ide.legacyMonaco', 'true')
-    setLegacyIdeOpen(true)
-  }
-
-  const closeLegacyIde = () => {
-    if (typeof window !== 'undefined') window.localStorage.removeItem('shogo.ide.legacyMonaco')
-    setLegacyIdeOpen(false)
-  }
 
   // SdkFs is always-on: it's the canonical backend for writes, search, and
   // SSE subscriptions even when the desktop IPC fast-path is available
@@ -118,26 +104,6 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
     )
   }
 
-  if (hasShogoIdeBridge && !legacyIdeOpen) {
-    if (!visible) return null
-    if (!desktopWorkspaceChecked) {
-      return (
-        <View className="flex-1 items-center justify-center p-6 bg-background">
-          <Text className="text-muted-foreground text-xs">Resolving project folder…</Text>
-        </View>
-      )
-    }
-    return (
-      <View style={{ flex: 1, minHeight: 0 }}>
-        <ShogoIdeReplacementGate
-          projectName={projectName || `project/${projectId}`}
-          projectRoot={desktopWorkspaceRoot}
-          onOpenLegacy={openLegacyIde}
-        />
-      </View>
-    )
-  }
-
   if (!agentService) {
     if (!visible) return null
     return (
@@ -159,16 +125,11 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
           fetchImpl={agentFetch}
         />
         {hasShogoIdeBridge && visible && (
-          <div className="pointer-events-auto absolute right-3 top-3 z-50 flex items-center gap-2 rounded-xl border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)]/95 px-3 py-2 text-xs text-[color:var(--ide-muted)] shadow-xl backdrop-blur">
-            <span>Legacy Monaco IDE</span>
-            <button
-              type="button"
-              onClick={closeLegacyIde}
-              className="rounded-md bg-orange-500 px-2 py-1 font-semibold text-white hover:bg-orange-600"
-            >
-              Return to Shogo IDE
-            </button>
-          </div>
+          <ShogoIdeReplacementGate
+            projectName={projectName || `project/${projectId}`}
+            projectRoot={desktopWorkspaceRoot}
+            workspaceResolved={desktopWorkspaceChecked}
+          />
         )}
       </div>
     </View>

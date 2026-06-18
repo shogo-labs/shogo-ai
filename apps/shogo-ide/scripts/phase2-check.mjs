@@ -46,20 +46,20 @@ assert(desktopBridge.includes('chat.titleBar.signIn.enabled'), 'desktop bridge r
 
 assert(main.includes("from './shogo-ide'"), 'main.ts must import shogo-ide bridge')
 assert(main.includes('registerShogoIdeIpcHandlers()'), 'main.ts must register shogo-ide IPC handlers')
-assert(main.includes('Open Shogo IDE Preview'), 'main menu must include Shogo IDE preview action')
+assert(main.includes('Open Shogo IDE...'), 'main menu must include Shogo IDE launch action')
 assert(main.includes('Reveal Shogo IDE Workspace'), 'main menu must include reveal action')
 
 assert(preload.includes('shogoIde: {'), 'preload must expose shogoIde bridge')
 assert(preload.includes("ipcRenderer.invoke('shogo-ide:get-status')"), 'preload must expose status IPC')
 assert(preload.includes("ipcRenderer.invoke('shogo-ide:launch'"), 'preload must expose launch IPC')
 
-assert(idePanel.includes('ShogoIdeReplacementGate'), 'IDEPanel must render the Shogo IDE replacement gate after Phase 5')
+assert(idePanel.includes('ShogoIdeReplacementGate'), 'IDEPanel must render the compact Shogo IDE launcher after Phase 5')
 assert(launcher.includes('window as unknown as { shogoDesktop?: { shogoIde?'), 'Phase 2 launcher must keep using desktop preload bridge while retained for reference')
 assert(launcher.includes('The Monaco IDE stays available as fallback'), 'launcher must communicate fallback behavior')
 assert(launcher.includes('status.cloneCommand'), 'Phase 2 reference launcher may keep showing the setup command')
 
-assert(docs.includes('Legacy Monaco IDE'), 'Phase 2 docs must state Monaco fallback after Phase 5 supersedes the overlay')
-assert(docs.includes('Desktop can automatically start Shogo IDE setup'), 'Phase 2 docs must state automatic desktop setup behavior')
+assert(docs.includes('keeps Monaco as the default Desktop IDE tab'), 'Phase 2 docs must state Monaco remains the default after Phase 5')
+assert(docs.includes('after the user chooses **Open Shogo IDE**'), 'Phase 2 docs must state explicit desktop setup behavior')
 
 if (errors.length > 0) {
   console.error('Phase 2 check failed:')

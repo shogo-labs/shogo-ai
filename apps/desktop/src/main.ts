@@ -605,14 +605,14 @@ function buildAppMenu(): void {
       label: 'File',
       submenu: [
         {
-          label: 'Open Shogo IDE Preview...',
+          label: 'Open Shogo IDE...',
           click: async () => {
             const result = await launchShogoIde()
             if (result.ok) return
             const status = result.status ?? getShogoIdeStatus()
             await dialog.showMessageBox({
               type: 'info',
-              title: 'Shogo IDE Preview',
+              title: 'Shogo IDE',
               message: 'Shogo IDE is not launchable yet.',
               detail:
                 `${result.error || status.reason}\n\n` +
