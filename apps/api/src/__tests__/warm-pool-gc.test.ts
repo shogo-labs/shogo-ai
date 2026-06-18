@@ -123,6 +123,36 @@ describe('WarmPoolController namespace garbage collection', () => {
     expect(deletedPreviewMappings).toContain('missing-project')
   })
 
+  test('never deletes durable published-* services (scaled-to-zero, orphaned, or unschedulable)', async () => {
+    // No matching project rows ⇒ every candidate looks "orphaned" to the GC,
+    // and they are all scaled-to-zero past the grace window. A preview/project
+    // service in this state WOULD be swept; published-* services must not be.
+    projectRows = []
+    serviceItems = [
+      service('published-zero-project', { 'shogo.io/project': 'p-zero' }, { actualReplicas: 0 }),
+      service('published-unschedulable', { 'shogo.io/project': 'p-unsched' }, {
+        actualReplicas: 1,
+        conditions: [{ type: 'Ready', reason: 'Unschedulable' }],
+      }),
+      service('published-running', { 'shogo.io/project': 'p-run' }, { actualReplicas: 1 }),
+      // A genuine preview orphan alongside them is still collected.
+      service('project-orphan', { 'shogo.io/project': 'gone' }, { actualReplicas: 0 }),
+    ]
+    const controller = new WarmPoolController({ namespace: 'gc-ns' })
+
+    const deleted = await controller.gcOrphanedServices()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    const deletedServiceNames = capture
+      .filter((c) => c.method === 'deleteNamespacedCustomObject' && c.args[0].plural === 'services')
+      .map((c) => c.args[0].name)
+    expect(deletedServiceNames).not.toContain('published-zero-project')
+    expect(deletedServiceNames).not.toContain('published-unschedulable')
+    expect(deletedServiceNames).not.toContain('published-running')
+    expect(deletedServiceNames).toContain('project-orphan')
+    expect(deleted).toBe(1)
+  })
+
   test('returns zero when there are no candidates or Kubernetes list fails', async () => {
     const controller = new WarmPoolController({ namespace: 'gc-ns' })
     expect(await controller.gcOrphanedServices()).toBe(0)

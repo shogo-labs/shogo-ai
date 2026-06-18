@@ -41,6 +41,7 @@ interface ContentSettings {
   postsPerAccount: number
   maxViewsPerPostPerRun: number
   perVideoCapCents: number | null
+  minPollIntervalMinutes: number
 }
 
 interface TokenInfo {
@@ -137,6 +138,7 @@ export default function AffiliateContentSettingsPage() {
     postsPerAccount: '',
     maxViewsPerPostPerRun: '',
     perVideoCapCents: '',
+    minPollIntervalMinutes: '',
   })
   const [tokenInput, setTokenInput] = useState('')
 
@@ -152,6 +154,7 @@ export default function AffiliateContentSettingsPage() {
       postsPerAccount: String(s.postsPerAccount),
       maxViewsPerPostPerRun: String(s.maxViewsPerPostPerRun),
       perVideoCapCents: s.perVideoCapCents != null ? String(s.perVideoCapCents) : '',
+      minPollIntervalMinutes: String(s.minPollIntervalMinutes),
     })
     setTokenInfo(r.ensembleDataToken)
   }, [])
@@ -192,6 +195,7 @@ export default function AffiliateContentSettingsPage() {
       postsPerAccount: intOrNull(form.postsPerAccount),
       maxViewsPerPostPerRun: intOrNull(form.maxViewsPerPostPerRun),
       perVideoCapCents: intOrNull(form.perVideoCapCents),
+      minPollIntervalMinutes: intOrNull(form.minPollIntervalMinutes),
     }
     // Only send a token write when the operator typed one (avoids clobbering
     // an existing token with a blank). Use the explicit Clear button to remove.
@@ -380,6 +384,13 @@ export default function AffiliateContentSettingsPage() {
               value={form.postsPerAccount}
               onChange={(v) => setForm((f) => ({ ...f, postsPerAccount: v }))}
               hint="Bounds provider API spend per hourly sweep"
+            />
+            <NumField
+              label="Min poll interval"
+              value={form.minPollIntervalMinutes}
+              onChange={(v) => setForm((f) => ({ ...f, minPollIntervalMinutes: v }))}
+              suffix="min"
+              hint="Min minutes between provider polls of the same account (default 240 = 4h). Throttles EnsembleData spend across regions/replicas."
             />
             <NumField
               label="Max views paid / post / run"

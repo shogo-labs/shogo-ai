@@ -226,6 +226,44 @@ resource "oci_objectstorage_object_lifecycle_policy" "published_apps_lifecycle" 
 }
 
 # -----------------------------------------------------------------------------
+# Published Data Bucket (writable runtime state for SERVER-BACKED *.shogo.one)
+# -----------------------------------------------------------------------------
+# Server-backed published apps run their server.tsx in production and persist
+# end-user writes (the SQLite DB + upload dirs) here, keyed by published
+# subdomain (`{subdomain}/data.tar.gz`). Restored on pod boot and flushed
+# periodically + at shutdown by PublishedDataSync (packages/shared-runtime).
+# Kept separate from the static `published_apps` bucket so the CDN PAR (read-
+# only, public-edge) never has any path to mutable user data. Accessed only by
+# the runtime pods' S3 credentials (same `s3-credentials` secret as workspaces).
+resource "oci_objectstorage_bucket" "published_data" {
+  compartment_id = coalesce(var.published_apps_compartment_id, var.compartment_id)
+  namespace      = local.namespace
+  name           = "shogo-published-data-${var.environment}"
+  access_type    = "NoPublicAccess"
+  versioning     = "Enabled"
+
+  freeform_tags = merge(var.tags, {
+    Purpose = "published-app-writable-state"
+  })
+}
+
+resource "oci_objectstorage_object_lifecycle_policy" "published_data_lifecycle" {
+  depends_on = [oci_identity_policy.lifecycle_service_principal]
+
+  namespace = local.namespace
+  bucket    = oci_objectstorage_bucket.published_data.name
+
+  rules {
+    name        = "cleanup-old-versions"
+    action      = "DELETE"
+    time_amount = 30
+    time_unit   = "DAYS"
+    is_enabled  = true
+    target      = "previous-object-versions"
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Outputs
 # -----------------------------------------------------------------------------
 output "namespace" {
@@ -256,4 +294,9 @@ output "pg_backups_bucket" {
 output "published_apps_bucket" {
   description = "Published apps bucket name"
   value       = oci_objectstorage_bucket.published_apps.name
+}
+
+output "published_data_bucket" {
+  description = "Published-app writable-state bucket name (server-backed apps' SQLite DB + uploads)"
+  value       = oci_objectstorage_bucket.published_data.name
 }

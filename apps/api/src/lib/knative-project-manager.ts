@@ -1537,6 +1537,208 @@ export class KnativeProjectManager {
   }
 
   /**
+   * Create a SERVER-BACKED published Knative Service for an app whose backend
+   * (`server.tsx`) must run in production (dynamic `/api/*` routes, a database,
+   * etc.) — not just static files.
+   *
+   * Unlike `createPublishedService` (nginx, static-only), this runs the unified
+   * agent-runtime image in `SHOGO_PUBLISHED_MODE`: it hydrates the source
+   * read-only from the durable git repo (pinned to `published/<subdomain>`),
+   * runs `server.tsx`, and persists writable state (the SQLite DB + upload
+   * dirs) to the published-data bucket via `PublishedDataSync`. The agent
+   * gateway/editing surfaces stay OFF.
+   *
+   * Service name is `published-{projectId}` — SAME as the static path — so the
+   * existing `{subdomain}.shogo.one -> published-{projectId}` DomainMapping is
+   * reused unchanged. `min-scale=0` / `max-scale=1` gives scale-to-zero with a
+   * single writer (no concurrent DB-archive uploaders).
+   */
+  async createPublishedServerService(projectId: string, subdomain: string): Promise<string> {
+    const serviceName = `published-${projectId}`
+    const api = getCustomApi()
+    const runtimeImage = RUNTIME_CONFIG.image()
+    const workDir = RUNTIME_CONFIG.workDir
+    const publishDomain = process.env.PUBLISH_DOMAIN || 'shogo.one'
+    const publishedDataBucket =
+      process.env.PUBLISH_DATA_BUCKET || process.env.S3_PUBLISHED_DATA_BUCKET || null
+
+    const extraEnvEntries = Object.entries(RUNTIME_CONFIG.extraEnv).map(([name, value]) => ({ name, value }))
+    const env: any[] = [
+      { name: "PROJECT_ID", value: projectId },
+      { name: "PROJECT_DIR", value: workDir },
+      { name: "SCHEMAS_PATH", value: "/app/.schemas" },
+      // Published-mode switches: run server.tsx, no agent gateway.
+      { name: "SHOGO_PUBLISHED_MODE", value: "true" },
+      { name: "PUBLISHED_SUBDOMAIN", value: subdomain },
+      { name: "PUBLISH_DOMAIN", value: publishDomain },
+      { name: "PUBLIC_PREVIEW_URL", value: `https://${subdomain}.${publishDomain}` },
+      // Source is restored from the durable git repo (carries the published
+      // tag + the builder's seed DB). server.ts → initializePublished()
+      // calls restoreRepoFromStore() directly regardless of this mode, but we
+      // pin git_only so no S3 source uploader/watcher ever runs.
+      { name: "SHOGO_CLOUD_SYNC_MODE", value: "git_only" },
+      ...extraEnvEntries,
+    ]
+
+    // AI + tools proxy (same server-side-keys model as dev pods).
+    const systemNamespace = process.env.SYSTEM_NAMESPACE || 'shogo-system'
+    const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local`
+    env.push({ name: "AI_PROXY_URL", value: buildAiProxyUrl(apiUrl) })
+    env.push({ name: "TOOLS_PROXY_URL", value: buildToolsProxyUrl(apiUrl) })
+    try {
+      const { prisma } = await import('./prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspaceId: true } as any,
+      }) as ({ workspaceId: string | null }) | null
+      const { getProjectOwnerUserId } = await import('./project-user-context')
+      const ownerUserId = await getProjectOwnerUserId(projectId)
+      const proxyToken = await generateProxyToken(
+        projectId,
+        project?.workspaceId ?? 'local-dev',
+        ownerUserId,
+        7 * 24 * 60 * 60 * 1000,
+      )
+      env.push({ name: "AI_PROXY_TOKEN", value: proxyToken })
+    } catch (err: any) {
+      console.warn(`[KnativeProjectManager] published-server: AI proxy token gen failed for ${projectId}:`, err.message)
+    }
+
+    // Per-project runtime capability tokens (the SDK in server.tsx auto-detects these).
+    const { deriveRuntimeToken, deriveWebhookToken } = await import('./runtime-token')
+    env.push({ name: "RUNTIME_AUTH_SECRET", value: deriveRuntimeToken(projectId) })
+    env.push({ name: "WEBHOOK_TOKEN", value: deriveWebhookToken(projectId) })
+
+    // S3 for source hydration (durable git repo lives in the workspaces bucket).
+    if (this.s3WorkspacesBucket) {
+      env.push({ name: "S3_WORKSPACES_BUCKET", value: this.s3WorkspacesBucket })
+      env.push({ name: "S3_REGION", value: this.s3Region })
+      if (this.s3Endpoint) env.push({ name: "S3_ENDPOINT", value: this.s3Endpoint })
+      if (this.s3ForcePathStyle) env.push({ name: "S3_FORCE_PATH_STYLE", value: "true" })
+    }
+
+    // Published-data bucket for writable state (DB + uploads).
+    if (publishedDataBucket) {
+      env.push({ name: "S3_PUBLISHED_DATA_BUCKET", value: publishedDataBucket })
+    }
+
+    // AWS credentials (shared with dev pods) — used for BOTH the workspaces
+    // bucket (git repo restore) and the published-data bucket.
+    if (this.s3WorkspacesBucket || publishedDataBucket) {
+      env.push({
+        name: "AWS_ACCESS_KEY_ID",
+        valueFrom: { secretKeyRef: { name: "s3-credentials", key: "access-key", optional: true } },
+      })
+      env.push({
+        name: "AWS_SECRET_ACCESS_KEY",
+        valueFrom: { secretKeyRef: { name: "s3-credentials", key: "secret-key", optional: true } },
+      })
+    }
+
+    if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+      env.push({ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: process.env.OTEL_EXPORTER_OTLP_ENDPOINT })
+      env.push({ name: "OTEL_SERVICE_NAME", value: "shogo-published" })
+      env.push({
+        name: "SIGNOZ_INGESTION_KEY",
+        valueFrom: { secretKeyRef: { name: "signoz-credentials", key: "SIGNOZ_INGESTION_KEY", optional: true } },
+      })
+    }
+
+    const service = {
+      apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
+      kind: "Service",
+      metadata: {
+        name: serviceName,
+        namespace: this.namespace,
+        labels: {
+          "app.kubernetes.io/part-of": "shogo",
+          "shogo.io/project": projectId,
+          "shogo.io/component": "published-server",
+        },
+      },
+      spec: {
+        template: {
+          metadata: {
+            annotations: {
+              "autoscaling.knative.dev/min-scale": "0",
+              "autoscaling.knative.dev/max-scale": "1",
+              "autoscaling.knative.dev/scale-to-zero-pod-retention-period": "1800s",
+              "autoscaling.knative.dev/target": "10",
+              "shogo.io/deploy-timestamp": new Date().toISOString(),
+            },
+          },
+          spec: {
+            // Cold start hydrates source + deps + runs a build, so allow a
+            // generous startup window before the request times out.
+            timeoutSeconds: 600,
+            responseStartTimeoutSeconds: 300,
+            securityContext: { fsGroup: 999 },
+            containers: [
+              {
+                name: RUNTIME_CONFIG.containerName,
+                image: runtimeImage,
+                imagePullPolicy: "Always",
+                ports: [{ containerPort: 8080, name: "http1" }],
+                env,
+                resources: {
+                  requests: { memory: "512Mi", cpu: "100m" },
+                  limits: { memory: this.memoryLimit, cpu: this.cpuLimit },
+                },
+                volumeMounts: [{ name: "project-data", mountPath: workDir }],
+                readinessProbe: {
+                  httpGet: { path: "/ready", port: 8080 },
+                  initialDelaySeconds: 3,
+                  periodSeconds: 3,
+                  timeoutSeconds: 3,
+                  failureThreshold: 120,
+                },
+                livenessProbe: {
+                  httpGet: { path: "/health", port: 8080 },
+                  initialDelaySeconds: 30,
+                  periodSeconds: 15,
+                  timeoutSeconds: 5,
+                  failureThreshold: 5,
+                },
+              },
+            ],
+            volumes: [
+              { name: "project-data", emptyDir: { sizeLimit: "2Gi" } },
+            ],
+          },
+        },
+      },
+    }
+
+    try {
+      await api.createNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: "services",
+        body: service,
+      })
+      console.log(`[KnativeProjectManager] Created published-server service ${serviceName}`)
+    } catch (err: any) {
+      const statusCode = err?.response?.statusCode || err?.statusCode || err?.body?.code
+      if (statusCode === 409 || err?.body?.reason === 'AlreadyExists') {
+        await api.replaceNamespacedCustomObject({
+          group: KNATIVE_GROUP,
+          version: KNATIVE_VERSION,
+          namespace: this.namespace,
+          plural: "services",
+          name: serviceName,
+          body: service,
+        })
+        console.log(`[KnativeProjectManager] Updated published-server service ${serviceName}`)
+      } else {
+        throw err
+      }
+    }
+
+    return `http://${serviceName}.${this.namespace}.svc.cluster.local`
+  }
+
+  /**
    * Force a new Knative revision for a published service.
    * Updates the deploy-timestamp annotation, causing the init container
    * to re-sync from S3 with fresh content.

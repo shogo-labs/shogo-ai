@@ -10,6 +10,12 @@ export {
 } from './s3-sync'
 
 export {
+  PublishedDataSync,
+  createPublishedDataSyncFromEnv,
+  type PublishedDataSyncConfig,
+} from './published-data-sync'
+
+export {
   GitWorkspaceSync,
   createGitSyncFromEnv,
   resolveCloudSyncMode,

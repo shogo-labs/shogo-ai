@@ -13,6 +13,15 @@
  * polling the same account on the same tick would race on the view
  * delta and could double-snapshot / double-pay. Exactly one region wins
  * the lock per tick.
+ *
+ * Frequency vs. concurrency: the lock prevents *concurrent* sweeps, but it is
+ * released as soon as a sweep finishes, so it does NOT stop the staggered
+ * per-pod/per-region timers from each kicking off a fresh sweep. Polling
+ * frequency is instead enforced inside `pollAllVerifiedAccounts`, which only
+ * touches accounts whose `lastPolledAt` is older than
+ * `affiliate.content.minPollIntervalMinutes` (default 4h). That keeps
+ * EnsembleData unit spend at one provider sweep per account per interval no
+ * matter how many pods are running or how often their timers fire.
  */
 
 import { withGlobalJobLock } from '../lib/global-job-lock'
