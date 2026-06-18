@@ -1878,7 +1878,54 @@ export class AgentGateway {
         }
         this.reloadConfig()
       },
+
     }
+
+    // Terminal exec callback — routes commands to the user's visible terminal
+    // when running on the desktop. The Electron main process starts a tiny
+    // HTTP handler and passes its URL via TERMINAL_EXEC_URL env var.
+    const terminalExecUrl = process.env.TERMINAL_EXEC_URL
+    if (terminalExecUrl) {
+      toolContext.terminalExec = async ({ command, cwd, timeoutMs, mode }) => {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), timeoutMs ?? 130_000)
+        try {
+          const res = await fetch(`${terminalExecUrl}/terminal/exec`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command, cwd, timeoutMs, mode }),
+            signal: controller.signal,
+          })
+          if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            throw new Error(`Terminal exec failed (HTTP ${res.status}): ${body}`)
+          }
+          return await res.json()
+        } finally {
+          clearTimeout(timer)
+        }
+      }
+      toolContext.terminalRead = async ({ terminalId, cwd, maxChars }) => {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 10_000)
+        try {
+          const res = await fetch(`${terminalExecUrl}/terminal/context`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ terminalId, cwd, maxChars }),
+            signal: controller.signal,
+          })
+          if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            throw new Error(`Terminal context read failed (HTTP ${res.status}): ${body}`)
+          }
+          return await res.json()
+        } finally {
+          clearTimeout(timer)
+        }
+      }
+    }
+
 
     const baseTools = createTools(toolContext)
 
@@ -2981,6 +3028,14 @@ export class AgentGateway {
       ...this.buildShellNavLines(),
     ].join('\n'))
 
+    if (process.env.TERMINAL_EXEC_URL) {
+      parts.push([
+        '## Desktop Terminal Context',
+        'When the user asks about terminal state, recent commands, command output, or "what did I just do?", call `terminal_read` before answering.',
+        'Use `terminal_exec` only when you need to run a new command in the user-visible desktop terminal.',
+      ].join('\n'))
+    }
+
     const workspaceTree = this.buildWorkspaceTreeContext()
     if (workspaceTree) {
       parts.push(workspaceTree)
@@ -3200,6 +3255,16 @@ export class AgentGateway {
         '- A successful final response should summarize what you configured, not ask whether to start.',
       )
       pushStable('action-tools-guide', actionLines.join('\n'))
+    }
+
+    if (process.env.TERMINAL_EXEC_URL) {
+      pushStable('desktop-terminal-context', [
+        '## Desktop Terminal Context',
+        '',
+        'The desktop IDE terminal is available through `terminal_read` and `terminal_exec`.',
+        '- When the user asks about terminal state, recent commands, command output, or "what did I just do?", call `terminal_read` before answering.',
+        '- Use `terminal_exec` only when you need to run a new command in the user-visible desktop terminal.',
+      ].join('\n'))
     }
 
     if (this.config.quickActionsEnabled !== false) {

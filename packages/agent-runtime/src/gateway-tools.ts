@@ -175,6 +175,50 @@ export interface ToolContext {
   /** When this tool runs inside a spawned subagent, the AgentManager instance id.
    *  Used e.g. to key the CDP screencast broadcaster so the mobile LiveBrowserView
    *  can subscribe to the right running subagent's browser viewport. */
+  /**
+   * Execute a command in the user's visible terminal (desktop only).
+   * When provided, the terminal_exec tool routes commands through
+   * the user's terminal instead of the sandboxed exec.
+   */
+  terminalExec?: (params: {
+    command: string
+    cwd?: string
+    timeoutMs?: number
+    mode?: 'foreground' | 'background'
+  }) => Promise<{
+    exitCode: number | null
+    output: string
+    cwd: string | null
+    durationMs: number | null
+    timedOut: boolean
+  }>
+  /** Read recent output from the user's desktop IDE terminal. */
+  terminalRead?: (params: {
+    terminalId?: string
+    cwd?: string
+    maxChars?: number
+  }) => Promise<{
+    source: string
+    terminalId: string | null
+    cwd: string | null
+    content: string
+    sessions: Array<{
+      id: string
+      cwd: string | null
+      shell: string | null
+      createdAt: number | null
+      updatedAt: number | null
+      exitedAt: number | null
+      bytes: number
+      active: boolean
+    }>
+    truncated: boolean
+    error?: string
+    hint?: string
+  }>
+  /** Interrupt the currently running terminal command (sends SIGINT). */
+  terminalInterrupt?: () => Promise<{ interrupted: boolean }>
+
   subagentInstanceId?: string
   /** BETA: per-chat git worktrees — status of all sibling chats' branches.
    *  Bound to the gateway so the worktree_list tool can surface cross-chat
@@ -427,6 +471,56 @@ function createExecTool(ctx: ToolContext): AgentTool {
       const gatewayGuard = commandTargetsGateway(command)
       if (gatewayGuard.blocked) {
         return textResult({ error: gatewayKillRefusal(gatewayGuard.reason ?? 'kill targets the runtime') })
+      }
+
+      // Desktop auto-redirect: when the user asks the agent to run a
+      // dev server / long-lived process, route through terminalExec
+      // so it spawns a visible ∞ terminal tab (matching Cursor UX).
+      // Only matches EXPLICIT dev server commands — not build/test/lint.
+      if (ctx.terminalExec) {
+        const lc = command.toLowerCase().trim()
+        const DEV_SERVER_PATTERNS = [
+          /^npm\s+run\s+(dev|start|serve|preview)(?:\s|$)/,
+          /^npx\s+(vite|expo|next|nuxt|astro|remix|webpack-dev-server|turbopack|metro)(?:\s|$)/,
+          /^bun\s+(dev|start|serve|preview)(?:\s|$)/,
+          /^yarn\s+(dev|start|serve|preview)(?:\s|$)/,
+          /^pnpm\s+(dev|start|serve|preview)(?:\s|$)/,
+          /^\.?\/node_modules\/\.bin\/(vite|expo|next|nuxt|astro)(?:\s|$)/,
+          /^vite(?:\s|$)/,
+          /^expo\s+start(?:\s|$)/,
+          /^next\s+dev(?:\s|$)/,
+          /^nuxt\s+dev(?:\s|$)/,
+          /^astro\s+dev(?:\s|$)/,
+          /^remix\s+dev(?:\s|$)/,
+          /^webpack-dev-server(?:\s|$)/,
+          /^turbo(?:\s|$)/,
+          /^serve(?:\s|$)/,
+          /^http-server(?:\s|$)/,
+          /^live-server(?:\s|$)/,
+          /^python3?\s+-m\s+(http\.server|SimpleHTTPServer|flask|django)(?:\s|$)/,
+          /^docker\s+compose\s+up(?:\s|$)/,
+          /^docker\s+run(?:\s|$)/,
+          /^pm2\s+(start|serve)(?:\s|$)/,
+          /^nodemon(?:\s|$)/,
+          /^tailwindcss\s+-i(?:\s|$)/,
+          /^concurrently(?:\s|$)/,
+          /^foreman\s+start(?:\s|$)/,
+          /^mux\s+start(?:\s|$)/,
+          /^dnsmasq(?:\s|$)/,
+        ]
+        const isDevServer = DEV_SERVER_PATTERNS.some((p) => p.test(lc))
+        if (isDevServer) {
+          try {
+            const result = await ctx.terminalExec({
+              command,
+              timeoutMs: undefined,
+              mode: 'background',
+            })
+            return textResult(result)
+          } catch (err: any) {
+            // Fallback: run in sandbox if terminalExec fails
+          }
+        }
       }
 
       let currentCwd = ctx.shellState?.getCwd() || ctx.workspaceDir
@@ -4379,6 +4473,210 @@ function createReadGuideTool(ctx: ToolContext): AgentTool {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Terminal Read Tool — reads saved terminal output from disk
+// ---------------------------------------------------------------------------
+
+function createTerminalReadTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'terminal_read',
+    label: 'Read Terminal Output',
+    description: `Read recent terminal output from the user's IDE terminal.
+Use this to answer questions like "what did I just do?" or "what commands did I run?"
+by reading the desktop terminal context bridge when available, with saved terminal
+files as a fallback.
+
+If no terminal ID is specified, reads the most relevant active terminal for the
+current workspace, falling back to the most recent terminal.
+Returns the serialized terminal commands + output for the agent to analyze.`,
+    parameters: Type.Object({
+      terminalId: Type.Optional(Type.String({ description: 'Terminal ID to read (default: most recent)' })),
+      cwd: Type.Optional(Type.String({ description: 'Workspace directory containing .shogo/terminals/' })),
+    }),
+    execute: async (_toolCallId: string, params: unknown) => {
+      const { terminalId, cwd } = params as { terminalId?: string; cwd?: string }
+
+      let bridgeFallback: unknown = null
+      if (ctx.terminalRead) {
+        try {
+          const result = await ctx.terminalRead({
+            terminalId,
+            cwd: cwd ?? ctx.workspaceDir,
+            maxChars: 24_000,
+          })
+          if (result.content) {
+            return textResult(result)
+          }
+          bridgeFallback = result
+        } catch (err: any) {
+          bridgeFallback = {
+            error: err?.message ?? String(err),
+            hint: 'Live desktop terminal bridge failed; falling back to saved terminal files.',
+          }
+        }
+      }
+
+      const baseDir = cwd
+        ? `${cwd}/.shogo/terminals`
+        : ctx.workspaceDir
+          ? `${ctx.workspaceDir}/.shogo/terminals`
+          : '.shogo/terminals'
+
+      try {
+        const { readdir, readFile, stat } = await import('node:fs/promises')
+        const { join } = await import('node:path')
+
+        const files = await readdir(baseDir).catch(() => [] as string[])
+        const txtFiles = files.filter((f) => f.endsWith('.txt'))
+
+        if (txtFiles.length === 0) {
+          if (bridgeFallback) return textResult(bridgeFallback)
+          return textResult({
+            error: 'No saved terminal files found.',
+            hint: ctx.terminalRead
+              ? 'No live desktop terminal context or saved terminal files were available. Open the IDE Terminal tab and run a command first.'
+              : 'Terminal output is saved when a terminal session closes. Try running some commands in the terminal first.',
+          })
+        }
+
+        let targetFile: string
+        if (terminalId) {
+          const match = txtFiles.find((f) => f === `${terminalId}.txt`)
+          if (!match) {
+            return textResult({
+              error: `Terminal "${terminalId}" not found.`,
+              available: txtFiles.map((f) => f.replace('.txt', '')),
+            })
+          }
+          targetFile = match
+        } else {
+          // Find most recent file by mtime
+          let newest = txtFiles[0]!
+          let newestMtime = 0
+          for (const f of txtFiles) {
+            try {
+              const s = await stat(join(baseDir, f))
+              if (s.mtimeMs > newestMtime) {
+                newestMtime = s.mtimeMs
+                newest = f
+              }
+            } catch { /* skip */ }
+          }
+          targetFile = newest
+        }
+
+        const content = await readFile(join(baseDir, targetFile), 'utf-8')
+        return textResult({
+          file: targetFile,
+          terminalId: targetFile.replace('.txt', ''),
+          content,
+        })
+      } catch (err: any) {
+        return textResult({
+          error: err?.message ?? String(err),
+          hint: 'Could not read terminal files. Ensure .shogo/terminals/ exists.',
+        })
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Terminal Exec Tool — runs commands in the user's visible terminal (desktop)
+// ---------------------------------------------------------------------------
+
+function createTerminalExecTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'terminal_exec',
+    label: 'Execute in Terminal',
+    description: `Execute a shell command in the user's visible terminal (desktop app only).
+Unlike exec (which runs in a sandbox), this sends the command to the user's terminal,
+waits for completion, and returns the output.
+
+For SHORT one-shot commands (echo, ls, git status, etc.): runs in the user's existing
+terminal, captures output, returns result in chat.
+
+For LONG-running commands (dev servers, watchers, etc.): creates a new agent terminal
+tab named "Shogo" with an infinity icon. The user can see it running. Returns a
+"background task started" message with the terminal ID.
+
+Returns: { exitCode, output, cwd, durationMs, timedOut, mode, sessionId? }.
+
+If the desktop terminal is not available (web/mobile), falls back to the sandboxed exec.`,
+    parameters: Type.Object({
+      command: Type.Optional(Type.String({ description: 'The shell command to execute' })),
+      action: Type.Optional(Type.String({ description: '"run" (default), "interrupt" to send SIGINT', enum: ['run', 'interrupt'] })),
+      mode: Type.Optional(Type.String({ description: '"foreground" (default, auto-detected) or "background" to force agent terminal tab', enum: ['foreground', 'background'] })),
+      cwd: Type.Optional(Type.String({ description: 'Working directory (defaults to current)' })),
+      timeoutMs: Type.Optional(Type.Number({ description: 'Max wait time in ms (default: 120000 for foreground, no limit for background)' })),
+    }),
+    execute: async (_toolCallId: string, params: unknown) => {
+      const { command, cwd, timeoutMs, action, mode } = params as { command?: string; cwd?: string; timeoutMs?: number; action?: string; mode?: string }
+
+      if (!ctx.terminalExec) {
+        return textResult({
+          error: 'Desktop terminal not available. Use exec tool instead.',
+          hint: 'This command can only run on the desktop app.',
+        })
+      }
+
+      if (action === 'interrupt') {
+        if (!ctx.terminalInterrupt) {
+          return textResult({ error: 'Terminal interrupt not available.' })
+        }
+        try {
+          const result = await ctx.terminalInterrupt()
+          return textResult(result)
+        } catch (err: any) {
+          return textResult({ error: err?.message ?? String(err) })
+        }
+      }
+
+      if (!command) {
+        return textResult({ error: 'command parameter is required for run action.' })
+      }
+
+      try {
+        // Auto-detect long-running commands when mode is not explicitly set
+        let effectiveMode: 'foreground' | 'background' = (mode ?? 'foreground') as 'foreground' | 'background'
+        if (!mode) {
+          const lc = command.toLowerCase().trim()
+          const longPatterns = [
+            /\bdev\b/, /\bstart\b/, /\bserve\b/, /\bwatch\b/,
+            /\bvite\b/, /\bexpo\b/, /\bmetro\b/, /\bwebpack\b/,
+            /\bnpm\s+run\s+(dev|start|serve|preview)\b/,
+            /\bbun\s+run\b/, /\byarn\s+(dev|start|serve)\b/,
+            /\bdocker-compose\s+up\b/,
+            /\bdocker\s+compose\s+up\b/,
+            /\bdocker\s+run\b/,
+            /\bpm2\s+(start|serve)\b/,
+            /\bnohup\b/, /\bforever\b/, /\bsupervisor\b/,
+            /\bpython\s+-m\s+http\.server\b/,
+            /\buvicorn\b/, /\bgunicorn\b/,
+            /\s*&\s*$/,
+          ]
+          for (const p of longPatterns) {
+            if (p.test(lc)) { effectiveMode = 'background' as const; break }
+          }
+        }
+        const result = await ctx.terminalExec({
+          command,
+          cwd,
+          timeoutMs: effectiveMode === 'background' ? undefined : (timeoutMs ?? 120_000),
+          mode: effectiveMode,
+        })
+        return textResult(result)
+      } catch (err: any) {
+        return textResult({
+          error: err?.message ?? String(err),
+          command,
+        })
+      }
+    },
+  }
+}
+
 /** All gateway tools (unified set). Includes base tools + agent_* orchestration tools. */
 export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
@@ -4421,6 +4719,8 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createCreatePlanTool(ctx),
     createUpdatePlanTool(ctx),
     createQuickActionTool(ctx),
+    createTerminalExecTool(ctx),
+    createTerminalReadTool(ctx),
     createReadGuideTool(ctx),
   ]
 
@@ -4804,7 +5104,7 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
  * Skills can reference either group names or individual tool names.
  */
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
-  shell: ['exec', 'exec_wait'],
+  shell: ['exec', 'exec_wait', 'terminal_exec', 'terminal_read'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
   files: ['delete_file', 'search', 'read_file', 'write_file', 'edit_file', 'read_lints'],
   search: ['search', 'impact_radius'],
@@ -4826,7 +5126,7 @@ export const ALL_TOOL_NAMES = [
   'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
-  'heartbeat_configure', 'heartbeat_status',
+  'heartbeat_configure', 'heartbeat_status', 'terminal_exec', 'terminal_read',
   'read_lints', 'server_sync',
   'search_integrations', 'connect', 'disconnect',
   'transcribe_audio',

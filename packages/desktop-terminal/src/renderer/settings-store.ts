@@ -46,6 +46,8 @@ export interface TerminalSettings {
   shellIntegrationEnabled: boolean
   /** Phase-10 telemetry consent — defaults OFF (opt-in). */
   telemetryEnabled: boolean
+  /** Enable CSS font-ligature rendering (e.g. → ≠ => with Cascadia Code / Fira Code). */
+  fontLigatures: boolean
 }
 
 export interface TerminalSettingsDocument {
@@ -69,6 +71,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   approvalDefault: 'allow-safe',
   shellIntegrationEnabled: true,
   telemetryEnabled: false,
+  fontLigatures: true,
 }
 
 // ─── validation ─────────────────────────────────────────────────
@@ -146,6 +149,9 @@ export function validateSettingsPatch(patch: Partial<TerminalSettings>): void {
   }
   if ('telemetryEnabled' in patch && typeof patch.telemetryEnabled !== 'boolean') {
     throw new SettingsValidationError('telemetryEnabled', patch.telemetryEnabled, 'boolean')
+  }
+  if ('fontLigatures' in patch && typeof patch.fontLigatures !== 'boolean') {
+    throw new SettingsValidationError('fontLigatures', patch.fontLigatures, 'boolean')
   }
 }
 

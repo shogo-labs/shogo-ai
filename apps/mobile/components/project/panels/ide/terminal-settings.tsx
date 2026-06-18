@@ -9,6 +9,7 @@ const DEFAULTS = {
   restorePolicy: "silent",
   shellIntegrationEnabled: true,
   telemetryEnabled: false,
+  fontLigatures: true,
 }
 
 export function TerminalSettingsPane() {
@@ -32,6 +33,7 @@ export function TerminalSettingsPane() {
       <div className="flex flex-col gap-1 rounded border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] p-1">
         <Toggle label="GPU renderer" value={settings.gpuEnabled} onChange={(v) => set({ gpuEnabled: v })} />
         <Toggle label="Shell integration (OSC 633)" value={settings.shellIntegrationEnabled} onChange={(v) => set({ shellIntegrationEnabled: v })} />
+        <Toggle label="Font ligatures (→ => !=)" value={settings.fontLigatures} onChange={(v) => set({ fontLigatures: v })} />
         <Toggle label="Terminal telemetry" value={settings.telemetryEnabled} onChange={(v) => set({ telemetryEnabled: v })} />
         <div className="flex items-center justify-between gap-3 rounded px-2 py-1.5">
           <div className="text-[12px] text-[color:var(--ide-text)]">Restore sessions</div>

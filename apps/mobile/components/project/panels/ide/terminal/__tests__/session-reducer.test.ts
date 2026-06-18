@@ -115,34 +115,34 @@ describe('closeGroup', () => {
 })
 
 describe('labelsFor', () => {
-  test('produces 1-indexed positional labels', () => {
-    const a = makeSession()
-    const b = makeSession()
-    const c = makeSession()
+  test('produces shell-name labels (zsh is the default)', () => {
+    const a = makeSession(undefined, 'zsh')
+    const b = makeSession(undefined, 'zsh')
+    const c = makeSession(undefined, 'zsh')
     const labels = labelsFor([a, b, c])
-    expect(labels.get(a.id)).toBe('Terminal 1')
-    expect(labels.get(b.id)).toBe('Terminal 2')
-    expect(labels.get(c.id)).toBe('Terminal 3')
+    expect(labels.get(a.id)).toBe('zsh')
+    expect(labels.get(b.id)).toBe('zsh (2)')
+    expect(labels.get(c.id)).toBe('zsh (3)')
   })
 
-  test('split panes share their tab\'s positional label', () => {
-    const a = makeSession()
-    const aSplit = makeSession(a.groupId)
-    const b = makeSession()
+  test('split panes share their tab\'s shell label', () => {
+    const a = makeSession(undefined, 'zsh')
+    const aSplit = makeSession(a.groupId, 'zsh')
+    const b = makeSession(undefined, 'bash')
     const labels = labelsFor([a, aSplit, b])
-    expect(labels.get(a.id)).toBe('Terminal 1')
-    expect(labels.get(aSplit.id)).toBe('Terminal 1')
-    expect(labels.get(b.id)).toBe('Terminal 2')
+    expect(labels.get(a.id)).toBe('zsh')
+    expect(labels.get(aSplit.id)).toBe('zsh (2)')
+    expect(labels.get(b.id)).toBe('bash')
   })
 
-  test('re-derives positional labels after a tab is removed (no gaps)', () => {
-    const a = makeSession()
-    const b = makeSession()
-    const c = makeSession()
+  test('re-derives shell-name labels after a tab is removed (no gaps)', () => {
+    const a = makeSession(undefined, 'zsh')
+    const b = makeSession(undefined, 'zsh')
+    const c = makeSession(undefined, 'bash')
     const after = closeSession([a, b, c], b.id, b.id).sessions
     const labels = labelsFor(after)
-    expect(labels.get(a.id)).toBe('Terminal 1')
-    expect(labels.get(c.id)).toBe('Terminal 2')
+    expect(labels.get(a.id)).toBe('zsh')
+    expect(labels.get(c.id)).toBe('bash')
     expect(labels.has(b.id)).toBe(false)
   })
 })
@@ -275,21 +275,21 @@ describe('renameGroup', () => {
   })
 
   test('labelsFor honours customLabel for every pane in the group', () => {
-    const a = makeSession()
-    const b = makeSession(a.groupId)
-    const c = makeSession()
+    const a = makeSession(undefined, 'zsh')
+    const b = makeSession(a.groupId, 'zsh')
+    const c = makeSession(undefined, 'bash')
     const labels = labelsFor(renameGroup([a, b, c], a.groupId, 'Build'))
     expect(labels.get(a.id)).toBe('Build')
     expect(labels.get(b.id)).toBe('Build')
-    expect(labels.get(c.id)).toBe('Terminal 2')
+    expect(labels.get(c.id)).toBe('bash')
   })
 
-  test('labelsFor falls back to positional when no customLabel set', () => {
-    const a = makeSession()
-    const b = makeSession()
+  test('labelsFor falls back to shell name when no customLabel set', () => {
+    const a = makeSession(undefined, 'zsh')
+    const b = makeSession(undefined, 'bash')
     const labels = labelsFor([a, b])
-    expect(labels.get(a.id)).toBe('Terminal 1')
-    expect(labels.get(b.id)).toBe('Terminal 2')
+    expect(labels.get(a.id)).toBe('zsh')
+    expect(labels.get(b.id)).toBe('bash')
   })
 })
 

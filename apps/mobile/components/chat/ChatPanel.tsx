@@ -324,6 +324,15 @@ export interface ChatPanelProps {
   onModelChange?: (modelId: string) => void
   /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
   isActive?: boolean
+  /**
+   * Optional message enrichment hook — called before each outgoing message
+   * to prepend auto-collected workspace context (terminal output, git status,
+   * diagnostics, active file). The returned string replaces messagePayload.text
+   * while the original trimmedContent is still displayed in the chat bubble.
+   *
+   * Desktop provides this via ContextAggregator; mobile passes nothing (no-op).
+   */
+  enrichMessage?: (text: string) => Promise<string>
 }
 
 // ============================================================
@@ -728,6 +737,7 @@ export const ChatPanel = observer(function ChatPanel({
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
   isActive = true,
+  enrichMessage,
 }: ChatPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
@@ -3616,6 +3626,18 @@ export const ChatPanel = observer(function ChatPanel({
         text: trimmedContent,
       }
 
+      // Auto context injection: let the host enrich the message with
+      // workspace context (terminal output, git status, diagnostics)
+      // before sending to the LLM. The original trimmedContent is
+      // already persisted and displayed; only the wire payload changes.
+      if (enrichMessage) {
+        try {
+          messagePayload.text = await enrichMessage(trimmedContent)
+        } catch (err) {
+          console.warn("[ChatPanel] enrichMessage failed, sending bare message:", err)
+        }
+      }
+
       if (fileArray.length > 0) {
         messagePayload.files = fileArray.map((file) => ({
           type: "file" as const,
@@ -3674,6 +3696,7 @@ export const ChatPanel = observer(function ChatPanel({
       projectId,
       selectedModel,
       actions,
+      enrichMessage,
     ]
   )
 
@@ -4091,6 +4114,38 @@ export const ChatPanel = observer(function ChatPanel({
     window.addEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
     return () => window.removeEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
   }, [isActive, currentSessionId, handleSendMessage])
+
+  // ─── Terminal context → Chat ─────────────────────────────────────────
+  // Desktop-only: when the user right-clicks a failing command in the
+  // terminal and picks "Debug with AI", the terminal bridge pushes a
+  // pre-rendered markdown report via IPC. We listen for it here and
+  // inject it as the next user message so the AI can help debug.
+  useEffect(() => {
+    if (Platform.OS !== "web") return
+    const desktop = (globalThis as any).shogoDesktop
+    if (!desktop?.onChatWithContext) return
+
+    const unsub = desktop.onChatWithContext((data: { markdown: string }) => {
+      if (!data?.markdown || !currentSessionId) return
+      handleSendMessage(data.markdown)
+    })
+    return unsub
+  }, [currentSessionId, handleSendMessage])
+
+  // Terminal "Add to Chat" (⌘L) — inserts captured selection into the chat input.
+  useEffect(() => {
+    if (Platform.OS !== "web" || !isActive) return
+    const onAddToChat = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text?.trim()
+      if (!text) return
+      setRestoreDraftRequest({
+        nonce: Date.now(),
+        content: text,
+      })
+    }
+    window.addEventListener("shogo:add-to-chat", onAddToChat as EventListener)
+    return () => window.removeEventListener("shogo:add-to-chat", onAddToChat as EventListener)
+  }, [isActive])
 
   // Collapse toggle — persist to AsyncStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {

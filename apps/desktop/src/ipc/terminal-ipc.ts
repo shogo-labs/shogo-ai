@@ -40,6 +40,7 @@ const CH = {
   discardSnapshot: 'shogo:terminal:snapshots:discard',
   restartHost: 'shogo:terminal:host:restart',
   event:  'shogo:terminal:event',
+  publishContext: 'shogo:terminal:publish-context',
 } as const
 
 function defaultShell(): string {
@@ -136,6 +137,14 @@ export function registerTerminalIpcHandlers(): void {
   ipcMain.handle(CH.restartHost, async () => {
     await host.restart()
   })
+  ipcMain.handle(CH.publishContext, async (_e, payload: {
+    sessionId: string
+    cwd: string | null
+    content: string
+  }) => {
+    const { updateRendererTerminalContext } = await import('./terminal-exec-server')
+    updateRendererTerminalContext(payload)
+  })
 }
 
 /**
@@ -156,6 +165,7 @@ export async function disposeTerminalIpc(): Promise<void> {
   ipcMain.removeHandler(CH.restoreSession)
   ipcMain.removeHandler(CH.discardSnapshot)
   ipcMain.removeHandler(CH.restartHost)
+  ipcMain.removeHandler(CH.publishContext)
   try { await getPtyHostClient().flushSnapshots() } catch {}
   await disposePtyHostClient()
 }
