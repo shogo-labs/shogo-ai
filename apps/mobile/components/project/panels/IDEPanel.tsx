@@ -14,6 +14,8 @@ interface IDEPanelProps {
   projectId: string
   projectName?: string | null
   agentUrl?: string | null
+  isExternalProject?: boolean
+  folderPath?: string | null
 }
 
 /**
@@ -34,7 +36,7 @@ interface IDEPanelProps {
  * miss any edits made while they were on another tab and have to refresh the
  * whole page to see them.
  */
-export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanelProps) {
+export function IDEPanel({ visible, projectId, projectName, agentUrl, isExternalProject, folderPath }: IDEPanelProps) {
   // SdkFs is always-on: it's the canonical backend for writes, search, and
   // SSE subscriptions even when the desktop IPC fast-path is available
   // (DesktopFs wraps and delegates to it). Memo keeps the AgentClient +
@@ -102,6 +104,8 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
           paneVisible={visible}
           agentUrl={agentUrl ?? undefined}
           fetchImpl={agentFetch}
+          isExternalProject={isExternalProject}
+          folderPath={folderPath}
         />
       </div>
     </View>

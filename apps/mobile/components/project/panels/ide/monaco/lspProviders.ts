@@ -42,29 +42,6 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
  */
 let installed: { agentUrl: string; rootId: string; dispose: () => void } | null = null
 
-/**
- * The live document-symbol fetcher from the most-recent `setupLspProviders`
- * call. The Outline view (FEAT-OUTLINE) reads symbols through this so it
- * shares the backend-LSP request path AND the version-keyed cache with
- * Monaco's breadcrumb picker — no duplicate network traffic, no second
- * cache to invalidate. Null before setup / after dispose.
- */
-let activeSymbolFetcher:
-  | ((model: editor.ITextModel) => Promise<languages.DocumentSymbol[] | null>)
-  | null = null
-
-/**
- * Fetch document symbols for a Monaco model via the registered backend LSP
- * (cached). Returns null when no LSP is installed, the model is on a
- * non-agent root, or the backend has no symbols. Safe to call from React.
- */
-export function getDocumentSymbols(
-  model: editor.ITextModel,
-): Promise<languages.DocumentSymbol[] | null> {
-  if (!activeSymbolFetcher) return Promise.resolve(null)
-  return activeSymbolFetcher(model)
-}
-
 const TS_LANGS = ['typescript', 'javascript', 'typescriptreact', 'javascriptreact']
 
 /** Strip the `<rootId>::` prefix from a Monaco model URI to get the workspace path. Returns null if the rootId doesn't match the active LSP. */
@@ -469,10 +446,7 @@ export function setupLspProviders(config: LspProvidersConfig): { dispose: () => 
     }),
   )
 
-  // ─── Document Symbols (outline / breadcrumb) ──────────────────────────
-  // Extracted to a named const so the Outline view (FEAT-OUTLINE) can call
-  // the exact same backend-LSP + cache path as Monaco's breadcrumb picker,
-  // via the module-level `getDocumentSymbols` accessor wired below.
+  // ─── Document Symbols (breadcrumb) ───────────────────────────────────
   const provideDocumentSymbols = async (
     model: editor.ITextModel,
     token?: { isCancellationRequested: boolean; onCancellationRequested: (cb: () => void) => IDisposable },
@@ -536,11 +510,6 @@ export function setupLspProviders(config: LspProvidersConfig): { dispose: () => 
       provideDocumentSymbols: (model, token) => provideDocumentSymbols(model, token),
     }),
   )
-
-  // Expose the (cached) fetcher to the Outline view. Cleared on dispose so a
-  // stale closure from a torn-down workspace can't answer Outline requests.
-  activeSymbolFetcher = provideDocumentSymbols
-  disposables.push({ dispose: () => { if (activeSymbolFetcher === provideDocumentSymbols) activeSymbolFetcher = null } })
 
   // ─── Signature Help (parameter hints while typing args) ───────────────
   disposables.push(

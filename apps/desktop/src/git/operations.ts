@@ -27,6 +27,16 @@ type StringResult =
   | { ok: true; content: string }
   | { ok: false; error: string };
 
+export interface GitCommitHistoryItem {
+  hash: string;
+  message: string;
+  author: string;
+  time: string;
+  isMerge: boolean;
+  branchLabel?: string;
+  isRemote?: boolean;
+}
+
 /** `git add <paths...>` */
 export async function gitStage(root: string, paths: string[]): Promise<OpResult> {
   if (paths.length === 0) return { ok: true };
@@ -109,6 +119,169 @@ export interface CommitOptions {
   signoff?: boolean;
 }
 
+
+/**
+ * Get per-file addition/deletion counts via `git diff --numstat`.
+ * Returns a map of relative path → { added, removed }.
+ */
+export async function gitNumStat(
+  root: string,
+  cached = false,
+): Promise<{ ok: true; stats: Record<string, { added: number; removed: number }> } | { ok: false; error: string }> {
+  const args = ["diff", "--numstat"];
+  if (cached) args.push("--cached");
+  const res = await runGit(args, { cwd: root });
+  if (!res.ok) {
+    return { ok: false, error: res.stderr.trim() || `git diff --numstat exit ${res.code}` };
+  }
+  const stats: Record<string, { added: number; removed: number }> = {};
+  for (const line of res.stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const parts = line.split("\t");
+    if (parts.length >= 3) {
+      const added = parseInt(parts[0], 10);
+      const removed = parseInt(parts[1], 10);
+      const path = parts.slice(2).join("\t");
+      if (!Number.isNaN(added) && !Number.isNaN(removed)) {
+        stats[path] = { added, removed };
+      }
+    }
+  }
+  return { ok: true, stats };
+}
+
+
+export async function gitCommitHistory(
+  root: string,
+  opts: { limit?: number; allBranches?: boolean } = {},
+): Promise<{ ok: true; commits: GitCommitHistoryItem[] } | { ok: false; error: string }> {
+  const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
+  const args = [
+    "log",
+    `--max-count=${limit}`,
+    "--decorate=short",
+    "--pretty=format:%H%x1f%P%x1f%D%x1f%an%x1f%cr%x1f%s%x1e",
+  ];
+  if (opts.allBranches) args.splice(1, 0, "--all");
+
+  const res = await runGit(args, { cwd: root, timeoutMs: 10_000 });
+  if (!res.ok) {
+    const error = res.stderr.trim() || res.stdout.trim() || `git log exit ${res.code}`;
+    if (
+      error.includes("does not have any commits yet") ||
+      error.includes("bad default revision") ||
+      error.includes("ambiguous argument 'HEAD'")
+    ) {
+      return { ok: true, commits: [] };
+    }
+    return { ok: false, error };
+  }
+
+  const commits: GitCommitHistoryItem[] = [];
+  for (const record of res.stdout.split("\x1e")) {
+    if (!record.trim()) continue;
+    const [hash = "", parentsRaw = "", decorationsRaw = "", author = "", time = "", message = ""] = record
+      .replace(/^\n+/, "")
+      .split("\x1f");
+    if (!hash) continue;
+    const decorations = decorationsRaw
+      .split(",")
+      .map((d) => d.trim())
+      .filter(Boolean);
+    const branchDecoration = decorations.find((d) => !d.startsWith("tag: ") && d !== "HEAD");
+    const branchLabel = branchDecoration?.replace(/^HEAD ->\s*/, "");
+    commits.push({
+      hash: hash.slice(0, 12),
+      message: message || "(no commit message)",
+      author,
+      time,
+      isMerge: parentsRaw.trim().split(/\s+/).filter(Boolean).length > 1,
+      branchLabel,
+      isRemote: Boolean(branchDecoration && !branchDecoration.startsWith("HEAD -> ") && branchDecoration.includes("/")),
+    });
+  }
+
+  return { ok: true, commits };
+}
+
+/**
+ * Commit then push in one shot.
+ * Mirrors VS Code's "Commit & Push" action.
+ */
+export async function gitCommitAndPush(root: string, opts: CommitOptions): Promise<OpResult> {
+  const commitRes = await gitCommit(root, opts);
+  if (!commitRes.ok) return commitRes;
+  const pushRes = await runGit(["push"], { cwd: root, timeoutMs: 60_000 });
+  if (!pushRes.ok) {
+    return { ok: false, error: pushRes.stderr.trim() || `git push exit ${pushRes.code}` };
+  }
+  getOrCreateGitWorkspace(root).requestRefresh();
+  return { ok: true };
+}
+
+/**
+ * Commit then sync (pull --rebase + push) in one shot.
+ * Mirrors VS Code's "Commit & Sync" action.
+ */
+export async function gitCommitAndSync(root: string, opts: CommitOptions): Promise<OpResult> {
+  const commitRes = await gitCommit(root, opts);
+  if (!commitRes.ok) return commitRes;
+  const pullRes = await runGit(["pull", "--rebase"], { cwd: root, timeoutMs: 60_000 });
+  if (!pullRes.ok) {
+    return { ok: false, error: pullRes.stderr.trim() || `git pull exit ${pullRes.code}` };
+  }
+  const pushRes = await runGit(["push"], { cwd: root, timeoutMs: 60_000 });
+  if (!pushRes.ok) {
+    return { ok: false, error: pushRes.stderr.trim() || `git push exit ${pushRes.code}` };
+  }
+  getOrCreateGitWorkspace(root).requestRefresh();
+  return { ok: true };
+}
+
+
+
+/**
+ * Generate a commit message from staged diff using an LLM via Shogo Cloud.
+ * Falls back to a generic message if the API call fails.
+ */
+export async function gitGenerateCommitMessage(
+  root: string,
+  apiUrl: string,
+): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
+  // Get the staged diff
+  const diffRes = await runGit(["diff", "--cached", "--stat"], { cwd: root });
+  if (!diffRes.ok) {
+    return { ok: false, error: diffRes.stderr.trim() || "failed to get staged diff" };
+  }
+  const diffStat = diffRes.stdout.trim();
+
+  // Get a short log of recent commits for context
+  const logRes = await runGit(["log", "--oneline", "-5"], { cwd: root });
+  const recentCommits = logRes.ok ? logRes.stdout.trim() : "";
+
+  // Get the actual diff (limited to first 4000 chars to stay within LLM context)
+  const fullDiffRes = await runGit(["diff", "--cached"], { cwd: root });
+  const diff = fullDiffRes.ok ? fullDiffRes.stdout.slice(0, 4000) : "";
+
+  try {
+    const res = await fetch(`${apiUrl}/api/ai/generate-commit-message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ diff, diffStat, recentCommits }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status}` };
+    }
+    const data = await res.json() as { message?: string };
+    if (data.message) {
+      return { ok: true, message: data.message };
+    }
+    return { ok: false, error: "No message returned from LLM" };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 /** `git commit -m <message>` against the current index. No -a. */
 export async function gitCommit(root: string, opts: CommitOptions): Promise<OpResult> {
   if (!opts.message.trim() && !opts.amend) {
@@ -125,6 +298,35 @@ export async function gitCommit(root: string, opts: CommitOptions): Promise<OpRe
   const res = await runGit(args, { cwd: root, timeoutMs: 30_000 });
   if (!res.ok) {
     return { ok: false, error: res.stderr.trim() || res.stdout.trim() || `git commit exit ${res.code}` };
+  }
+  getOrCreateGitWorkspace(root).requestRefresh();
+  return { ok: true };
+}
+
+/**
+ * Stage ALL changes (including untracked) and commit in one shot.
+ * Mirrors VS Code's "Commit All" action.
+ */
+export async function gitCommitAll(root: string, opts: CommitOptions): Promise<OpResult> {
+  if (!opts.message.trim() && !opts.amend) {
+    return { ok: false, error: "commit message is empty" };
+  }
+  // Stage everything first (including untracked).
+  const addRes = await runGit(["add", "-A"], { cwd: root, timeoutMs: 30_000 });
+  if (!addRes.ok) {
+    return { ok: false, error: addRes.stderr.trim() || `git add exit ${addRes.code}` };
+  }
+  return gitCommit(root, opts);
+}
+
+/**
+ * Undo the last commit (soft reset). Keeps all changes staged.
+ * Mirrors VS Code's "Undo Last Commit" action.
+ */
+export async function gitUndoLastCommit(root: string): Promise<OpResult> {
+  const res = await runGit(["reset", "--soft", "HEAD~1"], { cwd: root, timeoutMs: 30_000 });
+  if (!res.ok) {
+    return { ok: false, error: res.stderr.trim() || res.stdout.trim() || `git reset exit ${res.code}` };
   }
   getOrCreateGitWorkspace(root).requestRefresh();
   return { ok: true };

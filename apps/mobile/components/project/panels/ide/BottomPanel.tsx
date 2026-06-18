@@ -7,6 +7,10 @@ import { OutputTab } from "./OutputTab";
 import { DebugConsole } from "./DebugConsole";
 import { Ports } from "./Ports";
 import { PanelTabStrip } from "./PanelTabStrip";
+import { ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
+import { getDesktopExtensionsBridge } from "./extensions/useExtensions";
+import type { ExtensionRuntimeContainer } from "./extensions/ExtensionRuntimeViewlet";
+import type { ExtensionRuntimeViewResult } from "./extensions/types";
 import {
   ideBottomPanelStore,
   useBottomPanelState,
@@ -52,6 +56,7 @@ export function BottomPanel({
   messages?: any[];
 }) {
   const tab = useBottomPanelState((s) => s.activeTab);
+  const extensionPanelContainers = useBottomPanelState((s) => s.extensionPanelContainers);
   const unseenForThisProject = useBottomPanelState((s) =>
     projectId ? (s.unseenErrorsByProject[projectId] ?? 0) : 0,
   );
@@ -65,6 +70,20 @@ export function BottomPanel({
       ideBottomPanelStore.markAllSeen(projectId);
     }
   }, [projectId]);
+
+  const runExtensionCommand = React.useCallback((commandId: string, args?: unknown[], workspaceRoot?: string | null): void => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return;
+    void bridge.runCommand(commandId, args ?? [], workspaceRoot ?? undefined);
+  }, []);
+
+  const loadExtensionRuntimeView = React.useCallback(async (viewId: string, workspaceRoot?: string | null, itemHandle?: string): Promise<ExtensionRuntimeViewResult | null> => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return null;
+    const response = await bridge.getView(viewId, workspaceRoot ?? undefined, itemHandle);
+    if (!response.ok) throw new Error(response.error ?? `Extension view failed: ${viewId}`);
+    return response.view ?? null;
+  }, []);
 
   /**
    * Phase 11 — VS Code global shortcuts. Bound at the panel level (not
@@ -86,6 +105,18 @@ export function BottomPanel({
   // cases creep into the layout layer.
   const renderPane = (t: BottomPanelTab): React.ReactNode => {
     const visible = tab === t;
+    if (t.startsWith("extension:")) {
+      const container = extensionPanelContainers.find((candidate) => candidate.activityId === t);
+      if (!container) return null;
+      return (
+        <ExtensionRuntimeViewlet
+          container={container as ExtensionRuntimeContainer}
+          onRunCommand={(commandId, args) => runExtensionCommand(commandId, args, container.workspaceRoot)}
+          onOpenDetails={() => undefined}
+          onLoadView={(viewId, itemHandle) => loadExtensionRuntimeView(viewId, container.workspaceRoot, itemHandle)}
+        />
+      );
+    }
     switch (t) {
       case "Terminal":
         return (
@@ -126,6 +157,7 @@ export function BottomPanel({
         activeTab={tab}
         onSelect={handleSelect}
         badges={{ Output: unseenForThisProject }}
+        extensionTabs={extensionPanelContainers}
         onHide={onClose}
         onClose={onClose}
       />
@@ -137,12 +169,12 @@ export function BottomPanel({
         * `overflow-auto`, so we don't need this layer to clip.
         */}
       <div className="relative flex-1 min-h-0">
-        {(["Problems", "Output", "Debug Console", "Terminal", "Ports"] as const).map((t) => (
+        {(["Problems", "Output", "Debug Console", "Terminal", "Ports", ...extensionPanelContainers.map((container) => container.activityId)] as const).map((t) => (
           <div
             key={t}
             role="tabpanel"
             id={`bottompanel-tabpanel-${t}`}
-            aria-label={`${t} panel`}
+            aria-label={`${extensionPanelContainers.find((container) => container.activityId === t)?.title ?? t} panel`}
             hidden={tab !== t}
             className={`absolute inset-0 ${tab === t ? "" : "hidden"}`}
           >

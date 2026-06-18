@@ -12,6 +12,7 @@ import { GitStatusProvider } from "./git/GitStatusContext";
 import { SourceControlViewlet } from "./scm/SourceControlViewlet";
 import { RunDebugPanel } from "./run/RunDebugPanel";
 import { GraphView } from "./graph/GraphView";
+import { CheckpointListView } from "./CheckpointListView";
 import { attachGitDecorations, maybeAutoStageIfConflictResolved } from "./git/editorIntegration";
 import { MergeEditorModal } from "./git/MergeEditorModal";
 import { getDesktopGitBridge } from "./git/bridge";
@@ -49,10 +50,11 @@ import {
 } from "./types";
 import { broadcastEditorFontChange } from "./useEditorFont";
 import { SearchPane } from "./SearchPane";
-import { OutlinePanel } from "./OutlinePanel";
-import { getDocumentSymbols } from "./monaco/lspProviders";
-import type { DocumentSymbolLike } from "./outline-model";
 import { SettingsPane } from "./SettingsPane";
+import { ExtensionsViewlet, TrustPublisherDialog } from "./extensions/ExtensionsViewlet";
+import { collectRuntimeContainers, ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
+import { getDesktopExtensionsBridge, useExtensions } from "./extensions/useExtensions";
+import type { ExtensionHostEvent, ExtensionRuntimeViewResult, ExtensionRuntimeWebviewPanel, ExtensionSearchResult, ExtensionUiRequest, ExtensionUsableEntryPoint, ExtensionWorkspaceState, InstalledExtension } from "./extensions/types";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
@@ -142,6 +144,18 @@ function useResolvedTheme(): "light" | "dark" {
 
 const fileId = (rootId: string, path: string) => `${rootId}::${path}`;
 
+function workspaceFsPath(root: string, relPath: string): string {
+  const trimmedRoot = root.replace(/[\\/]+$/, "");
+  const trimmedPath = relPath.replace(/^[\\/]+/, "");
+  return `${trimmedRoot}/${trimmedPath}`;
+}
+
+function documentVersion(content: string, dirty: boolean): number {
+  let hash = dirty ? 17 : 0;
+  for (let i = 0; i < content.length; i++) hash = ((hash << 5) - hash + content.charCodeAt(i)) | 0;
+  return Math.abs(hash);
+}
+
 /** Debounce for auto save while typing (ms). */
 const AUTO_SAVE_DELAY_MS = 1000;
 
@@ -194,6 +208,8 @@ export function Workbench({
   paneVisible = true,
   agentUrl,
   fetchImpl,
+  isExternalProject = true,
+  folderPath,
 }: {
   agentService: WorkspaceService;
   agentLabel?: string;
@@ -221,10 +237,15 @@ export function Workbench({
    * for tests.
    */
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  /** True when the project was opened via "Open folder…" (external/IDE-style). */
+  isExternalProject?: boolean;
+  /** Absolute path to the project's primary folder (for external/open-folder projects). */
+  folderPath?: string | null;
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
   const [graphOpen, setGraphOpen] = useState<boolean>(false);
+  const [pendingExtensionInstall, setPendingExtensionInstall] = useState<InstalledExtension | ExtensionSearchResult | null>(null);
 
   // Deep-link: let surfaces outside the Workbench (e.g. the top-bar Publish
   // popover's "View history" link) switch the active activity — notably
@@ -235,10 +256,10 @@ export function Workbench({
     const KNOWN: ReadonlySet<string> = new Set([
       "files",
       "search",
-      "outline",
       "git",
       "checkpoint",
       "debug",
+      "extensions",
       "settings",
     ]);
     const apply = (id: string) => {
@@ -258,6 +279,21 @@ export function Workbench({
   useEffect(() => {
     try { localStorage.setItem("shogo.ide.sidebarOpen", String(sidebarOpen)); } catch { /* ignore */ }
   }, [sidebarOpen]);
+
+  useEffect(() => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return;
+    return bridge.onEvent((event: ExtensionHostEvent) => {
+      if (event.type === "uiRequest") setExtensionUiRequest(event.request);
+    });
+  }, []);
+
+  const respondToExtensionUiRequest = useCallback((requestId: string, result?: unknown, ok = true) => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return;
+    void bridge.respondUiRequest(requestId, ok ? { ok: true, result } : { ok: false, error: String(result ?? "Extension UI request cancelled") });
+    setExtensionUiRequest((current) => current?.requestId === requestId ? null : current);
+  }, []);
 
   // Bottom-panel state lives in the lifted store so the same drawer is
   // visible from anywhere in the project view (via DrawerHost mounted at
@@ -287,6 +323,7 @@ export function Workbench({
 
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
   const [toast, setToast] = useState<string | null>(null);
+  const [extensionUiRequest, setExtensionUiRequest] = useState<ExtensionUiRequest | null>(null);
   const [newRequest, setNewRequest] = useState<
     { kind: "file" | "dir"; nonce: number; rootId?: string } | null
   >(null);
@@ -330,7 +367,7 @@ export function Workbench({
     broadcastEditorFontChange(settings.fontFamily);
   }, [settings.fontFamily]);
 
-  const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal" });
+  const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal", invert: true });
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
@@ -340,11 +377,6 @@ export function Workbench({
   // refs reactively).
   const [monacoReadyTick, setMonacoReadyTick] = useState(0);
 
-  // FEAT-OUTLINE — document symbols for the active editor, fetched through
-  // the shared backend-LSP (version-keyed cache) only while the Outline view
-  // is open. `null` = not yet fetched / unavailable; `[]` = fetched, no symbols.
-  const [outlineSymbols, setOutlineSymbols] = useState<DocumentSymbolLike[] | null>(null);
-  const [outlineLoading, setOutlineLoading] = useState(false);
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1148,7 +1180,11 @@ export function Workbench({
         if (applied) setConflicts((cs) => cs.filter((c) => c.fileId !== id));
         const root = gitWorkspaceRootRef.current;
         if (root) {
-          void maybeAutoStageIfConflictResolved(root, f.path, content);
+          const gitBridge = getDesktopGitBridge();
+          void gitBridge?.refresh(root);
+          void maybeAutoStageIfConflictResolved(root, f.path, content).finally(() => {
+            void gitBridge?.refresh(root);
+          });
         }
         if (!opts?.silent) showToast(`Saved ${f.name}`);
         return true;
@@ -1274,50 +1310,6 @@ export function Workbench({
     [activeGroup],
   );
 
-  // FEAT-OUTLINE — jump the caret to a symbol's selection range.
-  const revealSymbol = useCallback(
-    (line: number, col: number) => {
-      const ed = editorRefs.current[activeGroup?.id ?? ""];
-      if (!ed) return;
-      ed.revealPositionInCenter({ lineNumber: line, column: col });
-      ed.setPosition({ lineNumber: line, column: col });
-      ed.focus();
-    },
-    [activeGroup],
-  );
-
-  // FEAT-OUTLINE — (re)fetch document symbols for the active editor while the
-  // Outline view is open. Keyed on the active file, Monaco readiness, and the
-  // caret line: an edit bumps the model version (invalidating the shared LSP
-  // cache) and also moves the caret, so this refreshes after typing — yet
-  // every navigation-only move is a cheap cache hit. A cancellation guard
-  // drops stale responses from rapid file/caret changes.
-  useEffect(() => {
-    if (activity !== "outline") return;
-    const ed = editorRefs.current[activeGroup?.id ?? ""];
-    const model = ed?.getModel();
-    if (!monacoNsRef.current || !model) {
-      setOutlineSymbols(null);
-      setOutlineLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setOutlineLoading(true);
-    getDocumentSymbols(model)
-      .then((syms) => {
-        if (!cancelled) setOutlineSymbols((syms as DocumentSymbolLike[] | null) ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setOutlineSymbols([]);
-      })
-      .finally(() => {
-        if (!cancelled) setOutlineLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activity, active?.id, monacoReadyTick, cursor.line, activeGroup]);
 
   // Reveal a specific location across any root (used by project search)
   const revealMatch = useCallback(
@@ -1357,6 +1349,197 @@ export function Workbench({
     [roots, openFileInGroup, activeGroupIdx, activeGroup],
   );
 
+  const extensionsSummary = useExtensions({ workspaceRoot: gitWorkspaceRootRef.current });
+  const extensionRuntimeContainers = useMemo(
+    () => collectRuntimeContainers(extensionsSummary.installed),
+    [extensionsSummary.installed],
+  );
+  const activityBarExtensionContainers = useMemo(
+    () => extensionRuntimeContainers.filter((container) => container.location === "activitybar"),
+    [extensionRuntimeContainers],
+  );
+  const panelExtensionContainers = useMemo(
+    () => extensionRuntimeContainers.filter((container) => container.location === "panel"),
+    [extensionRuntimeContainers],
+  );
+  useEffect(() => {
+    ideBottomPanelStore.setExtensionPanelContainers(panelExtensionContainers.map((container) => ({
+      ...container,
+      location: "panel" as const,
+      workspaceRoot: gitWorkspaceRootRef.current ?? null,
+    })));
+  }, [panelExtensionContainers]);
+  const activeExtensionRuntimeContainer = useMemo(
+    () => extensionRuntimeContainers.find((container) => container.activityId === activity),
+    [activity, extensionRuntimeContainers],
+  );
+  const openExtensionDetailsTab = useCallback((item: InstalledExtension | ExtensionSearchResult) => {
+    const id = `extension:${item.id}`;
+    const name = `Extension: ${item.displayName || item.name}`;
+    const existing = findOpenLocation(id);
+    if (existing) {
+      setActiveGroupIdx(existing.groupIdx);
+      updateGroup(existing.groupIdx, (g) => ({
+        ...g,
+        activeId: id,
+        files: g.files.map((file) => file.id === id ? { ...file, name, extensionDetail: item } : file),
+      }));
+      return;
+    }
+    const tab: OpenFile = {
+      id,
+      rootId: "__extensions__",
+      name,
+      path: `Extensions/${item.displayName || item.name}`,
+      language: "extension-detail",
+      content: "",
+      savedContent: "",
+      dirty: false,
+      extensionDetail: item,
+    };
+    updateGroup(activeGroupIdx, (g) => ({ ...g, files: [...g.files, tab], activeId: id }));
+    setActiveGroupIdx(activeGroupIdx);
+  }, [activeGroupIdx, findOpenLocation, updateGroup]);
+
+  const openExtensionWebviewPanel = useCallback((panel: ExtensionRuntimeWebviewPanel) => {
+    const id = `extension-webview:${panel.id}`;
+    const existing = findOpenLocation(id);
+    const tabName = panel.title || panel.viewType || "Extension Webview";
+    if (existing) {
+      setActiveGroupIdx(existing.groupIdx);
+      updateGroup(existing.groupIdx, (g) => ({
+        ...g,
+        activeId: id,
+        files: g.files.map((file) => file.id === id ? { ...file, name: tabName, content: panel.html, savedContent: panel.html } : file),
+      }));
+      return;
+    }
+    const tab: OpenFile = {
+      id,
+      rootId: "__extensions__",
+      name: tabName,
+      path: `Extensions/${panel.extensionId}/${panel.viewType}`,
+      language: "extension-webview",
+      content: panel.html,
+      savedContent: panel.html,
+      dirty: false,
+    };
+    updateGroup(activeGroupIdx, (g) => ({ ...g, files: [...g.files, tab], activeId: id }));
+    setActiveGroupIdx(activeGroupIdx);
+  }, [activeGroupIdx, findOpenLocation, updateGroup]);
+
+  const requestExtensionInstall = useCallback((item: InstalledExtension | ExtensionSearchResult) => {
+    if (extensionsSummary.isPublisherTrusted(item.publisher)) {
+      void extensionsSummary.installFromRegistry(item.id, item.version);
+    } else {
+      setPendingExtensionInstall(item);
+    }
+  }, [extensionsSummary]);
+  const trustAndInstallExtension = useCallback(async () => {
+    if (!pendingExtensionInstall) return;
+    const trusted = await extensionsSummary.trustPublisher(pendingExtensionInstall.publisher);
+    if (!trusted) return;
+    void extensionsSummary.installFromRegistry(pendingExtensionInstall.id, pendingExtensionInstall.version);
+    setPendingExtensionInstall(null);
+  }, [extensionsSummary, pendingExtensionInstall]);
+  const runExtensionCommand = useCallback((commandId: string, args?: unknown[]) => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) {
+      showToast("Extension commands are available in Shogo Desktop only", 2500);
+      return;
+    }
+    showToast(`Running ${commandId}…`, 1600);
+    void bridge.runCommand(commandId, args ?? [], gitWorkspaceRootRef.current ?? undefined).then(async (response) => {
+      if (!response.ok) {
+        const message = response.error ?? `Extension command failed: ${commandId}`;
+        console.warn(message);
+        showToast(message, 3500);
+        void extensionsSummary.showRunningExtensions();
+        return;
+      }
+      showToast(`Command completed: ${commandId}`, 2200);
+      void extensionsSummary.showRunningExtensions();
+      void extensionsSummary.loadStatusBarItems();
+      const panels = await bridge.getWebviewPanels(gitWorkspaceRootRef.current ?? undefined);
+      if (panels.ok) {
+        for (const panel of panels.panels ?? []) openExtensionWebviewPanel(panel);
+      }
+    });
+  }, [extensionsSummary, openExtensionWebviewPanel, showToast]);
+  const loadExtensionRuntimeView = useCallback(async (viewId: string, itemHandle?: string): Promise<ExtensionRuntimeViewResult | null> => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return null;
+    const response = await bridge.getView(viewId, gitWorkspaceRootRef.current ?? undefined, itemHandle);
+    if (!response.ok) throw new Error(response.error ?? `Extension view failed: ${viewId}`);
+    void extensionsSummary.showRunningExtensions();
+    return response.view ?? null;
+  }, [extensionsSummary]);
+
+  const useExtensionEntryPoint = useCallback((extension: InstalledExtension, entryPoint: ExtensionUsableEntryPoint) => {
+    if (!extension.enabled) {
+      showToast(`${extension.displayName || extension.name} is disabled`, 2500);
+      return;
+    }
+    if (extension.supportStatus !== "supported" && extension.supportStatus !== "partial") {
+      showToast(extension.unsupportedSurfaceMessage ?? extension.supportStatusMessage, 4500);
+      return;
+    }
+    if (entryPoint.kind === "command") {
+      runExtensionCommand(entryPoint.id);
+      return;
+    }
+    const containerId = entryPoint.kind === "view" ? entryPoint.detail : entryPoint.id;
+    const container = extensionRuntimeContainers.find((candidate) => candidate.extension.id === extension.id && candidate.id === containerId);
+    if (container) {
+      if (container.location === "panel") {
+        ideBottomPanelStore.showExtensionPanelContainer(container.activityId);
+      } else {
+        setActivity(container.activityId);
+        if (!sidebarOpen) setSidebarOpen(true);
+      }
+      if (entryPoint.kind === "view") {
+        const bridge = getDesktopExtensionsBridge();
+        void bridge?.activateEvent(`onView:${entryPoint.id}`, gitWorkspaceRootRef.current ?? undefined).then(() => {
+          void extensionsSummary.showRunningExtensions();
+        });
+      }
+      return;
+    }
+    if (entryPoint.kind === "startupActivation") {
+      const bridge = getDesktopExtensionsBridge();
+      if (!bridge) {
+        showToast("Extension activation is available in Shogo Desktop only", 2500);
+        return;
+      }
+      showToast(`Activating ${extension.displayName || extension.name}…`, 1600);
+      void bridge.activateEvent(entryPoint.id, gitWorkspaceRootRef.current ?? undefined).then(async (response) => {
+        if (!response.ok) {
+          showToast(response.error ?? `Extension activation failed: ${extension.id}`, 3500);
+          void extensionsSummary.showRunningExtensions();
+          return;
+        }
+        showToast(`Activated ${extension.displayName || extension.name}`, 2200);
+        void extensionsSummary.showRunningExtensions();
+        void extensionsSummary.loadStatusBarItems();
+        const panels = await bridge.getWebviewPanels(gitWorkspaceRootRef.current ?? undefined);
+        if (panels.ok) {
+          for (const panel of panels.panels ?? []) openExtensionWebviewPanel(panel);
+        }
+      });
+      return;
+    }
+    showToast(`${entryPoint.label} is not reachable in Shogo yet`, 3000);
+  }, [extensionRuntimeContainers, extensionsSummary, openExtensionWebviewPanel, runExtensionCommand, showToast, sidebarOpen]);
+
+  useEffect(() => {
+    if (!active?.language || active.rootId === "__extensions__" || PREVIEW_LANGUAGES.has(active.language)) return;
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge) return;
+    void bridge.activateEvent(`onLanguage:${active.language}`, gitWorkspaceRootRef.current ?? undefined).then(() => {
+      void extensionsSummary.showRunningExtensions();
+    });
+  }, [active?.id, active?.language, active?.rootId, extensionsSummary.showRunningExtensions]);
+
   // ─── Commands ────────────────────────────────────────────────────────
   const commands: Command[] = useMemo(() => {
     const cmds: Command[] = [
@@ -1388,6 +1571,30 @@ export function Workbench({
         id: `workspace.closeFolder:${r.id}`,
         label: `Workspace: Close Folder "${r.label}"`,
         run: () => void closeRoot(r.id),
+      });
+    }
+    for (const extension of extensionsSummary.installed) {
+      if (!extension.enabled || !extension.compatible) continue;
+      for (const command of extension.manifest.contributes?.commands ?? []) {
+        cmds.push({
+          id: `extension:${command.command}`,
+          label: `${command.category ? `${command.category}: ` : ""}${command.title}`,
+          run: () => runExtensionCommand(command.command),
+        });
+      }
+    }
+    for (const container of extensionRuntimeContainers) {
+      cmds.push({
+        id: `extension.view.${container.activityId}`,
+        label: `View: Show ${container.title}`,
+        run: () => {
+          if (container.location === "panel") {
+            ideBottomPanelStore.showExtensionPanelContainer(container.activityId);
+            return;
+          }
+          setActivity(container.activityId);
+          if (!sidebarOpen) setSidebarOpen(true);
+        },
       });
     }
     cmds.push(
@@ -1452,15 +1659,6 @@ export function Workbench({
         run: () => setActivity("search"),
       },
       {
-        id: "view.openOutline",
-        label: "View: Show Outline",
-        shortcut: "⌘⇧O",
-        run: () => {
-          setActivity("outline");
-          if (!sidebarOpen) setSidebarOpen(true);
-        },
-      },
-      {
         id: "view.openSourceControl",
         label: "View: Show Source Control",
         shortcut: "⌃⇧G",
@@ -1485,7 +1683,7 @@ export function Workbench({
     handleSave, handleSaveAll, activeGroup, activeGroupIdx, closeInGroup, splitRight,
     closeOtherGroup, focusNextGroup, togglePinInGroup, gotoLine, refreshAllRoots,
     openLocalFolder, closeRoot, fsaSupported, roots, sidebarOpen, bottomPanelOpen,
-    requestNewTerminal,
+    requestNewTerminal, extensionsSummary.installed, extensionRuntimeContainers, runExtensionCommand,
   ]);
 
   const commandItems: PaletteItem[] = useMemo(
@@ -1673,13 +1871,62 @@ export function Workbench({
       }
       const r = await fsBridge.resolveWorkspace(projectId);
       if (cancelled) return;
-      setGitWorkspaceRoot(r.ok && r.root ? r.root : null);
+      if (r.ok && r.root) {
+        setGitWorkspaceRoot(r.root);
+        return;
+      }
+      // G2 fallback: for external projects where neither bridge resolved
+      // the root, use the project's primary folder path directly.
+      if (folderPath) {
+        setGitWorkspaceRoot(folderPath);
+        return;
+      }
+      setGitWorkspaceRoot(null);
     })();
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, folderPath]);
   const gitSnapshot = useGitStatus(gitWorkspaceRoot);
+  const extensionsBridgeAvailable = getDesktopExtensionsBridge() !== null;
+
+  useEffect(() => {
+    const bridge = getDesktopExtensionsBridge();
+    if (!bridge || !gitWorkspaceRoot) return;
+    const documents = groups
+      .flatMap((group) => group.files)
+      .filter((file) => file.rootId === "agent" && !PREVIEW_LANGUAGES.has(file.language))
+      .map((file) => ({
+        path: file.path,
+        fsPath: workspaceFsPath(gitWorkspaceRoot, file.path),
+        languageId: file.language || "plaintext",
+        version: documentVersion(file.content, file.dirty),
+        text: file.content,
+        isDirty: file.dirty,
+      }));
+    const visibleDocumentPaths = groups
+      .map((group) => group.files.find((file) => file.id === group.activeId))
+      .filter((file): file is OpenFile => !!file && file.rootId === "agent" && !PREVIEW_LANGUAGES.has(file.language))
+      .map((file) => file.path);
+    const state: ExtensionWorkspaceState = {
+      workspaceRoot: gitWorkspaceRoot,
+      workspaceName: roots.find((root) => root.id === "agent")?.label ?? agentLabel,
+      activeDocumentPath: active?.rootId === "agent" && !PREVIEW_LANGUAGES.has(active.language) ? active.path : null,
+      visibleDocumentPaths,
+      documents,
+      configuration: {
+        editor: settings,
+        "editor.fontFamily": settings.fontFamily,
+        "editor.fontSize": settings.fontSize,
+        "editor.tabSize": settings.tabSize,
+        "editor.formatOnSave": settings.formatOnSave,
+        "files.autoSave": settings.autoSave ? "afterDelay" : "off",
+      },
+    };
+    void bridge.updateWorkspaceState(state).then((response) => {
+      if (!response.ok) console.warn(response.error ?? "Extension workspace state sync failed");
+    });
+  }, [active?.id, active?.language, active?.path, active?.rootId, agentLabel, gitWorkspaceRoot, groups, roots, settings]);
 
   // ─── G4: git gutter markers + inline blame + conflict CodeLens ─────
   // Attach Monaco decorations + a code lens provider for the active
@@ -1723,6 +1970,11 @@ export function Workbench({
     const out: Partial<Record<ActivityId, BadgeData>> = {};
     const gitN = gitChangeCount(gitSnapshot);
     if (gitN > 0) out.git = { count: gitN, tone: "neutral" };
+    if (extensionsSummary.restartRequired) {
+      out.extensions = { count: 1, tone: "warn" };
+    } else if (extensionsSummary.installed.length > 0) {
+      out.extensions = { count: extensionsSummary.installed.length, tone: "neutral" };
+    }
     if (problemsBadgeResult.count > 0) {
       const tone = problemsBadgeResult.severity === "error" ? "error" : "warn";
       // Shogo surfaces the Problems pane under the Files (Explorer)
@@ -1732,7 +1984,7 @@ export function Workbench({
       out.files = { count: problemsBadgeResult.count, tone };
     }
     return Object.keys(out).length === 0 ? null : out;
-  }, [desktopBadgesEnabled, gitSnapshot, problemsBadgeResult.count, problemsBadgeResult.severity]);
+  }, [desktopBadgesEnabled, gitSnapshot, problemsBadgeResult.count, problemsBadgeResult.severity, extensionsSummary.restartRequired, extensionsSummary.installed.length, isExternalProject]);
 
   return (
     <GitStatusProvider snapshot={gitSnapshot}>
@@ -1742,113 +1994,7 @@ export function Workbench({
       data-theme={themeMode}
     >
       <div className="flex flex-1 min-h-0">
-        <ActivityBar
-          active={activity}
-          sidebarOpen={sidebarOpen}
-          terminalOpen={bottomPanelOpen}
-          badges={activityBadges}
-          onSelect={(id) => {
-            setActivity(id);
-            if (!sidebarOpen) setSidebarOpen(true);
-          }}
-          onToggleSidebar={() => setSidebarOpen((v) => !v)}
-          onToggleTerminal={() => setBottomPanelOpen((v) => !v)}
-        />
-
         <div className="flex flex-1 min-w-0">
-          {/* The Checkpoint activity renders the commit graph as a full
-              main-area view (graph columns + a 400px detail panel), so it
-              suppresses the narrow sidebar — otherwise the detail panel
-              overflows and squeezes the graph to nothing. */}
-          {sidebarOpen && activity !== "checkpoint" && (
-            <>
-              <div
-                style={{ width: sidebarSplit.size, flexShrink: 0, maxWidth: "55%", minWidth: 0 }}
-                className="h-full bg-[color:var(--ide-surface)] overflow-hidden"
-              >
-                {activity === "files" && (
-                  <FilesPane
-                    roots={roots}
-                    virtualTree={virtualTree}
-                    activePath={active?.path ?? null}
-                    handlers={treeHandlers}
-                    newRequest={newRequest}
-                    fsaSupported={fsaSupported}
-                    onRefresh={refreshAllRoots}
-                    onNew={(kind) => setNewRequest({ kind, nonce: Date.now() })}
-                    onOpenFolder={() => void openLocalFolder()}
-                    onRestore={() => void restoreRoots()}
-                    onCloseRoot={(id) => void closeRoot(id)}
-                    onCollapse={() => setSidebarOpen(false)}
-                  />
-                )}
-                {activity === "search" && (
-                  <SearchPane
-                    roots={roots}
-                    services={services}
-                    onReveal={(rootId, path, line, col) =>
-                      void revealMatch(rootId, path, line, col)
-                    }
-                    onReplaced={(matches, files) => {
-                      showToast(
-                        `Replaced ${matches} match${matches === 1 ? "" : "es"} in ${files} file${files === 1 ? "" : "s"}`,
-                      );
-                    }}
-                  />
-                )}
-                {activity === "outline" && (
-                  <OutlinePanel
-                    symbols={outlineSymbols}
-                    loading={outlineLoading}
-                    hasFile={!!active}
-                    activeLine={cursor.line}
-                    onReveal={revealSymbol}
-                    onCollapse={() => setSidebarOpen(false)}
-                  />
-                )}
-                {activity === "git" && (
-                  <div className="flex flex-col h-full">
-                    {projectId && (
-                      <button
-                        onClick={() => setGraphOpen(true)}
-                        className="flex items-center gap-1.5 mx-2 mt-2 mb-1 px-2 py-1.5 rounded text-[12px] border border-[color:var(--ide-border-strong)] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
-                      >
-                        <GitBranch size={13} className="text-[color:var(--ide-muted)]" />
-                        Open Commit Graph
-                      </button>
-                    )}
-                    <div className="flex-1 min-h-0">
-                  <SourceControlViewlet
-                    workspaceRoot={gitWorkspaceRoot}
-                    onOpenDiff={(path, group) => {
-                      // G4.5: clicking a Merge row opens the 3-way merge
-                      // editor. Other groups still fall through to the
-                      // (forthcoming) Monaco diff view — tracked as G2.5
-                      // polish.
-                      if (group === "merge" && gitWorkspaceRoot) {
-                        setMergePath(path);
-                      }
-                    }}
-                    // Checkpoint now lives on its own activity bar entry
-                    // (id: "checkpoint"); the SourceControl viewlet no
-                    // longer falls back to it. If the project has no git
-                    // repo, the viewlet renders its own empty state.
-                  />
-                    </div>
-                  </div>
-                )}
-                {activity === "debug" && (
-                  <RunDebugPanel workspaceRoot={gitWorkspaceRoot} />
-                )}
-                {activity === "settings" && (
-                  <SettingsPane settings={settings} onChange={setSettings} />
-                )}
-              </div>
-
-              <VerticalSplit onMouseDown={sidebarSplit.onMouseDown} />
-            </>
-          )}
-
           <div className="flex flex-1 min-w-0 flex-col">
             <AgentEditBanner
               conflicts={conflicts}
@@ -1861,7 +2007,7 @@ export function Workbench({
               {graphOpen && projectId && (
                 <div className="absolute inset-0 z-30 flex flex-col bg-[color:var(--ide-bg)]">
                   <div className="flex items-center gap-2 px-3 h-9 border-b border-[color:var(--ide-border)] bg-[color:var(--ide-surface)]">
-                    <GitBranch size={13} className="text-[color:var(--ide-muted)]" />
+                    <GitBranch size={13} color="var(--ide-muted)" />
                     <span className="text-[12px] text-[color:var(--ide-text-strong)]">Commit Graph</span>
                     <span className="flex-1" />
                     <button
@@ -1878,9 +2024,9 @@ export function Workbench({
                 </div>
               )}
               {activity === "checkpoint" && projectId ? (
-                // Checkpoint tab: the commit graph takes the full main area
-                // and the editor panel is hidden.
-                <GraphView projectId={projectId} onOpenFile={openWorkspaceFile} />
+                // Checkpoint tab: managed projects see a checkpoint-only list;
+                // external (open-folder) projects see the full git commit graph.
+                <CheckpointListView projectId={projectId} />
               ) : (
               groups
                 .map((g, i) => (
@@ -1910,6 +2056,14 @@ export function Workbench({
                       onChange={handleChangeFor(i)}
                       onCursor={(line, col) => setCursor({ line, col })}
                       settings={settings}
+                      installedExtensions={extensionsSummary.installed}
+                      extensionInstallingId={extensionsSummary.installingId}
+                      onInstallExtension={requestExtensionInstall}
+                      onEnableExtension={(id) => void extensionsSummary.setEnabled(id, true)}
+                      onDisableExtension={(id) => void extensionsSummary.setEnabled(id, false)}
+                      onUninstallExtension={(id) => void extensionsSummary.uninstall(id)}
+                      onRunExtensionCommand={runExtensionCommand}
+                      onUseExtensionEntryPoint={useExtensionEntryPoint}
                       onEditorMount={(ed, monaco) => {
                         editorRefs.current[g.id] = ed;
                         if (monaco && monacoNsRef.current !== monaco) {
@@ -1959,6 +2113,13 @@ export function Workbench({
                   {toast}
                 </div>
               )}
+              {extensionUiRequest && (
+                <ExtensionUiRequestDialog
+                  request={extensionUiRequest}
+                  onResolve={(result) => respondToExtensionUiRequest(extensionUiRequest.requestId, result, true)}
+                  onCancel={() => respondToExtensionUiRequest(extensionUiRequest.requestId, undefined, true)}
+                />
+              )}
             </div>
 
             {/*
@@ -1973,6 +2134,108 @@ export function Workbench({
 
           </div>
         </div>
+
+        {/* The Checkpoint activity renders the commit graph as a full
+            main-area view (graph columns + a 400px detail panel), so it
+            suppresses the narrow sidebar — otherwise the detail panel
+            overflows and squeezes the graph to nothing. */}
+        {sidebarOpen && activity !== "checkpoint" && (
+          <>
+
+            <VerticalSplit onMouseDown={sidebarSplit.onMouseDown} />
+
+            <div
+              style={{ width: sidebarSplit.size, flexShrink: 0, maxWidth: "55%", minWidth: 0 }}
+              className="h-full bg-[color:var(--ide-surface)] overflow-hidden"
+            >
+              {activity === "files" && (
+                <FilesPane
+                  roots={roots}
+                  virtualTree={virtualTree}
+                  activePath={active?.path ?? null}
+                  handlers={treeHandlers}
+                  newRequest={newRequest}
+                  fsaSupported={fsaSupported}
+                  onRefresh={refreshAllRoots}
+                  onNew={(kind) => setNewRequest({ kind, nonce: Date.now() })}
+                  onOpenFolder={() => void openLocalFolder()}
+                  onRestore={() => void restoreRoots()}
+                  onCloseRoot={(id) => void closeRoot(id)}
+                  onCollapse={() => setSidebarOpen(false)}
+                />
+              )}
+              {activity === "search" && (
+                <SearchPane
+                  roots={roots}
+                  services={services}
+                  onReveal={(rootId, path, line, col) =>
+                    void revealMatch(rootId, path, line, col)
+                  }
+                  onReplaced={(matches, files) => {
+                    showToast(
+                      `Replaced ${matches} match${matches === 1 ? "" : "es"} in ${files} file${files === 1 ? "" : "s"}`,
+                    );
+                  }}
+                />
+              )}
+              {activity === "git" && (
+                <div className="flex flex-col h-full">
+                  <div className="flex-1 min-h-0">
+                <SourceControlViewlet
+                  workspaceRoot={gitWorkspaceRoot}
+                  onOpenFile={openWorkspaceFile}
+                  onOpenDiff={(path, group) => {
+                    if (group === "merge" && gitWorkspaceRoot) {
+                      // Merge conflicts open the 3-way merge editor
+                      setMergePath(path);
+                    } else if (gitWorkspaceRoot) {
+                      // Staged/changes: open Monaco diff tab
+                      openWorkspaceFile(path);
+                    }
+                  }}
+                  // Checkpoint now lives on its own activity bar entry
+                  // (id: "checkpoint"); the SourceControl viewlet no
+                  // longer falls back to it. If the project has no git
+                  // repo, the viewlet renders its own empty state.
+                />
+                  </div>
+                </div>
+              )}
+              {activity === "debug" && (
+                <RunDebugPanel workspaceRoot={gitWorkspaceRoot} />
+              )}
+              {activity === "extensions" && (
+                <ExtensionsViewlet workspaceRoot={gitWorkspaceRoot} onOpenDetails={openExtensionDetailsTab} onUseEntryPoint={useExtensionEntryPoint} />
+              )}
+              {activeExtensionRuntimeContainer && (
+                <ExtensionRuntimeViewlet
+                  container={activeExtensionRuntimeContainer}
+                  onRunCommand={runExtensionCommand}
+                  onOpenDetails={openExtensionDetailsTab}
+                  onLoadView={loadExtensionRuntimeView}
+                />
+              )}
+              {activity === "settings" && (
+                <SettingsPane settings={settings} onChange={setSettings} />
+              )}
+            </div>
+          </>
+          )}
+
+        <ActivityBar
+          active={activity}
+          sidebarOpen={sidebarOpen}
+          terminalOpen={bottomPanelOpen}
+          badges={activityBadges}
+          hiddenItemIds={extensionsBridgeAvailable ? [] : ["extensions"]}
+          extensionContainers={activityBarExtensionContainers}
+          onSelect={(id) => {
+            setActivity(id);
+            if (!sidebarOpen) setSidebarOpen(true);
+          }}
+          onToggleSidebar={() => setSidebarOpen((v) => !v)}
+          onToggleTerminal={() => setBottomPanelOpen((v) => !v)}
+        />
       </div>
 
       <StatusBar
@@ -1982,7 +2245,20 @@ export function Workbench({
         saved={!active?.dirty}
         git={gitSnapshot}
         workspaceRoot={gitWorkspaceRoot}
+        extensionItems={extensionsSummary.statusBarItems}
+        onRunExtensionCommand={runExtensionCommand}
       />
+
+
+      {pendingExtensionInstall && (
+        <div className="absolute inset-0 z-50">
+          <TrustPublisherDialog
+            extension={pendingExtensionInstall}
+            onCancel={() => setPendingExtensionInstall(null)}
+            onTrust={trustAndInstallExtension}
+          />
+        </div>
+      )}
 
       {palette === "command" && (
         <Palette
@@ -2130,7 +2406,7 @@ function FilesPane({
             title="Refresh All"
             className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
           >
-            <RefreshCw size={13} className={anyLoading ? "animate-spin" : ""} />
+            <RefreshCw size={13} />
           </button>
           {onCollapse && (
             <button
@@ -2187,6 +2463,92 @@ function FilesPane({
       )}
     </div>
   );
+}
+
+function ExtensionUiRequestDialog({
+  request,
+  onResolve,
+  onCancel,
+}: {
+  request: ExtensionUiRequest;
+  onResolve: (result: unknown) => void;
+  onCancel: () => void;
+}) {
+  const [inputValue, setInputValue] = useState(() => String((request.payload.options as { value?: unknown } | undefined)?.value ?? ""));
+  const message = String(request.payload.message ?? (request.payload.options as { prompt?: unknown; placeHolder?: unknown } | undefined)?.prompt ?? "Extension request");
+  const items = Array.isArray(request.payload.items) ? request.payload.items : [];
+  const title = request.kind === "quickPick" ? "Select an option" : request.kind === "inputBox" ? "Extension input" : "Extension notification";
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/45 px-4">
+      <div className="w-full max-w-md overflow-hidden rounded-lg border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-[color:var(--ide-border)] px-4 py-2">
+          <div>
+            <div className="text-[12px] font-semibold text-[color:var(--ide-text-strong)]">{title}</div>
+            <div className="text-[10px] text-[color:var(--ide-muted)]">{request.extensionId}</div>
+          </div>
+          <button onClick={onCancel} className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text)]" aria-label="Dismiss extension request">
+            <X size={14} />
+          </button>
+        </div>
+        <div className="space-y-3 px-4 py-3">
+          <div className="text-[12px] text-[color:var(--ide-text)]">{message}</div>
+          {request.kind === "quickPick" && (
+            <div className="max-h-72 overflow-auto rounded border border-[color:var(--ide-border)]">
+              {items.length === 0 ? (
+                <div className="px-3 py-2 text-[11px] text-[color:var(--ide-muted)]">No quick pick items were provided.</div>
+              ) : items.map((item, index) => {
+                const label = quickPickLabel(item, index);
+                const detail = quickPickDetail(item);
+                return (
+                  <button key={`${label}:${index}`} onClick={() => onResolve(item)} className="block w-full border-b border-[color:var(--ide-border)] px-3 py-2 text-left last:border-b-0 hover:bg-[color:var(--ide-hover)]">
+                    <div className="text-[12px] text-[color:var(--ide-text-strong)]">{label}</div>
+                    {detail && <div className="text-[10px] text-[color:var(--ide-muted)]">{detail}</div>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {request.kind === "inputBox" && (
+            <form onSubmit={(event) => { event.preventDefault(); onResolve(inputValue); }} className="space-y-3">
+              <input
+                autoFocus
+                value={inputValue}
+                onChange={(event) => setInputValue(event.target.value)}
+                placeholder={String((request.payload.options as { placeHolder?: unknown } | undefined)?.placeHolder ?? "")}
+                className="w-full rounded border border-[color:var(--ide-border)] bg-[color:var(--ide-bg)] px-3 py-2 text-[12px] text-[color:var(--ide-text)] outline-none focus:border-[color:var(--ide-primary)]"
+              />
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={onCancel} className="rounded px-3 py-1.5 text-[11px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]">Cancel</button>
+                <button type="submit" className="rounded bg-[color:var(--ide-primary)] px-3 py-1.5 text-[11px] text-white">OK</button>
+              </div>
+            </form>
+          )}
+          {request.kind === "notification" && (
+            <div className="flex flex-wrap justify-end gap-2">
+              <button onClick={onCancel} className="rounded px-3 py-1.5 text-[11px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]">Dismiss</button>
+              {items.map((item, index) => (
+                <button key={`${quickPickLabel(item, index)}:${index}`} onClick={() => onResolve(item)} className="rounded bg-[color:var(--ide-primary)] px-3 py-1.5 text-[11px] text-white">
+                  {quickPickLabel(item, index)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function quickPickLabel(item: unknown, index: number): string {
+  if (typeof item === "string") return item;
+  if (item && typeof item === "object" && "label" in item && typeof (item as { label?: unknown }).label === "string") return (item as { label: string }).label;
+  return `Item ${index + 1}`;
+}
+
+function quickPickDetail(item: unknown): string | null {
+  if (!item || typeof item !== "object") return null;
+  const record = item as { description?: unknown; detail?: unknown };
+  return typeof record.detail === "string" ? record.detail : typeof record.description === "string" ? record.description : null;
 }
 
 function Placeholder({

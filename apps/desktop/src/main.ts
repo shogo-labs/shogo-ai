@@ -49,6 +49,7 @@ import { registerDebugIpcHandlers, disposeDebugIpc } from './debug-ipc'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
+import { registerExtensionsIpcHandlers, disposeExtensionsIpcHandlers } from './extensions/ipc'
 import { createTray, destroyTray } from './tray'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 import {
@@ -1383,6 +1384,7 @@ app.whenReady().then(async () => {
   registerTerminalIpcHandlers()
   registerLlmIpcHandlers()
   registerPortsIpcHandlers()
+  registerExtensionsIpcHandlers()
   buildAppMenu()
 
   const skipLocalServer = !isCloudMode && process.env.SHOGO_SKIP_LOCAL_SERVER === 'true'
@@ -1476,6 +1478,7 @@ app.on('before-quit', (event) => {
     void disposeTerminalIpc().catch(() => {})
     disposeLlmIpcHandlers()
     disposePortsIpcHandlers()
+    disposeExtensionsIpcHandlers()
     disposeGitIpc()
     disposeRunIpc()
     disposeDebugIpc()
@@ -1489,6 +1492,7 @@ app.on('before-quit', (event) => {
   destroyTray()
   disposeLlmIpcHandlers()
   disposePortsIpcHandlers()
+  disposeExtensionsIpcHandlers()
   disposeGitIpc()
     disposeRunIpc()
     disposeDebugIpc()

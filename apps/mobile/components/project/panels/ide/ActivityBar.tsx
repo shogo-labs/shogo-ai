@@ -1,27 +1,27 @@
-import { Files, GitCommit, ListTree, Search, Settings, Terminal as TerminalIcon } from "lucide-react-native";
-import { CodiconSourceControl, CodiconRunDebug } from "./icons";
+import type { ComponentType } from "react";
+import { Files, GitCommit, Search, Settings, Terminal as TerminalIcon } from "lucide-react-native";
+import { CodiconSourceControl, CodiconRunDebug, CodiconExtensions } from "./icons";
 import type { ActivityId } from "./types";
+import type { ExtensionRuntimeContainer } from "./extensions/ExtensionRuntimeViewlet";
 import { formatBadgeCount, type BadgeData, type BadgeTone } from "./badges/formatBadge";
 
-const ITEMS: { id: ActivityId; icon: React.ComponentType<{ size?: number }>; label: string; hint?: string }[] = [
+type ActivityItem = {
+  id: ActivityId;
+  icon?: ComponentType<{ size?: number }>;
+  iconUrl?: string;
+  label: string;
+  hint?: string;
+};
+
+const ITEMS: ActivityItem[] = [
   { id: "files",      icon: Files,                label: "Explorer",       hint: "⌘⇧E" },
   { id: "search",     icon: Search,               label: "Search",         hint: "⌘⇧F" },
-  // VS Code parity — Outline (symbol tree for the active editor)
-  { id: "outline",    icon: ListTree,             label: "Outline",        hint: "⌘⇧O" },
-  // VS Code parity — dedicated Source Control glyph (3-circle Y branch)
   { id: "git",        icon: CodiconSourceControl, label: "Source Control", hint: "⌃⇧G" },
-  // VS Code parity — Run and Debug (bug + play triangle)
   { id: "debug",      icon: CodiconRunDebug,      label: "Run and Debug",  hint: "⇧⌘D" },
-  // Shogo-unique — the original `-o-` GitCommit glyph is now reserved
-  // exclusively for the Checkpoint activity. Source Control above gets
-  // the VS Code-style codicon so there is no visual collision.
+  { id: "extensions", icon: CodiconExtensions,    label: "Extensions",     hint: "⇧⌘X" },
   { id: "checkpoint", icon: GitCommit,            label: "Checkpoint" },
 ];
 
-/**
- * Per-tone color classes for the badge pill. Kept in module scope so the
- * Tailwind JIT can statically extract them.
- */
 const BADGE_TONE_BG: Record<BadgeTone, string> = {
   neutral: "bg-orange-500 text-white",
   warn:    "bg-amber-500 text-zinc-900",
@@ -42,24 +42,6 @@ function ActivityBadgePill({ data }: { data: BadgeData }) {
   );
 }
 
-/**
- * VS Code / Cursor-parity Activity Bar.
- *
- * Click behaviour:
- *  - clicking an inactive item selects it AND opens the sidebar if collapsed
- *  - clicking the currently-active item toggles the sidebar closed
- *    (same as VS Code — the primary way to hide the file tree)
- *  - Terminal button at the bottom toggles the bottom panel (⌃`)
- *
- * Badges (desktop-only):
- *  - The optional `badges` prop maps each ActivityId to a `{count, tone?}`.
- *    Callers should pass `null` (or omit the prop) on web / mobile so the
- *    badge pills never enter the DOM — that surface is intentionally
- *    badge-free per product direction.
- *  - When `count` is 0 / negative / NaN, the pill renders nothing.
- *  - `formatBadgeCount` caps the rendered label at "99+" for parity with
- *    VS Code's gutter badge.
- */
 export function ActivityBar({
   active,
   sidebarOpen,
@@ -68,6 +50,8 @@ export function ActivityBar({
   onSelect,
   onToggleSidebar,
   onToggleTerminal,
+  hiddenItemIds,
+  extensionContainers = [],
 }: {
   active: ActivityId;
   sidebarOpen: boolean;
@@ -76,6 +60,8 @@ export function ActivityBar({
   onSelect: (id: ActivityId) => void;
   onToggleSidebar: () => void;
   onToggleTerminal: () => void;
+  hiddenItemIds?: ActivityId[];
+  extensionContainers?: ExtensionRuntimeContainer[];
 }) {
   const handleSelect = (id: ActivityId) => {
     if (active === id && sidebarOpen) {
@@ -87,10 +73,23 @@ export function ActivityBar({
 
   const badgeFor = (id: ActivityId): BadgeData | undefined => badges?.[id];
 
+  const contributedItems: ActivityItem[] = extensionContainers
+    .filter((container) => container.location === "activitybar")
+    .map((container) => ({
+      id: container.activityId,
+      iconUrl: container.icon,
+      label: container.title,
+    }));
+
+  const allItems = [...ITEMS, ...contributedItems];
+  const visibleItems = hiddenItemIds && hiddenItemIds.length > 0
+    ? allItems.filter(({ id }) => !hiddenItemIds.includes(id))
+    : allItems;
+
   return (
-    <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between bg-[color:var(--ide-panel)] border-r border-[color:var(--ide-border)] py-2">
+    <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between bg-[color:var(--ide-panel)] border-l border-[color:var(--ide-border)] py-2">
       <div className="flex flex-col items-center gap-1">
-        {ITEMS.map(({ id, icon: Icon, label, hint }) => {
+        {visibleItems.map(({ id, icon: Icon, iconUrl, label, hint }) => {
           const isActive = active === id && sidebarOpen;
           const badge = badgeFor(id);
           return (
@@ -105,9 +104,9 @@ export function ActivityBar({
               }`}
             >
               {isActive && (
-                <span className="absolute left-0 top-1/2 h-6 -translate-y-1/2 w-0.5 bg-[color:var(--ide-text-strong)] rounded-r" />
+                <span className="absolute right-0 top-1/2 h-6 -translate-y-1/2 w-0.5 bg-[color:var(--ide-text-strong)] rounded-l" />
               )}
-              <Icon size={20} />
+              {Icon ? <Icon size={20} /> : iconUrl ? <img src={iconUrl} alt="" className="h-5 w-5 object-contain opacity-90" /> : <CodiconExtensions size={20} />}
               {badge && <ActivityBadgePill data={badge} />}
             </button>
           );
@@ -124,7 +123,7 @@ export function ActivityBar({
           }`}
         >
           {terminalOpen && (
-            <span className="absolute left-0 top-1/2 h-6 -translate-y-1/2 w-0.5 bg-[color:var(--ide-text-strong)] rounded-r" />
+            <span className="absolute right-0 top-1/2 h-6 -translate-y-1/2 w-0.5 bg-[color:var(--ide-text-strong)] rounded-l" />
           )}
           <TerminalIcon size={20} />
         </button>

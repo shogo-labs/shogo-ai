@@ -269,6 +269,67 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('fs:readFile', root, relPath),
   },
 
+  // Desktop IDE extension management. Milestone A exposes safe install/list/
+  // enable/disable state only; extension code execution is added behind the
+  // same bridge in later milestones.
+  extensions: {
+    listInstalled: (workspaceRoot?: string): Promise<{ ok: boolean; extensions?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:listInstalled', { workspaceRoot }),
+    search: (query: string, options?: { size?: number }): Promise<{ ok: boolean; results?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:search', query, options),
+    listTrustedPublishers: (): Promise<{ ok: boolean; publishers?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:listTrustedPublishers'),
+    trustPublisher: (publisher: string): Promise<{ ok: boolean; publisher?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:trustPublisher', publisher),
+    getWorkspaceTrust: (workspaceRoot?: string): Promise<{ ok: boolean; trust?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:getWorkspaceTrust', workspaceRoot),
+    trustWorkspace: (workspaceRoot: string): Promise<{ ok: boolean; workspace?: unknown; restartRequired?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:trustWorkspace', workspaceRoot),
+    installFromVsix: (workspaceRoot?: string): Promise<{ ok: boolean; extension?: unknown; restartRequired?: boolean; cancelled?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:installFromVsix', { workspaceRoot }),
+    installFromRegistry: (id: string, version?: string, workspaceRoot?: string): Promise<{ ok: boolean; extension?: unknown; restartRequired?: boolean; cancelled?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:installFromRegistry', id, version, { workspaceRoot }),
+    uninstall: (id: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:uninstall', id),
+    enable: (id: string, scope?: 'global' | 'workspace', workspaceRoot?: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:enable', id, scope, workspaceRoot),
+    disable: (id: string, scope?: 'global' | 'workspace', workspaceRoot?: string): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:disable', id, scope, workspaceRoot),
+    restartHost: (workspaceRoot?: string): Promise<{ ok: boolean; restarted?: boolean; message?: string; error?: string }> =>
+      ipcRenderer.invoke('extensions:restartHost', { workspaceRoot }),
+    checkUpdates: (): Promise<{ ok: boolean; updates?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:checkUpdates'),
+    update: (id: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:update', id),
+    getContributions: (workspaceRoot?: string): Promise<{ ok: boolean; extensions?: unknown[]; contributions?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:getContributions', { workspaceRoot }),
+    runCommand: (commandId: string, args?: unknown[], workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:runCommand', commandId, args, { workspaceRoot }),
+    activateEvent: (event: string, workspaceRoot?: string): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:activateEvent', event, { workspaceRoot }),
+    getView: (viewId: string, workspaceRoot?: string, itemHandle?: string): Promise<{ ok: boolean; view?: unknown; error?: string }> =>
+      ipcRenderer.invoke('extensions:getView', viewId, { workspaceRoot, itemHandle }),
+    getStatusBarItems: (workspaceRoot?: string): Promise<{ ok: boolean; items?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:getStatusBarItems', { workspaceRoot }),
+    getWebviewPanels: (workspaceRoot?: string): Promise<{ ok: boolean; panels?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:getWebviewPanels', { workspaceRoot }),
+    getOutputChannels: (workspaceRoot?: string): Promise<{ ok: boolean; channels?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('extensions:getOutputChannels', { workspaceRoot }),
+    respondUiRequest: (requestId: string, response: { ok: boolean; result?: unknown; error?: string }): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:respondUiRequest', requestId, response),
+    updateWorkspaceState: (state: unknown): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:updateWorkspaceState', state),
+    onEvent: (callback: (event: unknown) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('extensions:event', listener)
+      return () => ipcRenderer.removeListener('extensions:event', listener)
+    },
+    showRunningExtensions: (): Promise<{ ok: boolean; running?: unknown[]; diagnostics?: unknown[]; message?: string; error?: string }> =>
+      ipcRenderer.invoke('extensions:showRunningExtensions'),
+    startBisect: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('extensions:startBisect'),
+  },
+
   // --- Git (G1: read-only awareness) ------------------------------------
   // Backed by `apps/desktop/src/git/` in main. Shells out to the user's
   // installed `git` CLI in the workspace root and streams porcelain v2
@@ -278,11 +339,12 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   git: {
     probe: (): Promise<{ ok: boolean; available: boolean; version: string | null; supportsPorcelainV2: boolean; error?: string }> =>
       ipcRenderer.invoke('git:probe'),
-    subscribe: (workspaceRoot: string, onSnapshot: (snap: unknown) => void): Promise<{ ok: boolean; subId?: string; channel?: string; reason?: string }> => {
+    subscribe: (workspaceRoot: string, onSnapshot: (snap: unknown) => void): Promise<{ ok: boolean; subId?: string; channel?: string; snapshot?: unknown; reason?: string }> => {
       const result = ipcRenderer.invoke('git:subscribe', { workspaceRoot })
       void result.then((r: any) => {
         if (r?.ok && r.channel) {
           ipcRenderer.on(r.channel, (_event, snap) => onSnapshot(snap))
+          if (r.snapshot) onSnapshot(r.snapshot)
         }
       })
       return result
@@ -312,6 +374,18 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('git:discard', { workspaceRoot, paths }),
     commit: (workspaceRoot: string, message: string, opts?: { amend?: boolean; signoff?: boolean }): Promise<{ ok: boolean; reason?: string; error?: string }> =>
       ipcRenderer.invoke('git:commit', { workspaceRoot, message, amend: opts?.amend, signoff: opts?.signoff }),
+    commitAll: (workspaceRoot: string, message: string, opts?: { amend?: boolean; signoff?: boolean }): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:commitAll', { workspaceRoot, message, amend: opts?.amend, signoff: opts?.signoff }),
+    commitAndPush: (workspaceRoot: string, message: string, opts?: { amend?: boolean; signoff?: boolean }): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:commitAndPush', { workspaceRoot, message, amend: opts?.amend, signoff: opts?.signoff }),
+    commitAndSync: (workspaceRoot: string, message: string, opts?: { amend?: boolean; signoff?: boolean }): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:commitAndSync', { workspaceRoot, message, amend: opts?.amend, signoff: opts?.signoff }),
+    generateCommitMessage: (workspaceRoot: string, apiUrl: string): Promise<{ ok: boolean; message?: string; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:generateCommitMessage', { workspaceRoot, apiUrl }),
+    numStat: (workspaceRoot: string, cached?: boolean): Promise<{ ok: boolean; stats?: Record<string, { added: number; removed: number }>; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:numStat', { workspaceRoot, cached }),
+    undoLastCommit: (workspaceRoot: string): Promise<{ ok: boolean; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:undoLastCommit', { workspaceRoot }),
     fileContent: (workspaceRoot: string, path: string, ref: string): Promise<{ ok: boolean; content?: string; reason?: string; error?: string }> =>
       ipcRenderer.invoke('git:fileContent', { workspaceRoot, path, ref }),
     // G3 — branches.
@@ -364,6 +438,8 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('git:diffMarkers', { workspaceRoot, path, base }),
     blame: (workspaceRoot: string, path: string): Promise<{ ok: boolean; lines?: unknown[]; reason?: string; error?: string }> =>
       ipcRenderer.invoke('git:blame', { workspaceRoot, path }),
+    history: (workspaceRoot: string, opts?: { limit?: number; allBranches?: boolean }): Promise<{ ok: boolean; commits?: unknown[]; reason?: string; error?: string }> =>
+      ipcRenderer.invoke('git:history', { workspaceRoot, ...(opts ?? {}) }),
     // G4.5 — 3-way merge stages + per-hunk revert.
     mergeStages: (workspaceRoot: string, path: string): Promise<{ ok: boolean; stages?: { base: string | null; ours: string | null; theirs: string | null; working: string }; reason?: string; error?: string }> =>
       ipcRenderer.invoke('git:mergeStages', { workspaceRoot, path }),

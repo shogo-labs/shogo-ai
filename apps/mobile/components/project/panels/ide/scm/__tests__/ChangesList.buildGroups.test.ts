@@ -34,26 +34,33 @@ function buildGroups(snapshot: GitSnapshot): Group[] {
   for (const path of snapshot.conflictPaths) {
     merge.push({ path, code: snapshot.fileStatus[path] ?? "U" });
   }
+  const stagedPaths = new Set(Object.keys(snapshot.stagedStatus));
   for (const [path, code] of Object.entries(snapshot.fileStatus)) {
     if (snapshot.conflictPaths.includes(path)) continue;
     if (!isCountedGitCode(code)) continue;
-    working.push({ path, code });
+    if (stagedPaths.has(path)) {
+      staged.push({ path, code });
+    } else {
+      working.push({ path, code });
+    }
   }
   const groups: Group[] = [
     { id: "merge", label: "Merge Changes", files: merge, emptyHint: undefined },
     { id: "staged", label: "Staged Changes", files: staged, emptyHint: "Nothing staged" },
     { id: "changes", label: "Changes", files: working, emptyHint: "Working tree clean" },
   ];
-  return groups.filter((g) => g.files.length > 0 || g.id === "changes" || g.id === "staged");
+  return groups.filter((g) => g.files.length > 0);
 }
 
 function snap(
   fileStatus: Record<string, GitShortCode>,
   conflictPaths: string[] = [],
+  stagedStatus: Record<string, GitShortCode> = {},
 ): GitSnapshot {
   return {
     isRepo: true,
     fileStatus,
+    stagedStatus,
     conflictPaths,
     ...({} as Partial<GitSnapshot>),
   } as GitSnapshot;
@@ -84,11 +91,9 @@ describe("ChangesList.buildGroups — BUG-007 exclusions", () => {
     expect(changes.files.map((f) => f.path)).toEqual(["real.ts"]);
   });
 
-  test("a snapshot of ONLY ignored files yields an empty Changes group (not hidden)", () => {
+  test("a snapshot of ONLY ignored files hides the Changes group", () => {
     const s = snap({ "node_modules/a": "!", ".env.local": "!" });
-    const changes = buildGroups(s).find((g) => g.id === "changes")!;
-    expect(changes.files.length).toBe(0);
-    expect(changes.emptyHint).toBe("Working tree clean");
+    expect(buildGroups(s).find((g) => g.id === "changes")).toBeUndefined();
   });
 });
 
@@ -98,7 +103,7 @@ describe("ChangesList.buildGroups — conflict routing (BUG-007 must not regress
     const groups = buildGroups(s);
     expect(groups.find((g) => g.id === "merge")!.files.map((f) => f.path))
       .toEqual(["conflict.ts"]);
-    expect(groups.find((g) => g.id === "changes")!.files.length).toBe(0);
+    expect(groups.find((g) => g.id === "changes")).toBeUndefined();
   });
 
   test("conflict path missing from fileStatus defaults to 'U'", () => {
@@ -124,9 +129,9 @@ describe("ChangesList.buildGroups — group visibility", () => {
     expect(groups.find((g) => g.id === "merge")).toBeUndefined();
   });
 
-  test("changes + staged groups are ALWAYS shown (even when empty)", () => {
+  test("changes + staged groups are hidden when empty", () => {
     const groups = buildGroups(snap({}));
-    expect(groups.find((g) => g.id === "changes")).toBeDefined();
-    expect(groups.find((g) => g.id === "staged")).toBeDefined();
+    expect(groups.find((g) => g.id === "changes")).toBeUndefined();
+    expect(groups.find((g) => g.id === "staged")).toBeUndefined();
   });
 });

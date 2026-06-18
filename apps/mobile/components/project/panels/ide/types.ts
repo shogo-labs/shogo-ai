@@ -1,6 +1,9 @@
 import type { WsNode } from "./workspace/types";
+import type { ExtensionSearchResult, InstalledExtension } from "./extensions/types";
 
-export type ActivityId = "files" | "search" | "outline" | "git" | "debug" | "checkpoint" | "settings";
+export type BuiltinActivityId = "files" | "search" | "git" | "debug" | "extensions" | "checkpoint" | "settings";
+export type ExtensionActivityId = `extension:${string}`;
+export type ActivityId = BuiltinActivityId | ExtensionActivityId;
 
 /** A tree node annotated with the root it belongs to. */
 export interface TreeNode extends WsNode {
@@ -24,6 +27,7 @@ export interface OpenFile {
   pinned?: boolean;
   loading?: boolean;
   error?: string;
+  extensionDetail?: InstalledExtension | ExtensionSearchResult;
 }
 
 export interface EditorGroup {
