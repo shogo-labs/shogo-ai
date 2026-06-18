@@ -25,6 +25,7 @@
 import { OscDecoder } from '@shogo/pty-core'
 import { Osc633Tracker } from './osc633-tracker'
 import { AgentTerminalBridge } from './agent-terminal-bridge'
+import { backgroundTaskManager } from './background-task-manager'
 
 // ─── types ──────────────────────────────────────────────────────────────
 
@@ -139,11 +140,21 @@ export class AgentTerminalFactory {
       commandTimeoutMs: this.opts.defaultTimeoutMs ?? 120_000,
     })
 
-    // Attach to receive PTY data, decode OSC sequences, and feed to tracker
+    // Attach to receive PTY data, decode OSC sequences for the tracker, AND
+    // feed the human-visible bytes to the bridge so the active command's
+    // CommandResult.output is populated (without this, hidden agent terminals
+    // detect command boundaries but capture no output).
     const decoder = new OscDecoder()
     const encoder = new TextEncoder()
+    const textDecoder = new TextDecoder()
+    // The session id of the in-flight background task, so its raw output can be
+    // routed to the BackgroundTaskManager's ready-signal/URL detector.
+    let activeBgSessionId: string | null = null
     const { onData } = await this.opts.attachToPty(sessionId)
     const offData = onData((data) => {
+      const text = typeof data === 'string' ? data : textDecoder.decode(data)
+      bridge.feedOutput(text)
+      if (activeBgSessionId) backgroundTaskManager.feedOutput(activeBgSessionId, text)
       try {
         const bytes = typeof data === 'string' ? encoder.encode(data) : data
         const decoded = decoder.feed(bytes)
@@ -163,11 +174,57 @@ export class AgentTerminalFactory {
       bridge,
       cwd: opts?.cwd ?? null,
       get alive() { return alive },
-      sendCommand: (command) => bridge.sendCommand(command),
-      sendCommandBackground: (command) => bridge.sendCommandBackground(command),
+      command: undefined,
+      commandResult: null,
+      elapsedMs: undefined,
+      // Wrap the bridge calls so the instance carries enough state for
+      // AgentTerminalPanel to render command + status + elapsed time.
+      sendCommand: async (command) => {
+        instance.command = command
+        instance.commandResult = null
+        const startedAt = Date.now()
+        instance.elapsedMs = 0
+        try {
+          const result = await bridge.sendCommand(command)
+          instance.commandResult = result
+          return result
+        } finally {
+          instance.elapsedMs = Date.now() - startedAt
+        }
+      },
+      sendCommandBackground: (command) => {
+        instance.command = command
+        instance.commandResult = null
+        const startedAt = Date.now()
+        const task = bridge.sendCommandBackground(command)
+        // Give the background task a production home in the BackgroundTaskManager
+        // so the "N background terminals" UI + ready-signal/URL detection work.
+        const bgSessionId = `${id}:${task.id}`
+        activeBgSessionId = bgSessionId
+        backgroundTaskManager.registerTask({
+          sessionId: bgSessionId,
+          label: `Agent (${command.slice(0, 48)}${command.length > 48 ? '…' : ''})`,
+          command,
+          cwd: instance.cwd ?? '',
+        })
+        void task.promise
+          .then((result) => {
+            instance.commandResult = result
+            instance.elapsedMs = Date.now() - startedAt
+            backgroundTaskManager.completeTask(bgSessionId, result.exitCode)
+          })
+          .catch(() => {
+            backgroundTaskManager.completeTask(bgSessionId, null)
+          })
+          .finally(() => {
+            if (activeBgSessionId === bgSessionId) activeBgSessionId = null
+          })
+        return task
+      },
       getRecentCommands: (limit) => bridge.getRecentCommands(limit),
       dispose: async () => {
         alive = false
+        instance.disposed = true
         offData()
         bridge.dispose()
         try {

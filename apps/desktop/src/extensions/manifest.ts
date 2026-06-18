@@ -4,6 +4,41 @@ import path from 'path'
 
 export const SHOGO_VSCODE_COMPATIBILITY = '1.80.0'
 
+// ─── Explicit supported-API surface ──────────────────────────────────────
+// `engines.vscode` is only a coarse version gate. Real compatibility depends on
+// whether the contribution points + activation events an extension declares are
+// actually backed by the Shogo extension host. These sets are the source of
+// truth for that — keep them in sync with the host runner / host manager and
+// docs/SUPPORTED_VSCODE_APIS.md.
+
+/** Contribution points the host wires to real runtime behavior. */
+export const SUPPORTED_CONTRIBUTION_POINTS: ReadonlySet<string> = new Set([
+  'commands', 'menus', 'keybindings', 'views', 'viewsContainers', 'viewsWelcome', 'configuration',
+])
+
+/**
+ * Contribution points that are parsed and consumed passively by the editor
+ * (e.g. Monaco language/theme assets) rather than the extension host. Declaring
+ * them does not by itself make an extension incompatible.
+ */
+export const PASSIVE_CONTRIBUTION_POINTS: ReadonlySet<string> = new Set([
+  'languages', 'grammars', 'snippets', 'themes', 'iconThemes', 'productIconThemes', 'jsonValidation',
+])
+
+/** Contribution points recognized in the schema but NOT yet implemented. */
+export const UNIMPLEMENTED_CONTRIBUTION_POINTS: ReadonlySet<string> = new Set([
+  'debuggers', 'breakpoints', 'taskDefinitions', 'terminal', 'walkthroughs',
+])
+
+/** Activation-event prefixes the host can actually fire. */
+export const SUPPORTED_ACTIVATION_EVENTS: readonly string[] = [
+  '*', 'onStartupFinished', 'onCommand:', 'onView:', 'workspaceContains:', 'onLanguage:',
+]
+
+function isSupportedActivationEvent(event: string): boolean {
+  return SUPPORTED_ACTIVATION_EVENTS.some((p) => (p.endsWith(':') ? event.startsWith(p) : event === p))
+}
+
 export interface ShogoCommandContribution {
   command: string
   title: string
@@ -82,6 +117,10 @@ export interface ManifestParseResult {
   warnings: string[]
   compatible: boolean
   compatibilityReason?: string
+  /** Declared contribution points the host does not implement. */
+  unsupportedContributions: string[]
+  /** Declared activation events the host cannot fire. */
+  unsupportedActivationEvents: string[]
 }
 
 const SUPPORTED_TOP_LEVEL = new Set([
@@ -135,12 +174,15 @@ export function normalizeExtensionManifest(raw: Record<string, unknown>): Manife
 
   validateManifestPaths(manifest)
 
-  const compatibility = computeCompatibility(vscodeEngine)
+  const compatibility = computeCompatibility(vscodeEngine, manifest)
+  for (const w of compatibility.warnings) warnings.push(w)
   return {
     manifest,
-    warnings,
+    warnings: [...new Set(warnings)],
     compatible: compatibility.compatible,
     compatibilityReason: compatibility.reason,
+    unsupportedContributions: compatibility.unsupportedContributions,
+    unsupportedActivationEvents: compatibility.unsupportedActivationEvents,
   }
 }
 
@@ -290,16 +332,68 @@ export function validateRelativePath(input: string, field = 'path'): void {
   if (normalized.includes('/../')) throw new Error(`Manifest field "${field}" must not contain path traversal`)
 }
 
-function computeCompatibility(engine: string): { compatible: boolean; reason?: string } {
+interface CompatibilityResult {
+  compatible: boolean
+  reason?: string
+  warnings: string[]
+  unsupportedContributions: string[]
+  unsupportedActivationEvents: string[]
+}
+
+/**
+ * Decide compatibility from BOTH the engine version gate AND the explicit
+ * supported-API surface, so `compatible` reflects whether the extension can
+ * actually function rather than just a semver claim.
+ *
+ * - Version too new → incompatible (unchanged contract).
+ * - Otherwise: collect the declared contribution points / activation events the
+ *   host cannot back. An extension is only marked incompatible when it would be
+ *   non-functional: it has an executable `main` whose declared activation events
+ *   are ALL unfireable, or it declares contributions that are ALL unimplemented.
+ *   Partial gaps are reported as warnings, not a hard incompatibility.
+ */
+function computeCompatibility(engine: string, manifest: ShogoExtensionManifest): CompatibilityResult {
+  const declaredContribs = Object.keys(manifest.contributes ?? {})
+  const unsupportedContributions = declaredContribs.filter(
+    (k) => !SUPPORTED_CONTRIBUTION_POINTS.has(k) && !PASSIVE_CONTRIBUTION_POINTS.has(k),
+  )
+  const activationEvents = manifest.activationEvents ?? []
+  const unsupportedActivationEvents = activationEvents.filter((e) => !isSupportedActivationEvent(e))
+
+  const warnings: string[] = []
+  for (const c of unsupportedContributions) {
+    warnings.push(`Contribution point "${c}" is declared but not implemented by the Shogo extension host`)
+  }
+  for (const e of unsupportedActivationEvents) {
+    warnings.push(`Activation event "${e}" cannot be fired by the Shogo extension host`)
+  }
+
+  const base = { warnings, unsupportedContributions, unsupportedActivationEvents }
+
   const versionMatch = engine.match(/(\d+)\.(\d+)\.(\d+)|(\d+)\.(\d+)/)
-  if (!versionMatch) return { compatible: true, reason: 'Unable to parse engines.vscode; treated as compatible with warnings' }
+  if (!versionMatch) {
+    return { ...base, compatible: true, reason: 'Unable to parse engines.vscode; treated as compatible with warnings' }
+  }
   const major = Number(versionMatch[1] ?? versionMatch[4])
   const minor = Number(versionMatch[2] ?? versionMatch[5])
   const [supportedMajor, supportedMinor] = SHOGO_VSCODE_COMPATIBILITY.split('.').map(Number)
   if (major > supportedMajor || (major === supportedMajor && minor > supportedMinor)) {
-    return { compatible: false, reason: `Requires VS Code ${engine}; Shogo currently supports the ${SHOGO_VSCODE_COMPATIBILITY} API subset` }
+    return { ...base, compatible: false, reason: `Requires VS Code ${engine}; Shogo currently supports the ${SHOGO_VSCODE_COMPATIBILITY} API subset` }
   }
-  return { compatible: true }
+
+  // Non-functional cases: an activatable extension that can never activate, or
+  // one whose only contributions are unimplemented.
+  if (manifest.main && activationEvents.length > 0 && unsupportedActivationEvents.length === activationEvents.length) {
+    return { ...base, compatible: false, reason: `None of the declared activation events are supported (${activationEvents.join(', ')})` }
+  }
+  if (declaredContribs.length > 0 && declaredContribs.every((k) => UNIMPLEMENTED_CONTRIBUTION_POINTS.has(k))) {
+    return { ...base, compatible: false, reason: `Only unimplemented contribution points are declared (${declaredContribs.join(', ')})` }
+  }
+
+  const reason = (unsupportedContributions.length || unsupportedActivationEvents.length)
+    ? 'Compatible with limitations — see warnings for unsupported features'
+    : undefined
+  return { ...base, compatible: true, reason }
 }
 
 function isValidExtensionName(value: string): boolean {

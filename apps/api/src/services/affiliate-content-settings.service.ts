@@ -18,7 +18,7 @@
  *   affiliate.content.instagram.cpmCents      int   (per-platform override)
  *   affiliate.content.tiktok.cpmCents         int   (per-platform override)
  *   affiliate.content.holdDays                int   (hold before payable)
- *   affiliate.content.postsPerAccount         int   (posts fetched per poll)
+ *   affiliate.content.postsPerAccount         int   (recent posts fetched per poll; default 20, capped at POSTS_PER_ACCOUNT_MAX)
  *   affiliate.content.maxViewsPerPostPerRun   int   (anti-abuse per-run cap)
  *   affiliate.content.perVideoCapCents        int   (default per-video $ cap)
  *   affiliate.content.minPollIntervalMinutes  int   (min minutes between provider
@@ -78,7 +78,12 @@ export const CONTENT_SETTING_DEFAULTS: ContentSettings = {
   cpmCents: 100, // $1.00 per 1,000 views
   cpmCentsByPlatform: { instagram: null, tiktok: null },
   holdDays: 7,
-  postsPerAccount: 30,
+  // Only the most-recent N posts per account are polled each sweep. Views (and
+  // therefore CPM) accrue on recent content; re-fetching a creator's entire
+  // back catalogue every cycle just burns EnsembleData paging units for deltas
+  // that never come. `depth` in the provider is derived as ceil(N / 10), so 20
+  // = 2 pages/call. See POSTS_PER_ACCOUNT_MAX for the hard ceiling.
+  postsPerAccount: 20,
   maxViewsPerPostPerRun: 5_000_000,
   perVideoCapCents: null, // uncapped unless an operator sets a default
   minPollIntervalMinutes: 240, // 4h — matches the cron cadence
@@ -100,12 +105,29 @@ export const CONTENT_SETTING_KEYS = {
 const SETTING_PREFIX = 'affiliate.content.'
 const CACHE_TTL_MS = 30_000
 
+/**
+ * Hard ceiling on `postsPerAccount`. Each sweep pages EnsembleData
+ * `ceil(postsPerAccount / 10)` times PER account PER platform (Instagram does
+ * it twice — posts + reels), so an unbounded value silently multiplies unit
+ * spend. A prod misconfiguration of `1000` (depth 100) re-fetched whole back
+ * catalogues every 4h — the 2026-06 over-gather incident. Views accrue on
+ * recent posts, so 100 is plenty of headroom above the 20 default. Enforced on
+ * read so even an already-persisted runaway value is clamped without a write.
+ */
+export const POSTS_PER_ACCOUNT_MAX = 100
+
 let cache: { settings: ContentSettings; loadedAt: number } | null = null
 
-function parseIntOr(raw: string | undefined, fallback: number, min: number): number {
+function parseIntOr(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max?: number,
+): number {
   if (raw == null) return fallback
   const n = parseInt(raw, 10)
-  return Number.isFinite(n) && n >= min ? n : fallback
+  if (!Number.isFinite(n) || n < min) return fallback
+  return max != null ? Math.min(n, max) : n
 }
 
 function parseOptionalInt(raw: string | undefined, min: number): number | null {
@@ -127,7 +149,12 @@ function buildSettings(byKey: Map<string, string>): ContentSettings {
       tiktok: parseOptionalInt(byKey.get(CONTENT_SETTING_KEYS.cpmTiktok), 0),
     },
     holdDays: parseIntOr(byKey.get(CONTENT_SETTING_KEYS.holdDays), d.holdDays, 0),
-    postsPerAccount: parseIntOr(byKey.get(CONTENT_SETTING_KEYS.postsPerAccount), d.postsPerAccount, 1),
+    postsPerAccount: parseIntOr(
+      byKey.get(CONTENT_SETTING_KEYS.postsPerAccount),
+      d.postsPerAccount,
+      1,
+      POSTS_PER_ACCOUNT_MAX,
+    ),
     maxViewsPerPostPerRun: parseIntOr(
       byKey.get(CONTENT_SETTING_KEYS.maxViewsPerPostPerRun),
       d.maxViewsPerPostPerRun,
@@ -251,12 +278,12 @@ async function deleteSetting(key: string): Promise<void> {
  * are always stored. Invalidates the cache before returning.
  */
 export async function setContentSettings(patch: ContentSettingsPatch, userId: string): Promise<ContentSettings> {
-  const numeric: Array<[keyof ContentSettingsPatch, string, number]> = [
+  const numeric: Array<[keyof ContentSettingsPatch, string, number, number?]> = [
     ['cpmCents', CONTENT_SETTING_KEYS.cpmCents, 0],
     ['cpmCentsInstagram', CONTENT_SETTING_KEYS.cpmInstagram, 0],
     ['cpmCentsTiktok', CONTENT_SETTING_KEYS.cpmTiktok, 0],
     ['holdDays', CONTENT_SETTING_KEYS.holdDays, 0],
-    ['postsPerAccount', CONTENT_SETTING_KEYS.postsPerAccount, 1],
+    ['postsPerAccount', CONTENT_SETTING_KEYS.postsPerAccount, 1, POSTS_PER_ACCOUNT_MAX],
     ['maxViewsPerPostPerRun', CONTENT_SETTING_KEYS.maxViewsPerPostPerRun, 1],
     ['perVideoCapCents', CONTENT_SETTING_KEYS.perVideoCapCents, 1],
     ['minPollIntervalMinutes', CONTENT_SETTING_KEYS.minPollIntervalMinutes, 1],
@@ -269,15 +296,21 @@ export async function setContentSettings(patch: ContentSettingsPatch, userId: st
     const provider: ContentProviderName = patch.provider === 'official' ? 'official' : 'ensembledata'
     await upsertSetting(CONTENT_SETTING_KEYS.provider, provider, userId)
   }
-  for (const [field, key, min] of numeric) {
+  for (const [field, key, min, max] of numeric) {
     const value = patch[field]
     if (value === undefined) continue
     if (value === null) {
       await deleteSetting(key)
-    } else if (typeof value === 'number' && Number.isInteger(value) && value >= min) {
+    } else if (
+      typeof value === 'number' &&
+      Number.isInteger(value) &&
+      value >= min &&
+      (max == null || value <= max)
+    ) {
       await upsertSetting(key, String(value), userId)
     } else {
-      throw new Error(`${String(field)} must be null or an integer >= ${min}`)
+      const range = max == null ? `>= ${min}` : `between ${min} and ${max}`
+      throw new Error(`${String(field)} must be null or an integer ${range}`)
     }
   }
 

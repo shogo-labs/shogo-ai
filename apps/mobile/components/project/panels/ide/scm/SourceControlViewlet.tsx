@@ -26,8 +26,9 @@ import { useGitStatusContext } from "../git/GitStatusContext";
 import { ScmMenu } from "../git/ScmMenu";
 import { StashList } from "../git/StashList";
 import { ChangesList } from "./ChangesList";
-import { CommitInput } from "./CommitInput";
+import { CommitInput, type CommitInputHandle } from "./CommitInput";
 import { useScmActions } from "./useScmActions";
+import { useScmRefreshPolicy } from "./useScmRefreshPolicy";
 
 
 const GRAPH_HEIGHT_KEY = "sourceControl.graphHeight";
@@ -185,6 +186,8 @@ function GraphToolbar({
   onToggleAutoRefresh,
   focusBranch = false,
   onToggleFocusBranch,
+  collapsed = false,
+  onToggleCollapsed,
 }: {
   onFetch: () => void;
   onPull: () => void;
@@ -194,10 +197,12 @@ function GraphToolbar({
   onToggleAutoRefresh?: () => void;
   focusBranch?: boolean;
   onToggleFocusBranch?: () => void;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 }) {
   return (
     <div className="flex items-center h-[28px] px-2 border-t border-[color:var(--ide-border)] gap-0.5" style={{ minHeight: 28 }}>
-      <SectionHeader label="GRAPH" />
+      <SectionHeader label="GRAPH" collapsed={collapsed} onToggle={onToggleCollapsed} />
       <span className="flex-1" />
       <button
         title={autoRefresh ? "Auto Refresh: On (click to disable)" : "Auto Refresh: Off (click to enable)"}
@@ -389,13 +394,35 @@ export function SourceControlViewlet({
   const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [commitTyping, setCommitTyping] = useState(false);
   const { graphHeight, dragging, containerRef, onPointerDown } = useGraphSplitter();
-  const commitInputRef = useRef<HTMLTextAreaElement>(null);
+  const commitInputRef = useRef<CommitInputHandle>(null);
   const historyRequestIdRef = useRef(0);
 
   const refresh = useCallback(() => {
     void actions.refresh();
   }, [actions.refresh]);
+
+  /**
+   * Run a stage/unstage/discard mutation and surface any failure to the user
+   * instead of silently dropping it (the previous `void actions.stage(...)`
+   * fire-and-forget swallowed git errors, so a failed discard looked like a
+   * no-op). Refreshes status on success so the change list reflects reality.
+   */
+  const runMutation = useCallback(
+    async (label: string, op: () => Promise<{ ok: boolean; error?: string }>) => {
+      setActionError(null);
+      const res = await op();
+      if (!res.ok) {
+        setActionError(`${label} failed: ${res.error ?? "unknown error"}`);
+      } else {
+        await actions.refresh();
+      }
+      return res;
+    },
+    [actions],
+  );
 
   const loadHistory = useCallback(async () => {
     const requestId = historyRequestIdRef.current + 1;
@@ -478,28 +505,27 @@ export function SourceControlViewlet({
     void performSync();
   }, [performSync]);
 
-  useEffect(() => {
-    if (!autoRefresh || !workspaceRoot) return;
-    const id = setInterval(refreshGraph, 30_000);
-    return () => clearInterval(id);
-  }, [autoRefresh, workspaceRoot, refreshGraph]);
+  // Remote fetch used by the refresh policy's 180s cadence. Kept here (rather
+  // than inlined in the hook) so it can reuse loadHistory/actions and so the
+  // auto-fetch behavior stays greppable/testable.
+  const fetchCounts = useCallback(async () => {
+    const res = await actions.fetchRemote();
+    if (!res.ok) return;
+    await actions.refresh();
+    await loadHistory();
+  }, [actions.fetchRemote, actions.refresh, loadHistory]);
 
-  useEffect(() => {
-    if (!autoRefresh || !workspaceRoot || !snapshot?.isRepo || !snapshot.upstream) return;
-    let cancelled = false;
-    const fetchCounts = async () => {
-      const res = await actions.fetchRemote();
-      if (cancelled || !res.ok) return;
-      await actions.refresh();
-      await loadHistory();
-    };
-    void fetchCounts();
-    const id = setInterval(() => { void fetchCounts(); }, REMOTE_AUTO_FETCH_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [actions.fetchRemote, actions.refresh, autoRefresh, loadHistory, snapshot?.isRepo, snapshot?.upstream, workspaceRoot]);
+  // Single coordinated refresh policy (status 5s / graph 30s / remote 180s) with
+  // backoff while composing a commit message — replaces the old scattered loops.
+  useScmRefreshPolicy({
+    enabled: autoRefresh && !!workspaceRoot,
+    hasUpstream: !!snapshot?.isRepo && !!snapshot?.upstream,
+    isTyping: commitTyping,
+    onStatusRefresh: refresh,
+    onGraphRefresh: refreshGraph,
+    onRemoteFetch: () => { void fetchCounts(); },
+    remoteIntervalMs: REMOTE_AUTO_FETCH_INTERVAL_MS,
+  });
 
   useEffect(() => {
     if (!workspaceRoot || !snapshot?.isRepo) {
@@ -515,8 +541,7 @@ export function SourceControlViewlet({
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        const input = document.querySelector<HTMLInputElement>(".shogo-commit-input");
-        if (input) { e.preventDefault(); input.focus(); input.select(); }
+        if (commitInputRef.current) { e.preventDefault(); commitInputRef.current.focusMessage(); }
       }
     };
     document.addEventListener("keydown", handleKey);
@@ -574,10 +599,7 @@ export function SourceControlViewlet({
               onClick={() => {
                 const paths = unstagedPaths;
                 if (paths.length > 0) {
-                  void (async () => {
-                    await actions.stage(paths);
-                    await actions.refresh();
-                  })();
+                  void runMutation("Stage", () => actions.stage(paths));
                 }
               }}
               disabled={unstagedCount === 0}
@@ -590,10 +612,7 @@ export function SourceControlViewlet({
               onClick={() => {
                 const paths = stagedPaths;
                 if (paths.length > 0) {
-                  void (async () => {
-                    await actions.unstage(paths);
-                    await actions.refresh();
-                  })();
+                  void runMutation("Unstage", () => actions.unstage(paths));
                 }
               }}
               disabled={stagedCount === 0}
@@ -610,15 +629,7 @@ export function SourceControlViewlet({
             </button>
             <button
               title="Commit"
-              onClick={() => {
-                const commitButton = document.querySelector<HTMLButtonElement>(".shogo-primary-commit-button");
-                if (commitButton && !commitButton.disabled) {
-                  commitButton.click();
-                  return;
-                }
-                const input = document.querySelector<HTMLInputElement>(".shogo-commit-input");
-                if (input) { input.focus(); input.select(); }
-              }}
+              onClick={() => commitInputRef.current?.triggerCommit()}
               className="p-1 rounded-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]"
             >
               <Check size={15} />
@@ -639,11 +650,13 @@ export function SourceControlViewlet({
 
       {!changesGroupCollapsed && (
         <CommitInput
+        ref={commitInputRef}
         stagedCount={stagedCount}
         committableCount={totalUnstagedPlusStaged}
         branch={snapshot.detached ? "HEAD" : snapshot.branch}
         disabled={conflictCount > 0}
         disabledReason={conflictCount > 0 ? `Resolve ${conflictCount} merge conflict${conflictCount === 1 ? "" : "s"} before committing.` : undefined}
+        onActivityChange={setCommitTyping}
         onCommit={async (message, opts) => {
           const r = await actions.commitAll(message, opts);
           if (!r.ok) return { ok: false, error: r.error };
@@ -652,20 +665,18 @@ export function SourceControlViewlet({
           return { ok: true };
         }}
         onCommitAndPush={async (message, opts) => {
-          const committed = await actions.commitAll(message, opts);
-          if (!committed.ok) return { ok: false, error: committed.error };
-          const pushed = await actions.pushRemote();
+          // Use the atomic commit+push flow (single bridge op) instead of manual
+          // chaining, so a push failure can't leave us in a half-applied state.
+          const res = await actions.commitAndPush(message, opts);
           await actions.refresh();
           await loadHistory();
-          return { ok: pushed.ok, error: pushed.ok ? undefined : pushed.error };
+          return res;
         }}
         onCommitAndSync={async (message, opts) => {
-          const committed = await actions.commitAll(message, opts);
-          if (!committed.ok) return { ok: false, error: committed.error };
-          const synced = await actions.syncRemote();
+          const res = await actions.commitAndSync(message, opts);
           await actions.refresh();
           await loadHistory();
-          return { ok: synced.ok, error: synced.ok ? undefined : synced.error };
+          return res;
         }}
         />
       )}
@@ -682,6 +693,15 @@ export function SourceControlViewlet({
           {syncError && (
             <div className="mx-2 mb-2 rounded bg-rose-500/10 border border-rose-500/30 px-2 py-1 text-[10px] text-rose-300 whitespace-pre-wrap">
               {syncError}
+            </div>
+          )}
+          {actionError && (
+            <div
+              className="mx-2 mb-2 rounded bg-rose-500/10 border border-rose-500/30 px-2 py-1 text-[10px] text-rose-300 whitespace-pre-wrap cursor-pointer"
+              title="Dismiss"
+              onClick={() => setActionError(null)}
+            >
+              {actionError}
             </div>
           )}
         </>
@@ -725,9 +745,9 @@ export function SourceControlViewlet({
                 viewMode={viewMode}
                 onOpenDiff={onOpenDiff}
                 onOpenFile={onOpenFile}
-                onStage={(paths) => { void actions.stage(paths); }}
-                onUnstage={(paths) => { void actions.unstage(paths); }}
-                onDiscard={(paths) => { void actions.discard(paths); }}
+                onStage={(paths) => { void runMutation("Stage", () => actions.stage(paths)); }}
+                onUnstage={(paths) => { void runMutation("Unstage", () => actions.unstage(paths)); }}
+                onDiscard={(paths) => { void runMutation("Discard", () => actions.discard(paths)); }}
               />
             )}
           </>
@@ -747,7 +767,7 @@ export function SourceControlViewlet({
                     const paths = stagedPaths;
                     if (paths.length > 0) {
                       if (window.confirm(`Discard ${paths.length} staged change(s)? This cannot be undone.`)) {
-                        void actions.discard(paths);
+                        void runMutation("Discard", () => actions.discard(paths));
                       }
                     }
                   }}
@@ -764,9 +784,9 @@ export function SourceControlViewlet({
                 viewMode={viewMode}
                 onOpenDiff={onOpenDiff}
                 onOpenFile={onOpenFile}
-                onStage={(paths) => { void actions.stage(paths); }}
-                onUnstage={(paths) => { void actions.unstage(paths); }}
-                onDiscard={(paths) => { void actions.discard(paths); }}
+                onStage={(paths) => { void runMutation("Stage", () => actions.stage(paths)); }}
+                onUnstage={(paths) => { void runMutation("Unstage", () => actions.unstage(paths)); }}
+                onDiscard={(paths) => { void runMutation("Discard", () => actions.discard(paths)); }}
               />
             )}
           </>
@@ -785,7 +805,7 @@ export function SourceControlViewlet({
                     title="Stage All"
                     onClick={() => {
                       const paths = unstagedPaths;
-                      if (paths.length > 0) void actions.stage(paths);
+                      if (paths.length > 0) void runMutation("Stage", () => actions.stage(paths));
                     }}
                     className="p-1 rounded hover:bg-[color:var(--ide-primary)]/20 text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)]"
                   >
@@ -797,7 +817,7 @@ export function SourceControlViewlet({
                       const paths = unstagedPaths;
                       if (paths.length > 0) {
                         if (window.confirm(`Discard ${paths.length} unstaged change(s)? This cannot be undone.`)) {
-                          void actions.discard(paths);
+                          void runMutation("Discard", () => actions.discard(paths));
                         }
                       }
                     }}
@@ -815,9 +835,9 @@ export function SourceControlViewlet({
                 viewMode={viewMode}
                 onOpenDiff={onOpenDiff}
                 onOpenFile={onOpenFile}
-                onStage={(paths) => { void actions.stage(paths); }}
-                onUnstage={(paths) => { void actions.unstage(paths); }}
-                onDiscard={(paths) => { void actions.discard(paths); }}
+                onStage={(paths) => { void runMutation("Stage", () => actions.stage(paths)); }}
+                onUnstage={(paths) => { void runMutation("Unstage", () => actions.unstage(paths)); }}
+                onDiscard={(paths) => { void runMutation("Discard", () => actions.discard(paths)); }}
               />
             )}
           </>
@@ -859,6 +879,8 @@ export function SourceControlViewlet({
                 onToggleAutoRefresh={() => setAutoRefresh((v) => !v)}
                 focusBranch={focusBranch}
                 onToggleFocusBranch={() => setFocusBranch((v) => !v)}
+                collapsed={graphCollapsed}
+                onToggleCollapsed={() => setGraphCollapsed((v) => !v)}
               />
               {!graphCollapsed && (
                 <div className="flex-1 overflow-auto divide-y divide-[color:var(--ide-border)]/50">

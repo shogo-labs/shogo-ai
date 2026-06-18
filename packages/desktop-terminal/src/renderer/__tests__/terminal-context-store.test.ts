@@ -54,6 +54,7 @@ function createMockBridge(): AgentTerminalBridge {
     sendCommandBackground: () => null,
     getRecentCommands: () => [],
     getCurrentCwd: () => '/home/user/project',
+    getCommandOutput: () => undefined,
     setSend: () => {},
     dispose: () => {},
   } as unknown as AgentTerminalBridge
@@ -199,5 +200,80 @@ describe('TerminalContextStore', () => {
     store.publish({ tracker: createMockTracker('/x'), bridge: createMockBridge(), cwd: '/x', publishedAt: 1 })
     expect(e1).toEqual(['/x'])
     expect(e2).toEqual(['/x'])
+  })
+})
+
+describe('TerminalContextStore — session-keyed (multi-terminal)', () => {
+  let store: ReturnType<typeof createTerminalContextStore>
+
+  beforeEach(() => {
+    delete (globalThis as any).__shogoTerminalContext
+    store = createTerminalContextStore()
+  })
+
+  test('concurrent sessions coexist; latest published is active', () => {
+    store.publish({ sessionId: 'a', tracker: createMockTracker('/a'), bridge: createMockBridge(), cwd: '/a', publishedAt: 1 })
+    store.publish({ sessionId: 'b', tracker: createMockTracker('/b'), bridge: createMockBridge(), cwd: '/b', publishedAt: 2 })
+    expect(store.current()?.cwd).toBe('/b')
+  })
+
+  test('withdrawing the inactive session does not disturb the active one', () => {
+    store.publish({ sessionId: 'a', tracker: createMockTracker('/a'), bridge: createMockBridge(), cwd: '/a', publishedAt: 1 })
+    store.publish({ sessionId: 'b', tracker: createMockTracker('/b'), bridge: createMockBridge(), cwd: '/b', publishedAt: 2 })
+
+    store.withdraw('a')
+
+    expect(store.isReady()).toBe(true)
+    expect(store.current()?.cwd).toBe('/b')
+  })
+
+  test('withdrawing the active session promotes the newest remaining session', () => {
+    store.publish({ sessionId: 'a', tracker: createMockTracker('/a'), bridge: createMockBridge(), cwd: '/a', publishedAt: 10 })
+    store.publish({ sessionId: 'b', tracker: createMockTracker('/b'), bridge: createMockBridge(), cwd: '/b', publishedAt: 5 })
+    // b is active (last published). Withdraw it → newest remaining (a) is promoted.
+    store.withdraw('b')
+
+    expect(store.isReady()).toBe(true)
+    expect(store.current()?.cwd).toBe('/a')
+  })
+
+  test('withdrawing the last session clears the store', () => {
+    store.publish({ sessionId: 'only', tracker: createMockTracker('/o'), bridge: createMockBridge(), cwd: '/o', publishedAt: 1 })
+    store.withdraw('only')
+    expect(store.isReady()).toBe(false)
+    expect(store.current()).toBeNull()
+  })
+
+  test('setActiveSession switches the targeted terminal; unknown id is a no-op', () => {
+    store.publish({ sessionId: 'a', tracker: createMockTracker('/a'), bridge: createMockBridge(), cwd: '/a', publishedAt: 1 })
+    store.publish({ sessionId: 'b', tracker: createMockTracker('/b'), bridge: createMockBridge(), cwd: '/b', publishedAt: 2 })
+
+    store.setActiveSession('a')
+    expect(store.current()?.cwd).toBe('/a')
+
+    store.setActiveSession('does-not-exist')
+    expect(store.current()?.cwd).toBe('/a')
+  })
+
+  test('re-publishing an existing session id updates in place without adding a duplicate', () => {
+    store.publish({ sessionId: 'a', tracker: createMockTracker('/a'), bridge: createMockBridge(), cwd: '/a', publishedAt: 1 })
+    store.publish({ sessionId: 'b', tracker: createMockTracker('/b'), bridge: createMockBridge(), cwd: '/b', publishedAt: 2 })
+    store.publish({ sessionId: 'a', tracker: createMockTracker('/a2'), bridge: createMockBridge(), cwd: '/a2', publishedAt: 3 })
+
+    expect(store.current()?.cwd).toBe('/a2')
+    // Withdrawing a leaves exactly one remaining session (b).
+    store.withdraw('a')
+    expect(store.current()?.cwd).toBe('/b')
+    store.withdraw('b')
+    expect(store.isReady()).toBe(false)
+  })
+
+  test('default (id-less) callers share one key and stay isolated from keyed sessions', () => {
+    store.publish({ tracker: createMockTracker('/default'), bridge: createMockBridge(), cwd: '/default', publishedAt: 1 })
+    store.publish({ sessionId: 'keyed', tracker: createMockTracker('/keyed'), bridge: createMockBridge(), cwd: '/keyed', publishedAt: 2 })
+
+    // Withdrawing the keyed one promotes the default session back.
+    store.withdraw('keyed')
+    expect(store.current()?.cwd).toBe('/default')
   })
 })

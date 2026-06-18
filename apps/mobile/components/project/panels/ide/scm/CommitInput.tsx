@@ -2,10 +2,19 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { Check, ChevronDown, Loader2 } from "lucide-react-native";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 
 const HISTORY_KEY = "shogo.scm.commitHistory";
 const MAX_HISTORY = 50;
+
+/** Imperative handle so the parent toolbar can drive the commit input
+ *  without reaching into the DOM via querySelector. */
+export interface CommitInputHandle {
+  /** Focus and select the message field. */
+  focusMessage: () => void;
+  /** Commit if currently allowed; otherwise focus the message field. */
+  triggerCommit: () => void;
+}
 
 function loadHistory(storage?: Record<string, string>): string[] {
   try {
@@ -21,16 +30,7 @@ function saveToHistory(message: string) {
   try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch {}
 }
 
-export function CommitInput({
-  stagedCount,
-  committableCount = stagedCount,
-  branch,
-  onCommit,
-  onCommitAndPush,
-  onCommitAndSync,
-  disabled,
-  disabledReason,
-}: {
+export const CommitInput = forwardRef<CommitInputHandle, {
   stagedCount: number;
   committableCount?: number;
   branch?: string | null;
@@ -39,12 +39,31 @@ export function CommitInput({
   onCommitAndSync: (message: string, opts: { amend: boolean; signoff: boolean }) => Promise<{ ok: boolean; error?: string }>;
   disabled?: boolean;
   disabledReason?: string;
-}) {
+  /** Fires when the user is actively composing a commit (focused or non-empty),
+   *  so the parent can back off background refreshes that would disrupt typing. */
+  onActivityChange?: (active: boolean) => void;
+}>(function CommitInput({
+  stagedCount,
+  committableCount = stagedCount,
+  branch,
+  onCommit,
+  onCommitAndPush,
+  onCommitAndSync,
+  disabled,
+  disabledReason,
+  onActivityChange,
+}, ref) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    onActivityChange?.(focused || message.trim().length > 0);
+  }, [focused, message, onActivityChange]);
   const menuRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const historyIdxRef = useRef<number>(-1);
 
   useEffect(() => {
@@ -127,6 +146,19 @@ export function CommitInput({
     }
   }, [canCommit, handleCommit, onCommit, message]);
 
+  const focusMessage = useCallback(() => {
+    const el = inputRef.current;
+    if (el) { el.focus(); el.select(); }
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    focusMessage,
+    triggerCommit: () => {
+      if (canCommit) { void handleCommit(onCommit); return; }
+      focusMessage();
+    },
+  }), [canCommit, focusMessage, handleCommit, onCommit]);
+
   const branchSuffix = branch ? ` on "${branch}"` : "";
   const placeholder = disabledReason ?? `Message (⌘Enter to commit${branchSuffix})`;
 
@@ -134,11 +166,14 @@ export function CommitInput({
     <div>
       <div className="relative px-2 pt-1 pb-1">
         <input
+          ref={inputRef}
           value={message}
           onChange={(e) => { setMessage(e.target.value); historyIdxRef.current = -1; }}
           placeholder={placeholder}
           disabled={busy || disabled}
           onKeyDown={handleKeyDown}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
           className="shogo-commit-input w-full rounded-[4px] bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] px-2 text-[12px] text-[color:var(--ide-text-strong)] placeholder-[color:var(--ide-muted)] focus:outline-none focus:border-[color:var(--ide-primary)]"
           style={{ height: 32, fontFamily: "var(--ide-font, system-ui)" }}
         />
@@ -192,7 +227,7 @@ export function CommitInput({
       )}
     </div>
   );
-}
+});
 
 function MenuItem({
   label,

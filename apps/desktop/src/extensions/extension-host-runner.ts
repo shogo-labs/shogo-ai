@@ -9,6 +9,12 @@ type HostExtension = {
   id: string
   installPath: string
   main?: string
+  /**
+   * True when running in an untrusted (Restricted Mode) workspace and the
+   * extension only declared *limited* support. The module loader denies
+   * dangerous builtins and read-only's `fs` for these.
+   */
+  restricted?: boolean
   activationEvents?: string[]
   commands: string[]
   views: string[]
@@ -101,6 +107,23 @@ const pendingUiRequests = new Map<string, { resolve: (value: unknown) => void; r
 let workspaceRoot: string | undefined
 let workspaceState: WorkspaceStateSnapshot = {}
 let activeExtensionId: string | null = null
+// The most recent extension whose code was running (activation OR a command /
+// event callback). Unlike `activeExtensionId` it is NOT cleared after the
+// activation window, so a lazy `require('vscode')` from a command handler that
+// runs long after activation still resolves to an extension. Cache the API per
+// extension so repeated requires return one stable object (matching Node's
+// normal module-cache semantics, which we bypass for the synthetic `vscode`).
+let lastActiveExtensionId: string | null = null
+const vscodeApiCache = new Map<string, ReturnType<typeof makeVscodeApi>>()
+
+function getVscodeApiFor(extension: HostExtension): ReturnType<typeof makeVscodeApi> {
+  let api = vscodeApiCache.get(extension.id)
+  if (!api) {
+    api = makeVscodeApi(extension)
+    vscodeApiCache.set(extension.id, api)
+  }
+  return api
+}
 const activeEditorEmitter = createEmitter<TextEditorSnapshot | undefined>()
 const visibleEditorsEmitter = createEmitter<TextEditorSnapshot[]>()
 const openDocumentEmitter = createEmitter<TextDocumentSnapshot>()
@@ -223,14 +246,80 @@ function makeVscodeApi(extension: HostExtension) {
   }
 }
 
+// ─── Restricted-mode sandbox (untrusted workspaces) ──────────────────────
+// Modules that grant process spawning, raw sockets, or arbitrary code eval.
+// Denied for extensions running with only *limited* untrusted-workspace
+// support — mirrors VS Code's Restricted Mode intent (no shell, no network).
+const RESTRICTED_DENIED_MODULES = new Set([
+  'child_process', 'worker_threads', 'cluster', 'vm', 'inspector', 'repl',
+  'net', 'dgram', 'tls', 'http', 'https', 'http2',
+])
+// fs methods that mutate the filesystem — blocked under restricted mode so an
+// untrusted extension cannot write to the user's disk.
+const FS_WRITE_METHODS = new Set([
+  'writeFile', 'writeFileSync', 'appendFile', 'appendFileSync', 'mkdir', 'mkdirSync',
+  'rm', 'rmSync', 'rmdir', 'rmdirSync', 'unlink', 'unlinkSync', 'rename', 'renameSync',
+  'copyFile', 'copyFileSync', 'cp', 'cpSync', 'truncate', 'truncateSync', 'chmod', 'chmodSync',
+  'chown', 'chownSync', 'lchown', 'lchownSync', 'symlink', 'symlinkSync', 'link', 'linkSync',
+  'createWriteStream', 'open', 'openSync', 'write', 'writeSync', 'writev', 'writevSync',
+  'utimes', 'utimesSync', 'lutimes', 'lutimesSync', 'mkdtemp', 'mkdtempSync', 'opendir', 'opendirSync',
+])
+
+function normalizeBuiltinRequest(request: string): string {
+  return request.startsWith('node:') ? request.slice('node:'.length) : request
+}
+
+function isRestrictedActive(): boolean {
+  const extId = activeExtensionId ?? lastActiveExtensionId
+  const ext = extId ? extensions.get(extId) : null
+  return !!ext?.restricted
+}
+
+/** Wrap an fs-like module so write operations are refused (read-only). */
+function readOnlyFsProxy<T extends object>(realFs: T, isPromises: boolean): T {
+  return new Proxy(realFs, {
+    get(target, prop, receiver) {
+      if (prop === 'promises' && !isPromises) {
+        return readOnlyFsProxy((target as Record<string, unknown>).promises as object, true)
+      }
+      if (typeof prop === 'string' && FS_WRITE_METHODS.has(prop)) {
+        return (...args: unknown[]) => {
+          const err = new Error(`fs.${prop} is blocked for extensions in a Restricted (untrusted) workspace.`)
+          if (isPromises) return Promise.reject(err)
+          if (prop.endsWith('Sync')) throw err
+          const cb = args[args.length - 1]
+          if (typeof cb === 'function') { (cb as (e: Error) => void)(err); return undefined }
+          throw err
+        }
+      }
+      return Reflect.get(target, prop, receiver)
+    },
+  }) as T
+}
+
 type ModuleLoader = (request: string, parent: NodeModule | null, isMain: boolean) => unknown
 const moduleWithPrivateLoad = Module as unknown as { _load: ModuleLoader }
 const originalLoad = moduleWithPrivateLoad._load
 moduleWithPrivateLoad._load = function patchedLoad(this: unknown, request: string, parent: NodeModule | null, isMain: boolean) {
-  if (request === 'vscode') {
-    const extension = activeExtensionId ? extensions.get(activeExtensionId) : null
-    if (!extension) throw new Error('The vscode API can only be imported while an extension is activating')
-    return makeVscodeApi(extension)
+  if (request === 'vscode' || request === 'node:vscode') {
+    // Prefer the actively-running extension; fall back to the last one that ran
+    // so lazy requires after the activation window still resolve.
+    const extId = activeExtensionId ?? lastActiveExtensionId
+    const extension = extId ? extensions.get(extId) : null
+    if (!extension) throw new Error('The vscode API can only be imported from extension code')
+    return getVscodeApiFor(extension)
+  }
+  if (isRestrictedActive()) {
+    const builtin = normalizeBuiltinRequest(request)
+    if (RESTRICTED_DENIED_MODULES.has(builtin)) {
+      throw new Error(`Module "${request}" is blocked for extensions in a Restricted (untrusted) workspace.`)
+    }
+    if (builtin === 'fs') {
+      return readOnlyFsProxy(originalLoad.call(this, request, parent, isMain) as object, false)
+    }
+    if (builtin === 'fs/promises') {
+      return readOnlyFsProxy(originalLoad.call(this, request, parent, isMain) as object, true)
+    }
   }
   return originalLoad.call(this, request, parent, isMain)
 }
@@ -406,12 +495,6 @@ function applyWorkspaceState(next: WorkspaceStateSnapshot): void {
   visibleEditorsEmitter.fire((workspaceState.visibleTextEditors ?? []).map((editor) => serializeTextEditor(editor)).filter((editor): editor is TextEditorSnapshot & { document: ReturnType<typeof serializeTextDocument> } => !!editor))
 }
 
-function unsupported(method: string) {
-  return () => {
-    throw new Error(`Unsupported VS Code API in Shogo extension host: ${method}`)
-  }
-}
-
 function registerViewOwner(extension: HostExtension, viewId: string): { dispose: () => void } {
   viewOwners.set(viewId, extension.id)
   post({ type: 'viewRegistered', extensionId: extension.id, viewId })
@@ -548,6 +631,7 @@ async function activateExtensionOnce(extension: HostExtension, reason: string): 
   fs.mkdirSync(extension.globalStoragePath, { recursive: true })
   fs.mkdirSync(extension.workspaceStoragePath, { recursive: true })
   activeExtensionId = extension.id
+  lastActiveExtensionId = extension.id
   try {
     const mod = require(mainPath)
     const context = {
@@ -606,6 +690,10 @@ async function executeCommand(requestId: string, commandId: string, args: unknow
       command = commands.get(commandId)
     }
     if (!command) throw new Error(`Extension did not register command after activation: ${commandId}`)
+    // Scope the running extension so a lazy `require('vscode')` inside the
+    // handler resolves to the command's owner, then restore on the way out.
+    const owner = commandOwners.get(commandId)
+    if (owner) lastActiveExtensionId = owner
     const result = await command(...args)
     post({ type: 'commandExecuted', commandId, durationMs: Date.now() - started })
     post({ type: 'response', requestId, ok: true, result: serializeResult(result) })
@@ -766,11 +854,43 @@ function createWebviewApi(extension: HostExtension, onChange: () => void, getHtm
   Object.defineProperty(webview, 'html', {
     get: getHtml,
     set: (value) => {
-      setHtml(String(value ?? ''))
+      // Defense-in-depth: extension-authored HTML is rendered in the host UI,
+      // so ensure a restrictive Content-Security-Policy is present before it
+      // leaves the host process. If the extension already declared one we keep
+      // it (extensions are expected to ship their own nonce-based CSP).
+      setHtml(ensureWebviewCsp(String(value ?? '')))
       onChange()
     },
   })
   return webview
+}
+
+/**
+ * Default CSP for extension webviews that don't ship one. Blocks remote
+ * scripts and all network egress (connect-src 'none') so a malicious or
+ * compromised webview can't exfiltrate data, while still allowing inline
+ * markup/styles and data:/https: images that simple webviews rely on.
+ */
+const DEFAULT_WEBVIEW_CSP =
+  "default-src 'none'; " +
+  "img-src data: https:; " +
+  "style-src 'unsafe-inline'; " +
+  "font-src data: https:; " +
+  "script-src 'unsafe-inline'; " +
+  "connect-src 'none';"
+
+function ensureWebviewCsp(html: string): string {
+  if (!html.trim()) return html
+  // Respect an existing CSP declared by the extension.
+  if (/http-equiv\s*=\s*["']?Content-Security-Policy/i.test(html)) return html
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${DEFAULT_WEBVIEW_CSP}">`
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head[^>]*>/i, (head) => `${head}\n${meta}`)
+  }
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html[^>]*>/i, (tag) => `${tag}\n<head>${meta}</head>`)
+  }
+  return `${meta}\n${html}`
 }
 
 function webviewResourceUri(extension: HostExtension, uri: unknown): unknown {

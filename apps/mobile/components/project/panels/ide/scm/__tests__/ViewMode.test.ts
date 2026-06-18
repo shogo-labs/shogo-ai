@@ -1,115 +1,75 @@
 /**
- * ViewMode — test list/tree toggle and the auto-refresh interval logic.
+ * Tree-view construction (the behaviour behind the list/tree toggle).
+ *
+ * This file previously asserted on inline copies of constants (e.g.
+ * `expect(intervalMs).toBe(30_000)` right after assigning it) — tautologies
+ * that tested nothing. It now drives the REAL exported `buildChangesTree`
+ * that ChangesList renders in tree mode, so a regression in the tree grouping,
+ * single-child compaction, or sort order is actually caught.
  */
-
 import { describe, expect, it } from "bun:test";
+import { buildChangesTree } from "../grouping";
+import type { GitShortCode } from "../../git/bridge";
 
-describe("ViewMode toggle", () => {
-  it("defaults to list", () => {
-    let viewMode: "list" | "tree" = "list";
-    expect(viewMode).toBe("list");
+type Node =
+  | { type: "file"; name: string; file: { path: string } }
+  | { type: "dir"; name: string; path: string; children: Node[] };
+
+function file(path: string, code: GitShortCode = "M") {
+  return { path, code };
+}
+
+function asNodes(files: ReturnType<typeof file>[]): Node[] {
+  return buildChangesTree(files) as unknown as Node[];
+}
+
+describe("buildChangesTree", () => {
+  it("returns an empty tree for no files", () => {
+    expect(asNodes([])).toEqual([]);
   });
 
-  it("toggles from list to tree", () => {
-    let viewMode: "list" | "tree" = "list";
-    viewMode = viewMode === "list" ? "tree" : "list";
-    expect(viewMode).toBe("tree");
+  it("keeps root-level files flat", () => {
+    const nodes = asNodes([file("a.ts"), file("b.ts")]);
+    expect(nodes.every((n) => n.type === "file")).toBe(true);
+    expect(nodes.map((n) => n.name)).toEqual(["a.ts", "b.ts"]);
   });
 
-  it("toggles from tree to list", () => {
-    let viewMode: "list" | "tree" = "tree";
-    viewMode = viewMode === "list" ? "tree" : "list";
-    expect(viewMode).toBe("list");
+  it("nests files under their directory", () => {
+    const nodes = asNodes([file("src/index.ts"), file("src/util.ts")]);
+    expect(nodes).toHaveLength(1);
+    const dir = nodes[0];
+    expect(dir.type).toBe("dir");
+    if (dir.type !== "dir") throw new Error("expected dir");
+    expect(dir.name).toBe("src");
+    expect(dir.children.map((c) => c.name)).toEqual(["index.ts", "util.ts"]);
   });
 
-  it("cycles correctly through multiple toggles", () => {
-    let viewMode: "list" | "tree" = "list";
-    const toggle = () => { viewMode = viewMode === "list" ? "tree" : "list"; };
-    const modes: string[] = [];
-    for (let i = 0; i < 5; i++) {
-      modes.push(viewMode);
-      toggle();
-    }
-    expect(modes).toEqual(["list", "tree", "list", "tree", "list"]);
-  });
-});
-
-describe("Auto-refresh interval", () => {
-  it("interval is 30 seconds when enabled", () => {
-    const intervalMs = 30_000;
-    expect(intervalMs).toBe(30_000);
+  it("compacts single-child directory chains (src/components → one node)", () => {
+    const nodes = asNodes([file("src/components/Button.tsx")]);
+    expect(nodes).toHaveLength(1);
+    const dir = nodes[0];
+    if (dir.type !== "dir") throw new Error("expected dir");
+    expect(dir.name).toBe("src/components");
+    expect(dir.children).toHaveLength(1);
+    expect(dir.children[0].name).toBe("Button.tsx");
   });
 
-  it("interval is 0 when disabled (no effect)", () => {
-    let autoRefresh = false;
-    const intervalMs = autoRefresh ? 30_000 : 0;
-    expect(intervalMs).toBe(0);
-  });
-});
-
-describe("Commit textarea focus (⌘Enter shortcut)", () => {
-  it("Cmd+Enter triggers focus on commit input", () => {
-    let focused = false;
-    const simulateCmdEnter = (e: { metaKey: boolean; ctrlKey: boolean; key: string; preventDefault: () => void }) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        focused = true;
-        e.preventDefault();
-      }
-    };
-
-    simulateCmdEnter({ metaKey: true, ctrlKey: false, key: "Enter", preventDefault: () => {} });
-    expect(focused).toBe(true);
+  it("does NOT compact a directory that has multiple children", () => {
+    const nodes = asNodes([file("src/a.ts"), file("src/sub/b.ts")]);
+    const src = nodes[0];
+    if (src.type !== "dir") throw new Error("expected dir");
+    expect(src.name).toBe("src");
+    // src has a file (a.ts) and a dir (sub) → not collapsible.
+    expect(src.children.map((c) => c.name).sort()).toEqual(["a.ts", "sub"]);
   });
 
-  it("Ctrl+Enter also triggers focus", () => {
-    let focused = false;
-    const simulateCmdEnter = (e: { metaKey: boolean; ctrlKey: boolean; key: string; preventDefault: () => void }) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        focused = true;
-        e.preventDefault();
-      }
-    };
-
-    simulateCmdEnter({ metaKey: false, ctrlKey: true, key: "Enter", preventDefault: () => {} });
-    expect(focused).toBe(true);
-  });
-
-  it("plain Enter does NOT trigger commit focus", () => {
-    let focused = false;
-    const simulateCmdEnter = (e: { metaKey: boolean; ctrlKey: boolean; key: string; preventDefault: () => void }) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        focused = true;
-        e.preventDefault();
-      }
-    };
-
-    simulateCmdEnter({ metaKey: false, ctrlKey: false, key: "Enter", preventDefault: () => {} });
-    expect(focused).toBe(false);
-  });
-});
-
-describe("Discard confirmation", () => {
-  it("confirm returns true for valid discard", () => {
-    let confirmed = false;
-    // Simulate window.confirm
-    const confirm = (_msg: string) => { confirmed = true; return true; };
-    const result = confirm("Discard 3 unstaged change(s)?");
-    expect(result).toBe(true);
-    expect(confirmed).toBe(true);
-  });
-
-  it("confirm returns false when user cancels", () => {
-    const confirm = (_msg: string) => false;
-    const result = confirm("Discard 5 staged change(s)?");
-    expect(result).toBe(false);
-  });
-
-  it("discard is not called when paths array is empty", () => {
-    let discarded = false;
-    const paths: string[] = [];
-    if (paths.length > 0) {
-      discarded = true;
-    }
-    expect(discarded).toBe(false);
+  it("sorts directories before files, each alphabetically", () => {
+    const nodes = asNodes([file("z.ts"), file("a.ts"), file("dir/x.ts")]);
+    // dir first (it's a directory), then files alphabetically.
+    expect(nodes.map((n) => `${n.type}:${n.name}`)).toEqual([
+      "dir:dir",
+      "file:a.ts",
+      "file:z.ts",
+    ]);
   });
 });

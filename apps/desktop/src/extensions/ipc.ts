@@ -12,6 +12,32 @@ let installService: ExtensionInstallService | null = null
 let registryService: ExtensionRegistryService | null = null
 let hostManager: ExtensionHostManager | null = null
 
+/** Open VSX serves VSIX archives from the API host and its blob storage CDN. */
+const ALLOWED_VSIX_DOWNLOAD_HOSTS = new Set([
+  'open-vsx.org',
+  'openvsxorg.blob.core.windows.net',
+])
+const MAX_VSIX_DOWNLOAD_BYTES = 250 * 1024 * 1024
+
+/**
+ * Confine a registry-supplied VSIX download URL to https on a known Open VSX
+ * host. Throws on anything else (http, file:, internal hosts, etc.).
+ */
+function assertAllowedVsixDownloadUrl(rawUrl: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    throw new Error(`Invalid VSIX download URL: ${rawUrl}`)
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`VSIX download URL must use https: ${rawUrl}`)
+  }
+  if (!ALLOWED_VSIX_DOWNLOAD_HOSTS.has(parsed.hostname)) {
+    throw new Error(`VSIX download host not allowed: ${parsed.hostname}`)
+  }
+}
+
 function services(): { install: ExtensionInstallService; registry: ExtensionRegistryService; host: ExtensionHostManager } {
   if (!installService) installService = new ExtensionInstallService()
   if (!registryService) registryService = new ExtensionRegistryService(installService)
@@ -115,9 +141,20 @@ export function registerExtensionsIpcHandlers(): void {
       const metadata = await metaRes.json() as { files?: { download?: string; icon?: string }; version?: string; iconUrl?: string }
       const downloadUrl = metadata.files?.download
       if (!downloadUrl) throw new Error('Open VSX metadata did not include a VSIX download URL')
-      const downloadRes = await fetch(downloadUrl)
+      // SSRF guard: the download URL comes from a remote registry response, so
+      // confine it to known Open VSX hosts before fetching. Without this an
+      // attacker-controlled (or MITM'd) metadata response could point the
+      // download at an internal service or file: URL.
+      assertAllowedVsixDownloadUrl(downloadUrl)
+      const downloadRes = await fetch(downloadUrl, { redirect: 'follow' })
       if (!downloadRes.ok) throw new Error(`Open VSX download failed (${downloadRes.status})`)
+      // Re-check the post-redirect URL — a 30x could have bounced us off the
+      // allow-list.
+      if (downloadRes.url) assertAllowedVsixDownloadUrl(downloadRes.url)
       const bytes = Buffer.from(await downloadRes.arrayBuffer())
+      if (bytes.byteLength > MAX_VSIX_DOWNLOAD_BYTES) {
+        throw new Error(`VSIX download exceeds size limit (${bytes.byteLength} > ${MAX_VSIX_DOWNLOAD_BYTES} bytes)`)
+      }
       const downloadsDir = path.join(os.tmpdir(), 'shogo-extension-downloads')
       fs.mkdirSync(downloadsDir, { recursive: true })
       const file = path.join(downloadsDir, `${publisher}.${name}-${metadata.version ?? version ?? Date.now()}.vsix`)

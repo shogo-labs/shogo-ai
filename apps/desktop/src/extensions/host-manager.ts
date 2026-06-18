@@ -5,6 +5,7 @@ import type { UtilityProcess } from 'electron'
 import path from 'path'
 import crypto from 'crypto'
 import { ExtensionInstallService, type ExtensionListItem } from './install-service'
+import { hashWorkspace } from './workspace-id'
 
 interface PendingRequest {
   resolve: (value: unknown) => void
@@ -228,10 +229,31 @@ export class ExtensionHostManager {
   private extensionPayload(workspaceRoot?: string) {
     return this.installService.listInstalled(workspaceRoot)
       .filter((ext) => ext.enabled && ext.compatible && ext.manifest.main)
+      .filter((ext) => {
+        // Integrity gate — never fork an extension whose on-disk record fails
+        // verification (tampered registry, hash/version mismatch, path escape).
+        const integrity = this.installService.verifyIntegrity(ext)
+        if (!integrity.ok) {
+          this.recordDiagnostic({
+            level: 'error',
+            type: 'host',
+            extensionId: ext.id,
+            message: `Skipped loading ${ext.id}: ${integrity.reason ?? 'integrity check failed'}`,
+            error: integrity.reason,
+          })
+          return false
+        }
+        return true
+      })
       .map((ext) => ({
         id: ext.id,
         installPath: ext.installPath,
         main: ext.manifest.main,
+        // Run in restricted mode when the workspace is untrusted and the
+        // extension only declared *limited* untrusted-workspace support
+        // (`unsupported` ones are already filtered out by `enabled`). The
+        // runner uses this to deny dangerous builtins + read-only the fs.
+        restricted: ext.restrictedMode && ext.restrictedModeSupport !== 'full',
         activationEvents: ext.manifest.activationEvents ?? [],
         commands: (ext.manifest.contributes?.commands ?? []).map((command) => command.command),
         views: Object.values(ext.manifest.contributes?.views ?? {}).flat().map((view) => view.id),
@@ -454,10 +476,6 @@ export class ExtensionHostManager {
       }, 20)
     })
   }
-}
-
-function hashWorkspace(workspaceRoot: string): string {
-  return crypto.createHash('sha256').update(path.resolve(workspaceRoot)).digest('hex').slice(0, 32)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

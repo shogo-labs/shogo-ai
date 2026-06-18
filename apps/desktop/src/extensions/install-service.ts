@@ -7,6 +7,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { unzipSync } from 'fflate'
 import { parseExtensionManifestJson, type ShogoExtensionManifest } from './manifest'
+import { hashWorkspace } from './workspace-id'
 
 export type ExtensionInstallSource = 'vsix' | 'open-vsx' | 'private'
 export type ExtensionEnableScope = 'global' | 'workspace'
@@ -175,6 +176,45 @@ export class ExtensionInstallService {
         capabilityKinds,
       }
     })
+  }
+
+  /**
+   * Integrity check run before the extension host loads an extension. Confirms
+   * the registry record has not been tampered with out-of-band:
+   *   - the install path is confined to the managed installed dir
+   *   - the recorded package hash matches the (separately written) lockfile
+   *   - the declared `main` entry resolves inside the install dir
+   * Returns `{ ok: false, reason }` so the host can skip + diagnose rather than
+   * loading an unverified extension. An attacker who edits only registry.json
+   * (e.g. to repoint installPath at a malicious dir or bump a hash) is caught
+   * because the lockfile is a distinct file with the authoritative hash.
+   */
+  verifyIntegrity(record: InstalledExtensionRecord): { ok: boolean; reason?: string } {
+    const installPath = path.resolve(record.installPath)
+    const installedRoot = path.resolve(this.installedDir)
+    if (installPath !== installedRoot && !installPath.startsWith(installedRoot + path.sep)) {
+      return { ok: false, reason: `install path escapes managed directory: ${record.installPath}` }
+    }
+    if (!fs.existsSync(installPath)) {
+      return { ok: false, reason: `install path does not exist: ${record.installPath}` }
+    }
+    const lockEntry = this.readLock().packages[record.id]
+    if (!lockEntry) {
+      return { ok: false, reason: `no lockfile entry for ${record.id}` }
+    }
+    if (lockEntry.sha256 !== record.packageHash) {
+      return { ok: false, reason: `package hash mismatch for ${record.id}` }
+    }
+    if (lockEntry.version !== record.version) {
+      return { ok: false, reason: `version mismatch for ${record.id} (lock ${lockEntry.version} vs registry ${record.version})` }
+    }
+    if (record.manifest.main) {
+      const mainPath = path.resolve(installPath, record.manifest.main)
+      if (mainPath !== installPath && !mainPath.startsWith(installPath + path.sep)) {
+        return { ok: false, reason: `main entry escapes install dir: ${record.manifest.main}` }
+      }
+    }
+    return { ok: true }
   }
 
   getContributions(workspaceRoot?: string): { extensions: ExtensionListItem[]; contributions: Array<{ extensionId: string; contributes: ShogoExtensionManifest['contributes'] }> } {
@@ -656,9 +696,6 @@ function getRestrictedModeSupport(manifest: ShogoExtensionManifest): RestrictedM
   return 'unsupported'
 }
 
-function hashWorkspace(workspaceRoot: string): string {
-  return crypto.createHash('sha256').update(path.resolve(workspaceRoot)).digest('hex').slice(0, 32)
-}
 
 function requiredWorkspace(workspaceRoot?: string): string {
   if (!workspaceRoot) throw new Error('workspaceRoot is required for workspace-scoped extension enablement')

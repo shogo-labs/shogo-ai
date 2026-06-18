@@ -1717,6 +1717,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       if (process.env.TERMINAL_EXEC_URL) {
         runtimeEnv.TERMINAL_EXEC_URL = process.env.TERMINAL_EXEC_URL
       }
+      if (process.env.TERMINAL_EXEC_TOKEN) {
+        runtimeEnv.TERMINAL_EXEC_TOKEN = process.env.TERMINAL_EXEC_TOKEN
+      }
 
       if (process.env.PROJECTS_DATABASE_URL) {
         runtimeEnv.DATABASE_URL = process.env.PROJECTS_DATABASE_URL
@@ -2194,6 +2197,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         runtimeEnv.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
         if (process.env.TERMINAL_EXEC_URL) {
           runtimeEnv.TERMINAL_EXEC_URL = process.env.TERMINAL_EXEC_URL
+        }
+        if (process.env.TERMINAL_EXEC_TOKEN) {
+          runtimeEnv.TERMINAL_EXEC_TOKEN = process.env.TERMINAL_EXEC_TOKEN
         }
 
         runtimeEnv.WORKSPACE_ID = workspaceId
