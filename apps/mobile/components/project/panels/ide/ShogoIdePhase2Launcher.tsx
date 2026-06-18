@@ -58,7 +58,7 @@ export function ShogoIdePhase2Launcher({ projectRoot }: { projectRoot?: string |
     try {
       const result = await bridge.launch(projectRoot ? { workspacePath: projectRoot } : undefined)
       setStatus(result.status)
-      setMessage(result.ok ? 'Shogo IDE launch requested.' : result.error || result.status.reason)
+      setMessage(result.ok ? 'External IDE dev runtime launch requested.' : result.error || result.status.reason)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
@@ -86,13 +86,13 @@ export function ShogoIdePhase2Launcher({ projectRoot }: { projectRoot?: string |
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs font-semibold text-[color:var(--ide-text-strong)]">
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-orange-500 text-white">⌘</span>
-            Shogo IDE Preview
+            External IDE Dev Runtime
             <span className="rounded-full border border-[color:var(--ide-border)] px-1.5 py-0.5 text-[10px] text-[color:var(--ide-muted)]">
               Phase 2
             </span>
           </div>
           <p className="mt-1 text-[11px] leading-4 text-[color:var(--ide-muted)]">
-            {status.launchReady ? 'Code OSS launcher is wired. The Monaco IDE stays available as fallback.' : status.reason}
+            {status.launchReady ? 'Code OSS dev launcher is wired behind the explicit developer flag. The in-app IDE remains the product surface.' : status.reason}
           </p>
           {message && (
             <p className="mt-1 rounded-md bg-[color:var(--ide-bg)] px-2 py-1 text-[10px] leading-4 text-[color:var(--ide-muted)]">
@@ -109,7 +109,7 @@ export function ShogoIdePhase2Launcher({ projectRoot }: { projectRoot?: string |
           className="inline-flex h-8 items-center gap-1.5 rounded-md bg-orange-500 px-2.5 text-xs font-semibold text-white transition-colors hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {busy ? <Loader2 size={13} /> : <ExternalLink size={13} />}
-          Open Shogo IDE
+          Open external IDE (dev)
         </button>
         <button
           type="button"

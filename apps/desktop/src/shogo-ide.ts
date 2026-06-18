@@ -52,7 +52,7 @@ const DEFAULT_EXECUTABLE_NAMES = process.platform === 'darwin'
     : ['shogo-ide']
 
 const CODE_OSS_NODE_VERSION = '24.15.0'
-const SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS = [
+export const SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS = [
   'GitHub.copilot',
   'GitHub.copilot-chat',
   'vscode.github',
@@ -353,7 +353,7 @@ function resolveCodeOssScriptCommand(script: 'electron' | 'compile'): { command:
   return { command: 'npm', args: ['run', script] }
 }
 
-function ensureShogoIdeRuntimeProfile(workspacePath: string): {
+export function ensureShogoIdeRuntimeProfile(workspacePath: string): {
   userDataDir: string
   extensionsDir: string
   agentsUserDataDir: string
@@ -423,7 +423,7 @@ function resolveSourceRunnerLaunch(status: ShogoIdeStatus, workspaceArg: string)
   }
 }
 
-async function ensureShogoIdeSetup(status: ShogoIdeStatus): Promise<void> {
+export async function ensureShogoIdeSetup(status: ShogoIdeStatus): Promise<void> {
   if (setupPromise) return setupPromise
 
   setupPromise = (async () => {
@@ -620,7 +620,17 @@ export async function launchShogoIde(opts?: { workspacePath?: string }): Promise
 
 export function registerShogoIdeIpcHandlers(): void {
   ipcMain.handle('shogo-ide:get-status', () => getShogoIdeStatus())
-  ipcMain.handle('shogo-ide:launch', (_event, opts?: { workspacePath?: string }) => launchShogoIde(opts))
+  ipcMain.handle('shogo-ide:launch', async (_event, opts?: { workspacePath?: string }) => {
+    const status = getShogoIdeStatus()
+    if (process.env.SHOGO_ENABLE_EXTERNAL_IDE_LAUNCH !== 'true') {
+      return {
+        ok: false,
+        status,
+        error: 'External Shogo IDE launch is disabled. Open a new Shogo window from the app menu so it stays in the same Electron app identity.',
+      }
+    }
+    return launchShogoIde(opts)
+  })
   ipcMain.handle('shogo-ide:open-workspace-folder', async () => {
     const status = getShogoIdeStatus()
     const error = await shell.openPath(status.workspacePath)

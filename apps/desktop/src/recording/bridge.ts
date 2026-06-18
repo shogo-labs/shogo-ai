@@ -12,13 +12,14 @@
  *
  * Recording itself still needs the renderer (the only place `getUserMedia`
  * and `getDisplayMedia` exist). The bridge dispatches IPC events to the
- * main window, which wires the capture pipeline via the preload script.
+ * target renderer window, which wires the capture pipeline via the preload
+ * script.
  */
 import http from 'http'
 import path from 'path'
 import crypto from 'crypto'
 import fs from 'fs'
-import { BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
 import type { AddressInfo } from 'net'
 
 interface BridgeState {
@@ -135,8 +136,7 @@ export async function stopRecordingBridge(): Promise<void> {
  * `startRecording` contextBridge function. This keeps all the Web Audio
  * plumbing in one place.
  */
-export async function invokeRendererStart(): Promise<{ ok: true; id: string; audioPath: string } | { ok: false; error: string }> {
-  const win = findVisibleWindow()
+export async function invokeRendererStart(win: BrowserWindow | null): Promise<{ ok: true; id: string; audioPath: string } | { ok: false; error: string }> {
   if (!win) return { ok: false, error: 'no renderer window available — open the Shogo app first' }
 
   try {
@@ -153,8 +153,7 @@ export async function invokeRendererStart(): Promise<{ ok: true; id: string; aud
   }
 }
 
-export async function invokeRendererStop(): Promise<{ ok: true; id: string; audioPath: string; duration: number } | { ok: false; error: string }> {
-  const win = findVisibleWindow()
+export async function invokeRendererStop(win: BrowserWindow | null): Promise<{ ok: true; id: string; audioPath: string; duration: number } | { ok: false; error: string }> {
   if (!win) return { ok: false, error: 'no renderer window available' }
 
   try {
@@ -171,10 +170,6 @@ export async function invokeRendererStop(): Promise<{ ok: true; id: string; audi
   }
 }
 
-function findVisibleWindow(): BrowserWindow | null {
-  const windows = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed())
-  return windows[0] ?? null
-}
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
   res.statusCode = status

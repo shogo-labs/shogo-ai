@@ -21,7 +21,7 @@ import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notif
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
-import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
+import { startLocalServer, stopLocalServer, getApiUrl } from './local-server'
 import { getWebDir, getBunPath, getDbPath } from './paths'
 import {
   routeShogoRequest,
@@ -41,6 +41,7 @@ import {
   startMeetingMonitor,
   cleanupRecording,
   startRecordingHttpBridge,
+  setRecordingWindowResolver,
 } from './recording'
 import { registerFsIpcHandlers } from './fs-ipc'
 import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
@@ -49,8 +50,9 @@ import { registerDebugIpcHandlers, disposeDebugIpc } from './debug-ipc'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
-import { getShogoIdeStatus, launchShogoIde, registerShogoIdeIpcHandlers, terminateLaunchedShogoIdeProcesses } from './shogo-ide'
+import { getShogoIdeStatus, registerShogoIdeIpcHandlers, terminateLaunchedShogoIdeProcesses } from './shogo-ide'
 import { createTray, destroyTray } from './tray'
+import { WindowManager } from './window-manager'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 import {
   openPreview,
@@ -65,6 +67,16 @@ import {
   onPreviewEvent,
   type PreviewBounds,
 } from './preview-views'
+import {
+  openIdeView,
+  openIdeWindow,
+  closeIdeView,
+  setIdeViewBounds,
+  setIdeViewVisible,
+  closeAllIdeViewsForWindow,
+  disposeIdeServers,
+  type IdeViewBounds,
+} from './ide-views'
 
 // Shape of JSON responses from the local API's cloud-login endpoints
 // (used by the heartbeat + signout helpers below). Every field is optional
@@ -159,23 +171,25 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
-// Single-instance: keep one Shogo window per user. Second-instance just
-// focuses the existing window (no auth-callback handling — sign-in is
-// now driven by polling the cloud, not a deep link).
+// Single-instance: keep one Shogo app process per user. Second-instance
+// currently preserves legacy behavior by focusing the primary window
+// (no auth-callback handling — sign-in is now driven by polling the cloud,
+// not a deep link).
 if (!ensureSingleInstanceLock()) {
   process.exit(0)
 }
 
 app.on('second-instance', () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  }
+  windowManager.focusPrimaryWindow()
 })
 
 const IS_DEV = !app.isPackaged
 
-let mainWindow: BrowserWindow | null = null
+const windowManager = new WindowManager({
+  onWindowClosed: (window) => closeAllForWindow(window),
+})
+setRecordingWindowResolver(() => windowManager.getPrimaryWindow())
+
 let isCloudMode = false
 
 // --- Cloud sign-in: poll-based device flow (no deep link) ---
@@ -328,10 +342,7 @@ async function performCloudSignIn(
   })
 
   // Bring the main window forward so the user sees the result.
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  }
+  windowManager.focusPrimaryWindow()
 
   return { ok: true }
 }
@@ -584,6 +595,56 @@ async function repairLocalDatabaseInteractive(): Promise<void> {
   performDatabaseRepair(failures, dbPath)
 }
 
+function getAppWindowUrl(pathWithQuery = '/'): string {
+  if (isCloudMode) {
+    return new URL(pathWithQuery, getCloudUrl()).toString()
+  }
+  if (IS_DEV) {
+    const devUrl = process.env.DESKTOP_DEV_URL || `http://localhost:8081`
+    return new URL(pathWithQuery, devUrl).toString()
+  }
+  return new URL(pathWithQuery, 'shogo://app').toString()
+}
+
+function loadAppWindow(window: BrowserWindow, pathWithQuery = '/'): void {
+  const url = getAppWindowUrl(pathWithQuery)
+  window.loadURL(url).catch(() => {
+    if (!isCloudMode && IS_DEV) {
+      loadProductionWeb(window)
+    }
+  })
+}
+
+function buildCodeWorkbenchPath(options: { projectId?: string; workspacePath?: string } = {}): string {
+  const projectPath = options.projectId ? `/(app)/projects/${encodeURIComponent(options.projectId)}` : '/(app)'
+  const params = new URLSearchParams({ tab: 'ide' })
+  if (options.workspacePath) params.set('workspacePath', options.workspacePath)
+  return `${projectPath}?${params.toString()}`
+}
+
+function openNewWindow(): void {
+  loadAppWindow(windowManager.createAppWindow())
+}
+
+async function openCodeWorkbenchWindow(options: { projectId?: string; workspacePath?: string } = {}): Promise<{ ok: true; windowId: number; url: string } | { ok: false; error: string }> {
+  if (!options.projectId) return { ok: false, error: 'project-id-required' }
+  return openIdeWindow(
+    options.projectId,
+    () => windowManager.createCodeWorkbenchWindow(options),
+    { workspacePath: options.workspacePath },
+  )
+}
+
+function buildDockMenu(): void {
+  if (process.platform !== 'darwin' || !app.dock) return
+  app.dock.setMenu(Menu.buildFromTemplate([
+    {
+      label: 'New Window',
+      click: () => { openNewWindow() },
+    },
+  ]))
+}
+
 function buildAppMenu(): void {
   const config = readConfig()
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -605,27 +666,13 @@ function buildAppMenu(): void {
       label: 'File',
       submenu: [
         {
-          label: 'Open Shogo IDE...',
-          click: async () => {
-            const result = await launchShogoIde()
-            if (result.ok) return
-            const status = result.status ?? getShogoIdeStatus()
-            await dialog.showMessageBox({
-              type: 'info',
-              title: 'Shogo IDE',
-              message: 'Shogo IDE is not launchable yet.',
-              detail:
-                `${result.error || status.reason}\n\n` +
-                `Workspace: ${status.workspacePath}\n\n` +
-                `Next setup command:\n${status.cloneCommand}`,
-              buttons: ['OK'],
-              defaultId: 0,
-              noLink: true,
-            })
-          },
+          label: 'New Window',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => { openNewWindow() },
         },
+        { type: 'separator' },
         {
-          label: 'Reveal Shogo IDE Workspace',
+          label: 'Reveal Legacy IDE Workspace',
           click: () => {
             const status = getShogoIdeStatus()
             void shell.openPath(status.workspacePath)
@@ -676,6 +723,11 @@ function buildAppMenu(): void {
     {
       label: 'Window',
       submenu: [
+        {
+          label: 'New Window',
+          click: () => { openNewWindow() },
+        },
+        { type: 'separator' },
         { role: 'minimize' },
         { role: 'zoom' },
         ...(process.platform === 'darwin' ? [
@@ -701,11 +753,7 @@ function buildAppMenu(): void {
         {
           label: 'Report Bug...',
           click: () => {
-            if (mainWindow) {
-              if (mainWindow.isMinimized()) mainWindow.restore()
-              mainWindow.focus()
-              mainWindow.webContents.send('navigate', '/settings?tab=support')
-            }
+            windowManager.focusAndNavigatePrimaryWindow('/settings?tab=support')
           },
         },
       ],
@@ -717,6 +765,9 @@ function buildAppMenu(): void {
 function registerIpcHandlers(): void {
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
+  ipcMain.handle('code-workbench:open', (_event, options?: { projectId?: string; workspacePath?: string }) => {
+    return openCodeWorkbenchWindow(options ?? {})
+  })
 
   // On-demand local-database repair, surfaced from the support/settings UI.
   // Detects failed migrations, confirms with the user, then backs up,
@@ -742,7 +793,7 @@ function registerIpcHandlers(): void {
   // macOS. Returns absolute paths; the caller is responsible for POSTing
   // them to /api/local/projects/from-folders.
   ipcMain.handle('pick-folders', async (event, opts?: { multi?: boolean; defaultPath?: string }) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
     const properties: Array<
       'openDirectory' | 'multiSelections' | 'createDirectory' | 'showHiddenFiles'
     > = ['openDirectory', 'createDirectory']
@@ -881,12 +932,7 @@ function registerIpcHandlers(): void {
       const { title, body, sessionId, projectId } = args
       const n = new Notification({ title, body, silent: false })
       n.on('click', () => {
-        if (mainWindow) {
-          if (mainWindow.isMinimized()) mainWindow.restore()
-          mainWindow.show()
-          mainWindow.focus()
-          mainWindow.webContents.send('notification-clicked', { sessionId, projectId })
-        }
+        windowManager.focusAndSendToPrimaryWindow('notification-clicked', { sessionId, projectId })
       })
       n.show()
     },
@@ -895,8 +941,9 @@ function registerIpcHandlers(): void {
   // Source of truth for renderer inactivity detection on desktop —
   // document.hasFocus() is unreliable when another app is foregrounded on
   // macOS, so we defer to BrowserWindow.isFocused().
-  ipcMain.handle('get-window-focused', () => {
-    return !!mainWindow && mainWindow.isFocused()
+  ipcMain.handle('get-window-focused', (event) => {
+    const window = windowManager.getWindowForWebContents(event.sender)
+    return !!window && window.isFocused()
   })
 
   ipcMain.handle('check-vm-image-update', async () => {
@@ -917,10 +964,11 @@ function registerIpcHandlers(): void {
 
   // --- Bug report / log sharing ---
 
-  ipcMain.handle('capture-screenshot', async () => {
-    if (!mainWindow) return { ok: false, error: 'No window available' }
+  ipcMain.handle('capture-screenshot', async (event) => {
+    const window = windowManager.getWindowForWebContents(event.sender)
+    if (!window) return { ok: false, error: 'No sender window available' }
     try {
-      const image = await mainWindow.webContents.capturePage()
+      const image = await window.webContents.capturePage()
       return { ok: true, base64: image.toPNG().toString('base64') }
     } catch (err) {
       return { ok: false, error: (err as Error)?.message || 'Screenshot capture failed' }
@@ -1007,7 +1055,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     'preview:open',
     (event, args: { projectId: string; url: string; allowNonLocal?: boolean }) => {
-      const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()
+      const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
       if (!win) return { ok: false, error: 'no-window' }
       return openPreview(args?.projectId, args?.url, win, {
         allowNonLocal: !!args?.allowNonLocal,
@@ -1015,145 +1063,113 @@ function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle('preview:close', (_event, args: { projectId: string }) => {
-    closePreview(args?.projectId)
+  ipcMain.handle('preview:close', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    closePreview(win.id, args.projectId)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:set-bounds', (_event, args: { projectId: string; bounds: PreviewBounds }) => {
+  ipcMain.handle('preview:set-bounds', (event, args: { projectId: string; bounds: PreviewBounds }) => {
     if (!args?.projectId || !args?.bounds) return { ok: false }
-    setPreviewBounds(args.projectId, args.bounds)
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    setPreviewBounds(win.id, args.projectId, args.bounds)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:set-visible', (_event, args: { projectId: string; visible: boolean }) => {
+  ipcMain.handle('preview:set-visible', (event, args: { projectId: string; visible: boolean }) => {
     if (!args?.projectId) return { ok: false }
-    setPreviewVisible(args.projectId, !!args.visible)
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    setPreviewVisible(win.id, args.projectId, !!args.visible)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:reload', (_event, args: { projectId: string }) => {
-    reloadPreview(args?.projectId)
+  ipcMain.handle('preview:reload', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    reloadPreview(win.id, args.projectId)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:go-back', (_event, args: { projectId: string }) => {
-    goBackPreview(args?.projectId)
+  ipcMain.handle('preview:go-back', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    goBackPreview(win.id, args.projectId)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:go-forward', (_event, args: { projectId: string }) => {
-    goForwardPreview(args?.projectId)
+  ipcMain.handle('preview:go-forward', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    goForwardPreview(win.id, args.projectId)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:get-state', (_event, args: { projectId: string }) => {
-    return getPreviewState(args?.projectId)
+  ipcMain.handle('preview:get-state', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return null
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return null
+    return getPreviewState(win.id, args.projectId)
   })
 
-  // Forward preview events to every renderer. The renderer ignores events
-  // for project IDs it doesn't care about, so a single shared channel is
-  // fine — there's only one BrowserWindow in practice.
   onPreviewEvent((ev) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (win.isDestroyed()) continue
-      try {
-        win.webContents.send('preview:event', ev)
-      } catch {}
-    }
+    windowManager.sendToWindow(ev.windowId, 'preview:event', ev)
+  })
+
+
+  ipcMain.handle('ide-view:open', (event, args: { projectId: string; workspacePath?: string }) => {
+    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    return openIdeView(args.projectId, win, { workspacePath: args.workspacePath })
+  })
+
+  ipcMain.handle('ide-view:close', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    closeIdeView(win.id, args.projectId)
+    return { ok: true }
+  })
+
+  ipcMain.handle('ide-view:set-bounds', (event, args: { projectId: string; bounds: IdeViewBounds }) => {
+    if (!args?.projectId || !args?.bounds) return { ok: false }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    setIdeViewBounds(win.id, args.projectId, args.bounds)
+    return { ok: true }
+  })
+
+  ipcMain.handle('ide-view:set-visible', (event, args: { projectId: string; visible: boolean }) => {
+    if (!args?.projectId) return { ok: false }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    setIdeViewVisible(win.id, args.projectId, !!args.visible)
+    return { ok: true }
   })
 }
 
 function createWindow(): void {
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 800,
-    minHeight: 600,
-    title: 'Shogo',
-    autoHideMenuBar: true,
-    webPreferences: {
-      // ⚠️ Do NOT use `path.join(__dirname, 'preload.js')` here. `scripts/bundle-main.mjs`
-      // runs `bun build --target node --format cjs` over this file, and Bun inlines
-      // `__dirname` as a string literal of the source file's directory at build time
-      // rather than leaving it as Node's runtime CJS builtin. On a CI runner that
-      // means `__dirname` ships as `/Users/runner/work/<org>/<repo>/apps/desktop/src`
-      // baked into `app.asar`, so on every other machine Electron tries to load a
-      // preload script from a path that doesn't exist — no IPC bridge gets installed,
-      // `window.shogoDesktop` is undefined, and the renderer fails over to the
-      // default `localhost:8002` API URL, which is wrong for the packaged desktop
-      // (it uses a dynamic port from `getApiPort()`). v1.7.8 shipped that regression.
-      //
-      // `app.getAppPath()` is supplied by Electron at runtime and is NOT subject to
-      // bundler inlining. It returns the directory containing the loaded
-      // `package.json` — `apps/desktop/` in dev, `…/Contents/Resources/app.asar/` in
-      // a packaged build — and `preload.js` is at `<that>/dist/preload.js` in both.
-      preload: path.join(app.getAppPath(), 'dist', 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      // sandbox is disabled so the preload script can require the audio
-      // capture pipeline (pcm-worklet.ts, audio-capture-manager.ts) via
-      // relative paths. contextIsolation=true + nodeIntegration=false still
-      // keep the main world insulated — only the contextBridge-exposed
-      // functions reach the page.
-      sandbox: false,
-      additionalArguments: [`--api-port=${getApiPort()}`],
-    },
-    show: false,
-  })
-
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show()
-  })
-
-  mainWindow.on('closed', () => {
-    if (mainWindow) closeAllForWindow(mainWindow)
-    mainWindow = null
-  })
-
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      shell.openExternal(url)
-    }
-    return { action: 'deny' }
-  })
-
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    const appOrigins = ['shogo://app', 'http://localhost']
-    const isInternal = appOrigins.some((origin) => url.startsWith(origin))
-    if (!isInternal) {
-      event.preventDefault()
-      if (url.startsWith('http://') || url.startsWith('https://')) {
-        shell.openExternal(url)
-      }
-    }
-  })
-
-  if (isCloudMode) {
-    mainWindow.loadURL(getCloudUrl())
-  } else if (IS_DEV) {
-    const devUrl = process.env.DESKTOP_DEV_URL || `http://localhost:8081`
-    mainWindow.loadURL(devUrl).catch(() => {
-      loadProductionWeb()
-    })
-  } else {
-    loadProductionWeb()
-  }
+  loadAppWindow(windowManager.createPrimaryWindow())
 }
 
-function loadProductionWeb(): void {
-  if (!mainWindow) return
-
+function loadProductionWeb(window: BrowserWindow): void {
   const webDir = getWebDir()
   const indexPath = path.join(webDir, 'index.html')
 
   if (!fs.existsSync(indexPath)) {
     console.error(`[Desktop] Web build not found at ${indexPath}`)
-    mainWindow.loadURL('data:text/html,<h1>Web build not found</h1><p>Run expo export --platform web first.</p>')
+    window.loadURL('data:text/html,<h1>Web build not found</h1><p>Run expo export --platform web first.</p>')
     return
   }
 
-  mainWindow.loadURL('shogo://app/')
+  window.loadURL('shogo://app/')
 }
 
 function registerProtocol(): void {
@@ -1414,6 +1430,7 @@ app.whenReady().then(async () => {
   registerPortsIpcHandlers()
   registerShogoIdeIpcHandlers()
   buildAppMenu()
+  buildDockMenu()
 
   const skipLocalServer = !isCloudMode && process.env.SHOGO_SKIP_LOCAL_SERVER === 'true'
   if (!isCloudMode && !skipLocalServer) {
@@ -1458,7 +1475,11 @@ app.whenReady().then(async () => {
   createWindow()
 
   if (!isCloudMode) {
-    createTray()
+    createTray({
+      openMeetings: () => {
+        windowManager.focusAndNavigatePrimaryWindow('/meetings')
+      },
+    })
     startMeetingMonitor()
     startCloudLoginHeartbeat()
     void startRecordingHttpBridge()
@@ -1481,7 +1502,7 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!windowManager.hasWindows()) {
       createWindow()
     }
   })
