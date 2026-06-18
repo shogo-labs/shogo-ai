@@ -2292,6 +2292,20 @@ export default observer(function ProjectLayout() {
     [billingHasActive, billingHasAdvanced, billingRefetch],
   )
 
+  // enrichMessage: auto-inject terminal context into every chat message.
+  // Dynamically imports the desktop terminal store (no-op on mobile/web).
+  // Must live before the loading early-return below so hook order is stable.
+  const enrichMessage = useCallback(async (text: string): Promise<string> => {
+    try {
+      if (Platform.OS !== 'web') return text
+      const { terminalContextStore } = await import('@shogo/desktop-terminal')
+      if (!terminalContextStore.isReady()) return text
+      return terminalContextStore.enrichMessage(text)
+    } catch {
+      return text
+    }
+  }, [])
+
   // Loading state. We also gate on `runtimeReady` so the panels never
   // render with stale URLs — see `useAgentUrl` for the polling contract.
   // The copy differs once project metadata has loaded but the per-project
@@ -2461,6 +2475,7 @@ export default observer(function ProjectLayout() {
                 selectedModel={selectedModel}
                 onModelChange={handleModelChange}
                 className="flex-1"
+                enrichMessage={enrichMessage}
               />
             </PanelErrorBoundary>
           </View>
@@ -2803,6 +2818,7 @@ export default observer(function ProjectLayout() {
             platformIsWeb={Platform.OS === 'web'}
             canvasAreaHidden={canvasAreaHidden}
             isChatFullscreen={isChatFullscreen}
+            folderPath={primaryFolderPath ?? undefined}
           >
           {/* Floating chat button on native narrow canvas — above every canvas sub-tab (z-20 panels) */}
           {showNativeNarrowChatFab && (

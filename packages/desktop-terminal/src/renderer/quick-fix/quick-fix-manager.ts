@@ -17,7 +17,10 @@
  */
 
 import type { Command, Osc633Tracker, TrackerEvent, CommandMarker } from '../osc633-tracker'
-import type { DecorationHandle, DecorationHost, DecorationOptions } from '../command-decorations'
+// Inline xterm.js decoration types (moved from removed command-decorations.ts)
+interface DecorationHandle { onRender(cb: (el: HTMLElement) => void): void; dispose(): void; }
+interface DecorationHost { registerDecoration(opts: any): DecorationHandle | undefined }
+type DecorationOptions = any
 import {
   QuickFixEngine,
   type QuickFixContext,

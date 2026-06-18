@@ -129,6 +129,12 @@ function readPersistedState(): BottomPanelState {
 let state: BottomPanelState = readPersistedState()
 const listeners = new Set<Listener>()
 
+// Non-reactive bridge: Workbench writes these on each active-file change
+// so Terminal can implement "Run Active File" and "Run Selected Text"
+// without prop-drilling through DrawerHost → BottomPanel → Terminal.
+let _activeEditorPath: string | null = null
+let _getEditorSelection: (() => string | null) | null = null
+
 function emit(): void {
   for (const l of listeners) l()
 }
@@ -236,6 +242,22 @@ export const ideBottomPanelStore = {
   __resetForTest(): void {
     state = readPersistedState()
     listeners.clear()
+  },
+
+  setActiveEditorPath(path: string | null): void {
+    _activeEditorPath = path
+  },
+
+  getActiveEditorPath(): string | null {
+    return _activeEditorPath
+  },
+
+  setGetEditorSelection(fn: (() => string | null) | null): void {
+    _getEditorSelection = fn
+  },
+
+  getEditorSelectionText(): string | null {
+    return _getEditorSelection?.() ?? null
   },
 } as const
 

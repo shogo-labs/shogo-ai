@@ -31,6 +31,8 @@ export interface SearchOptions {
   wholeWord?: boolean
   /** When true, the next findNext() starts from the current cursor. */
   incremental?: boolean
+  /** When set, matching lines get a mark in the scrollbar overview ruler. */
+  overviewRulerOptions?: { color: string; position?: 'left' | 'center' | 'right' | 'full' }
 }
 
 /** Subset of `@xterm/addon-search`'s SearchAddon we need. */
@@ -92,6 +94,11 @@ export class SearchController {
   getOptions(): SearchOptions { return { ...this.options } }
   getHits(): SearchHits { return this.lastHits }
 
+  private rulerOpts: SearchOptions['overviewRulerOptions'] = {
+    color: '#f5d76e99',
+    position: 'right',
+  }
+
   setQuery(q: string): void {
     if (this.disposed) return
     this.query = q
@@ -101,26 +108,25 @@ export class SearchController {
       this.listener?.(this.lastHits)
       return
     }
-    // Re-issue a search so highlights match the new query.
-    this.addon.findNext(this.query, { ...this.options, incremental: true })
+    this.addon.findNext(this.query, { ...this.options, incremental: true, overviewRulerOptions: this.rulerOpts })
   }
 
   setOptions(opts: SearchOptions): void {
     if (this.disposed) return
     this.options = { ...opts }
-    if (this.query) this.addon.findNext(this.query, { ...this.options, incremental: true })
+    if (this.query) this.addon.findNext(this.query, { ...this.options, incremental: true, overviewRulerOptions: this.rulerOpts })
   }
 
   /** Returns true if a match was found. */
   findNext(): boolean {
     if (this.disposed || !this.query) return false
-    return this.addon.findNext(this.query, { ...this.options })
+    return this.addon.findNext(this.query, { ...this.options, overviewRulerOptions: this.rulerOpts })
   }
 
   /** Returns true if a match was found. */
   findPrev(): boolean {
     if (this.disposed || !this.query) return false
-    return this.addon.findPrevious(this.query, { ...this.options })
+    return this.addon.findPrevious(this.query, { ...this.options, overviewRulerOptions: this.rulerOpts })
   }
 
   /** Clear query + highlights. */

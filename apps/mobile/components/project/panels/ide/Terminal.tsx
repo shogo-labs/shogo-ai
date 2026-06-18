@@ -11,7 +11,9 @@ import {
   Plus,
   X,
   ChevronDown,
-  Settings,
+  Terminal as TerminalIcon,
+  Circle,
+  SquareSplitHorizontal,
 } from "lucide-react-native";
 import { API_URL } from "../../../../lib/api";
 import { agentFetch } from "../../../../lib/agent-fetch";
@@ -33,6 +35,7 @@ import {
   isValidTabColor,
   labelsFor,
   makeSession,
+  makeAgentSession,
   patchSession as patchSessionInList,
   renameGroup as renameGroupInList,
   reorderGroups as reorderGroupsInList,
@@ -51,7 +54,7 @@ import {
   type SplitNode,
 } from "./terminal/split-tree";
 import { TerminalHeader } from "./terminal/TerminalHeader";
-import { useShellName } from "./terminal/useShellName";
+import { useShellName, type ShellName } from "./terminal/useShellName";
 import {
   AUTO_REPLY_STORAGE_KEY,
   defaultRuleTemplates,
@@ -62,6 +65,7 @@ import {
   type AutoReplyRule,
   type AutoReplyState,
 } from "./terminal/auto-replies";
+import { ideBottomPanelStore } from "../../../../lib/ide-bottom-panel-store";
 
 /**
  * The IDE "Terminal" — a real PTY-backed shell, one per tab.
@@ -166,11 +170,16 @@ function displayCwd(cwd: string | null | undefined): string {
   return v;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function cwdBasename(cwd: string | null | undefined): string {
   const v = displayCwd(cwd);
   if (v === "~") return "~";
   const parts = v.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? v;
+  const last = parts[parts.length - 1] ?? v;
+  // Workspace folders are named by UUID — never show that as subtitle.
+  if (UUID_RE.test(last)) return "";
+  return last;
 }
 
 function wsBaseFromApi(apiBase: string): string {
@@ -180,11 +189,38 @@ function wsBaseFromApi(apiBase: string): string {
   return apiBase;
 }
 
+export interface TerminalToolbarControls {
+  shellName: string;
+  running: boolean;
+  clearDisabled: boolean;
+  onNew: () => void;
+  onSplitRight: () => void;
+  onKillActive: () => void;
+  onStop: () => void;
+  onClear: () => void;
+  onFind: () => void;
+  onPickProfile: (name: ShellName) => void;
+  onConfigure: () => void;
+  onRunRecent: () => void;
+  onScrollPrevCommand: () => void;
+  onScrollNextCommand: () => void;
+  canScrollPrev: boolean;
+  canScrollNext: boolean;
+  commandCount: number;
+  onRunActiveFile: () => void;
+  onRunSelectedText: () => void;
+  onGoToRecentDirectory: () => void;
+  onNewWithProfile?: (profile: string) => void;
+  onSplitWithProfile?: (profile: string) => void;
+}
+
 export function Terminal({
   projectId,
   visible,
   newSessionNonce,
   onRequestClose,
+  onControlsChange,
+  folderPath,
 }: {
   projectId: string | null | undefined;
   visible: boolean;
@@ -195,6 +231,13 @@ export function Terminal({
    * parent should hide the bottom panel in response.
    */
   onRequestClose?: () => void;
+  /**
+   * Called whenever active terminal session info changes — BottomPanel
+   * uses this to show the toolbar in the VS Code-style panel header row.
+   */
+  onControlsChange?: (controls: TerminalToolbarControls | null) => void;
+  /** Filesystem path of the opened project folder — used as terminal cwd. */
+  folderPath?: string
 }) {
   const [commands, setCommands] = useState<Record<string, PresetCommandDto[]>>({});
   const [loading, setLoading] = useState(false);
@@ -203,6 +246,11 @@ export function Terminal({
   const [activeId, setActiveId] = useState<string>(() => sessions[0]?.id ?? "t0");
   const [confirming, setConfirming] = useState<PresetCommandDto | null>(null);
   const [terminalSettingsOpen, setTerminalSettingsOpen] = useState(false);
+  const [cwdHistory, setCwdHistory] = useState<string[]>([]);
+  const [recentDirOpen, setRecentDirOpen] = useState(false);
+  const [recentCmdOpen, setRecentCmdOpen] = useState(false);
+  const [navState, setNavState] = useState({ canPrev: false, canNext: false, count: 0 });
+  const [recentCmdList, setRecentCmdList] = useState<string[]>([]);
   // Per-group split layout (Phase 3 — vertical + mixed grid splits).
   // Lazily initialised: any group not in this map renders a flat horizontal
   // row built from its sessions, matching the pre-split-tree behaviour.
@@ -267,7 +315,18 @@ export function Terminal({
   const activeGroupId = active?.groupId ?? "";
 
   const patchSession = useCallback((id: string, patch: (s: Session) => Session) => {
-    setSessions((prev) => patchSessionInList(prev, id, patch));
+    setSessions((prev) => {
+      const next = patchSessionInList(prev, id, patch);
+      const patched = next.find((s) => s.id === id);
+      const cwd = patched?.cwd;
+      if (cwd) {
+        setCwdHistory((h) => {
+          const deduped = [cwd, ...h.filter((d) => d !== cwd)];
+          return deduped.slice(0, 50);
+        });
+      }
+      return next;
+    });
   }, []);
 
   const renameGroup = useCallback((groupId: string, label: string | null) => {
@@ -297,10 +356,22 @@ export function Terminal({
         const initial = estimateGridSize(panelRef.current);
         let data: CreateSessionResponse;
         let client: PtyClientLike;
-        if (isDesktopRuntime()) {
+        const existing = sessionsRef.current.find((x) => x.id === sessionId);
+        if (isDesktopRuntime() && existing?.ptySessionId) {
+          client = await createPtyClient({ sessionId: existing.ptySessionId });
+          data = {
+            id: existing.ptySessionId,
+            cwd: existing.cwd ?? process.env.HOME ?? "/",
+            cols: initial.cols,
+            rows: initial.rows,
+            createdAt: Date.now(),
+          };
+        } else if (isDesktopRuntime()) {
           const provisioned = await createPtyClientSession({
             spawn: {
               projectId,
+              shell: existing?.shell ?? shellNameRef.current,
+              cwd: folderPath,
               cols: initial.cols,
               rows: initial.rows,
             },
@@ -437,6 +508,39 @@ export function Terminal({
     }
   }, [projectId, visible, provisionSession, sessions]);
 
+  // Agent long-running commands spawn a background ∞ Shogo tab via the
+  // desktop terminal-exec server; attach the UI when main notifies us.
+  useEffect(() => {
+    if (Platform.OS !== "web" || !isDesktopRuntime()) return;
+    const bridge = (globalThis as { shogoDesktopTerminal?: {
+      onAgentTerminalSpawned?: (cb: (p: {
+        sessionId: string
+        terminalLabel: string
+        cwd: string | null
+      }) => void) => () => void
+    } }).shogoDesktopTerminal;
+    if (!bridge?.onAgentTerminalSpawned) return;
+    return bridge.onAgentTerminalSpawned((payload) => {
+      if (sessionsRef.current.some((s) => s.ptySessionId === payload.sessionId)) return;
+      const s = makeAgentSession({
+        ptySessionId: payload.sessionId,
+        label: payload.terminalLabel,
+        cwd: payload.cwd,
+      });
+      setSessions((prev) => addSessionToList(prev, s));
+      setGroupLayouts((prev) => {
+        const next = new Map(prev);
+        next.set(s.groupId, splitLeafNode(s.id));
+        return next;
+      });
+      setActiveId(s.id);
+      if (projectId) {
+        provisionedRef.current.add(s.id);
+        void provisionSession(s.id);
+      }
+    });
+  }, [projectId, provisionSession]);
+
   // ─── Preset commands (kebab menu) ───────────────────────────────────
   const loadCommands = useCallback(async () => {
     if (!projectId) return;
@@ -479,8 +583,10 @@ export function Terminal({
 
   // ─── Session add / split / close ────────────────────────────────────
   // "New Terminal": a fresh group → its own tab, rendered as a single pane.
-  const addSession = useCallback(() => {
-    const s = makeSession();
+  const addSession = useCallback((overrideShell?: string) => {
+    // Guard: React's onClick passes a SyntheticEvent as the first arg.
+    const shell = typeof overrideShell === 'string' ? overrideShell : undefined;
+    const s = makeSession(undefined, shell ?? shellNameRef.current);
     setSessions((prev) => addSessionToList(prev, s));
     setGroupLayouts((prev) => {
       const next = new Map(prev);
@@ -499,12 +605,13 @@ export function Terminal({
   // Down). Default is 'row' so all existing call sites and shortcuts that
   // pass no argument keep their horizontal-split behaviour.
   const splitSession = useCallback(
-    (direction: "row" | "column" = "row") => {
+    (direction: "row" | "column" = "row", overrideShell?: string) => {
       const current =
         sessionsRef.current.find((x) => x.id === activeIdRef.current) ??
         sessionsRef.current[0];
       if (!current) return;
-      const s = makeSession(current.groupId);
+      const shell = typeof overrideShell === 'string' ? overrideShell : undefined;
+      const s = makeSession(current.groupId, shell ?? shellNameRef.current);
       setSessions((prev) => addSplitToList(prev, s));
       setGroupLayouts((prev) => {
         const next = new Map(prev);
@@ -532,7 +639,7 @@ export function Terminal({
         if (result.panelDismissed) {
           onRequestClose?.();
           // Reset to a single fresh tab so the next reopen starts clean.
-          const fresh = makeSession();
+          const fresh = makeSession(undefined, shellNameRef.current);
           setGroupLayouts(new Map([[fresh.groupId, splitLeafNode(fresh.id)]]));
           queueMicrotask(() => {
             setActiveId(fresh.id);
@@ -576,7 +683,7 @@ export function Terminal({
         const result = closeGroupInList(prev, groupId, activeIdRef.current);
         if (result.panelDismissed) {
           onRequestClose?.();
-          const fresh = makeSession();
+          const fresh = makeSession(undefined, shellNameRef.current);
           setGroupLayouts(new Map([[fresh.groupId, splitLeafNode(fresh.id)]]));
           queueMicrotask(() => {
             setActiveId(fresh.id);
@@ -746,7 +853,7 @@ export function Terminal({
   const closeAllSessions = useCallback(() => {
     sessionsRef.current.forEach((s) => disposeSession(s));
     onRequestClose?.();
-    const fresh = makeSession();
+    const fresh = makeSession(undefined, shellNameRef.current);
     setSessions([fresh]);
     setGroupLayouts(new Map([[fresh.groupId, splitLeafNode(fresh.id)]]));
     setActiveId(fresh.id);
@@ -781,9 +888,19 @@ export function Terminal({
   // the container was previously `display: none`.
   useEffect(() => {
     if (!visible) return;
-    const handle = xtermRefs.current.get(activeId);
-    handle?.refit();
-    handle?.focus();
+    const id = activeId;
+    let raf2: number;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const handle = xtermRefs.current.get(id);
+        handle?.refit();
+        handle?.focus();
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2!);
+    };
   }, [visible, activeId]);
 
   // ─── Toolbar actions ────────────────────────────────────────────────
@@ -803,8 +920,91 @@ export function Terminal({
 
   const openRecent = useCallback(() => {
     if (!active) return;
-    xtermRefs.current.get(active.id)?.openRecent?.();
+    const handle = xtermRefs.current.get(active.id);
+    // Prefer the combined keyboard+tracker+disk list (desktop), fall back to
+    // web session-only keyboard history.
+    const fromDesktop = handle?.getRecentCommands?.() ?? [];
+    const fromWeb = handle?.getSentLines?.() ?? [];
+    const commands = fromDesktop.length > 0
+      ? fromDesktop.map((e) => e.command)
+      : fromWeb;
+    setRecentCmdList(commands);
+    setRecentCmdOpen(true);
   }, [active]);
+
+  const scrollPrevCommand = useCallback(() => {
+    if (!active) return;
+    xtermRefs.current.get(active.id)?.scrollToPrevCommand?.();
+  }, [active]);
+
+  const scrollNextCommand = useCallback(() => {
+    if (!active) return;
+    xtermRefs.current.get(active.id)?.scrollToNextCommand?.();
+  }, [active]);
+
+  const runActiveFile = useCallback(() => {
+    const filePath = ideBottomPanelStore.getActiveEditorPath();
+    if (!filePath || !active?.client) return;
+    const name = filePath.split('/').pop() ?? filePath;
+    const ext = name.split('.').pop()?.toLowerCase() ?? '';
+    const cmds: Record<string, string> = {
+      py: `python3 "${name}"`,
+      js: `node "${name}"`,
+      mjs: `node "${name}"`,
+      cjs: `node "${name}"`,
+      ts: `npx ts-node "${name}"`,
+      tsx: `npx ts-node "${name}"`,
+      sh: `bash "${name}"`,
+      bash: `bash "${name}"`,
+      zsh: `zsh "${name}"`,
+      rb: `ruby "${name}"`,
+      go: `go run "${name}"`,
+      php: `php "${name}"`,
+      pl: `perl "${name}"`,
+      r: `Rscript "${name}"`,
+    };
+    const cmd = cmds[ext] ?? `./"${name}"`;
+    active.client.send(`${cmd}
+`);
+    xtermRefs.current.get(active.id)?.focus();
+  }, [active]);
+
+  const runSelectedText = useCallback(() => {
+    const text = ideBottomPanelStore.getEditorSelectionText();
+    if (!text?.trim() || !active?.client) return;
+    active.client.send(`${text.trim()}
+`);
+    xtermRefs.current.get(active.id)?.focus();
+  }, [active]);
+
+  useEffect(() => {
+    if (!active) return;
+    const handle = xtermRefs.current.get(active.id);
+    const poll = () => {
+      const ns = handle?.getNavState?.();
+      if (ns) setNavState({ canPrev: ns.canPrev, canNext: ns.canNext, count: ns.commandCount });
+    };
+    poll();
+    const iv = window.setInterval(poll, 500);
+    return () => window.clearInterval(iv);
+  }, [active]);
+
+  const openRecentDir = useCallback(() => {
+    setRecentDirOpen(true);
+  }, []);
+
+  const openRecentRef = React.useRef(openRecent);
+  openRecentRef.current = openRecent;
+  useEffect(() => {
+    const onRunRecent = () => openRecentRef.current();
+    const onGoRecentDir = () => setRecentDirOpen(true);
+    window.addEventListener('shogo:terminal:run-recent-command', onRunRecent);
+    window.addEventListener('shogo:terminal:go-recent-directory', onGoRecentDir);
+    return () => {
+      window.removeEventListener('shogo:terminal:run-recent-command', onRunRecent);
+      window.removeEventListener('shogo:terminal:go-recent-directory', onGoRecentDir);
+    };
+  }, []);
 
   /**
    * Run a preset by typing its command into the active shell. We hand it
@@ -861,6 +1061,48 @@ export function Terminal({
     commands: commands[cat] ?? [],
   }));
 
+  const { shellName, setShellName } = useShellName(active?.id ?? "");
+  const shellNameRef = useRef(shellName);
+  shellNameRef.current = shellName;
+  const running = active?.status === "ready";
+
+  useEffect(() => {
+    if (!onControlsChange) return;
+    onControlsChange({
+      shellName: active?.shell ?? shellName,
+      running,
+      clearDisabled: !active?.client,
+      onNew: addSession,
+      onSplitRight: () => splitSession("row"),
+      onKillActive: () => closeSession(active?.id ?? ""),
+      onStop: stop,
+      onClear: clear,
+      onFind: openFind,
+      onPickProfile: setShellName,
+      onConfigure: () => setTerminalSettingsOpen(true),
+      onRunRecent: openRecent,
+      onScrollPrevCommand: scrollPrevCommand,
+      onScrollNextCommand: scrollNextCommand,
+      canScrollPrev: navState.canPrev,
+      canScrollNext: navState.canNext,
+      commandCount: navState.count,
+      onRunActiveFile: runActiveFile,
+      onRunSelectedText: runSelectedText,
+      onGoToRecentDirectory: openRecentDir,
+      onNewWithProfile: (profile: string) => {
+        addSession(profile);
+      },
+      onSplitWithProfile: (profile: string) => {
+        splitSession("row", profile);
+      },
+    });
+  }, [shellName, active?.shell, running, active?.id, active?.client, onControlsChange,
+      scrollPrevCommand, scrollNextCommand, runActiveFile, runSelectedText, openRecentDir, navState]);
+
+  useEffect(() => {
+    return () => { onControlsChange?.(null); };
+  }, []);
+
   return (
     <div className="relative flex h-full min-h-0 flex-col bg-[#1e1e1e]">
       <SessionTabs
@@ -897,6 +1139,7 @@ export function Terminal({
         presetsError={loadError}
         onRetryPresets={() => void loadCommands()}
         onRunPreset={(cmd) => runCommand(cmd, false)}
+        hideTabStrip
       />
       <div
         ref={panelRef}
@@ -944,15 +1187,21 @@ export function Terminal({
                   onMovePane={movePaneToTarget}
                 />
               </div>
-              {isSplit && (
-                <TerminalSplitList
-                  sessions={groupSessions}
-                  labels={labels}
-                  activeId={active?.id ?? ""}
-                  onSelect={setActiveId}
-                  onClose={closeSession}
-                />
-              )}
+              <TerminalAllInstanceList
+                groups={groupIds}
+                sessions={sessions}
+                labels={labels}
+                activeId={active?.id ?? ""}
+                activeGroupId={activeGroupId}
+                onSelectGroup={(gid) => {
+                  const g = sessionsInGroup(sessionsRef.current, gid);
+                  const t = g.find((s) => s.id === activeIdRef.current) ?? g[0];
+                  if (t) setActiveId(t.id);
+                }}
+                onSelectSession={setActiveId}
+                onCloseSession={closeSession}
+                onSplitSession={() => splitSession("row")}
+              />
             </div>
           );
         })}
@@ -965,7 +1214,7 @@ export function Terminal({
           onConfirm={() => runCommand(confirming, true)}
         />
       )}
-      {terminalSettingsOpen && (
+      {terminalSettingsOpen && createPortal(
         <TerminalSettingsModal
           onClose={() => setTerminalSettingsOpen(false)}
           onOpenAutoReplies={() => {
@@ -974,75 +1223,201 @@ export function Terminal({
               window.dispatchEvent(new CustomEvent("shogo:terminal:auto-replies"));
             }
           }}
-        />
+        />,
+        document.body
+      )}
+      {recentDirOpen && createPortal(
+        <RecentDirectoryPicker
+          dirs={cwdHistory}
+          onSelect={(dir) => {
+            setRecentDirOpen(false);
+            if (active?.client) {
+              active.client.send(`cd "${dir}"
+`);
+              xtermRefs.current.get(active.id)?.focus();
+            }
+          }}
+          onClose={() => setRecentDirOpen(false)}
+        />,
+        document.body
+      )}
+      {recentCmdOpen && createPortal(
+        <RecentCommandPickerModal
+          commands={recentCmdList}
+          onSelect={(cmd) => {
+            setRecentCmdOpen(false);
+            if (active?.client) {
+              active.client.send(`${cmd}
+`);
+              xtermRefs.current.get(active.id)?.focus();
+            }
+          }}
+          onClose={() => setRecentCmdOpen(false)}
+        />,
+        document.body
       )}
     </div>
   );
 }
 
-function TerminalSplitList({
+/**
+ * VS Code-style terminal instance list — always visible on the right side.
+ * Shows every terminal group and their splits (panes) in a tree structure.
+ * Clicking any row focuses that group/pane. On hover shows split + kill buttons.
+ */
+function TerminalAllInstanceList({
+  groups,
   sessions,
   labels,
   activeId,
-  onSelect,
-  onClose,
+  activeGroupId,
+  onSelectGroup,
+  onSelectSession,
+  onCloseSession,
+  onSplitSession,
 }: {
+  groups: string[];
   sessions: Session[];
   labels: Map<string, string>;
   activeId: string;
-  onSelect: (id: string) => void;
-  onClose: (id: string) => void;
-}) {
+  activeGroupId: string;
+  onSelectGroup: (groupId: string) => void;
+  onSelectSession: (sessionId: string) => void;
+  onCloseSession: (sessionId: string) => void;
+  onSplitSession: () => void;
+}): React.ReactElement | null {
+  if (groups.length < 2) return null;
+
+  type InstanceRow =
+    | { kind: "group"; groupId: string; label: string; isActive: boolean }
+    | { kind: "split"; sessionId: string; groupId: string; label: string; isLast: boolean; isActive: boolean };
+
+  const rows: InstanceRow[] = [];
+  for (const gid of groups) {
+    const groupSessions = sessions.filter((s) => s.groupId === gid);
+    const isActiveGroup = gid === activeGroupId;
+
+    if (groupSessions.length === 1) {
+      const s = groupSessions[0]!;
+      rows.push({
+        kind: "group",
+        groupId: gid,
+        label: labels.get(s.id) ?? "zsh",
+        isActive: isActiveGroup && s.id === activeId,
+      });
+    } else {
+      groupSessions.forEach((s, idx) => {
+        if (idx === 0) {
+          rows.push({
+            kind: "group",
+            groupId: gid,
+            label: labels.get(s.id) ?? "zsh",
+            isActive: isActiveGroup && s.id === activeId,
+          });
+        } else {
+          rows.push({
+            kind: "split",
+            sessionId: s.id,
+            groupId: gid,
+            label: labels.get(s.id) ?? "zsh",
+            isLast: idx === groupSessions.length - 1,
+            isActive: isActiveGroup && s.id === activeId,
+          });
+        }
+      });
+    }
+  }
+
   return (
     <aside
-      className="w-[148px] shrink-0 border-l border-[#2d2d2d] bg-[#1e1e1e] py-1 text-[12px] text-[#cccccc]"
-      aria-label="Terminal splits"
+      className="flex w-[160px] shrink-0 flex-col border-l border-[#2d2d2d] bg-[#1e1e1e]"
+      aria-label="Terminal instances"
     >
-      {sessions.map((s, index) => {
-        const active = s.id === activeId;
+      {rows.map((row, i) => {
+        const isActive = row.isActive;
+        const baseClass = [
+          "group flex h-[22px] w-full cursor-pointer select-none items-center text-left text-[11px]",
+          isActive
+            ? "bg-[#37373d] text-[#cccccc]"
+            : "text-[#858585] hover:bg-[#2a2d2e] hover:text-[#cccccc]",
+        ].join(" ");
+
+        if (row.kind === "group") {
+          return (
+            <div
+              key={`g-${row.groupId}-${i}`}
+              className={baseClass}
+              onClick={() => onSelectGroup(row.groupId)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelectGroup(row.groupId); }}}
+              title={row.label}
+            >
+              <span className="flex min-w-0 flex-1 items-center gap-[5px] pl-2">
+                <TerminalIcon size={12} className="shrink-0" />
+                <span className="truncate">{row.label}</span>
+              </span>
+              {isActive && (
+                <span className="flex shrink-0 items-center gap-[1px] pr-1 opacity-0 group-hover:opacity-100">
+                  <button
+                    type="button"
+                    title="Split Terminal"
+                    aria-label="Split Terminal"
+                    onClick={(e) => { e.stopPropagation(); onSplitSession(); }}
+                    className="flex items-center justify-center rounded p-[2px] hover:bg-[#3c3c3c]"
+                  >
+                    <SquareSplitHorizontal size={11} />
+                  </button>
+                  <button
+                    type="button"
+                    title="Kill Terminal"
+                    aria-label="Kill Terminal"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const s = sessions.find((x) => x.groupId === row.groupId);
+                      if (s) onCloseSession(s.id);
+                    }}
+                    className="flex items-center justify-center rounded p-[2px] text-[#858585] hover:bg-[#3c3c3c] hover:text-[#f48771]"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </span>
+              )}
+            </div>
+          );
+        }
+
         return (
           <div
-            key={s.id}
-            className={[
-              "group flex h-8 w-full items-center gap-1 px-2 text-left hover:bg-[#2a2d2e]",
-              active ? "bg-[#37373d] text-[#ffffff]" : "text-[#cccccc]",
-            ].join(" ")}
-            aria-current={active ? "true" : undefined}
-            title={labels.get(s.id) ?? `Terminal ${index + 1}`}
+            key={`s-${row.sessionId}-${i}`}
+            className={baseClass}
+            onClick={() => onSelectSession(row.sessionId)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelectSession(row.sessionId); }}}
+            title={row.label}
           >
-            <button
-              type="button"
-              onClick={() => onSelect(s.id)}
-              className="flex min-w-0 flex-1 items-center gap-1 text-left"
-            >
-              <span className="w-4 shrink-0 text-[#858585]">{index === 0 ? "┌" : "└"}</span>
-              <span className="shrink-0 rounded border border-[#858585] px-1 text-[10px] leading-4 text-[#cccccc]">⌁</span>
-              <span className="min-w-0 flex-1 truncate">zsh</span>
-              <span className="max-w-[54px] shrink-0 truncate text-[10px] text-[#858585]">{cwdBasename(s.cwd)}</span>
-            </button>
-            <button
-              type="button"
-              aria-label={`Kill ${labels.get(s.id) ?? `Terminal ${index + 1}`}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose(s.id);
-              }}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[#858585] opacity-0 hover:bg-[#3c3c3c] hover:text-[#f48771] group-hover:opacity-100"
-              title="Kill terminal"
-            >
-              ×
-            </button>
+            <span className="flex min-w-0 flex-1 items-center gap-[5px] pl-3">
+              <span className="shrink-0 text-[#555555]">{row.isLast ? "└" : "├"}</span>
+              <TerminalIcon size={12} className="shrink-0" />
+              <span className="truncate">{row.label}</span>
+            </span>
+            <span className="flex shrink-0 items-center gap-[1px] pr-1 opacity-0 group-hover:opacity-100">
+              <button
+                type="button"
+                title="Kill Split"
+                aria-label="Kill Split"
+                onClick={(e) => { e.stopPropagation(); onCloseSession(row.sessionId); }}
+                className="flex items-center justify-center rounded p-[2px] text-[#858585] hover:bg-[#3c3c3c] hover:text-[#f48771]"
+              >
+                <Trash2 size={11} />
+              </button>
+            </span>
           </div>
         );
       })}
     </aside>
   );
-}
-
-interface PresetGroup {
-  category: string;
-  label: string;
-  commands: PresetCommandDto[];
 }
 
 function SessionTabs({
@@ -1075,6 +1450,7 @@ function SessionTabs({
   presetsError,
   onRetryPresets,
   onRunPreset,
+  hideTabStrip,
 }: {
   sessions: Session[];
   groupIds: string[];
@@ -1105,6 +1481,7 @@ function SessionTabs({
   presetsError: string | null;
   onRetryPresets: () => void;
   onRunPreset: (cmd: PresetCommandDto) => void;
+  hideTabStrip?: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [autoRepliesOpen, setAutoRepliesOpen] = useState(false);
@@ -1170,8 +1547,11 @@ function SessionTabs({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [dragGroupId]);
+
+  if (hideTabStrip) return null;
+
   return (
-    <div className="relative flex shrink-0 items-center justify-between border-b border-[#2a2a2a] bg-[#1e1e1e] pr-2">
+    <div className="relative flex shrink-0 items-center justify-between border-b border-[#2d2d2d] bg-[#252526] pr-1">
       <div role="tablist" aria-label="Terminals" className="flex min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:thin]">
         {groupIds.map((gid) => {
           const groupSessions = sessions.filter((s) => s.groupId === gid);
@@ -1239,11 +1619,16 @@ function SessionTabs({
                   startRename(gid, label);
                 }
               }}
-              style={tabColor ? { borderBottom: `2px solid ${tabColor}` } : undefined}
-              className={`group relative flex shrink-0 cursor-pointer items-center gap-1 border-r border-[#2a2a2a] px-2 py-[6px] text-[11px] ${
+              style={tabColor
+                ? { borderBottom: `2px solid ${tabColor}`, borderTop: active ? '1px solid transparent' : '1px solid transparent' }
+                : active
+                  ? { borderTop: '1px solid #1e90ff' }
+                  : { borderTop: '1px solid transparent' }
+              }
+              className={`group relative flex h-[35px] shrink-0 cursor-pointer items-center gap-[5px] border-r border-[#2d2d2d] px-3 text-[12px] ${
                 active
-                  ? "bg-[#1e1e1e] text-white"
-                  : "bg-[#252526] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
+                  ? "bg-[#1e1e1e] text-[#cccccc]"
+                  : "bg-[#252526] text-[#858585] hover:bg-[#2d2d2d] hover:text-[#cccccc]"
               } ${dragGroupId === gid ? "opacity-50" : ""}`}
             >
               {dropTarget?.gid === gid && (
@@ -1260,11 +1645,11 @@ function SessionTabs({
               ) : rep.status === "error" ? (
                 <AlertTriangle size={10} className="text-[#f48771]" />
               ) : rep.status === "closed" ? (
-                <span className="inline-block h-2 w-2 rounded-full bg-[#858585]/60" />
+                <span className="inline-block h-[8px] w-[8px] shrink-0 rounded-full bg-[#858585]" />
               ) : (
-                <span className="inline-block h-2 w-2 rounded-full bg-[#4ec9b0]/60" />
+                <span className="inline-block h-[8px] w-[8px] shrink-0 rounded-full bg-[#4ec9b0]" />
               )}
-              <span className="flex max-w-[150px] flex-col leading-tight">
+              <span className="flex max-w-[140px] items-center leading-none">
                 {renamingGroupId === gid ? (
                   <input
                     ref={renameInputRef}
@@ -1286,33 +1671,47 @@ function SessionTabs({
                     aria-label={`Rename ${label}`}
                     placeholder="Terminal"
                     maxLength={64}
-                    className="w-[140px] truncate rounded-sm border border-[#0078d4] bg-[#1e1e1e] px-1 text-[11px] text-white outline-none"
+                    className="w-[120px] truncate rounded-sm border border-[#0078d4] bg-[#1e1e1e] px-1 text-[12px] text-white outline-none"
                   />
                 ) : (
-                  <span className="truncate" title="Double-click or F2 to rename">
+                  <span className="truncate text-[12px]" title="Double-click or F2 to rename">
+                    {rep.isAgentTerminal ? "∞ " : ""}
                     {label}
                     {paneCount > 1 ? ` (${paneCount})` : ""}
                   </span>
                 )}
-                <span className="truncate text-[9px] text-[#858585]">{cwdBasename(rep.cwd)}</span>
               </span>
-              <button
-                type="button"
-                title={`Change color for ${label}`}
-                aria-label={`Change color for ${label}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setPickerForGroupId((prev) => (prev === gid ? null : gid));
-                }}
-                className={`ml-1 rounded p-[1px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white ${
-                  tabColor || active ? "opacity-100" : "opacity-60 group-hover:opacity-100"
-                }`}
-              >
-                <span
-                  className="inline-block h-2 w-2 rounded-full border border-[#3c3c3c]"
-                  style={{ backgroundColor: tabColor ?? "transparent" }}
-                />
-              </button>
+              {tabColor && (
+                <button
+                  type="button"
+                  title={`Change color for ${label}`}
+                  aria-label={`Change color for ${label}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPickerForGroupId((prev) => (prev === gid ? null : gid));
+                  }}
+                  className="rounded p-[1px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+                >
+                  <span
+                    className="inline-block h-[7px] w-[7px] rounded-full"
+                    style={{ backgroundColor: tabColor }}
+                  />
+                </button>
+              )}
+              {!tabColor && (
+                <button
+                  type="button"
+                  title={`Change color for ${label}`}
+                  aria-label={`Change color for ${label}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPickerForGroupId((prev) => (prev === gid ? null : gid));
+                  }}
+                  className="rounded p-[1px] text-[#858585] opacity-0 hover:bg-[#ffffff1a] hover:text-white group-hover:opacity-60"
+                >
+                  <span className="inline-block h-[7px] w-[7px] rounded-full border border-[#858585]" />
+                </button>
+              )}
               {pickerForGroupId === gid && (
                 <TabColorPicker
                   current={tabColor}
@@ -1331,11 +1730,11 @@ function SessionTabs({
                   e.stopPropagation();
                   onCloseGroup(gid);
                 }}
-                className={`ml-1 rounded p-[1px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white ${
-                  active ? "opacity-100" : "opacity-60 group-hover:opacity-100"
+                className={`ml-[2px] rounded p-[2px] text-[#858585] hover:bg-[#ffffff1a] hover:text-[#cccccc] ${
+                  active ? "opacity-100" : "opacity-0 group-hover:opacity-80"
                 }`}
               >
-                <X size={10} />
+                <X size={11} />
               </button>
             </div>
           );
@@ -1352,26 +1751,23 @@ function SessionTabs({
           aria-label="Preset commands"
           aria-expanded={menuOpen}
           aria-haspopup="menu"
-          className="flex shrink-0 items-center gap-1 px-1 py-[6px] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
+          className="flex h-[35px] shrink-0 items-center gap-1 px-2 text-[#858585] hover:bg-[#2d2d2d] hover:text-[#cccccc]"
         >
-          <ChevronDown size={12} />
-        </button>
-        <button
-          type="button"
-          onClick={() => setAutoRepliesOpen(true)}
-          title="Auto-replies…"
-          aria-label="Auto-replies"
-          className="flex shrink-0 items-center gap-1 px-1 py-[6px] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
-        >
-          <Settings size={12} />
+          <ChevronDown size={11} />
         </button>
       </div>
-      <div className="flex shrink-0 items-center gap-2 pr-1">
+      <div className="flex shrink-0 items-center gap-[2px] border-l border-[#2d2d2d] pl-1 pr-1">
         <PhasedTerminalHeader
           activeId={activeId}
           onNew={onAdd}
+          onNewWithProfile={(profile) => {
+            addSession(profile);
+          }}
           onSplit={onSplit}
           onSplitDown={onSplitDown}
+          onSplitWithProfile={(profile) => {
+            splitSession("row", profile);
+          }}
           onKillActive={onKillActive}
           running={running}
           onStop={onStop}
@@ -1571,7 +1967,7 @@ function ConfirmDangerous({
 }) {
   const titleId = "destructive-confirm-title"
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60">
       <div
         role="dialog"
         aria-modal="true"
@@ -1607,6 +2003,158 @@ function ConfirmDangerous({
   );
 }
 
+const TERMINAL_SETTINGS_KEY = "shogo.desktop.terminal.settings.v1";
+const TERMINAL_SETTINGS_DEFAULTS = {
+  gpuEnabled: true,
+  shellIntegrationEnabled: true,
+  fontLigatures: true,
+  telemetryEnabled: false,
+  restorePolicy: "silent",
+};
+
+function useTerminalSettings() {
+  const [settings, setSettings] = useState(() => {
+    try {
+      const raw = typeof localStorage !== "undefined" ? localStorage.getItem(TERMINAL_SETTINGS_KEY) : null;
+      return raw ? { ...TERMINAL_SETTINGS_DEFAULTS, ...JSON.parse(raw) } : TERMINAL_SETTINGS_DEFAULTS;
+    } catch {
+      return TERMINAL_SETTINGS_DEFAULTS;
+    }
+  });
+  const set = useCallback((patch: Partial<typeof TERMINAL_SETTINGS_DEFAULTS>) => {
+    setSettings((prev) => {
+      const next = { ...prev, ...patch };
+      try { localStorage.setItem(TERMINAL_SETTINGS_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
+  return { settings, set };
+}
+
+function RecentCommandPickerModal({
+  commands,
+  onSelect,
+  onClose,
+}: {
+  commands: string[];
+  onSelect: (cmd: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = React.useState("");
+  const filtered = query.trim()
+    ? commands.filter((c) => c.toLowerCase().includes(query.toLowerCase()))
+    : commands;
+
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] flex items-start justify-center bg-black/40 pt-16"
+      onClick={onClose}
+    >
+      <div
+        className="w-[560px] max-w-[90vw] rounded-md border border-[#454545] bg-[#252526] shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center border-b border-[#454545] px-3 py-2 gap-2">
+          <span className="text-[11px] text-[#858585] shrink-0">Run Recent Command</span>
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Type to filter commands..."
+            className="flex-1 bg-transparent text-[12px] text-[#cccccc] outline-none placeholder:text-[#585858]"
+          />
+        </div>
+        <div className="max-h-72 overflow-y-auto py-1">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-[11px] text-[#585858]">
+              {commands.length === 0
+                ? "No command history yet — run some commands first"
+                : "No matching commands"}
+            </div>
+          ) : (
+            filtered.map((cmd, i) => (
+              <button
+                key={i}
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[#cccccc] hover:bg-[#0078d4]/60"
+                onClick={() => onSelect(cmd)}
+              >
+                <span className="font-mono truncate">{cmd}</span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecentDirectoryPicker({
+  dirs,
+  onSelect,
+  onClose,
+}: {
+  dirs: string[];
+  onSelect: (dir: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = React.useState("");
+  const filtered = query.trim()
+    ? dirs.filter((d) => d.toLowerCase().includes(query.toLowerCase()))
+    : dirs;
+
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] flex items-start justify-center bg-black/40 pt-16"
+      onClick={onClose}
+    >
+      <div
+        className="w-[480px] max-w-[90vw] rounded-md border border-[#454545] bg-[#252526] shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center border-b border-[#454545] px-3 py-2 gap-2">
+          <span className="text-[11px] text-[#858585] shrink-0">Go to Directory</span>
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter directories..."
+            className="flex-1 bg-transparent text-[12px] text-[#cccccc] outline-none placeholder:text-[#585858]"
+          />
+        </div>
+        <div className="max-h-64 overflow-y-auto py-1">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-[11px] text-[#585858]">No matching directories</div>
+          ) : (
+            filtered.map((dir) => (
+              <button
+                key={dir}
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[#cccccc] hover:bg-[#0078d4]/60"
+                onClick={() => onSelect(dir)}
+              >
+                <span className="font-mono">{dir}</span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TerminalSettingsModal({
   onClose,
   onOpenAutoReplies,
@@ -1614,6 +2162,8 @@ function TerminalSettingsModal({
   onClose: () => void;
   onOpenAutoReplies: () => void;
 }): React.ReactElement {
+  const { settings, set } = useTerminalSettings();
+
   return createPortal(
     <div
       role="presentation"
@@ -1642,10 +2192,36 @@ function TerminalSettingsModal({
           </button>
         </div>
         <div className="space-y-3 text-[12px]">
-          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e] p-3">
-            <div className="font-medium text-white">Find and recent commands</div>
-            <p className="mt-1 text-[#9d9d9d]">Use the terminal ⋯ menu for Find and Run Recent Command. Both actions now open the active terminal's native picker.</p>
+          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e]">
+            <div className="border-b border-[#3c3c3c] px-3 py-2">
+              <div className="font-medium text-white">Appearance</div>
+            </div>
+            <SettingsToggle
+              label="Font ligatures"
+              description="Render → => != as connected glyphs (requires Fira Code, JetBrains Mono, or Cascadia Code)"
+              value={settings.fontLigatures}
+              onChange={(v) => set({ fontLigatures: v })}
+            />
+            <SettingsToggle
+              label="GPU renderer"
+              description="Use WebGL for faster terminal rendering. Disable if you see visual glitches."
+              value={settings.gpuEnabled}
+              onChange={(v) => set({ gpuEnabled: v })}
+            />
           </div>
+
+          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e]">
+            <div className="border-b border-[#3c3c3c] px-3 py-2">
+              <div className="font-medium text-white">Shell</div>
+            </div>
+            <SettingsToggle
+              label="Shell integration (OSC 633)"
+              description="Enables command decorations, CWD tracking, and navigate-by-command (⌘↑/↓)."
+              value={settings.shellIntegrationEnabled}
+              onChange={(v) => set({ shellIntegrationEnabled: v })}
+            />
+          </div>
+
           <button
             type="button"
             onClick={onOpenAutoReplies}
@@ -1657,13 +2233,55 @@ function TerminalSettingsModal({
             </span>
             <ChevronDown size={14} className="-rotate-90 text-[#858585]" />
           </button>
-          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e] p-3 text-[#9d9d9d]">
-            Scrollback is enabled with the desktop renderer's long buffer; use mouse wheel or trackpad inside the terminal area to scroll through long output.
+
+          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e] p-3 text-[11px] text-[#9d9d9d]">
+            <span className="font-medium text-[#cccccc]">Find & recent commands</span>
+            <span className="ml-1">— use the terminal ⋯ menu or ⌘F / Ctrl+Alt+R.</span>
+          </div>
+          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e] p-3 text-[11px] text-[#9d9d9d]">
+            Changes to GPU renderer and shell integration take effect on the next terminal spawn.
           </div>
         </div>
       </div>
     </div>,
     document.body,
+  );
+}
+
+function SettingsToggle({
+  label,
+  description,
+  value,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}): React.ReactElement {
+  return (
+    <label className="flex cursor-pointer items-start justify-between gap-3 px-3 py-2 hover:bg-[#2a2a2a]">
+      <div>
+        <div className="text-[12px] text-[#cccccc]">{label}</div>
+        <div className="mt-[2px] text-[10px] text-[#858585]">{description}</div>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={value}
+        onClick={(e) => { e.preventDefault(); onChange(!value); }}
+        className={`relative mt-[2px] inline-block h-4 w-7 shrink-0 rounded-full transition-colors ${
+          value ? "bg-[#0078d4]" : "bg-[#3c3c3c]"
+        }`}
+      >
+        <span
+          aria-hidden
+          className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white transition-transform duration-150 ${
+            value ? "translate-x-3" : "translate-x-0"
+          }`}
+        />
+      </button>
+    </label>
   );
 }
 
@@ -1692,6 +2310,8 @@ function PhasedTerminalHeader(props: {
   onConfigure: () => void;
   onRunRecent: () => void;
   clearDisabled: boolean;
+  onNewWithProfile?: (profile: string) => void;
+  onSplitWithProfile?: (profile: string) => void;
 }) {
   const { shellName, setShellName } = useShellName(props.activeId);
   return (
@@ -1699,8 +2319,10 @@ function PhasedTerminalHeader(props: {
       shellName={shellName}
       onPickProfile={setShellName}
       onNew={props.onNew}
+      onNewWithProfile={props.onNewWithProfile}
       onSplit={props.onSplit}
       onSplitDown={props.onSplitDown}
+      onSplitWithProfile={props.onSplitWithProfile}
       onKill={props.onKillActive}
       running={props.running}
       onStop={props.onStop}
@@ -1938,6 +2560,7 @@ function SplitLeafView(
           hidden={!props.isActiveGroup}
           autoFocus={isActive && props.isActiveGroup && props.visible}
           projectId={props.projectId}
+          ptySessionId={s.ptySessionId}
           onCwdChange={(cwd) => {
             props.onPatch(s.id, (cur) => ({ ...cur, cwd }));
           }}

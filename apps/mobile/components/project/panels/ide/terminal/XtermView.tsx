@@ -34,6 +34,8 @@ interface XtermViewProps {
   /** Auto-focus the terminal on mount + when becoming visible. */
   autoFocus?: boolean
   projectId?: string | null
+  /** Desktop PTY session id (for context bridge + persistence). */
+  ptySessionId?: string | null
   onCwdChange?: (cwd: string) => void
 }
 
@@ -54,6 +56,16 @@ export interface XtermViewHandle {
   openFind?: () => void
   /** Open the recent-command picker when the backing renderer supports it. */
   openRecent?: () => void
+  /** Scroll viewport to the previous command boundary marker. */
+  scrollToPrevCommand?: () => void
+  /** Scroll viewport to the next command boundary marker. */
+  scrollToNextCommand?: () => void
+  /** Commands typed in this session (newest first). Falls back to empty array. */
+  getSentLines?: () => string[]
+  /** Combined keyboard + tracker + disk history (newest first). Desktop-only. */
+  getRecentCommands?: () => Array<{ command: string }>
+  /** Navigation state for disabled-styling in the overflow menu. */
+  getNavState?: () => { commandCount: number; activeIndex: number | null; canPrev: boolean; canNext: boolean }
 }
 
 export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function XtermView({
@@ -63,6 +75,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   fontFamily,
   autoFocus = true,
   projectId,
+  ptySessionId,
   onCwdChange,
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -162,6 +175,17 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       refit: () => desktopHandleRef.current?.refit() ?? sessionRef.current?.fit(),
       openFind: () => desktopHandleRef.current?.openFind?.(),
       openRecent: () => desktopHandleRef.current?.openRecent?.(),
+      scrollToPrevCommand: () => {
+        desktopHandleRef.current?.scrollToPrevCommand?.()
+        sessionRef.current?.scrollToPrevCommand()
+      },
+      scrollToNextCommand: () => {
+        desktopHandleRef.current?.scrollToNextCommand?.()
+        sessionRef.current?.scrollToNextCommand()
+      },
+      getSentLines: () => sessionRef.current?.getSentLines() ?? [],
+      getRecentCommands: () => desktopHandleRef.current?.getRecentCommands?.() ?? [],
+      getNavState: () => desktopHandleRef.current?.getNavState?.() ?? sessionRef.current?.getNavState?.() ?? { commandCount: 0, activeIndex: null, canPrev: false, canNext: false },
     }),
     [],
   )
@@ -178,6 +202,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         fontFamily={effectiveFamily}
         autoFocus={autoFocus}
         projectId={projectId}
+        ptySessionId={ptySessionId}
         onCwdChange={onCwdChange}
       />
     )

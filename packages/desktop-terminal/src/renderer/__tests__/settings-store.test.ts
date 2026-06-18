@@ -116,10 +116,19 @@ describe('SettingsStore — set + validation', () => {
     expect(() => store.set({ defaultProfileId: '' })).toThrow(SettingsValidationError)
   })
 
-  it('rejects non-boolean shellIntegrationEnabled / telemetryEnabled', () => {
+  it('rejects non-boolean shellIntegrationEnabled / telemetryEnabled / fontLigatures', () => {
     const { store } = fresh()
     expect(() => store.set({ shellIntegrationEnabled: 1 as never })).toThrow(SettingsValidationError)
     expect(() => store.set({ telemetryEnabled: 'on' as never })).toThrow(SettingsValidationError)
+    expect(() => store.set({ fontLigatures: 'yes' as never })).toThrow(SettingsValidationError)
+  })
+
+  it('accepts boolean fontLigatures and persists it', () => {
+    const { store } = fresh()
+    expect(() => store.set({ fontLigatures: false })).not.toThrow()
+    expect(store.get().fontLigatures).toBe(false)
+    expect(() => store.set({ fontLigatures: true })).not.toThrow()
+    expect(store.get().fontLigatures).toBe(true)
   })
 
   it('SettingsValidationError carries field + value for UI display', () => {
