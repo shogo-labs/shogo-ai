@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { Code2, ExternalLink, Loader2 } from 'lucide-react-native'
+import { useEffect, useState } from 'react'
+import { ExternalLink, Loader2 } from 'lucide-react-native'
 
 interface ShogoIdeStatus {
   phase: number
@@ -43,31 +43,39 @@ export function getShogoIdeBridge(): ShogoIdeBridge | null {
 export function ShogoIdeReplacementGate({
   projectName,
   projectRoot,
-  onOpenLegacy,
+  workspaceResolved,
 }: {
   projectName?: string | null
   projectRoot?: string | null
-  onOpenLegacy(): void
+  workspaceResolved?: boolean
 }) {
   const [bridge] = useState(() => getShogoIdeBridge())
   const [status, setStatus] = useState<ShogoIdeStatus | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const autoLaunchStarted = useRef(false)
 
-  const launch = async (mode: 'auto' | 'manual' = 'manual') => {
+  useEffect(() => {
     if (!bridge) return
-    if (!projectRoot) {
-      setMessage('Could not resolve this project folder yet. Open Legacy Monaco or re-open the project after the workspace finishes loading.')
-      return
-    }
+    let cancelled = false
+    bridge.getStatus()
+      .then((nextStatus) => {
+        if (!cancelled) setStatus(nextStatus)
+      })
+      .catch((error) => {
+        if (!cancelled) setMessage(error instanceof Error ? error.message : String(error))
+      })
+    return () => { cancelled = true }
+  }, [bridge])
+
+  const launch = async () => {
+    if (!bridge || busy || workspaceResolved === false) return
     setBusy(true)
-    setMessage(mode === 'auto' ? 'Preparing Shogo IDE…' : null)
+    setMessage(projectRoot ? 'Opening Shogo IDE…' : 'Opening Shogo IDE with the default workspace…')
     try {
       const result = await bridge.launch(projectRoot ? { workspacePath: projectRoot } : undefined)
       setStatus(result.status)
       if (result.ok) {
-        setMessage(result.status.launchMode === 'source-runner' ? 'Opening Shogo IDE from the Code OSS source runner…' : 'Opening Shogo IDE…')
+        setMessage(null)
       } else {
         setMessage(result.error || result.status.reason)
       }
@@ -78,107 +86,43 @@ export function ShogoIdeReplacementGate({
     }
   }
 
-  useEffect(() => {
-    if (!bridge) return
-    let cancelled = false
-    bridge.getStatus()
-      .then((nextStatus) => {
-        if (cancelled) return
-        setStatus(nextStatus)
-        if (!autoLaunchStarted.current && projectRoot) {
-          autoLaunchStarted.current = true
-          void launch('auto')
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) setMessage(error instanceof Error ? error.message : String(error))
-      })
-    return () => { cancelled = true }
-  }, [bridge, projectRoot])
-
   if (!bridge) return null
 
-  const readyLabel = busy || status?.setupInProgress ? 'Preparing automatically' : status?.launchReady ? 'Opening' : 'Preparing'
-  const setupReason = status?.reason ?? 'Checking Shogo IDE distribution status…'
-  const diagnostics = status?.launchReady ? [] : status?.diagnostics ?? []
+  const resolving = workspaceResolved === false
+  const disabled = busy || resolving
+  const label = resolving ? 'Resolving…' : busy ? 'Opening…' : 'Open Shogo IDE'
+  const title = resolving
+    ? 'Resolving the project folder before opening Shogo IDE'
+    : `Open Shogo IDE${projectName ? ` for ${projectName}` : ''}`
+  const setupLogPath = status?.setupLogPath && !status.launchReady ? status.setupLogPath : null
+  const diagnostics = message && !status?.launchReady ? status?.diagnostics ?? [] : []
 
   return (
-    <div className="flex h-full min-h-0 items-center justify-center bg-[color:var(--ide-bg,#0f1115)] p-6 text-[color:var(--ide-text,#d4d4d4)]">
-      <div className="w-full max-w-3xl overflow-hidden rounded-2xl border border-[color:var(--ide-border,#2d2d2d)] bg-[color:var(--ide-panel,#181a20)] shadow-2xl">
-        <div className="border-b border-[color:var(--ide-border,#2d2d2d)] bg-gradient-to-br from-orange-500/20 via-transparent to-transparent p-6">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0">
-              <div className="flex items-center gap-3">
-                <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-orange-500 text-lg font-bold text-white shadow-lg shadow-orange-950/30">⌘</span>
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-orange-300">Desktop IDE</p>
-                  <h2 className="text-2xl font-semibold text-[color:var(--ide-text-strong,#fff)]">Opening Shogo IDE</h2>
-                </div>
-              </div>
-              <p className="mt-4 max-w-2xl text-sm leading-6 text-[color:var(--ide-muted,#9ca3af)]">
-                Shogo Desktop opens the Code OSS-based Shogo IDE automatically for {projectName || 'this project'}. Web and mobile keep using the existing Monaco path and never enter this Desktop-only launcher.
-              </p>
-            </div>
-            <span className="rounded-full border border-[color:var(--ide-border,#2d2d2d)] px-3 py-1 text-xs font-medium text-[color:var(--ide-muted,#9ca3af)]">
-              {readyLabel}
-            </span>
-          </div>
+    <div className="pointer-events-none absolute right-3 top-3 z-50 flex max-w-[min(26rem,calc(100%-1.5rem))] flex-col items-end gap-2">
+      <button
+        type="button"
+        title={title}
+        aria-label={title}
+        disabled={disabled}
+        onClick={() => void launch()}
+        className="pointer-events-auto inline-flex items-center gap-1.5 rounded-lg border border-orange-400/30 bg-[color:var(--ide-panel,#181a20)]/95 px-2.5 py-1.5 text-[11px] font-semibold text-orange-100 shadow-lg shadow-black/30 backdrop-blur transition-colors hover:border-orange-400/60 hover:bg-orange-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {busy || resolving ? <Loader2 size={13} /> : <ExternalLink size={13} />}
+        {label}
+      </button>
+      {message && (
+        <div className="pointer-events-auto max-w-sm rounded-lg border border-[color:var(--ide-border,#2d2d2d)] bg-[color:var(--ide-panel,#181a20)]/95 px-3 py-2 text-[11px] leading-5 text-[color:var(--ide-muted,#9ca3af)] shadow-xl backdrop-blur">
+          <div>{message}</div>
+          {setupLogPath && <div className="mt-1 text-orange-200">Setup log: {setupLogPath}</div>}
+          {diagnostics.length > 0 && (
+            <ul className="mt-1 space-y-0.5 text-orange-100/90">
+              {diagnostics.map((item) => (
+                <li key={item}>• {item}</li>
+              ))}
+            </ul>
+          )}
         </div>
-
-        <div className="grid gap-4 p-6 md:grid-cols-[1fr_260px]">
-          <div className="space-y-4">
-            <div className="rounded-xl border border-[color:var(--ide-border,#2d2d2d)] bg-[color:var(--ide-bg,#0f1115)] p-4">
-              <div className="flex items-start gap-3">
-                <Code2 size={20} color="#fb923c" />
-                <div className="min-w-0">
-                  <h3 className="text-sm font-semibold text-[color:var(--ide-text-strong,#fff)]">Distribution status</h3>
-                  <p className="mt-1 text-sm leading-6 text-[color:var(--ide-muted,#9ca3af)]">{setupReason}</p>
-                  {message && (
-                    <p className="mt-3 rounded-lg border border-[color:var(--ide-border,#2d2d2d)] bg-[color:var(--ide-panel,#181a20)] px-3 py-2 text-xs leading-5 text-[color:var(--ide-muted,#9ca3af)]">
-                      {message}
-                    </p>
-                  )}
-                  {diagnostics.length > 0 && (
-                    <ul className="mt-3 space-y-1 rounded-lg border border-[color:var(--ide-border,#2d2d2d)] bg-[color:var(--ide-panel,#181a20)] px-3 py-2 text-xs leading-5 text-[color:var(--ide-muted,#9ca3af)]">
-                      {diagnostics.map((item) => (
-                        <li key={item}>• {item}</li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {status?.setupLogPath && !status.launchReady && (
-              <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-4 text-xs leading-5 text-orange-100">
-                Shogo Desktop is handling setup automatically. Diagnostic log: {status.setupLogPath}
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-3">
-            <button
-              type="button"
-              disabled={busy || !status}
-              onClick={() => void launch('manual')}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {busy ? <Loader2 size={16} /> : <ExternalLink size={16} />}
-              {busy ? 'Preparing…' : 'Open Shogo IDE'}
-            </button>
-            <button
-              type="button"
-              onClick={onOpenLegacy}
-              className="w-full rounded-xl border border-[color:var(--ide-border,#2d2d2d)] px-4 py-3 text-sm font-medium text-[color:var(--ide-muted,#9ca3af)] transition-colors hover:bg-[color:var(--ide-bg,#0f1115)]"
-            >
-              Use Legacy Monaco IDE
-            </button>
-            <p className="text-center text-[11px] leading-4 text-[color:var(--ide-muted,#9ca3af)]">
-              Legacy mode is a Desktop-only fallback. Web and mobile keep their existing IDE behavior.
-            </p>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   )
 }
