@@ -22,6 +22,10 @@ export interface GitSnapshot {
   ahead: number
   behind: number
   fileStatus: Record<string, GitShortCode>
+  /** Files staged in the index (X column). */
+  stagedStatus: Record<string, GitShortCode>
+  /** Per-file change counts (+added/-removed) from git diff --numstat. */
+  fileChanges: Record<string, { added: number; removed: number }>
   conflictPaths: string[]
   refreshedAt: number
   error: string | null
@@ -88,6 +92,16 @@ export interface BlameLine {
   summary: string
 }
 
+export interface GitCommitHistoryItem {
+  hash: string
+  message: string
+  author?: string
+  time?: string
+  isMerge?: boolean
+  branchLabel?: string
+  isRemote?: boolean
+}
+
 export interface BranchesBridge {
   list(workspaceRoot: string): Promise<{ ok: boolean; branches?: BranchInfo[]; reason?: string; error?: string }>
   checkout(workspaceRoot: string, name: string): Promise<GitOpResult>
@@ -118,7 +132,7 @@ export interface DesktopGitBridge {
   subscribe(
     workspaceRoot: string,
     onSnapshot: (snap: GitSnapshot) => void,
-  ): Promise<{ ok: boolean; subId?: string; channel?: string; reason?: string }>
+  ): Promise<{ ok: boolean; subId?: string; channel?: string; snapshot?: GitSnapshot; reason?: string }>
   unsubscribe(subId: string, channel: string): Promise<{ ok: boolean; reason?: string }>
   refresh(workspaceRoot: string): Promise<{ ok: boolean; reason?: string }>
   current(workspaceRoot: string): Promise<{ ok: boolean; snapshot?: GitSnapshot; reason?: string }>
@@ -133,6 +147,12 @@ export interface DesktopGitBridge {
   unstage(workspaceRoot: string, paths: string[]): Promise<GitOpResult>
   discard(workspaceRoot: string, paths: string[]): Promise<GitOpResult>
   commit(workspaceRoot: string, message: string, opts?: CommitOptions): Promise<GitOpResult>
+  commitAll(workspaceRoot: string, message: string, opts?: CommitOptions): Promise<GitOpResult>
+  commitAndPush(workspaceRoot: string, message: string, opts?: CommitOptions): Promise<GitOpResult>
+  commitAndSync(workspaceRoot: string, message: string, opts?: CommitOptions): Promise<GitOpResult>
+  generateCommitMessage(workspaceRoot: string, apiUrl: string): Promise<{ ok: boolean; message?: string; error?: string }>
+  numStat(workspaceRoot: string, cached?: boolean): Promise<{ ok: boolean; stats?: Record<string, { added: number; removed: number }>; error?: string }>
+  undoLastCommit(workspaceRoot: string): Promise<GitOpResult>
   fileContent(workspaceRoot: string, path: string, ref: string): Promise<{ ok: boolean; content?: string; reason?: string; error?: string }>
   // G3 — sub-objects.
   branches: BranchesBridge
@@ -141,6 +161,7 @@ export interface DesktopGitBridge {
   // G4 — per-file diff markers + blame.
   diffMarkers(workspaceRoot: string, path: string, base?: string): Promise<{ ok: boolean; markers?: DiffMarker[]; reason?: string; error?: string }>
   blame(workspaceRoot: string, path: string): Promise<{ ok: boolean; lines?: BlameLine[]; reason?: string; error?: string }>
+  history(workspaceRoot: string, opts?: { limit?: number; allBranches?: boolean }): Promise<{ ok: boolean; commits?: GitCommitHistoryItem[]; reason?: string; error?: string }>
   // G4.5 — 3-way merge stages + per-hunk revert + streaming progress.
   mergeStages(workspaceRoot: string, path: string): Promise<{ ok: boolean; stages?: { base: string | null; ours: string | null; theirs: string | null; working: string }; reason?: string; error?: string }>
   revertHunk(workspaceRoot: string, path: string, workingStart: number, workingEnd: number, headStart: number | null, headEnd: number | null): Promise<GitOpResult>
@@ -163,8 +184,8 @@ export function getDesktopGitBridge(): DesktopGitBridge | null {
   for (const m of [
     'probe', 'subscribe', 'unsubscribe', 'refresh', 'current',
     'setProjectRoot', 'unsetProjectRoot', 'resolveProjectRoot',
-    'stage', 'unstage', 'discard', 'commit', 'fileContent',
-    'diffMarkers', 'blame',
+    'stage', 'unstage', 'discard', 'commit', 'commitAll', 'commitAndPush', 'commitAndSync', 'generateCommitMessage', 'numStat', 'undoLastCommit', 'fileContent',
+    'diffMarkers', 'blame', 'history',
     'mergeStages', 'revertHunk', 'fetchStreaming', 'pullStreaming', 'pushStreaming',
   ] as const) {
     if (typeof (g as unknown as Record<string, unknown>)[m] !== 'function') return null

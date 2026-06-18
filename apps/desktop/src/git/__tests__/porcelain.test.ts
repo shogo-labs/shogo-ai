@@ -128,8 +128,8 @@ describe('shortCode', () => {
     expect(shortCode({ path: '', index: 'unmodified', working: 'unmodified', isConflict: false, isDirty: false })).toBe('·')
   })
 
-  it('maps untracked and ignored explicitly', () => {
-    expect(shortCode({ path: '', index: 'unmodified', working: 'untracked', isConflict: false, isDirty: true })).toBe('?')
+  it('maps untracked to U and ignored explicitly', () => {
+    expect(shortCode({ path: '', index: 'unmodified', working: 'untracked', isConflict: false, isDirty: true })).toBe('U')
     expect(shortCode({ path: '', index: 'ignored', working: 'ignored', isConflict: false, isDirty: false })).toBe('!')
   })
 })
