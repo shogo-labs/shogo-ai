@@ -14,17 +14,17 @@ Phase 3 turns `apps/shogo-ide/extensions/shogo-core` from a manifest-only skelet
 - Web extension entry point.
 - Local VS Code type shim for Phase 3 validation without adding monorepo dependencies.
 
-## Shogo Agent Chat UI reuse
+## Shogo Chat UI reuse
 
-Phase 3 also upgrades `apps/shogo-ide/extensions/shogo-agent-chat` from the Phase 2 placeholder shell to a right-side chat panel that reuses the Shogo Desktop chat UI patterns:
+`shogo-core` owns the Shogo Chat secondary-sidebar webview and embeds the Desktop project chat route passed by the Desktop launcher:
 
-- Shogo-branded header with status affordance.
-- Desktop-style transcript turns with Shogo/user/system avatars.
-- Context chips for selected code and active files.
-- Desktop-style composer card with attach controls, model/mode picker, and `Ask Shogo to ...` placeholder language.
-- VS Code theme variables so the reused shell fits Code OSS dark/light themes.
+- Shogo-branded toolbar with selection handoff.
+- Desktop chat iframe so the Code-OSS panel shares the same chat surface as the app.
+- Open/reload fallback actions when the embedded route cannot load.
+- Hardened CSP for localhost, 127.0.0.1, and Code-OSS webview CDN frames.
+- VS Code theme variables so the shell fits Code OSS dark/light themes.
 
-The panel remains bridge-ready but does not execute tools or call models directly in this phase.
+The extension panel remains a bridge into Desktop chat and does not call models directly in this phase.
 
 ## Extension commands
 

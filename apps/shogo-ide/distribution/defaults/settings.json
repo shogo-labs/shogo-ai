@@ -33,6 +33,5 @@
   "chat.viewSessions.enabled": false,
   "chat.commandCenter.enabled": false,
   "extensions.ignoreRecommendations": true,
-  "extensions.showRecommendationsOnlyOnDemand": true,
-  "shogo.agentChat.autoOpen": true
+  "extensions.showRecommendationsOnlyOnDemand": true
 }

@@ -27,7 +27,8 @@
     "onCommand:shogo.patch.preview",
     "onCommand:shogo.checkpoint.create",
     "onCommand:shogo.git.reviewChanges",
-    "onCommand:shogo.runtime.openPreview"
+    "onCommand:shogo.runtime.openPreview",
+    "onView:shogo.agentChat"
   ],
   "main": "./dist/extension.js",
   "browser": "./dist/web.js",
@@ -138,6 +139,24 @@
         ]
       }
     ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "shogo-agent-chat",
+          "title": "Shogo Chat",
+          "icon": "media/shogo.svg"
+        }
+      ]
+    },
+    "views": {
+      "shogo-agent-chat": [
+        {
+          "id": "shogo.agentChat",
+          "name": "Shogo Chat",
+          "type": "webview"
+        }
+      ]
+    },
     "configurationDefaults": {
       "workbench.startupEditor": "none",
       "workbench.activityBar.location": "default",
@@ -218,6 +237,11 @@
           "type": "string",
           "default": "http://127.0.0.1:0",
           "description": "Local Shogo agent service URL. Port 0 means the bundled service supervisor should discover or start the service."
+        },
+        "shogo.desktopChat.url": {
+          "type": "string",
+          "default": "about:blank",
+          "description": "Desktop Shogo project chat URL embedded in the Shogo-IDE secondary sidebar."
         },
         "shogo.security.requireApprovalForCommands": {
           "type": "boolean",

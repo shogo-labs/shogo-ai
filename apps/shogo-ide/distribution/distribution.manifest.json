@@ -8,8 +8,7 @@
   "defaultSettings": "defaults/settings.json",
   "defaultLayout": "defaults/layout.json",
   "builtinExtensions": [
-    "builtin-extensions/shogo-core.json",
-    "builtin-extensions/shogo-agent-chat.json"
+    "builtin-extensions/shogo-core.json"
   ],
   "extensionGallery": "Open VSX",
   "telemetryDefault": "off",
@@ -32,8 +31,6 @@
     "Open VSX is configured instead of Microsoft Marketplace",
     "telemetry is disabled by default",
     "workspace trust defaults are explicit",
-    "current Desktop launcher remains opt-in fallback",
-    "shogo-agent-chat extension builds before bundling",
-    "built-in extension mapping points to shogo-agent-chat"
+    "current Desktop launcher remains opt-in fallback"
   ]
 }

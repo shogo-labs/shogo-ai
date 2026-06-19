@@ -31,7 +31,6 @@ function assert(condition, message) {
 }
 
 const extensionPackage = readJson('apps/shogo-ide/extensions/shogo-core/package.json')
-const agentChatPackage = readJson('apps/shogo-ide/extensions/shogo-agent-chat/package.json')
 const tsconfig = readJson('apps/shogo-ide/extensions/shogo-core/tsconfig.json')
 const extension = read('apps/shogo-ide/extensions/shogo-core/src/extension.ts')
 const chatView = read('apps/shogo-ide/extensions/shogo-core/src/chatViewProvider.ts')
@@ -41,12 +40,9 @@ const contextStore = read('apps/shogo-ide/extensions/shogo-core/src/contextStore
 const treeViews = read('apps/shogo-ide/extensions/shogo-core/src/treeViews.ts')
 const types = read('apps/shogo-ide/extensions/shogo-core/src/types.ts')
 const web = read('apps/shogo-ide/extensions/shogo-core/src/web.ts')
-const agentChatExtension = read('apps/shogo-ide/extensions/shogo-agent-chat/src/extension.ts')
-const agentChatReadme = read('apps/shogo-ide/extensions/shogo-agent-chat/README.md')
 const docs = read('apps/shogo-ide/PHASE_3_SHOGO_CORE_EXTENSION.md')
 
 read('apps/shogo-ide/extensions/shogo-core/src/vscode.d.ts')
-read('apps/shogo-ide/extensions/shogo-agent-chat/src/vscode.d.ts')
 
 if (extensionPackage) {
   assert(extensionPackage.scripts?.build === 'tsc -p tsconfig.json', 'shogo-core must expose build script')
@@ -69,14 +65,6 @@ if (extensionPackage) {
   }
 }
 
-if (agentChatPackage) {
-  assert(/^0\.0\.0-phase\.(8|9|10)$/.test(agentChatPackage.version || ''), 'shogo-agent-chat version must track the current Shogo chat phase')
-  assert(agentChatPackage.contributes?.viewsContainers?.auxiliarybar?.some((container) => container.id === 'shogo-agent-chat'), 'shogo-agent-chat must contribute the Shogo auxiliary container')
-  assert(agentChatPackage.contributes?.views?.['shogo-agent-chat']?.some((view) => view.id === 'shogo.agentChat'), 'shogo-agent-chat must contribute the Shogo webview to its auxiliary container')
-  assert(!agentChatPackage.contributes?.chatParticipants, 'shogo-agent-chat must not use proposed native chat participant APIs')
-  assert(agentChatPackage.contributes?.configurationDefaults?.['shogo.agentChat.autoOpen'] === true, 'shogo-agent-chat must auto-open by default')
-}
-
 if (tsconfig) {
   assert(tsconfig.compilerOptions?.outDir === 'dist', 'extension tsconfig must emit to dist')
   assert(tsconfig.compilerOptions?.strict === true, 'extension tsconfig must keep strict mode')
@@ -84,10 +72,14 @@ if (tsconfig) {
 
 assert(!extension.includes("registerWebviewViewProvider('shogo.chat'"), 'extension activation must not register the removed left-side chat webview provider')
 assert(!extension.includes('registerTreeViews(context)'), 'extension activation must not register removed left-side Shogo tree views')
-assert(extension.includes('registerCommands(context, services)'), 'extension activation must register commands')
+assert(extension.includes('registerCommands(context, services'), 'extension activation must register commands')
+assert(extensionPackage?.contributes?.viewsContainers?.secondarySidebar?.some((container) => container.id === 'shogo-agent-chat'), 'shogo-core must contribute the Shogo Chat secondary sidebar container')
+assert(extensionPackage?.contributes?.views?.['shogo-agent-chat']?.some((view) => view.id === 'shogo.agentChat'), 'shogo-core must contribute the Shogo Chat webview')
 assert(chatView.includes('Content-Security-Policy'), 'chat webview must include CSP')
 assert(chatView.includes('nonce-'), 'chat webview must use script nonce')
-assert(chatView.includes('sendPrompt'), 'chat webview must support prompt messages')
+assert(chatView.includes('<iframe'), 'chat webview must embed the Desktop chat route')
+assert(chatView.includes('SHOGO_DESKTOP_CHAT_URL'), 'chat webview must read the Desktop chat URL')
+assert(chatView.includes('https://*.vscode-cdn.net'), 'chat webview CSP must allow Code-OSS webview CDN frames')
 assert(commands.includes('requireTrustedWorkspace'), 'commands must guard workspace-trust-sensitive actions')
 assert(commands.includes('shogo.context.addActiveFile'), 'commands must support active file context')
 assert(agentClient.includes('/health'), 'agent client must support health endpoint')
@@ -97,15 +89,8 @@ assert(contextStore.includes('MAX_CONTEXT_TEXT_LENGTH'), 'context store must tru
 assert(treeViews.includes("registerTreeDataProvider('shogo.tasks'"), 'tree view helpers may remain available but must not be activated by default')
 assert(types.includes('ShogoContextItem'), 'types must define context item contract')
 assert(web.includes("export { activate, deactivate } from './extension'"), 'web entrypoint must re-export activation')
-assert(agentChatExtension.includes('data-shogo-desktop-chat-ui="true"'), 'agent chat webview must mark the reused Desktop chat UI shell')
-assert(agentChatExtension.includes('desktop-chat-shell'), 'agent chat webview must use Desktop chat shell layout class')
-assert(agentChatExtension.includes('composer-card'), 'agent chat webview must use Desktop-style composer card')
-assert(agentChatExtension.includes('context-chip'), 'agent chat webview must render Desktop-style context chips')
-assert(agentChatExtension.includes('Plan, Build, / for skills, @ for context'), 'agent chat composer must use the Cursor-style Shogo prompt placeholder')
-assert(agentChatExtension.includes("registerWebviewViewProvider('shogo.agentChat'"), 'agent chat extension must register the Shogo webview provider')
-assert(!agentChatExtension.includes('createChatParticipant'), 'agent chat extension must not register proposed native chat participants')
-assert(agentChatExtension.includes('<select id="model"'), 'agent chat webview must expose model/mode control in the composer')
-assert(agentChatReadme.includes('reuses the Shogo Desktop chat UI shell'), 'agent chat README must document Desktop chat UI reuse')
+assert(extension.includes("registerWebviewViewProvider('shogo.agentChat'"), 'shogo-core must register the Shogo webview provider')
+assert(!extension.includes('createChatParticipant'), 'shogo-core must not register proposed native chat participants')
 assert(docs.includes('Phase 3 still does not execute shell commands'), 'Phase 3 docs must state non-execution safety')
 
 if (errors.length > 0) {

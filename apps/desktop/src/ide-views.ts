@@ -7,7 +7,7 @@ import fs from 'fs'
 import path from 'path'
 import { getApiUrl } from './local-server'
 import { getWorkspacesDir } from './paths'
-import { ensureShogoIdeRuntimeProfile, ensureShogoIdeSetup, getShogoIdeStatus, SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS } from './shogo-ide'
+import { ensureShogoIdeRuntimeProfile, ensureShogoIdeSetup, getShogoIdeStatus, SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS, syncShogoIdeProduct } from './shogo-ide'
 
 interface IdeServerRecord {
   key: string
@@ -42,10 +42,9 @@ function codeOssWorkspaceUrl(baseUrl: string, workspacePath: string): string {
   }
 }
 
-function codeOssWebArgs(status: ReturnType<typeof getShogoIdeStatus>, workspacePath: string): string[] {
-  const runtime = ensureShogoIdeRuntimeProfile(status.workspacePath)
+function codeOssWebArgs(status: ReturnType<typeof getShogoIdeStatus>, workspacePath: string, desktopChatUrl?: string): string[] {
+  const runtime = ensureShogoIdeRuntimeProfile(status.workspacePath, { desktopChatUrl })
   const shogoCoreExtensionPath = path.join(status.workspacePath, 'extensions', 'shogo-core')
-  const shogoAgentChatExtensionPath = path.join(status.workspacePath, 'extensions', 'shogo-agent-chat')
   return [
     '--skip-welcome',
     '--disable-telemetry',
@@ -53,17 +52,17 @@ function codeOssWebArgs(status: ReturnType<typeof getShogoIdeStatus>, workspaceP
     '--disable-workspace-trust',
     '--user-data-dir', runtime.userDataDir,
     '--extensions-dir', runtime.extensionsDir,
+    '--builtin-extensions-dir', runtime.systemExtensionsDir,
     '--agents-user-data-dir', runtime.agentsUserDataDir,
     '--agents-extensions-dir', runtime.agentsExtensionsDir,
     '--crash-reporter-directory', runtime.crashReporterDirectory,
     '--extensionDevelopmentPath', shogoCoreExtensionPath,
-    '--extensionDevelopmentPath', shogoAgentChatExtensionPath,
     ...SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS.map((extensionId) => `--disable-extension=${extensionId}`),
     workspacePath,
   ]
 }
 
-async function startIdeServer(workspacePath: string): Promise<IdeServerRecord> {
+async function startIdeServer(workspacePath: string, desktopChatUrl?: string): Promise<IdeServerRecord> {
   const key = serverKey(workspacePath)
   const existing = servers.get(key)
   if (existing) return existing
@@ -74,13 +73,14 @@ async function startIdeServer(workspacePath: string): Promise<IdeServerRecord> {
   if (!status.codeOssCheckoutExists) {
     throw new Error('Code OSS checkout is not present after setup.')
   }
+  syncShogoIdeProduct(status)
 
   const scriptPath = path.join(status.codeOssCheckoutPath, 'scripts', process.platform === 'win32' ? 'code-server.bat' : 'code-server.sh')
   if (!fs.existsSync(scriptPath)) {
     throw new Error(`Code OSS web runner not found at ${scriptPath}`)
   }
 
-  const args = codeOssWebArgs(status, workspacePath)
+  const args = codeOssWebArgs(status, workspacePath, desktopChatUrl)
   let resolvedUrl: string | null = null
 
   const proc = spawn(scriptPath, args, {
@@ -91,6 +91,7 @@ async function startIdeServer(workspacePath: string): Promise<IdeServerRecord> {
       SHOGO_IDE_PHASE: 'same-app-window',
       SHOGO_IDE_WORKSPACE: status.workspacePath,
       SHOGO_AGENT_BRIDGE_URL: getApiUrl(),
+      ...(desktopChatUrl ? { SHOGO_DESKTOP_CHAT_URL: desktopChatUrl } : {}),
       VSCODE_DEV: '1',
       VSCODE_SKIP_PRELAUNCH: '1',
     },
@@ -135,7 +136,7 @@ async function startIdeServer(workspacePath: string): Promise<IdeServerRecord> {
 export async function openIdeWindow(
   projectId: string,
   createWindow: () => BrowserWindow,
-  opts: { workspacePath?: string } = {},
+  opts: { workspacePath?: string; chatUrl?: string } = {},
 ): Promise<{ ok: true; windowId: number; url: string } | { ok: false; error: string }> {
   if (!projectId) return { ok: false, error: 'project-id-required' }
 
@@ -145,7 +146,7 @@ export async function openIdeWindow(
 
     const existing = ideWindows.get(projectId)
     if (existing && !existing.isDestroyed()) {
-      const server = await startIdeServer(workspacePath)
+      const server = await startIdeServer(workspacePath, opts.chatUrl)
       const url = codeOssWorkspaceUrl(await server.ready, workspacePath)
       if (!existing.webContents.getURL().includes('folder=')) {
         await existing.loadURL(url)
@@ -156,7 +157,7 @@ export async function openIdeWindow(
       return { ok: true, windowId: existing.id, url: existing.webContents.getURL() }
     }
 
-    const server = await startIdeServer(workspacePath)
+    const server = await startIdeServer(workspacePath, opts.chatUrl)
     const url = codeOssWorkspaceUrl(await server.ready, workspacePath)
     const window = createWindow()
     ideWindows.set(projectId, window)

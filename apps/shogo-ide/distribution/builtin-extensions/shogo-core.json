@@ -19,6 +19,9 @@
   },
   "defaultVisibility": {
     "activityContainer": null,
-    "views": []
+    "chatContainer": "shogo-agent-chat",
+    "views": [
+      "shogo.agentChat"
+    ]
   }
 }

@@ -614,6 +614,12 @@ function buildCodeWorkbenchPath(options: { projectId?: string; workspacePath?: s
   return `${projectPath}?${params.toString()}`
 }
 
+function buildCodeWorkbenchChatPath(options: { projectId: string; workspacePath?: string }): string {
+  const params = new URLSearchParams({ tab: 'chat', embed: 'ide' })
+  if (options.workspacePath) params.set('workspacePath', options.workspacePath)
+  return `/(app)/projects/${encodeURIComponent(options.projectId)}?${params.toString()}`
+}
+
 function openNewWindow(): void {
   loadAppWindow(windowManager.createAppWindow())
 }
@@ -623,7 +629,13 @@ async function openCodeWorkbenchWindow(options: { projectId?: string; workspaceP
   return openIdeWindow(
     options.projectId,
     () => windowManager.createCodeWorkbenchWindow(options),
-    { workspacePath: options.workspacePath },
+    {
+      workspacePath: options.workspacePath,
+      chatUrl: getAppWindowUrl(buildCodeWorkbenchChatPath({
+        projectId: options.projectId,
+        workspacePath: options.workspacePath,
+      })),
+    },
   )
 }
 
@@ -1346,7 +1358,8 @@ function setupSessionHandlers(): void {
         [
           "default-src 'self' shogo: https: http:",
           `connect-src *`,
-          `frame-src 'self' shogo: ${apiOrigin} http://localhost:*`,
+          `frame-src 'self' shogo: ${apiOrigin} http://localhost:* http://127.0.0.1:* https://*.vscode-cdn.net https:`,
+          `child-src 'self' shogo: ${apiOrigin} http://localhost:* http://127.0.0.1:* https://*.vscode-cdn.net https:`,
           "script-src 'self' shogo: blob: 'unsafe-inline' 'unsafe-eval'",
           "worker-src 'self' shogo: blob:",
           "style-src 'self' shogo: 'unsafe-inline'",
