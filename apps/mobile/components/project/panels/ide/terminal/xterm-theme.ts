@@ -68,6 +68,7 @@ export const TERMINAL_DEFAULTS = {
   // keeps memory bounded even with `cat huge.log`.
   scrollback: 10_000,
   cursorBlink: false,
+  fontLigatures: true,
   // Convert lone CR (\r without \n) into CRLF. Most terminal apps emit
   // a bare CR for in-place updates (progress bars, spinners), but xterm
   // by default leaves the cursor at column 0 mid-line, which makes the

@@ -60,6 +60,31 @@ export async function setServerBackedFlag(subdomain: string): Promise<boolean> {
   }
 }
 
+/**
+ * Read whether a subdomain is currently flagged server-backed. Returns:
+ *   - `true`/`false` when the KV is configured (the live edge signal),
+ *   - `null` when unconfigured or on error (caller decides the fallback).
+ * A single fast KV GET — does NOT touch the runtime pod, so it's safe to call
+ * on read-heavy endpoints (e.g. GET publish state) without a cold start.
+ */
+export async function getServerBackedFlag(subdomain: string): Promise<boolean | null> {
+  const cfg = getServerBackedKvConfig()
+  if (!cfg) return null
+  try {
+    const res = await fetch(
+      `${CF_API_BASE}/accounts/${cfg.accountId}/storage/kv/namespaces/${cfg.kvNamespaceId}/values/${encodeURIComponent(subdomain)}`,
+      { headers: { Authorization: `Bearer ${cfg.apiToken}` } },
+    )
+    if (res.status === 404) return false
+    if (!res.ok) throw new Error(`KV get ${res.status}`)
+    const val = (await res.text()).trim()
+    return val.length > 0
+  } catch (err: any) {
+    console.error(`[cf-server-backed] KV get ${subdomain} failed (non-fatal):`, err?.message ?? err)
+    return null
+  }
+}
+
 /** Remove the server-backed flag for a subdomain. Best-effort. */
 export async function clearServerBackedFlag(subdomain: string): Promise<boolean> {
   const cfg = getServerBackedKvConfig()

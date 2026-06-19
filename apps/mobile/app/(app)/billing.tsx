@@ -57,6 +57,8 @@ import {
   formatUsd,
   formatCurrencyPrice,
   getPlanDisplayName,
+  getWindowDisplays,
+  getUsageLimitNotice,
 } from '../../lib/billing-config'
 import { SeatCounter } from '../../components/billing/SeatCounter'
 import { BillingHistory } from '../../components/billing/BillingHistory'
@@ -123,6 +125,20 @@ export default observer(function BillingPage() {
   // adapt by checking `planSource === 'subscription'` instead of just
   // `subscription` truthiness.
   const hasStripeSubscription = planSource === 'subscription'
+
+  // Coupled window display: when the weekly window is exhausted the user is
+  // maxed out regardless of 5-hour headroom, so the 5-hour bar is forced to
+  // 100% and a single at-limit notice (overage vs paused) is surfaced.
+  const usageWindowDisplays = getWindowDisplays(usageWindows)
+  const usageLimitNotice = getUsageLimitNotice({
+    atLimit: usageWindowDisplays.fiveHour.atLimit || usageWindowDisplays.weekly.atLimit,
+    overage: effectiveBalance
+      ? { enabled: effectiveBalance.overageEnabled, accumulatedUsd: effectiveBalance.overageAccumulatedUsd }
+      : undefined,
+    countdown: usageWindowDisplays.weekly.atLimit
+      ? usageWindowDisplays.weekly.countdown
+      : usageWindowDisplays.fiveHour.countdown,
+  })
 
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
   const [proSeats, setProSeats] = useState(1)
@@ -701,12 +717,35 @@ export default observer(function BillingPage() {
             <UsageWindowBar
               label="5-hour window"
               window={usageWindows?.fiveHour}
+              coupledFull={usageWindowDisplays.weekly.atLimit}
             />
             <UsageWindowBar
               label="Weekly window"
               window={usageWindows?.weekly}
             />
           </View>
+
+          {usageLimitNotice ? (
+            <View
+              className={cn(
+                'flex-row items-center gap-2 rounded-md p-3',
+                usageLimitNotice.tone === 'overage' ? 'bg-destructive/10' : 'bg-muted',
+              )}
+            >
+              <Info
+                size={16}
+                className={usageLimitNotice.tone === 'overage' ? 'text-destructive' : 'text-muted-foreground'}
+              />
+              <Text
+                className={cn(
+                  'flex-1 text-sm',
+                  usageLimitNotice.tone === 'overage' ? 'text-foreground font-medium' : 'text-muted-foreground',
+                )}
+              >
+                {usageLimitNotice.text}
+              </Text>
+            </View>
+          ) : null}
 
           <View className="gap-2">
             <View className="flex-row items-center gap-2">
@@ -717,7 +756,7 @@ export default observer(function BillingPage() {
                   : 'Usage is billed at the AI provider\'s raw cost plus a flat 20% markup and is unlimited within rolling 5-hour and weekly limits (per seat on Pro/Business). When a window is exhausted, usage resumes after it resets.'}
               </Text>
             </View>
-            {Platform.OS !== 'ios' && effectiveBalance?.overageEnabled && (
+            {Platform.OS !== 'ios' && !usageLimitNotice && effectiveBalance?.overageEnabled && (
               <View className="flex-row items-center gap-2">
                 <Info size={16} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">

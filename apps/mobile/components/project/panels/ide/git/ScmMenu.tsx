@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-//
-// Dropdown menu for SCM viewlet header — fetch / pull / push / sync,
-// stash operations, branch picker entry point. Renders inline (no
-// portal) so positioning is dead simple and there's no z-index war.
 
 import { ArrowDown, ArrowUp, Loader2, RefreshCw, X } from "lucide-react-native";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getDesktopGitBridge } from "./bridge";
 
@@ -20,7 +16,45 @@ interface ScmMenuProps {
 
 export function ScmMenu({ workspaceRoot, onClose, onAfterAction, onOpenBranchPicker, onOpenStashList }: ScmMenuProps) {
   const bridge = getDesktopGitBridge();
+  const menuRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handlePointerDown = (e: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    const timer = setTimeout(() => {
+      document.addEventListener("pointerdown", handlePointerDown, true);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, [onClose]);
+
+  useEffect(() => {
+    const handleFocusIn = (e: FocusEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener("focusin", handleFocusIn, true);
+    return () => document.removeEventListener("focusin", handleFocusIn, true);
+  }, [onClose]);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ phase: string; percent: number | null } | null>(null);
 
@@ -41,10 +75,6 @@ export function ScmMenu({ workspaceRoot, onClose, onAfterAction, onOpenBranchPic
 
   if (!bridge) return null;
 
-  // G3.5: route fetch/pull/push through the streaming variants so we
-  // can show live progress in the busy indicator. Sync still uses the
-  // non-streaming wrapper because it's a 3-step composition that
-  // already short-circuits on error.
   const onProgress = (p: { phase: string; percent: number | null }) => setProgress({ phase: p.phase, percent: p.percent });
 
   const items: { label: string; icon: typeof RefreshCw; fn: () => Promise<{ ok: boolean; error?: string; reason?: string }> }[] = [
@@ -57,7 +87,7 @@ export function ScmMenu({ workspaceRoot, onClose, onAfterAction, onOpenBranchPic
   ];
 
   return (
-    <div className="absolute right-2 top-9 z-[1000] w-[260px] rounded-md bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] shadow-2xl py-1 text-[13px]">
+    <div ref={menuRef} className="absolute right-2 top-9 z-[1000] w-[260px] rounded-md bg-[color:var(--ide-surface)] border border-[color:var(--ide-border)] shadow-2xl py-1 text-[13px]">
       <MenuHeader>Remote</MenuHeader>
       {items.map((it) => (
         <button

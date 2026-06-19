@@ -12,13 +12,27 @@
 import { View, Text } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { UsageWindowView, UsageWindows } from '@shogo/shared-app/hooks'
-import { formatResetCountdown } from '../../lib/billing-config'
+import {
+  formatResetCountdown,
+  getWindowDisplays,
+  getUsageLimitNotice,
+  type UsageOverageContext,
+} from '../../lib/billing-config'
 
-export function UsageWindowBar({ label, window }: { label: string; window: UsageWindowView | undefined }) {
+export function UsageWindowBar({
+  label,
+  window,
+  coupledFull = false,
+}: {
+  label: string
+  window: UsageWindowView | undefined
+  /** Force the bar to display 100% (e.g. 5-hour when weekly is exhausted). */
+  coupledFull?: boolean
+}) {
   // Uncapped (enterprise) plans report a null limit.
   const uncapped = !!window && window.limitUsd == null
   const utilization = window ? Math.min(1, Math.max(0, window.utilization)) : 0
-  const pct = Math.round(utilization * 100)
+  const pct = coupledFull && !uncapped ? 100 : Math.round(utilization * 100)
   const countdown = window ? formatResetCountdown(window.resetsAt) : ''
 
   const usageText = !window
@@ -50,12 +64,16 @@ export function UsageWindowBar({ label, window }: { label: string; window: Usage
   )
 }
 
-function CompactWindowRow({ label, window }: { label: string; window: UsageWindowView | undefined }) {
-  const uncapped = !!window && window.limitUsd == null
-  const utilization = window ? Math.min(1, Math.max(0, window.utilization)) : 0
-  const pct = Math.round(utilization * 100)
+function CompactWindowRow({
+  label,
+  display,
+}: {
+  label: string
+  display: { pct: number; uncapped: boolean; empty: boolean }
+}) {
+  const { pct, uncapped, empty } = display
 
-  const usageText = !window
+  const usageText = empty
     ? '—'
     : uncapped
       ? 'Unlimited'
@@ -79,11 +97,34 @@ function CompactWindowRow({ label, window }: { label: string; window: UsageWindo
   )
 }
 
-export function CompactUsageWindows({ windows }: { windows: UsageWindows | undefined }) {
+export function CompactUsageWindows({
+  windows,
+  overage,
+}: {
+  windows: UsageWindows | undefined
+  overage?: UsageOverageContext
+}) {
+  const { fiveHour, weekly } = getWindowDisplays(windows)
+  const atLimit = fiveHour.atLimit || weekly.atLimit
+  // Resume time is the binding constraint: when weekly is exhausted you stay
+  // blocked until it resets (resetting the 5-hour window won't help).
+  const countdown = weekly.atLimit ? weekly.countdown : fiveHour.countdown
+  const notice = getUsageLimitNotice({ atLimit, overage, countdown })
+
   return (
     <View className="gap-2.5">
-      <CompactWindowRow label="5-hour window" window={windows?.fiveHour} />
-      <CompactWindowRow label="Weekly window" window={windows?.weekly} />
+      <CompactWindowRow label="5-hour window" display={fiveHour} />
+      <CompactWindowRow label="Weekly window" display={weekly} />
+      {notice ? (
+        <Text
+          className={cn(
+            'text-xs',
+            notice.tone === 'overage' ? 'text-foreground' : 'text-muted-foreground',
+          )}
+        >
+          {notice.text}
+        </Text>
+      ) : null}
     </View>
   )
 }

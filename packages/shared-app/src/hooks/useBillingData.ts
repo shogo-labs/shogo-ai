@@ -9,6 +9,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { useSDKDomain, useSDKHttp } from "../domain"
 import type { IDomainStore } from "@shogo/domain-stores"
+import { deriveUsageWindows } from "./usage-windows"
 
 export interface EffectiveBalance {
   dailyIncludedUsd: number
@@ -190,6 +191,10 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
   const walletOverageHardLimitUsd = usageWallet?.overageHardLimitUsd
   const walletOverageEnabled = usageWallet?.overageEnabled
   const walletOverageAccumulatedUsd = usageWallet?.overageAccumulatedUsd
+  const walletFiveHourUsedUsd = usageWallet?.fiveHourUsedUsd
+  const walletWeeklyUsedUsd = usageWallet?.weeklyUsedUsd
+  const walletFiveHourWindowStart = usageWallet?.fiveHourWindowStart
+  const walletWeeklyWindowStart = usageWallet?.weeklyWindowStart
 
   const effectiveBalance = useMemo<EffectiveBalance | undefined>(() => {
     if (!usageWallet) return undefined
@@ -220,6 +225,37 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
       }
     } catch { return undefined }
   }, [usageWallet, effectivePlan, walletUpdatedAt, walletOverageHardLimitUsd, walletOverageEnabled, walletOverageAccumulatedUsd])
+
+  // Live-derive the rolling windows from the wallet so the usage bars refresh
+  // on every `refetchUsageWallet()` (e.g. after each completed chat message)
+  // instead of only when the workspace-plan endpoint is re-fetched. The server
+  // snapshot still supplies the authoritative per-window limits (covering
+  // grant/seat overrides); the wallet supplies live usage + window starts.
+  // Falls back to the raw server snapshot until the wallet has loaded.
+  const liveUsageWindows = useMemo<UsageWindows | undefined>(() => {
+    if (!usageWallet || !usageWindows) return usageWindows
+    return deriveUsageWindows({
+      wallet: {
+        fiveHourWindowStart: usageWallet.fiveHourWindowStart,
+        fiveHourUsedUsd: usageWallet.fiveHourUsedUsd,
+        weeklyWindowStart: usageWallet.weeklyWindowStart,
+        weeklyUsedUsd: usageWallet.weeklyUsedUsd,
+      },
+      limits: {
+        fiveHourUsd: usageWindows.fiveHour.limitUsd,
+        weeklyUsd: usageWindows.weekly.limitUsd,
+      },
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    usageWallet,
+    usageWindows,
+    walletUpdatedAt,
+    walletFiveHourUsedUsd,
+    walletWeeklyUsedUsd,
+    walletFiveHourWindowStart,
+    walletWeeklyWindowStart,
+  ])
 
   const usageEvents = useMemo(() => {
     if (!workspaceId || !store?.usageEventCollection) return []
@@ -255,6 +291,6 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     refetchUsageEvents,
     effectivePlanId,
     planSource,
-    usageWindows,
+    usageWindows: liveUsageWindows,
   }
 }

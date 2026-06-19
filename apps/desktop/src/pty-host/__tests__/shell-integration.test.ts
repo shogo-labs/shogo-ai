@@ -93,7 +93,7 @@ describe('applyShellIntegration — opt-outs', () => {
     expect(readdirSync(TMP_ROOT)).toEqual([])
   })
 
-  it('returns status=disabled-by-default when neither opt-in nor opt-out is set (Phase 6 hardening guard)', () => {
+  it('returns status=applied by default when neither opt-in nor opt-out is set', () => {
     const plan = applyShellIntegration(
       // Note: env has neither SHOGO_ENABLE_SHELL_INTEGRATION nor SHOGO_DISABLE_*
       {
@@ -103,13 +103,11 @@ describe('applyShellIntegration — opt-outs', () => {
       },
       { tmpRoot: TMP_ROOT },
     )
-    expect(plan.status).toBe('disabled-by-default')
-    expect(plan.artifacts).toEqual([])
-    // Spawn passes through unmodified — exactly what we need for the
-    // terminal to print a real prompt and accept input.
-    expect(plan.spawn.args).toEqual([])
-    expect(plan.spawn.env.SHOGO_TERMINAL).toBeUndefined()
-    expect(readdirSync(TMP_ROOT)).toEqual([])
+    expect(plan.status).toBe('applied')
+    // Shell integration applied by default — temp files created for bash
+    expect(plan.artifacts.length).toBeGreaterThan(0)
+    expect(plan.spawn.env.SHOGO_TERMINAL).toBe('1')
+    expect(plan.spawn.env.SHOGO_SHELL_INTEGRATION).toBe('1')
   })
 
   it('returns status=disabled-by-option when opts.disabled=true', () => {
@@ -463,7 +461,7 @@ describe('Nushell shell integration', () => {
     expect(plan.artifacts).toEqual([])
   })
 
-  it('default opt-in gate (no SHOGO_ENABLE_SHELL_INTEGRATION) passes through', () => {
+  it('enabled by default (no SHOGO_ENABLE_SHELL_INTEGRATION required)', () => {
     const input: SpawnOptionsLike = {
       shell: '/usr/local/bin/nu',
       args: [],
@@ -473,7 +471,7 @@ describe('Nushell shell integration', () => {
       rows: 24,
     }
     const plan = applyShellIntegration(input, { tmpRoot: TMP_ROOT })
-    expect(plan.status).toBe('disabled-by-default')
+    expect(plan.status).toBe('applied')
     expect(plan.kind).toBe('nushell')
   })
 })

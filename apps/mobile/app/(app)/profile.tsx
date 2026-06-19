@@ -380,7 +380,12 @@ const WorkspaceCard = observer(function WorkspaceCard({
                     Usage
                   </Text>
                 </View>
-                <CompactUsageWindows windows={usageWindows} />
+                <CompactUsageWindows
+                  windows={usageWindows}
+                  overage={effectiveBalance
+                    ? { enabled: effectiveBalance.overageEnabled, accumulatedUsd: effectiveBalance.overageAccumulatedUsd }
+                    : undefined}
+                />
                 {effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 ? (
                   <View className="flex-row items-center justify-between">
                     <Text className="text-xs text-muted-foreground">Overage</Text>

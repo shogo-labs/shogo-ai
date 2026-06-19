@@ -9,7 +9,7 @@
  * The data plane does NOT live here — see terminal-port-broker.ts.
  */
 
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -40,11 +40,37 @@ const CH = {
   discardSnapshot: 'shogo:terminal:snapshots:discard',
   restartHost: 'shogo:terminal:host:restart',
   event:  'shogo:terminal:event',
+  publishContext: 'shogo:terminal:publish-context',
 } as const
 
 function defaultShell(): string {
   if (process.platform === 'win32') return process.env.ComSpec || 'pwsh.exe'
   return process.env.SHELL || '/bin/zsh'
+}
+
+/**
+ * Reject IPC from anything that isn't a top-level frame of one of our own app
+ * windows. Without this, a compromised renderer bundle (XSS) or an embedded
+ * iframe/webview could spawn/write/kill PTY sessions directly, bypassing the
+ * agent permission model. Mirrors the trust posture of fs/git IPC.
+ */
+function isTrustedSender(event: IpcMainInvokeEvent): boolean {
+  const senderId = event.sender.id
+  const owned = BrowserWindow.getAllWindows().some(
+    (w) => !w.isDestroyed() && w.webContents.id === senderId,
+  )
+  if (!owned) return false
+  // Subframes (iframes / <webview>) carry a parent frame — only the top frame
+  // of the app window is trusted to drive the terminal control plane.
+  const frame = event.senderFrame
+  if (frame && frame.parent) return false
+  return true
+}
+
+function assertTrustedSender(event: IpcMainInvokeEvent): void {
+  if (!isTrustedSender(event)) {
+    throw new Error('terminal IPC: untrusted sender rejected')
+  }
 }
 
 function resolveWorkspaceCwd(opts: RendererSpawnOptions): string {
@@ -96,45 +122,66 @@ export function registerTerminalIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(CH.spawn, async (_e, opts: RendererSpawnOptions): Promise<SessionInfo> => {
+  ipcMain.handle(CH.spawn, async (e, opts: RendererSpawnOptions): Promise<SessionInfo> => {
+    assertTrustedSender(e)
     return host.spawn(normalizeSpawnOptions(opts))
   })
-  ipcMain.handle(CH.write, async (_e, id: string, text: string): Promise<void> => {
+  ipcMain.handle(CH.write, async (e, id: string, text: string): Promise<void> => {
+    assertTrustedSender(e)
     await host.write(id, text)
   })
-  ipcMain.handle(CH.resize, async (_e, id: string, cols: number, rows: number): Promise<void> => {
+  ipcMain.handle(CH.resize, async (e, id: string, cols: number, rows: number): Promise<void> => {
+    assertTrustedSender(e)
     await host.resize(id, cols, rows)
   })
-  ipcMain.handle(CH.signal, async (_e, id: string, sig: 'INT' | 'TERM' | 'KILL'): Promise<void> => {
+  ipcMain.handle(CH.signal, async (e, id: string, sig: 'INT' | 'TERM' | 'KILL'): Promise<void> => {
+    assertTrustedSender(e)
     await host.signal(id, sig)
   })
-  ipcMain.handle(CH.kill, async (_e, id: string): Promise<void> => {
+  ipcMain.handle(CH.kill, async (e, id: string): Promise<void> => {
+    assertTrustedSender(e)
     await host.kill(id)
   })
-  ipcMain.handle(CH.list, async (): Promise<SessionInfo[]> => {
+  ipcMain.handle(CH.list, async (e): Promise<SessionInfo[]> => {
+    assertTrustedSender(e)
     return host.list()
   })
   ipcMain.handle(
     CH.attach,
     async (event, id: string, sinceSeq: number): Promise<{ channelId: string; latestSeq: number }> => {
+      assertTrustedSender(event)
       return brokerAttach(event.sender, id, sinceSeq)
     },
   )
-  ipcMain.handle(CH.detach, async (_e, id: string, channelId: string): Promise<void> => {
+  ipcMain.handle(CH.detach, async (e, id: string, channelId: string): Promise<void> => {
+    assertTrustedSender(e)
     await host.detach(id, channelId)
   })
-  ipcMain.handle(CH.listSnapshots, async (_e, workspaceHash: string) => {
+  ipcMain.handle(CH.listSnapshots, async (e, workspaceHash: string) => {
+    assertTrustedSender(e)
     return host.listSnapshots(workspaceHash)
   })
-  ipcMain.handle(CH.restoreSession, async (_e, workspaceHash: string, snapshotId: string) => {
+  ipcMain.handle(CH.restoreSession, async (e, workspaceHash: string, snapshotId: string) => {
+    assertTrustedSender(e)
     const session = await host.restoreSession(workspaceHash, snapshotId)
     return { newSessionId: session.id, session }
   })
-  ipcMain.handle(CH.discardSnapshot, async (_e, workspaceHash: string, snapshotId: string) => {
+  ipcMain.handle(CH.discardSnapshot, async (e, workspaceHash: string, snapshotId: string) => {
+    assertTrustedSender(e)
     await host.discardSnapshot(workspaceHash, snapshotId)
   })
-  ipcMain.handle(CH.restartHost, async () => {
+  ipcMain.handle(CH.restartHost, async (e) => {
+    assertTrustedSender(e)
     await host.restart()
+  })
+  ipcMain.handle(CH.publishContext, async (e, payload: {
+    sessionId: string
+    cwd: string | null
+    content: string
+  }) => {
+    assertTrustedSender(e)
+    const { updateRendererTerminalContext } = await import('./terminal-exec-server')
+    updateRendererTerminalContext(payload)
   })
 }
 
@@ -156,6 +203,7 @@ export async function disposeTerminalIpc(): Promise<void> {
   ipcMain.removeHandler(CH.restoreSession)
   ipcMain.removeHandler(CH.discardSnapshot)
   ipcMain.removeHandler(CH.restartHost)
+  ipcMain.removeHandler(CH.publishContext)
   try { await getPtyHostClient().flushSnapshots() } catch {}
   await disposePtyHostClient()
 }

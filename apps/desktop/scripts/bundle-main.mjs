@@ -147,6 +147,7 @@ const EXTERNALS = [
   'node-ical',
   'node-pty',
   'ps-list',
+  'fsevents',
 ];
 
 ensureWorkerSymlink();

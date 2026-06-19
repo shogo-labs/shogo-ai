@@ -23,7 +23,7 @@
  */
 
 import { spawn } from 'child_process'
-import { existsSync, mkdirSync, createReadStream, createWriteStream } from 'fs'
+import { existsSync, mkdirSync, createReadStream, createWriteStream, readFileSync } from 'fs'
 import { unlink } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -254,11 +254,17 @@ export async function persistRepoToStore(
     if (opts.excludeLfsObjects) tarArgs.push('--exclude=.git/lfs/objects')
     tarArgs.push('.git')
     await run('tar', tarArgs)
+    // Upload a Buffer, NOT a `createReadStream`. Under the bun runtime
+    // (`bun run src/server.ts`) a streaming fs body to the OCI S3-compatible
+    // endpoint never completes — the PutObject promise hangs forever, so the
+    // afterCommit durability path silently stalls and no `repo.git.tar.gz` is
+    // ever written. Reading the (source-only, LFS/offload-excluded, small)
+    // tarball into memory mirrors S3Sync's proven upload path.
     await client.send(
       new PutObjectCommand({
         Bucket: cfg.bucket,
         Key: repoKey(cfg.projectId),
-        Body: createReadStream(tmpFile),
+        Body: readFileSync(tmpFile),
         ContentType: 'application/gzip',
       }),
     )

@@ -73,6 +73,7 @@ import {
 } from 'lucide-react-native'
 import { cn, Badge } from '@shogo/shared-ui/primitives'
 import type { UsageWindows } from '@shogo/shared-app/hooks'
+import type { UsageOverageContext } from '../../lib/billing-config'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
 import { CompactUsageWindows } from '../billing/UsageWindows'
 import { PublishDropdown } from './PublishDropdown'
@@ -128,6 +129,7 @@ export interface ProjectTopBarProps {
   workspaceName?: string
   planLabel?: string
   usageWindows?: UsageWindows
+  usageOverage?: UsageOverageContext
   ownerName?: string
   projectCreatedAt?: string | number
   projectModifiedAt?: string | number
@@ -317,6 +319,7 @@ export function ProjectTopBar({
   workspaceName = '',
   planLabel = 'Free',
   usageWindows,
+  usageOverage,
   ownerName = '',
   projectCreatedAt,
   projectModifiedAt,
@@ -525,6 +528,7 @@ export function ProjectTopBar({
                   workspaceName={workspaceName}
                   planLabel={planLabel}
                   usageWindows={usageWindows}
+                  usageOverage={usageOverage}
                   ownerName={ownerName}
                   projectCreatedAt={projectCreatedAt}
                   projectModifiedAt={projectModifiedAt}
@@ -700,6 +704,7 @@ export function ProjectTopBar({
                   workspaceName={workspaceName}
                   planLabel={planLabel}
                   usageWindows={usageWindows}
+                  usageOverage={usageOverage}
                   ownerName={ownerName}
                   projectCreatedAt={projectCreatedAt}
                   projectModifiedAt={projectModifiedAt}
@@ -984,6 +989,7 @@ function ProjectDropdownContent({
   workspaceName,
   planLabel,
   usageWindows,
+  usageOverage,
   ownerName,
   projectCreatedAt,
   projectModifiedAt,
@@ -1003,6 +1009,7 @@ function ProjectDropdownContent({
   workspaceName: string
   planLabel: string
   usageWindows?: UsageWindows
+  usageOverage?: UsageOverageContext
   ownerName: string
   projectCreatedAt?: string | number
   projectModifiedAt?: string | number
@@ -1035,6 +1042,7 @@ function ProjectDropdownContent({
       workspaceName={workspaceName}
       planLabel={planLabel}
       usageWindows={usageWindows}
+      usageOverage={usageOverage}
       onGoToDashboard={onGoToDashboard}
       onSwitchProject={() => setView('switcher')}
       onClose={onClose}
@@ -1062,6 +1070,7 @@ function ProjectMenuView({
   workspaceName,
   planLabel,
   usageWindows,
+  usageOverage,
   onGoToDashboard,
   onSwitchProject,
   onClose,
@@ -1081,6 +1090,7 @@ function ProjectMenuView({
   workspaceName: string
   planLabel: string
   usageWindows?: UsageWindows
+  usageOverage?: UsageOverageContext
   onGoToDashboard: () => void
   onSwitchProject: () => void
   onClose: () => void
@@ -1261,7 +1271,7 @@ function ProjectMenuView({
                 <Text className="text-sm font-medium text-foreground">Usage</Text>
                 <ChevronRight size={14} className="text-muted-foreground" />
               </Pressable>
-              <CompactUsageWindows windows={usageWindows} />
+              <CompactUsageWindows windows={usageWindows} overage={usageOverage} />
             </View>
           </View>
         )}

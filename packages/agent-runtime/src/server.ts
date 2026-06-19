@@ -80,6 +80,7 @@ import {
 } from './workspace-defaults'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
+import { computePublishedReadiness } from './published-readiness'
 import {
   walkFilesTree,
   WORKSPACE_TREE_HIDDEN_DIRS,
@@ -723,6 +724,21 @@ const { app, state, logTiming } = await createRuntimeApp({
 app.get('/ready', (c) => {
   const poolModeUnassigned = state.isPoolMode && !state.poolAssigned
   const gatewayReady = agentGateway != null
+
+  // Server-backed published apps: a static `dist/` is hydrated from git long
+  // before the project's `server.tsx` (`/api/*`) is up, so accepting
+  // `distReady` here would mark the pod routable while the API still returns
+  // 503 `phase:idle` — exactly the cold-start that surfaced as
+  // "Could not find <name>" to end users. Gate published readiness on the
+  // inner API server instead so Knative's activator buffers the first request
+  // through cold boot and the visitor gets a real 200. `apiReady` is
+  // `hasApiServer === false || apiServerPhase === 'healthy'`, so a published
+  // app with no sidecar (detected static-only) still reports ready.
+  if (IS_PUBLISHED_MODE) {
+    const { apiReady, apiServerPhase } = getPreviewManager().getStatus()
+    const decision = computePublishedReadiness({ apiReady, apiServerPhase })
+    return c.json(decision.body, decision.status)
+  }
 
   // 2026-05-20 cold-start fix: also accept readiness when the static
   // serving path is functional (workspace `dist/index.html` exists).
