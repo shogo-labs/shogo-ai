@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useEffect, useMemo, useState } from 'react'
-import { Platform, View, Text, Pressable } from 'react-native'
+import { Platform, View, Text } from 'react-native'
 import { Code2 } from 'lucide-react-native'
 import { Workbench } from './ide/Workbench'
 import { sdkFsFor } from './ide/workspace/sdkFs'
@@ -29,8 +29,8 @@ interface IDEPanelProps {
  * are rendered as "backend-pending" placeholders until the agent-runtime
  * exposes those routes (follow-up phase).
  *
- * In Shogo Desktop, this IDE tab is the in-app editing surface. It must not
- * launch a separate Code OSS/Shogo IDE runtime from normal product UI.
+ * In Shogo Desktop, this IDE tab remains the in-app editing surface while
+ * the footer can open/focus the managed external Shogo-IDE window.
  */
 export function IDEPanel({
   visible,
@@ -120,17 +120,9 @@ export function IDEPanel({
           fetchImpl={agentFetch}
           isExternalProject={isExternalProject}
           folderPath={folderPath}
+          onOpenCodeWorkbench={onOpenCodeWorkbench}
         />
       </div>
-      {onOpenCodeWorkbench ? (
-        <Pressable
-          onPress={onOpenCodeWorkbench}
-          className="absolute top-3 right-3 z-20 rounded-md border border-orange-500/60 bg-background/90 px-3 py-1.5 shadow-sm active:opacity-80"
-          accessibilityLabel="Open Shogo IDE"
-        >
-          <Text className="text-xs font-semibold text-orange-500">Open Shogo IDE</Text>
-        </Pressable>
-      ) : null}
     </View>
   )
 }

@@ -20,6 +20,8 @@ function assert(condition, message) {
 }
 
 const idePanel = read('apps/mobile/components/project/panels/IDEPanel.tsx')
+const statusBar = read('apps/mobile/components/project/panels/ide/StatusBar.tsx')
+const main = read('apps/desktop/src/main.ts')
 const layout = read('apps/mobile/app/(app)/projects/[id]/_layout.tsx')
 const topBar = read('apps/mobile/components/project/ProjectTopBar.tsx')
 const preload = read('apps/desktop/src/preload.ts')
@@ -28,7 +30,8 @@ const phase2Check = read('apps/shogo-ide/scripts/phase2-check.mjs')
 const docs = read('apps/shogo-ide/PHASE_5_REPLACE_CUSTOM_IDE.md')
 
 assert(idePanel.includes('<Workbench'), 'IDEPanel must keep Monaco Workbench as the default in-tab editor')
-assert(idePanel.includes('Open Shogo IDE'), 'IDEPanel must expose the compact Open Shogo IDE action')
+assert(statusBar.includes('Shogo IDE'), 'StatusBar must expose the compact Shogo IDE action')
+assert(main.includes("label: 'Open Shogo IDE'"), 'File menu must expose Open Shogo IDE')
 assert(idePanel.includes('onOpenCodeWorkbench'), 'IDEPanel must accept the managed workbench open/focus callback')
 assert(!idePanel.includes('ShogoIdeReplacementGate'), 'IDEPanel must not use the removed replacement gate')
 assert(!idePanel.includes('<ShogoIdePhase2Launcher'), 'IDEPanel must no longer render the Phase 2 overlay')

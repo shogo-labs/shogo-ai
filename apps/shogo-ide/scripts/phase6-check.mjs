@@ -36,6 +36,8 @@ const packagingChecklist = readJson('apps/shogo-ide/hardening/packaging-checklis
 const readiness = readJson('apps/shogo-ide/hardening/generated/production-readiness.json')
 const desktopBridge = read('apps/desktop/src/shogo-ide.ts')
 const idePanel = read('apps/mobile/components/project/panels/IDEPanel.tsx')
+const statusBar = read('apps/mobile/components/project/panels/ide/StatusBar.tsx')
+const main = read('apps/desktop/src/main.ts')
 const layout = read('apps/mobile/app/(app)/projects/[id]/_layout.tsx')
 const docs = read('apps/shogo-ide/PHASE_6_PRODUCTION_HARDENING.md')
 const packageJson = readJson('apps/shogo-ide/package.json')
@@ -78,7 +80,8 @@ assert(!desktopBridge.includes('writeLaunchDiagnostic'), 'desktop bridge must re
 assert(!desktopBridge.includes('launchShogoIde'), 'desktop bridge must not keep the old standalone launch path')
 assert(desktopBridge.includes('phase: 6'), 'desktop bridge status must report Phase 6')
 
-assert(idePanel.includes('Open Shogo IDE'), 'IDE panel must expose the managed Shogo-IDE action')
+assert(statusBar.includes('Shogo IDE'), 'Status bar must expose the managed Shogo-IDE action')
+assert(main.includes("label: 'Open Shogo IDE'"), 'File menu must expose Open Shogo IDE')
 assert(idePanel.includes('onOpenCodeWorkbench'), 'IDE panel must accept the managed workbench callback')
 assert(layout.includes('handleOpenCodeWorkbench'), 'project layout must wire the managed workbench opener')
 

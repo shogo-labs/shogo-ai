@@ -627,6 +627,62 @@ async function openCodeWorkbenchWindow(options: { projectId?: string; workspaceP
   )
 }
 
+function parseCodeWorkbenchOptionsFromUrl(rawUrl: string): { projectId?: string; workspacePath?: string } | null {
+  try {
+    const url = new URL(rawUrl)
+    const parts = url.pathname.split('/').filter(Boolean)
+    const projectIndex = parts.indexOf('projects')
+    const encodedProjectId = projectIndex >= 0 ? parts[projectIndex + 1] : undefined
+    if (!encodedProjectId) return null
+    const workspacePath = url.searchParams.get('workspacePath') ?? undefined
+    return { projectId: decodeURIComponent(encodedProjectId), workspacePath }
+  } catch {
+    return null
+  }
+}
+
+function getActiveCodeWorkbenchOptions(): { projectId?: string; workspacePath?: string } | null {
+  const focusedRecord = windowManager.getFocusedWindowRecord()
+  if (focusedRecord?.codeWorkbench?.projectId) return focusedRecord.codeWorkbench
+
+  const focusedUrl = focusedRecord?.browserWindow.webContents.getURL()
+  const focusedOptions = focusedUrl ? parseCodeWorkbenchOptionsFromUrl(focusedUrl) : null
+  if (focusedOptions?.projectId) return focusedOptions
+
+  const primaryUrl = windowManager.getPrimaryWindow()?.webContents.getURL()
+  return primaryUrl ? parseCodeWorkbenchOptionsFromUrl(primaryUrl) : null
+}
+
+function openActiveCodeWorkbenchFromMenu(): void {
+  const options = getActiveCodeWorkbenchOptions()
+  if (!options?.projectId) {
+    const win = BrowserWindow.getFocusedWindow() ?? windowManager.getPrimaryWindow()
+    const dialogOptions = {
+      type: 'info' as const,
+      message: 'Open a project first',
+      detail: 'Shogo IDE opens the workspace for the project currently selected in Shogo.',
+      buttons: ['OK'],
+    }
+    if (win) void dialog.showMessageBox(win, dialogOptions)
+    else void dialog.showMessageBox(dialogOptions)
+    return
+  }
+
+  void openCodeWorkbenchWindow(options).then((result) => {
+    if (!result.ok) {
+      const win = BrowserWindow.getFocusedWindow() ?? windowManager.getPrimaryWindow()
+      const dialogOptions = {
+        type: 'error' as const,
+        message: 'Could not open Shogo IDE',
+        detail: result.error,
+        buttons: ['OK'],
+      }
+      if (win) void dialog.showMessageBox(win, dialogOptions)
+      else void dialog.showMessageBox(dialogOptions)
+    }
+  })
+}
+
 function buildDockMenu(): void {
   if (process.platform !== 'darwin' || !app.dock) return
   app.dock.setMenu(Menu.buildFromTemplate([
@@ -661,6 +717,10 @@ function buildAppMenu(): void {
           label: 'New Window',
           accelerator: 'CmdOrCtrl+N',
           click: () => { openNewWindow() },
+        },
+        {
+          label: 'Open Shogo IDE',
+          click: () => { openActiveCodeWorkbenchFromMenu() },
         },
         { type: 'separator' },
         {
