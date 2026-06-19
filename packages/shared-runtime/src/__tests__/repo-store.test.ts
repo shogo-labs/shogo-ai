@@ -34,9 +34,16 @@ mock.module('@aws-sdk/client-s3', () => {
     async send(cmd: any): Promise<any> {
       if (cmd instanceof PutObjectCommand) {
         const body = cmd.input.Body
-        const chunks: Buffer[] = []
-        for await (const c of body as AsyncIterable<Buffer>) chunks.push(Buffer.from(c))
-        s3store.set(cmd.input.Key, Buffer.concat(chunks))
+        let buf: Buffer
+        if (Buffer.isBuffer(body)) {
+          // persistRepoToStore uploads a Buffer (streaming bodies hang under bun).
+          buf = body
+        } else {
+          const chunks: Buffer[] = []
+          for await (const c of body as AsyncIterable<Buffer>) chunks.push(Buffer.from(c))
+          buf = Buffer.concat(chunks)
+        }
+        s3store.set(cmd.input.Key, buf)
         return {}
       }
       if (cmd instanceof HeadObjectCommand) {
