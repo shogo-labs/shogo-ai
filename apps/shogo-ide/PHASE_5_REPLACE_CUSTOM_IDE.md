@@ -12,7 +12,7 @@ window.shogoDesktop.codeWorkbench
 
 IDE tab now keeps Monaco visible and opens/focuses the managed Shogo-IDE window. Web and mobile continue to use their existing Monaco/placeholder behavior and never render the desktop-only Shogo IDE action.
 
-Users can also open/focus the managed Code OSS-based Shogo-IDE window through the small top-right button or through the macOS **File → Open Shogo IDE...** menu item.
+Users can also open/focus the managed Code OSS-based Shogo-IDE window through the small top-right button in the Monaco IDE panel.
 
 The compact action lets users:
 
@@ -58,7 +58,6 @@ They stay available on Desktop, web fallback, and mobile-adjacent scenarios. Cod
 
 - The IDE tab shows Monaco immediately and keeps live-edit subscriptions mounted across tab switches.
 - **Open Shogo IDE** in the top-right corner opens Code OSS for the resolved project folder.
-- **File → Open Shogo IDE...** opens Code OSS from the native macOS menu.
 - If Code OSS source setup is incomplete, Desktop starts setup only after the user requests Shogo IDE and shows diagnostics instead of manual commands.
 
 ## Safety
@@ -67,12 +66,10 @@ They stay available on Desktop, web fallback, and mobile-adjacent scenarios. Cod
 - Desktop keeps Monaco visible when the IDE tab opens/focuses Shogo-IDE.
 - Existing web/mobile behavior remains intact and does not render the desktop-only launcher.
 - Existing Workbench code remains the default in-app editing path.
-- The current desktop menu launch path remains available as **Open Shogo IDE...**.
+- The old standalone Code - OSS / Extension Development Host launcher is removed; Desktop uses the managed Shogo-IDE window only.
 
 ## Remaining work after Phase 5
 
-- Build/package the actual Code OSS checkout.
-- Wire Code OSS package output into `SHOGO_IDE_EXECUTABLE` discovery automatically.
+- Keep the managed Shogo-IDE web workbench path as the only Desktop Code OSS launch surface.
 - Add local agent service process supervision.
 - Migrate source-control, terminal, runtime, and checkpoint features into `shogo-core` + agent service.
-- Eventually remove legacy Monaco desktop fallback after beta confidence.

@@ -39,7 +39,8 @@ assert(layout.includes('handleOpenCodeWorkbench'), 'project layout must own the 
 assert(layout.includes('window.shogoDesktop?.codeWorkbench'), 'project layout must call the desktop codeWorkbench bridge')
 assert(topBar.includes('onOpenCodeWorkbench?.()'), 'IDE tab press must open/focus Shogo-IDE')
 assert(preload.includes("ipcRenderer.invoke('code-workbench:open'"), 'preload must expose managed workbench open IPC')
-assert(desktopBridge.includes("ipcMain.handle('shogo-ide:launch'"), 'legacy explicit launch IPC may remain behind its env gate')
+assert(!desktopBridge.includes("ipcMain.handle('shogo-ide:launch'"), 'legacy explicit launch IPC must be removed')
+assert(!preload.includes('shogoIde: shogoIdeBridge'), 'preload must not expose the old shogoIde bridge')
 assert(desktopBridge.includes('launchReady'), 'desktop bridge must keep launch readiness status')
 assert(phase2Check.includes('codeWorkbench'), 'Phase 2 check must be updated for the managed workbench bridge')
 

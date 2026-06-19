@@ -51,7 +51,6 @@ import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-
 import { startTerminalExecServer, stopTerminalExecServer, getTerminalExecToken } from './ipc/terminal-exec-server'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
-import { getShogoIdeStatus, registerShogoIdeIpcHandlers, terminateLaunchedShogoIdeProcesses } from './shogo-ide'
 import { registerExtensionsIpcHandlers, disposeExtensionsIpcHandlers } from './extensions/ipc'
 import { createTray, destroyTray } from './tray'
 import { WindowManager } from './window-manager'
@@ -662,14 +661,6 @@ function buildAppMenu(): void {
           label: 'New Window',
           accelerator: 'CmdOrCtrl+N',
           click: () => { openNewWindow() },
-        },
-        { type: 'separator' },
-        {
-          label: 'Reveal Legacy IDE Workspace',
-          click: () => {
-            const status = getShogoIdeStatus()
-            void shell.openPath(status.workspacePath)
-          },
         },
         { type: 'separator' },
         {
@@ -1398,7 +1389,6 @@ app.whenReady().then(async () => {
   registerTerminalIpcHandlers()
   registerLlmIpcHandlers()
   registerPortsIpcHandlers()
-  registerShogoIdeIpcHandlers()
   registerExtensionsIpcHandlers()
   buildAppMenu()
   buildDockMenu()
@@ -1484,7 +1474,6 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  void terminateLaunchedShogoIdeProcesses().catch((err) => console.error('[Desktop] Shogo IDE cleanup error:', err))
   if (process.platform !== 'darwin') {
     app.quit()
   }
@@ -1495,7 +1484,6 @@ app.on('before-quit', (event) => {
   console.log(`[Desktop] before-quit fired, isQuitting=${isQuitting}, isCloudMode=${isCloudMode}, applyingUpdate=${getIsApplyingUpdate()}`)
   if (isQuitting) return
   if (isCloudMode) {
-    void terminateLaunchedShogoIdeProcesses().catch((err) => console.error('[Desktop] Shogo IDE cleanup error:', err))
     disposeIdeServers()
     return
   }
@@ -1512,7 +1500,6 @@ app.on('before-quit', (event) => {
     disposeGitIpc()
     disposeRunIpc()
     disposeDebugIpc()
-    void terminateLaunchedShogoIdeProcesses().catch((err) => console.error('[Desktop] Shogo IDE cleanup error:', err))
     disposeIdeServers()
     stopLocalServer().catch(() => {})
     return
@@ -1529,7 +1516,7 @@ app.on('before-quit', (event) => {
   disposeRunIpc()
   disposeDebugIpc()
   disposeIdeServers()
-  Promise.allSettled([terminateLaunchedShogoIdeProcesses(), disposeTerminalIpc(), stopTerminalExecServer(), stopLocalServer()])
+  Promise.allSettled([disposeTerminalIpc(), stopTerminalExecServer(), stopLocalServer()])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))
     .finally(() => {
