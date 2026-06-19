@@ -168,5 +168,6 @@ declare module 'vscode' {
   export namespace env {
     const appName: string
     const uriScheme: string
+    function openExternal(target: Uri): Thenable<boolean>
   }
 }

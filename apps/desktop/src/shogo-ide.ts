@@ -5,7 +5,6 @@ import { app } from 'electron'
 import { spawn, spawnSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
-import { getApiUrl } from './local-server'
 
 export interface ShogoIdeStatus {
   ok: true
@@ -46,6 +45,7 @@ export const SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS = [
   'vscode.github',
   'vscode.github-authentication',
   'vscode.microsoft-authentication',
+  'shogo.shogo-agent-chat',
 ] as const
 const SHOGO_IDE_DISABLED_UPSTREAM_AI_SETTINGS = {
   'github.copilot.enable': { '*': false },
@@ -142,21 +142,97 @@ function resolveCodeOssInstallCommand(): { command: string; args: string[] } {
   return { command: 'npm', args: ['install'] }
 }
 
-export function ensureShogoIdeRuntimeProfile(workspacePath: string): {
+export function syncShogoIdeProduct(status: ShogoIdeStatus): void {
+  if (!fs.existsSync(status.generatedProductPath) || !fs.existsSync(status.codeOssCheckoutPath)) return
+  const targetProductPath = path.join(status.codeOssCheckoutPath, 'product.json')
+  if (!fs.existsSync(targetProductPath)) return
+
+  const product = JSON.parse(fs.readFileSync(targetProductPath, 'utf8'))
+  const generatedProduct = JSON.parse(fs.readFileSync(status.generatedProductPath, 'utf8'))
+  for (const key of [
+    'nameShort',
+    'nameLong',
+    'applicationName',
+    'dataFolderName',
+    'serverDataFolderName',
+    'urlProtocol',
+    'licenseName',
+    'licenseUrl',
+    'quality',
+    'documentationUrl',
+    'reportIssueUrl',
+    'requestFeatureUrl',
+    'privacyStatementUrl',
+    'telemetryOptOutUrl',
+    'extensionsGallery',
+    'linkProtectionTrustedDomains',
+    'enableTelemetry',
+    'extensionEnabledApiProposals',
+    'aiConfig',
+  ] as const) {
+    if (generatedProduct[key] !== undefined) product[key] = generatedProduct[key]
+  }
+  product.builtInExtensions = []
+  delete product.defaultChatAgent
+  delete product.trustedExtensionAuthAccess
+  if (Array.isArray(product.builtInExtensionsEnabledWithAutoUpdates)) {
+    product.builtInExtensionsEnabledWithAutoUpdates = product.builtInExtensionsEnabledWithAutoUpdates.filter((id: string) => id !== 'GitHub.copilot-chat' && id !== 'GitHub.copilot')
+  } else {
+    product.builtInExtensionsEnabledWithAutoUpdates = []
+  }
+  fs.writeFileSync(targetProductPath, `${JSON.stringify(product, null, '\t')}\n`)
+}
+
+function syncFilteredSystemExtensions(sourceExtensionsDir: string, targetExtensionsDir: string): void {
+  const blocked = new Set(['copilot', 'copilot-chat'])
+  fs.rmSync(targetExtensionsDir, { recursive: true, force: true })
+  fs.mkdirSync(targetExtensionsDir, { recursive: true })
+  if (!fs.existsSync(sourceExtensionsDir)) return
+
+  for (const entry of fs.readdirSync(sourceExtensionsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || blocked.has(entry.name.toLowerCase())) continue
+    const sourcePath = path.join(sourceExtensionsDir, entry.name)
+    const targetPath = path.join(targetExtensionsDir, entry.name)
+    try {
+      fs.symlinkSync(sourcePath, targetPath, 'dir')
+    } catch {
+      fs.cpSync(sourcePath, targetPath, { recursive: true })
+    }
+  }
+}
+
+function syncBundledExtension(workspacePath: string, extensionsDir: string, extensionName: string): void {
+  const sourcePath = path.join(workspacePath, 'extensions', extensionName)
+  const manifestPath = path.join(sourcePath, 'package.json')
+  if (!fs.existsSync(manifestPath)) return
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  const publisher = manifest.publisher || 'shogo'
+  const version = manifest.version || '0.0.0'
+  const targetPath = path.join(extensionsDir, `${publisher}.${extensionName}-${version}`)
+  fs.cpSync(sourcePath, targetPath, { recursive: true, force: true })
+}
+
+function syncBundledShogoExtensions(workspacePath: string, extensionsDir: string): void {
+  syncBundledExtension(workspacePath, extensionsDir, 'shogo-core')
+}
+
+export function ensureShogoIdeRuntimeProfile(workspacePath: string, options: { desktopChatUrl?: string } = {}): {
   userDataDir: string
   extensionsDir: string
+  systemExtensionsDir: string
   agentsUserDataDir: string
   agentsExtensionsDir: string
   crashReporterDirectory: string
 } {
-  const runtimeDir = path.join(workspacePath, 'hardening', 'runtime')
+  const runtimeDir = path.join(workspacePath, 'hardening', 'runtime-shogo-chat')
   const userDataDir = path.join(runtimeDir, 'user-data')
   const extensionsDir = path.join(runtimeDir, 'extensions')
+  const systemExtensionsDir = path.join(runtimeDir, 'system-extensions')
   const agentsUserDataDir = path.join(runtimeDir, 'agents-user-data')
   const agentsExtensionsDir = path.join(runtimeDir, 'agents-extensions')
   const crashReporterDirectory = path.join(runtimeDir, 'crash-reports')
 
-  for (const dir of [userDataDir, extensionsDir, agentsUserDataDir, agentsExtensionsDir, crashReporterDirectory]) {
+  for (const dir of [userDataDir, extensionsDir, systemExtensionsDir, agentsUserDataDir, agentsExtensionsDir, crashReporterDirectory]) {
     fs.mkdirSync(dir, { recursive: true })
   }
 
@@ -172,13 +248,17 @@ export function ensureShogoIdeRuntimeProfile(workspacePath: string): {
     'security.workspace.trust.enabled': false,
     'workbench.panel.defaultLocation': 'bottom',
     'workbench.secondarySideBar.defaultVisibility': 'visible',
-    'shogo.agentChat.autoOpen': true,
-    'shogo.agentChat.bridgeUrl': getApiUrl(),
+    'workbench.secondarySideBar.showLabels': true,
+    ...(options.desktopChatUrl ? { 'shogo.desktopChat.url': options.desktopChatUrl } : {}),
     ...SHOGO_IDE_DISABLED_UPSTREAM_AI_SETTINGS,
   }
   fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
+  fs.rmSync(extensionsDir, { recursive: true, force: true })
+  fs.mkdirSync(extensionsDir, { recursive: true })
+  syncFilteredSystemExtensions(path.join(workspacePath, 'upstream', 'vscode', 'extensions'), systemExtensionsDir)
+  syncBundledShogoExtensions(workspacePath, extensionsDir)
 
-  return { userDataDir, extensionsDir, agentsUserDataDir, agentsExtensionsDir, crashReporterDirectory }
+  return { userDataDir, extensionsDir, systemExtensionsDir, agentsUserDataDir, agentsExtensionsDir, crashReporterDirectory }
 }
 
 export async function ensureShogoIdeSetup(status: ShogoIdeStatus): Promise<void> {
@@ -225,7 +305,6 @@ export function getShogoIdeStatus(): ShogoIdeStatus {
   const workspacePath = path.join(repoRoot, 'apps', 'shogo-ide')
   const productTemplatePath = path.join(workspacePath, 'product.shogo.template.json')
   const extensionManifestPath = path.join(workspacePath, 'extensions', 'shogo-core', 'package.json')
-  const agentChatExtensionManifestPath = path.join(workspacePath, 'extensions', 'shogo-agent-chat', 'package.json')
   const generatedProductPath = path.join(workspacePath, 'distribution', 'generated', 'product.json')
   const hardeningReportPath = path.join(workspacePath, 'hardening', 'generated', 'production-readiness.json')
   const codeOssCheckoutPath = path.join(workspacePath, 'upstream', 'vscode')
@@ -234,7 +313,6 @@ export function getShogoIdeStatus(): ShogoIdeStatus {
   const devRunnerPath: string | null = null
   const productTemplateExists = fs.existsSync(productTemplatePath)
   const extensionManifestExists = fs.existsSync(extensionManifestPath)
-  const agentChatExtensionManifestExists = fs.existsSync(agentChatExtensionManifestPath)
   const generatedProductExists = fs.existsSync(generatedProductPath)
   const hardeningReportExists = fs.existsSync(hardeningReportPath)
   const codeOssCheckoutExists = fs.existsSync(codeOssCheckoutPath)
@@ -246,12 +324,11 @@ export function getShogoIdeStatus(): ShogoIdeStatus {
   const launchMode: 'packaged' | 'source-runner' | null = null
   const setupInProgress = !!setupPromise
   const autoSetupAvailable = true
-  const launchReady = productTemplateExists && extensionManifestExists && agentChatExtensionManifestExists && generatedProductExists && hardeningReportExists && codeOssCheckoutExists
+  const launchReady = productTemplateExists && extensionManifestExists && generatedProductExists && hardeningReportExists && codeOssCheckoutExists
   const diagnostics: string[] = []
 
   if (!productTemplateExists) diagnostics.push('Missing Shogo product template.')
   if (!extensionManifestExists) diagnostics.push('Missing shogo-core extension manifest.')
-  if (!agentChatExtensionManifestExists) diagnostics.push('Missing shogo-agent-chat extension manifest.')
   if (!generatedProductExists) diagnostics.push('Missing generated Code OSS product metadata; Shogo Desktop will materialize it automatically.')
   if (!hardeningReportExists) diagnostics.push('Missing production-readiness report; Shogo Desktop will generate it automatically.')
   if (!codeOssCheckoutExists) diagnostics.push('Code - OSS checkout is not present; Shogo Desktop will clone it automatically.')

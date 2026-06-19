@@ -11,8 +11,10 @@ dist/
 extensions/shogo-core/dist/
 extensions/shogo-agent-chat/dist/
 hardening/runtime/
+hardening/runtime-*/
 hardening/runtime-smoke/
 hardening/generated/last-launch.json
+.runtime-debug*/
 .cache/
 node_modules/
 *.log

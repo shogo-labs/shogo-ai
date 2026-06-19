@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 
 const workspaceRoot = resolve(new URL('..', import.meta.url).pathname)
@@ -26,13 +26,11 @@ function assertFile(path, label) {
   }
 }
 
-function readBuiltInDescriptors() {
+function readBuiltInDescriptors(files) {
   assertFile(builtinDescriptorsDir, 'built-in extension descriptors directory')
-  return readdirSync(builtinDescriptorsDir)
-    .filter((file) => file.endsWith('.json'))
-    .sort()
+  return files
     .map((file) => {
-      const descriptorPath = join(builtinDescriptorsDir, file)
+      const descriptorPath = join(workspaceRoot, 'distribution', file)
       const descriptor = readJson(descriptorPath)
       const packagePath = join(workspaceRoot, 'extensions', descriptor.name, 'package.json')
       assertFile(packagePath, `${descriptor.name} package`)
@@ -52,8 +50,8 @@ assertFile(distributionManifestPath, 'distribution manifest')
 const product = readJson(productTemplatePath)
 const settings = readJson(defaultsSettingsPath)
 const layout = readJson(defaultsLayoutPath)
-const builtIns = readBuiltInDescriptors()
 const distributionManifest = readJson(distributionManifestPath)
+const builtIns = readBuiltInDescriptors(distributionManifest.builtinExtensions ?? [])
 
 const productJson = {
   ...product,
@@ -94,7 +92,7 @@ const generatedManifest = {
     main: packageJson.main,
     browser: packageJson.browser,
     activityContainer: packageJson.contributes?.viewsContainers?.activitybar?.[0]?.id ?? null,
-    auxiliaryContainer: packageJson.contributes?.viewsContainers?.auxiliarybar?.[0]?.id ?? null,
+    auxiliaryContainer: packageJson.contributes?.viewsContainers?.secondarySidebar?.[0]?.id ?? null,
     chatContainer: descriptor.defaultVisibility?.chatContainer ?? null,
     views: Object.values(packageJson.contributes?.views ?? {}).flat().map((view) => view.id),
     walkthroughs: packageJson.contributes?.walkthroughs?.map((walkthrough) => walkthrough.id) ?? [],

@@ -23,22 +23,9 @@
       "contribViewsRemote",
       "terminalDataWriteEvent",
       "treeViewMarkdownMessage"
-    ],
-    "shogo.shogo-agent-chat": [
-      "contribViewsRemote"
     ]
   },
   "builtInExtensions": [
-    {
-      "name": "shogo-agent-chat",
-      "version": "0.0.0-phase.3",
-      "repo": "https://github.com/shogo-labs/shogo-ai",
-      "metadata": {
-        "id": "shogo.shogo-agent-chat",
-        "publisherId": "shogo",
-        "publisherDisplayName": "Shogo Labs"
-      }
-    },
     {
       "name": "shogo-core",
       "version": "0.0.0-phase.1",

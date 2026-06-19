@@ -23,22 +23,9 @@
       "contribViewsRemote",
       "terminalDataWriteEvent",
       "treeViewMarkdownMessage"
-    ],
-    "shogo.shogo-agent-chat": [
-      "contribViewsRemote"
     ]
   },
   "builtInExtensions": [
-    {
-      "name": "shogo-agent-chat",
-      "version": "0.0.0-phase.8",
-      "repo": "https://github.com/shogo-labs/shogo-ai",
-      "metadata": {
-        "id": "shogo.shogo-agent-chat",
-        "publisherId": "shogo",
-        "publisherDisplayName": "Shogo Labs"
-      }
-    },
     {
       "name": "shogo-core",
       "version": "0.0.0-phase.1",
@@ -82,7 +69,6 @@
     "defaultSettingsPath": "distribution/defaults/settings.json",
     "defaultLayoutPath": "distribution/defaults/layout.json",
     "builtinExtensionDescriptors": [
-      "distribution/builtin-extensions/shogo-agent-chat.json",
       "distribution/builtin-extensions/shogo-core.json"
     ],
     "currentDesktopFallback": true
