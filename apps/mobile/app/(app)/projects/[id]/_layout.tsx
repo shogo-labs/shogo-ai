@@ -2345,14 +2345,29 @@ export default observer(function ProjectLayout() {
     if (!projectId) return
     const bridge =
       Platform.OS === 'web' && typeof window !== 'undefined'
-        ? window.shogoDesktop?.codeWorkbench
+        ? (window as unknown as {
+            shogoDesktop?: {
+              codeWorkbench?: {
+                open?: (opts: { projectId?: string; workspacePath?: string }) => Promise<{ ok?: boolean; error?: string }>
+              }
+            }
+          }).shogoDesktop?.codeWorkbench
         : undefined
     if (bridge?.open) {
-      void bridge.open({ projectId: projectId! })
+      void bridge.open({
+        projectId: projectId!,
+        ...(primaryFolderPath ? { workspacePath: primaryFolderPath } : {}),
+      }).then((result: { ok?: boolean; error?: string } | undefined) => {
+        if (result && result.ok === false) {
+          Alert.alert('Could not open Shogo IDE', result.error ?? 'Unknown error')
+        }
+      }).catch((err: unknown) => {
+        Alert.alert('Could not open Shogo IDE', err instanceof Error ? err.message : String(err))
+      })
       return
     }
     handlePreviewTabChange('ide')
-  }, [handlePreviewTabChange, projectId])
+  }, [handlePreviewTabChange, primaryFolderPath, projectId])
 
   // enrichMessage: auto-inject terminal context into every chat message.
   // Dynamically imports the desktop terminal store (no-op on mobile/web).

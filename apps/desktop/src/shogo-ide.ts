@@ -3,6 +3,7 @@
 
 import { app } from 'electron'
 import { spawn, spawnSync } from 'child_process'
+import { createHash } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 
@@ -216,7 +217,14 @@ function syncBundledShogoExtensions(workspacePath: string, extensionsDir: string
   syncBundledExtension(workspacePath, extensionsDir, 'shogo-core')
 }
 
-export function ensureShogoIdeRuntimeProfile(workspacePath: string, options: { desktopChatUrl?: string } = {}): {
+function runtimeProfileSegment(profileKey?: string): string {
+  if (!profileKey) return 'default'
+  const basename = path.basename(profileKey).replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 48) || 'workspace'
+  const hash = createHash('sha256').update(path.resolve(profileKey)).digest('hex').slice(0, 12)
+  return `${basename}-${hash}`
+}
+
+export function ensureShogoIdeRuntimeProfile(workspacePath: string, options: { desktopChatUrl?: string; profileKey?: string } = {}): {
   userDataDir: string
   extensionsDir: string
   systemExtensionsDir: string
@@ -224,7 +232,7 @@ export function ensureShogoIdeRuntimeProfile(workspacePath: string, options: { d
   agentsExtensionsDir: string
   crashReporterDirectory: string
 } {
-  const runtimeDir = path.join(workspacePath, 'hardening', 'runtime-shogo-chat')
+  const runtimeDir = path.join(workspacePath, 'hardening', 'runtime-shogo-chat', runtimeProfileSegment(options.profileKey))
   const userDataDir = path.join(runtimeDir, 'user-data')
   const extensionsDir = path.join(runtimeDir, 'extensions')
   const systemExtensionsDir = path.join(runtimeDir, 'system-extensions')

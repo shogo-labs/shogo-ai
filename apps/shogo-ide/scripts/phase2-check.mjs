@@ -61,7 +61,7 @@ assert(preload.includes("ipcRenderer.invoke('code-workbench:open'"), 'preload mu
 assert(idePanel.includes('<Workbench'), 'IDEPanel must keep Monaco Workbench as the default in-tab editor')
 assert(statusBar.includes('Shogo IDE'), 'StatusBar must expose the compact Shogo IDE focus/open action')
 assert(layout.includes('handleOpenCodeWorkbench'), 'project layout must route IDE launches through the managed workbench opener')
-assert(layout.includes('window.shogoDesktop?.codeWorkbench'), 'project layout must use the codeWorkbench bridge')
+assert(layout.includes('shogoDesktop') && layout.includes('codeWorkbench') && layout.includes('workspacePath'), 'project layout must use the codeWorkbench bridge with workspace path support')
 assert(topBar.includes("tabId === 'ide'"), 'top bar must special-case IDE tab presses')
 assert(topBar.includes('onOpenCodeWorkbench?.()'), 'top bar must open/focus Shogo-IDE when IDE tab is pressed')
 
