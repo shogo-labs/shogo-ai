@@ -215,10 +215,17 @@ const args = [
   // workflows can `sentry-cli sourcemaps inject` + `upload` it to the
   // `shogo-desktop` project (and then delete it before packaging, so the
   // map never ships inside app.asar). Without this the main-process bundle
-  // has no map and every captured crash stays minified. `external` writes a
-  // standalone map without a `sourceMappingURL` comment; sentry-cli adds the
-  // comment + Debug ID during inject.
-  '--sourcemap=external',
+  // has no map and every captured crash stays minified.
+  //
+  // Use `linked` (not `external`): bun rejects `--sourcemap=external` unless
+  // the output goes to `--outdir`, but we emit a single `--outfile`. `linked`
+  // works with `--outfile`, writes the standalone `main.js.map`, AND stamps a
+  // matching `//# debugId=` into both files so Sentry can pair the bundle with
+  // its map (sentry-cli inject/upload reconciles the same Debug ID). The
+  // trailing `//# sourceMappingURL=main.js.map` comment becomes a dangling
+  // reference once the map is deleted pre-packaging, which is harmless — only
+  // a devtools session would try to fetch it.
+  '--sourcemap=linked',
   '--define', `__SHOGO_WORKER_VERSION__="${workerPkg.version}"`,
   '--define', `__SHOGO_DESKTOP_SENTRY_DSN__="${desktopSentryDsn}"`,
   ...EXTERNALS.flatMap((p) => ['--external', p]),
