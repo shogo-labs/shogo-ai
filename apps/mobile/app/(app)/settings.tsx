@@ -66,7 +66,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { formatUsd, formatResetCountdown, PLAN_PRICING } from '../../lib/billing-config'
+import { formatUsd, getWindowDisplays, getUsageLimitNotice, PLAN_PRICING } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { openWebAppSession } from '../../lib/openWebAppSession'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
@@ -2523,6 +2523,18 @@ function BillingTab() {
   const [instanceLabel, setInstanceLabel] = useState<string | null>(null)
   const [spendLimitOpen, setSpendLimitOpen] = useState(false)
 
+  // Coupled window display + single at-limit notice (overage vs paused).
+  const billingWindowDisplays = getWindowDisplays(usageWindows)
+  const billingUsageLimitNotice = getUsageLimitNotice({
+    atLimit: billingWindowDisplays.fiveHour.atLimit || billingWindowDisplays.weekly.atLimit,
+    overage: effectiveBalance
+      ? { enabled: effectiveBalance.overageEnabled, accumulatedUsd: effectiveBalance.overageAccumulatedUsd }
+      : undefined,
+    countdown: billingWindowDisplays.weekly.atLimit
+      ? billingWindowDisplays.weekly.countdown
+      : billingWindowDisplays.fiveHour.countdown,
+  })
+
   useEffect(() => {
     if (!workspace?.id) return
     let cancelled = false
@@ -2596,9 +2608,8 @@ function BillingTab() {
             {(['fiveHour', 'weekly'] as const).map((key) => {
               const w = usageWindows?.[key]
               const label = key === 'fiveHour' ? '5-hour usage' : 'Weekly usage'
-              const uncapped = !!w && w.limitUsd == null
-              const pct = w ? Math.round(Math.min(1, Math.max(0, w.utilization)) * 100) : 0
-              const countdown = w ? formatResetCountdown(w.resetsAt) : ''
+              const display = billingWindowDisplays[key]
+              const { pct, uncapped, countdown } = display
               return (
                 <View key={key} className="gap-1">
                   <View className="flex-row items-center justify-between">
@@ -2623,7 +2634,17 @@ function BillingTab() {
                 </View>
               )
             })}
-            {Platform.OS !== 'ios' && effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 && (
+            {billingUsageLimitNotice ? (
+              <Text
+                className={cn(
+                  'text-xs',
+                  billingUsageLimitNotice.tone === 'overage' ? 'text-foreground font-medium' : 'text-muted-foreground',
+                )}
+              >
+                {billingUsageLimitNotice.text}
+              </Text>
+            ) : null}
+            {Platform.OS !== 'ios' && !billingUsageLimitNotice && effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 && (
               <Text className="text-xs text-muted-foreground">
                 Overage this period: {formatUsd(effectiveBalance.overageAccumulatedUsd)} (billed in trust blocks: $100 → $500)
               </Text>
@@ -2820,6 +2841,8 @@ function WorkspaceAnalyticsTab() {
   }
 
   // ─── Progress card data ──────────────────────────────────
+  // Coupled window display: weekly-at-100% forces the 5-hour card to 100% too.
+  const analyticsWindowDisplays = getWindowDisplays(usageWindows)
   const onDemandUsed = effectiveBalance?.overageAccumulatedUsd ?? 0
   const onDemandLimit = effectiveBalance?.overageHardLimitUsd ?? null
   const onDemandPct = onDemandLimit && onDemandLimit > 0
@@ -2856,9 +2879,7 @@ function WorkspaceAnalyticsTab() {
         {(['fiveHour', 'weekly'] as const).map((key) => {
           const w = usageWindows?.[key]
           const label = key === 'fiveHour' ? '5-hour usage' : 'Weekly usage'
-          const uncapped = !!w && w.limitUsd == null
-          const pct = w ? Math.round(Math.min(1, Math.max(0, w.utilization)) * 100) : 0
-          const countdown = w ? formatResetCountdown(w.resetsAt) : ''
+          const { pct, uncapped, countdown } = analyticsWindowDisplays[key]
           return (
             <BillingProgressCard
               key={key}

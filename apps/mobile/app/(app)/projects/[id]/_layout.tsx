@@ -2586,6 +2586,9 @@ export default observer(function ProjectLayout() {
     workspaceName,
     planLabel,
     usageWindows: billingData.usageWindows,
+    usageOverage: billingData.effectiveBalance
+      ? { enabled: billingData.effectiveBalance.overageEnabled, accumulatedUsd: billingData.effectiveBalance.overageAccumulatedUsd }
+      : undefined,
     ownerName: user?.name || '',
     projectCreatedAt: project.createdAt,
     projectModifiedAt: project.updatedAt,

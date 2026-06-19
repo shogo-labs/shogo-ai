@@ -1159,7 +1159,12 @@ function WorkspaceMenuSection({
           <View className="h-px bg-border" />
           <View className="px-4 py-3 gap-2">
             <Text className="text-sm text-muted-foreground">Usage</Text>
-            <CompactUsageWindows windows={billingData.usageWindows} />
+            <CompactUsageWindows
+              windows={billingData.usageWindows}
+              overage={billingData.effectiveBalance
+                ? { enabled: billingData.effectiveBalance.overageEnabled, accumulatedUsd: billingData.effectiveBalance.overageAccumulatedUsd }
+                : undefined}
+            />
           </View>
         </>
       )}
