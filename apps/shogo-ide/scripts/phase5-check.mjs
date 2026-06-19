@@ -39,7 +39,7 @@ assert(!idePanel.includes('shogo.ide.legacyMonaco'), 'IDEPanel must not persist 
 assert(!idePanel.includes('Return to Shogo IDE'), 'IDEPanel must not show the old large replacement-gate return banner')
 
 assert(layout.includes('handleOpenCodeWorkbench'), 'project layout must own the managed workbench open/focus callback')
-assert(layout.includes('window.shogoDesktop?.codeWorkbench'), 'project layout must call the desktop codeWorkbench bridge')
+assert(layout.includes('shogoDesktop') && layout.includes('codeWorkbench') && layout.includes('workspacePath'), 'project layout must call the desktop codeWorkbench bridge with workspace path support')
 assert(topBar.includes('onOpenCodeWorkbench?.()'), 'IDE tab press must open/focus Shogo-IDE')
 assert(preload.includes("ipcRenderer.invoke('code-workbench:open'"), 'preload must expose managed workbench open IPC')
 assert(!desktopBridge.includes("ipcMain.handle('shogo-ide:launch'"), 'legacy explicit launch IPC must be removed')

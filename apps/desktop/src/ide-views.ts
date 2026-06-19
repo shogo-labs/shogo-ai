@@ -43,7 +43,7 @@ function codeOssWorkspaceUrl(baseUrl: string, workspacePath: string): string {
 }
 
 function codeOssWebArgs(status: ReturnType<typeof getShogoIdeStatus>, workspacePath: string, desktopChatUrl?: string): string[] {
-  const runtime = ensureShogoIdeRuntimeProfile(status.workspacePath, { desktopChatUrl })
+  const runtime = ensureShogoIdeRuntimeProfile(status.workspacePath, { desktopChatUrl, profileKey: workspacePath })
   const shogoCoreExtensionPath = path.join(status.workspacePath, 'extensions', 'shogo-core')
   return [
     '--skip-welcome',
