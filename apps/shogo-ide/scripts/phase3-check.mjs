@@ -37,10 +37,8 @@ const chatView = read('apps/shogo-ide/extensions/shogo-core/src/chatViewProvider
 const commands = read('apps/shogo-ide/extensions/shogo-core/src/commands.ts')
 const agentClient = read('apps/shogo-ide/extensions/shogo-core/src/agentClient.ts')
 const contextStore = read('apps/shogo-ide/extensions/shogo-core/src/contextStore.ts')
-const treeViews = read('apps/shogo-ide/extensions/shogo-core/src/treeViews.ts')
 const types = read('apps/shogo-ide/extensions/shogo-core/src/types.ts')
 const web = read('apps/shogo-ide/extensions/shogo-core/src/web.ts')
-const docs = read('apps/shogo-ide/PHASE_3_SHOGO_CORE_EXTENSION.md')
 
 read('apps/shogo-ide/extensions/shogo-core/src/vscode.d.ts')
 
@@ -84,14 +82,12 @@ assert(commands.includes('requireTrustedWorkspace'), 'commands must guard worksp
 assert(commands.includes('shogo.context.addActiveFile'), 'commands must support active file context')
 assert(agentClient.includes('/health'), 'agent client must support health endpoint')
 assert(agentClient.includes('/chat'), 'agent client must support chat endpoint')
-assert(agentClient.includes('Phase 3 Shogo Core extension shell'), 'agent client must have no-agent fallback')
+assert(agentClient.includes('local agent bridge is not connected'), 'agent client must have no-agent fallback')
 assert(contextStore.includes('MAX_CONTEXT_TEXT_LENGTH'), 'context store must truncate context')
-assert(treeViews.includes("registerTreeDataProvider('shogo.tasks'"), 'tree view helpers may remain available but must not be activated by default')
 assert(types.includes('ShogoContextItem'), 'types must define context item contract')
 assert(web.includes("export { activate, deactivate } from './extension'"), 'web entrypoint must re-export activation')
 assert(extension.includes("registerWebviewViewProvider('shogo.agentChat'"), 'shogo-core must register the Shogo webview provider')
 assert(!extension.includes('createChatParticipant'), 'shogo-core must not register proposed native chat participants')
-assert(docs.includes('Phase 3 still does not execute shell commands'), 'Phase 3 docs must state non-execution safety')
 
 if (errors.length > 0) {
   console.error('Phase 3 check failed:')

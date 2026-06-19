@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-19T11:39:46.776Z",
+  "generatedAt": "2026-06-19T17:04:41.094Z",
   "phase": 8,
   "product": {
     "nameShort": "Shogo",
@@ -13,7 +13,7 @@
   "extensions": [
     {
       "id": "shogo.shogo-core",
-      "version": "0.0.0-phase.1",
+      "version": "0.0.0",
       "main": "./dist/extension.js",
       "browser": "./dist/web.js",
       "activityContainer": null,
@@ -56,7 +56,7 @@
   ],
   "extension": {
     "id": "shogo.shogo-core",
-    "version": "0.0.0-phase.1",
+    "version": "0.0.0",
     "main": "./dist/extension.js",
     "browser": "./dist/web.js",
     "activityContainer": null,

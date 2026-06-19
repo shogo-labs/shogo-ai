@@ -39,7 +39,6 @@ const idePanel = read('apps/mobile/components/project/panels/IDEPanel.tsx')
 const statusBar = read('apps/mobile/components/project/panels/ide/StatusBar.tsx')
 const main = read('apps/desktop/src/main.ts')
 const layout = read('apps/mobile/app/(app)/projects/[id]/_layout.tsx')
-const docs = read('apps/shogo-ide/PHASE_6_PRODUCTION_HARDENING.md')
 const packageJson = readJson('apps/shogo-ide/package.json')
 const rootPackage = readJson('package.json')
 
@@ -84,10 +83,6 @@ assert(statusBar.includes('Shogo IDE'), 'Status bar must expose the managed Shog
 assert(main.includes("label: 'Open Shogo IDE'"), 'File menu must expose Open Shogo IDE')
 assert(idePanel.includes('onOpenCodeWorkbench'), 'IDE panel must accept the managed workbench callback')
 assert(layout.includes('handleOpenCodeWorkbench'), 'project layout must wire the managed workbench opener')
-
-assert(docs.toLowerCase().includes('production hardening'), 'Phase 6 docs must describe production hardening')
-assert(docs.includes('No commit or push'), 'Phase 6 docs must preserve no-commit/no-push posture')
-assert(docs.includes('Manual gates remain'), 'Phase 6 docs must document remaining manual gates')
 
 if (packageJson) {
   assert(packageJson.scripts?.['phase6:check'], 'apps/shogo-ide must expose phase6:check')

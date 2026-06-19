@@ -1,14 +1,13 @@
 # Shogo Core Extension
 
-Buildable Phase 3 shell for the bundled Shogo IDE extension.
+Bundled Shogo IDE extension for the managed Code - OSS workbench.
 
 The extension stays portable enough to run in stock VS Code during development and in the Shogo Code - OSS distribution when bundled.
 
-## Phase 3 responsibilities
+## Responsibilities
 
-- Own the Shogo activity bar container.
-- Register the Chat webview view.
-- Register Agent Tasks, Checkpoints, Runtime, and Integrations tree views.
+- Own the right-side Shogo Chat webview container.
+- Embed the Desktop project chat route inside the workbench.
 - Register command IDs and menu placement.
 - Collect selected text and active file context.
 - Check local Shogo agent service health when configured.
@@ -30,19 +29,19 @@ shogo.runtime.openPreview
 
 ## Runtime contract
 
-The extension talks to a future local Shogo agent service over localhost HTTP. The service owns indexing, patch application, checkpointing, command execution, and model/tool orchestration.
+The extension can talk to a local Shogo agent service over localhost HTTP. The service owns indexing, patch application, checkpointing, command execution, and model/tool orchestration.
 
-Phase 3 supports:
+Supported endpoints:
 
 - `GET /health`
 - `POST /chat`
 
-If no service URL is configured, the chat webview returns a local placeholder response so the UI can be tested safely.
+If no service URL is configured, the chat webview stays usable and reports that the local bridge is unavailable.
 
 ## Security rules
 
-- Never run shell commands in Phase 3.
-- Never apply edits in Phase 3.
+- Do not run shell commands directly from the extension host.
+- Do not apply edits directly from the extension host.
 - Gate patch/checkpoint/source-control actions on workspace trust.
 - Validate webview message types before acting.
 - Truncate selected/active-file context before storing it.

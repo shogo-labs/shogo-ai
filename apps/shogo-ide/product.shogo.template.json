@@ -28,7 +28,7 @@
   "builtInExtensions": [
     {
       "name": "shogo-core",
-      "version": "0.0.0-phase.1",
+      "version": "0.0.0",
       "repo": "https://github.com/shogo-labs/shogo-ai",
       "metadata": {
         "id": "shogo.shogo-core",

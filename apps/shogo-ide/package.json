@@ -1,10 +1,10 @@
 {
   "name": "@shogo/shogo-ide",
-  "version": "0.0.0-phase.1",
+  "version": "0.0.0",
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Phase 1 spike workspace for the Shogo Code - OSS desktop IDE distribution.",
+  "description": "Shogo Code - OSS desktop IDE distribution workspace.",
   "scripts": {
     "phase1:check": "node scripts/phase1-check.mjs",
     "phase2:check": "node scripts/phase2-check.mjs",

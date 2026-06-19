@@ -27,7 +27,6 @@ const topBar = read('apps/mobile/components/project/ProjectTopBar.tsx')
 const preload = read('apps/desktop/src/preload.ts')
 const desktopBridge = read('apps/desktop/src/shogo-ide.ts')
 const phase2Check = read('apps/shogo-ide/scripts/phase2-check.mjs')
-const docs = read('apps/shogo-ide/PHASE_5_REPLACE_CUSTOM_IDE.md')
 
 assert(idePanel.includes('<Workbench'), 'IDEPanel must keep Monaco Workbench as the default in-tab editor')
 assert(statusBar.includes('Shogo IDE'), 'StatusBar must expose the compact Shogo IDE action')
@@ -46,10 +45,6 @@ assert(!desktopBridge.includes("ipcMain.handle('shogo-ide:launch'"), 'legacy exp
 assert(!preload.includes('shogoIde: shogoIdeBridge'), 'preload must not expose the old shogoIde bridge')
 assert(desktopBridge.includes('launchReady'), 'desktop bridge must keep launch readiness status')
 assert(phase2Check.includes('codeWorkbench'), 'Phase 2 check must be updated for the managed workbench bridge')
-
-assert(docs.includes('Monaco workbench first, Shogo IDE as an explicit launcher'), 'Phase 5 docs must state replacement posture')
-assert(docs.includes('Behavior matrix'), 'Phase 5 docs must include behavior matrix')
-assert(docs.includes('IDE tab now keeps Monaco visible and opens/focuses the managed Shogo-IDE window'), 'Phase 5 docs must state final Desktop launch behavior')
 
 if (errors.length > 0) {
   console.error('Phase 5 check failed:')

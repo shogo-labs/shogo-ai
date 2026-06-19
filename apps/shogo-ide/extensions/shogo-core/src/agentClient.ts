@@ -15,7 +15,7 @@ export class ShogoAgentClient {
         ok: false,
         status: 'not-configured',
         url: null,
-        message: 'Shogo agent service is not configured yet. Phase 3 runs the extension shell without starting a local agent.',
+        message: 'Shogo agent service is not configured yet. The embedded chat panel remains available while the local agent bridge is starting.',
       }
     }
 
@@ -56,9 +56,9 @@ export class ShogoAgentClient {
       return {
         ok: true,
         message:
-          `Phase 3 Shogo Core extension shell received your prompt: "${request.prompt}".` +
+          `Shogo received your prompt: "${request.prompt}".` +
           contextSummary +
-          '\n\nNext phase wires this chat view to the local Shogo agent service for real model/tool execution.',
+          '\n\nThe local agent bridge is not connected yet, so model/tool execution is unavailable in this window.',
       }
     }
 
