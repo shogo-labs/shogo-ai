@@ -1088,6 +1088,11 @@ model ChatMessage {
   ///                 envelope describing the sub-kind
   ///                 (voice / agent-activity / agent-reply / shogo-text).
   agent     String   @default("technical")
+  /// The model selection (picker `agentMode` value, e.g. "claude-sonnet-4-6"
+  /// or "auto") used to author this row. Stamped on assistant messages so the
+  /// picker can default to a chat's last-used model when switching chats.
+  /// Null for legacy rows and rows authored before this column existed.
+  model     String?
 
   // Relations
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
