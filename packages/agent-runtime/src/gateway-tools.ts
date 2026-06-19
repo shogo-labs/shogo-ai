@@ -440,7 +440,7 @@ function buildSoftTimeoutResult(entry: CommandEntry, softTimeoutMs: number): Age
 function createExecTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec',
-    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail. Tokens saved to .env are auto-loaded. Soft timeout: if the command does not finish within \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}), this tool returns \`{ status: "running", run_id, pid, ... }\` while the command keeps running in the background. You can then call \`exec_wait(run_id)\` to keep waiting, or \`exec("kill <pid>")\` to terminate it and move on.`,
+    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail, and the \`search\` tool over grep/rg for finding code. Tokens saved to .env are auto-loaded. Soft timeout: if the command does not finish within \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}), this tool returns \`{ status: "running", run_id, pid, ... }\` while the command keeps running in the background. You can then call \`exec_wait(run_id)\` to keep waiting, or \`exec("kill <pid>")\` to terminate it and move on.`,
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
@@ -818,24 +818,69 @@ function detectBinaryContent(
 function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
-    description: 'Read a file from the agent workspace. Supports partial reads via offset and limit to handle large files without consuming the full context window. When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit or use grep to find specific sections. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than 20 MB are rejected.',
+    description: 'Read a file from the agent workspace. Prefer this over `exec` with `cat`/`head`/`tail`. Supports partial reads via offset and limit to handle large files without consuming the full context window. `offset` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); `limit` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or use the `search` tool to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than 20 MB are rejected.',
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
+      // Tolerant union: weak models frequently send a stringified number
+      // ("380") or an object ({ start, end } / { offset, limit }) instead of
+      // the canonical number|number[]. Accept those shapes here so the input
+      // validator doesn't reject the call; execute() normalizes them below.
       offset: Type.Optional(Type.Union([
-        Type.Number({ description: 'Line number to start reading from (1-based)' }),
-        Type.Array(Type.Number(), { description: 'Tuple [start, end] line range' }),
+        Type.Number({ description: 'Line number to start reading from (1-based). Example: offset: 380' }),
+        Type.Array(Type.Number(), { description: 'Tuple [start, end] line range. Example: offset: [380, 420]' }),
+        Type.String({ description: 'Stringified start line (coerced to a number), e.g. "380"' }),
+        Type.Object({
+          start: Type.Optional(Type.Number()),
+          end: Type.Optional(Type.Number()),
+          offset: Type.Optional(Type.Number()),
+          limit: Type.Optional(Type.Number()),
+        }, { description: 'Object range form, e.g. { start, end } or { offset, limit }' }),
       ])),
-      limit: Type.Optional(Type.Number({ description: 'Number of lines to read' })),
+      limit: Type.Optional(Type.Union([
+        Type.Number({ description: 'Number of lines to read. Example: limit: 40' }),
+        Type.String({ description: 'Stringified line count (coerced to a number), e.g. "40"' }),
+      ])),
     }),
     execute: async (_toolCallId, params) => {
-      let { path: filePath, offset, limit } = params as {
-        path: string; offset?: number | number[]; limit?: number
+      const raw = params as {
+        path: string
+        offset?: number | number[] | string | Record<string, unknown>
+        limit?: number | string
       }
-      if (Array.isArray(offset)) {
-        const sorted = [...offset].sort((a, b) => a - b)
-        if (!limit) limit = sorted[sorted.length - 1] - sorted[0]
-        offset = sorted[0]
+      const filePath = raw.path
+      // Normalize tolerant offset/limit shapes into numbers. Anything that
+      // can't be coerced is dropped (treated as "not provided") rather than
+      // erroring the call — this is the single largest production tool-error
+      // class for weak models (malformed read_file offset).
+      const coerceNum = (v: unknown): number | undefined => {
+        if (typeof v === 'number') return Number.isFinite(v) ? v : undefined
+        if (typeof v === 'string') {
+          const n = Number(v.trim())
+          return v.trim() !== '' && Number.isFinite(n) ? n : undefined
+        }
+        return undefined
+      }
+      let offset: number | undefined
+      let limit: number | undefined = coerceNum(raw.limit)
+      if (Array.isArray(raw.offset)) {
+        const sorted = raw.offset
+          .map(coerceNum)
+          .filter((n): n is number => n !== undefined)
+          .sort((a, b) => a - b)
+        if (sorted.length > 0) {
+          offset = sorted[0]
+          if (limit === undefined && sorted.length > 1) limit = sorted[sorted.length - 1] - sorted[0]
+        }
+      } else if (raw.offset !== null && typeof raw.offset === 'object') {
+        const o = raw.offset as Record<string, unknown>
+        offset = coerceNum(o.start) ?? coerceNum(o.offset) ?? coerceNum(o.from)
+        const end = coerceNum(o.end) ?? coerceNum(o.to)
+        if (limit === undefined) {
+          limit = coerceNum(o.limit) ?? (end !== undefined && offset !== undefined ? end - offset : undefined)
+        }
+      } else {
+        offset = coerceNum(raw.offset)
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
       if (!existsSync(resolved)) {
@@ -965,7 +1010,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       const result: Record<string, any> = { content: fullContent, bytes: fullContent.length }
       if (totalLineCount > 500) {
         result.totalLines = totalLineCount
-        result.note = `Large file (${totalLineCount} lines). Use offset/limit to read specific sections, or grep to find the code you need. Reading the whole file wastes context.`
+        result.note = `Large file (${totalLineCount} lines). Use offset/limit to read specific sections (e.g. offset: 380, limit: 40), or the \`search\` tool to find the code you need. Reading the whole file wastes context.`
       }
       return textResult(result)
     },
@@ -989,6 +1034,66 @@ function appendImpactHint(ctx: ToolContext, filePath: string, result: Record<str
         'Use impact_radius for full analysis.'
     }
   } catch { /* best-effort — do not fail the write */ }
+}
+
+/**
+ * Best-effort lint feedback attached to write_file/edit_file results so weak
+ * models get immediate diagnostics without having to remember `read_lints`.
+ * Lightweight by design: only runs when the LSP is already up, queries a single
+ * file, and is hard-capped on time — if diagnostics aren't ready it omits the
+ * field silently. This is feedback, NOT a gate (the agent is free to ignore it).
+ */
+async function attachEditDiagnostics(
+  ctx: ToolContext,
+  filePath: string,
+  resolved: string,
+  base: Record<string, unknown>,
+): Promise<void> {
+  try {
+    if (!LINTABLE_EXTENSION_RE.test(filePath)) return
+    if (filePath.endsWith('.d.ts') || filePath.endsWith('.pyi')) return
+    const lsp = ctx.getLspManager?.() ?? ctx.lspManager
+    if (!lsp || !lsp.isRunning()) return
+
+    const uri = `file://${resolved}`
+    const TS_RETURN_OUTSIDE_FN = 1108
+    // Small settle so the LSP recomputes after notifyFileChanged, hard-capped
+    // so this never adds more than ~1.2s of latency to an edit.
+    const diagsMap = await Promise.race([
+      (async () => {
+        await new Promise(r => setTimeout(r, 300))
+        return lsp.getDiagnosticsAsync(uri)
+      })(),
+      new Promise<null>(r => setTimeout(() => r(null), 1200)),
+    ])
+    if (!diagsMap) return
+
+    let diags = diagsMap.get(uri)
+    if (!diags) {
+      for (const [u, d] of diagsMap) {
+        if (u === uri || u.endsWith(filePath)) { diags = d; break }
+      }
+    }
+    diags = diags ?? []
+
+    const errors = diags
+      .filter(d => (d.severity ?? 1) === 1)
+      .filter(d => d.code !== TS_RETURN_OUTSIDE_FN)
+      .map(d => `Line ${d.range.start.line + 1}: ${d.message}`)
+
+    if (errors.length === 0) {
+      base.lint = { ok: true }
+      return
+    }
+    base.lint = {
+      ok: false,
+      errorCount: errors.length,
+      errors: errors.slice(0, 5),
+      hint: 'This edit introduced type/lint errors (above). Fix them with edit_file — you do not need to call read_lints first.',
+    }
+  } catch {
+    /* best-effort — never fail an edit because diagnostics couldn't be fetched */
+  }
 }
 
 function createWriteFileTool(ctx: ToolContext): AgentTool {
@@ -1053,6 +1158,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         ? (existsSync(resolved) ? readFileSync(resolved, 'utf-8') : content)
         : content
       appendCanvasApiContractHint(ctx, filePath, finalContentForLint, base)
+      await attachEditDiagnostics(ctx, filePath, resolved, base)
       const quickActionsResult = maybeValidateQuickActions(filePath, resolved, base)
       if (quickActionsResult) return textResult(quickActionsResult)
       const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
@@ -1558,7 +1664,9 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
             ctx.lspManager.notifyFileChanged(resolved, normalized)
             ctx.lspManager.notifyFileSaved?.(resolved)
           }
-          return textResult({ ok: true, path: filePath, created: true })
+          const createdBase: Record<string, unknown> = { ok: true, path: filePath, created: true }
+          await attachEditDiagnostics(ctx, filePath, resolved, createdBase)
+          return textResult(createdBase)
         }
         const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
         return textResult({ error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}` })
@@ -1704,6 +1812,7 @@ async function commitEdit(
   // Mirror the write_file canvas-API contract hint so edits that
   // introduce a new `fetch('/api/X')` get the same eager warning.
   appendCanvasApiContractHint(ctx, filePath, updated, base)
+  await attachEditDiagnostics(ctx, filePath, resolved, base)
   const quickActionsResult = maybeValidateQuickActions(filePath, resolved, base)
   if (quickActionsResult) return textResult(quickActionsResult)
   const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
