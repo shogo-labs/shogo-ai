@@ -1714,6 +1714,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // buildWorkspaceEnv already set AI_PROXY_URL; add the tools proxy
       // (index-engine embeddings etc.) the same way doStart does.
       runtimeEnv.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
+      if (process.env.TERMINAL_EXEC_URL) {
+        runtimeEnv.TERMINAL_EXEC_URL = process.env.TERMINAL_EXEC_URL
+      }
+      if (process.env.TERMINAL_EXEC_TOKEN) {
+        runtimeEnv.TERMINAL_EXEC_TOKEN = process.env.TERMINAL_EXEC_TOKEN
+      }
 
       if (process.env.PROJECTS_DATABASE_URL) {
         runtimeEnv.DATABASE_URL = process.env.PROJECTS_DATABASE_URL
@@ -2189,6 +2195,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // gates everything outside the `/api/tools/*` allowlist). See
         // `runtime-manager-proxy-urls.test.ts` for the regression guard.
         runtimeEnv.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
+        if (process.env.TERMINAL_EXEC_URL) {
+          runtimeEnv.TERMINAL_EXEC_URL = process.env.TERMINAL_EXEC_URL
+        }
+        if (process.env.TERMINAL_EXEC_TOKEN) {
+          runtimeEnv.TERMINAL_EXEC_TOKEN = process.env.TERMINAL_EXEC_TOKEN
+        }
 
         runtimeEnv.WORKSPACE_ID = workspaceId
 

@@ -23,7 +23,7 @@
  *     or stubbing `react-native`'s `Platform`.
  */
 
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ideBottomPanelStore,
   useBottomPanelState,
@@ -59,6 +59,8 @@ interface DrawerHostProps {
    * the chat to use.
    */
   isChatFullscreen: boolean
+  /** Filesystem path of the opened project folder. */
+  folderPath?: string
   /** The right-pane content (the previewTab switch). */
   children: React.ReactNode
 }
@@ -86,11 +88,28 @@ export function DrawerHost({
   platformIsWeb,
   canvasAreaHidden,
   isChatFullscreen,
+  folderPath,
   children,
 }: DrawerHostProps): JSX.Element {
   const open = useBottomPanelState((s) => s.open)
   const size = useBottomPanelState((s) => s.size)
   const newSessionNonce = useBottomPanelState((s) => s.newTerminalNonce)
+
+  // Panel maximize: when true, terminal fills all available height and
+  // the editor/canvas area shrinks to zero.
+  const [isPanelMaximized, setIsPanelMaximized] = useState(false)
+  const prevSizeRef = useRef<number | null>(null)
+  const handleMaximizeChange = useCallback((maximized: boolean) => {
+    if (maximized) {
+      prevSizeRef.current = ideBottomPanelStore.getState().size
+      ideBottomPanelStore.setSize(SIZE_MAX)
+    } else {
+      if (prevSizeRef.current != null) {
+        ideBottomPanelStore.setSize(prevSizeRef.current)
+      }
+    }
+    setIsPanelMaximized(maximized)
+  }, [])
 
   const showDrawer = shouldShowDrawer({
     platformIsWeb,
@@ -197,20 +216,25 @@ export function DrawerHost({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="relative flex-1 min-h-0">{children}</div>
+      {/* Editor/canvas area — hidden when panel is maximized */}
+      <div className={isPanelMaximized ? 'relative h-0 overflow-hidden' : 'relative flex-1 min-h-0'}>
+        {children}
+      </div>
       {open ? (
         <>
-          <div
-            role="separator"
-            aria-orientation="horizontal"
-            aria-label="Resize panel"
-            className="h-[3px] shrink-0 cursor-row-resize bg-transparent hover:bg-[#0078d4]/60"
-            onMouseDown={handleResizeStart}
-            onDoubleClick={() => ideBottomPanelStore.setSize(260)}
-          />
+          {!isPanelMaximized && (
+            <div
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="Resize panel"
+              className="h-[3px] shrink-0 cursor-row-resize bg-transparent hover:bg-[#0078d4]/60"
+              onMouseDown={handleResizeStart}
+              onDoubleClick={() => ideBottomPanelStore.setSize(260)}
+            />
+          )}
           <div
             data-testid="drawer-host-panel"
-            style={{ height: size, flexShrink: 0 }}
+            style={isPanelMaximized ? { flex: 1, flexShrink: 1 } : { height: size, flexShrink: 0 }}
             className="min-h-0"
           >
             <BottomPanel
@@ -220,6 +244,8 @@ export function DrawerHost({
               onReveal={onReveal}
               agentUrl={agentUrl ?? null}
               messages={messages}
+              onMaximizeChange={handleMaximizeChange}
+              folderPath={folderPath}
             />
           </div>
         </>

@@ -13,6 +13,8 @@
  * `usage-cost.ts` and `usage-plans.ts` on the backend.
  */
 
+import type { UsageWindows, UsageWindowView } from '@shogo/shared-app/hooks'
+
 export type PlanId = 'free' | 'basic' | 'pro' | 'business' | 'enterprise'
 
 /** Included USD per seat per month. Free has no monthly pool; daily-only. */
@@ -112,6 +114,101 @@ export function formatResetCountdown(resetsAt: string | Date | null | undefined,
   if (days > 0) return `${days}d ${hours}h`
   if (hours > 0) return `${hours}h ${minutes}m`
   return `${minutes}m`
+}
+
+/** Display-ready state for a single rolling usage window. */
+export interface WindowDisplay {
+  /** 0..100 integer, with the weekly -> 5-hour coupling already applied. */
+  pct: number
+  /** True when the plan is uncapped (enterprise) and reports a null limit. */
+  uncapped: boolean
+  /** True when the window is effectively at its limit (`pct >= 100`). */
+  atLimit: boolean
+  /** Human-readable reset countdown, e.g. "2h 13m" (empty if not opened). */
+  countdown: string
+  /** True when there is no window data yet. */
+  empty: boolean
+}
+
+function windowPct(window: UsageWindowView | undefined): number {
+  if (!window) return 0
+  return Math.round(Math.min(1, Math.max(0, window.utilization)) * 100)
+}
+
+/**
+ * Derive display state for both rolling windows, applying the coupling rule:
+ * because usage is blocked when *either* window is exhausted, an exhausted
+ * weekly window means the user is maxed out regardless of 5-hour headroom.
+ * So when the weekly window is at 100%, the 5-hour bar is forced to 100% too,
+ * keeping the two indicators from contradicting each other.
+ */
+export function getWindowDisplays(windows: UsageWindows | undefined): {
+  fiveHour: WindowDisplay
+  weekly: WindowDisplay
+} {
+  const weekly = windows?.weekly
+  const fiveHour = windows?.fiveHour
+
+  const weeklyPct = windowPct(weekly)
+  const rawFivePct = windowPct(fiveHour)
+  const fivePct = weeklyPct >= 100 ? 100 : rawFivePct
+
+  return {
+    fiveHour: {
+      pct: fivePct,
+      uncapped: !!fiveHour && fiveHour.limitUsd == null,
+      atLimit: fivePct >= 100,
+      countdown: fiveHour ? formatResetCountdown(fiveHour.resetsAt) : '',
+      empty: !fiveHour,
+    },
+    weekly: {
+      pct: weeklyPct,
+      uncapped: !!weekly && weekly.limitUsd == null,
+      atLimit: weeklyPct >= 100,
+      countdown: weekly ? formatResetCountdown(weekly.resetsAt) : '',
+      empty: !weekly,
+    },
+  }
+}
+
+/** Overage context needed to phrase the at-limit notice. */
+export interface UsageOverageContext {
+  enabled: boolean
+  accumulatedUsd?: number
+}
+
+/** A user-facing notice shown when a usage window is exhausted. */
+export interface UsageLimitNotice {
+  tone: 'overage' | 'paused'
+  text: string
+}
+
+/**
+ * Build the at-limit notice. Returns `null` when not at limit. When overage is
+ * enabled the user keeps working and is billed for overage; otherwise usage is
+ * paused until the soonest window resets.
+ */
+export function getUsageLimitNotice(opts: {
+  atLimit: boolean
+  overage: UsageOverageContext | undefined
+  countdown?: string
+}): UsageLimitNotice | null {
+  if (!opts.atLimit) return null
+
+  if (opts.overage?.enabled) {
+    const accumulated = opts.overage.accumulatedUsd ?? 0
+    const suffix = accumulated > 0 ? ` Overage this period: ${formatUsd(accumulated)}.` : ''
+    return {
+      tone: 'overage',
+      text: `Limit reached — additional usage is now billed as overage.${suffix}`,
+    }
+  }
+
+  const resumes = opts.countdown ? ` Resumes in ${opts.countdown}.` : ''
+  return {
+    tone: 'paused',
+    text: `Limit reached — usage is paused.${resumes}`,
+  }
 }
 
 export interface PlanPricing {

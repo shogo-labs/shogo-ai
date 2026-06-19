@@ -15,6 +15,8 @@ interface IDEPanelProps {
   projectName?: string | null
   agentUrl?: string | null
   onOpenCodeWorkbench?: () => void
+  isExternalProject?: boolean
+  folderPath?: string | null
 }
 
 /**
@@ -30,7 +32,15 @@ interface IDEPanelProps {
  * In Shogo Desktop, this IDE tab is the in-app editing surface. It must not
  * launch a separate Code OSS/Shogo IDE runtime from normal product UI.
  */
-export function IDEPanel({ visible, projectId, projectName, agentUrl, onOpenCodeWorkbench }: IDEPanelProps) {
+export function IDEPanel({
+  visible,
+  projectId,
+  projectName,
+  agentUrl,
+  onOpenCodeWorkbench,
+  isExternalProject,
+  folderPath,
+}: IDEPanelProps) {
   // SdkFs is always-on: it's the canonical backend for writes, search, and
   // SSE subscriptions even when the desktop IPC fast-path is available
   // (DesktopFs wraps and delegates to it). Memo keeps the AgentClient +
@@ -108,6 +118,8 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl, onOpenCode
           paneVisible={visible}
           agentUrl={agentUrl ?? undefined}
           fetchImpl={agentFetch}
+          isExternalProject={isExternalProject}
+          folderPath={folderPath}
         />
       </div>
       {onOpenCodeWorkbench ? (

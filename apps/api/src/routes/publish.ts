@@ -530,24 +530,33 @@ async function seedPublishedData(subdomain: string, projectId: string): Promise<
  * is (re)created and the SERVER_BACKED Worker KV flag is set/cleared so the
  * edge routes `/api/*` correctly. Shared by publish + republish.
  */
-async function configurePublishedService(projectId: string, subdomain: string): Promise<void> {
+async function configurePublishedService(
+  projectId: string,
+  subdomain: string,
+  opts?: { alwaysOn?: boolean },
+): Promise<{ serverBacked: boolean }> {
   const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
   const { setServerBackedFlag, clearServerBackedFlag } = await import("../lib/cloudflare-server-backed-kv")
   const manager = getKnativeProjectManager()
 
   const serverBacked = await detectServerBacked(projectId)
+  // Always-on only applies to server-backed apps — a static app is served
+  // from object storage/edge, so a warm pod is pointless. Clamp to scale-to-
+  // zero for static even if the project row says alwaysOn.
+  const minScale = serverBacked && opts?.alwaysOn ? 1 : 0
   if (serverBacked) {
-    const serviceUrl = await manager.createPublishedServerService(projectId, subdomain)
-    console.log(`[Publish] Server-backed published service ready: ${serviceUrl}`)
+    const serviceUrl = await manager.createPublishedServerService(projectId, subdomain, { minScale })
+    console.log(`[Publish] Server-backed published service ready: ${serviceUrl} (min-scale=${minScale})`)
     await manager.createPublishedDomainMapping(subdomain, projectId)
     await seedPublishedData(subdomain, projectId)
     await setServerBackedFlag(subdomain)
   } else {
-    const serviceUrl = await manager.createPublishedService(projectId, subdomain)
+    const serviceUrl = await manager.createPublishedService(projectId, subdomain, { minScale })
     console.log(`[Publish] Static published service ready: ${serviceUrl}`)
     await manager.createPublishedDomainMapping(subdomain, projectId)
     await clearServerBackedFlag(subdomain)
   }
+  return { serverBacked }
 }
 
 /**
@@ -751,6 +760,7 @@ export function publishRoutes() {
       const project = await prisma.project.findUnique({
         where: { id: projectId },
         select: {
+          workspaceId: true,
           publishedSubdomain: true,
           publishedAt: true,
           accessLevel: true,
@@ -759,11 +769,27 @@ export function publishRoutes() {
           publishStatus: true,
           publishedCommitSha: true,
           publishedTag: true,
+          publishedAlwaysOn: true,
         } as any,
       }) as (Record<string, any>) | null
       if (!project) {
         return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
       }
+
+      // Always-on surface: the slot meter (pooled per workspace) and whether
+      // this app can use it at all (server-backed). `serverBacked` is read from
+      // the edge KV flag (fast, no pod cold start); in local/unconfigured mode
+      // we default it on so the toggle is testable.
+      const { getAlwaysOnAllowanceForWorkspace, countAlwaysOnUsed } = await import("../services/billing.service")
+      const { getServerBackedFlag } = await import("../lib/cloudflare-server-backed-kv")
+      const [alwaysOnAllowance, alwaysOnUsed, serverBackedFlag] = await Promise.all([
+        getAlwaysOnAllowanceForWorkspace(project.workspaceId),
+        countAlwaysOnUsed(project.workspaceId),
+        project.publishedSubdomain
+          ? getServerBackedFlag(project.publishedSubdomain)
+          : Promise.resolve(null),
+      ])
+
       return c.json({
         subdomain: project.publishedSubdomain ?? undefined,
         publishedAt: project.publishedAt ? new Date(project.publishedAt).getTime() : undefined,
@@ -773,6 +799,11 @@ export function publishRoutes() {
         publishStatus: project.publishStatus ?? undefined,
         publishedCommitSha: project.publishedCommitSha ?? undefined,
         publishedTag: project.publishedTag ?? undefined,
+        alwaysOn: project.publishedAlwaysOn === true,
+        // `Infinity` (enterprise/local) is not valid JSON — send null = unlimited.
+        alwaysOnAllowance: Number.isFinite(alwaysOnAllowance) ? alwaysOnAllowance : null,
+        alwaysOnUsed,
+        serverBacked: serverBackedFlag ?? true,
       }, 200)
     } catch (error: any) {
       console.error("[Publish] Get publish state error:", error)
@@ -830,6 +861,22 @@ export function publishRoutes() {
         }
       }
 
+      // Resolve the always-on intent for this (re)publish: honor the saved
+      // flag, but re-validate entitlement so a downgrade / seat removal since
+      // the last toggle clamps the app back to scale-to-zero. `configure`
+      // additionally clamps static apps (a warm pod is pointless for them).
+      let alwaysOn = (project as any).publishedAlwaysOn === true
+      if (alwaysOn) {
+        const { canEnableAlwaysOn } = await import("../services/billing.service")
+        const gate = await canEnableAlwaysOn(project.workspaceId, projectId)
+        if (!gate.allowed) {
+          console.warn(
+            `[Publish] always-on no longer entitled for ${projectId} (${gate.used}/${gate.allowance}) — clamping off`,
+          )
+          alwaysOn = false
+        }
+      }
+
       // In Kubernetes: Build, download, and upload to S3
       if (isKubernetes()) {
         // Hold the publish-in-flight lock for the entire pipeline so the
@@ -883,7 +930,10 @@ export function publishRoutes() {
           // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
           await setPublishStatus(projectId, 'configuring')
           try {
-            await configurePublishedService(projectId, subdomain)
+            const { serverBacked } = await configurePublishedService(projectId, subdomain, { alwaysOn })
+            // Static apps never consume an always-on slot — clamp the persisted
+            // flag so the slot meter and DB stay accurate.
+            if (!serverBacked) alwaysOn = false
           } catch (err: any) {
             console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
             await setPublishStatus(projectId, 'failed', 'configure_failed')
@@ -927,6 +977,7 @@ export function publishRoutes() {
           accessLevel: accessLevel as any,
           siteTitle,
           siteDescription,
+          publishedAlwaysOn: alwaysOn,
           ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
         } as any,
       })
@@ -1077,6 +1128,20 @@ export function publishRoutes() {
 
       const subdomain = project.publishedSubdomain
 
+      // Re-validate always-on entitlement on each republish (clamp off on a
+      // downgrade); `configure` further clamps static apps.
+      let alwaysOn = (project as any).publishedAlwaysOn === true
+      if (alwaysOn) {
+        const { canEnableAlwaysOn } = await import("../services/billing.service")
+        const gate = await canEnableAlwaysOn(project.workspaceId, projectId)
+        if (!gate.allowed) {
+          console.warn(
+            `[Publish] always-on no longer entitled for ${projectId} (${gate.used}/${gate.allowance}) — clamping off`,
+          )
+          alwaysOn = false
+        }
+      }
+
       if (isKubernetes()) {
         await acquirePublishLock(projectId)
         try {
@@ -1117,7 +1182,8 @@ export function publishRoutes() {
           // republish never clobbers accumulated end-user writes.
           await setPublishStatus(projectId, 'configuring')
           try {
-            await configurePublishedService(projectId, subdomain)
+            const { serverBacked } = await configurePublishedService(projectId, subdomain, { alwaysOn })
+            if (!serverBacked) alwaysOn = false
           } catch (err: any) {
             console.warn("[Publish] Failed to reconfigure published service:", err.message)
           }
@@ -1139,6 +1205,7 @@ export function publishRoutes() {
           publishStatus: 'live' as any,
           publishError: null,
           publishStatusAt: publishedAt,
+          publishedAlwaysOn: alwaysOn,
           ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
         } as any,
       })
@@ -1183,6 +1250,7 @@ export function publishRoutes() {
         accessLevel?: "anyone" | "authenticated" | "private"
         siteTitle?: string
         siteDescription?: string
+        alwaysOn?: boolean
       }>()
 
       const project = await prisma.project.findUnique({
@@ -1202,6 +1270,55 @@ export function publishRoutes() {
       if (body.siteTitle !== undefined) updates.siteTitle = body.siteTitle
       if (body.siteDescription !== undefined) updates.siteDescription = body.siteDescription
 
+      // Always-on toggle: entitlement-gated and only meaningful for
+      // server-backed apps. Enforce the workspace slot cap on enable, then
+      // flip the live Knative service's min-scale in place (no rebuild).
+      if (body.alwaysOn !== undefined) {
+        const wantOn = body.alwaysOn === true
+        if (wantOn) {
+          const serverBacked = isKubernetes() ? await detectServerBacked(projectId) : true
+          if (!serverBacked) {
+            return c.json(
+              {
+                error: {
+                  code: "not_server_backed",
+                  message: "Always on only applies to apps with a backend (database or API routes).",
+                },
+              },
+              400,
+            )
+          }
+          const { canEnableAlwaysOn } = await import("../services/billing.service")
+          const gate = await canEnableAlwaysOn(project.workspaceId, projectId)
+          if (!gate.allowed) {
+            const code = gate.planAllows ? "slot_exhausted" : "plan_not_allowed"
+            const message = gate.planAllows
+              ? `You're using all ${gate.allowance} always-on apps on your plan. Upgrade or add a seat to add more.`
+              : "Always on is available on Pro and Business plans. Upgrade to enable it."
+            return c.json(
+              { error: { code, message, allowance: gate.allowance, used: gate.used } },
+              402,
+            )
+          }
+        }
+
+        updates.publishedAlwaysOn = wantOn
+
+        // Apply to the live service. Best-effort: the DB flag is the source of
+        // truth and the next (re)publish reconciles min-scale regardless.
+        if (isKubernetes()) {
+          try {
+            const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+            await getKnativeProjectManager().setPublishedMinScale(projectId, wantOn ? 1 : 0)
+          } catch (err: any) {
+            console.warn(
+              `[Publish] setPublishedMinScale failed for ${projectId} (flag persisted, will reconcile on republish):`,
+              err?.message ?? err,
+            )
+          }
+        }
+      }
+
       let updatedProject = project
       if (Object.keys(updates).length > 0) {
         updatedProject = await prisma.project.update({
@@ -1218,6 +1335,7 @@ export function publishRoutes() {
           accessLevel: updatedProject.accessLevel,
           siteTitle: updatedProject.siteTitle,
           siteDescription: updatedProject.siteDescription,
+          alwaysOn: (updatedProject as any).publishedAlwaysOn === true,
         },
         200
       )

@@ -48,9 +48,11 @@ import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
 import { registerRunIpcHandlers, disposeRunIpc } from './run-ipc'
 import { registerDebugIpcHandlers, disposeDebugIpc } from './debug-ipc'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
+import { startTerminalExecServer, stopTerminalExecServer, getTerminalExecToken } from './ipc/terminal-exec-server'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
 import { getShogoIdeStatus, registerShogoIdeIpcHandlers, terminateLaunchedShogoIdeProcesses } from './shogo-ide'
+import { registerExtensionsIpcHandlers, disposeExtensionsIpcHandlers } from './extensions/ipc'
 import { createTray, destroyTray } from './tray'
 import { WindowManager } from './window-manager'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
@@ -812,6 +814,15 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('get-device-info', () => getDeviceInfo())
+  ipcMain.handle('clipboard:write-text', (_event, text: string) => {
+    const { clipboard } = require('electron') as typeof import('electron')
+    clipboard.writeText(text)
+    return true
+  })
+  ipcMain.handle('clipboard:read-text', () => {
+    const { clipboard } = require('electron') as typeof import('electron')
+    return clipboard.readText()
+  })
 
   // Cloud sign-in: drive the same poll-based device flow the CLI uses
   // (see runCloudSignIn() above). We open the system browser pointed at
@@ -1429,6 +1440,7 @@ app.whenReady().then(async () => {
   registerLlmIpcHandlers()
   registerPortsIpcHandlers()
   registerShogoIdeIpcHandlers()
+  registerExtensionsIpcHandlers()
   buildAppMenu()
   buildDockMenu()
 
@@ -1436,6 +1448,10 @@ app.whenReady().then(async () => {
   if (!isCloudMode && !skipLocalServer) {
     console.log('[Desktop] Starting local server...')
     try {
+      // Start the terminal exec server for agent -> visible terminal commands
+      const terminalExecUrl = await startTerminalExecServer()
+      process.env.TERMINAL_EXEC_URL = terminalExecUrl
+      process.env.TERMINAL_EXEC_TOKEN = getTerminalExecToken()
       await startLocalServer()
     } catch (err) {
       writeLogSync('FATAL', '[Desktop] Failed to start local server:', err)
@@ -1532,6 +1548,7 @@ app.on('before-quit', (event) => {
     void disposeTerminalIpc().catch(() => {})
     disposeLlmIpcHandlers()
     disposePortsIpcHandlers()
+    disposeExtensionsIpcHandlers()
     disposeGitIpc()
     disposeRunIpc()
     disposeDebugIpc()
@@ -1546,10 +1563,11 @@ app.on('before-quit', (event) => {
   destroyTray()
   disposeLlmIpcHandlers()
   disposePortsIpcHandlers()
+  disposeExtensionsIpcHandlers()
   disposeGitIpc()
     disposeRunIpc()
     disposeDebugIpc()
-  Promise.allSettled([terminateLaunchedShogoIdeProcesses(), disposeTerminalIpc(), stopLocalServer()])
+  Promise.allSettled([terminateLaunchedShogoIdeProcesses(), disposeTerminalIpc(), stopTerminalExecServer(), stopLocalServer()])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))
     .finally(() => {

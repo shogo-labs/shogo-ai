@@ -175,6 +175,9 @@ model Project {
   // See prisma/schema.prisma for the canonical comment.
   publishedCommitSha String?
   publishedTag       String?
+  // When true, the published Knative service runs at min-scale=1 (never
+  // scales to zero). Canonical comment in prisma/schema.prisma.
+  publishedAlwaysOn  Boolean   @default(false)
   accessLevel        String    @default("anyone")
   category           String?
   siteTitle          String?

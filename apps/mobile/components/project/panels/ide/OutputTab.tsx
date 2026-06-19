@@ -19,6 +19,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ReactElement,
 } from 'react'
 import {
   formatTime,
@@ -33,8 +34,11 @@ import {
 } from '../../../../lib/runtime-logs/runtime-log-store'
 import { useRuntimeLogStream } from '../../../../lib/runtime-logs/useRuntimeLogStream'
 import { useStickyBottom } from './sticky-bottom'
+import { ideBottomPanelStore } from '../../../../lib/ide-bottom-panel-store'
+import { getDesktopExtensionsBridge } from './extensions/useExtensions'
+import type { ExtensionHostEvent, ExtensionOutputChannel } from './extensions/types'
 
-type SourceFilter = 'all' | RuntimeLogSource
+type SourceFilter = 'all' | RuntimeLogSource | 'extension'
 
 const SOURCE_FILTERS: ReadonlyArray<{ id: SourceFilter; label: string }> = [
   { id: 'all', label: 'All' },
@@ -42,6 +46,7 @@ const SOURCE_FILTERS: ReadonlyArray<{ id: SourceFilter; label: string }> = [
   { id: 'console', label: 'Console' },
   { id: 'canvas-error', label: 'Canvas' },
   { id: 'exec', label: 'Exec' },
+  { id: 'extension', label: 'Extensions' },
 ]
 
 const LEVEL_BADGE_CLASS: Record<LogLevel, string> = {
@@ -93,7 +98,7 @@ export function OutputTab({
   visible,
   __eventSourceFactory,
   __fetcher,
-}: OutputTabProps): JSX.Element {
+}: OutputTabProps): ReactElement {
   const safeProjectId = projectId ?? '__no_project__'
   const { entries, unseenErrors } = useRuntimeLogStream({
     projectId: safeProjectId,
@@ -106,6 +111,8 @@ export function OutputTab({
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
   const [search, setSearch] = useState('')
   const [autoScroll, setAutoScroll] = useState(true)
+  const [extensionChannels, setExtensionChannels] = useState<ExtensionOutputChannel[]>([])
+  const [activeExtensionChannelId, setActiveExtensionChannelId] = useState<string>('')
   const listRef = useRef<HTMLDivElement | null>(null)
 
   // Mark this project's errors as seen as soon as the user views the tab.
@@ -115,9 +122,29 @@ export function OutputTab({
     if (visible && safeProjectId) markAllSeen(safeProjectId)
   }, [visible, safeProjectId, entries.length])
 
+  useEffect(() => {
+    const bridge = getDesktopExtensionsBridge()
+    if (!bridge) return
+    let disposed = false
+    void bridge.getOutputChannels().then((response) => {
+      if (!disposed && response.ok) setExtensionChannels(response.channels ?? [])
+    })
+    return bridge.onEvent((event: ExtensionHostEvent) => {
+      if (event.type !== 'outputChanged') return
+      setExtensionChannels(event.channels)
+      if (!activeExtensionChannelId && event.channels[0]) setActiveExtensionChannelId(event.channels[0].id)
+      if (event.changed?.visible) {
+        ideBottomPanelStore.setOpen(true)
+        ideBottomPanelStore.setActiveTab('Output')
+        setSourceFilter('extension')
+        setActiveExtensionChannelId(event.changed.id)
+      }
+    })
+  }, [activeExtensionChannelId])
+
   const rows: LogRow[] = useMemo(() => {
-    let filtered: ReadonlyArray<RuntimeLogEntry> = entries
-    if (sourceFilter !== 'all') {
+    let filtered: ReadonlyArray<RuntimeLogEntry> = sourceFilter === 'extension' ? [] : entries
+    if (sourceFilter !== 'all' && sourceFilter !== 'extension') {
       filtered = filtered.filter((e) => e.source === sourceFilter)
     }
     const q = search.trim().toLowerCase()
@@ -126,6 +153,15 @@ export function OutputTab({
     }
     return filtered.map(deriveLogRow)
   }, [entries, sourceFilter, search])
+
+  const activeExtensionChannel = useMemo(() => {
+    return extensionChannels.find((channel) => channel.id === activeExtensionChannelId) ?? extensionChannels[0] ?? null
+  }, [activeExtensionChannelId, extensionChannels])
+
+  const extensionOutputText = activeExtensionChannel?.lines ?? ''
+  const extensionOutputMatches = sourceFilter === 'extension' && search.trim().length > 0
+    ? extensionOutputText.toLowerCase().includes(search.trim().toLowerCase())
+    : true
 
   // BUG-009 fix: sticky-bottom auto-scroll. The user's autoScroll toggle
   // enables tail-follow; the hook honours it ONLY when the viewport is
@@ -136,7 +172,7 @@ export function OutputTab({
   const { scrollToBottom } = useStickyBottom(listRef, { enabled: autoScroll })
   useEffect(() => {
     scrollToBottom()
-  }, [rows.length, scrollToBottom])
+  }, [rows.length, extensionOutputText.length, scrollToBottom])
 
   const errorCount = useMemo(
     () => entries.filter((e) => e.level === 'error').length,
@@ -200,6 +236,19 @@ export function OutputTab({
             )
           })}
         </div>
+
+        {sourceFilter === 'extension' && extensionChannels.length > 0 && (
+          <select
+            value={activeExtensionChannel?.id ?? ''}
+            onChange={(event) => setActiveExtensionChannelId(event.target.value)}
+            aria-label="Extension output channel"
+            className="max-w-64 rounded border border-[#2a2a2a] bg-[#252526] px-2 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-[#0078d4]"
+          >
+            {extensionChannels.map((channel) => (
+              <option key={channel.id} value={channel.id}>{channel.name} · {channel.extensionId}</option>
+            ))}
+          </select>
+        )}
 
         <div className="ml-auto flex items-center gap-2">
           <label className="flex items-center gap-1 text-[11px] text-zinc-400">
@@ -271,7 +320,21 @@ export function OutputTab({
         aria-label="Output entries"
         className="flex-1 overflow-auto px-3 py-2 font-mono"
       >
-        {!agentUrl ? (
+        {sourceFilter === 'extension' ? (
+          !activeExtensionChannel ? (
+            <div className="py-8 text-center text-[11px] text-zinc-500">
+              No extension output channels yet.
+            </div>
+          ) : !extensionOutputMatches ? (
+            <div className="py-8 text-center text-[11px] text-zinc-500">
+              No output in {activeExtensionChannel.name} matches the current filter.
+            </div>
+          ) : (
+            <pre className="whitespace-pre-wrap break-words text-zinc-200">
+              {extensionOutputText || `${activeExtensionChannel.name} is open. No output has been written yet.`}
+            </pre>
+          )
+        ) : !agentUrl ? (
           <div className="py-8 text-center text-[11px] text-zinc-500">
             No runtime logs yet. Start the agent to see activity.
           </div>

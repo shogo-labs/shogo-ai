@@ -138,6 +138,49 @@ export function comparePlanRank(
 }
 
 /**
+ * Always-on published-app slots included per *seat*, by plan.
+ *
+ * Slots are pooled per workspace: a workspace's total included slots =
+ * `perSeat × entitledSeats` (see `getAlwaysOnAllowance`). An "always-on" app
+ * runs its published Knative service at `min-scale=1` so it never scales to
+ * zero — no cold-start delay for visitors (see `publish.ts`).
+ *
+ * `free`/`basic` get 0 (always-on is a paid upgrade gated to pro+). `null`
+ * means unlimited (enterprise).
+ */
+export const ALWAYS_ON_SLOTS_PER_SEAT: Record<PlanId, number | null> = {
+  free: 0,
+  basic: 0,
+  pro: 1,
+  business: 1,
+  enterprise: null,
+}
+
+/** Plans whose always-on slot allowance scales with the paid seat count. */
+const PER_SEAT_ALWAYS_ON_PLANS: ReadonlySet<PlanId> = new Set<PlanId>(['pro', 'business'])
+
+/**
+ * Resolve the total number of always-on published-app slots a (plan, seats)
+ * tuple is entitled to, pooled across the workspace.
+ *
+ * - Returns `Infinity` for uncapped plans (enterprise).
+ * - Per-seat plans (`pro`, `business`) multiply the per-seat allowance by
+ *   `max(1, seats)`.
+ * - `free`/`basic` (and unknown ids) return 0.
+ */
+export function getAlwaysOnAllowance(
+  planId: string | null | undefined,
+  seats: number = 1,
+): number {
+  const normalized = normalizePlanId(planId) ?? 'free'
+  const perSeat = ALWAYS_ON_SLOTS_PER_SEAT[normalized]
+  if (perSeat == null) return Infinity
+  if (!PER_SEAT_ALWAYS_ON_PLANS.has(normalized)) return perSeat
+  const safeSeats = Math.max(1, Math.floor(seats || 1))
+  return perSeat * safeSeats
+}
+
+/**
  * Rolling usage-window durations, in milliseconds. Usage is gated by two
  * independent windows that run in parallel (modeled on how Codex / Claude
  * Code time-gate "unlimited" plans): a short burst window and a longer

@@ -48,6 +48,20 @@ export interface ShogoDesktopTerminalBridge {
   detach(id: string, channelId: string): Promise<void>
   /** Subscribe to control-channel events (session:exit, host:log…). */
   onEvent(cb: (ev: ControlEvent) => void): () => void
+  /** Read lines from the user's shell history file(s). Used by the recent-command picker. */
+  readShellHistory?(): Promise<{ zsh: string[]; bash: string[]; fish: string[] }>
+  /** Push structured OSC633 command history to the main-process context bridge. */
+  publishTerminalContext?(payload: {
+    sessionId: string
+    cwd: string | null
+    content: string
+  }): Promise<void>
+  /** Fired when the agent spawns a background (∞ Shogo) terminal tab. */
+  onAgentTerminalSpawned?(cb: (payload: {
+    sessionId: string
+    terminalLabel: string
+    cwd: string | null
+  }) => void): () => void
   llm?: LlmClient & {
     openChatWithContext?(markdown: string): Promise<void>
   }

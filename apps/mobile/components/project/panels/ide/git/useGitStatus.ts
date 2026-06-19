@@ -20,6 +20,8 @@ const EMPTY_SNAPSHOT: GitSnapshot = {
   ahead: 0,
   behind: 0,
   fileStatus: {},
+  stagedStatus: {},
+  fileChanges: {},
   conflictPaths: [],
   refreshedAt: 0,
   error: null,

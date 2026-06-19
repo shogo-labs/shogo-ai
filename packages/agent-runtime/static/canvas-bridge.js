@@ -166,21 +166,49 @@
 
   // -------------------------------------------------------------------------
   // SSE listener — rebuild events from the agent runtime
+  // With automatic reconnection and exponential backoff.
   // -------------------------------------------------------------------------
 
-  try {
-    var es = new EventSource('/agent/canvas/stream')
-    var ready = false
-    es.onmessage = function (e) {
-      try {
-        var evt = JSON.parse(e.data)
-        if (evt && evt.type === 'init') { ready = true; return }
-        if (evt && evt.type === 'reload' && ready) showUpdateToast()
-      } catch (_err) { /* ignore malformed events */ }
+  var SSE_MAX_RETRY_MS = 30000
+  var SSE_INITIAL_RETRY_MS = 1000
+  var sseRetryDelay = SSE_INITIAL_RETRY_MS
+  var sseReady = false
+
+  function connectSSE() {
+    try {
+      var sse = new EventSource('/agent/canvas/stream')
+      sse.onopen = function () {
+        // Reset backoff on successful connection
+        sseRetryDelay = SSE_INITIAL_RETRY_MS
+      }
+      sse.onmessage = function (e) {
+        try {
+          var evt = JSON.parse(e.data)
+          if (evt && evt.type === 'init') { sseReady = true; return }
+          if (evt && evt.type === 'reload' && sseReady) showUpdateToast()
+        } catch (_err) { /* ignore malformed events */ }
+      }
+      sse.onerror = function () {
+        // EventSource auto-reconnects natively, but if the connection
+        // stays in error state we close and retry with backoff to avoid
+        // hammering a dead server
+        sse.close()
+        setTimeout(function () {
+          sseRetryDelay = Math.min(sseRetryDelay * 2, SSE_MAX_RETRY_MS)
+          connectSSE()
+        }, sseRetryDelay)
+      }
+    } catch (_err) {
+      // Older browsers without EventSource: degrade gracefully (no live toasts).
+      // Retry after backoff in case it's a transient error
+      setTimeout(function () {
+        sseRetryDelay = Math.min(sseRetryDelay * 2, SSE_MAX_RETRY_MS)
+        connectSSE()
+      }, sseRetryDelay)
     }
-  } catch (_err) {
-    // Older browsers without EventSource: degrade gracefully (no live toasts).
   }
+
+  connectSSE()
 
   // -------------------------------------------------------------------------
   // Parent bridge — receive theme + other messages from the host app

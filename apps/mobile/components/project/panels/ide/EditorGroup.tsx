@@ -10,6 +10,8 @@ import {
   PdfPreview,
   VideoPreview,
 } from "./MediaPreview";
+import { ExtensionDetails } from "./extensions/ExtensionDetails";
+import type { ExtensionSearchResult, ExtensionUsableEntryPoint, InstalledExtension } from "./extensions/types";
 import type { EditorGroup as GroupState, EditorSettings, OpenFile } from "./types";
 import type { editor } from "monaco-editor";
 
@@ -28,6 +30,14 @@ export function EditorGroupView({
   onEditorMount,
   settings,
   themeMode,
+  installedExtensions = [],
+  extensionInstallingId,
+  onInstallExtension,
+  onEnableExtension,
+  onDisableExtension,
+  onUninstallExtension,
+  onRunExtensionCommand,
+  onUseExtensionEntryPoint,
 }: {
   group: GroupState;
   focused: boolean;
@@ -41,6 +51,15 @@ export function EditorGroupView({
   onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
   settings: EditorSettings;
   themeMode: "dark" | "light";
+  editorTheme?: string;
+  installedExtensions?: InstalledExtension[];
+  extensionInstallingId?: string | null;
+  onInstallExtension?: (item: InstalledExtension | ExtensionSearchResult) => void;
+  onEnableExtension?: (id: string) => void;
+  onDisableExtension?: (id: string) => void;
+  onUninstallExtension?: (id: string) => void;
+  onRunExtensionCommand?: (commandId: string) => void;
+  onUseExtensionEntryPoint?: (extension: InstalledExtension, entryPoint: ExtensionUsableEntryPoint) => void;
 }) {
   const active: OpenFile | null =
     group.files.find((f) => f.id === group.activeId) ?? null;
@@ -62,7 +81,7 @@ export function EditorGroupView({
         onFocus={onFocus}
         groupFocused={focused}
       />
-      {active && <Breadcrumbs path={active.path} />}
+      {active && active.language !== "extension-detail" && active.language !== "extension-webview" && <Breadcrumbs path={active.path} />}
       <div className="flex-1 min-h-0 relative">
         {active ? (
           active.loading ? (
@@ -75,6 +94,23 @@ export function EditorGroupView({
               <div className="text-[13px]">Could not open {active.name}</div>
               <div className="text-[12px] text-[color:var(--ide-muted)]">{active.error}</div>
             </div>
+          ) : active.language === "extension-webview" ? (
+            <ExtensionWebview html={active.content} title={active.name} />
+          ) : active.language === "extension-detail" && active.extensionDetail ? (
+            <ExtensionDetails
+              item={active.extensionDetail}
+              installedItem={installedExtensions.find((extension) => extension.id === active.extensionDetail?.id)}
+              installing={extensionInstallingId === active.extensionDetail.id}
+              onInstall={!installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onInstallExtension?.(active.extensionDetail as InstalledExtension | ExtensionSearchResult) : undefined}
+              onEnable={installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onEnableExtension?.(active.extensionDetail!.id) : undefined}
+              onDisable={installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onDisableExtension?.(active.extensionDetail!.id) : undefined}
+              onUninstall={installedExtensions.some((extension) => extension.id === active.extensionDetail?.id) ? () => onUninstallExtension?.(active.extensionDetail!.id) : undefined}
+              onRunCommand={onRunExtensionCommand}
+              onUseEntryPoint={(entryPoint) => {
+                const installed = installedExtensions.find((extension) => extension.id === active.extensionDetail?.id);
+                if (installed) onUseExtensionEntryPoint?.(installed, entryPoint);
+              }}
+            />
           ) : active.language === "image" ? (
             <ImagePreview url={active.content} name={active.name} path={active.path} />
           ) : active.language === "sqlite" ? (
@@ -121,5 +157,17 @@ function EmptyGroup() {
         </span>
       </div>
     </div>
+  );
+}
+
+
+function ExtensionWebview({ html, title }: { html: string; title: string }) {
+  return (
+    <iframe
+      title={title}
+      sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+      srcDoc={html || "<html><body style='background:#1e1e1e;color:#cccccc;font-family:sans-serif;padding:16px'>Extension webview is loading…</body></html>"}
+      className="h-full w-full border-0 bg-[color:var(--ide-bg)]"
+    />
   );
 }

@@ -199,6 +199,10 @@ model Project {
   // Gives the publish panel + UI a traceable "this is what's live" anchor.
   publishedCommitSha String?
   publishedTag       String?
+  // When true, the published Knative service runs at min-scale=1 (never
+  // scales to zero) so visitors never hit a cold start. Gated by plan/seat
+  // allotment (see billing.service.ts canEnableAlwaysOn + publish.ts).
+  publishedAlwaysOn  Boolean          @default(false)
   accessLevel        AccessLevel      @default(anyone)
   category           ProjectCategory?
   siteTitle          String?

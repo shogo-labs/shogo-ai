@@ -9,9 +9,10 @@
   "main": "dist/main.js",
   "scripts": {
     "postinstall": "node scripts/fix-node-pty-perms.mjs",
-    "dev": "tsc && npm run bundle:main && npm run bundle:pty-host && electron .",
-    "build": "tsc && npm run bundle:main && npm run bundle:pty-host",
+    "dev": "tsc && npm run bundle:main && npm run bundle:pty-host && npm run bundle:extension-host && electron .",
+    "build": "tsc && npm run bundle:main && npm run bundle:pty-host && npm run bundle:extension-host",
     "bundle:main": "node scripts/bundle-main.mjs",
+    "bundle:extension-host": "node scripts/bundle-extension-host.mjs",
     "start": "electron .",
     "sync:web": "node scripts/sync-web.mjs",
     "test:web-bundle": "bun test-web-bundle.ts",

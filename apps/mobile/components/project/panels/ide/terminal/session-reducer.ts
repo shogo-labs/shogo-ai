@@ -56,6 +56,7 @@ export interface Session {
    * positional label. Empty strings are normalised to `null` by the
    * reducer.
    */
+  shell: string | null
   customLabel: string | null
   /**
    * Optional accent color (CSS hex like `#0078d4`) for this tab/group.
@@ -65,6 +66,8 @@ export interface Session {
    * is normalised to `null` on write.
    */
   tabColor: string | null
+  /** Agent-spawned (∞ Shogo) background terminal — read-only tab. */
+  isAgentTerminal?: boolean
 }
 
 let _idSeq = 0
@@ -83,7 +86,7 @@ export function __resetSessionIdSeqForTest(): void {
  * Create a session. Pass an existing `groupId` to add it as a split inside
  * that tab; omit it to mint a brand-new group (a new tab).
  */
-export function makeSession(groupId?: string): Session {
+export function makeSession(groupId?: string, shell?: string | null): Session {
   return {
     id: `t-${Date.now().toString(36)}-${++_idSeq}`,
     groupId: groupId ?? `g-${Date.now().toString(36)}-${++_groupSeq}`,
@@ -93,8 +96,26 @@ export function makeSession(groupId?: string): Session {
     cwd: null,
     errorMessage: null,
     exit: null,
+    shell: shell ?? null,
     customLabel: null,
     tabColor: null,
+    isAgentTerminal: false,
+  }
+}
+
+/** Attach UI to an agent-spawned PTY session (already running in the host). */
+export function makeAgentSession(opts: {
+  ptySessionId: string
+  label: string
+  cwd?: string | null
+}): Session {
+  const s = makeSession()
+  return {
+    ...s,
+    ptySessionId: opts.ptySessionId,
+    customLabel: opts.label,
+    cwd: opts.cwd ?? null,
+    isAgentTerminal: true,
   }
 }
 
@@ -172,8 +193,23 @@ export function labelsFor(sessions: Session[]): Map<string, string> {
       groupLabel.set(s.groupId, s.customLabel)
     }
   }
+  // Count occurrences of each shell so we can suffix duplicates (e.g. "zsh (2)")
+  const shellCount = new Map<string, number>()
+  for (const s of sessions) {
+    const name = s.shell ?? positional.get(s.groupId) ?? 'Terminal'
+    shellCount.set(name, (shellCount.get(name) ?? 0) + 1)
+  }
+  const shellSeen = new Map<string, number>()
   return new Map(
-    sessions.map((s) => [s.id, groupLabel.get(s.groupId) ?? s.id]),
+    sessions.map((s) => {
+      const custom = groupLabel.get(s.groupId)
+      if (custom && custom !== positional.get(s.groupId)) return [s.id, custom]
+      const shell = s.shell ?? 'Terminal'
+      const count = shellCount.get(shell) ?? 1
+      const seen = (shellSeen.get(shell) ?? 0) + 1
+      shellSeen.set(shell, seen)
+      return [s.id, seen > 1 ? `${shell} (${seen})` : shell]
+    }),
   )
 }
 

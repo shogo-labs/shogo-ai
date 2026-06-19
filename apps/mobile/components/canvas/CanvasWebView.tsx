@@ -9,8 +9,8 @@
  * back to the agent over HTTP.
  */
 
-import { useCallback, useEffect, useRef, useMemo } from 'react'
-import { Platform, View, StyleSheet } from 'react-native'
+import { useCallback, useEffect, useRef, useMemo, useState } from 'react'
+import { Platform, View, StyleSheet, ActivityIndicator, Text, TouchableOpacity } from 'react-native'
 import { useCanvasThemeOptional } from './CanvasThemeContext'
 
 interface CanvasCapabilities {
@@ -125,6 +125,9 @@ interface BridgeProps {
 function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const readyRef = useRef(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<{ phase: string; message: string } | null>(null)
+  const [refreshCount, setRefreshCount] = useState(0)
 
   const sendToIframe = useCallback((msg: Record<string, unknown>) => {
     iframeRef.current?.contentWindow?.postMessage(msg, '*')
@@ -138,6 +141,12 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
     if (themeMessage && readyRef.current) sendToIframe(themeMessage)
   }, [themeMessage, sendToIframe])
 
+  // Reset loading state when refreshKey changes (external reload trigger)
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+  }, [refreshCount])
+
   // Listen for messages from the iframe
   useEffect(() => {
     function onMessage(e: MessageEvent) {
@@ -146,6 +155,7 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
 
       if (msg.type === 'canvas-ready') {
         readyRef.current = true
+        setLoading(false)
         if (themeMessage) sendToIframe(themeMessage)
       } else if (msg.type === 'canvas-capabilities') {
         onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
@@ -154,15 +164,17 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
         const recentActions = Array.isArray(msg.recentActions)
           ? (msg.recentActions as CanvasErrorAction[])
           : undefined
+        const errorMsg = msg.error as string
         postCanvasError(agentUrl, {
           phase: msg.phase as string,
-          error: msg.error as string,
+          error: errorMsg,
           route,
           recentActions,
         })
+        setError({ phase: msg.phase as string, message: errorMsg })
         onCanvasError?.(
           msg.phase as 'compile' | 'runtime',
-          msg.error as string,
+          errorMsg,
           { route, recentActions },
         )
       }
@@ -172,11 +184,38 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
     return () => window.removeEventListener('message', onMessage)
   }, [agentUrl, sendToIframe, themeMessage, onCanvasError, onCanvasCapabilities])
 
+  const handleRetry = useCallback(() => {
+    setError(null)
+    setLoading(true)
+    readyRef.current = false
+    setRefreshCount((c) => c + 1)
+  }, [])
+
   return (
     <View style={styles.container}>
+      {loading && !error && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#888" />
+          <Text style={styles.loadingText}>Loading preview…</Text>
+        </View>
+      )}
+      {error && (
+        <View style={styles.errorOverlay}>
+          <Text style={styles.errorIcon}>⚠️</Text>
+          <Text style={styles.errorTitle}>
+            {error.phase === 'compile' ? 'Build Error' : 'Runtime Error'}
+          </Text>
+          <Text style={styles.errorMessage} numberOfLines={4}>
+            {error.message}
+          </Text>
+          <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       <iframe
         ref={iframeRef}
-        src={url}
+        src={`${url}${url.includes('?') ? '&' : '?'}_v=${refreshCount}`}
         data-testid="canvas-preview-iframe"
         title="Project preview"
         style={{
@@ -184,6 +223,7 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
           height: '100%',
           border: 'none',
           backgroundColor: 'transparent',
+          opacity: loading || error ? 0 : 1,
         } as any}
         allow="clipboard-write; clipboard-read; microphone; camera; display-capture; autoplay; fullscreen; geolocation; midi; encrypted-media; accelerometer; gyroscope; magnetometer; xr-spatial-tracking"
       />
@@ -266,5 +306,62 @@ const styles = StyleSheet.create({
   placeholder: {
     flex: 1,
     backgroundColor: 'transparent',
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+    zIndex: 10,
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 13,
+    color: '#888',
+  },
+  errorOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.03)',
+    zIndex: 10,
+    padding: 24,
+  },
+  errorIcon: {
+    fontSize: 32,
+    marginBottom: 12,
+  },
+  errorTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#e74c3c',
+    marginBottom: 8,
+  },
+  errorMessage: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    maxWidth: 400,
+    marginBottom: 16,
+    fontFamily: 'monospace',
+  },
+  retryButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    borderRadius: 6,
+    backgroundColor: '#333',
+  },
+  retryButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#fff',
   },
 })

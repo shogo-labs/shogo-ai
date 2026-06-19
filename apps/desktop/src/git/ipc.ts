@@ -22,9 +22,16 @@ import {
 } from "./branches";
 import {
   gitCommit,
+  gitCommitAll,
+  gitCommitAndPush,
+  gitCommitAndSync,
   gitDiscard,
+  gitGenerateCommitMessage,
   gitFileContent,
+  gitCommitHistory,
+  gitNumStat,
   gitStage,
+  gitUndoLastCommit,
   gitUnstage,
 } from "./operations";
 import {
@@ -90,6 +97,33 @@ function guard(workspaceRoot: unknown):
   return { ok: true, root: resolved };
 }
 
+/**
+ * Validate caller-supplied repo-relative paths for the mutating SCM ops
+ * (stage / unstage / discard). A compromised renderer (XSS) could otherwise
+ * pass `../../etc/...` or an absolute path and have `git checkout` / the
+ * untracked-file `rm` in gitDiscard touch files outside the workspace. We
+ * reject absolute paths and any path that resolves outside `root`. The `git`
+ * commands already use `--` to block flag injection, so we only need the
+ * traversal/containment check here.
+ */
+function validatePaths(root: string, paths: unknown):
+  | { ok: true; paths: string[] }
+  | { ok: false } {
+  if (!Array.isArray(paths)) return { ok: false };
+  const out: string[] = [];
+  for (const p of paths) {
+    if (typeof p !== "string" || p.length === 0) return { ok: false };
+    if (p.includes("\0")) return { ok: false };
+    // Disallow absolute paths — repo ops are always relative to the root.
+    const resolved = resolvePath(root, p);
+    if (resolved !== root && !resolved.startsWith(root + pathSep)) {
+      return { ok: false };
+    }
+    out.push(p);
+  }
+  return { ok: true, paths: out };
+}
+
 export function registerGitIpcHandlers(): void {
   const channels = [
     "git:probe",
@@ -104,6 +138,12 @@ export function registerGitIpcHandlers(): void {
     "git:unstage",
     "git:discard",
     "git:commit",
+    "git:commitAll",
+    "git:commitAndPush",
+    "git:commitAndSync",
+    "git:undoLastCommit",
+    "git:numStat",
+    "git:generateCommitMessage",
     "git:fileContent",
     "git:branches.list",
     "git:branches.checkout",
@@ -181,7 +221,8 @@ export function registerGitIpcHandlers(): void {
         cleanup();
       };
       SUBSCRIPTIONS.set(subId, { workspaceRoot: g.root, webContents, dispose: fullCleanup });
-      return { ok: true as const, subId, channel };
+      await ws.refreshNow();
+      return { ok: true as const, subId, channel, snapshot: ws.current() };
     },
   );
 
@@ -195,7 +236,7 @@ export function registerGitIpcHandlers(): void {
   ipcMain.handle("git:refresh", async (_event, args: { workspaceRoot: string }) => {
     const g = guard(args?.workspaceRoot);
     if (!g.ok) return { ok: false as const, reason: g.reason };
-    getOrCreateGitWorkspace(g.root).requestRefresh();
+    await getOrCreateGitWorkspace(g.root).refreshNow();
     return { ok: true as const };
   });
 
@@ -246,7 +287,9 @@ export function registerGitIpcHandlers(): void {
     async (_event, args: { workspaceRoot: string; paths: string[] }) => {
       const g = guard(args?.workspaceRoot);
       if (!g.ok) return { ok: false as const, reason: g.reason };
-      const res = await gitStage(g.root, args.paths ?? []);
+      const v = validatePaths(g.root, args?.paths ?? []);
+      if (!v.ok) return { ok: false as const, reason: "invalid-input" as const };
+      const res = await gitStage(g.root, v.paths);
       return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
     },
   );
@@ -256,7 +299,9 @@ export function registerGitIpcHandlers(): void {
     async (_event, args: { workspaceRoot: string; paths: string[] }) => {
       const g = guard(args?.workspaceRoot);
       if (!g.ok) return { ok: false as const, reason: g.reason };
-      const res = await gitUnstage(g.root, args.paths ?? []);
+      const v = validatePaths(g.root, args?.paths ?? []);
+      if (!v.ok) return { ok: false as const, reason: "invalid-input" as const };
+      const res = await gitUnstage(g.root, v.paths);
       return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
     },
   );
@@ -266,7 +311,9 @@ export function registerGitIpcHandlers(): void {
     async (_event, args: { workspaceRoot: string; paths: string[] }) => {
       const g = guard(args?.workspaceRoot);
       if (!g.ok) return { ok: false as const, reason: g.reason };
-      const res = await gitDiscard(g.root, args.paths ?? []);
+      const v = validatePaths(g.root, args?.paths ?? []);
+      if (!v.ok) return { ok: false as const, reason: "invalid-input" as const };
+      const res = await gitDiscard(g.root, v.paths);
       return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
     },
   );
@@ -281,6 +328,78 @@ export function registerGitIpcHandlers(): void {
         amend: !!args.amend,
         signoff: !!args.signoff,
       });
+      return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:commitAll",
+    async (_event, args: { workspaceRoot: string; message: string; amend?: boolean; signoff?: boolean }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitCommitAll(g.root, {
+        message: typeof args.message === "string" ? args.message : "",
+        amend: !!args.amend,
+        signoff: !!args.signoff,
+      });
+      return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:commitAndPush",
+    async (_event, args: { workspaceRoot: string; message: string; amend?: boolean; signoff?: boolean }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitCommitAndPush(g.root, {
+        message: typeof args.message === "string" ? args.message : "",
+        amend: !!args.amend,
+        signoff: !!args.signoff,
+      });
+      return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:commitAndSync",
+    async (_event, args: { workspaceRoot: string; message: string; amend?: boolean; signoff?: boolean }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitCommitAndSync(g.root, {
+        message: typeof args.message === "string" ? args.message : "",
+        amend: !!args.amend,
+        signoff: !!args.signoff,
+      });
+      return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:generateCommitMessage",
+    async (_event, args: { workspaceRoot: string; apiUrl: string }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitGenerateCommitMessage(g.root, args.apiUrl);
+      return res.ok ? { ok: true as const, message: res.message } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:numStat",
+    async (_event, args: { workspaceRoot: string; cached?: boolean }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitNumStat(g.root, !!args.cached);
+      return res.ok ? { ok: true as const, stats: res.stats } : { ok: false as const, reason: "git-error" as const, error: res.error };
+    },
+  );
+
+  ipcMain.handle(
+    "git:undoLastCommit",
+    async (_event, args: { workspaceRoot: string }) => {
+      const g = guard(args?.workspaceRoot);
+      if (!g.ok) return { ok: false as const, reason: g.reason };
+      const res = await gitUndoLastCommit(g.root);
       return res.ok ? { ok: true as const } : { ok: false as const, reason: "git-error" as const, error: res.error };
     },
   );
@@ -429,6 +548,18 @@ export function registerGitIpcHandlers(): void {
     const r = await blameFile(g.root, args.path);
     return r.ok
       ? { ok: true as const, lines: r.lines }
+      : { ok: false as const, reason: "git-error" as const, error: r.error };
+  });
+
+  ipcMain.handle("git:history", async (_event, args: { workspaceRoot: string; limit?: number; allBranches?: boolean }) => {
+    const g = guard(args?.workspaceRoot);
+    if (!g.ok) return { ok: false as const, reason: g.reason };
+    const r = await gitCommitHistory(g.root, {
+      limit: typeof args.limit === "number" ? args.limit : undefined,
+      allBranches: Boolean(args.allBranches),
+    });
+    return r.ok
+      ? { ok: true as const, commits: r.commits }
       : { ok: false as const, reason: "git-error" as const, error: r.error };
   });
 

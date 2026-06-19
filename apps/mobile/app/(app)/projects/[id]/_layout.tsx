@@ -2354,6 +2354,73 @@ export default observer(function ProjectLayout() {
     handlePreviewTabChange('ide')
   }, [handlePreviewTabChange, projectId])
 
+  // enrichMessage: auto-inject terminal context into every chat message.
+  // Dynamically imports the desktop terminal store (no-op on mobile/web).
+  // Must live before the loading early-return below so hook order is stable.
+  //
+  // Beyond the terminal tracker, we feed REAL git + diagnostics sources so the
+  // model sees branch/working-tree state and current errors without the user
+  // pasting them. Each source is independently guarded: a failure degrades to
+  // null/[] rather than dropping the user's message.
+  const enrichMessage = useCallback(async (text: string): Promise<string> => {
+    try {
+      if (Platform.OS !== 'web') return text
+      const { terminalContextStore } = await import('@shogo/desktop-terminal')
+      if (!terminalContextStore.isReady()) return text
+
+      const git = {
+        getStatus: async () => {
+          try {
+            if (!projectId) return null
+            const { getDesktopGitBridge } = await import('@/components/project/panels/ide/git/bridge')
+            const bridge = getDesktopGitBridge()
+            if (!bridge) return null
+            const resolved = await bridge.resolveProjectRoot(projectId)
+            const root = resolved.ok ? resolved.root : null
+            if (!root) return null
+            const cur = await bridge.current(root)
+            const snap = cur.ok ? cur.snapshot : null
+            if (!snap || !snap.isRepo) return null
+            const fileCodes = Object.values(snap.fileStatus ?? {})
+            return {
+              branch: snap.branch ?? (snap.detached ? 'HEAD (detached)' : 'unknown'),
+              stagedCount: Object.keys(snap.stagedStatus ?? {}).length,
+              modifiedCount: fileCodes.filter((c) => c !== '?').length,
+              untrackedCount: fileCodes.filter((c) => c === '?').length,
+              conflictCount: snap.conflictPaths?.length ?? 0,
+            }
+          } catch {
+            return null
+          }
+        },
+      }
+
+      const diagnostics = {
+        getDiagnostics: async () => {
+          try {
+            if (!projectId) return []
+            const { fetchDiagnostics } = await import('@/lib/diagnostics-api')
+            const res = await fetchDiagnostics(projectId)
+            if ('unchanged' in res) return []
+            return res.diagnostics.map((d) => ({
+              severity: d.severity === 'error' ? 'error' : d.severity === 'warning' ? 'warning' : 'info',
+              file: d.file,
+              line: d.line,
+              column: d.column,
+              message: d.message,
+            }))
+          } catch {
+            return []
+          }
+        },
+      }
+
+      return terminalContextStore.enrichMessage(text, { git, diagnostics })
+    } catch {
+      return text
+    }
+  }, [projectId])
+
   // Loading state. We also gate on `runtimeReady` so the panels never
   // render with stale URLs — see `useAgentUrl` for the polling contract.
   // Keep this as data for the final render branch instead of returning here:
@@ -2454,6 +2521,7 @@ export default observer(function ProjectLayout() {
                 selectedModel={selectedModel}
                 onModelChange={handleModelChange}
                 className="flex-1"
+                enrichMessage={enrichMessage}
               />
             </PanelErrorBoundary>
           </View>
@@ -2511,6 +2579,9 @@ export default observer(function ProjectLayout() {
     workspaceName,
     planLabel,
     usageWindows: billingData.usageWindows,
+    usageOverage: billingData.effectiveBalance
+      ? { enabled: billingData.effectiveBalance.overageEnabled, accumulatedUsd: billingData.effectiveBalance.overageAccumulatedUsd }
+      : undefined,
     ownerName: user?.name || '',
     projectCreatedAt: project?.createdAt,
     projectModifiedAt: project?.updatedAt,
@@ -2855,6 +2926,7 @@ export default observer(function ProjectLayout() {
             platformIsWeb={Platform.OS === 'web'}
             canvasAreaHidden={canvasAreaHidden}
             isChatFullscreen={isChatFullscreen}
+            folderPath={primaryFolderPath ?? undefined}
           >
           {/* Floating chat button on native narrow canvas — above every canvas sub-tab (z-20 panels) */}
           {showNativeNarrowChatFab && (
@@ -2914,7 +2986,15 @@ export default observer(function ProjectLayout() {
             }
           >
             <PanelErrorBoundary panelName="IDE">
-              <IDEPanel visible={effectiveTab === 'ide'} projectId={projectId!} projectName={project?.name ?? 'Project'} agentUrl={agentUrl} onOpenCodeWorkbench={handleOpenCodeWorkbench} />
+              <IDEPanel
+                visible={effectiveTab === 'ide'}
+                projectId={projectId!}
+                projectName={project.name}
+                agentUrl={agentUrl}
+                isExternalProject={isExternalProject}
+                folderPath={primaryFolderPath ?? undefined}
+                onOpenCodeWorkbench={handleOpenCodeWorkbench}
+              />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Files">
               <FilesBrowserPanel visible={effectiveTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />

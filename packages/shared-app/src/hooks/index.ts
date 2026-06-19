@@ -7,6 +7,13 @@ export {
   type UsageWindows,
 } from './useBillingData'
 export {
+  deriveUsageWindows,
+  FIVE_HOUR_MS,
+  SEVEN_DAY_MS,
+  type WalletWindowFields,
+  type WindowLimitsInput,
+} from './usage-windows'
+export {
   useCheckpoints,
   type Checkpoint,
   type GitStatus,
