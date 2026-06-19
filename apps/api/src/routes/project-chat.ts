@@ -650,6 +650,11 @@ export async function trackUsageFromStream(
             content: accumulatedText,
             parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
             agent: 'technical',
+            // Stamp the model selection used for this turn (the picker
+            // `agentMode` value, e.g. "claude-sonnet-4-6" or "auto", after any
+            // server-side tier downgrade). Lets the client default the picker
+            // to a chat's last-used model when switching chats.
+            model: agentMode,
           },
         })
         assistantMessageId = message.id

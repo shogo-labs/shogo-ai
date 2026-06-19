@@ -323,6 +323,14 @@ export interface ChatPanelProps {
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
   selectedModel?: string
   onModelChange?: (modelId: string) => void
+  /**
+   * Reports this chat's last-used model (the most recent message that carries a
+   * `model` value) so the parent can default the shared picker to it when this
+   * chat becomes active. Fires with `null` when the chat has no model-stamped
+   * message yet (brand-new/empty chat), letting the parent fall back to the
+   * global last-used preference. Only invoked while the panel `isActive`.
+   */
+  onResolveSessionModel?: (modelId: string | null) => void
   /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
   isActive?: boolean
   /**
@@ -737,6 +745,7 @@ export const ChatPanel = observer(function ChatPanel({
   onOpenPlan,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
+  onResolveSessionModel,
   isActive = true,
   enrichMessage,
 }: ChatPanelProps) {
@@ -3104,6 +3113,32 @@ export const ChatPanel = observer(function ChatPanel({
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, currentSessionId, sessionMessages, setMessages, isLoadingMessages, isStreaming])
+
+  // This chat's last-used model: the most recent loaded message carrying a
+  // `model` value (assistant rows are stamped server-side). MST `.all` is
+  // observed here, so this recomputes when the session's messages settle.
+  const lastSessionModel: string | null = (() => {
+    const all = sessionMessages?.all as any[] | undefined
+    if (!all || all.length === 0) return null
+    let latest: { createdAt: number; model: string } | null = null
+    for (const m of all) {
+      const mdl = typeof m.model === "string" ? m.model.trim() : ""
+      if (!mdl) continue
+      const createdAt = (m.createdAt as number) || 0
+      if (!latest || createdAt >= latest.createdAt) latest = { createdAt, model: mdl }
+    }
+    return latest ? latest.model : null
+  })()
+
+  // Report the active chat's last-used model up to the parent so it can default
+  // the shared picker when switching chats. Fires `null` for empty chats so the
+  // parent can fall back to the global preference. The effect re-runs (and thus
+  // re-emits) when this panel becomes active, so switching back to a chat
+  // restores its model even if the value itself is unchanged.
+  useEffect(() => {
+    if (!isActive || !isInitialLoadComplete || !onResolveSessionModel) return
+    onResolveSessionModel(lastSessionModel)
+  }, [isActive, isInitialLoadComplete, currentSessionId, lastSessionModel, onResolveSessionModel])
 
   // Post-stream settle: when streaming ends, the AI SDK messages ARE the
   // authoritative fresh state — `cachedMessagesRef.current` is already kept in
