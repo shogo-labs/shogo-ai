@@ -152,19 +152,47 @@ Verified A2 fires in the eval VM: edit results carry inline diagnostics
 
 ### Before → after on mimo-v2.5 (VM mode, 6 workers, agent_only)
 
-| Track | Before | After | Notes |
-| --- | --- | --- | --- |
-| `tool-discipline` | 3/5 · `tool-usage` **0/2** | **5/5** · `tool-usage` **2/2** | A1 win — the read_file arg-schema class is gone. |
-| `coding-discipline` | 7/9 | **8/8** | B1 win — `use-read_file-not-exec(cat)` and `locate-before-edit` both pass. (Eval count dropped 9→8: the stale `use-grep-not-exec` case was removed and `grep-to-locate` was retargeted to `search`.) |
-| `canvas-v2-lint` | 3/8 | 3/8 | A2 confirmed active; heavy multi-chart / SDK builds (E2/E5/E6) remain red — model-capability limit, accepted. |
-| `typed-build` | 1/3 | 1/3 | E2 passes; E1 (Prisma field hallucination + runtime CRUD failure) and E3 (schema thrash, 2.7M tokens, 28 canvas compile errors) stay red — model-capability limit, accepted. |
+| Track | Baseline | After A1/A2/B1 | After eval-VM seeding fix | Notes |
+| --- | --- | --- | --- | --- |
+| `tool-discipline` | 3/5 · `tool-usage` **0/2** | **5/5** · `tool-usage` **2/2** | 5/5 | A1 win — the read_file arg-schema class is gone. |
+| `coding-discipline` | 7/9 | **8/8** | 8/8 | B1 win — `use-read_file-not-exec(cat)` and `locate-before-edit` both pass. (Eval count dropped 9→8: stale `use-grep-not-exec` removed, `grep-to-locate` retargeted to `search`.) |
+| `canvas-v2-lint` | 3/8 | 3/8 | **7/8** | The 3/8 plateau was NOT model capability — see seeding bug below. |
+| `typed-build` | 1/3 | 1/3 | **3/3** | Same — the "schema thrash" was an artifact, not a capability limit. |
 
-**Realistic ceiling reached:** the deterministic tool fixes (A1) and prompt fixes
-(B1) cleared the failures that were *tooling/guidance* problems. The remaining red
-evals are genuine from-scratch reasoning/build tasks where mimo's capability — not
-our tooling — is the bottleneck, so we report them as model limits rather than
-weaken the tests. A2 helps in production (where every Hoshi user gets edit-time
-diagnostics) even though it doesn't flip the heaviest agent_only canvas builds.
+### Critical finding: the canvas/typed reds were an eval-harness bug, not the model
+
+The deep-dive into the failing transcripts showed the model was doing the *right*
+thing and still losing on `final-lint-clean` / runtime criteria. The lint errors
+were all environment noise — `Cannot find module 'react'`, `'lucide-react'`,
+`'@/components/ui/card'`, `'vite'`, `JSX.IntrinsicElements` missing — because the
+**eval VM workspace had no `node_modules`**. Every worker logged
+`runtime-template not found in any candidate path` and `templateSeeded=n/a,
+depsInstalled=n/a ✗`.
+
+Root cause (eval-only; production seeds via the baked image, so users were never
+affected): the macOS seed-ISO builder uses `hdiutil makehybrid -iso -joliet`
+(no Rock Ridge), which collapses the double-dot artifact name
+`runtime-template.tar.gz` → `runtime-templatetar.gz`. The boot extractor only
+matched the literal `*runtime-template.tar.gz`, so the template was never
+extracted, the workspace booted with no React/Vite/deps, and `read_lints` failed
+for every file regardless of model quality. Fix: the boot glob is now
+`*runtime-template*tar.gz` (matches both forms) in
+[apps/desktop/src/vm/cloud-init.ts](../../../../apps/desktop/src/vm/cloud-init.ts).
+
+Impact of the fix (mimo, agent_only): `typed-build` **1/3 → 3/3**,
+`canvas-v2-lint` **3/8 → 7/8**, and the thrash collapsed — `typed-build` E3 went
+from **2.7M → 237K tokens**, E1 from 846K → 156K. The "schema thrash" and "Prisma
+field hallucination" were the model fighting a depless workspace.
+
+**Remaining red:** only `canvas-v2-lint` E1 (icon-heavy file manager, 69/100).
+It is *not* an icon problem (criterion "5+ Lucide icons" scored 20/20); it fails
+on a shadcn `DropdownMenuSeparator` export member + non-clean lint after burning
+~4M tokens. That is the one genuine narrow capability gap.
+
+**Reassessment of grounding/CRUD ideas:** with the env bug fixed, broad symbol
+grounding and CRUD-codegen scaffolding are no longer justified by the data — the
+dominant failure was infrastructure. Any further work should be narrow (e.g.
+shadcn component-export awareness for the single remaining red).
 
 ## How to run
 
