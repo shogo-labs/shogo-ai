@@ -40,7 +40,6 @@ const product = readJson('product.shogo.template.json')
 const extension = readJson('extensions/shogo-core/package.json')
 
 requireFile('README.md')
-requireFile('PHASE_1_EDGE_CASES.md')
 requireFile('.gitignore')
 requireFile('extensions/shogo-core/README.md')
 requireFile('extensions/shogo-core/src/extension.ts')
@@ -49,7 +48,7 @@ requireFile('scripts/print-code-oss-clone-command.mjs')
 
 if (packageJson) {
   assert(packageJson.name === '@shogo/shogo-ide', 'apps/shogo-ide package must be named @shogo/shogo-ide')
-  assert(packageJson.private === true, 'apps/shogo-ide package must remain private during Phase 1')
+  assert(packageJson.private === true, 'apps/shogo-ide package must remain private')
   assert(packageJson.scripts?.['phase1:check'], 'apps/shogo-ide must expose phase1:check')
 }
 
@@ -58,9 +57,9 @@ if (product) {
   assert(product.nameLong === 'Shogo IDE', 'product nameLong must be Shogo IDE')
   assert(product.applicationName === 'shogo-ide', 'product applicationName must be shogo-ide')
   assert(product.dataFolderName === '.shogo-ide', 'product dataFolderName must not reuse current Shogo Desktop data folder')
-  assert(product.urlProtocol === 'shogo-ide', 'product urlProtocol must avoid colliding with existing shogo:// desktop protocol in Phase 1')
+  assert(product.urlProtocol === 'shogo-ide', 'product urlProtocol must avoid colliding with existing shogo:// desktop protocol')
   assert(product.extensionsGallery?.serviceUrl?.includes('open-vsx.org'), 'extension gallery must default to Open VSX')
-  assert(product.enableTelemetry === false, 'Phase 1 product template must disable telemetry')
+  assert(product.enableTelemetry === false, 'product template must disable telemetry')
   assert(Array.isArray(product.builtInExtensions), 'product template must list built-in extensions')
   assert(product.builtInExtensions?.some((item) => item.name === 'shogo-core'), 'product template must include shogo-core as a built-in extension')
 }
@@ -68,7 +67,7 @@ if (product) {
 if (extension) {
   assert(extension.name === 'shogo-core', 'extension name must be shogo-core')
   assert(extension.publisher === 'shogo', 'extension publisher must be shogo')
-  assert(extension.private === true, 'extension must remain private in Phase 1')
+  assert(extension.private === true, 'extension must remain private')
   assert(extension.capabilities?.untrustedWorkspaces?.supported === 'limited', 'extension must declare limited untrusted workspace support')
   assert(extension.capabilities?.virtualWorkspaces?.supported === 'limited', 'extension must declare limited virtual workspace support')
   assert(!extension.contributes?.viewsContainers?.activitybar?.some((view) => view.id === 'shogo'), 'extension must not contribute a left-side Shogo activity bar container')

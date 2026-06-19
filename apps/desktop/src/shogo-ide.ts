@@ -232,7 +232,7 @@ export function ensureShogoIdeRuntimeProfile(workspacePath: string, options: { d
   agentsExtensionsDir: string
   crashReporterDirectory: string
 } {
-  const runtimeDir = path.join(workspacePath, 'hardening', 'runtime-shogo-chat', runtimeProfileSegment(options.profileKey))
+  const runtimeDir = path.join(workspacePath, 'hardening', 'runtime-shogo-ide', runtimeProfileSegment(options.profileKey))
   const userDataDir = path.join(runtimeDir, 'user-data')
   const extensionsDir = path.join(runtimeDir, 'extensions')
   const systemExtensionsDir = path.join(runtimeDir, 'system-extensions')

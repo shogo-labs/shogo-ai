@@ -27,7 +27,6 @@ const idePanel = read('apps/mobile/components/project/panels/IDEPanel.tsx')
 const statusBar = read('apps/mobile/components/project/panels/ide/StatusBar.tsx')
 const layout = read('apps/mobile/app/(app)/projects/[id]/_layout.tsx')
 const topBar = read('apps/mobile/components/project/ProjectTopBar.tsx')
-const docs = read('apps/shogo-ide/PHASE_2_DESKTOP_INTEGRATION.md')
 
 assert(desktopBridge.includes('getShogoIdeStatus'), 'desktop bridge must expose getShogoIdeStatus')
 assert(!desktopBridge.includes("ipcMain.handle('shogo-ide:launch'"), 'desktop bridge must not expose the old standalone Code - OSS launch IPC')
@@ -64,9 +63,6 @@ assert(layout.includes('handleOpenCodeWorkbench'), 'project layout must route ID
 assert(layout.includes('shogoDesktop') && layout.includes('codeWorkbench') && layout.includes('workspacePath'), 'project layout must use the codeWorkbench bridge with workspace path support')
 assert(topBar.includes("tabId === 'ide'"), 'top bar must special-case IDE tab presses')
 assert(topBar.includes('onOpenCodeWorkbench?.()'), 'top bar must open/focus Shogo-IDE when IDE tab is pressed')
-
-assert(docs.includes('keeps Monaco as the default Desktop IDE tab'), 'Phase 2 docs must state Monaco remains the default after Phase 5')
-assert(docs.includes('after the user chooses **Open Shogo IDE**'), 'Phase 2 docs must state explicit desktop setup behavior')
 
 if (errors.length > 0) {
   console.error('Phase 2 check failed:')

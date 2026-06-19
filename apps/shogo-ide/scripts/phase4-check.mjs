@@ -39,7 +39,6 @@ const manifest = readJson('apps/shogo-ide/distribution/distribution.manifest.jso
 const generatedProduct = readJson('apps/shogo-ide/distribution/generated/product.json')
 const generatedManifest = readJson('apps/shogo-ide/distribution/generated/distribution.generated.json')
 const materializeScript = read('apps/shogo-ide/scripts/materialize-distribution.mjs')
-const docs = read('apps/shogo-ide/PHASE_4_DISTRIBUTION_INTEGRATION.md')
 
 if (product) {
   assert(product.nameLong === 'Shogo IDE', 'product template must identify Shogo IDE')
@@ -124,8 +123,6 @@ if (generatedManifest) {
 }
 
 assert(materializeScript.includes('Materialized Shogo IDE distribution metadata'), 'materialize script must produce explicit output')
-assert(docs.includes('No Code - OSS source is vendored'), 'Phase 4 docs must state no upstream vendoring')
-assert(docs.includes('Open VSX'), 'Phase 4 docs must document Open VSX posture')
 
 if (errors.length > 0) {
   console.error('Phase 4 check failed:')

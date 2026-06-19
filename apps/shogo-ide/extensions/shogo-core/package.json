@@ -2,7 +2,7 @@
   "name": "shogo-core",
   "displayName": "Shogo",
   "description": "Bundled Shogo IDE extension for chat, agent workflows, checkpoints, runtime status, and source-control assistance.",
-  "version": "0.0.0-phase.1",
+  "version": "0.0.0",
   "publisher": "shogo",
   "license": "MIT",
   "private": true,

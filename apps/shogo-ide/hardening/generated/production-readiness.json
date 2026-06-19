@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-15T18:54:14.055Z",
+  "generatedAt": "2026-06-19T17:04:41.147Z",
   "phase": 6,
   "ok": true,
   "product": {
@@ -12,10 +12,10 @@
   },
   "bundledExtension": {
     "id": "shogo.shogo-core",
-    "version": "0.0.0-phase.1",
+    "version": "0.0.0",
     "main": "./dist/extension.js",
     "browser": "./dist/web.js",
-    "activityContainer": "shogo"
+    "activityContainer": null
   },
   "releaseChannels": {
     "phase": 6,

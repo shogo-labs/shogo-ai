@@ -1,18 +1,16 @@
-# Code - OSS is intentionally not vendored in Phase 1.
+# Code - OSS is intentionally kept out of the repository.
 # Use scripts/print-code-oss-clone-command.mjs to create a local checkout here.
 upstream/vscode/
 upstream/vscode-oss/
 
-# Local build outputs from Code - OSS / electron-builder experiments.
+# Local build and runtime outputs.
 .vscode-test/
 .build/
 out*/
 dist/
 extensions/shogo-core/dist/
-extensions/shogo-agent-chat/dist/
 hardening/runtime/
 hardening/runtime-*/
-hardening/runtime-smoke/
 hardening/generated/last-launch.json
 .runtime-debug*/
 .cache/

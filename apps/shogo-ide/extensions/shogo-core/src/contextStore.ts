@@ -9,7 +9,7 @@ function now() {
 
 function truncateText(text: string): string {
   if (text.length <= MAX_CONTEXT_TEXT_LENGTH) return text
-  return `${text.slice(0, MAX_CONTEXT_TEXT_LENGTH)}\n\n[Truncated by Shogo Phase 3 context guard]`
+  return `${text.slice(0, MAX_CONTEXT_TEXT_LENGTH)}\n\n[Truncated by Shogo context guard]`
 }
 
 function createRange(selection: vscode.Selection) {
