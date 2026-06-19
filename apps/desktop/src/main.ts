@@ -69,16 +69,7 @@ import {
   onPreviewEvent,
   type PreviewBounds,
 } from './preview-views'
-import {
-  openIdeView,
-  openIdeWindow,
-  closeIdeView,
-  setIdeViewBounds,
-  setIdeViewVisible,
-  closeAllIdeViewsForWindow,
-  disposeIdeServers,
-  type IdeViewBounds,
-} from './ide-views'
+import { openIdeWindow, disposeIdeServers } from './ide-views'
 
 // Shape of JSON responses from the local API's cloud-login endpoints
 // (used by the heartbeat + signout helpers below). Every field is optional
@@ -1132,38 +1123,6 @@ function registerIpcHandlers(): void {
   onPreviewEvent((ev) => {
     windowManager.sendToWindow(ev.windowId, 'preview:event', ev)
   })
-
-
-  ipcMain.handle('ide-view:open', (event, args: { projectId: string; workspacePath?: string }) => {
-    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
-    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
-    if (!win) return { ok: false, error: 'no-window' }
-    return openIdeView(args.projectId, win, { workspacePath: args.workspacePath })
-  })
-
-  ipcMain.handle('ide-view:close', (event, args: { projectId: string }) => {
-    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
-    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
-    if (!win) return { ok: false, error: 'no-window' }
-    closeIdeView(win.id, args.projectId)
-    return { ok: true }
-  })
-
-  ipcMain.handle('ide-view:set-bounds', (event, args: { projectId: string; bounds: IdeViewBounds }) => {
-    if (!args?.projectId || !args?.bounds) return { ok: false }
-    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
-    if (!win) return { ok: false, error: 'no-window' }
-    setIdeViewBounds(win.id, args.projectId, args.bounds)
-    return { ok: true }
-  })
-
-  ipcMain.handle('ide-view:set-visible', (event, args: { projectId: string; visible: boolean }) => {
-    if (!args?.projectId) return { ok: false }
-    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
-    if (!win) return { ok: false, error: 'no-window' }
-    setIdeViewVisible(win.id, args.projectId, !!args.visible)
-    return { ok: true }
-  })
 }
 
 function createWindow(): void {
@@ -1537,6 +1496,7 @@ app.on('before-quit', (event) => {
   if (isQuitting) return
   if (isCloudMode) {
     void terminateLaunchedShogoIdeProcesses().catch((err) => console.error('[Desktop] Shogo IDE cleanup error:', err))
+    disposeIdeServers()
     return
   }
   isQuitting = true
@@ -1553,6 +1513,7 @@ app.on('before-quit', (event) => {
     disposeRunIpc()
     disposeDebugIpc()
     void terminateLaunchedShogoIdeProcesses().catch((err) => console.error('[Desktop] Shogo IDE cleanup error:', err))
+    disposeIdeServers()
     stopLocalServer().catch(() => {})
     return
   }
@@ -1565,8 +1526,9 @@ app.on('before-quit', (event) => {
   disposePortsIpcHandlers()
   disposeExtensionsIpcHandlers()
   disposeGitIpc()
-    disposeRunIpc()
-    disposeDebugIpc()
+  disposeRunIpc()
+  disposeDebugIpc()
+  disposeIdeServers()
   Promise.allSettled([terminateLaunchedShogoIdeProcesses(), disposeTerminalIpc(), stopTerminalExecServer(), stopLocalServer()])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))

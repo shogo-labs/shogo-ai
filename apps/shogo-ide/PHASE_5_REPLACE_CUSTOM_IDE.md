@@ -4,34 +4,36 @@ Phase 5 now uses "Monaco workbench first, Shogo IDE as an explicit launcher" so 
 
 ## What changed
 
-The existing IDE tab now checks for the Electron preload bridge:
+The existing IDE tab now uses the Electron preload workbench bridge:
 
 ```ts
-window.shogoDesktop.shogoIde
+window.shogoDesktop.codeWorkbench
 ```
 
-When that bridge exists inside Shogo Desktop, the IDE tab still mounts the Monaco `Workbench` by default and overlays a small top-right `ShogoIdeReplacementGate` action. Web and mobile continue to use their existing Monaco/placeholder behavior and never render the desktop-only Shogo IDE action.
+IDE tab now keeps Monaco visible and opens/focuses the managed Shogo-IDE window. Web and mobile continue to use their existing Monaco/placeholder behavior and never render the desktop-only Shogo IDE action.
 
-Desktop does not open Shogo IDE automatically from the IDE tab. Users open the Code OSS-based Shogo IDE explicitly through the small top-right button or through the macOS **File → Open Shogo IDE...** menu item.
+Users can also open/focus the managed Code OSS-based Shogo-IDE window through the small top-right button or through the macOS **File → Open Shogo IDE...** menu item.
 
-The compact launcher lets users:
+The compact action lets users:
 
-- open the Code OSS-based Shogo IDE for the resolved project folder,
-- keep editing in Monaco while Shogo IDE opens separately,
-- see a small setup/launch message only when a launch is requested or fails.
+- open/focus the Code OSS-based Shogo-IDE window for the resolved project folder,
+- keep editing in Monaco while Shogo-IDE opens separately,
+- return to the already-open Shogo-IDE window without creating duplicates.
 
 ## Files
 
 ```text
 apps/mobile/components/project/panels/IDEPanel.tsx
-apps/mobile/components/project/panels/ide/ShogoIdeReplacementGate.tsx
+apps/mobile/app/(app)/projects/[id]/_layout.tsx
+apps/mobile/components/project/ProjectTopBar.tsx
+apps/desktop/src/ide-views.ts
 ```
 
 ## Behavior matrix
 
 | Environment | Default IDE behavior |
 | --- | --- |
-| Shogo Desktop with `window.shogoDesktop.shogoIde` | Existing Monaco Workbench with a small top-right **Open Shogo IDE** button |
+| Shogo Desktop with `window.shogoDesktop.codeWorkbench` | Existing Monaco Workbench with a small top-right **Open Shogo IDE** button and IDE-tab open/focus behavior |
 | Shogo Desktop File menu | **Open Shogo IDE...** launches the Code OSS-based IDE on demand |
 | Web browser without desktop bridge | Existing Monaco Workbench |
 | Native mobile | Existing placeholder |
@@ -62,7 +64,7 @@ They stay available on Desktop, web fallback, and mobile-adjacent scenarios. Cod
 ## Safety
 
 - No Code OSS source is vendored.
-- Desktop does not open Shogo IDE automatically from the IDE tab.
+- Desktop keeps Monaco visible when the IDE tab opens/focuses Shogo-IDE.
 - Existing web/mobile behavior remains intact and does not render the desktop-only launcher.
 - Existing Workbench code remains the default in-app editing path.
 - The current desktop menu launch path remains available as **Open Shogo IDE...**.
