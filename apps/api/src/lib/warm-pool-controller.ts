@@ -2485,6 +2485,12 @@ export class WarmPoolController {
       `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: 'AI_PROXY_URL', value: buildAiProxyUrl(apiUrl) })
     env.push({ name: 'TOOLS_PROXY_URL', value: buildToolsProxyUrl(apiUrl) })
+    // In-cluster API root the runtime needs for the pod-owned git_only durable
+    // bootstrap (restore/seed `.git` + persist to object storage + record
+    // checkpoints). Without it, agent-runtime's git bootstrap guard
+    // (`if (cloudApiUrl && runtimeAuthSecret && projectId)`) fails and every
+    // project silently falls back to S3, producing no git history.
+    env.push({ name: 'SHOGO_API_URL', value: apiUrl })
 
     // Public API URL for browser-facing contexts (e.g. webchat widget embed snippets)
     if (process.env.SHOGO_PUBLIC_API_URL) {

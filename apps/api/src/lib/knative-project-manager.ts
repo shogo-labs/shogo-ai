@@ -1095,6 +1095,13 @@ export class KnativeProjectManager {
     const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: "AI_PROXY_URL", value: buildAiProxyUrl(apiUrl) })
     env.push({ name: "TOOLS_PROXY_URL", value: buildToolsProxyUrl(apiUrl) })
+    // In-cluster API root the runtime needs for the pod-owned git_only durable
+    // bootstrap (restore/seed `.git` + persist to object storage + record
+    // checkpoints). Without it, agent-runtime's git bootstrap guard fails and
+    // the project silently falls back to S3 with no git history. This direct
+    // ksvc-creation path builds the Pod spec inline, so it must set it here
+    // (the warm-pool /pool/assign path gets it via buildProjectEnv).
+    env.push({ name: "SHOGO_API_URL", value: apiUrl })
 
     let proxyTokenGenerated = false
 
@@ -1627,6 +1634,10 @@ export class KnativeProjectManager {
     const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: "AI_PROXY_URL", value: buildAiProxyUrl(apiUrl) })
     env.push({ name: "TOOLS_PROXY_URL", value: buildToolsProxyUrl(apiUrl) })
+    // Published-mode runtime restores source from the durable git repo
+    // (restoreRepoFromStore) and persists it — both need the in-cluster API
+    // root. Without SHOGO_API_URL the git_only durable path is skipped.
+    env.push({ name: "SHOGO_API_URL", value: apiUrl })
     try {
       const { prisma } = await import('./prisma')
       const project = await prisma.project.findUnique({
