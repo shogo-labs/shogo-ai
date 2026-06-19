@@ -211,6 +211,14 @@ const args = [
   '--target', 'node',
   '--format', 'cjs',
   '--outfile', OUT_FILE,
+  // Emit `dist/main.js.map` next to the bundle so the desktop release
+  // workflows can `sentry-cli sourcemaps inject` + `upload` it to the
+  // `shogo-desktop` project (and then delete it before packaging, so the
+  // map never ships inside app.asar). Without this the main-process bundle
+  // has no map and every captured crash stays minified. `external` writes a
+  // standalone map without a `sourceMappingURL` comment; sentry-cli adds the
+  // comment + Debug ID during inject.
+  '--sourcemap=external',
   '--define', `__SHOGO_WORKER_VERSION__="${workerPkg.version}"`,
   '--define', `__SHOGO_DESKTOP_SENTRY_DSN__="${desktopSentryDsn}"`,
   ...EXTERNALS.flatMap((p) => ['--external', p]),

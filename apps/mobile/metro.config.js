@@ -1,7 +1,20 @@
 const path = require('path')
-const { getDefaultConfig } = require('expo/metro-config')
+// Sentry's Expo Metro config is a drop-in superset of
+// `expo/metro-config`'s `getDefaultConfig(__dirname)`: it installs a
+// custom serializer that emits source maps AND embeds matching Sentry
+// **Debug IDs** into every exported bundle. Without it, `expo export`
+// (web) ships minified bundles with no maps for CI's `sentry-cli
+// sourcemaps inject/upload` to attach to — which is why `production_web`
+// issues (`Object.S`, `Qr`, `<unknown>`) were never symbolicated.
+//
+// The serializer only generates maps + debug IDs; it does NOT upload.
+// Every pipeline keeps uploading explicitly via sentry-cli (web
+// Dockerfile, desktop release workflows, ios.yml, android.yml), so this
+// change is safe for the native builds too — they already expect the
+// debug-id'd maps this produces.
+const { getSentryExpoConfig } = require('@sentry/react-native/metro')
 const { withNativeWind } = require('nativewind/metro')
-const config = getDefaultConfig(__dirname)
+const config = getSentryExpoConfig(__dirname)
 
 const monorepoRoot = path.resolve(__dirname, '../..')
 
