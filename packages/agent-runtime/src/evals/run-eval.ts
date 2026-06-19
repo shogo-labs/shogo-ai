@@ -712,6 +712,30 @@ async function runEvalOnWorker(
         mkdirSync(dirname(absPath), { recursive: true })
         writeFileSync(absPath, content, 'utf-8')
       }
+
+      // Workers that don't share a filesystem with the host — a VM without a
+      // 9p mount, or a K8s pod — can't see host-side writes to `worker.dir`.
+      // Push the overlay in over HTTP exactly like the full-setup branch seeds
+      // `workspaceFiles`. Without this, pipeline-phase fixtures are silently
+      // written host-only and never reach the guest, so phase 2+ evals run
+      // against a workspace missing their seeded state.
+      if ((vmFlag && !mountFlag) || k8sFlag) {
+        const base = getWorkerBaseUrl(worker)
+        try {
+          const seedRes = await fetch(`${base}/agent/workspace/seed`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: overlay }),
+          })
+          if (!seedRes.ok) {
+            console.warn(`[setup] Failed to seed pipeline overlay into guest: ${seedRes.status}`)
+          } else if (verboseFlag) {
+            console.log(`      [setup] Seeded ${Object.keys(overlay).length} pipeline overlay file(s) into guest workspace`)
+          }
+        } catch (e: any) {
+          console.warn(`[setup] Failed to seed pipeline overlay into guest: ${e.message}`)
+        }
+      }
     }
   } else if (vmFlag && mountFlag) {
     // 9p mount: the VM manages its own workspace defaults and .shogo is
