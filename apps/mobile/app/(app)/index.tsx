@@ -42,6 +42,14 @@ import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
 import { getPendingLicenseCode, clearPendingLicenseCode } from '../../lib/pending-license'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
+import { TechStackPicker } from '../../components/chat/TechStackPicker'
+
+/**
+ * Default tech stack for blank projects created from the home composer.
+ * Mirrors the agent-runtime fallback (`packages/agent-runtime/src/server.ts`),
+ * so the persisted `settings.techStackId` matches what the workspace seeds.
+ */
+const DEFAULT_TECH_STACK_ID = 'react-app'
 
 /**
  * Home-rail listing shape. Mirrors `AgentTileListing` plus the
@@ -239,6 +247,14 @@ const HomeScreen = observer(function HomeScreen() {
   // clobbers the user's saved choice on every cold load.
   const [modelPrefLoaded, setModelPrefLoaded] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
+  // Tech stack chosen in the composer toolbar. Threaded into createProject so
+  // the new project persists settings.techStackId (the runtime defaults to
+  // react-app for absent values, so we record that same default here).
+  const [techStackId, setTechStackId] = useState<string>(DEFAULT_TECH_STACK_ID)
+  const techStackIdRef = useRef(techStackId)
+  useEffect(() => {
+    techStackIdRef.current = techStackId
+  }, [techStackId])
 
   /**
    * Draft project the homepage opens behind the scenes for a creation
@@ -461,13 +477,13 @@ const HomeScreen = observer(function HomeScreen() {
           workspaceId,
           undefined,
           user.id,
+          techStackIdRef.current,
         )
-        // The legacy createProject signature took a techStackId hint
-        // ('react-app'). After the templates → marketplace consolidation
-        // createProject builds plain blank projects only — the
-        // marketplace install path is the source of tech-stack-aware
-        // seeding. The runtime defaults to react-app for projects with
-        // no settings.techStackId, matching the old fallback.
+        // The stack chosen in the composer toolbar (defaults to
+        // react-app) is persisted into settings.techStackId here so the
+        // Configuration screen and the agent runtime agree on the stack.
+        // Reading the ref keeps this single-flight draft in sync with a
+        // last-moment stack change without re-running the callback.
         const draft = await createHomeDraftSession(newProject.id, workspaceId)
         draftRef.current = draft
 
@@ -504,6 +520,26 @@ const HomeScreen = observer(function HomeScreen() {
     setPrompt(next)
   }, [])
 
+  /**
+   * Composer tech-stack chip handler. Updates local state (consumed at
+   * creation time via `techStackIdRef`). A draft is only created on the
+   * actual Send/mic gesture, so normally no project exists yet — but if a
+   * draft was already minted (e.g. the mic prewarm path), patch its
+   * settings.techStackId so it doesn't drift from the user's final choice.
+   */
+  const handleTechStackChange = useCallback((stackId: string) => {
+    setTechStackId(stackId)
+    const draft = draftRef.current
+    if (draft) {
+      // Settings is persisted as a JSON string (see updateProjectSettings in
+      // the project layout); cast to bypass the object-typed `settings` field.
+      const settingsStr = JSON.stringify({ activeMode: 'canvas', techStackId: stackId })
+      actions
+        .updateProject(draft.projectId, { settings: settingsStr as any })
+        .catch(() => {})
+    }
+  }, [actions])
+
   const createProjectFromPrompt = useCallback(async (
     text: string,
     files?: FileAttachment[],
@@ -533,6 +569,7 @@ const HomeScreen = observer(function HomeScreen() {
             currentWorkspace.id,
             undefined,
             user.id,
+            techStackIdRef.current,
           )
           draft = await createHomeDraftSession(newProject.id, currentWorkspace.id)
           draftRef.current = draft
@@ -807,10 +844,20 @@ const HomeScreen = observer(function HomeScreen() {
               // their flows immediately and route into the resulting
               // project.
               leadingControls={
-                <ProjectSourceMenu
-                  workspaceId={currentWorkspace?.id}
-                  variant="chip"
-                />
+                <View className="flex-row items-center gap-1">
+                  <ProjectSourceMenu
+                    workspaceId={currentWorkspace?.id}
+                    variant="chip"
+                  />
+                  {/* Tech stack for the project this composer will create.
+                      Persisted into settings.techStackId on Send so the
+                      Configuration screen reflects the real stack. */}
+                  <TechStackPicker
+                    value={techStackId}
+                    onChange={handleTechStackChange}
+                    disabled={isCreating}
+                  />
+                </View>
               }
             />
           </View>

@@ -91,21 +91,30 @@ export function createDomainActions(store: IDomainStore) {
     /**
      * Create a blank project in a workspace.
      *
-     * The legacy templateId / techStackId / templateSettings parameters
-     * were removed when the templates surface was consolidated into the
-     * marketplace — first-party templates are now real listings, so
-     * "create from template" callers go through `installListing` below
-     * instead. Plain blank-project creation (e.g. from the projects
+     * The legacy templateId / templateSettings parameters were removed
+     * when the templates surface was consolidated into the marketplace —
+     * first-party templates are now real listings, so "create from
+     * template" callers go through `installListing` below instead. Plain
+     * blank-project creation (e.g. the home composer or the projects
      * page's "+ New project" button) stays here.
+     *
+     * `techStackId` is persisted into `settings.techStackId` so the DB
+     * matches what the agent runtime actually seeds. The runtime defaults
+     * to `react-app` for projects with no `techStackId`, so we record that
+     * same default here — otherwise the Configuration screen reads
+     * `settings.techStackId` as undefined and shows "None" even though the
+     * workspace is running React/Vite.
      */
     createProject: async (
       name: string,
       workspaceId: string,
       description: string | undefined,
       userId: string,
+      techStackId: string = 'react-app',
     ) => {
       const settings = JSON.stringify({
         activeMode: 'canvas',
+        techStackId,
       })
 
       const project = await store.projectCollection.create({
