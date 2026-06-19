@@ -35,6 +35,12 @@
  *   8. Client disconnect doesn't cancel the underlying "agent" work.
  *   9. New POST for same session replaces the buffer (fresh turn).
  *  10. Two subscribers on a live stream both receive full content.
+ *  11. Client abandons the stream mid-turn (auto-resume budget exhausted /
+ *      app backgrounded) WHILE the server turn keeps running. The reported
+ *      "UI says disconnected but the stream is still going" bug. Asserts the
+ *      condition is recoverable: `/turn` still reports `active`, and a fresh
+ *      `/stream?fromSeq=N` replays only the missed delta + live tail with no
+ *      duplicated and no dropped chunks.
  */
 
 import { describe, test, expect, afterEach, beforeEach } from 'bun:test'
@@ -157,14 +163,38 @@ function createChatHarness(opts?: {
     })
   })
 
-  // GET /agent/chat/:sessionId/stream → reconnect.
+  // GET /agent/chat/:sessionId/stream → reconnect. Honors `?fromSeq=N` so a
+  // client that already consumed up to seq N only receives the delta + live
+  // tail (mirrors `server.ts` and `auto-resuming-fetch`).
   app.get('/agent/chat/:sessionId/stream', (c) => {
     const sessionId = c.req.param('sessionId')
-    const replayStream = store.createReplayStream(sessionId)
-    if (!replayStream) return new Response(null, { status: 204 })
+    const fromSeqRaw = c.req.query('fromSeq')
+    const fromSeq = fromSeqRaw ? Math.max(0, parseInt(fromSeqRaw, 10) || 0) : 0
+    const snapshot = store.snapshot(sessionId)
+    const replayStream = store.createReplayStream(sessionId, { fromSeq })
+    if (!replayStream || !snapshot) return new Response(null, { status: 204 })
     return new Response(replayStream, {
       status: 200,
-      headers: { 'Content-Type': 'text/x-ai-sdk-ui-stream' },
+      headers: {
+        'Content-Type': 'text/x-ai-sdk-ui-stream',
+        'X-Turn-Id': snapshot.turnId,
+        'X-Last-Seq': String(snapshot.lastSeq),
+        'X-Turn-Status': snapshot.status,
+      },
+    })
+  })
+
+  // GET /agent/chat/:sessionId/turn → read-only durable-turn snapshot. Mirrors
+  // the runtime's `/turn` probe the client uses to decide whether to reconnect.
+  app.get('/agent/chat/:sessionId/turn', (c) => {
+    const sessionId = c.req.param('sessionId')
+    const snapshot = store.snapshot(sessionId)
+    if (!snapshot) return c.json({ status: 'unknown' as const }, 404)
+    return c.json({
+      chatSessionId: sessionId,
+      turnId: snapshot.turnId,
+      status: snapshot.status,
+      lastSeq: snapshot.lastSeq,
     })
   })
 
@@ -513,5 +543,67 @@ describe('streaming + tab-switch resume', () => {
     // Fresh turn — exactly chunksPerTurn chunks, no spillover from turn 1.
     const chunkCount = (r2.text.match(/chunk-/g) || []).length
     expect(chunkCount).toBe(h.chunksPerTurn)
+  })
+
+  test('client abandons stream mid-turn while server keeps running: /turn stays active and fromSeq resume recovers the delta', async () => {
+    // Reproduces the reported bug: the client's stream ends mid-turn (its
+    // auto-resume budget exhausted, or the app was backgrounded) so the UI
+    // shows "disconnected / tap Retry", but the agent is STILL running and
+    // buffering frames server-side. The recovery contract the client relies
+    // on must hold: `/turn` reports `active`, and `/stream?fromSeq=N` returns
+    // exactly the chunks the client missed plus the live tail — no dupes,
+    // nothing dropped.
+    //
+    // Uses a local harness with generous timing so the turn is unambiguously
+    // still active at probe time (no flaky races with the mock agent).
+    const local = createChatHarness({ chunksPerTurn: 8, chunkDelayMs: 40 })
+    const sess = 'sess-abandon-midturn'
+    try {
+      const res1 = await local.request('/agent/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatSessionId: sess }),
+      })
+      expect(res1.ok).toBe(true)
+
+      // Client consumes the first 2 chunks (seq 1 + 2) then "gives up" —
+      // readText's finally cancels the reader, tearing down the HTTP body
+      // exactly as auto-resuming-fetch does when its retry budget is spent.
+      const consumed = await readText(res1.body!, { maxChunks: 2 })
+      expect(consumed.chunks).toBe(2)
+      expect(consumed.done).toBe(false)
+      const fromSeq = consumed.chunks // last seq the client actually saw
+
+      // The UI would now show "disconnected". Probe the durable-turn snapshot
+      // the client uses to decide whether to auto-reconnect: it must report
+      // the turn is STILL active even though the client dropped.
+      const turnRes = await local.request(`/agent/chat/${sess}/turn`)
+      expect(turnRes.status).toBe(200)
+      const turn = (await turnRes.json()) as { status: string; turnId: string; lastSeq: number }
+      expect(turn.status).toBe('active')
+      expect(turn.turnId).toBeTruthy()
+
+      // Auto-recovery: reconnect from the last seq the client saw. The resume
+      // must be tagged with the SAME turnId (so the client doesn't graft a
+      // different turn onto its accumulator) and replay only seq > fromSeq.
+      const resumeRes = await local.request(`/agent/chat/${sess}/stream?fromSeq=${fromSeq}`)
+      expect(resumeRes.status).toBe(200)
+      expect(resumeRes.headers.get('X-Turn-Id')).toBe(turn.turnId)
+
+      const recovered = await readText(resumeRes.body!, { maxMs: 5_000 })
+      expect(recovered.done).toBe(true)
+
+      // The delta must contain none of the already-seen chunks and all of the
+      // remaining ones, in order.
+      expect(recovered.text).not.toContain(`${sess}:chunk-0\n`)
+      expect(recovered.text).not.toContain(`${sess}:chunk-1\n`)
+      const fullText = consumed.text + recovered.text
+      expect(fullText).toBe(expectedFullPayload(sess, local.chunksPerTurn))
+      // Exactly chunksPerTurn chunks across both reads — no duplication.
+      expect((fullText.match(/chunk-/g) || []).length).toBe(local.chunksPerTurn)
+    } finally {
+      await Promise.allSettled(Array.from(local.agentDone.values()))
+      local.store.dispose()
+    }
   })
 })
