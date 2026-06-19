@@ -5,8 +5,6 @@ import { AudioCaptureManager, type PcmChunkMessage } from './audio/audio-capture
 
 const portArg = process.argv.find((a) => a.startsWith('--api-port='))
 const apiPort = portArg ? portArg.split('=')[1] : '39100'
-const externalIdeLaunchEnabled = process.env.SHOGO_ENABLE_EXTERNAL_IDE_LAUNCH === 'true'
-
 // --- Recording capture pipeline (runs here, in the renderer) ----------------
 
 interface ActiveSession {
@@ -117,14 +115,6 @@ window.addEventListener('beforeunload', () => { void stopActive() })
 
 // --- Exposed surface -------------------------------------------------------
 
-const shogoIdeBridge = {
-  getStatus: () => ipcRenderer.invoke('shogo-ide:get-status'),
-  openWorkspaceFolder: () => ipcRenderer.invoke('shogo-ide:open-workspace-folder'),
-  ...(externalIdeLaunchEnabled
-    ? { launch: (opts?: { workspacePath?: string }) => ipcRenderer.invoke('shogo-ide:launch', opts ?? {}) }
-    : {}),
-}
-
 ipcRenderer.on('shogo:chat:open-with-context', (_event, payload: { markdown?: string }) => {
   window.dispatchEvent(new CustomEvent('shogo:chat:open-with-context', { detail: payload }))
 })
@@ -137,7 +127,6 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   setAppMode: (mode: 'local' | 'cloud') => ipcRenderer.invoke('set-app-mode', mode),
 
-  shogoIde: shogoIdeBridge,
   codeWorkbench: {
     open: (opts?: { projectId?: string; workspacePath?: string }) => ipcRenderer.invoke('code-workbench:open', opts ?? {}),
   },

@@ -74,8 +74,8 @@ if (readiness) {
 
 assert(desktopBridge.includes('hardeningReportPath'), 'desktop bridge must include hardening report status')
 assert(desktopBridge.includes('generatedProductPath'), 'desktop bridge must include generated product status')
-assert(desktopBridge.includes('executableExecutable'), 'desktop bridge must validate executable permissions')
-assert(desktopBridge.includes('writeLaunchDiagnostic'), 'desktop bridge must write launch diagnostics')
+assert(!desktopBridge.includes('writeLaunchDiagnostic'), 'desktop bridge must remove old standalone launch diagnostics')
+assert(!desktopBridge.includes('launchShogoIde'), 'desktop bridge must not keep the old standalone launch path')
 assert(desktopBridge.includes('phase: 6'), 'desktop bridge status must report Phase 6')
 
 assert(idePanel.includes('Open Shogo IDE'), 'IDE panel must expose the managed Shogo-IDE action')
