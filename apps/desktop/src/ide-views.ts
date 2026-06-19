@@ -1,20 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { BrowserWindow, WebContentsView, shell, session } from 'electron'
+import { BrowserWindow } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { getApiUrl } from './local-server'
 import { getWorkspacesDir } from './paths'
 import { ensureShogoIdeRuntimeProfile, ensureShogoIdeSetup, getShogoIdeStatus, SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS } from './shogo-ide'
-
-export interface IdeViewBounds {
-  x: number
-  y: number
-  width: number
-  height: number
-}
 
 interface IdeServerRecord {
   key: string
@@ -24,36 +17,11 @@ interface IdeServerRecord {
   ready: Promise<string>
 }
 
-interface IdeViewRecord {
-  key: string
-  windowId: number
-  projectId: string
-  view: WebContentsView
-  ownerWindow: BrowserWindow
-  lastBounds: IdeViewBounds | null
-  attached: boolean
-  visible: boolean
-}
-
 const servers = new Map<string, IdeServerRecord>()
-const views = new Map<string, IdeViewRecord>()
 const ideWindows = new Map<string, BrowserWindow>()
-
-function viewKey(windowId: number, projectId: string): string {
-  return `${windowId}:${projectId}`
-}
 
 function serverKey(workspacePath: string): string {
   return path.resolve(workspacePath)
-}
-
-function clampBounds(b: IdeViewBounds): IdeViewBounds {
-  return {
-    x: Math.max(0, Math.round(b.x)),
-    y: Math.max(0, Math.round(b.y)),
-    width: Math.max(0, Math.round(b.width)),
-    height: Math.max(0, Math.round(b.height)),
-  }
 }
 
 function resolveWorkspacePath(projectId: string, workspacePath?: string): string | null {
@@ -61,66 +29,6 @@ function resolveWorkspacePath(projectId: string, workspacePath?: string): string
   if (!projectId || projectId.includes('/') || projectId.includes('\\') || projectId.includes('..')) return null
   const candidate = path.join(getWorkspacesDir(), projectId)
   return fs.existsSync(candidate) ? candidate : null
-}
-
-function createView(projectId: string, ownerWindow: BrowserWindow): IdeViewRecord {
-  const windowId = ownerWindow.id
-  const key = viewKey(windowId, projectId)
-  const ideSession = session.fromPartition(`persist:shogo-code-oss-${projectId}`)
-  const view = new WebContentsView({
-    webPreferences: {
-      session: ideSession,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true,
-    },
-  })
-
-  view.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      shell.openExternal(url).catch(() => {})
-    }
-    return { action: 'deny' }
-  })
-
-  const rec: IdeViewRecord = {
-    key,
-    windowId,
-    projectId,
-    view,
-    ownerWindow,
-    lastBounds: null,
-    attached: false,
-    visible: true,
-  }
-  views.set(key, rec)
-  return rec
-}
-
-function ensureAttached(rec: IdeViewRecord): void {
-  if (rec.attached || rec.ownerWindow.isDestroyed()) return
-  rec.ownerWindow.contentView.addChildView(rec.view)
-  rec.attached = true
-  applyBounds(rec)
-}
-
-function applyBounds(rec: IdeViewRecord): void {
-  if (!rec.attached || !rec.visible || !rec.lastBounds) {
-    rec.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-    return
-  }
-  rec.view.setBounds(clampBounds(rec.lastBounds))
-}
-
-function detach(rec: IdeViewRecord): void {
-  if (!rec.attached) return
-  try {
-    rec.ownerWindow.contentView.removeChildView(rec.view)
-  } catch {
-    // Best-effort cleanup.
-  }
-  rec.attached = false
 }
 
 function codeOssWorkspaceUrl(baseUrl: string, workspacePath: string): string {
@@ -224,33 +132,6 @@ async function startIdeServer(workspacePath: string): Promise<IdeServerRecord> {
   return rec
 }
 
-export async function openIdeView(
-  projectId: string,
-  ownerWindow: BrowserWindow,
-  opts: { workspacePath?: string } = {},
-): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
-  if (!projectId) return { ok: false, error: 'project-id-required' }
-  if (ownerWindow.isDestroyed()) return { ok: false, error: 'window-destroyed' }
-
-  try {
-    const workspacePath = resolveWorkspacePath(projectId, opts.workspacePath)
-    if (!workspacePath) return { ok: false, error: 'workspace-path-required' }
-    const server = await startIdeServer(workspacePath)
-    const url = codeOssWorkspaceUrl(await server.ready, workspacePath)
-
-    let rec = views.get(viewKey(ownerWindow.id, projectId))
-    if (!rec) rec = createView(projectId, ownerWindow)
-    ensureAttached(rec)
-
-    if (rec.view.webContents.getURL() !== url) {
-      await rec.view.webContents.loadURL(url)
-    }
-    return { ok: true, url }
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
-  }
-}
-
 export async function openIdeWindow(
   projectId: string,
   createWindow: () => BrowserWindow,
@@ -289,36 +170,6 @@ export async function openIdeWindow(
     return { ok: true, windowId: window.id, url }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
-  }
-}
-
-export function setIdeViewBounds(windowId: number, projectId: string, bounds: IdeViewBounds): void {
-  const rec = views.get(viewKey(windowId, projectId))
-  if (!rec) return
-  rec.lastBounds = bounds
-  applyBounds(rec)
-}
-
-export function setIdeViewVisible(windowId: number, projectId: string, visible: boolean): void {
-  const rec = views.get(viewKey(windowId, projectId))
-  if (!rec) return
-  rec.visible = visible
-  if (visible) ensureAttached(rec)
-  applyBounds(rec)
-}
-
-export function closeIdeView(windowId: number, projectId: string): void {
-  const key = viewKey(windowId, projectId)
-  const rec = views.get(key)
-  if (!rec) return
-  detach(rec)
-  rec.view.webContents.close()
-  views.delete(key)
-}
-
-export function closeAllIdeViewsForWindow(windowId: number): void {
-  for (const rec of [...views.values()]) {
-    if (rec.windowId === windowId) closeIdeView(windowId, rec.projectId)
   }
 }
 

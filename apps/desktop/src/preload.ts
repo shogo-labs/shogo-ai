@@ -141,20 +141,6 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   codeWorkbench: {
     open: (opts?: { projectId?: string; workspacePath?: string }) => ipcRenderer.invoke('code-workbench:open', opts ?? {}),
   },
-  ideView: {
-    open: (projectId: string, opts?: { workspacePath?: string }): Promise<{ ok: boolean; url?: string; error?: string }> =>
-      ipcRenderer.invoke('ide-view:open', { projectId, workspacePath: opts?.workspacePath }),
-    close: (projectId: string): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke('ide-view:close', { projectId }),
-    setBounds: (
-      projectId: string,
-      bounds: { x: number; y: number; width: number; height: number },
-    ): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke('ide-view:set-bounds', { projectId, bounds }),
-    setVisible: (projectId: string, visible: boolean): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke('ide-view:set-visible', { projectId, visible }),
-  },
-
   // Open the native folder picker for external/IDE-style projects.
   // Returns `{ ok: true, paths: string[] }` on selection or
   // `{ ok: false, error?: string }` on cancel/error.
