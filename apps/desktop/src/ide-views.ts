@@ -3,6 +3,7 @@
 
 import { BrowserWindow } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
+import { createHash } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { getApiUrl } from './local-server'
@@ -22,6 +23,21 @@ const ideWindows = new Map<string, BrowserWindow>()
 
 function serverKey(workspacePath: string): string {
   return path.resolve(workspacePath)
+}
+
+function stableHash(value: string): string {
+  return createHash('sha256').update(path.resolve(value)).digest('hex')
+}
+
+function serverPortRange(workspacePath: string): string {
+  const offset = parseInt(stableHash(workspacePath).slice(0, 4), 16) % 1000
+  const start = 18000 + offset * 10
+  return `${start}-${start + 9}`
+}
+
+function ideWindowKey(ownerWindowId: number | undefined, projectId: string, workspacePath: string): string {
+  const ownerSegment = ownerWindowId === undefined ? 'global' : String(ownerWindowId)
+  return `${ownerSegment}:${projectId}:${path.resolve(workspacePath)}`
 }
 
 function resolveWorkspacePath(projectId: string, workspacePath?: string): string | null {
@@ -53,6 +69,8 @@ function codeOssWebArgs(status: ReturnType<typeof getShogoIdeStatus>, workspaceP
     '--user-data-dir', runtime.userDataDir,
     '--extensions-dir', runtime.extensionsDir,
     '--builtin-extensions-dir', runtime.systemExtensionsDir,
+    '--host', '127.0.0.1',
+    '--port', serverPortRange(workspacePath),
     '--agents-user-data-dir', runtime.agentsUserDataDir,
     '--agents-extensions-dir', runtime.agentsExtensionsDir,
     '--crash-reporter-directory', runtime.crashReporterDirectory,
@@ -136,15 +154,16 @@ async function startIdeServer(workspacePath: string, desktopChatUrl?: string): P
 export async function openIdeWindow(
   projectId: string,
   createWindow: () => BrowserWindow,
-  opts: { workspacePath?: string; chatUrl?: string } = {},
+  opts: { workspacePath?: string; chatUrl?: string; ownerWindowId?: number } = {},
 ): Promise<{ ok: true; windowId: number; url: string } | { ok: false; error: string }> {
   if (!projectId) return { ok: false, error: 'project-id-required' }
 
   try {
     const workspacePath = resolveWorkspacePath(projectId, opts.workspacePath)
     if (!workspacePath) return { ok: false, error: 'workspace-path-required' }
+    const windowKey = ideWindowKey(opts.ownerWindowId, projectId, workspacePath)
 
-    const existing = ideWindows.get(projectId)
+    const existing = ideWindows.get(windowKey)
     if (existing && !existing.isDestroyed()) {
       const server = await startIdeServer(workspacePath, opts.chatUrl)
       const url = codeOssWorkspaceUrl(await server.ready, workspacePath)
@@ -160,10 +179,10 @@ export async function openIdeWindow(
     const server = await startIdeServer(workspacePath, opts.chatUrl)
     const url = codeOssWorkspaceUrl(await server.ready, workspacePath)
     const window = createWindow()
-    ideWindows.set(projectId, window)
+    ideWindows.set(windowKey, window)
     window.setTitle('Shogo-IDE')
     window.once('closed', () => {
-      if (ideWindows.get(projectId)?.id === window.id) ideWindows.delete(projectId)
+      if (ideWindows.get(windowKey)?.id === window.id) ideWindows.delete(windowKey)
     })
     await window.loadURL(url)
     window.show()

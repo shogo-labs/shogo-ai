@@ -624,13 +624,17 @@ function openNewWindow(): void {
   loadAppWindow(windowManager.createAppWindow())
 }
 
-async function openCodeWorkbenchWindow(options: { projectId?: string; workspacePath?: string } = {}): Promise<{ ok: true; windowId: number; url: string } | { ok: false; error: string }> {
+async function openCodeWorkbenchWindow(
+  options: { projectId?: string; workspacePath?: string } = {},
+  ownerWindow?: BrowserWindow | null,
+): Promise<{ ok: true; windowId: number; url: string } | { ok: false; error: string }> {
   if (!options.projectId) return { ok: false, error: 'project-id-required' }
   return openIdeWindow(
     options.projectId,
     () => windowManager.createCodeWorkbenchWindow(options),
     {
       workspacePath: options.workspacePath,
+      ownerWindowId: ownerWindow?.id,
       chatUrl: getAppWindowUrl(buildCodeWorkbenchChatPath({
         projectId: options.projectId,
         workspacePath: options.workspacePath,
@@ -680,7 +684,8 @@ function openActiveCodeWorkbenchFromMenu(): void {
     return
   }
 
-  void openCodeWorkbenchWindow(options).then((result) => {
+  const ownerWindow = BrowserWindow.getFocusedWindow() ?? windowManager.getPrimaryWindow()
+  void openCodeWorkbenchWindow(options, ownerWindow).then((result) => {
     if (!result.ok) {
       const win = BrowserWindow.getFocusedWindow() ?? windowManager.getPrimaryWindow()
       const dialogOptions = {
@@ -821,8 +826,8 @@ function buildAppMenu(): void {
 function registerIpcHandlers(): void {
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
-  ipcMain.handle('code-workbench:open', (_event, options?: { projectId?: string; workspacePath?: string }) => {
-    return openCodeWorkbenchWindow(options ?? {})
+  ipcMain.handle('code-workbench:open', (event, options?: { projectId?: string; workspacePath?: string }) => {
+    return openCodeWorkbenchWindow(options ?? {}, windowManager.getWindowForWebContents(event.sender))
   })
 
   // On-demand local-database repair, surfaced from the support/settings UI.
