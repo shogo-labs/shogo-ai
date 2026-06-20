@@ -420,27 +420,6 @@ jobs:
           # without the secret — Sentry self-disables in that case.
           SHOGO_DESKTOP_SENTRY_DSN: ${{ secrets.SHOGO_DESKTOP_SENTRY_DSN }}
 
-      - name: Upload main-process source maps to Sentry (shogo-desktop)
-        working-directory: apps/desktop
-        # bundle-main.mjs emits dist/main.js.map and tsc emits maps for the
-        # other dist/*.js (preload, local-server, …). Inject Debug IDs +
-        # upload them to shogo-desktop under the app version (the main
-        # process's Sentry `release` is `app.getVersion()`), then delete the
-        # maps so they don't ship inside app.asar. Skips on forks without the
-        # token; a real failure fails the job (bash -e).
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: shogo-ai
-          SENTRY_PROJECT: shogo-desktop
-        run: |
-          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
-            echo "SENTRY_AUTH_TOKEN not set — skipping main-process source map upload"
-            exit 0
-          fi
-          bunx @sentry/cli sourcemaps inject --release "$APP_VERSION" dist
-          bunx @sentry/cli sourcemaps upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --release "$APP_VERSION" dist
-          find dist -name '*.map' -delete
-
       # Desktop notarization (xcrun notarytool) requires a "Developer ID
       # Application" certificate, which is distinct from the "Apple
       # Distribution" cert used by `.github/workflows/ios.yml` for App Store
