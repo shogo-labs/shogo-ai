@@ -27,6 +27,31 @@ declare const __SHOGO_DESKTOP_SENTRY_DSN__: string
 
 let initialized = false
 
+// TEMPORARY KILL-SWITCH — main-process Sentry is disabled.
+//
+// v1.11.13 was the first build to ship a *real* desktop DSN (every prior
+// release carried the placeholder `-`, so `isValidSentryDsn()` rejected it and
+// `Sentry.init()` never actually ran). With a valid DSN the init path executed
+// for the first time on `@sentry/electron@^7.13.0` and the packaged macOS app
+// HUNG during top-level module evaluation — zero output to main.log/stdout,
+// `app.whenReady()` never fired, the local server never started. The release
+// `Boot smoke test` caught it (deterministic across re-runs) and the build was
+// never published.
+//
+// The `import * as Sentry` above is NOT the culprit: it has loaded in every
+// shipped build regardless of DSN and those booted fine. The hang is in
+// `Sentry.init()` itself, so skipping it restores a bootable app while keeping
+// renderer crash reporting (@sentry/react-native in the Expo web build, via
+// EXPO_PUBLIC_SENTRY_DSN_WEB) and web/main source-map upload fully intact.
+//
+// Re-enable (set to false) once main-process init is fixed — almost certainly a
+// bump off the EOL v7 line to @sentry/electron v8+, verified against a
+// *packaged* build (the hang does not reproduce under `npm run dev`).
+//
+// `as boolean` keeps tsc from narrowing the literal and flagging the guarded
+// init below as unreachable.
+const MAIN_PROCESS_SENTRY_DISABLED = true as boolean
+
 function resolveDsn(): string {
   const fromBuild =
     typeof __SHOGO_DESKTOP_SENTRY_DSN__ !== 'undefined'
@@ -73,6 +98,9 @@ function isValidSentryDsn(value: string): boolean {
  */
 export function initSentry(): void {
   if (initialized) return
+  // See MAIN_PROCESS_SENTRY_DISABLED above — skips the hanging v7 init while
+  // leaving renderer reporting + source-map upload untouched.
+  if (MAIN_PROCESS_SENTRY_DISABLED) return
   const dsn = resolveDsn()
   if (!isValidSentryDsn(dsn)) {
     if (dsn && !app.isPackaged) {
