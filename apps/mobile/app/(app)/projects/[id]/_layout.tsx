@@ -119,6 +119,7 @@ import {
   FileText,
   ShieldCheck,
   Globe,
+  Plus,
 } from 'lucide-react-native'
 import {
   useToast,
@@ -2599,7 +2600,6 @@ export default observer(function ProjectLayout() {
   // Read from effectiveTab so transient attention overrides drive the layout
   // without mutating the persisted previewTab.
   const isChatFullscreen = isWide && effectiveTab === 'chat-fullscreen'
-  const ideChatSidebarWidth = Math.min(280, Math.max(220, Math.floor(width * 0.3)))
 
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
@@ -2755,34 +2755,80 @@ export default observer(function ProjectLayout() {
             initialEzModeActive={false}
             initialAutoStartVoice={false}
           >
-            <View className="flex-1 flex-row bg-background overflow-hidden">
-              <View
-                className="h-full shrink-0 border-r border-border bg-background"
-                style={{ width: ideChatSidebarWidth }}
-              >
-                <ChatSessionSidebar
-                  sessions={chatSessions}
-                  currentSessionId={chatSessionId ?? undefined}
-                  onSelect={(sessionId) => {
-                    setOpenChatTabIds((prev) =>
-                      prev.includes(sessionId) ? prev : [...prev, sessionId],
+            <View className="flex-1 bg-background overflow-hidden">
+              <View className="h-11 flex-row items-center border-b border-border bg-background">
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  className="flex-1"
+                  contentContainerStyle={{ alignItems: 'center' }}
+                >
+                  {openChatTabIds.map((tabId) => {
+                    const session = chatSessions.find((candidate) => candidate.id === tabId)
+                    const isActive = tabId === chatSessionId
+                    const isStreaming = streamingTabIds.has(tabId)
+                    const isCompleted = completedTabIds.has(tabId)
+                    return (
+                      <Pressable
+                        key={tabId}
+                        onPress={() => setChatSessionId(tabId)}
+                        className={cn(
+                          'h-11 min-w-[150px] max-w-[240px] flex-row items-center gap-2 border-r border-border px-3',
+                          isActive ? 'bg-background' : 'bg-muted/30 opacity-70',
+                        )}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Open chat ${session?.name ?? 'Untitled chat'}`}
+                      >
+                        <MessageSquare
+                          size={15}
+                          className={cn(isActive ? 'text-foreground' : 'text-muted-foreground')}
+                        />
+                        <Text
+                          className={cn(
+                            'flex-1 text-sm font-medium',
+                            isActive ? 'text-foreground' : 'text-muted-foreground',
+                          )}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {session?.name ?? 'New Chat'}
+                        </Text>
+                        {isStreaming ? (
+                          <View className="h-2 w-2 rounded-full bg-orange-500" />
+                        ) : isCompleted ? (
+                          <View className="h-2 w-2 rounded-full bg-emerald-500" />
+                        ) : null}
+                        <Pressable
+                          onPress={(event) => {
+                            event.stopPropagation?.()
+                            setOpenChatTabIds((prev) => {
+                              const next = prev.filter((id) => id !== tabId)
+                              if (chatSessionId === tabId) {
+                                setChatSessionId(next[next.length - 1] ?? null)
+                              }
+                              return next
+                            })
+                          }}
+                          className="h-6 w-6 items-center justify-center rounded-md active:bg-muted"
+                          accessibilityRole="button"
+                          accessibilityLabel={`Close chat ${session?.name ?? 'Untitled chat'}`}
+                        >
+                          <XIcon size={14} className="text-muted-foreground" />
+                        </Pressable>
+                      </Pressable>
                     )
-                    setChatSessionId(sessionId)
-                  }}
-                  onCreate={() => {
+                  })}
+                </ScrollView>
+                <Pressable
+                  onPress={() => {
                     void handleCreateNewSession()
                   }}
-                  onRename={handleRenameChatSession}
-                  onDelete={handleDeleteChatSession}
-                  onTogglePin={handleTogglePinChatSession}
-                  onToggleArchive={handleToggleArchiveChatSession}
-                  onLoadMore={handleLoadMoreSessions}
-                  hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                  isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                  streamingSessionIds={streamingTabIds}
-                  completedSessionIds={completedTabIds}
-                  projectId={projectId ?? undefined}
-                />
+                  className="h-11 w-11 items-center justify-center border-l border-border active:bg-muted"
+                  accessibilityRole="button"
+                  accessibilityLabel="New chat"
+                >
+                  <Plus size={18} className="text-muted-foreground" />
+                </Pressable>
               </View>
               <View className="flex-1 min-w-0 bg-background">
                 <PanelErrorBoundary panelName="Shogo IDE Chat">
@@ -2795,7 +2841,7 @@ export default observer(function ProjectLayout() {
                     <View className="flex-1 bg-background items-center justify-center px-8">
                       <MessageSquare size={28} className="text-muted-foreground" />
                       <Text className="text-sm text-muted-foreground mt-3 text-center">
-                        No chat open. Pick one from the list on the left, or start a new chat.
+                        No chat open. Press + to start a new project chat.
                       </Text>
                     </View>
                   ) : (
