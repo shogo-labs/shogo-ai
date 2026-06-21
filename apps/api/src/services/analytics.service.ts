@@ -288,29 +288,56 @@ export async function getGrowthTimeSeries(
     })
   }
 
-  // Platform-wide: new users, workspaces, projects over time
-  const [users, workspaces, projects] = await Promise.all([
-    prisma.user.findMany({
-      where: { createdAt: { gte: since } },
-      select: { createdAt: true },
-      orderBy: { createdAt: 'asc' },
-    }),
-    prisma.workspace.findMany({
-      where: { createdAt: { gte: since } },
-      select: { createdAt: true },
-      orderBy: { createdAt: 'asc' },
-    }),
-    prisma.project.findMany({
-      where: { createdAt: { gte: since } },
-      select: { createdAt: true },
-      orderBy: { createdAt: 'asc' },
-    }),
+  // Platform-wide: new users, workspaces, projects, and chat sessions per day.
+  //
+  // On Postgres (production) we bucket by day in SQL so the query returns at
+  // most one row per day instead of streaming every entity's createdAt back to
+  // the app — this keeps the long (90d / 1y) windows cheap as the tables grow.
+  // The WHERE "createdAt" >= … filter is backed by the @@index([createdAt]) on
+  // each table. SQLite (local / tests) keeps the simple findMany+JS path: data
+  // volumes are tiny and Prisma's SQLite DateTime storage doesn't play nicely
+  // with strftime, so there's no win and real risk in raw-bucketing it there.
+  if (isSqlite) {
+    const [users, workspaces, projects, sessions] = await Promise.all([
+      prisma.user.findMany({ where: { createdAt: { gte: since } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } }),
+      prisma.workspace.findMany({ where: { createdAt: { gte: since } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } }),
+      prisma.project.findMany({ where: { createdAt: { gte: since } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } }),
+      prisma.chatSession.findMany({ where: { createdAt: { gte: since } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } }),
+    ])
+    return mergeTimeSeries({
+      users: groupByDate(users),
+      workspaces: groupByDate(workspaces),
+      projects: groupByDate(projects),
+      sessions: groupByDate(sessions),
+    })
+  }
+
+  // Postgres: one grouped COUNT per table. createdAt is a UTC `timestamp(3)`,
+  // so date_trunc('day', …) yields the same UTC day buckets as the JS path.
+  const bucketByDay = (table: string) =>
+    prisma.$queryRawUnsafe<{ date: string; count: number | bigint }[]>(
+      `SELECT to_char(date_trunc('day', "createdAt"), 'YYYY-MM-DD') AS "date", COUNT(*) AS "count"
+       FROM "${table}"
+       WHERE "createdAt" >= $1
+       GROUP BY 1
+       ORDER BY 1`,
+      since,
+    )
+  const toPoints = (rows: { date: string; count: number | bigint }[]): TimeSeriesPoint[] =>
+    rows.map((r) => ({ date: r.date, count: toNum(r.count) }))
+
+  const [users, workspaces, projects, sessions] = await Promise.all([
+    bucketByDay('users'),
+    bucketByDay('workspaces'),
+    bucketByDay('projects'),
+    bucketByDay('chat_sessions'),
   ])
 
   return mergeTimeSeries({
-    users: groupByDate(users),
-    workspaces: groupByDate(workspaces),
-    projects: groupByDate(projects),
+    users: toPoints(users),
+    workspaces: toPoints(workspaces),
+    projects: toPoints(projects),
+    sessions: toPoints(sessions),
   })
 }
 
