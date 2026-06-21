@@ -1426,6 +1426,7 @@ export function UsageTimeseriesChart({
   groupByOptions,
   height = 260,
   showTotals = true,
+  allowCumulative = false,
 }: {
   data: SpendTimeseriesData | null
   loading?: boolean
@@ -1439,9 +1440,25 @@ export function UsageTimeseriesChart({
   groupByOptions?: readonly SpendGroupBy[]
   height?: number
   showTotals?: boolean
+  /** When true, show a Daily/Cumulative toggle that accumulates each series over the window. */
+  allowCumulative?: boolean
 }) {
+  const [mode, setMode] = useState<'daily' | 'cumulative'>('daily')
   const series = buildSpendSeries(data)
-  const chartDays: StackedDay[] = (data?.days ?? []).map((d) => ({ date: d.date, values: d.byModel }))
+  const dailyDays: StackedDay[] = (data?.days ?? []).map((d) => ({ date: d.date, values: d.byModel }))
+  const isCumulative = allowCumulative && mode === 'cumulative'
+  const chartDays = useMemo<StackedDay[]>(() => {
+    if (!isCumulative) return dailyDays
+    const running: Record<string, number> = {}
+    return dailyDays.map((d) => {
+      const values: Record<string, number> = {}
+      for (const s of series) {
+        running[s.id] = (running[s.id] ?? 0) + (d.values[s.id] ?? 0)
+        values[s.id] = running[s.id]
+      }
+      return { date: d.date, values }
+    })
+  }, [dailyDays, series, isCumulative])
 
   return (
     <View className="rounded-xl border border-border bg-card p-4 gap-3">
@@ -1450,7 +1467,17 @@ export function UsageTimeseriesChart({
           <Text className="text-sm font-semibold text-foreground">{title}</Text>
           <Text className="text-xs text-muted-foreground">{subtitle}</Text>
         </View>
-        <View className="flex-row items-center gap-2">
+        <View className="flex-row items-center gap-2 flex-wrap">
+          {allowCumulative ? (
+            <MetricToggle
+              value={mode}
+              onChange={setMode}
+              options={[
+                { id: 'daily', label: 'Daily' },
+                { id: 'cumulative', label: 'Cumulative' },
+              ]}
+            />
+          ) : null}
           <GroupBySelect value={groupBy} onChange={onGroupByChange} options={groupByOptions} />
           <MetricSelect value={metric} onChange={onMetricChange} />
         </View>
@@ -1515,6 +1542,8 @@ export function MetricTrendChart({
   days,
   metrics,
   height = 240,
+  allowCumulative = false,
+  baselines,
 }: {
   title: string
   subtitle?: string
@@ -1522,13 +1551,32 @@ export function MetricTrendChart({
   days: StackedDay[]
   metrics: TrendMetricOption[]
   height?: number
+  /** When true, show a Daily/Cumulative toggle that turns the series into a running total. */
+  allowCumulative?: boolean
+  /**
+   * Starting value for the cumulative line per metric id (e.g. entities that
+   * existed before the window). The cumulative series ends at
+   * `baseline + sum(window)`, so it lines up with a "Total X" stat card.
+   */
+  baselines?: Record<string, number>
 }) {
   const [selected, setSelected] = useState<string>(metrics[0]?.id ?? '')
+  const [mode, setMode] = useState<'daily' | 'cumulative'>('daily')
   const metric = metrics.find((m) => m.id === selected) ?? metrics[0]
   const series: StackedSeries[] = metric
     ? [{ id: metric.id, label: metric.label, color: metric.color ?? STACKED_PALETTE[0] }]
     : []
   const fmt = metric?.format ?? ((n: number) => formatNumber(n))
+
+  const isCumulative = allowCumulative && mode === 'cumulative'
+  const chartDays = useMemo<StackedDay[]>(() => {
+    if (!isCumulative || !metric) return days
+    let running = baselines?.[metric.id] ?? 0
+    return days.map((d) => {
+      running += d.values[metric.id] ?? 0
+      return { ...d, values: { ...d.values, [metric.id]: running } }
+    })
+  }, [days, isCumulative, metric, baselines])
 
   return (
     <View className="rounded-xl border border-border bg-card p-4 gap-3">
@@ -1537,11 +1585,23 @@ export function MetricTrendChart({
           <Text className="text-sm font-semibold text-foreground">{title}</Text>
           {subtitle ? <Text className="text-xs text-muted-foreground">{subtitle}</Text> : null}
         </View>
-        <MetricToggle
-          value={selected}
-          onChange={setSelected}
-          options={metrics.map((m) => ({ id: m.id, label: m.label }))}
-        />
+        <View className="flex-row items-center gap-2 flex-wrap">
+          {allowCumulative ? (
+            <MetricToggle
+              value={mode}
+              onChange={setMode}
+              options={[
+                { id: 'daily', label: 'Daily' },
+                { id: 'cumulative', label: 'Cumulative' },
+              ]}
+            />
+          ) : null}
+          <MetricToggle
+            value={selected}
+            onChange={setSelected}
+            options={metrics.map((m) => ({ id: m.id, label: m.label }))}
+          />
+        </View>
       </View>
 
       {loading ? (
@@ -1552,7 +1612,7 @@ export function MetricTrendChart({
         </View>
       ) : (
         <StackedAreaChart
-          days={days}
+          days={chartDays}
           series={series}
           height={height}
           formatY={fmt}
@@ -1617,6 +1677,82 @@ export function ActivityTrendsChart({
       loading={loading}
       days={days}
       metrics={metrics}
+    />
+  )
+}
+
+// =============================================================================
+// Platform growth (users / workspaces / projects / sessions over time)
+// =============================================================================
+
+export interface PlatformGrowthPoint {
+  date: string
+  users: number
+  workspaces: number
+  projects: number
+  sessions: number
+}
+
+/** Current platform totals, used to anchor the cumulative line to the cards. */
+export interface PlatformGrowthTotals {
+  totalUsers?: number
+  totalWorkspaces?: number
+  totalProjects?: number
+  totalChatSessions?: number
+}
+
+/**
+ * Core-entity growth chart with a Daily/Cumulative toggle. Daily mode shows new
+ * entities per day; cumulative mode shows a running total that ends at the
+ * matching "Total X" stat card (baseline = current total minus what was created
+ * inside the window).
+ */
+export function PlatformGrowthChart({
+  data,
+  totals,
+  loading,
+  title = 'Growth',
+}: {
+  data: PlatformGrowthPoint[] | null
+  totals?: PlatformGrowthTotals | null
+  loading?: boolean
+  title?: string
+}) {
+  const rows = data ?? []
+  const days: StackedDay[] = rows.map((d) => ({
+    date: d.date,
+    values: {
+      users: d.users ?? 0,
+      workspaces: d.workspaces ?? 0,
+      projects: d.projects ?? 0,
+      sessions: d.sessions ?? 0,
+    },
+  }))
+  const sum = (key: 'users' | 'workspaces' | 'projects' | 'sessions') =>
+    rows.reduce((acc, d) => acc + (d[key] ?? 0), 0)
+  const baseline = (total: number | undefined, windowSum: number) =>
+    Math.max((total ?? windowSum) - windowSum, 0)
+  const baselines: Record<string, number> = {
+    users: baseline(totals?.totalUsers, sum('users')),
+    workspaces: baseline(totals?.totalWorkspaces, sum('workspaces')),
+    projects: baseline(totals?.totalProjects, sum('projects')),
+    sessions: baseline(totals?.totalChatSessions, sum('sessions')),
+  }
+  const metrics: TrendMetricOption[] = [
+    { id: 'users', label: 'Users', color: STACKED_PALETTE[1], format: formatNumber },
+    { id: 'workspaces', label: 'Workspaces', color: STACKED_PALETTE[3], format: formatNumber },
+    { id: 'projects', label: 'Projects', color: STACKED_PALETTE[2], format: formatNumber },
+    { id: 'sessions', label: 'Sessions', color: STACKED_PALETTE[0], format: formatNumber },
+  ]
+  return (
+    <MetricTrendChart
+      title={title}
+      subtitle="New per day, or cumulative running total"
+      loading={loading}
+      days={days}
+      metrics={metrics}
+      allowCumulative
+      baselines={baselines}
     />
   )
 }

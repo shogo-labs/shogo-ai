@@ -57,6 +57,7 @@ model User {
   affiliateAttribution AffiliateAttribution?
   projectAuthSignIns   ProjectAuthSignIn[]
 
+  @@index([createdAt])
   @@map("users")
 }
 
@@ -161,6 +162,7 @@ model Workspace {
   chatSessions           ChatSession[]
   modelVisibility        WorkspaceModelVisibility[]
 
+  @@index([createdAt])
   @@map("workspaces")
 }
 
@@ -288,6 +290,7 @@ model Project {
   @@index([workspaceId])
   @@index([folderId])
   @@index([preferredInstanceId])
+  @@index([createdAt])
   @@map("projects")
 }
 
@@ -1039,6 +1042,7 @@ model ChatSession {
 
   @@index([contextType, contextId])
   @@index([workspaceId])
+  @@index([createdAt])
   @@map("chat_sessions")
 }
 
