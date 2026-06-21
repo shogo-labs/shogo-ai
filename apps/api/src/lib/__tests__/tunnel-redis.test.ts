@@ -606,22 +606,29 @@ describe('cross-pod stream relay', () => {
 // ─── Coverage closer — branches not reachable from the other test files ─────
 
 describe('coverage closer: retry strategy', () => {
-  it('publisher retryStrategy gives up after 5 attempts and backs off otherwise', () => {
+  // Regression guard for the prod incident: retryStrategy must NEVER return
+  // null (which makes ioredis emit 'end' and stop reconnecting forever).
+  it('publisher retryStrategy backs off and never gives up', () => {
     const pubOpts = pub().opts as { retryStrategy: (times: number) => number | null }
-    expect(pubOpts.retryStrategy(6)).toBeNull()
-    expect(pubOpts.retryStrategy(2)).toBe(1000)
-    expect(pubOpts.retryStrategy(10)).toBeNull()
     expect(pubOpts.retryStrategy(1)).toBe(500)
+    expect(pubOpts.retryStrategy(2)).toBe(1000)
+    expect(pubOpts.retryStrategy(6)).toBe(3000)
+    expect(pubOpts.retryStrategy(10)).toBe(5000) // capped
+    expect(pubOpts.retryStrategy(1000)).toBe(5000) // still capped, never null
   })
 
-  it('subscriber retryStrategy gives up after 5 attempts and backs off otherwise', () => {
+  it('subscriber retryStrategy backs off and never gives up', () => {
     const subOpts = sub().opts as { retryStrategy: (times: number) => number | null }
-    expect(subOpts.retryStrategy(6)).toBeNull()
     expect(subOpts.retryStrategy(3)).toBe(1500)
-    expect(subOpts.retryStrategy(20)).toBeNull()
-    // Math.min cap at 3000 once times >= 6 would normally fire but we
-    // exit earlier with null. Cap is exercised by clamping a low value.
     expect(subOpts.retryStrategy(5)).toBe(2500)
+    expect(subOpts.retryStrategy(20)).toBe(5000) // capped
+    expect(subOpts.retryStrategy(99)).not.toBeNull()
+  })
+
+  it('reconnectOnError forces a reconnect only on READONLY failover errors', () => {
+    const pubOpts = pub().opts as { reconnectOnError: (err: Error) => boolean }
+    expect(pubOpts.reconnectOnError(new Error("READONLY You can't write against a read only replica."))).toBe(true)
+    expect(pubOpts.reconnectOnError(new Error('ETIMEDOUT'))).toBe(false)
   })
 })
 
