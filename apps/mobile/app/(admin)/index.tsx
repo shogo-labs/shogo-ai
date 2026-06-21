@@ -32,6 +32,15 @@ import {
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
+import {
+  PlatformGrowthChart,
+  ActiveUsersTrendChart,
+  UsageTimeseriesChart,
+  type ActiveUsersTimeseriesPoint,
+  type SpendTimeseriesData,
+  type SpendGroupBy,
+  type SpendMetric,
+} from '../../components/analytics/SharedAnalytics'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -64,6 +73,7 @@ interface GrowthDataPoint {
   users: number
   workspaces: number
   projects: number
+  sessions: number
 }
 
 interface InfraLiveData {
@@ -366,74 +376,6 @@ function SystemHealthCard({ data, loading }: { data: InfraLiveData | null; loadi
   )
 }
 
-function GrowthSummary({ data, loading }: { data: GrowthDataPoint[] | null; loading: boolean }) {
-  if (loading) {
-    return (
-      <View className="rounded-xl border border-border bg-card p-5">
-        <View className="h-4 w-32 bg-muted rounded mb-4" />
-        <View className="h-40 bg-muted/50 rounded" />
-      </View>
-    )
-  }
-
-  if (!data || data.length === 0) {
-    return (
-      <View className="rounded-xl border border-border bg-card p-5">
-        <View className="flex-row items-center gap-2 mb-3">
-          <TrendingUp size={16} className="text-foreground" />
-          <Text className="text-sm font-semibold text-foreground">Growth Trends</Text>
-        </View>
-        <View className="h-32 items-center justify-center">
-          <Text className="text-sm text-muted-foreground">No growth data available</Text>
-        </View>
-      </View>
-    )
-  }
-
-  const latest = data[data.length - 1]
-  const earliest = data[0]
-  const metrics = [
-    { label: 'Users', current: latest.users, start: earliest.users, color: 'bg-primary' },
-    { label: 'Workspaces', current: latest.workspaces, start: earliest.workspaces, color: 'bg-blue-500' },
-    { label: 'Projects', current: latest.projects, start: earliest.projects, color: 'bg-emerald-500' },
-  ]
-
-  const maxVal = Math.max(...data.map((d) => Math.max(d.users, d.workspaces, d.projects)), 1)
-
-  return (
-    <View className="rounded-xl border border-border bg-card p-5">
-      <View className="flex-row items-center gap-2 mb-4">
-        <TrendingUp size={16} className="text-foreground" />
-        <Text className="text-sm font-semibold text-foreground">Growth Trends</Text>
-      </View>
-      <View className="gap-4">
-        {metrics.map((m) => {
-          const growth = m.start > 0 ? (((m.current - m.start) / m.start) * 100).toFixed(0) : '—'
-          const barWidth = Math.max((m.current / maxVal) * 100, 5)
-          return (
-            <View key={m.label} className="gap-1.5">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-sm font-medium text-foreground">{m.label}</Text>
-                <View className="flex-row items-center gap-2">
-                  <Text className="text-sm font-bold text-foreground">
-                    {m.current.toLocaleString()}
-                  </Text>
-                  {growth !== '—' && (
-                    <Text className="text-xs font-medium text-green-500">+{growth}%</Text>
-                  )}
-                </View>
-              </View>
-              <View className="h-2.5 bg-muted rounded-full overflow-hidden">
-                <View className={cn('h-full rounded-full', m.color)} style={{ width: `${barWidth}%` }} />
-              </View>
-            </View>
-          )
-        })}
-      </View>
-    </View>
-  )
-}
-
 function AIUsageSummaryCard({ data, loading }: { data: UsageSummaryData | null; loading: boolean }) {
   if (loading) {
     return (
@@ -684,6 +626,16 @@ export default function AdminDashboard() {
     data: null,
     loading: true,
   })
+  const [activeUsersTs, setActiveUsersTs] = useState<{ data: ActiveUsersTimeseriesPoint[] | null; loading: boolean }>({
+    data: null,
+    loading: true,
+  })
+  const [spendTs, setSpendTs] = useState<{ data: SpendTimeseriesData | null; loading: boolean }>({
+    data: null,
+    loading: true,
+  })
+  const [spendGroupBy, setSpendGroupBy] = useState<SpendGroupBy>('model')
+  const [spendMetric, setSpendMetric] = useState<SpendMetric>('spend')
 
   // Infrastructure + GC are super_admin-only. Partial admins (analytics:read)
   // see the usage/growth half of the dashboard; the infra half is hidden so
@@ -704,6 +656,8 @@ export default function AdminDashboard() {
     setActiveUsers((s) => ({ ...s, loading: true }))
     setGrowth((s) => ({ ...s, loading: true }))
     setUsage((s) => ({ ...s, loading: true }))
+    setActiveUsersTs((s) => ({ ...s, loading: true }))
+    setSpendTs((s) => ({ ...s, loading: true }))
 
     const canSeeInfra = isSuperAdmin === true
     if (canSeeInfra) {
@@ -714,27 +668,43 @@ export default function AdminDashboard() {
       setInfraHistory({ data: null, loading: false })
     }
 
-    const [overviewData, activeData, growthData, usageData, infraData, infraHistoryData] =
-      await Promise.all([
-        fetchAdminJson<OverviewData>('/analytics/overview'),
-        fetchAdminJson<ActiveUsersData>('/analytics/active-users', { period }),
-        fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', { period }),
-        fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { period }),
-        canSeeInfra ? fetchAdminJson<InfraLiveData>('/analytics/infra-current') : Promise.resolve(null),
-        canSeeInfra
-          ? fetchAdminJson<InfraHistoryPoint[]>('/analytics/infra-history', { period: '24h' })
-          : Promise.resolve(null),
-      ])
+    const [
+      overviewData,
+      activeData,
+      growthData,
+      usageData,
+      activeUsersTsData,
+      spendTsData,
+      infraData,
+      infraHistoryData,
+    ] = await Promise.all([
+      fetchAdminJson<OverviewData>('/analytics/overview'),
+      fetchAdminJson<ActiveUsersData>('/analytics/active-users', { period }),
+      fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', { period }),
+      fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { period }),
+      fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', { period }),
+      fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', {
+        period,
+        groupBy: spendGroupBy,
+        metric: spendMetric,
+      }),
+      canSeeInfra ? fetchAdminJson<InfraLiveData>('/analytics/infra-current') : Promise.resolve(null),
+      canSeeInfra
+        ? fetchAdminJson<InfraHistoryPoint[]>('/analytics/infra-history', { period: '24h' })
+        : Promise.resolve(null),
+    ])
 
     setOverview({ data: overviewData, loading: false })
     setActiveUsers({ data: activeData, loading: false })
     setGrowth({ data: growthData, loading: false })
     setUsage({ data: usageData, loading: false })
+    setActiveUsersTs({ data: activeUsersTsData, loading: false })
+    setSpendTs({ data: spendTsData, loading: false })
     if (canSeeInfra) {
       setInfra({ data: infraData, loading: false })
       setInfraHistory({ data: infraHistoryData, loading: false })
     }
-  }, [period, isSuperAdmin])
+  }, [period, isSuperAdmin, spendGroupBy, spendMetric])
 
   useEffect(() => {
     loadData()
@@ -854,17 +824,39 @@ export default function AdminDashboard() {
         )}
       </View>
 
-      {/* Row 3: Growth Trends + AI Usage */}
-      <View className={cn('gap-4 mb-6', isWide ? 'flex-row' : '')}>
-        <View className={isWide ? 'flex-1' : ''}>
-          <GrowthSummary data={growth.data} loading={growth.loading} />
-        </View>
-        <View className={isWide ? 'flex-1' : ''}>
-          <AIUsageSummaryCard data={usage.data} loading={usage.loading} />
-        </View>
+      {/* Row 3: Growth over time (Daily / Cumulative) */}
+      <View className="mb-6">
+        <PlatformGrowthChart
+          data={growth.data}
+          totals={overview.data}
+          loading={growth.loading}
+        />
       </View>
 
-      {/* Row 4 + 5: Infra history + quick actions (super-admin only) */}
+      {/* Row 4: Active users trend (DAU / WAU / MAU over time) */}
+      <View className="mb-6">
+        <ActiveUsersTrendChart data={activeUsersTs.data} loading={activeUsersTs.loading} />
+      </View>
+
+      {/* Row 5: AI usage — summary + over time */}
+      <View className="mb-6">
+        <AIUsageSummaryCard data={usage.data} loading={usage.loading} />
+      </View>
+      <View className="mb-6">
+        <UsageTimeseriesChart
+          data={spendTs.data}
+          loading={spendTs.loading}
+          groupBy={spendGroupBy}
+          metric={spendMetric}
+          onGroupByChange={setSpendGroupBy}
+          onMetricChange={setSpendMetric}
+          allowCumulative
+          title="AI Usage Over Time"
+          subtitle="Daily spend / tokens / requests"
+        />
+      </View>
+
+      {/* Row 6 + 7: Infra history + quick actions (super-admin only) */}
       {isSuperAdmin && (
         <>
           <View className="mb-6">
