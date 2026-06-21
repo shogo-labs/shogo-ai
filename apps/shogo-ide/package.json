@@ -16,6 +16,7 @@
     "hardening:report": "node scripts/generate-hardening-report.mjs",
     "extension:build": "bun run --cwd extensions/shogo-core build",
     "extension:typecheck": "bun run --cwd extensions/shogo-core typecheck",
-    "codeoss:clone:print": "node scripts/print-code-oss-clone-command.mjs"
+    "codeoss:clone:print": "node scripts/print-code-oss-clone-command.mjs",
+    "codeoss:patch": "node scripts/apply-code-oss-patches.mjs"
   }
 }
