@@ -37,6 +37,7 @@ const {
   getUserActivityTable,
   getTemplateEngagement,
   getChatConversations,
+  getGrowthTimeSeries,
 } = await import('../services/analytics.service')
 
 beforeEach(() => {
@@ -78,6 +79,16 @@ describe('analytics.service.ts — Postgres dialect branches (SHOGO_LOCAL_MODE u
     expect(q).toContain('1000')
     // Postgres uses positional parameters $1 instead of sqlite's ?
     expect(q).toContain('$1')
+  })
+
+  test('getGrowthTimeSeries (platform) buckets by day in SQL for the four core tables', async () => {
+    await getGrowthTimeSeries()
+    // One grouped COUNT per table: users, workspaces, projects, chat_sessions.
+    expect(captured.length).toBe(4)
+    expect(captured.every((sql) => sql.includes(`date_trunc('day', "createdAt")`))).toBe(true)
+    expect(captured.every((sql) => sql.includes('$1'))).toBe(true)
+    const tables = captured.map((sql) => sql.match(/FROM "(\w+)"/)?.[1])
+    expect(tables).toEqual(['users', 'workspaces', 'projects', 'chat_sessions'])
   })
 
 })

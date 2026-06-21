@@ -284,12 +284,20 @@ describe('getGrowthTimeSeries', () => {
     expect(out.length).toBeGreaterThanOrEqual(1)
   })
 
-  test('platform scope returns users + workspaces + projects', async () => {
-    store.users.push({ id: 'u-1', createdAt: new Date() })
-    store.workspaces.push({ id: 'w-1', createdAt: new Date() })
+  test('platform scope returns users + workspaces + projects + sessions', async () => {
+    const now = new Date()
+    store.users.push({ id: 'u-1', createdAt: now })
+    store.workspaces.push({ id: 'w-1', createdAt: now })
+    store.projects.push({ id: 'p-1', workspaceId: 'w-1', createdAt: now })
+    store.chatSessions.push({ id: 's-1', contextId: 'p-1', createdAt: now })
     rebuildModels()
-    const out = await analytics.getGrowthTimeSeries()
+    const out = (await analytics.getGrowthTimeSeries()) as Array<Record<string, unknown>>
     expect(Array.isArray(out)).toBe(true)
+    const day = out[out.length - 1]
+    expect(day.users).toBe(1)
+    expect(day.workspaces).toBe(1)
+    expect(day.projects).toBe(1)
+    expect(day.sessions).toBe(1)
   })
 })
 
