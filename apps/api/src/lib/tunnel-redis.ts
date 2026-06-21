@@ -26,6 +26,34 @@ const STREAM_RELAY_TIMEOUT_MS = 600_000 // 10 min max for streaming
 // One bounded re-read in getTunnelOwner to absorb the cold-start gap on
 // sibling pods. Keep it small — this delays 503s, not real traffic.
 const GET_TUNNEL_OWNER_RETRY_MS = 100
+// Delay between background re-init attempts after a cold-start connect
+// failure (pod booted while Redis was unreachable). Overridable for tests.
+const REINIT_DELAY_MS = Number(process.env.TUNNEL_REDIS_REINIT_MS) || 5000
+
+// Shared ioredis options for both the publisher and subscriber. Centralized
+// so the publisher and subscriber can never drift apart on reconnect policy.
+const REDIS_OPTS = {
+  maxRetriesPerRequest: 3,
+  connectTimeout: 5000,
+  lazyConnect: true,
+  // NEVER return null here. A null return makes ioredis emit 'end' and
+  // permanently stop reconnecting, which latches the pod into a degraded
+  // state with no recovery path. That was the production incident: a brief
+  // redis-master reschedule dropped every long-lived API pod's connection,
+  // ioredis gave up after 5 tries, and cross-pod tunnel routing stayed
+  // broken (health 503s) until each pod was manually restarted. Cap the
+  // backoff and retry forever instead — ioredis auto-resubscribes channels
+  // on reconnect, so the subscriber heals itself once the link is back.
+  retryStrategy(times: number) {
+    return Math.min(times * 500, 5000)
+  },
+  // After a primary failover the old node can briefly answer READONLY;
+  // force a reconnect so we re-resolve to the new primary instead of
+  // wedging on a read-only handle.
+  reconnectOnError(err: Error) {
+    return err.message.includes('READONLY')
+  },
+}
 
 let pub: Redis | null = null
 let sub: Redis | null = null
@@ -40,6 +68,10 @@ let degraded = false
 // and silently dropped — which made other pods return 503 until the next
 // WS reconnect.
 let initPromise: Promise<void> | null = null
+// Pending background re-init timer for the cold-start failure mode (see
+// scheduleReconnect). Tracked so it can be cancelled on shutdown and never
+// double-scheduled.
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 // ─── Initialization ─────────────────────────────────────────────────────────
 
@@ -136,27 +168,29 @@ async function _doInit(): Promise<void> {
     return
   }
 
+  // connectClients resolves on both success and handled failure (it never
+  // rethrows), so `initialized` is only set once the connect attempt has
+  // fully settled. This preserves the cold-start invariant that whenReady()
+  // does not resolve until pub/sub are connected on the happy path.
+  await connectClients()
+  initialized = true
+}
+
+/**
+ * Establish (or re-establish) the publisher + subscriber pair and wire up
+ * channel subscriptions. On success clears `degraded`. On failure it does
+ * NOT rethrow: it logs, tears the half-open clients down, marks the pod
+ * degraded, and schedules a background retry so the pod self-heals once
+ * Redis becomes reachable again (the original incident left this path with
+ * no recovery — a pod that booted during a Redis blip stayed publisher=null
+ * forever).
+ */
+async function connectClients(): Promise<void> {
   try {
-    pub = new Redis(REDIS_URL, {
-      maxRetriesPerRequest: 3,
-      connectTimeout: 5000,
-      lazyConnect: true,
-      retryStrategy(times) {
-        if (times > 5) return null
-        return Math.min(times * 500, 3000)
-      },
-    })
+    pub = new Redis(REDIS_URL, REDIS_OPTS)
     attachLifecycleListeners(pub, 'publisher')
 
-    sub = new Redis(REDIS_URL, {
-      maxRetriesPerRequest: 3,
-      connectTimeout: 5000,
-      lazyConnect: true,
-      retryStrategy(times) {
-        if (times > 5) return null
-        return Math.min(times * 500, 3000)
-      },
-    })
+    sub = new Redis(REDIS_URL, REDIS_OPTS)
     attachLifecycleListeners(sub, 'subscriber')
 
     await Promise.all([pub.connect(), sub.connect()])
@@ -166,6 +200,7 @@ async function _doInit(): Promise<void> {
 
     sub.on('message', handleSubMessage)
 
+    degraded = false
     console.log(`[TunnelRedis] Initialized (pod=${POD_ID})`)
   } catch (err) {
     // In multi-pod deployments this is a correctness bug, not a warning:
@@ -177,8 +212,7 @@ async function _doInit(): Promise<void> {
       `[TunnelRedis] ❌ CRITICAL: Redis unreachable at ${REDIS_URL} — ` +
       `cross-pod tunnel routing is DISABLED. Remote control will return ` +
       `503 on pods that do not own the desktop WS. ` +
-      `Fix: ensure Redis is deployed in this namespace or set ` +
-      `SHOGO_LOCAL_MODE=true for single-pod deployments. ` +
+      `Retrying in ${REINIT_DELAY_MS}ms. ` +
       `Underlying error: ${(err as Error).message}`,
     )
     try { pub?.disconnect() } catch {}
@@ -186,12 +220,36 @@ async function _doInit(): Promise<void> {
     pub = null
     sub = null
     degraded = true
+    scheduleReconnect()
   }
+}
 
-  initialized = true
+/**
+ * Background re-init for the cold-start failure mode where the very first
+ * connect() throws (pod started while Redis was unreachable). We can't rely
+ * on ioredis's own auto-reconnect here because the clients never finished
+ * their initial connect + channel subscribe, so we retry the full
+ * connect+subscribe routine until it succeeds. The timer is unref'd so it
+ * never keeps the process alive on its own.
+ */
+function scheduleReconnect(): void {
+  if (isLocalMode) return
+  if (reconnectTimer) return // already scheduled
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    if (!degraded) return // recovered some other way; nothing to do
+    console.warn('[TunnelRedis] Attempting background reconnect after degraded state…')
+    void connectClients()
+  }, REINIT_DELAY_MS)
+  // Don't let the retry timer alone hold the event loop open.
+  ;(reconnectTimer as { unref?: () => void }).unref?.()
 }
 
 export async function shutdownTunnelRedis(): Promise<void> {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
   if (!initialized) return
   try {
     if (sub) {
