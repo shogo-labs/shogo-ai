@@ -286,8 +286,14 @@ export default observer(function ProjectLayout() {
     newChat?: string
     /** Bumped alongside `newChat` so the one-shot create re-fires on re-press. */
     newChatNonce?: string
+    /** When 'ide', render only the canonical chat for embedding in Shogo IDE. */
+    embed?: string
   }>()
   const projectId = params.id
+  const isIdeChatEmbed = params.embed === 'ide'
+    || (Platform.OS === 'web'
+      && typeof window !== 'undefined'
+      && new URLSearchParams(window.location.search).get('embed') === 'ide')
   const { width, height } = useWindowDimensions()
   const isWide = width >= WIDE_BREAKPOINT
   const insets = useSafeAreaInsets()
@@ -299,6 +305,36 @@ export default observer(function ProjectLayout() {
   const toast = useToast()
 
   const router = useRouter()
+
+  useEffect(() => {
+    if (!isIdeChatEmbed || Platform.OS !== 'web' || !projectId || typeof window === 'undefined') return
+
+    const lockedUrl = new URL(window.location.href)
+    lockedUrl.searchParams.set('tab', 'chat-fullscreen')
+    lockedUrl.searchParams.set('embed', 'ide')
+    const lockedHref = `${lockedUrl.pathname}${lockedUrl.search}${lockedUrl.hash}`
+
+    window.history.replaceState(window.history.state, '', lockedHref)
+    window.history.pushState({ ...(window.history.state ?? {}), shogoIdeProjectChat: true }, '', lockedHref)
+
+    const keepProjectChatLocked = () => {
+      window.history.replaceState(
+        { ...(window.history.state ?? {}), shogoIdeProjectChat: true },
+        '',
+        lockedHref,
+      )
+      window.history.pushState(
+        { ...(window.history.state ?? {}), shogoIdeProjectChat: true },
+        '',
+        lockedHref,
+      )
+      router.replace(lockedHref as any)
+    }
+
+    window.addEventListener('popstate', keepProjectChatLocked)
+    return () => window.removeEventListener('popstate', keepProjectChatLocked)
+  }, [isIdeChatEmbed, projectId, router])
+
   const store = useSDKDomain() as IDomainStore
   const { isReady: sdkReady } = useSDKReady()
   const actions = useDomainActions()
@@ -2536,6 +2572,7 @@ export default observer(function ProjectLayout() {
                 selectedModel={selectedModel}
                 onModelChange={handleModelChange}
                 className="flex-1"
+                ideMode={isIdeChatEmbed}
                 enrichMessage={enrichMessage}
               />
             </PanelErrorBoundary>
@@ -2546,6 +2583,7 @@ export default observer(function ProjectLayout() {
   )
 
   const hiddenTabs: string[] = ['app-preview'] // APP_MODE_DISABLED: always hide app-preview
+  if (isIdeChatEmbed) hiddenTabs.push('canvas', 'external-preview', 'ide', 'files', 'plans', 'settings')
   if (activeMode !== 'canvas') hiddenTabs.push('canvas')
   // Hide the external-only tabs on managed projects so the top-bar
   // stays uncluttered. The renderer/state for these panels is
@@ -2561,6 +2599,7 @@ export default observer(function ProjectLayout() {
   // Read from effectiveTab so transient attention overrides drive the layout
   // without mutating the persisted previewTab.
   const isChatFullscreen = isWide && effectiveTab === 'chat-fullscreen'
+  const ideChatSidebarWidth = Math.min(280, Math.max(220, Math.floor(width * 0.3)))
 
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
@@ -2644,6 +2683,7 @@ export default observer(function ProjectLayout() {
             if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
           }
         : undefined,
+    ideEmbed: isIdeChatEmbed,
   }
 
   if (projectRouteLoading) {
@@ -2700,6 +2740,72 @@ export default observer(function ProjectLayout() {
             </View>
           )}
         </View>
+      </>
+    )
+  }
+
+  if (isIdeChatEmbed) {
+    return (
+      <>
+        <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
+        <PlanStreamProvider>
+          <ChatBridgeProvider
+            chatSessionId={chatSessionId}
+            agentUrl={agentUrl}
+            initialEzModeActive={false}
+            initialAutoStartVoice={false}
+          >
+            <View className="flex-1 flex-row bg-background overflow-hidden">
+              <View
+                className="h-full shrink-0 border-r border-border bg-background"
+                style={{ width: ideChatSidebarWidth }}
+              >
+                <ChatSessionSidebar
+                  sessions={chatSessions}
+                  currentSessionId={chatSessionId ?? undefined}
+                  onSelect={(sessionId) => {
+                    setOpenChatTabIds((prev) =>
+                      prev.includes(sessionId) ? prev : [...prev, sessionId],
+                    )
+                    setChatSessionId(sessionId)
+                  }}
+                  onCreate={() => {
+                    void handleCreateNewSession()
+                  }}
+                  onRename={handleRenameChatSession}
+                  onDelete={handleDeleteChatSession}
+                  onTogglePin={handleTogglePinChatSession}
+                  onToggleArchive={handleToggleArchiveChatSession}
+                  onLoadMore={handleLoadMoreSessions}
+                  hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                  isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                  streamingSessionIds={streamingTabIds}
+                  completedSessionIds={completedTabIds}
+                  projectId={projectId ?? undefined}
+                />
+              </View>
+              <View className="flex-1 min-w-0 bg-background">
+                <PanelErrorBoundary panelName="Shogo IDE Chat">
+                  {workspaceChatLoading ? (
+                    <View className="flex-1 items-center justify-center bg-background">
+                      <ActivityIndicator size="large" />
+                      <Text className="mt-3 text-sm text-muted-foreground">Loading project chat…</Text>
+                    </View>
+                  ) : showEmptyChatState ? (
+                    <View className="flex-1 bg-background items-center justify-center px-8">
+                      <MessageSquare size={28} className="text-muted-foreground" />
+                      <Text className="text-sm text-muted-foreground mt-3 text-center">
+                        No chat open. Pick one from the list on the left, or start a new chat.
+                      </Text>
+                    </View>
+                  ) : (
+                    <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
+                  )}
+                </PanelErrorBoundary>
+              </View>
+            </View>
+          </ChatBridgeProvider>
+        </PlanStreamProvider>
       </>
     )
   }

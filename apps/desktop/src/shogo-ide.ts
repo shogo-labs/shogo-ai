@@ -73,6 +73,22 @@ function resolveRepoRoot(): string {
   return path.resolve(app.getAppPath(), '..', '..')
 }
 
+function pathNeedsNativeBuildWorkaround(candidate: string): boolean {
+  return /[\s'"\\]/.test(candidate)
+}
+
+function resolveCodeOssCheckoutPath(workspacePath: string): string {
+  const defaultPath = path.join(workspacePath, 'upstream', 'vscode')
+  if (process.env.SHOGO_CODE_OSS_CHECKOUT_PATH) return path.resolve(process.env.SHOGO_CODE_OSS_CHECKOUT_PATH)
+  if (!pathNeedsNativeBuildWorkaround(defaultPath)) return defaultPath
+
+  const hash = createHash('sha256').update(defaultPath).digest('hex').slice(0, 12)
+  const homePath = path.join(app.getPath('home'), '.shogo', 'code-oss', hash, 'vscode')
+  if (!pathNeedsNativeBuildWorkaround(homePath)) return homePath
+
+  return path.join(app.getPath('temp'), 'shogo-codeoss-checkouts', hash, 'vscode')
+}
+
 function firstExistingPath(paths: string[]): string | null {
   for (const candidate of paths) {
     if (candidate && fs.existsSync(candidate)) return candidate
@@ -143,6 +159,32 @@ function resolveCodeOssInstallCommand(): { command: string; args: string[] } {
   return { command: 'npm', args: ['install'] }
 }
 
+function resolveCodeOssInstallCwd(workspacePath: string, codeOssCheckoutPath: string): string {
+  if (!pathNeedsNativeBuildWorkaround(codeOssCheckoutPath)) return codeOssCheckoutPath
+
+  const hash = createHash('sha256').update(codeOssCheckoutPath).digest('hex').slice(0, 12)
+  const linkPath = path.join(app.getPath('temp'), `shogo-codeoss-${hash}`)
+  try {
+    const stat = fs.lstatSync(linkPath)
+    if (stat.isSymbolicLink()) {
+      const target = fs.readlinkSync(linkPath)
+      if (path.resolve(path.dirname(linkPath), target) === codeOssCheckoutPath) return linkPath
+      fs.unlinkSync(linkPath)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+
+  fs.symlinkSync(codeOssCheckoutPath, linkPath, 'dir')
+  appendSetupLog(workspacePath, `Using no-space Code OSS install path: ${linkPath}`)
+  return linkPath
+}
+
+function codeOssDependenciesInstalled(codeOssCheckoutPath: string): boolean {
+  return fs.existsSync(path.join(codeOssCheckoutPath, 'node_modules', '@vscode', 'sqlite3', 'build', 'Release'))
+    && fs.existsSync(path.join(codeOssCheckoutPath, 'node_modules', 'node-addon-api'))
+}
+
 export function syncShogoIdeProduct(status: ShogoIdeStatus): void {
   if (!fs.existsSync(status.generatedProductPath) || !fs.existsSync(status.codeOssCheckoutPath)) return
   const targetProductPath = path.join(status.codeOssCheckoutPath, 'product.json')
@@ -202,11 +244,29 @@ function syncFilteredSystemExtensions(sourceExtensionsDir: string, targetExtensi
   }
 }
 
+function ensureBundledExtensionBuilt(workspacePath: string, sourcePath: string, manifest: { main?: string; browser?: string; scripts?: Record<string, string> }): void {
+  const expectedOutputs = [manifest.main, manifest.browser]
+    .filter((entry): entry is string => !!entry && !entry.startsWith('../'))
+    .map((entry) => path.join(sourcePath, entry))
+
+  if (expectedOutputs.length === 0 || expectedOutputs.every((entry) => fs.existsSync(entry))) return
+  if (!manifest.scripts?.build) return
+
+  appendSetupLog(workspacePath, `Building bundled extension: ${sourcePath}`)
+  const result = spawnSync('npm', ['run', 'build'], { cwd: sourcePath, encoding: 'utf8' })
+  if (result.stdout) appendSetupLog(workspacePath, result.stdout.trimEnd())
+  if (result.stderr) appendSetupLog(workspacePath, result.stderr.trimEnd())
+  if (result.status !== 0) {
+    throw new Error(`npm run build exited with code ${result.status ?? 'unknown'} in ${sourcePath}`)
+  }
+}
+
 function syncBundledExtension(workspacePath: string, extensionsDir: string, extensionName: string): void {
   const sourcePath = path.join(workspacePath, 'extensions', extensionName)
   const manifestPath = path.join(sourcePath, 'package.json')
   if (!fs.existsSync(manifestPath)) return
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  ensureBundledExtensionBuilt(workspacePath, sourcePath, manifest)
   const publisher = manifest.publisher || 'shogo'
   const version = manifest.version || '0.0.0'
   const targetPath = path.join(extensionsDir, `${publisher}.${extensionName}-${version}`)
@@ -263,7 +323,8 @@ export function ensureShogoIdeRuntimeProfile(workspacePath: string, options: { d
   fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
   fs.rmSync(extensionsDir, { recursive: true, force: true })
   fs.mkdirSync(extensionsDir, { recursive: true })
-  syncFilteredSystemExtensions(path.join(workspacePath, 'upstream', 'vscode', 'extensions'), systemExtensionsDir)
+  const codeOssCheckoutPath = resolveCodeOssCheckoutPath(workspacePath)
+  syncFilteredSystemExtensions(path.join(codeOssCheckoutPath, 'extensions'), systemExtensionsDir)
   syncBundledShogoExtensions(workspacePath, extensionsDir)
 
   return { userDataDir, extensionsDir, systemExtensionsDir, agentsUserDataDir, agentsExtensionsDir, crashReporterDirectory }
@@ -294,10 +355,10 @@ export async function ensureShogoIdeSetup(status: ShogoIdeStatus): Promise<void>
       await runSetupCommand(status.workspacePath, 'bun', ['run', 'hardening:report'], status.workspacePath)
     }
 
-    const nodeModulesPath = path.join(status.codeOssCheckoutPath, 'node_modules')
-    if (fs.existsSync(status.codeOssCheckoutPath) && !fs.existsSync(nodeModulesPath)) {
+    if (fs.existsSync(status.codeOssCheckoutPath) && !codeOssDependenciesInstalled(status.codeOssCheckoutPath)) {
       const installCommand = resolveCodeOssInstallCommand()
-      await runSetupCommand(status.workspacePath, installCommand.command, installCommand.args, status.codeOssCheckoutPath)
+      const installCwd = resolveCodeOssInstallCwd(status.workspacePath, status.codeOssCheckoutPath)
+      await runSetupCommand(status.workspacePath, installCommand.command, installCommand.args, installCwd)
     }
 
     appendSetupLog(status.workspacePath, 'Automatic Shogo IDE setup finished.')
@@ -315,7 +376,7 @@ export function getShogoIdeStatus(): ShogoIdeStatus {
   const extensionManifestPath = path.join(workspacePath, 'extensions', 'shogo-core', 'package.json')
   const generatedProductPath = path.join(workspacePath, 'distribution', 'generated', 'product.json')
   const hardeningReportPath = path.join(workspacePath, 'hardening', 'generated', 'production-readiness.json')
-  const codeOssCheckoutPath = path.join(workspacePath, 'upstream', 'vscode')
+  const codeOssCheckoutPath = resolveCodeOssCheckoutPath(workspacePath)
   const setupLogPath = resolveSetupLogPath(workspacePath)
   const executablePath: string | null = null
   const devRunnerPath: string | null = null
@@ -324,6 +385,7 @@ export function getShogoIdeStatus(): ShogoIdeStatus {
   const generatedProductExists = fs.existsSync(generatedProductPath)
   const hardeningReportExists = fs.existsSync(hardeningReportPath)
   const codeOssCheckoutExists = fs.existsSync(codeOssCheckoutPath)
+  const codeOssDependenciesExist = codeOssCheckoutExists && codeOssDependenciesInstalled(codeOssCheckoutPath)
   const executableExists = false
   const executableExecutable = false
   const devRunnerExists = false
@@ -332,7 +394,7 @@ export function getShogoIdeStatus(): ShogoIdeStatus {
   const launchMode: 'packaged' | 'source-runner' | null = null
   const setupInProgress = !!setupPromise
   const autoSetupAvailable = true
-  const launchReady = productTemplateExists && extensionManifestExists && generatedProductExists && hardeningReportExists && codeOssCheckoutExists
+  const launchReady = productTemplateExists && extensionManifestExists && generatedProductExists && hardeningReportExists && codeOssCheckoutExists && codeOssDependenciesExist
   const diagnostics: string[] = []
 
   if (!productTemplateExists) diagnostics.push('Missing Shogo product template.')
@@ -340,6 +402,7 @@ export function getShogoIdeStatus(): ShogoIdeStatus {
   if (!generatedProductExists) diagnostics.push('Missing generated Code OSS product metadata; Shogo Desktop will materialize it automatically.')
   if (!hardeningReportExists) diagnostics.push('Missing production-readiness report; Shogo Desktop will generate it automatically.')
   if (!codeOssCheckoutExists) diagnostics.push('Code - OSS checkout is not present; Shogo Desktop will clone it automatically.')
+  if (codeOssCheckoutExists && !codeOssDependenciesExist) diagnostics.push('Code - OSS dependencies are not fully installed; Shogo Desktop will install them automatically.')
 
   const reason = launchReady
     ? 'Shogo IDE web workbench is ready.'

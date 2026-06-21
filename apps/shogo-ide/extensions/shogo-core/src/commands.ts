@@ -37,6 +37,7 @@ export function registerCommands(
       const item = services.contextStore.addSelection(editor)
       await vscode.window.showInformationMessage(item ? `Added to Shogo context: ${item.label}` : 'No selectable text was added to Shogo context.')
       await openShogoChat(chatViewProvider)
+      chatViewProvider.syncContext()
     }),
     vscode.commands.registerCommand('shogo.context.addActiveFile', async () => {
       const editor = vscode.window.activeTextEditor
@@ -47,11 +48,13 @@ export function registerCommands(
       const item = services.contextStore.addActiveFile(editor)
       await vscode.window.showInformationMessage(item ? `Added active file to Shogo context: ${item.label}` : 'Active file was empty.')
       await openShogoChat(chatViewProvider)
+      chatViewProvider.syncContext()
     }),
     vscode.commands.registerCommand('shogo.context.clear', async () => {
       services.contextStore.clear()
       await vscode.window.showInformationMessage('Shogo context cleared.')
       await openShogoChat(chatViewProvider)
+      chatViewProvider.syncContext()
     }),
     vscode.commands.registerCommand('shogo.patch.preview', async () => {
       if (!requireTrustedWorkspace('Patch preview')) return

@@ -241,7 +241,7 @@
         "shogo.desktopChat.url": {
           "type": "string",
           "default": "about:blank",
-          "description": "Desktop Shogo project chat URL embedded in the Shogo-IDE secondary sidebar."
+          "description": "Desktop/Web Shogo project chat URL embedded in the Shogo-IDE secondary sidebar. Desktop passes the canonical project route with embed=ide."
         },
         "shogo.security.requireApprovalForCommands": {
           "type": "boolean",
