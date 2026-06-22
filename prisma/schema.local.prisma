@@ -814,6 +814,9 @@ model ChatMessage {
   /// Which agent authored this row. "technical" (default, legacy rows) or
   /// "voice" (EZ Mode translator overlay thread).
   agent     String   @default("technical")
+  /// Model selection (picker `agentMode` value) used to author this row.
+  /// Stamped on assistant messages; null for legacy rows.
+  model     String?
 
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 

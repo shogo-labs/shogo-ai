@@ -870,11 +870,22 @@ export default observer(function ProjectLayout() {
   // persisted model's provider/effort to the agent.
   const visibleModels = useVisibleModels()
   const modelPrefSyncedRef = useRef<string | null>(null)
+  // Mirror of selectedModel for stable callbacks (avoids stale closures without
+  // making chat-switch handlers depend on the changing selection).
+  const selectedModelRef = useRef(selectedModel)
+  selectedModelRef.current = selectedModel
+  // The global last-used model preference — the fallback when a chat has no
+  // model-stamped message yet. Updated only on explicit user picks / cold load,
+  // NOT when we apply a per-chat model on switch (so the fallback is preserved).
+  const globalModelPrefRef = useRef<string | null>(null)
+  // Dedups the runtime PATCH when applying a chat's model on switch.
+  const sessionModelSyncedRef = useRef<string | null>(null)
   useEffect(() => {
     let cancelled = false
     loadModelPreference(projectId).then((stored) => {
       if (cancelled) return
       const next = stored ?? (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE)
+      globalModelPrefRef.current = next
       setSelectedModel(next)
       setModelPrefLoaded(true)
       if (!agentUrl) return
@@ -899,6 +910,10 @@ export default observer(function ProjectLayout() {
   }, [hasAdvancedModelAccess, projectId, agentUrl, visibleModels])
 
   const handleModelChange = useCallback(async (modelId: string) => {
+    // An explicit user pick updates the global last-used preference (and thus
+    // the per-chat fallback baseline).
+    globalModelPrefRef.current = modelId
+    sessionModelSyncedRef.current = `${projectId}:${modelId}`
     setSelectedModel(modelId)
     saveModelPreference(modelId, projectId)
     if (agentUrl) {
@@ -917,6 +932,34 @@ export default observer(function ProjectLayout() {
       }
     }
   }, [agentUrl, projectId])
+
+  // Apply a chat's last-used model when switching into it (reported by the
+  // active ChatPanel). Updates the shared picker + runtime config WITHOUT
+  // touching the global preference, so an empty chat (modelId === null) falls
+  // back to the last-used global choice.
+  const handleResolveSessionModel = useCallback((modelId: string | null) => {
+    const next =
+      modelId ??
+      globalModelPrefRef.current ??
+      (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE)
+    if (selectedModelRef.current === next) return
+    setSelectedModel(next)
+    if (!agentUrl) return
+    const syncKey = `${projectId}:${next}`
+    if (sessionModelSyncedRef.current === syncKey) return
+    const provider = resolveProvider(next)
+    if (!provider) return
+    sessionModelSyncedRef.current = syncKey
+    const thinkingLevel = resolveReasoningEffort(next)
+    agentFetch(`${agentUrl}/agent/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: { provider, name: next, ...(thinkingLevel ? { thinkingLevel } : {}) } }),
+    }).catch((err) => {
+      console.error('[ProjectLayout] Failed to sync chat model to runtime:', err)
+      sessionModelSyncedRef.current = null
+    })
+  }, [agentUrl, projectId, hasAdvancedModelAccess])
 
   // Reset a pre-UUID stored selection (an old slug that's now only a server
   // alias, so the picker can't label it) to the tier default once the catalog
@@ -2572,6 +2615,7 @@ export default observer(function ProjectLayout() {
                 onOpenPlan={handleOpenPlan}
                 selectedModel={selectedModel}
                 onModelChange={handleModelChange}
+                onResolveSessionModel={handleResolveSessionModel}
                 className="flex-1"
                 ideMode={isIdeChatEmbed}
                 enrichMessage={enrichMessage}

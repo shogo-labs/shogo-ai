@@ -19,7 +19,7 @@ import {
   getSourceBreakdown,
   type ConversationThread,
 } from '../services/analytics.service'
-import { getMaxOutputTokens } from '@shogo/model-catalog'
+import { getMaxOutputTokens, resolveAgentModeDefault } from '@shogo/model-catalog'
 
 const MAX_TOKENS_PER_CHUNK = 100_000
 const MAX_CHUNKS = 3
@@ -117,6 +117,12 @@ Analyze these conversations and return a JSON object with exactly this structure
 Focus on: what users are trying to build, whether they're succeeding, common patterns of confusion, and feature gaps.
 Return ONLY valid JSON, no markdown fences.`
 
+  // Use the platform default "basic" model (admin-overridable) rather than a
+  // hardcoded snapshot id. The previously pinned `claude-sonnet-4-20250514`
+  // was retired upstream and started returning 404s, silently breaking the
+  // daily AI Insights run.
+  const model = resolveAgentModeDefault('basic')
+
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -126,8 +132,8 @@ Return ONLY valid JSON, no markdown fences.`
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: getMaxOutputTokens('claude-sonnet-4-20250514'),
+        model,
+        max_tokens: getMaxOutputTokens(model),
         messages: [{ role: 'user', content: prompt }],
       }),
     })

@@ -50,6 +50,31 @@ jobs:
       - name: Check desktop SQLite migrations match schema.local.prisma
         run: bun run check:desktop-schema-drift
 
+      - name: Require desktop Sentry DSN (canonical release builds only)
+        # Guards against silently shipping a desktop release with Sentry
+        # disabled. The renderer + main process both self-disable when their
+        # DSN is empty, so a missing `SHOGO_DESKTOP_SENTRY_DSN` secret means
+        # zero crash reports for the whole release (which is how the
+        # `shogo-desktop` project sat at firstEvent=None). Scoped to the
+        # canonical repo via `github.repository` so forks/branches without
+        # the secret keep building telemetry-free.
+        if: ${{ github.repository == 'shogo-labs/shogo-ai' }}
+        env:
+          SHOGO_DESKTOP_SENTRY_DSN: ${{ secrets.SHOGO_DESKTOP_SENTRY_DSN }}
+        run: |
+          # Validate the DSN *shape*, not just non-emptiness. The secret has
+          # previously been set to the placeholder `-`, which is non-empty but
+          # is rejected by isValidSentryDsn() at runtime, so both processes
+          # self-disabled and shogo-desktop received zero events. Require a
+          # real `https://<key>@<host>/<projectId>` value.
+          case "$SHOGO_DESKTOP_SENTRY_DSN" in
+            https://*@*/*)
+              echo "Desktop Sentry DSN present and well-formed." ;;
+            *)
+              echo "::error title=Desktop Sentry DSN missing or placeholder::SHOGO_DESKTOP_SENTRY_DSN must be a real Sentry DSN (https://<key>@<host>/<projectId>) for shogo-labs/shogo-ai desktop releases. It is currently empty or a placeholder (e.g. '-'), so the main process + renderer self-disable and the shogo-desktop project receives nothing. Set the repo secret to the shogo-desktop DSN and re-run."
+              exit 1 ;;
+          esac
+
   build-web:
     name: Build Expo Web
     needs: preflight
@@ -64,6 +89,22 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set app version from tag
+        # Mirrors the build-desktop step so the renderer's Sentry `release`
+        # (read from EXPO_PUBLIC_BUILD_HASH in apps/mobile/app/_layout.tsx)
+        # matches the main process's `app.getVersion()`. Without this the
+        # renderer defaulted every desktop build's release to `dev`.
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="0.0.0-dev"
+          fi
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Renderer build version: $VERSION"
 
       - name: Cache bun dependencies
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -98,6 +139,32 @@ jobs:
           # Falls back to empty (Sentry self-disables) on forks / branches
           # without the secret.
           EXPO_PUBLIC_SENTRY_DSN_WEB: ${{ secrets.SHOGO_DESKTOP_SENTRY_DSN }}
+          # Tag renderer events with the release so they line up with the
+          # main process and with the uploaded source maps below.
+          EXPO_PUBLIC_BUILD_HASH: ${{ env.APP_VERSION }}
+          # getSentryExpoConfig's serializer only injects Debug IDs + writes
+          # maps here; the upload is the explicit sentry-cli step below.
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+
+      - name: Upload renderer source maps to Sentry (shogo-desktop)
+        working-directory: apps/mobile
+        # Injects Debug IDs into the exported web bundle + maps and uploads
+        # them to the shogo-desktop project, then strips the maps so they
+        # never ship inside the .app. Skips on forks without the token; a
+        # real failure when the token IS set fails the job (bash -e) so we
+        # don't ship a release whose renderer crashes are unreadable.
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: shogo-ai
+          SENTRY_PROJECT: shogo-desktop
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping renderer source map upload"
+            exit 0
+          fi
+          bunx @sentry/cli sourcemaps inject --release "$APP_VERSION" dist
+          bunx @sentry/cli sourcemaps upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --release "$APP_VERSION" dist
+          find dist -name '*.map' -delete
 
       - name: Upload web build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
