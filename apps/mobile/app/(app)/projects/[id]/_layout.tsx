@@ -2695,7 +2695,6 @@ export default observer(function ProjectLayout() {
     workingMode: isExternalProject ? 'external' as const : 'managed' as const,
     trustLevel: projectTrustLevel,
     onToggleTrust: handleToggleTrust,
-    onOpenCodeWorkbench: handleOpenCodeWorkbench,
     trustBusy: trustSubmitting,
     // The app sidebar is now the single home for browsing projects + chats,
     // so the project's own in-split chat-sessions panel and its toggles are

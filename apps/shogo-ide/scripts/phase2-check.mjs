@@ -61,8 +61,8 @@ assert(idePanel.includes('<Workbench'), 'IDEPanel must keep Monaco Workbench as 
 assert(statusBar.includes('Shogo IDE'), 'StatusBar must expose the compact Shogo IDE focus/open action')
 assert(layout.includes('handleOpenCodeWorkbench'), 'project layout must route IDE launches through the managed workbench opener')
 assert(layout.includes('shogoDesktop') && layout.includes('codeWorkbench') && layout.includes('workspacePath'), 'project layout must use the codeWorkbench bridge with workspace path support')
-assert(topBar.includes("tabId === 'ide'"), 'top bar must special-case IDE tab presses')
-assert(topBar.includes('onOpenCodeWorkbench?.()'), 'top bar must open/focus Shogo-IDE when IDE tab is pressed')
+assert(!topBar.includes('onOpenCodeWorkbench'), 'top bar IDE tab must only switch to the in-app Monaco IDE panel')
+assert(statusBar.includes('onOpenCodeWorkbench') && statusBar.includes('Shogo IDE'), 'Monaco footer must keep the Shogo IDE open/focus action')
 
 if (errors.length > 0) {
   console.error('Phase 2 check failed:')
