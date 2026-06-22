@@ -1233,6 +1233,7 @@ export default observer(function ProjectLayout() {
   }, [chatSessionId, projectId])
 
   const SESSION_PAGE_SIZE = 10
+  const IDE_SESSION_PAGE_SIZE = 100
 
   // Tracks which projects we've already seeded via loadPage so we don't
   // re-fetch the session list on every chatSessionId change. Without this,
@@ -1240,6 +1241,25 @@ export default observer(function ProjectLayout() {
   // (the root cause of the "[ChatPanel] Loading session from API" storm
   // when a project restores many open tabs).
   const seededProjectsRef = useRef<Set<string>>(new Set())
+
+  const refreshProjectChatSessions = useCallback(async () => {
+    if (!projectId || !store?.chatSessionCollection) return
+    const pageSize = isIdeChatEmbed ? IDE_SESSION_PAGE_SIZE : SESSION_PAGE_SIZE
+    let offset = 0
+
+    try {
+      do {
+        await store.chatSessionCollection.loadPage(
+          { contextId: projectId },
+          { limit: pageSize, offset },
+        )
+        offset += pageSize
+      } while (isIdeChatEmbed && store.chatSessionCollection.hasMore)
+      seededProjectsRef.current.add(projectId)
+    } catch (err) {
+      console.error('[ProjectLayout] Failed to refresh chat sessions:', err)
+    }
+  }, [projectId, store, isIdeChatEmbed])
 
   // Seed the chat session collection and, when no session is selected yet,
   // auto-select or create one. The seed always runs once per projectId; the
@@ -1254,15 +1274,7 @@ export default observer(function ProjectLayout() {
 
     const run = async () => {
       if (!seededProjectsRef.current.has(projectId)) {
-        try {
-          await store.chatSessionCollection.loadPage(
-            { contextId: projectId },
-            { limit: SESSION_PAGE_SIZE, offset: 0 },
-          )
-          seededProjectsRef.current.add(projectId)
-        } catch (err) {
-          console.error('[ProjectLayout] Failed to seed chat sessions:', err)
-        }
+        await refreshProjectChatSessions()
         if (cancelled) return
       }
 
@@ -1319,7 +1331,7 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, store, chatSessionId, actions, tabsHydration, params.newChat])
+  }, [projectId, store, chatSessionId, actions, tabsHydration, params.newChat, refreshProjectChatSessions])
 
   // After a 'restored-with-tabs' hydration, choose which restored tab is
   // active. Prefer the persisted `lastChatSession` if it's still in the list,
@@ -1915,6 +1927,18 @@ export default observer(function ProjectLayout() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store?.chatSessionCollection?.all, sessionNames, projectId, _sessionFieldsKey])
 
+  useEffect(() => {
+    if (!isIdeChatEmbed || chatSessions.length === 0) return
+    const sessionIds = chatSessions.map((session) => session.id)
+    setOpenChatTabIds((prev) => {
+      if (prev.length === sessionIds.length && prev.every((id, index) => id === sessionIds[index])) return prev
+      return sessionIds
+    })
+    if (!chatSessionId || !sessionIds.includes(chatSessionId)) {
+      setChatSessionId(sessionIds[0])
+    }
+  }, [isIdeChatEmbed, chatSessions, chatSessionId])
+
   const handleCreateNewSession = useCallback(async () => {
     if (!projectId) return
     try {
@@ -2021,6 +2045,21 @@ export default observer(function ProjectLayout() {
       void handleCreateNewSession()
     })
   }, [projectId, handleCreateNewSession])
+
+  useEffect(() => {
+    if (!projectId) return
+    return chatSessionEvents.subscribe(({ projectId: pid, activeSessionId, refresh }) => {
+      if (pid !== projectId) return
+      if (refresh) {
+        seededProjectsRef.current.delete(projectId)
+        void refreshProjectChatSessions()
+      }
+      if (isIdeChatEmbed && activeSessionId) {
+        setOpenChatTabIds((prev) => (prev.includes(activeSessionId) ? prev : [...prev, activeSessionId]))
+        setChatSessionId(activeSessionId)
+      }
+    })
+  }, [projectId, isIdeChatEmbed, refreshProjectChatSessions])
 
   // Honor a `newChat=1` arrival (sidebar "+" pressed on a project that wasn't
   // open yet): create one fresh chat per `newChatNonce`. Ref-guarded so
