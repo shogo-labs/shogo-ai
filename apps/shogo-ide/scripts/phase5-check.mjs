@@ -39,7 +39,8 @@ assert(!idePanel.includes('Return to Shogo IDE'), 'IDEPanel must not show the ol
 
 assert(layout.includes('handleOpenCodeWorkbench'), 'project layout must own the managed workbench open/focus callback')
 assert(layout.includes('shogoDesktop') && layout.includes('codeWorkbench') && layout.includes('workspacePath'), 'project layout must call the desktop codeWorkbench bridge with workspace path support')
-assert(topBar.includes('onOpenCodeWorkbench?.()'), 'IDE tab press must open/focus Shogo-IDE')
+assert(!topBar.includes('onOpenCodeWorkbench'), 'IDE tab press must only select the in-app Monaco IDE panel')
+assert(statusBar.includes('onOpenCodeWorkbench') && statusBar.includes('Shogo IDE'), 'Monaco footer must open/focus the managed Shogo-IDE window')
 assert(preload.includes("ipcRenderer.invoke('code-workbench:open'"), 'preload must expose managed workbench open IPC')
 assert(!desktopBridge.includes("ipcMain.handle('shogo-ide:launch'"), 'legacy explicit launch IPC must be removed')
 assert(!preload.includes('shogoIde: shogoIdeBridge'), 'preload must not expose the old shogoIde bridge')
@@ -53,4 +54,4 @@ if (errors.length > 0) {
 }
 
 console.log('Phase 5 check passed.')
-console.log('Desktop IDE tab keeps Monaco visible and opens/focuses the managed Shogo-IDE window.')
+console.log('Desktop IDE tab keeps Monaco visible; the Monaco footer opens/focuses the managed Shogo-IDE window.')
