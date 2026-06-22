@@ -2,8 +2,9 @@
 
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const root = new URL('..', import.meta.url).pathname
+const root = fileURLToPath(new URL('..', import.meta.url))
 const errors = []
 const warnings = []
 
@@ -45,6 +46,8 @@ requireFile('extensions/shogo-core/README.md')
 requireFile('extensions/shogo-core/src/extension.ts')
 requireFile('extensions/shogo-core/media/shogo.svg')
 requireFile('scripts/print-code-oss-clone-command.mjs')
+requireFile('scripts/apply-code-oss-patches.mjs')
+requireFile('patches/code-oss/remove-built-in-chat.patch')
 
 if (packageJson) {
   assert(packageJson.name === '@shogo/shogo-ide', 'apps/shogo-ide package must be named @shogo/shogo-ide')

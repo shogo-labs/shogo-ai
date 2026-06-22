@@ -31,6 +31,7 @@ import { isBinaryFilePath } from '@shogo/shared-runtime'
 /** Structured reference shape mirrored from the web composer. */
 export type ChatReference =
   | { type: 'file'; path?: string; name?: string }
+  | { type: 'folder'; path?: string; name?: string }
   | { type: 'project'; id?: string; name?: string }
   | { type: 'workspace'; id?: string; name?: string; slug?: string; summary?: string }
 
@@ -38,6 +39,20 @@ export type ChatReference =
 const MAX_FILE_BYTES = 64 * 1024
 /** Aggregate cap across all referenced files in one message. */
 const MAX_TOTAL_BYTES = 256 * 1024
+/** Max files inlined from a referenced folder. */
+const MAX_FOLDER_FILES = 30
+/** Directories skipped when expanding folder references. */
+const FOLDER_REFERENCE_SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'out',
+  '.next',
+  'coverage',
+  'target',
+  'vendor',
+])
 
 /**
  * Resolve `subPath` strictly inside `rootDir`, rejecting path traversal.
@@ -79,11 +94,41 @@ const PROJECT_TREE_SKIP_DIRS = new Set([
   'venv',
 ])
 
-/**
- * Build a bounded, indented file tree for a referenced project's directory.
- * DFS with hard depth/entry caps so a large monorepo can't blow the prompt;
- * dot-dirs and well-known build/dep dirs are listed as skipped, not walked.
- */
+function collectFolderReferenceFiles(rootDir: string): { files: string[]; truncated: boolean } {
+  const files: string[] = []
+  let truncated = false
+
+  const walk = (dir: string): void => {
+    if (truncated || files.length >= MAX_FOLDER_FILES) {
+      truncated = true
+      return
+    }
+    let entries: Dirent<string>[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      if (truncated || files.length >= MAX_FOLDER_FILES) {
+        truncated = true
+        return
+      }
+      const child = resolve(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith('.') || FOLDER_REFERENCE_SKIP_DIRS.has(entry.name)) continue
+        walk(child)
+      } else if (entry.isFile() && !isBinaryFilePath(child)) {
+        files.push(child)
+      }
+    }
+  }
+
+  walk(rootDir)
+  return { files, truncated }
+}
+
 function buildProjectTree(rootDir: string): { lines: string[]; truncated: boolean } {
   const lines: string[] = []
   let count = 0
@@ -130,10 +175,52 @@ function buildProjectTree(rootDir: string): { lines: string[]; truncated: boolea
   return { lines, truncated }
 }
 
-/**
- * Build the "[Referenced context]" block for a message's `references`.
- * Returns an empty string when there's nothing to inject.
- */
+export function buildIdeContext(ideContext: unknown): string {
+  if (!ideContext || typeof ideContext !== 'object') return ''
+  const ctx = ideContext as {
+    activeFile?: {
+      path?: unknown
+      languageId?: unknown
+      selection?: {
+        text?: unknown
+        startLine?: unknown
+        endLine?: unknown
+        truncated?: unknown
+      }
+    }
+    workspaceFolders?: Array<{ name?: unknown; path?: unknown }>
+  }
+  const sections: string[] = []
+  const active = ctx.activeFile
+  if (active && typeof active.path === 'string' && active.path.trim()) {
+    const lines = [`Active file: ${active.path}`]
+    if (typeof active.languageId === 'string' && active.languageId.trim()) {
+      lines.push(`Language: ${active.languageId}`)
+    }
+    const selection = active.selection
+    if (selection && typeof selection.text === 'string' && selection.text.trim()) {
+      const start = typeof selection.startLine === 'number' ? selection.startLine : '?'
+      const end = typeof selection.endLine === 'number' ? selection.endLine : '?'
+      lines.push(`Selected lines: ${start}-${end}${selection.truncated ? ' (truncated)' : ''}`)
+      lines.push('[Selected text]')
+      lines.push(selection.text.slice(0, 24_000))
+      lines.push('[End selected text]')
+    }
+    sections.push(lines.join('\n'))
+  }
+
+  if (Array.isArray(ctx.workspaceFolders) && ctx.workspaceFolders.length > 0) {
+    const folders = ctx.workspaceFolders
+      .filter((folder) => typeof folder?.path === 'string')
+      .slice(0, 10)
+      .map((folder) => `- ${typeof folder.name === 'string' ? `${folder.name}: ` : ''}${folder.path}`)
+    if (folders.length > 0) sections.push(`Workspace folders:\n${folders.join('\n')}`)
+  }
+
+  if (sections.length === 0) return ''
+  return '[SYSTEM NOTE — Shogo IDE context for this turn.]\n\n' + sections.join('\n\n')
+}
+
 export function buildReferencedContext(
   references: unknown,
   workspaceDir: string,
@@ -188,6 +275,62 @@ export function buildReferencedContext(
       } catch {
         sections.push(`[Referenced File: ${relPath}] (could not read)`)
       }
+    } else if (ref.type === 'folder') {
+      const relPath = typeof ref.path === 'string' ? ref.path : ''
+      if (!relPath) continue
+
+      const resolved = resolveInsideRoot(workspaceDir, relPath)
+      if (!resolved) {
+        sections.push(`[Referenced Folder: ${relPath}] (path outside workspace — skipped)`)
+        continue
+      }
+      if (!existsSync(resolved)) {
+        sections.push(`[Referenced Folder: ${relPath}] (not found in workspace)`)
+        continue
+      }
+      let isDir = false
+      try {
+        isDir = statSync(resolved).isDirectory()
+      } catch {
+        isDir = false
+      }
+      if (!isDir) {
+        sections.push(`[Referenced Folder: ${relPath}] (not a folder)`)
+        continue
+      }
+
+      const { files, truncated: folderTruncated } = collectFolderReferenceFiles(resolved)
+      const fileSections: string[] = []
+      const root = resolve(workspaceDir)
+      for (const filePath of files) {
+        if (totalBytes >= MAX_TOTAL_BYTES) break
+        const relativeFilePath = filePath.startsWith(root + sep)
+          ? filePath.slice(root.length + 1).split(sep).join('/')
+          : filePath
+        try {
+          let content = readFileSync(filePath, 'utf-8')
+          let truncated = false
+          if (content.length > MAX_FILE_BYTES) {
+            content = content.slice(0, MAX_FILE_BYTES)
+            truncated = true
+          }
+          if (totalBytes + content.length > MAX_TOTAL_BYTES) {
+            content = content.slice(0, Math.max(0, MAX_TOTAL_BYTES - totalBytes))
+            truncated = true
+          }
+          totalBytes += content.length
+          fileSections.push(
+            `[Referenced Folder File: ${relativeFilePath}]\n${content}${truncated ? '\n…(truncated — read the full file with your file tools if needed)' : ''}\n[End of Referenced Folder File]`,
+          )
+        } catch {
+          fileSections.push(`[Referenced Folder File: ${relativeFilePath}] (could not read)`)
+        }
+      }
+      sections.push(
+        `[Referenced Folder: ${relPath}]${folderTruncated ? ' (truncated by file-count limit)' : ''}\n` +
+          (fileSections.length > 0 ? fileSections.join('\n\n') : '(no readable text files found)') +
+          `\n[End of Referenced Folder]`,
+      )
     } else if (ref.type === 'project') {
       const id = typeof ref.id === 'string' ? ref.id : ''
       const label = projectLabel(ref)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useRef } from 'react'
-import { ActivityIndicator, View } from 'react-native'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { ActivityIndicator, Platform, View } from 'react-native'
 import { Redirect } from 'expo-router'
 import { useAuth } from '../contexts/auth'
 import { usePlatformConfig } from '../lib/platform-config'
@@ -14,6 +14,10 @@ export default function RootIndex() {
   const [checkingOnboarding, setCheckingOnboarding] = useState(false)
   const [autoSigningIn, setAutoSigningIn] = useState(false)
   const autoSignInAttempted = useRef(false)
+  const isIdeEmbed = useMemo(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return false
+    return new URLSearchParams(window.location.search).get('embed') === 'ide'
+  }, [])
 
   // Local mode: auto-sign-in when not authenticated
   useEffect(() => {
@@ -51,15 +55,23 @@ export default function RootIndex() {
     )
   }
 
+  if (isIdeEmbed && platformConfig.localMode && !isAuthenticated) {
+    return (
+      <View className="flex-1 items-center justify-center bg-background">
+        <ActivityIndicator size="large" />
+      </View>
+    )
+  }
+
   if (platformConfig.localMode && platformConfig.needsSetup && !isAuthenticated) {
     return <Redirect href="/(onboarding)" />
   }
 
   if (isAuthenticated) {
-    if (onboardingCompleted === false) {
+    if (!isIdeEmbed && onboardingCompleted === false) {
       return <Redirect href="/(onboarding)" />
     }
-    if (platformConfig.localMode && platformConfig.needsSetup) {
+    if (!isIdeEmbed && platformConfig.localMode && platformConfig.needsSetup) {
       return <Redirect href="/(admin)" />
     }
     return <Redirect href="/(app)" />
