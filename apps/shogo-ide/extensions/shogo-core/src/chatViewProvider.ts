@@ -37,6 +37,9 @@ function escapeHtml(value: string): string {
 function addCacheBust(rawUrl: string): string {
   try {
     const parsed = new URL(rawUrl)
+    if (parsed.pathname.startsWith('/(app)/projects/')) {
+      parsed.pathname = parsed.pathname.replace('/(app)/projects/', '/projects/')
+    }
     parsed.searchParams.set('tab', 'chat-fullscreen')
     parsed.searchParams.set('embed', 'ide')
     parsed.searchParams.set('ideCacheBust', String(Date.now()))

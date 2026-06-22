@@ -934,7 +934,7 @@ function buildCodeWorkbenchPath(options: { projectId?: string; workspacePath?: s
 function buildCodeWorkbenchChatPath(options: { projectId: string; workspacePath?: string }): string {
   const params = new URLSearchParams({ tab: 'chat-fullscreen', embed: 'ide' })
   if (options.workspacePath) params.set('workspacePath', options.workspacePath)
-  return `/(app)/projects/${encodeURIComponent(options.projectId)}?${params.toString()}`
+  return `/projects/${encodeURIComponent(options.projectId)}?${params.toString()}`
 }
 
 function openNewWindow(): void {
