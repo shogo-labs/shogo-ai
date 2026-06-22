@@ -378,8 +378,16 @@ function buildUserData(config: CloudInitConfig): string {
     // and symlinked into /opt/shogo/templates, so the workspace seeder finds a
     // template even when the image bake didn't persist one. Extracting source
     // over a baked template is safe: tar adds files and leaves node_modules.
+    //
+    // NOTE: the seed glob is `*runtime-template*tar.gz` (not the literal
+    // `*runtime-template.tar.gz`) because the macOS seed-ISO builder
+    // (`hdiutil makehybrid -iso -joliet`, no Rock Ridge) collapses the
+    // double-dot name to `runtime-templatetar.gz`. The literal pattern never
+    // matched on mac, so the template was silently cp'd to /opt/shogo and the
+    // workspace booted with no React/Vite/deps — making every eval read_lints
+    // fail with "Cannot find module 'react'". The wildcard matches both forms.
     lines.push('    for f in /mnt/seed/*; do')
-    lines.push('      case "$f" in *.wasm) cp "$f" /opt/shogo/wasm/ ;; *canvas-bridge.js) cp "$f" /opt/shogo/static/ ;; *runtime-template.tar.gz) mkdir -p /app/templates /opt/shogo/templates && tar -xzf "$f" -C /app/templates/ && ln -sf /app/templates/runtime-template /opt/shogo/templates/runtime-template ;; *) cp "$f" /opt/shogo/ ;; esac 2>/dev/null || true')
+    lines.push('      case "$f" in *.wasm) cp "$f" /opt/shogo/wasm/ ;; *canvas-bridge.js) cp "$f" /opt/shogo/static/ ;; *runtime-template*tar.gz) mkdir -p /app/templates /opt/shogo/templates && tar -xzf "$f" -C /app/templates/ && ln -sf /app/templates/runtime-template /opt/shogo/templates/runtime-template ;; *) cp "$f" /opt/shogo/ ;; esac 2>/dev/null || true')
     lines.push('    done')
     lines.push('    ls -la /opt/shogo/ /opt/shogo/wasm/ /opt/shogo/static/')
     lines.push('    ln -sf /opt/shogo/shogo.js /packages/sdk/bin/shogo.ts 2>/dev/null || true')

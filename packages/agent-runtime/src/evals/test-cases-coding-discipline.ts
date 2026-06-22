@@ -6,11 +6,11 @@
  * Tests agent adherence to coding best practices drawn from the
  * CODE_AGENT_GENERAL_GUIDE and Cursor-style agent patterns:
  *
- * A. Read-before-edit — agent must read/grep before any edit_file call
+ * A. Read-before-edit — agent must read/search before any edit_file call
  * B. Verify-after-edit — agent must run tests or check output after changes
  * C. Minimal change — agent should use edit_file (not write_file rewrite) and
  *    avoid touching unrelated code
- * D. Tool efficiency — agent should use grep/glob over exec(cat/grep),
+ * D. Tool efficiency — agent should use search/read_file over exec(cat/grep),
  *    and not create throwaway scripts
  *
  * Track: --track coding-discipline
@@ -27,7 +27,7 @@ function readBeforeFirstEdit(r: EvalResult): boolean {
   const editIdx = r.toolCalls.findIndex(t => t.name === 'edit_file')
   if (editIdx === -1) return true
   return r.toolCalls.slice(0, editIdx).some(
-    t => t.name === 'read_file' || t.name === 'grep',
+    t => t.name === 'read_file' || t.name === 'search',
   )
 }
 
@@ -35,7 +35,7 @@ function usedExplorationBeforeEdit(r: EvalResult): boolean {
   const editIdx = r.toolCalls.findIndex(t => t.name === 'edit_file' || t.name === 'write_file')
   if (editIdx === -1) return false
   return r.toolCalls.slice(0, editIdx).some(
-    t => t.name === 'ls' || t.name === 'glob' || t.name === 'grep' || t.name === 'read_file',
+    t => t.name === 'search' || t.name === 'read_file',
   )
 }
 
@@ -92,15 +92,6 @@ function neverUsedExecCat(r: EvalResult): boolean {
       // this way, so we don't want to flag the discipline regression
       // for the exact action we instructed.
       return /\bcat\s+/.test(cmd) && !cmd.includes('build.log')
-    })
-}
-
-function neverUsedExecGrep(r: EvalResult): boolean {
-  return !r.toolCalls
-    .filter(t => t.name === 'exec')
-    .some(t => {
-      const cmd = String((t.input as any).command ?? '').toLowerCase()
-      return /\bgrep\s+/.test(cmd) || /\brg\s+/.test(cmd)
     })
 }
 
@@ -439,7 +430,7 @@ const READ_DISCIPLINE_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'explored-before-editing',
-        description: 'Agent explored the codebase (ls/glob/grep) before editing',
+        description: 'Agent explored the codebase (search/read_file) before editing',
         points: 3,
         phase: 'intention',
         validate: (r) => usedExplorationBeforeEdit(r),
@@ -474,7 +465,7 @@ const READ_DISCIPLINE_EVALS: AgentEval[] = [
 
   {
     id: 'discipline-grep-to-locate',
-    name: 'Use grep to locate code before editing',
+    name: 'Use search to locate code before editing',
     category: 'code-agent',
     level: 2,
     input: [
@@ -484,15 +475,15 @@ const READ_DISCIPLINE_EVALS: AgentEval[] = [
     workspaceFiles: MULTI_FILE_CODEBASE,
     validationCriteria: [
       {
-        id: 'used-grep-or-glob',
-        description: 'Agent used grep or glob to find the function',
+        id: 'located-before-edit',
+        description: 'Agent located the function (search or read_file) before editing',
         points: 4,
         phase: 'intention',
         validate: (r) => {
           const editIdx = r.toolCalls.findIndex(t => t.name === 'edit_file')
           if (editIdx === -1) return false
           return r.toolCalls.slice(0, editIdx).some(
-            t => t.name === 'grep' || t.name === 'glob',
+            t => t.name === 'search' || t.name === 'read_file',
           )
         },
       },
@@ -768,42 +759,6 @@ const MINIMAL_CHANGE_EVALS: AgentEval[] = [
 
 const TOOL_EFFICIENCY_EVALS: AgentEval[] = [
   {
-    id: 'discipline-use-grep-not-exec',
-    name: 'Use grep tool instead of exec(grep)',
-    category: 'code-agent',
-    level: 1,
-    input: [
-      'Find all places in this codebase where `is_admin` is used or defined.',
-      'List each file and line. Do not make any changes.',
-    ].join('\n'),
-    workspaceFiles: MULTI_FILE_CODEBASE,
-    validationCriteria: [
-      {
-        id: 'used-grep-tool',
-        description: 'Agent used the grep tool (not exec with grep/rg)',
-        points: 5,
-        phase: 'execution',
-        validate: (r) => usedTool(r, 'grep'),
-      },
-      {
-        id: 'did-not-exec-grep',
-        description: 'Agent did not use exec to run grep/rg',
-        points: 4,
-        phase: 'execution',
-        validate: (r) => neverUsedExecGrep(r),
-      },
-      {
-        id: 'no-throwaway-files',
-        description: 'Agent did not create scripts to search',
-        points: 3,
-        phase: 'execution',
-        validate: (r) => neverCreatedThrowawayFiles(r),
-      },
-    ],
-    maxScore: 12,
-  },
-
-  {
     id: 'discipline-use-read-not-cat',
     name: 'Use read_file instead of exec(cat)',
     category: 'code-agent',
@@ -854,11 +809,11 @@ const TOOL_EFFICIENCY_EVALS: AgentEval[] = [
     workspaceFiles: MULTI_FILE_CODEBASE,
     validationCriteria: [
       {
-        id: 'used-grep-or-read',
-        description: 'Agent used grep or read_file to investigate',
+        id: 'used-search-or-read',
+        description: 'Agent used search or read_file to investigate',
         points: 4,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'grep') || usedTool(r, 'read_file'),
+        validate: (r) => usedTool(r, 'search') || usedTool(r, 'read_file'),
       },
       {
         id: 'no-throwaway-files',

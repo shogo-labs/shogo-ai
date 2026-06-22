@@ -40,6 +40,11 @@ ENV EXPO_PUBLIC_FB_PIXEL_ID=$FB_PIXEL_ID
 ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
 ENV SENTRY_ORG=$SENTRY_ORG
 ENV SENTRY_PROJECT=$SENTRY_PROJECT
+# The Metro serializer (getSentryExpoConfig) only needs to inject Debug IDs
+# and write source maps here — the actual upload is the explicit sentry-cli
+# step below. Disable the serializer's auto-upload path so we keep a single,
+# controlled upload to the right project.
+ENV SENTRY_DISABLE_AUTO_UPLOAD=true
 
 # Sentry CLI standalone binary. The get-cli/ install script doesn't reliably
 # land sentry-cli in PATH on this debian base, so download the prebuilt
@@ -85,12 +90,18 @@ RUN test -f dist/vs/loader.js && test -f dist/vs/editor/editor.main.js \
 RUN node scripts/inject-analytics.js
 
 # Upload source maps to Sentry (inject debug IDs, upload, then strip maps).
-# Upload is non-fatal: a Sentry misconfiguration should not block a deploy.
+# When SENTRY_AUTH_TOKEN is set (real deploys) a failed upload now FAILS the
+# build: shipping a minified bundle whose maps never reached Sentry silently
+# breaks symbolication for the whole release (this is exactly how
+# `production_web` issues like `Object.S` / `Qr` went unreadable), so a loud
+# failure is the lesser evil. Fork / contributor builds without the token
+# skip the step entirely and stay telemetry-free.
 RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
       sentry-cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
-      (sentry-cli sourcemaps upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --release "$EXPO_PUBLIC_BUILD_HASH" ./dist \
-        || echo "Warning: Sentry sourcemaps upload failed — continuing build") && \
+      sentry-cli sourcemaps upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
       find ./dist -name '*.map' -delete; \
+    else \
+      echo "SENTRY_AUTH_TOKEN not set — skipping Sentry source map upload"; \
     fi
 
 # =============================================================================

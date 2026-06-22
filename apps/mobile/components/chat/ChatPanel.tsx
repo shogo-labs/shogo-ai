@@ -71,6 +71,7 @@ import { decideMessagesPropagation } from "./messages-propagation"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import { probeChatTurnStatus, shouldAttachLiveStream, type ChatTurnStatus } from "./probe-turn-status"
 import { decideRetryAction, lastAssistantHasResumableWork } from "./retry-triage"
+import { decideStallRecovery, computeRecoveryBackoff } from "./stall-recovery"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
@@ -323,6 +324,14 @@ export interface ChatPanelProps {
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
   selectedModel?: string
   onModelChange?: (modelId: string) => void
+  /**
+   * Reports this chat's last-used model (the most recent message that carries a
+   * `model` value) so the parent can default the shared picker to it when this
+   * chat becomes active. Fires with `null` when the chat has no model-stamped
+   * message yet (brand-new/empty chat), letting the parent fall back to the
+   * global last-used preference. Only invoked while the panel `isActive`.
+   */
+  onResolveSessionModel?: (modelId: string | null) => void
   /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
   isActive?: boolean
   /** Enables IDE-specific context bridge and compact composer affordances. */
@@ -739,6 +748,7 @@ export const ChatPanel = observer(function ChatPanel({
   onOpenPlan,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
+  onResolveSessionModel,
   isActive = true,
   ideMode = false,
   enrichMessage,
@@ -1336,6 +1346,16 @@ export const ChatPanel = observer(function ChatPanel({
   const currentTurnIdRef = useRef<string | null>(null)
   const turnCompletedRef = useRef<boolean>(false)
   const turnLastSeqRef = useRef<number>(0)
+  // Auto-recovery bookkeeping: which turn we've already tried to auto-recover
+  // (so a single stalled turn fires recovery exactly once), and a ref-held
+  // recovery callback so the early falling-edge effect can invoke the
+  // callback that's defined later in the component (same pattern as
+  // `handleRetryRef`). `currentSessionIdRef` lets the async recovery loop
+  // detect a session switch and bail before reattaching to a stale stream.
+  const recoveredTurnIdRef = useRef<string | null>(null)
+  const stallRecoveryRef = useRef<(() => void) | null>(null)
+  const currentSessionIdRef = useRef<string | null>(null)
+  currentSessionIdRef.current = currentSessionId
 
   const [toolErrorBanner, setToolErrorBanner] = useState<{ toolkitName: string; error: string; isAuthError?: boolean } | null>(null)
   const [reconnecting, setReconnecting] = useState(false)
@@ -2416,6 +2436,11 @@ export const ChatPanel = observer(function ChatPanel({
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
   const [errorDismissed, setErrorDismissed] = useState(false)
   const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
+  // True while the panel is automatically probing `/turn` + reattaching to a
+  // turn that ended without `data-turn-complete` (auto-resume budget spent,
+  // app backgrounded, transport blip) but is still running server-side. Drives
+  // a transient "Reconnecting…" banner instead of a dead-end "tap Retry".
+  const [streamAutoRecovering, setStreamAutoRecovering] = useState(false)
 
   const isRemoteInstance = !!localAgentUrl
   const isTunnelError = !!(error && isRemoteInstance && isTunnelDisconnectError(error.message))
@@ -2425,9 +2450,10 @@ export const ChatPanel = observer(function ChatPanel({
     () => {
       if (isTunnelError && tunnelReconnecting) return 'Connection to desktop instance lost. Reconnecting\u2026'
       if (isTunnelError) return 'Connection to desktop instance lost. Tap Reconnect to retry.'
+      if (streamAutoRecovering) return 'Connection interrupted. Reconnecting\u2026'
       return (error ? formatErrorMessage(error.message) : emptyResponseError) ?? ''
     },
-    [error?.message, emptyResponseError, isTunnelError, tunnelReconnecting]
+    [error?.message, emptyResponseError, isTunnelError, tunnelReconnecting, streamAutoRecovering]
   )
   useEffect(() => {
     setErrorBannerExpanded(false)
@@ -2601,6 +2627,21 @@ export const ChatPanel = observer(function ChatPanel({
             "); turn may still be running on the server",
         )
         turnStalledRef.current = true
+
+        // Auto-recover: the agent is likely still running and buffering frames
+        // server-side. Rather than stranding the user on a static "tap Retry"
+        // banner, kick off a bounded `/turn` probe that reattaches to the live
+        // stream if it's still active. Skip when the user explicitly stopped
+        // (that's an intentional terminal state, not a dropped connection),
+        // and fire at most once per turn so we never loop.
+        const stalledTurnId = currentTurnIdRef.current
+        if (
+          !userInitiatedStopRef.current &&
+          recoveredTurnIdRef.current !== stalledTurnId
+        ) {
+          recoveredTurnIdRef.current = stalledTurnId
+          stallRecoveryRef.current?.()
+        }
       }
     }
   }, [isStreaming])
@@ -3077,6 +3118,32 @@ export const ChatPanel = observer(function ChatPanel({
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, currentSessionId, sessionMessages, setMessages, isLoadingMessages, isStreaming])
+
+  // This chat's last-used model: the most recent loaded message carrying a
+  // `model` value (assistant rows are stamped server-side). MST `.all` is
+  // observed here, so this recomputes when the session's messages settle.
+  const lastSessionModel: string | null = (() => {
+    const all = sessionMessages?.all as any[] | undefined
+    if (!all || all.length === 0) return null
+    let latest: { createdAt: number; model: string } | null = null
+    for (const m of all) {
+      const mdl = typeof m.model === "string" ? m.model.trim() : ""
+      if (!mdl) continue
+      const createdAt = (m.createdAt as number) || 0
+      if (!latest || createdAt >= latest.createdAt) latest = { createdAt, model: mdl }
+    }
+    return latest ? latest.model : null
+  })()
+
+  // Report the active chat's last-used model up to the parent so it can default
+  // the shared picker when switching chats. Fires `null` for empty chats so the
+  // parent can fall back to the global preference. The effect re-runs (and thus
+  // re-emits) when this panel becomes active, so switching back to a chat
+  // restores its model even if the value itself is unchanged.
+  useEffect(() => {
+    if (!isActive || !isInitialLoadComplete || !onResolveSessionModel) return
+    onResolveSessionModel(lastSessionModel)
+  }, [isActive, isInitialLoadComplete, currentSessionId, lastSessionModel, onResolveSessionModel])
 
   // Post-stream settle: when streaming ends, the AI SDK messages ARE the
   // authoritative fresh state — `cachedMessagesRef.current` is already kept in
@@ -4271,6 +4338,89 @@ export const ChatPanel = observer(function ChatPanel({
   const handleRetryRef = useRef<(() => void) | null>(null)
   handleRetryRef.current = handleRetry
 
+  // Automatic stall recovery — invoked by the falling-edge effect the instant
+  // a turn ends without `data-turn-complete`. This is the non-interactive twin
+  // of `handleRetry`'s `reconnect` branch: it ONLY reattaches to a still-active
+  // server turn (never re-sends or continues, which would surprise the user by
+  // restarting work behind their back). A bounded poll absorbs the brief window
+  // where the runtime hasn't re-published the buffer yet (warm-pool / pod
+  // transition), and any session switch / new turn / user-stop cancels it.
+  const attemptStallRecovery = useCallback(() => {
+    if (!currentSessionId || !API_URL) return
+    const recoverySessionId = currentSessionId
+    const recoveryTurnId = currentTurnIdRef.current
+    const fromSeqAtStall = turnLastSeqRef.current
+    const MAX_ATTEMPTS = 4
+
+    setStreamAutoRecovering(true)
+    void (async () => {
+      try {
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          // Bail if the user moved on (switched session), stopped, or a fresh
+          // turn started — reconnecting now would graft onto the wrong panel.
+          if (
+            userInitiatedStopRef.current ||
+            currentSessionIdRef.current !== recoverySessionId ||
+            isStreamingRef.current
+          ) {
+            return
+          }
+
+          let turnStatus: ChatTurnStatus = "unknown"
+          try {
+            const turnUrl = buildChatTurnUrl(
+              API_URL,
+              projectId,
+              localAgentUrl,
+              recoverySessionId,
+              chatWorkspaceId,
+            )
+            turnStatus = await probeChatTurnStatus({
+              url: turnUrl,
+              fetch: expoFetch,
+              headers: nativeHeaders ? nativeHeaders() : undefined,
+              credentials: Platform.OS === "web" ? "include" : undefined,
+            })
+          } catch {
+            turnStatus = "unknown"
+          }
+
+          // Re-check liveness after the await — the world may have changed.
+          if (currentSessionIdRef.current !== recoverySessionId || isStreamingRef.current) {
+            return
+          }
+
+          const action = decideStallRecovery({ turnStatus, attempt, maxAttempts: MAX_ATTEMPTS })
+          if (action === "reconnect") {
+            console.log(
+              `[ChatPanel] auto-recovery: turn ${recoveryTurnId} still active — reattaching live stream (fromSeq=${fromSeqAtStall})`,
+            )
+            void resumeStream()
+            return
+          }
+          if (action === "give-up") {
+            // Terminal or persistently-unknown: leave the manual Retry banner
+            // for the user. `handleRetry` will still triage continue/resend.
+            return
+          }
+          // retry-later: brief backoff, then probe again.
+          await new Promise<void>((r) => setTimeout(r, computeRecoveryBackoff(attempt)))
+        }
+      } finally {
+        setStreamAutoRecovering(false)
+      }
+    })()
+  }, [
+    currentSessionId,
+    projectId,
+    localAgentUrl,
+    chatWorkspaceId,
+    expoFetch,
+    nativeHeaders,
+    resumeStream,
+  ])
+  stallRecoveryRef.current = attemptStallRecovery
+
   // ─── Edit / Retry from arbitrary user message ────────────────────────────
   //
   // Built on top of `sendMessageInternal` and the new server endpoint
@@ -5016,8 +5166,11 @@ export const ChatPanel = observer(function ChatPanel({
             </View>
           )}
 
-          {/* Error Alert — cap long messages so the sidebar layout stays usable */}
-          {(error || emptyResponseError) && !errorDismissed && (
+          {/* Error Alert — cap long messages so the sidebar layout stays usable.
+              Also surfaces while auto-recovery is reconnecting, even when the
+              SDK left no `error`/`emptyResponseError` behind (the silent-stall
+              case), so the user sees "Reconnecting…" rather than nothing. */}
+          {((error || emptyResponseError) && !errorDismissed) || streamAutoRecovering ? (
             <View className="px-4 pb-2 max-w-3xl w-full self-center">
               <View className={`flex-row items-start gap-1.5 rounded-md border px-3 py-2 ${
                 isTunnelError
@@ -5063,9 +5216,9 @@ export const ChatPanel = observer(function ChatPanel({
                       </Pressable>
                     )}
                   </View>
-                  {tunnelReconnecting ? (
-                    <View className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1 self-start">
-                      <Text className="text-xs text-orange-600 dark:text-orange-400 font-medium">Reconnecting…</Text>
+                  {tunnelReconnecting || streamAutoRecovering ? (
+                    <View className={`shrink-0 rounded-md border px-2 py-1 self-start ${isTunnelError ? 'border-orange-400/30' : 'border-destructive/30'}`}>
+                      <Text className={`text-xs font-medium ${isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'}`}>Reconnecting…</Text>
                     </View>
                   ) : (
                     <View className="shrink-0 flex-row items-center gap-1 self-start">
@@ -5114,7 +5267,7 @@ export const ChatPanel = observer(function ChatPanel({
                 </View>
               </View>
             </View>
-          )}
+          ) : null}
 
           {/* Permission Approval Dialog (Local Mode Security) */}
           {pendingPermissionRequest && (

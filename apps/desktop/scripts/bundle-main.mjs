@@ -211,6 +211,19 @@ const args = [
   '--target', 'node',
   '--format', 'cjs',
   '--outfile', OUT_FILE,
+  // DO NOT add `--sourcemap` here. With `--outfile`, any `--sourcemap` mode
+  // that produces a separate `.map` turns the build into a *multiple-output*
+  // build, and bun (1.3.x) then writes NOTHING to `--outfile` while still
+  // printing a success summary and exiting 0 — leaving `main.js` empty/stale.
+  // `result.status` below stays 0, so the broken bundle sails through and the
+  // packaged app silently does nothing at launch (zero output, never starts
+  // the local server). v1.11.12 (`--sourcemap=external`) failed loudly with
+  // "cannot use an external source map without --outdir"; v1.11.13 switched to
+  // `--sourcemap=linked`, which hit the silent-empty path above and shipped a
+  // dead `main.js` (caught only by the release Boot smoke test). If a
+  // main-process source map is ever needed again, switch to `--outdir dist`
+  // (which writes both files) AND assert `main.js` is non-empty before
+  // packaging — never re-add `--sourcemap` alongside `--outfile`.
   '--define', `__SHOGO_WORKER_VERSION__="${workerPkg.version}"`,
   '--define', `__SHOGO_DESKTOP_SENTRY_DSN__="${desktopSentryDsn}"`,
   ...EXTERNALS.flatMap((p) => ['--external', p]),
@@ -228,7 +241,23 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1);
 }
 
-const sizeKb = (statSync(OUT_FILE).size / 1024).toFixed(1);
+// Hard floor on the output size. `bun build` can exit 0 while writing an
+// empty/stale `--outfile` (see the `--sourcemap` note above) — `result.status`
+// won't catch it, so verify the bundle is actually there. The real bundle is
+// ~600 KB; anything under 50 KB means the write silently failed and we must NOT
+// let it reach packaging (an empty main.js = an app that launches and does
+// nothing, which is how v1.11.13 shipped a dead build past every exit-code
+// check and only died in the Boot smoke test).
+const outBytes = statSync(OUT_FILE).size;
+const MIN_BUNDLE_BYTES = 50 * 1024;
+if (outBytes < MIN_BUNDLE_BYTES) {
+  console.error(
+    `[bundle-main] ✗ dist/main.js is only ${outBytes} bytes — bun reported success but did not write a real bundle.`,
+  );
+  console.error('  This is the silent --outfile failure; do not package an empty main process.');
+  process.exit(1);
+}
+const sizeKb = (outBytes / 1024).toFixed(1);
 console.log(`[bundle-main] ✓ wrote dist/main.js (${sizeKb} KB)`);
 
 // ─────────────────────────────────────────────────────────────────────────────

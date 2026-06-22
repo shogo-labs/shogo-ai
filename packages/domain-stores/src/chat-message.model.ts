@@ -25,6 +25,7 @@ export const ChatMessageModel = types
     parts: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
     agent: types.optional(types.string, "technical"),
+    model: types.optional(types.string, ""),
     session: types.safeReference(types.late(() => ChatSessionModel)),
   })
   .views(self => ({
