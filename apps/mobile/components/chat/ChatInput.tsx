@@ -78,6 +78,7 @@ import type { ToolCallData } from "./tools/types"
 import { AgentClient } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../lib/agent-fetch"
 import { useChatContextSafe } from "./ChatContext"
+import type { IdeContextState, IdeFileResult } from "./ideBridge"
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
@@ -161,6 +162,7 @@ export interface FileAttachment {
  */
 export type ChatReference =
   | { type: "file"; path: string; name: string; label?: string }
+  | { type: "folder"; path: string; name: string; label?: string }
   | { type: "project"; id: string; name: string; label?: string }
   | { type: "workspace"; id: string; name: string; slug: string; summary?: string; label?: string }
 
@@ -173,6 +175,7 @@ export interface ProjectMentionOption {
 /** One selectable row in the "@" menu (files first, then projects). */
 type MentionItem =
   | { kind: "file"; path: string; name: string }
+  | { kind: "folder"; path: string; name: string }
   | { kind: "project"; id: string; name: string }
 
 const MAX_MENTION_FILE_RESULTS = 8
@@ -180,6 +183,7 @@ const MAX_MENTION_PROJECT_RESULTS = 8
 
 function referenceKey(ref: ChatReference): string {
   if (ref.type === "file") return `file:${ref.path}`
+  if (ref.type === "folder") return `folder:${ref.path}`
   if (ref.type === "project") return `project:${ref.id}`
   return `workspace:${ref.id}`
 }
@@ -351,6 +355,10 @@ export interface ChatInputProps {
    * ChatInput doesn't re-render every render.
    */
   projects?: ProjectMentionOption[]
+  ideMode?: boolean
+  ideContext?: IdeContextState
+  ideFileSearch?: (query?: string) => Promise<IdeFileResult[]>
+  onOpenIdeFile?: (path: string) => void
   dimWhenDisabled?: boolean
   /**
    * When true, draws an accent-colored ring on the visible input
@@ -412,6 +420,10 @@ function ChatInputImpl({
   restoreDraftRequest,
   projectId,
   projects = [],
+  ideMode = false,
+  ideContext,
+  ideFileSearch,
+  onOpenIdeFile,
   dimWhenDisabled = true,
   highlighted = false,
   flush = false,
@@ -591,7 +603,7 @@ function ChatInputImpl({
   const [showMentionMenu, setShowMentionMenu] = useState(false)
   const [mentionQuery, setMentionQuery] = useState("")
   const [mentionIndex, setMentionIndex] = useState(0)
-  const [fileResults, setFileResults] = useState<{ path: string; name: string }[]>([])
+  const [fileResults, setFileResults] = useState<IdeFileResult[]>([])
   // Per-project cache of the workspace file list, so name matching as the user
   // types is instant and doesn't refetch the tree on every keystroke.
   const treeFilesRef = useRef<{
@@ -646,7 +658,15 @@ function ChatInputImpl({
   // name-relevant. Gated on `projectId` so the Files section only appears in a
   // project composer (and stays empty in the inline-edit composer).
   useEffect(() => {
-    if (!showMentionMenu || !agentClient || !projectId) {
+    if (!showMentionMenu) {
+      setFileResults([])
+      return
+    }
+    if (ideMode && !ideFileSearch) {
+      setFileResults([])
+      return
+    }
+    if (!ideMode && (!agentClient || !projectId)) {
       setFileResults([])
       return
     }
@@ -654,11 +674,17 @@ function ChatInputImpl({
     const q = mentionQuery.trim().toLowerCase()
     const timer = setTimeout(async () => {
       try {
+        if (ideMode && ideFileSearch) {
+          const results = await ideFileSearch(mentionQuery.trim())
+          if (!cancelled) setFileResults(results.slice(0, MAX_MENTION_FILE_RESULTS * 2))
+          return
+        }
+
         // Load + cache the workspace file list once per project. The tree route
         // is shallow (eager-depth), so this covers the common top-level files;
         // the content-index backfill below reaches deeper ones.
         if (treeFilesRef.current.projectId !== projectId) {
-          const tree = await agentClient.getWorkspaceTree("")
+          const tree = await agentClient?.getWorkspaceTree("")
           const files: { path: string; name: string }[] = []
           const walk = (nodes: any[]) => {
             for (const node of nodes) {
@@ -670,15 +696,15 @@ function ChatInputImpl({
             }
           }
           walk(Array.isArray(tree) ? tree : [])
-          treeFilesRef.current = { projectId, files }
+          treeFilesRef.current = { projectId: projectId ?? null, files }
         }
 
         const seen = new Set<string>()
-        const results: { path: string; name: string }[] = []
+        const results: IdeFileResult[] = []
         const push = (f: { path: string; name: string }) => {
           if (results.length >= MAX_MENTION_FILE_RESULTS || seen.has(f.path)) return
           seen.add(f.path)
-          results.push(f)
+          results.push({ type: "file", path: f.path, name: f.name })
         }
 
         if (!q) {
@@ -693,10 +719,10 @@ function ChatInputImpl({
           // those whose basename matches the typed query.
           if (results.length < MAX_MENTION_FILE_RESULTS) {
             try {
-              const hits = await agentClient.searchFiles(mentionQuery.trim(), {
+              const hits = await agentClient?.searchFiles(mentionQuery.trim(), {
                 limit: MAX_MENTION_FILE_RESULTS * 4,
               })
-              for (const hit of hits) {
+              for (const hit of hits ?? []) {
                 if (!hit?.path) continue
                 const name = basename(hit.path)
                 if (name.toLowerCase().includes(q)) push({ path: hit.path, name })
@@ -715,7 +741,7 @@ function ChatInputImpl({
       cancelled = true
       clearTimeout(timer)
     }
-  }, [showMentionMenu, mentionQuery, agentClient, projectId])
+  }, [showMentionMenu, mentionQuery, agentClient, projectId, ideMode, ideFileSearch])
 
   const filteredProjects = useMemo(() => {
     const q = mentionQuery.trim().toLowerCase()
@@ -732,7 +758,7 @@ function ChatInputImpl({
   // Flat, ordered list backing keyboard navigation (files first, then projects).
   const mentionItems = useMemo<MentionItem[]>(
     () => [
-      ...fileResults.map((f) => ({ kind: "file" as const, path: f.path, name: f.name })),
+      ...fileResults.map((f) => ({ kind: f.type, path: f.path, name: f.name })),
       ...filteredProjects.map((p) => ({
         kind: "project" as const,
         id: p.id,
@@ -756,7 +782,7 @@ function ChatInputImpl({
       // tag by basename, projects by slugified name (both whitespace-free).
       const base = inputValueRef.current
       const token = mentionTokenRef.current
-      const label = `@${item.kind === "file" ? item.name : slugifyMention(item.name)}`
+      const label = `@${item.kind === "project" ? slugifyMention(item.name) : item.name}`
       let caret: number
       if (token) {
         const start = Math.max(0, Math.min(token.start, base.length))
@@ -777,6 +803,8 @@ function ChatInputImpl({
 
       if (item.kind === "file") {
         addReference({ type: "file", path: item.path, name: item.name, label })
+      } else if (item.kind === "folder") {
+        addReference({ type: "folder", path: item.path, name: item.name, label })
       } else {
         addReference({ type: "project", id: item.id, name: item.name, label })
       }
@@ -1093,6 +1121,10 @@ function ChatInputImpl({
     [addPastedText, closeMentionMenu, updateMentionState]
   )
 
+  const removeReference = useCallback((key: string) => {
+    setReferences((prev) => prev.filter((ref) => referenceKey(ref) !== key))
+  }, [])
+
   const getFileIcon = useCallback((fileType: string) => {
     if (fileType.startsWith("image/")) {
       return <ImageIcon className="h-4 w-4 text-muted-foreground" size={16} />
@@ -1115,6 +1147,61 @@ function ChatInputImpl({
     // composer from whatever sits beneath it (file previews,
     // toolbar dropdowns, etc.).
     <View className={cn(flush ? "pb-3" : "p-3 pt-0")}>
+      {ideMode && (ideContext?.activeFile || references.length > 0) && (
+        <View className="mb-2 gap-1.5">
+          {ideContext?.activeFile && (
+            <View className="flex-row flex-wrap items-center gap-1.5">
+              <Text className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Context
+              </Text>
+              <Pressable
+                onPress={() => onOpenIdeFile?.(ideContext.activeFile?.path ?? "")}
+                className="flex-row items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-1"
+              >
+                <FileText className="h-3 w-3 text-muted-foreground" size={12} />
+                <Text className="max-w-[220px] text-[11px] text-foreground" numberOfLines={1}>
+                  {ideContext.activeFile.path}
+                </Text>
+              </Pressable>
+              {ideContext.activeFile.selection && (
+                <View className="rounded-full border border-border bg-muted/50 px-2 py-1">
+                  <Text className="text-[11px] text-muted-foreground">
+                    lines {ideContext.activeFile.selection.startLine}-{ideContext.activeFile.selection.endLine}
+                    {ideContext.activeFile.selection.truncated ? " · truncated" : ""}
+                  </Text>
+                </View>
+              )}
+            </View>
+          )}
+          {references.length > 0 && (
+            <View className="flex-row flex-wrap gap-1.5">
+              {references.map((ref) => {
+                const key = referenceKey(ref)
+                const isFolder = ref.type === "folder"
+                const isFile = ref.type === "file"
+                return (
+                  <View key={key} className="flex-row items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-1">
+                    {isFolder ? (
+                      <FolderGit2 className="h-3 w-3 text-muted-foreground" size={12} />
+                    ) : isFile ? (
+                      <FileText className="h-3 w-3 text-muted-foreground" size={12} />
+                    ) : (
+                      <FolderGit2 className="h-3 w-3 text-muted-foreground" size={12} />
+                    )}
+                    <Text className="max-w-[180px] text-[11px] text-foreground" numberOfLines={1}>
+                      {ref.type === "file" || ref.type === "folder" ? ref.path : ref.name}
+                    </Text>
+                    <Pressable onPress={() => removeReference(key)} className="h-4 w-4 items-center justify-center rounded-full">
+                      <X className="h-3 w-3 text-muted-foreground" size={12} />
+                    </Pressable>
+                  </View>
+                )
+              })}
+            </View>
+          )}
+        </View>
+      )}
+
       {/* File previews */}
       {pendingFiles.length > 0 && (
         <ScrollView
@@ -1512,30 +1599,38 @@ function ChatInputImpl({
           </View>
         )}
 
-        {/* "@" mention menu — files (current project) + sibling projects */}
+        {/* "@" mention menu — files/folders in IDE mode; project files + sibling projects otherwise */}
         {showMentionMenu && (
           <View className="absolute bottom-full left-0 right-0 mb-1 max-h-[280px] rounded-md border border-border bg-popover shadow-md z-50">
             <ScrollView keyboardShouldPersistTaps="handled">
               {fileResults.length > 0 && (
                 <>
                   <Text className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Files
+                    {ideMode ? "Files and folders" : "Files"}
                   </Text>
                   {fileResults.map((file, i) => {
                     const active = i === mentionIndex
+                    const Icon = file.type === "folder" ? FolderGit2 : FileText
                     return (
                       <Pressable
-                        key={`mention-file-${file.path}`}
-                        onPress={() => selectMention({ kind: "file", path: file.path, name: file.name })}
+                        key={`mention-${file.type}-${file.path}`}
+                        onPress={() => selectMention({ kind: file.type, path: file.path, name: file.name })}
                         className={cn(
                           "w-full flex-row items-center gap-2 px-3 py-1.5",
                           active && "bg-accent"
                         )}
                       >
-                        <FileText className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-                        <Text className="flex-1 text-xs text-foreground" numberOfLines={1}>
-                          {file.name}
-                        </Text>
+                        <Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                        <View className="flex-1 min-w-0">
+                          <Text className="text-xs text-foreground" numberOfLines={1}>
+                            {file.name}
+                          </Text>
+                          {ideMode && (
+                            <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+                              {file.path}
+                            </Text>
+                          )}
+                        </View>
                       </Pressable>
                     )
                   })}
@@ -1571,9 +1666,11 @@ function ChatInputImpl({
 
               {mentionItems.length === 0 && (
                 <Text className="px-3 py-3 text-xs text-muted-foreground">
-                  {!agentClient && (projects?.length ?? 0) === 0
-                    ? "Nothing to reference yet"
-                    : "No matches"}
+                  {ideMode && !ideFileSearch
+                    ? "IDE file bridge unavailable"
+                    : !agentClient && !ideMode && (projects?.length ?? 0) === 0
+                      ? "Nothing to reference yet"
+                      : "No matches"}
                 </Text>
               )}
             </ScrollView>
@@ -1680,7 +1777,6 @@ function ChatInputImpl({
             // Keep the inline-mention overlay aligned once the box scrolls.
             setOverlayScrollY((e.nativeEvent as any)?.contentOffset?.y ?? 0)
           }}
-          scrollEventThrottle={16}
           onSubmitEditing={handleSubmit}
           onKeyPress={(e: any) => {
             // While the "@" menu is open, intercept navigation keys so they
@@ -2089,7 +2185,7 @@ function ChatInputImpl({
                   </Pressable>
                 )}
               </>
-            ) : (inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) ? (
+            ) : (inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0 || references.length > 0) ? (
               <Pressable
                 onPress={handleSubmit}
                 disabled={disabled || isProcessingFiles}

@@ -120,7 +120,7 @@ import { subscribe as subscribeScreencast, getLastFrame as getLastScreencastFram
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
 import { saveUploadedFileParts, buildUploadedFilesNote } from './upload-attachments'
-import { buildReferencedContext } from './reference-context'
+import { buildIdeContext, buildReferencedContext } from './reference-context'
 import { maybeRunInteractive } from './interactive/entry'
 import { evaluateServerBacked } from './published-detect'
 
@@ -1586,12 +1586,13 @@ app.post('/agent/chat', async (c) => {
       'and finish the task.'
   }
 
-  // Resolve "@" references (tagged files + workspaces) into inline context and
-  // append it to the user's message. Done before the empty-message guard so a
-  // references-only message is still valid. Skipped on continuation turns (the
-  // client doesn't send references there). File contents are read from the
-  // workspace on disk; workspace metadata comes from the client-built summary.
+  // Resolve IDE and "@" references into inline context before the empty-message
+  // guard so context-only turns are valid. Skipped on continuation turns.
   if (!isContinueTurn) {
+    const ideContext = buildIdeContext(body.ideContext)
+    if (ideContext) {
+      userText = userText ? `${userText}\n\n${ideContext}` : ideContext
+    }
     const referencedContext = buildReferencedContext(body.references, WORKSPACE_DIR)
     if (referencedContext) {
       userText = userText ? `${userText}\n\n${referencedContext}` : referencedContext

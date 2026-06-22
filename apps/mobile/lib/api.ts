@@ -27,12 +27,15 @@ function nativeApiUrlWithoutEnv(): string {
 
 export const API_URL = (() => {
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    const origin = window.location.origin
+    const isIdeEmbed = new URLSearchParams(window.location.search).get('embed') === 'ide'
+    if (isIdeEmbed) return origin
+
     const desktop = (window as any).shogoDesktop as { apiUrl?: string } | undefined
     if (desktop?.apiUrl) return desktop.apiUrl
 
     const envUrl = process.env.EXPO_PUBLIC_API_URL
     if (envUrl) return envUrl
-    const origin = window.location.origin
     if (!origin.includes('localhost')) return origin
     return `http://localhost:${API_PORT}`
   }

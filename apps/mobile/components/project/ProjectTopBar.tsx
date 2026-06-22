@@ -192,6 +192,7 @@ export interface ProjectTopBarProps {
   canvasThemeSupported?: boolean | null
   onCanvasRefresh?: () => void
   onCanvasOpenInNewTab?: () => void
+  ideEmbed?: boolean
 }
 
 /** Set the native HTML `title` tooltip on the DOM element via ref. */
@@ -364,6 +365,7 @@ export function ProjectTopBar({
   canvasThemeSupported,
   onCanvasRefresh,
   onCanvasOpenInNewTab,
+  ideEmbed = false,
 }: ProjectTopBarProps) {
   const router = useRouter()
   const { width, height } = useWindowDimensions()
@@ -410,7 +412,9 @@ export function ProjectTopBar({
   const showTrustBadge =
     workingMode === 'external' && !!trustLevel && typeof onToggleTrust === 'function'
 
-  const visibleTabs = AGENT_TABS.filter(tab => !hiddenTabs.includes(tab.id))
+  const visibleTabs = AGENT_TABS.filter(tab =>
+    ideEmbed ? tab.id === 'chat-fullscreen' : !hiddenTabs.includes(tab.id),
+  )
   // Every remaining tab is primary now that secondary controls live behind
   // the Settings tab. Files (native) and IDE (web) sit next to Chat/Canvas/
   // Preview/Plans/Settings on narrow screens too.
@@ -459,6 +463,34 @@ export function ProjectTopBar({
   const chatPanelWidth = chatPanelWidthProp ?? 480
   const narrowNativeMenuW = Platform.OS !== 'web' ? narrowProjectDropdownWidth(width) : null
 
+  if (ideEmbed) {
+    return (
+      <View
+        className="h-10 bg-background/95 flex-row items-center px-2 web:sticky web:top-0"
+        style={
+          Platform.OS === 'web'
+            ? ({ zIndex: 1000, isolation: 'isolate' as const } as const)
+            : { elevation: 12 }
+        }
+      >
+        <View className="px-1.5 py-0.5 max-w-[180px]">
+          <Text className="text-xs font-semibold text-foreground" numberOfLines={1} ellipsizeMode="tail">
+            {projectName}
+          </Text>
+        </View>
+        <View className="w-px h-5 bg-border mx-1 flex-shrink-0" />
+        <BarIconButton
+          icon={MessageSquare}
+          onPress={() => handleTabPress('chat-fullscreen')}
+          active
+          title="Chat"
+          testID="project-tab-chat-fullscreen"
+        />
+        <View className="flex-1" />
+      </View>
+    )
+  }
+
   if (!isWide) {
     return (
       <View
@@ -470,78 +502,86 @@ export function ProjectTopBar({
         }
       >
         <View className="flex-row items-center gap-0.5 flex-shrink-0">
-          <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" />
-          <Popover
-            placement="bottom"
-            size="md"
-            isOpen={showDropdown}
-            onOpen={() => { setShowDropdown(true); setDropdownKey((k) => k + 1) }}
-            onClose={() => setShowDropdown(false)}
-            trigger={(triggerProps) => (
-              <Pressable
-                {...triggerProps}
-                className={cn(
-                  'flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted',
-                  !isNativePhone && 'max-w-[120px]',
-                )}
-                style={[
-                  (triggerProps as { style?: StyleProp<ViewStyle> }).style,
-                  isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth } : undefined,
-                ]}
-                accessibilityLabel="Switch project"
-                testID="project-switcher-trigger"
-              >
-                <Text
-                  className="text-xs font-semibold text-foreground"
-                  style={isNativePhone ? { flex: 1, minWidth: 0 } : undefined}
-                  numberOfLines={1}
-                  ellipsizeMode="tail"
+          {!ideEmbed && <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" />}
+          {ideEmbed ? (
+            <View className="px-1.5 py-0.5 max-w-[160px]">
+              <Text className="text-xs font-semibold text-foreground" numberOfLines={1} ellipsizeMode="tail">
+                {projectName}
+              </Text>
+            </View>
+          ) : (
+            <Popover
+              placement="bottom"
+              size="md"
+              isOpen={showDropdown}
+              onOpen={() => { setShowDropdown(true); setDropdownKey((k) => k + 1) }}
+              onClose={() => setShowDropdown(false)}
+              trigger={(triggerProps) => (
+                <Pressable
+                  {...triggerProps}
+                  className={cn(
+                    'flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted',
+                    !isNativePhone && 'max-w-[120px]',
+                  )}
+                  style={[
+                    (triggerProps as { style?: StyleProp<ViewStyle> }).style,
+                    isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth } : undefined,
+                  ]}
+                  accessibilityLabel="Switch project"
+                  testID="project-switcher-trigger"
                 >
-                  {projectName}
-                </Text>
-                <ChevronDown size={10} className="text-muted-foreground flex-shrink-0" />
-              </Pressable>
-            )}
-          >
-            <PopoverBackdrop />
-            <PopoverContent
-              className={
-                Platform.OS === 'web'
-                  ? 'max-w-[340px] w-[320px] p-0'
-                  : 'p-0'
-              }
-              style={
-                narrowNativeMenuW != null
-                  ? { width: narrowNativeMenuW, maxWidth: narrowNativeMenuW }
-                  : undefined
-              }
+                  <Text
+                    className="text-xs font-semibold text-foreground"
+                    style={isNativePhone ? { flex: 1, minWidth: 0 } : undefined}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {projectName}
+                  </Text>
+                  <ChevronDown size={10} className="text-muted-foreground flex-shrink-0" />
+                </Pressable>
+              )}
             >
-              <PopoverBody>
-                <ProjectDropdownContent
-                  key={dropdownKey}
-                  projects={projects}
-                  currentProjectId={projectId}
-                  projectName={projectName}
-                  onSelect={handleProjectSelect}
-                  onGoToDashboard={handleBack}
-                  onClose={() => setShowDropdown(false)}
-                  workspaceName={workspaceName}
-                  planLabel={planLabel}
-                  usageWindows={usageWindows}
-                  usageOverage={usageOverage}
-                  ownerName={ownerName}
-                  projectCreatedAt={projectCreatedAt}
-                  projectModifiedAt={projectModifiedAt}
-                  isStarred={isStarred}
-                  onRenameProject={onRenameProject}
-                  onToggleStar={onToggleStar}
-                  onMoveToFolder={onMoveToFolder}
-                  folders={folders}
-                  canvasThemeSupported={canvasThemeSupported}
-                />
-              </PopoverBody>
-            </PopoverContent>
-          </Popover>
+              <PopoverBackdrop />
+              <PopoverContent
+                className={
+                  Platform.OS === 'web'
+                    ? 'max-w-[340px] w-[320px] p-0'
+                    : 'p-0'
+                }
+                style={
+                  narrowNativeMenuW != null
+                    ? { width: narrowNativeMenuW, maxWidth: narrowNativeMenuW }
+                    : undefined
+                }
+              >
+                <PopoverBody>
+                  <ProjectDropdownContent
+                    key={dropdownKey}
+                    projects={projects}
+                    currentProjectId={projectId}
+                    projectName={projectName}
+                    onSelect={handleProjectSelect}
+                    onGoToDashboard={handleBack}
+                    onClose={() => setShowDropdown(false)}
+                    workspaceName={workspaceName}
+                    planLabel={planLabel}
+                    usageWindows={usageWindows}
+                    usageOverage={usageOverage}
+                    ownerName={ownerName}
+                    projectCreatedAt={projectCreatedAt}
+                    projectModifiedAt={projectModifiedAt}
+                    isStarred={isStarred}
+                    onRenameProject={onRenameProject}
+                    onToggleStar={onToggleStar}
+                    onMoveToFolder={onMoveToFolder}
+                    folders={folders}
+                    canvasThemeSupported={canvasThemeSupported}
+                  />
+                </PopoverBody>
+              </PopoverContent>
+            </Popover>
+          )}
         </View>
 
         <View className="w-px h-5 bg-border mx-1 flex-shrink-0" />
@@ -656,72 +696,80 @@ export function ProjectTopBar({
         style={{ width: chatFullscreenSidebarWidth ?? (isChatCollapsed ? undefined : chatPanelWidth) }}
       >
         <View className="flex-row items-center gap-0.5 flex-shrink-0">
-          {/* <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" /> */}
+          {ideEmbed ? (
+            <View className="px-1.5 py-0.5 max-w-[180px]">
+              <Text className="text-xs font-semibold text-foreground" numberOfLines={1} ellipsizeMode="tail">
+                {projectName}
+              </Text>
+            </View>
+          ) : (
+            <>
+              {/* <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" /> */}
 
-          <Popover
-            placement="bottom"
-            size="md"
-            isOpen={showDropdown}
-            onOpen={() => { setShowDropdown(true); setDropdownKey((k) => k + 1) }}
-            onClose={() => setShowDropdown(false)}
-            trigger={(triggerProps) => (
-              <Pressable
-                {...triggerProps}
-                className={cn(
-                  'flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted',
-                  !isNativePhone && 'max-w-[180px]',
+              <Popover
+                placement="bottom"
+                size="md"
+                isOpen={showDropdown}
+                onOpen={() => { setShowDropdown(true); setDropdownKey((k) => k + 1) }}
+                onClose={() => setShowDropdown(false)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    className={cn(
+                      'flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted',
+                      !isNativePhone && 'max-w-[180px]',
+                    )}
+                    style={[
+                      (triggerProps as { style?: StyleProp<ViewStyle> }).style,
+                      isNativePhone ? { maxWidth: 180 } : undefined,
+                    ]}
+                    accessibilityLabel="Switch project"
+                    testID="project-switcher-trigger"
+                  >
+                    <Text
+                      className="text-xs font-semibold text-foreground"
+                      style={isNativePhone ? { flex: 1, minWidth: 0 } : undefined}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {projectName}
+                    </Text>
+                    <ChevronDown size={10} className="text-muted-foreground flex-shrink-0" />
+                  </Pressable>
                 )}
-                style={[
-                  (triggerProps as { style?: StyleProp<ViewStyle> }).style,
-                  isNativePhone ? { maxWidth: 180 } : undefined,
-                ]}
-                accessibilityLabel="Switch project"
-                testID="project-switcher-trigger"
               >
-                <Text
-                  className="text-xs font-semibold text-foreground"
-                  style={isNativePhone ? { flex: 1, minWidth: 0 } : undefined}
-                  numberOfLines={1}
-                  ellipsizeMode="tail"
-                >
-                  {projectName}
-                </Text>
-                <ChevronDown size={10} className="text-muted-foreground flex-shrink-0" />
-              </Pressable>
-            )}
-          >
-            <PopoverBackdrop />
-            <PopoverContent className="max-w-[340px] w-[320px] p-0">
-              <PopoverBody>
-                <ProjectDropdownContent
-                  key={dropdownKey}
-                  projects={projects}
-                  currentProjectId={projectId}
-                  projectName={projectName}
-                  onSelect={handleProjectSelect}
-                  onGoToDashboard={handleBack}
-                  onClose={() => setShowDropdown(false)}
-                  workspaceName={workspaceName}
-                  planLabel={planLabel}
-                  usageWindows={usageWindows}
-                  usageOverage={usageOverage}
-                  ownerName={ownerName}
-                  projectCreatedAt={projectCreatedAt}
-                  projectModifiedAt={projectModifiedAt}
-                  isStarred={isStarred}
-                  onRenameProject={onRenameProject}
-                  onToggleStar={onToggleStar}
-                  onMoveToFolder={onMoveToFolder}
-                  folders={folders}
-                  canvasThemeSupported={canvasThemeSupported}
-                />
-              </PopoverBody>
-            </PopoverContent>
-          </Popover>
+                <PopoverBackdrop />
+                <PopoverContent className="max-w-[340px] w-[320px] p-0">
+                  <PopoverBody>
+                    <ProjectDropdownContent
+                      key={dropdownKey}
+                      projects={projects}
+                      currentProjectId={projectId}
+                      projectName={projectName}
+                      onSelect={handleProjectSelect}
+                      onGoToDashboard={handleBack}
+                      onClose={() => setShowDropdown(false)}
+                      workspaceName={workspaceName}
+                      planLabel={planLabel}
+                      usageWindows={usageWindows}
+                      usageOverage={usageOverage}
+                      ownerName={ownerName}
+                      projectCreatedAt={projectCreatedAt}
+                      projectModifiedAt={projectModifiedAt}
+                      isStarred={isStarred}
+                      onRenameProject={onRenameProject}
+                      onToggleStar={onToggleStar}
+                      onMoveToFolder={onMoveToFolder}
+                      folders={folders}
+                      canvasThemeSupported={canvasThemeSupported}
+                    />
+                  </PopoverBody>
+                </PopoverContent>
+              </Popover>
 
-          {/* Cloud content-sync status (desktop + cloud-linked only; the
-              pill self-gates and renders nothing otherwise). */}
-          <CloudSyncStatusPill projectId={projectId} />
+              <CloudSyncStatusPill projectId={projectId} />
+            </>
+          )}
         </View>
 
         <View className="flex-1" />

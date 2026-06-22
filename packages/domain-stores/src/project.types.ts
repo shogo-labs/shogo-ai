@@ -37,6 +37,7 @@ export interface ProjectType {
   publishStatusAt?: Date
   publishedCommitSha?: string
   publishedTag?: string
+  publishedAlwaysOn: boolean
   accessLevel: AccessLevel
   category?: ProjectCategory
   siteTitle?: string
@@ -70,6 +71,7 @@ export interface ProjectCreateInput {
   publishStatusAt?: Date
   publishedCommitSha?: string
   publishedTag?: string
+  publishedAlwaysOn?: boolean
   accessLevel?: AccessLevel
   category?: ProjectCategory
   siteTitle?: string
@@ -103,6 +105,7 @@ export interface ProjectUpdateInput {
   publishStatusAt?: Date
   publishedCommitSha?: string
   publishedTag?: string
+  publishedAlwaysOn?: boolean
   accessLevel?: AccessLevel
   category?: ProjectCategory
   siteTitle?: string

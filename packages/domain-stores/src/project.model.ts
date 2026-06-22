@@ -43,6 +43,7 @@ export const ProjectModel = types
     publishStatusAt: types.optional(types.number, 0),
     publishedCommitSha: types.optional(types.string, ""),
     publishedTag: types.optional(types.string, ""),
+    publishedAlwaysOn: types.optional(types.boolean, false),
     accessLevel: types.optional(types.enumeration("AccessLevel", ["anyone", "authenticated", "private"]), "anyone"),
     category: types.maybeNull(types.enumeration("ProjectCategory", ["app", "website", "tool", "game"])),
     siteTitle: types.optional(types.string, ""),

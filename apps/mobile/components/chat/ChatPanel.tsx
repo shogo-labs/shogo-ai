@@ -117,6 +117,7 @@ import {
   type ChatContextValue,
   type ChatMessage,
 } from "./ChatContext"
+import { useIdeBridge } from "./ideBridge"
 
 // Stable empty array we hand to the chat context's `messages` field.
 // See the long comment near `contextValue` below — we intentionally do
@@ -324,6 +325,8 @@ export interface ChatPanelProps {
   onModelChange?: (modelId: string) => void
   /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
   isActive?: boolean
+  /** Enables IDE-specific context bridge and compact composer affordances. */
+  ideMode?: boolean
   /**
    * Optional message enrichment hook — called before each outgoing message
    * to prepend auto-collected workspace context (terminal output, git status,
@@ -737,10 +740,12 @@ export const ChatPanel = observer(function ChatPanel({
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
   isActive = true,
+  ideMode = false,
   enrichMessage,
 }: ChatPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
+  const ideBridge = useIdeBridge(ideMode)
 
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
@@ -3526,7 +3531,7 @@ export const ChatPanel = observer(function ChatPanel({
 
       const fileArray = files || []
 
-      if (!content.trim() && fileArray.length === 0) {
+      if (!content.trim() && fileArray.length === 0 && (!references || references.length === 0)) {
         return
       }
 
@@ -3666,6 +3671,9 @@ export const ChatPanel = observer(function ChatPanel({
           bodyExtra.interactionMode = "agent"
           confirmedPlanRef.current = null
         }
+        if (ideMode && (ideBridge.context.activeFile || ideBridge.context.workspaceFolders.length > 0)) {
+          bodyExtra.ideContext = ideBridge.context
+        }
         if (references && references.length > 0) {
           // The runtime resolves these into real context (file contents +
           // workspace summaries) before the model runs. Passed through the
@@ -3697,6 +3705,8 @@ export const ChatPanel = observer(function ChatPanel({
       selectedModel,
       actions,
       enrichMessage,
+      ideMode,
+      ideBridge.context,
     ]
   )
 
@@ -5170,6 +5180,10 @@ export const ChatPanel = observer(function ChatPanel({
               restoreDraftRequest={restoreDraftRequest}
               projectId={projectId}
               projects={projectMentionOptions}
+              ideMode={ideMode}
+              ideContext={ideBridge.context}
+              ideFileSearch={ideBridge.listFiles}
+              onOpenIdeFile={ideBridge.openFile}
             />
           </View>
         </KeyboardAvoidingView>

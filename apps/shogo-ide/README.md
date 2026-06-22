@@ -28,6 +28,16 @@ bun run --cwd apps/shogo-ide codeoss:clone:print
 
 The Desktop launcher also performs the required local setup automatically when the Shogo IDE is opened.
 
+## Code - OSS patches
+
+The upstream checkout remains ignored, so Shogo-specific Code - OSS changes are tracked as patches under `patches/code-oss/`.
+
+Apply them after cloning or refreshing the upstream checkout:
+
+```bash
+bun run --cwd apps/shogo-ide codeoss:patch
+```
+
 ## Validation
 
 ```bash
@@ -39,6 +49,7 @@ bun run --cwd apps/shogo-ide phase5:check
 bun run --cwd apps/shogo-ide phase6:check
 bun run --cwd apps/shogo-ide extension:typecheck
 bun run --cwd apps/shogo-ide distribution:materialize
+bun run --cwd apps/shogo-ide codeoss:patch
 ```
 
 ## Runtime behavior

@@ -69,15 +69,24 @@ function codeOssWebArgs(status: ReturnType<typeof getShogoIdeStatus>, workspaceP
     '--user-data-dir', runtime.userDataDir,
     '--extensions-dir', runtime.extensionsDir,
     '--builtin-extensions-dir', runtime.systemExtensionsDir,
+    '--extensionDevelopmentPath', shogoCoreExtensionPath,
     '--host', '127.0.0.1',
     '--port', serverPortRange(workspacePath),
     '--agents-user-data-dir', runtime.agentsUserDataDir,
     '--agents-extensions-dir', runtime.agentsExtensionsDir,
     '--crash-reporter-directory', runtime.crashReporterDirectory,
-    '--extensionDevelopmentPath', shogoCoreExtensionPath,
     ...SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS.map((extensionId) => `--disable-extension=${extensionId}`),
     workspacePath,
   ]
+}
+
+function codeOssLaunchCommand(scriptPath: string, args: string[]): { command: string; args: string[] } {
+  if (process.platform === 'win32') return { command: scriptPath, args }
+  return { command: 'npx', args: ['-y', '-p', 'node@24.15.0', 'bash', scriptPath, ...args] }
+}
+
+function trimLaunchOutput(output: string[]): string {
+  return output.join('').split(/\r?\n/).filter(Boolean).slice(-12).join('\n')
 }
 
 async function startIdeServer(workspacePath: string, desktopChatUrl?: string): Promise<IdeServerRecord> {
@@ -99,9 +108,11 @@ async function startIdeServer(workspacePath: string, desktopChatUrl?: string): P
   }
 
   const args = codeOssWebArgs(status, workspacePath, desktopChatUrl)
+  const launch = codeOssLaunchCommand(scriptPath, args)
+  const output: string[] = []
   let resolvedUrl: string | null = null
 
-  const proc = spawn(scriptPath, args, {
+  const proc = spawn(launch.command, launch.args, {
     cwd: status.codeOssCheckoutPath,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
@@ -111,7 +122,6 @@ async function startIdeServer(workspacePath: string, desktopChatUrl?: string): P
       SHOGO_AGENT_BRIDGE_URL: getApiUrl(),
       ...(desktopChatUrl ? { SHOGO_DESKTOP_CHAT_URL: desktopChatUrl } : {}),
       VSCODE_DEV: '1',
-      VSCODE_SKIP_PRELAUNCH: '1',
     },
   })
 
@@ -122,6 +132,8 @@ async function startIdeServer(workspacePath: string, desktopChatUrl?: string): P
 
     const onData = (chunk: Buffer) => {
       const text = chunk.toString()
+      output.push(text)
+      if (output.length > 40) output.splice(0, output.length - 40)
       const match = text.match(/https?:\/\/[^\s]+/)
       if (match && !resolvedUrl) {
         resolvedUrl = match[0]
@@ -140,7 +152,9 @@ async function startIdeServer(workspacePath: string, desktopChatUrl?: string): P
       servers.delete(key)
       if (!resolvedUrl) {
         clearTimeout(timeout)
-        reject(new Error(`Code OSS web server exited before startup (${code ?? 'unknown'})`))
+        const details = trimLaunchOutput(output)
+        reject(new Error(`Code OSS web server exited before startup (${code ?? 'unknown'})${details ? `
+${details}` : ''}`))
       }
     })
   })

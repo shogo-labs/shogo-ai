@@ -21,6 +21,8 @@ import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notif
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
+import http, { type Server as HttpServer } from 'http'
+import https from 'https'
 import { startLocalServer, stopLocalServer, getApiUrl } from './local-server'
 import { getWebDir, getBunPath, getDbPath } from './paths'
 import {
@@ -587,6 +589,272 @@ async function repairLocalDatabaseInteractive(): Promise<void> {
   performDatabaseRepair(failures, dbPath)
 }
 
+let embeddedWebServer: HttpServer | null = null
+let embeddedWebServerUrl: string | null = null
+let embeddedWebServerStarting: Promise<string> | null = null
+const embeddedWebCookieJar = new Map<string, string>()
+
+const EMBEDDED_WEB_CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.wasm': 'application/wasm',
+}
+
+function embeddedWebContentType(filePath: string): string {
+  return EMBEDDED_WEB_CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+}
+
+function embeddedDesktopBridgeScript(): string {
+  const platform = process.platform
+  return `<script>
+(function(){
+  const apiUrl = window.location.origin;
+  const platform = ${JSON.stringify(platform)};
+  const vmProgressListeners = [];
+  const vmUpdateListeners = [];
+  const requestJson = async (path, fallback, init) => {
+    try {
+      const res = await fetch(apiUrl + path, Object.assign({ credentials: 'include' }, init || {}));
+      if (!res.ok) return fallback;
+      return await res.json();
+    } catch (_) {
+      return fallback;
+    }
+  };
+  const downloadVMImages = async () => {
+    try {
+      const res = await fetch(apiUrl + '/api/vm/images/download', { method: 'POST', credentials: 'include' });
+      if (!res.ok) return { success: false, error: 'Download failed: HTTP ' + res.status };
+      const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+      if (!reader) return { success: true };
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalResult = { success: true };
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const raw = line.slice(5).trim();
+          if (!raw) continue;
+          try {
+            const event = JSON.parse(raw);
+            if (typeof event.percent !== 'undefined') vmProgressListeners.forEach((fn) => { try { fn(event); } catch (_) {} });
+            if (typeof event.success !== 'undefined') finalResult = event;
+          } catch (_) {}
+        }
+      }
+      return finalResult;
+    } catch (err) {
+      return { success: false, error: err && err.message ? err.message : String(err) };
+    }
+  };
+  const bridge = {
+    platform,
+    isDesktop: true,
+    apiUrl,
+    getAppMode: async () => 'local',
+    getAppConfig: async () => ({ mode: 'local' }),
+    setAppMode: async () => ({ ok: false, error: 'Not available inside Shogo IDE embed' }),
+    clipboardWriteText: async (text) => { try { await navigator.clipboard.writeText(String(text || '')); return true; } catch (_) { return false; } },
+    clipboardReadText: async () => { try { return await navigator.clipboard.readText(); } catch (_) { return ''; } },
+    pickFolders: async () => ({ ok: false, error: 'Open folders from the main Shogo Desktop window.' }),
+    getVMImageStatus: async () => requestJson('/api/vm/images', { imagesPresent: false }),
+    downloadVMImages,
+    skipVMDownload: async () => ({ success: false, error: 'Not available inside Shogo IDE embed' }),
+    getVMStatus: async () => requestJson('/api/vm/status', { available: false, enabled: false }),
+    setVMConfig: async (config) => requestJson('/api/vm/config', { ok: false }, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config || {}) }),
+    onVMImageNeeded: () => {},
+    onVMImageDownloadProgress: (callback) => { if (typeof callback === 'function') vmProgressListeners.push(callback); },
+    checkVMImageUpdate: async () => requestJson('/api/vm/images/update-check', { available: false, currentVersion: null, latestVersion: '' }),
+    onVMImageUpdateAvailable: (callback) => { if (typeof callback === 'function') vmUpdateListeners.push(callback); },
+    removeVMImageUpdateListener: () => { vmUpdateListeners.length = 0; },
+    recycleVMPool: async () => requestJson('/api/vm/pool/recycle', { ok: false }, { method: 'POST' }),
+    startRecording: async () => ({ ok: false, error: 'Recording is not available inside Shogo IDE embed' }),
+    stopRecording: async () => ({ ok: false, error: 'Recording is not available inside Shogo IDE embed' }),
+    getRecordingStatus: async () => ({ isRecording: false, active: false }),
+    getMeetingConfig: async () => ({}),
+    setMeetingConfig: async () => ({ ok: false }),
+    onRecordingStarted: () => {},
+    onRecordingDuration: () => {},
+    onRecordingStopped: () => {},
+    removeRecordingListeners: () => {},
+    getUpdateStatus: async () => ({ status: 'idle', releaseName: null, availableVersion: null }),
+    onUpdateStatus: () => {},
+    removeUpdateListener: () => {},
+    downloadUpdate: async () => ({ ok: false, error: 'Updates are handled by Shogo Desktop' }),
+    dismissUpdate: async () => ({ ok: true }),
+    installUpdate: async () => {},
+    getBugReportConfig: async () => ({}),
+    getSystemInfo: async () => ({ appVersion: '', electronVersion: '', platform, arch: '', osVersion: '', totalMemoryMB: 0, freeMemoryMB: 0, cpuModel: '', cpuCores: 0, deviceName: 'Shogo IDE' }),
+    exportBugReport: async () => ({ ok: false, error: 'Open bug report export in Shogo Desktop' }),
+    startCloudLogin: async () => ({ ok: false, error: 'Open cloud login in Shogo Desktop' }),
+    signOutCloud: async () => ({ ok: false }),
+    onNavigate: () => {},
+    removeNavigateListener: () => {},
+    codeWorkbench: { open: async () => ({ ok: false, error: 'Already inside Shogo IDE' }) },
+  };
+  window.shogoDesktop = Object.assign({}, bridge, window.shogoDesktop || {});
+})();
+</script>`
+}
+
+function injectEmbeddedDesktopBridge(html: string): string {
+  const script = embeddedDesktopBridgeScript()
+  if (html.includes('window.shogoDesktop=Object.assign')) return html
+  if (html.includes('</head>')) return html.replace('</head>', `${script}</head>`)
+  return `${script}${html}`
+}
+
+function normalizeCookieHeader(value: string | string[] | undefined): string {
+  if (!value) return ''
+  return Array.isArray(value) ? value.join('; ') : value
+}
+
+function rememberEmbeddedSetCookies(value: string | string[] | undefined): void {
+  const cookies = Array.isArray(value) ? value : value ? [value] : []
+  for (const cookie of cookies) {
+    const pair = cookie.split(';', 1)[0]?.trim()
+    if (!pair) continue
+    const eq = pair.indexOf('=')
+    if (eq <= 0) continue
+    const name = pair.slice(0, eq).trim()
+    const cookieValue = pair.slice(eq + 1).trim()
+    if (!name) continue
+    if (!cookieValue) embeddedWebCookieJar.delete(name)
+    else embeddedWebCookieJar.set(name, cookieValue)
+  }
+}
+
+function getEmbeddedCookieHeader(existing: string | string[] | undefined): string | undefined {
+  const merged = new Map<string, string>()
+  const existingHeader = normalizeCookieHeader(existing)
+  for (const part of existingHeader.split(';')) {
+    const pair = part.trim()
+    if (!pair) continue
+    const eq = pair.indexOf('=')
+    if (eq <= 0) continue
+    merged.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim())
+  }
+  for (const [name, value] of embeddedWebCookieJar) merged.set(name, value)
+  const header = Array.from(merged.entries()).map(([name, value]) => `${name}=${value}`).join('; ')
+  return header || undefined
+}
+
+function proxyEmbeddedApiRequest(req: http.IncomingMessage, res: http.ServerResponse, requestUrl: URL): void {
+  const apiUrl = new URL(getApiUrl())
+  const headers = { ...req.headers, host: apiUrl.host }
+  const cookieHeader = getEmbeddedCookieHeader(req.headers.cookie)
+  if (cookieHeader) headers.cookie = cookieHeader
+  const proxyReq = http.request({
+    hostname: apiUrl.hostname,
+    port: apiUrl.port,
+    path: `${requestUrl.pathname}${requestUrl.search}`,
+    method: req.method,
+    headers,
+  }, (proxyRes) => {
+    const responseHeaders = { ...proxyRes.headers }
+    if (responseHeaders['set-cookie']) {
+      rememberEmbeddedSetCookies(responseHeaders['set-cookie'])
+      responseHeaders['set-cookie'] = (Array.isArray(responseHeaders['set-cookie'])
+        ? responseHeaders['set-cookie']
+        : [responseHeaders['set-cookie']]
+      ).map((cookie) => cookie.replace(/;\s*Domain=[^;]+/gi, ''))
+    }
+    res.writeHead(proxyRes.statusCode ?? 502, responseHeaders)
+    proxyRes.pipe(res)
+  })
+  proxyReq.on('error', (err) => {
+    res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }))
+  })
+  req.pipe(proxyReq)
+}
+
+function stopEmbeddedWebServer(): void {
+  embeddedWebServer?.close()
+  embeddedWebServer = null
+  embeddedWebServerUrl = null
+  embeddedWebServerStarting = null
+  embeddedWebCookieJar.clear()
+}
+
+async function getEmbeddedWebServerUrl(): Promise<string> {
+  if (embeddedWebServerUrl) return embeddedWebServerUrl
+  if (embeddedWebServerStarting) return embeddedWebServerStarting
+
+  embeddedWebServerStarting = new Promise((resolve, reject) => {
+    const webDir = getWebDir()
+    const server = http.createServer((req, res) => {
+      try {
+        const requestUrl = new URL(req.url || '/', 'http://127.0.0.1')
+        if (requestUrl.pathname.startsWith('/api/')) {
+          proxyEmbeddedApiRequest(req, res, requestUrl)
+          return
+        }
+        const decision = routeShogoRequest(requestUrl.pathname, webDir, (candidate) => {
+          try {
+            return fs.statSync(candidate).isFile()
+          } catch {
+            return false
+          }
+        })
+
+        if (decision.kind === 'not-found') {
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+          res.end(`Not Found: /${decision.urlPath}`)
+          return
+        }
+
+        const contentType = embeddedWebContentType(decision.absolutePath)
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        })
+        if (contentType.startsWith('text/html')) {
+          res.end(injectEmbeddedDesktopBridge(fs.readFileSync(decision.absolutePath, 'utf8')))
+          return
+        }
+        fs.createReadStream(decision.absolutePath).pipe(res)
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
+        res.end(err instanceof Error ? err.message : String(err))
+      }
+    })
+
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        server.close()
+        reject(new Error('Embedded web server did not bind to a TCP port'))
+        return
+      }
+      embeddedWebServer = server
+      embeddedWebServerUrl = `http://127.0.0.1:${address.port}`
+      console.log(`[Desktop] Embedded web server listening on ${embeddedWebServerUrl}`)
+      resolve(embeddedWebServerUrl)
+    })
+  })
+
+  return embeddedWebServerStarting
+}
+
 function getAppWindowUrl(pathWithQuery = '/'): string {
   if (isCloudMode) {
     return new URL(pathWithQuery, getCloudUrl()).toString()
@@ -596,6 +864,55 @@ function getAppWindowUrl(pathWithQuery = '/'): string {
     return new URL(pathWithQuery, devUrl).toString()
   }
   return new URL(pathWithQuery, 'shogo://app').toString()
+}
+
+function canCheckHttpUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function isHttpUrlReachable(rawUrl: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+
+    try {
+      const url = new URL(rawUrl)
+      const client = url.protocol === 'https:' ? https : http
+      const req = client.request(url, { method: 'GET', timeout: 750 }, (res) => {
+        res.resume()
+        finish((res.statusCode ?? 500) < 500)
+      })
+      req.on('timeout', () => {
+        req.destroy()
+        finish(false)
+      })
+      req.on('error', () => finish(false))
+      req.end()
+    } catch {
+      finish(false)
+    }
+  })
+}
+
+async function getEmbeddableAppWindowUrl(pathWithQuery = '/'): Promise<string> {
+  if (isCloudMode) return getAppWindowUrl(pathWithQuery)
+
+  if (IS_DEV) {
+    const devBaseUrl = process.env.DESKTOP_DEV_URL || `http://localhost:8081`
+    const devUrl = new URL(pathWithQuery, devBaseUrl).toString()
+    if (canCheckHttpUrl(devUrl) && await isHttpUrlReachable(new URL('/', devBaseUrl).toString())) return devUrl
+  }
+
+  return new URL(pathWithQuery, await getEmbeddedWebServerUrl()).toString()
 }
 
 function loadAppWindow(window: BrowserWindow, pathWithQuery = '/'): void {
@@ -615,7 +932,7 @@ function buildCodeWorkbenchPath(options: { projectId?: string; workspacePath?: s
 }
 
 function buildCodeWorkbenchChatPath(options: { projectId: string; workspacePath?: string }): string {
-  const params = new URLSearchParams({ tab: 'chat', embed: 'ide' })
+  const params = new URLSearchParams({ tab: 'chat-fullscreen', embed: 'ide' })
   if (options.workspacePath) params.set('workspacePath', options.workspacePath)
   return `/(app)/projects/${encodeURIComponent(options.projectId)}?${params.toString()}`
 }
@@ -635,7 +952,7 @@ async function openCodeWorkbenchWindow(
     {
       workspacePath: options.workspacePath,
       ownerWindowId: ownerWindow?.id,
-      chatUrl: getAppWindowUrl(buildCodeWorkbenchChatPath({
+      chatUrl: await getEmbeddableAppWindowUrl(buildCodeWorkbenchChatPath({
         projectId: options.projectId,
         workspacePath: options.workspacePath,
       })),
