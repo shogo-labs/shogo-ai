@@ -19,15 +19,16 @@ export interface IdeWorkspaceFolderContext {
   path: string
 }
 
-export interface IdeContextState {
-  activeFile?: IdeActiveFileContext
-  workspaceFolders: IdeWorkspaceFolderContext[]
-}
-
 export interface IdeFileResult {
   type: "file" | "folder"
   path: string
   name: string
+}
+
+export interface IdeContextState {
+  activeFile?: IdeActiveFileContext
+  workspaceFolders: IdeWorkspaceFolderContext[]
+  workspaceItems?: IdeFileResult[]
 }
 
 export interface IdeReadFileResult {
@@ -84,6 +85,7 @@ export function useIdeBridge(enabled: boolean) {
         setContext({
           activeFile: message.activeFile,
           workspaceFolders: Array.isArray(message.workspaceFolders) ? message.workspaceFolders : [],
+          workspaceItems: Array.isArray(message.workspaceItems) ? message.workspaceItems : [],
         })
         return
       }

@@ -187,6 +187,7 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
       name: folder.name,
       path: this.workspaceRelativePath(folder.uri),
     }))
+    const workspaceItems = await this.listFiles('')
     const storedContext = this.services.contextStore.list().map((item) => ({
       id: item.id,
       kind: item.kind === 'workspace' ? 'folder' : item.kind === 'active-file' ? 'active-file' : 'selection',
@@ -203,12 +204,14 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
       type: 'ide.context',
       activeFile,
       workspaceFolders,
+      workspaceItems,
       storedContext,
     })
     await this.view?.webview.postMessage({
       type: 'shogo.ide.context',
       activeFile,
       workspaceFolders,
+      workspaceItems,
       storedContext,
     })
   }
@@ -216,34 +219,70 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
   private async listFiles(query?: string): Promise<IdeFileResult[]> {
     const q = (query ?? '').trim().toLowerCase()
     const workspaceApi = vscode.workspace as any
-    const files: vscode.Uri[] = typeof workspaceApi.findFiles === 'function'
-      ? await workspaceApi.findFiles('**/*', '**/{node_modules,.git,dist,build,out,.next,coverage,target,vendor}/**', 300)
-      : []
+    const fileSystem = workspaceApi.fs
+    const fileType = (vscode as any).FileType ?? { File: 1, Directory: 2 }
+    const workspaceFolders = vscode.workspace.workspaceFolders ?? []
     const seen = new Set<string>()
+    const rootItems: IdeFileResult[] = []
     const folders = new Map<string, IdeFileResult>()
-    const items: IdeFileResult[] = []
+    const files: IdeFileResult[] = []
 
-    const addFile = (path: string): void => {
-      const normalized = path.replace(/\\/g, '/')
+    const matches = (path: string, name: string): boolean => {
+      return !q || path.toLowerCase().includes(q) || name.toLowerCase().includes(q)
+    }
+
+    const addItem = (type: IdeFileResult['type'], path: string, target: IdeFileResult[]): void => {
+      const normalized = path.replace(/\\/g, '/').replace(/^\/+/, '')
+      if (!normalized) return
       const name = normalized.split('/').filter(Boolean).pop() ?? normalized
-      if (q && !normalized.toLowerCase().includes(q) && !name.toLowerCase().includes(q)) return
-      if (!seen.has(`file:${normalized}`) && items.length < 60) {
-        seen.add(`file:${normalized}`)
-        items.push({ type: 'file', path: normalized, name })
-      }
-      const parts = normalized.split('/').filter(Boolean)
+      if (!matches(normalized, name)) return
+      const key = `${type}:${normalized}`
+      if (seen.has(key)) return
+      seen.add(key)
+      target.push({ type, path: normalized, name })
+    }
+
+    const addFolderAncestors = (path: string): void => {
+      const parts = path.replace(/\\/g, '/').split('/').filter(Boolean)
       for (let i = 1; i < parts.length; i += 1) {
         const folderPath = parts.slice(0, i).join('/')
         const folderName = parts[i - 1]
-        if (!folderPath || folders.has(folderPath)) continue
-        if (q && !folderPath.toLowerCase().includes(q) && !folderName.toLowerCase().includes(q)) continue
+        if (!folderPath || folders.has(folderPath) || !matches(folderPath, folderName)) continue
         folders.set(folderPath, { type: 'folder', path: folderPath, name: folderName })
       }
     }
 
-    for (const uri of files) addFile(this.workspaceRelativePath(uri))
+    if (fileSystem) {
+      for (const folder of workspaceFolders) {
+        try {
+          const entries: [string, number][] = await fileSystem.readDirectory(folder.uri)
+          for (const [name, type] of entries.sort(([a], [b]) => a.localeCompare(b))) {
+            const uri = vscode.Uri.joinPath(folder.uri, name)
+            const path = this.workspaceRelativePath(uri)
+            if (type === fileType.Directory) addItem('folder', path, rootItems)
+            else if (type === fileType.File) addItem('file', path, rootItems)
+          }
+        } catch {
+          continue
+        }
+      }
+    }
 
-    return [...Array.from(folders.values()).slice(0, 20), ...items].slice(0, 80)
+    const foundFiles: vscode.Uri[] = typeof workspaceApi.findFiles === 'function'
+      ? await workspaceApi.findFiles('**/*', '**/{node_modules,.git,dist,build,out,.next,coverage,target,vendor}/**', 1000)
+      : []
+
+    for (const uri of foundFiles) {
+      const path = this.workspaceRelativePath(uri)
+      addFolderAncestors(path)
+      addItem('file', path, files)
+      if (files.length >= 120) break
+    }
+
+    const folderItems = Array.from(folders.values()).filter((item) => !seen.has(`folder:${item.path}`)).slice(0, 80)
+    for (const item of folderItems) seen.add(`folder:${item.path}`)
+
+    return [...rootItems, ...folderItems, ...files].slice(0, 160)
   }
 
   private resolveWorkspaceUri(path: string): vscode.Uri | null {
@@ -369,14 +408,26 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
     function postToChat(message) {
       if (frame && frame.contentWindow) frame.contentWindow.postMessage(message, '*');
     }
+    const iframeToIdeMessages = new Set([
+      'shogo.ide.ready',
+      'shogo.ide.listFiles',
+      'shogo.ide.readFiles',
+      'shogo.ide.openFile',
+    ]);
+    const ideToIframeMessages = new Set([
+      'shogo.ide.hostReady',
+      'shogo.ide.context',
+      'shogo.ide.fileResults',
+      'shogo.ide.readFilesResult',
+    ]);
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
-      if (event.source === frame?.contentWindow && message.type.startsWith('shogo.ide.')) {
+      if (iframeToIdeMessages.has(message.type)) {
         vscode.postMessage(message);
         return;
       }
-      if (event.source !== frame?.contentWindow && message.type.startsWith('shogo.ide.')) {
+      if (ideToIframeMessages.has(message.type)) {
         postToChat(message);
       }
     });
