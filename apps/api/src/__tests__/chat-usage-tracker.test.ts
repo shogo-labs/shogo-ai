@@ -239,4 +239,48 @@ describe('trackChatStreamForBilling', () => {
     expect(consumeUsageCalls).toHaveLength(1)
     expect(hasSession(projectId)).toBe(false)
   })
+
+  test('teeChatStreamForBilling can hand the mirrored stream to a persistence tracker', async () => {
+    const projectId = 'proj-persist-tee'
+    const seen: string[] = []
+    const upstream = makeSseStream([
+      `data: ${JSON.stringify({ type: 'text-delta', delta: 'persisted ' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'text-delta', delta: 'reply' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'data-turn-complete' })}\n\n`,
+    ])
+
+    const clientStream = teeChatStreamForBilling(
+      upstream,
+      projectId,
+      'chat-persist-1',
+      async (stream, trackerProjectId, chatSessionId) => {
+        expect(trackerProjectId).toBe(projectId)
+        expect(chatSessionId).toBe('chat-persist-1')
+        const reader = stream.getReader()
+        const decoder = new TextDecoder()
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          seen.push(decoder.decode(value))
+        }
+      },
+    )
+
+    const reader = clientStream.getReader()
+    const decoder = new TextDecoder()
+    let body = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      body += decoder.decode(value)
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(body).toContain('persisted ')
+    expect(body).toContain('reply')
+    expect(seen.join('')).toContain('persisted ')
+    expect(seen.join('')).toContain('reply')
+  })
+
 })

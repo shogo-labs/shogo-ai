@@ -162,6 +162,11 @@ export function teeChatStreamForBilling(
   upstreamBody: ReadableStream<Uint8Array>,
   projectId: string,
   chatSessionId?: string | null,
+  tracker: (
+    stream: ReadableStream<Uint8Array>,
+    projectId: string,
+    chatSessionId?: string | null,
+  ) => Promise<void> | void = trackChatStreamForBilling,
 ): ReadableStream<Uint8Array> {
   const bgReader = upstreamBody.getReader()
   const trackingChunks: Uint8Array[] = []
@@ -225,7 +230,7 @@ export function teeChatStreamForBilling(
     },
   })
 
-  trackChatStreamForBilling(trackingStream, projectId, chatSessionId).catch((err) =>
+  Promise.resolve(tracker(trackingStream, projectId, chatSessionId)).catch((err) =>
     console.error(`[ChatUsageTracker] Tracking error for project ${projectId}:`, err),
   )
 

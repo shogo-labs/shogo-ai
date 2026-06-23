@@ -2146,6 +2146,54 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       if (currentSessionId) {
+        const assistantParts = Array.isArray(message.parts) ? message.parts : []
+        const assistantText = assistantParts
+          .filter((p: any) => p?.type === "text" && typeof p.text === "string")
+          .map((p: any) => p.text)
+          .join("")
+          .trim()
+        const assistantHasToolParts = assistantParts.some((p: any) =>
+          p?.type === "tool-invocation" ||
+          p?.type === "tool-result" ||
+          p?.type === "dynamic-tool" ||
+          typeof p?.type === "string" && p.type.startsWith("tool-")
+        )
+
+        if (assistantText || assistantHasToolParts) {
+          const sessionIdForPersist = currentSessionId
+          const partsForPersist = assistantParts.length > 0 ? JSON.stringify(assistantParts) : undefined
+          setTimeout(() => {
+            void (async () => {
+              try {
+                await sessionMessages?.loadPage({ sessionId: sessionIdForPersist }, { limit: 10, offset: 0 })
+              } catch (err) {
+                console.warn("[ChatPanel] Assistant fallback dedupe refresh failed:", err)
+              }
+
+              const existingAssistant = sessionMessages?.all?.some((m: any) => {
+                if (m.sessionId !== sessionIdForPersist || m.role !== "assistant") return false
+                if (assistantText && typeof m.content === "string" && m.content.trim() === assistantText) return true
+                return !!partsForPersist && m.parts === partsForPersist
+              })
+              if (existingAssistant) return
+
+              actions
+                .addMessage({
+                  sessionId: sessionIdForPersist,
+                  role: "assistant",
+                  content: assistantText,
+                  parts: partsForPersist,
+                  agent: "technical",
+                  model: selectedModel,
+                })
+                .then(() => {
+                  console.log("[ChatPanel] Persisted assistant message from onFinish fallback")
+                })
+                .catch((err) => console.warn("[ChatPanel] Failed to persist assistant fallback:", err))
+            })()
+          }, 750)
+        }
+
         refetchUsageWallet()
 
         const toolCalls = extractToolCalls(message)

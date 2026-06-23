@@ -38,7 +38,7 @@ import * as workspaceModelsService from './services/workspace-models.service'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
-import { projectChatRoutes } from './routes/project-chat'
+import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -2723,7 +2723,33 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         // takes ownership of `closeSession`; mark the handoff so the
         // finally guard below does not double-close.
         if (isChatStream && response.ok) {
-          outBody = teeChatStreamForBilling(outBody, projectId, chatSessionIdHeader)
+          const trackerProject = chatSessionIdHeader
+            ? await prisma.project.findUnique({
+                where: { id: projectId },
+                select: { id: true, workspaceId: true },
+              }).catch(() => null)
+            : null
+
+          if (trackerProject) {
+            let parsedBodyForTracker: any = {}
+            if (requestBody) {
+              try {
+                parsedBodyForTracker = JSON.parse(new TextDecoder().decode(requestBody))
+              } catch {
+                parsedBodyForTracker = {}
+              }
+            }
+            outBody = teeChatStreamForBilling(
+              outBody,
+              projectId,
+              chatSessionIdHeader,
+              (stream) => trackUsageFromStream(stream, parsedBodyForTracker, trackerProject, {
+                chatSessionId: chatSessionIdHeader,
+              }),
+            )
+          } else {
+            outBody = teeChatStreamForBilling(outBody, projectId, chatSessionIdHeader)
+          }
           billingSessionHandedOff = true
         }
         proxyClientSignal?.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
