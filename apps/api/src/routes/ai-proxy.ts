@@ -2453,8 +2453,17 @@ export function aiProxyRoutes() {
       }
     }
 
-    // Pre-check: reject if workspace has no included USD left (skip in local dev)
-    if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+    // Internal, non-billable completions (e.g. server-initiated title
+    // generation) must NOT be balance-gated: the preflight allocates a free
+    // wallet for the token's workspace, and the server's own proxy token uses a
+    // synthetic workspace that has no Workspace row, so `allocateFreeWallet`
+    // would throw on the credit-ledger FK. Resolve the tag before the preflight
+    // and skip it for internal usage.
+    const internalUsage = resolveInternalUsage(c, tokenPayload)
+
+    // Pre-check: reject if workspace has no included USD left (skip in local dev
+    // and for internal, non-billable completions)
+    if (!isLocalDev && !internalUsage && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
         {
@@ -2475,7 +2484,6 @@ export function aiProxyRoutes() {
       // / instance-tunnel) so accumulateUsage can route to the right
       // `(projectId, chatSessionId)` billing-session slot.
       const chatSessionId = c.req.header('x-chat-session-id') || null
-      const internalUsage = resolveInternalUsage(c, tokenPayload)
 
       // Resolve agent-mode aliases (basic/advanced) to real model names
       if (request.model) {
@@ -2661,7 +2669,11 @@ export function aiProxyRoutes() {
       }
     }
 
-    if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+    // Internal, non-billable completions skip the balance preflight (see
+    // chat/completions for the credit-ledger FK rationale).
+    const internalUsage = resolveInternalUsage(c, tokenPayload)
+
+    if (!isLocalDev && !internalUsage && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
         { error: { message: 'Usage limit reached.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
@@ -2676,7 +2688,6 @@ export function aiProxyRoutes() {
         return c.json({ error: { message: 'model is required', type: 'invalid_request_error' } }, 400)
       }
       const chatSessionId = c.req.header('x-chat-session-id') || null
-      const internalUsage = resolveInternalUsage(c, tokenPayload)
 
       const { resolvedModel } = resolveAgentModel(requestedModel)
       const modelConfig = resolveModel(resolvedModel)
@@ -2968,8 +2979,12 @@ export function aiProxyRoutes() {
       }
     }
 
-    // Pre-check usage balance (skip in local dev)
-    if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+    // Internal, non-billable completions skip the balance preflight (see
+    // chat/completions for the credit-ledger FK rationale).
+    const internalUsage = resolveInternalUsage(c, tokenPayload)
+
+    // Pre-check usage balance (skip in local dev and for internal usage)
+    if (!isLocalDev && !internalUsage && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
         { type: 'error', error: { type: 'billing_error', message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', ...usageLimit } },
@@ -2984,7 +2999,6 @@ export function aiProxyRoutes() {
       const requestModel = parsed.model || 'advanced'
       const isStream = !!parsed.stream
       const chatSessionId = c.req.header('x-chat-session-id') || null
-      const internalUsage = resolveInternalUsage(c, tokenPayload)
 
       const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
