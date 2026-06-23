@@ -239,22 +239,31 @@ export const invitationHooks: InvitationHooks = {
     if (!input.status) input.status = "pending"
     if (!input.invitedBy && userId) input.invitedBy = userId
 
-    // Duplicate check
-    const existingWhere: any = {
-      email: input.email?.toLowerCase(),
-      status: "pending",
-    }
+    if (input.email) input.email = input.email.toLowerCase()
+
+    // Duplicate check. Only an active (non-expired) pending invite blocks a
+    // re-invite; a pending row whose expiresAt is in the past is treated as
+    // expired (consistent with the UI and project-auth allowlist).
+    const now = new Date()
+    const scopeWhere: any = { email: input.email }
     if (projectId) {
-      existingWhere.projectId = projectId
+      scopeWhere.projectId = projectId
     } else {
-      existingWhere.workspaceId = input.workspaceId
+      scopeWhere.workspaceId = input.workspaceId
     }
-    const existing = await ctx.prisma.invitation.findFirst({ where: existingWhere })
+
+    const existing = await ctx.prisma.invitation.findFirst({
+      where: { ...scopeWhere, status: "pending", expiresAt: { gt: now } },
+    })
     if (existing) {
       return { ok: false, error: { code: "invitation_exists", message: "An invitation for this email is already pending" } }
     }
 
-    if (input.email) input.email = input.email.toLowerCase()
+    // Clean up stale pending-but-expired rows for this email + scope so we
+    // don't accumulate duplicate invitations (no DB unique constraint exists).
+    await ctx.prisma.invitation.deleteMany({
+      where: { ...scopeWhere, status: "pending", expiresAt: { lte: now } },
+    })
 
     return { ok: true, data: input }
   },
