@@ -762,7 +762,14 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
       }
 
       if (!res.ok) {
-        return textResult(buildComposioErrorResult(res.errMsg, schema.slug))
+        const built = buildComposioErrorResult(res.errMsg, schema.slug)
+        // Surface the classification in logs so we can track which integrations
+        // fail and why (auth vs notconnected vs notfound vs validation) — this
+        // is how we measure WS9 against the prod error signatures.
+        console.warn(
+          `[Composio] ${schema.slug} failed (kind=${built.errorKind}): ${res.errMsg}`,
+        )
+        return textResult(built)
       }
 
       // Configurable so large integration payloads (e.g. Shopify product

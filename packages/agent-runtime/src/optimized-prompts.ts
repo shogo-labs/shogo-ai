@@ -10,6 +10,8 @@
  * Source: 14 optimized programs from DSPy bootstrap optimization
  */
 
+import { isSearchEnabled } from './search-flag'
+
 export const OPTIMIZED_CANVAS_EXAMPLES = ``
 
 export const OPTIMIZED_MEMORY_GUIDE = `### Memory Decision Examples
@@ -69,7 +71,25 @@ ALWAYS use \`read_file\` then \`edit_file\` on AGENTS.md (which contains Identit
 **Don't update when:**
 - "User said: 'What's the weather like?' Agent responded with weather info." → No update (trivial, one-off conversation)`
 
-export const OPTIMIZED_TOOL_PLANNING_GUIDE = `## Tool Planning
+/**
+ * Build the tool-planning guide. The `search` tool is only registered when
+ * SHOGO_SEARCH_ENABLED=1, so when it's off we must not advertise it (else the
+ * model calls a non-existent tool — "Tool search not found"). When disabled,
+ * uploaded-file discovery falls back to `read_file` + `exec`.
+ */
+export function buildToolPlanningGuide(searchEnabled: boolean = isSearchEnabled()): string {
+  const findFiles = searchEnabled
+    ? `- **search** — Semantic search across all workspace content; use \`source: "files"\` to search only uploaded files (supports .txt, .csv, .md)
+- **read_file** — Read a specific file (use path like \`files/myfile.txt\`, or just \`my-archive.zip\` for an upload at the workspace root)`
+    : `- **read_file** — Read a specific file (use path like \`files/myfile.txt\`, or just \`my-archive.zip\` for an upload at the workspace root)`
+  const accessLine = searchEnabled
+    ? 'Use `search` or `read_file` to access uploaded file content.'
+    : 'Use `read_file` (and `exec` with `ls files/`) to access uploaded file content.'
+  const findExample = searchEnabled
+    ? '- "Find revenue numbers in my data" → `search({ source: "files" })` (~1 iteration)'
+    : '- "Find revenue numbers in my data" → `exec({ command: \'ls files/\' }), read_file` (~1 iteration)'
+
+  return `## Tool Planning
 
 Before executing, plan the full tool sequence upfront. Complete complex tasks
 in fewer LLM iterations by batching independent tool calls.
@@ -84,12 +104,11 @@ Uploaded Files") — always trust that listing over assumptions.
 When a user asks about uploaded files, references their data, or you need to find
 information they've shared:
 
-- **search** — Semantic search across all workspace content; use \`source: "files"\` to search only uploaded files (supports .txt, .csv, .md)
-- **read_file** — Read a specific file (use path like \`files/myfile.txt\`, or just \`my-archive.zip\` for an upload at the workspace root)
+${findFiles}
 - **exec** — Run \`ls files/\` to see what's in the files directory; check the "Workspace Uploaded Files" section for any zip archives at the root
 - **exec** with \`unzip <name>.zip\` — Extract a zip archive in place. Pair with \`-d <dir>\` to extract into a subfolder.
 
-Use \`search\` or \`read_file\` to access uploaded file content. Do NOT assume an upload is
+${accessLine} Do NOT assume an upload is
 missing just because \`ls files/\` is empty — also check the workspace root for zip archives.
 
 ### Examples
@@ -97,10 +116,14 @@ missing just because \`ls files/\` is empty — also check the workspace root fo
 - "Check the deploy log and write a summary report" → \`read_file, write_file\` (~1 iteration)
 - "Convert data.csv to JSON format and save it" → \`read_file, exec, write_file\` (~1 iteration)
 - "What's in the file I uploaded?" → \`exec({ command: 'ls files/' }), read_file\` (~1 iteration)
-- "Find revenue numbers in my data" → \`search({ source: "files" })\` (~1 iteration)
+${findExample}
 - "Summarize the CSV I uploaded" → \`read_file\` (~1 iteration)
 - "I uploaded a zip, take a look" → \`exec({ command: 'unzip -o <name>.zip' })\` then explore the extracted contents (~1 iteration)
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)`
+}
+
+/** Default tool-planning guide (search gated by env at module load). */
+export const OPTIMIZED_TOOL_PLANNING_GUIDE = buildToolPlanningGuide()
 
 export const OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE = `## Constraint Awareness
 

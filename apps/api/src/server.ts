@@ -2132,8 +2132,21 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       ? getPreviewUrl(projectId)
       : `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
 
+    // A Knative Service reports Ready=True even when scaled to zero
+    // (actualReplicas=0). Returning ready:true for a cold service sends the
+    // user to a URL that may show "site can't be reached" until the pod cold-
+    // starts (prod: ~121 "can't be reached"/5d). Only fast-path when the pod
+    // is actually serving; if it's Ready but scaled to zero, actively probe
+    // (which wakes it via the Knative activator) and fall through to the
+    // wake/wait path if it doesn't respond in time.
+    let servingNow = status.exists && status.ready && status.replicas > 0
+    if (status.exists && status.ready && status.replicas === 0) {
+      console.log(`[sandbox/url] ${projectId} is Ready but scaled to zero — probing to wake before reporting ready`)
+      servingNow = await manager.healthCheck(projectId)
+    }
+
     // If pod is already running, return immediately
-    if (status.exists && status.ready) {
+    if (servingNow) {
       console.log(`[sandbox/url] Returning ready response with url=${previewUrl}`)
 
       // Auto-capture thumbnail if missing (fire-and-forget)
@@ -2176,6 +2189,10 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         getProjectPodUrl(projectId).catch(err => {
           console.error(`[Runtime] Background pod creation failed for ${projectId}:`, err)
         })
+      } else if (status.ready && status.replicas === 0) {
+        // Cold (scaled-to-zero) pod: kick a background probe to wake it via
+        // the activator so the client's next poll finds it serving.
+        manager.healthCheck(projectId).catch(() => {})
       }
       
       console.log(`[sandbox/url] Returning non-blocking response (wait=false) with url=${previewUrl}`)

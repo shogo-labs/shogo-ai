@@ -8,6 +8,8 @@
  * Workers report results via task notifications.
  */
 
+import { isSearchEnabled } from './search-flag'
+
 export const COORDINATOR_SYSTEM_PROMPT = `## Coordinator Mode
 
 You are operating in **coordinator mode**. Your role is to orchestrate workers, not to do work directly.
@@ -45,7 +47,7 @@ You are operating in **coordinator mode**. Your role is to orchestrate workers, 
 - Compare multiple agents' outputs when approaching ambiguous problems.`
 
 export const COORDINATOR_READONLY_TOOLS = new Set([
-  'read_file', 'search', 'impact_radius',
+  'read_file', ...(isSearchEnabled() ? ['search'] : []), 'impact_radius',
   'web', 'browser', 'memory_read', 'memory_search',
   'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
   'team_create', 'team_delete', 'task_create', 'task_get', 'task_list', 'task_update', 'send_team_message',

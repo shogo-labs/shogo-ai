@@ -16,6 +16,7 @@ import { join } from 'path'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
+import { isSearchEnabled } from './search-flag'
 import type { ToolContext } from './gateway-tools'
 import { createBrowserTool, textResult } from './gateway-tools'
 
@@ -119,23 +120,38 @@ export interface SubagentStreamCallbacks {
 // Built-in Subagent Definitions
 // ---------------------------------------------------------------------------
 
-export const EXPLORE_SYSTEM_PROMPT = `You are an exploration subagent. Search and analyze the codebase efficiently.
+/**
+ * Build the explore subagent system prompt. `search` is only registered when
+ * SHOGO_SEARCH_ENABLED=1; when off we must not tell the subagent to use it
+ * (it would call a tool that isn't bound and get "Tool search not found").
+ * exec + rg/grep covers code search in that case.
+ */
+export function buildExploreSystemPrompt(searchEnabled: boolean = isSearchEnabled()): string {
+  const toolsLine = searchEnabled
+    ? 'read_file, exec, search, web, impact_radius — exploration and analysis tools.'
+    : 'read_file, exec, web, impact_radius — exploration and analysis tools.'
+  const searchGuideline = searchEnabled
+    ? '- Use search for semantic code search.\n'
+    : ''
+  return `You are an exploration subagent. Search and analyze the codebase efficiently.
 
 ## Your Scope
 Read-only codebase exploration. Find files, search for patterns, read code, and return specific findings with file references.
 
 ## Available Tools
-read_file, exec, search, web, impact_radius — exploration and analysis tools.
+${toolsLine}
 
 ## Guidelines
 - Use exec to run shell commands (e.g. find, rg, ls) for file discovery and searching.
-- Use search for semantic code search.
-- Read files to understand implementation details.
+${searchGuideline}- Read files to understand implementation details.
 - Use web to look up documentation or external references when needed.
 - Use impact_radius to check blast radius for specific files when assessing change scope.
 - Be thorough but concise in your findings.
 - Always include specific file paths and line references.
 - Return a structured summary of what you found.`
+}
+
+export const EXPLORE_SYSTEM_PROMPT = buildExploreSystemPrompt()
 
 export const GENERAL_PURPOSE_SYSTEM_PROMPT = `You are a general-purpose subagent. Complete the given task using all available tools.
 
@@ -153,7 +169,7 @@ export const CODE_REVIEWER_SYSTEM_PROMPT = `You are a code review subagent. Anal
 2. Use \`review_context()\` for a full review bundle: structural subgraph, source hunks, affected flows, and auto-generated guidance.
 3. Use \`impact_radius({ files: [...] })\` to check blast radius for specific files if needed.
 4. Read specific files with \`read_file\` for deeper inspection of risky areas.
-5. Use \`search\` or \`exec\` to trace references or find related code.
+5. Use \`exec\` (rg/grep) or \`read_file\` to trace references or find related code.
 
 ## Review Priorities
 - Untested functions with high risk scores — recommend adding tests.
@@ -373,8 +389,11 @@ export function getBuiltinSubagentConfig(
       return {
         name: 'explore',
         description: 'Fast read-only codebase exploration agent',
-        systemPrompt: EXPLORE_SYSTEM_PROMPT,
-        toolNames: ['read_file', 'exec', 'search', 'web', 'impact_radius'],
+        systemPrompt: buildExploreSystemPrompt(),
+        // Only advertise `search` when it's actually registered (SHOGO_SEARCH_ENABLED=1).
+        toolNames: isSearchEnabled()
+          ? ['read_file', 'exec', 'search', 'web', 'impact_radius']
+          : ['read_file', 'exec', 'web', 'impact_radius'],
         disallowedTools: ['task', 'skill'],
         model: 'claude-haiku-4-5',
         maxTurns: 5,

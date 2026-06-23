@@ -9,10 +9,48 @@
 
 import { Hono } from 'hono'
 import type { Context } from 'hono'
+import { join, resolve } from 'path'
 import { validatePodToken } from '../lib/k8s-auth'
-import { recordCheckpointForCommit } from '../services/checkpoint.service'
+import {
+  recordCheckpointForCommit,
+  listCheckpoints as listCheckpointsSvc,
+  getCheckpoint as getCheckpointSvc,
+  rollback as rollbackSvc,
+  getDiff as getDiffSvc,
+} from '../services/checkpoint.service'
+import { prisma } from '../lib/prisma'
+import { hydrateRepo } from '../services/git-repo-store'
 
 const app = new Hono()
+
+// Resolve the workspaces root the same way server.ts does so the internal
+// checkpoint routes operate on the same on-disk repos as the public ones.
+const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(process.cwd(), 'workspaces')
+
+function internalWorkspacePath(projectId: string): string {
+  return join(WORKSPACES_DIR, projectId)
+}
+
+/** Folder-linked projects have no Shogo-managed git → typed 409 (mirrors public route). */
+function externalModeResponse(c: Context) {
+  return c.json(
+    {
+      error: {
+        code: 'checkpoints_disabled_in_external_mode',
+        message:
+          "Checkpoints are disabled for folder-linked projects. Use your own git workflow — Shogo doesn't manage the repo.",
+      },
+    },
+    409,
+  )
+}
+
+async function loadProjectForCheckpoints(projectId: string) {
+  return prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, workingMode: true } as any,
+  })
+}
 
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
 const RATE_LIMIT_MAX = 5
@@ -631,6 +669,118 @@ app.post('/projects/:projectId/checkpoints/record', async (c) => {
   } catch (err: any) {
     console.error(`[Internal] Failed to record checkpoint for ${projectId}:`, err.message)
     return c.json({ error: 'Failed to record checkpoint' }, 500)
+  }
+})
+
+/**
+ * GET  /api/internal/projects/:projectId/checkpoints                  — list
+ * GET  /api/internal/projects/:projectId/checkpoints/:checkpointId    — detail
+ * GET  /api/internal/projects/:projectId/checkpoints/:checkpointId/diff — diff vs HEAD
+ * POST /api/internal/projects/:projectId/checkpoints/:checkpointId/rollback
+ *
+ * Cluster-internal mirror of the public checkpoint routes so the agent-runtime
+ * pod can let the agent SEE and USE the existing auto-checkpoint/rollback
+ * system (fixes the "no git history" lie + hand-reverts). Auth: K8s SA token
+ * (cluster) OR `x-runtime-token` (local desktop). Folder-linked (external)
+ * projects return a typed 409 the agent surfaces gracefully.
+ */
+app.get('/projects/:projectId/checkpoints', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  try {
+    const project = await loadProjectForCheckpoints(projectId)
+    if (!project) return c.json({ error: 'Project not found' }, 404)
+    if ((project as any).workingMode === 'external') return externalModeResponse(c)
+
+    const limit = Math.min(parseInt(c.req.query('limit') || '20', 10) || 20, 100)
+    const checkpoints = await listCheckpointsSvc(projectId, { limit })
+    return c.json({ ok: true, checkpoints })
+  } catch (err: any) {
+    console.error(`[Internal] checkpoint list for ${projectId} failed:`, err.message)
+    return c.json({ error: 'Failed to list checkpoints' }, 500)
+  }
+})
+
+app.get('/projects/:projectId/checkpoints/:checkpointId', async (c) => {
+  const projectId = c.req.param('projectId')
+  const checkpointId = c.req.param('checkpointId')
+  if (!projectId || !checkpointId) return c.json({ error: 'Missing params' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  try {
+    const project = await loadProjectForCheckpoints(projectId)
+    if (!project) return c.json({ error: 'Project not found' }, 404)
+    if ((project as any).workingMode === 'external') return externalModeResponse(c)
+
+    const checkpoint = await getCheckpointSvc(checkpointId)
+    if (!checkpoint) return c.json({ error: 'Checkpoint not found' }, 404)
+    return c.json({ ok: true, checkpoint })
+  } catch (err: any) {
+    console.error(`[Internal] checkpoint get for ${projectId} failed:`, err.message)
+    return c.json({ error: 'Failed to get checkpoint' }, 500)
+  }
+})
+
+app.get('/projects/:projectId/checkpoints/:checkpointId/diff', async (c) => {
+  const projectId = c.req.param('projectId')
+  const checkpointId = c.req.param('checkpointId')
+  if (!projectId || !checkpointId) return c.json({ error: 'Missing params' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  try {
+    const project = await loadProjectForCheckpoints(projectId)
+    if (!project) return c.json({ error: 'Project not found' }, 404)
+    if ((project as any).workingMode === 'external') return externalModeResponse(c)
+
+    const workspacePath = internalWorkspacePath(projectId)
+    await hydrateRepo(projectId, workspacePath).catch((err) =>
+      console.warn(`[Internal] hydrate for ${projectId} failed:`, err?.message ?? err),
+    )
+    const diff = await getDiffSvc(workspacePath, checkpointId, c.req.query('to'))
+    if (!diff) return c.json({ error: 'Checkpoint not found' }, 404)
+    return c.json({ ok: true, diff })
+  } catch (err: any) {
+    console.error(`[Internal] checkpoint diff for ${projectId} failed:`, err.message)
+    return c.json({ error: 'Failed to get diff' }, 500)
+  }
+})
+
+app.post('/projects/:projectId/checkpoints/:checkpointId/rollback', async (c) => {
+  const projectId = c.req.param('projectId')
+  const checkpointId = c.req.param('checkpointId')
+  if (!projectId || !checkpointId) return c.json({ error: 'Missing params' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  try {
+    const project = await loadProjectForCheckpoints(projectId)
+    if (!project) return c.json({ error: 'Project not found' }, 404)
+    if ((project as any).workingMode === 'external') return externalModeResponse(c)
+
+    const body = (await c.req.json().catch(() => ({}))) as { includeDatabase?: boolean }
+    const workspacePath = internalWorkspacePath(projectId)
+    await hydrateRepo(projectId, workspacePath).catch((err) =>
+      console.warn(`[Internal] hydrate for ${projectId} failed:`, err?.message ?? err),
+    )
+    const result = await rollbackSvc({
+      projectId,
+      workspacePath,
+      checkpointId,
+      includeDatabase: body.includeDatabase === true,
+      createdBy: 'agent',
+    })
+    if (!result.success) {
+      return c.json({ error: result.error || 'Rollback failed' }, 400)
+    }
+    return c.json({
+      ok: true,
+      rolledBackTo: result.previousCheckpoint,
+      newCheckpoint: result.newCheckpoint,
+    })
+  } catch (err: any) {
+    console.error(`[Internal] checkpoint rollback for ${projectId} failed:`, err.message)
+    return c.json({ error: 'Failed to rollback' }, 500)
   }
 })
 

@@ -10,6 +10,7 @@
  */
 
 import { statSync } from 'fs'
+import { posix } from 'path'
 
 export interface FileReadRecord {
   path: string
@@ -24,6 +25,40 @@ export interface FileReadRecord {
 export class FileStateCache {
   private reads = new Map<string, FileReadRecord>()
   private editedThisTurn = new Set<string>()
+  private workspaceDir?: string
+
+  constructor(workspaceDir?: string) {
+    if (workspaceDir) this.setWorkspaceDir(workspaceDir)
+  }
+
+  /**
+   * Set the workspace root so absolute paths under it collapse to the same
+   * canonical key as their relative spelling. Safe to call after construction
+   * (the gateway constructs the cache as a field initializer, before it knows
+   * the workspace dir).
+   */
+  setWorkspaceDir(dir: string): void {
+    this.workspaceDir = dir.replace(/\\/g, '/').replace(/\/+$/, '')
+  }
+
+  /**
+   * Canonicalize a path so different spellings of the SAME file map to one
+   * cache key. This is the fix for the #1 production tool error
+   * ("File has not been read yet"): the agent would read `src/foo.ts` and
+   * then edit `./src/foo.ts` (or a backslash / absolute variant) and the
+   * read-before-edit guard, keyed on the raw string, wouldn't find the read.
+   * We strip a leading workspace prefix, normalize separators, and collapse
+   * `./` / `../` / duplicate slashes via posix.normalize.
+   */
+  private normalizeKey(path: string): string {
+    let s = path.replace(/\\/g, '/')
+    if (this.workspaceDir && (s === this.workspaceDir || s.startsWith(this.workspaceDir + '/'))) {
+      s = s.slice(this.workspaceDir.length + 1)
+    }
+    s = posix.normalize(s)
+    if (s.startsWith('./')) s = s.slice(2)
+    return s
+  }
 
   /**
    * Mark a file as edited/written during the current agent turn.
@@ -32,7 +67,7 @@ export class FileStateCache {
    * of each top-level runAgentLoop call.
    */
   markEditedThisTurn(path: string): void {
-    this.editedThisTurn.add(path)
+    this.editedThisTurn.add(this.normalizeKey(path))
   }
 
   /** Return the list of files edited in the current turn. */
@@ -52,12 +87,13 @@ export class FileStateCache {
     partial?: { offset: number; limit: number },
     content?: string,
   ): void {
-    const existing = this.reads.get(path)
+    const key = this.normalizeKey(path)
+    const existing = this.reads.get(key)
     if (existing && !partial && existing.partial) {
       // Full read supersedes a previous partial read
     }
-    this.reads.set(path, {
-      path, mtime: Math.floor(mtime), lineCount, readAt: Date.now(), partial,
+    this.reads.set(key, {
+      path: key, mtime: Math.floor(mtime), lineCount, readAt: Date.now(), partial,
       content: partial ? undefined : content,
     })
   }
@@ -67,16 +103,17 @@ export class FileStateCache {
    * within the same turn (instead of just invalidating).
    */
   recordEdit(path: string, content: string, mtime: number): void {
+    const key = this.normalizeKey(path)
     const lineCount = content.split('\n').length
-    this.reads.set(path, { path, mtime: Math.floor(mtime), lineCount, readAt: Date.now(), content })
+    this.reads.set(key, { path: key, mtime: Math.floor(mtime), lineCount, readAt: Date.now(), content })
   }
 
   hasBeenRead(path: string): boolean {
-    return this.reads.has(path)
+    return this.reads.has(this.normalizeKey(path))
   }
 
   getRecord(path: string): FileReadRecord | undefined {
-    return this.reads.get(path)
+    return this.reads.get(this.normalizeKey(path))
   }
 
   /**
@@ -85,7 +122,7 @@ export class FileStateCache {
    * stat'd (deleted) or hasn't been read.
    */
   isStale(path: string, resolvedPath: string): boolean {
-    const record = this.reads.get(path)
+    const record = this.reads.get(this.normalizeKey(path))
     if (!record) return false
     try {
       const currentMtime = Math.floor(statSync(resolvedPath).mtimeMs)
@@ -97,7 +134,7 @@ export class FileStateCache {
 
   /** Invalidate a cached entry (call after writes/edits/deletes). */
   invalidate(path: string): void {
-    this.reads.delete(path)
+    this.reads.delete(this.normalizeKey(path))
   }
 
   /** Number of tracked files. */
@@ -140,7 +177,7 @@ export class FileStateCache {
    * starts with its own empty edit set.
    */
   clone(): FileStateCache {
-    const copy = new FileStateCache()
+    const copy = new FileStateCache(this.workspaceDir)
     for (const [key, value] of this.reads) {
       copy.reads.set(key, { ...value })
     }

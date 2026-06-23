@@ -1807,6 +1807,113 @@ GMAIL_FETCH_EMAILS: {
 }
 
 // ---------------------------------------------------------------------------
+// Fixture: Composio error surfacing (WS9)
+// The toolkit is connected, but the action fails upstream with a *classified*
+// error (the same shape buildComposioErrorResult emits in prod: error +
+// errorKind + authExpired/needsScope + hint). Reproduces the prod signature
+// where integrations fail (e.g. YouTube upload 99% fail) and the agent either
+// surfaces nothing actionable or loops retrying the dead call. The eval asserts
+// the agent relays the reconnect/auth guidance and does NOT hammer the tool.
+// ---------------------------------------------------------------------------
+
+export const COMPOSIO_AUTH_ERROR_MOCKS: ToolMockMap = {
+  search_integrations: {
+    type: 'static',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'gmail',
+      results: [{ name: 'gmail', description: 'Gmail — send, read, and manage emails', source: 'composio' }],
+      message: 'Found 1 integration(s).',
+    },
+  },
+  connect: {
+    type: 'static',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      integration: 'gmail',
+      toolCount: 2,
+      tools: ['GMAIL_SEND_EMAIL', 'GMAIL_FETCH_EMAILS'],
+      authStatus: 'active',
+      message: 'Installed gmail with 2 tool(s). Auth is active.',
+    },
+  },
+  GMAIL_SEND_EMAIL: {
+    type: 'static',
+    description: 'Send an email via Gmail.',
+    paramKeys: ['to', 'subject', 'body'],
+    hidden: true,
+    // Shape mirrors buildComposioErrorResult() for an expired OAuth session.
+    response: {
+      error: 'Tool "GMAIL_SEND_EMAIL" failed: 401 invalid_grant — the OAuth token is expired or has been revoked.',
+      errorKind: 'auth',
+      authExpired: true,
+      hint: "The integration's OAuth session is expired or invalid. Ask the user to reconnect the integration, then retry.",
+    },
+  },
+  GMAIL_FETCH_EMAILS: {
+    type: 'static',
+    paramKeys: ['query', 'max_results'],
+    hidden: true,
+    response: {
+      error: 'Tool "GMAIL_FETCH_EMAILS" failed: 401 invalid_grant — the OAuth token is expired or has been revoked.',
+      errorKind: 'auth',
+      authExpired: true,
+      hint: "The integration's OAuth session is expired or invalid. Ask the user to reconnect the integration, then retry.",
+    },
+  },
+}
+
+export const COMPOSIO_NOTFOUND_ERROR_MOCKS: ToolMockMap = {
+  search_integrations: {
+    type: 'static',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'youtube',
+      results: [{ name: 'youtube', description: 'YouTube — upload and manage videos', source: 'composio' }],
+      message: 'Found 1 integration(s).',
+    },
+  },
+  connect: {
+    type: 'static',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      integration: 'youtube',
+      toolCount: 2,
+      tools: ['YOUTUBE_MULTIPART_UPLOAD_VIDEO', 'YOUTUBE_LIST_CHANNEL_VIDEOS'],
+      authStatus: 'active',
+      message: 'Installed youtube with 2 tool(s). Auth is active.',
+    },
+  },
+  // The agent invents / mis-remembers a slug that isn't bound. Persistent
+  // notfound (after the runtime's single transient retry) carries the valid
+  // bound tools so the agent can self-correct instead of re-calling the
+  // phantom slug.
+  YOUTUBE_UPLOAD_VIDEO: {
+    type: 'static',
+    paramKeys: ['videoFilePath', 'title'],
+    hidden: true,
+    response: {
+      error: 'Tool "YOUTUBE_UPLOAD_VIDEO" failed: Unable to retrieve tool with slug YOUTUBE_UPLOAD_VIDEO',
+      errorKind: 'notfound',
+      hint: 'The target resource was not found, or the tool slug is not available. Verify the id/handle (do not guess ids), or use search_integrations/connect to find the correct tool. Do not repeat the same call unchanged. Valid bound tools for this integration: YOUTUBE_MULTIPART_UPLOAD_VIDEO, YOUTUBE_LIST_CHANNEL_VIDEOS.',
+    },
+  },
+  YOUTUBE_MULTIPART_UPLOAD_VIDEO: {
+    type: 'static',
+    paramKeys: ['videoFilePath', 'title', 'description'],
+    hidden: true,
+    response: {
+      data: { video_id: 'yt_abc123', status: 'uploaded', title: 'My Video' },
+      successful: true,
+    },
+  },
+}
+
+// ---------------------------------------------------------------------------
 // Fixture: Composio GitHub PR — skill auto-save eval (Composio Case 6)
 // Full discovery flow + write_file to save skill
 // ---------------------------------------------------------------------------
