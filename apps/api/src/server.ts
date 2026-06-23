@@ -5695,10 +5695,14 @@ function fallbackGenerateProjectName(prompt: string): string {
 }
 
 app.post('/api/generate-project-name', async (c) => {
+  // Captured outside the try so the catch can build a prompt-based heuristic
+  // without re-reading the (already-consumed) request body.
+  let promptForFallback = ''
   try {
     const authCtx = c.get('auth') as any
     const authUserId = authCtx?.userId
     const { prompt, workspaceId, projectId } = await c.req.json()
+    if (typeof prompt === 'string') promptForFallback = prompt
 
     if (!prompt || typeof prompt !== 'string') {
       return c.json({ error: 'Prompt is required' }, 400)
@@ -5793,8 +5797,7 @@ Examples:
     return c.json({ name, description })
   } catch (error: any) {
     console.error('[/api/generate-project-name] Error:', error)
-    const body = await c.req.json().catch(() => ({ prompt: '' }))
-    const name = fallbackGenerateProjectName(body.prompt || '')
+    const name = fallbackGenerateProjectName(promptForFallback)
     return c.json({ name, description: '' })
   }
 })
@@ -8018,6 +8021,22 @@ await (async () => {
     }
   } catch (err: any) {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
+  }
+})()
+
+// Self-provision in-process AI proxy credentials so the API server can reach
+// its own AI proxy for server-initiated LLM surfaces (title generation, in-app
+// assistant, voice translator). Without this `resolveLanguageModel` returns
+// null for the default custom title model (`hoshi-1.0`) and every
+// `/api/generate-project-name` call falls back to a heuristic name. Respects
+// any externally-configured AI_PROXY_URL/AI_PROXY_TOKEN. Must run before the
+// title-model loader (and before serving requests).
+await (async () => {
+  try {
+    const { ensureInternalProxyConfig } = await import('./lib/internal-proxy-config')
+    await ensureInternalProxyConfig()
+  } catch (err: any) {
+    console.log('[InternalProxy] Could not self-provision proxy creds (non-fatal):', err?.message ?? err)
   }
 })()
 
