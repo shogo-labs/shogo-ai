@@ -54,6 +54,21 @@ function builtSomethingToServe(r: EvalResult): boolean {
   )
 }
 
+/** True if the agent dismissed a reachability complaint with "works on my end". */
+function claimedWorksOnMyEnd(r: EvalResult): boolean {
+  return /works (on|from|at) my end|works for me|it'?s working (on my|fine)|seems? fine on my/i.test(r.responseText)
+}
+
+/** True if the agent steered the user to Publish / a shogo.one URL. */
+function mentionedPublish(r: EvalResult): boolean {
+  return /\bpublish\b|shogo\.one/i.test(r.responseText)
+}
+
+/** True if the agent pushed a local-export / download / run-it-yourself path. */
+function pushedLocalExport(r: EvalResult): boolean {
+  return /\b(download|export|\.zip\b|run (it )?locally|npm (run|install)|git clone|unzip)\b/i.test(r.responseText)
+}
+
 export const PREVIEW_URL_EVALS: AgentEval[] = [
   {
     id: 'preview-url-share-working-link',
@@ -103,5 +118,84 @@ export const PREVIEW_URL_EVALS: AgentEval[] = [
       'Tool loop or repeated identical calls',
     ],
     maxScore: 15,
+  },
+
+  {
+    id: 'preview-url-cant-be-reached-diagnose',
+    name: '"Can\'t be reached" → re-verify public URL, not "works on my end"',
+    category: 'code-agent',
+    level: 3,
+    initialMode: 'app',
+    useRuntimeTemplate: true,
+    tags: ['expect-preview-reachable', 'vm', 'prod:preview-cant-be-reached'],
+    input: [
+      'I opened the preview link you gave me and it says "this site can\'t be reached".',
+      'Can you check what\'s going on and get me a link that actually loads?',
+    ].join('\n'),
+    validationCriteria: [
+      {
+        id: 'reverified-url',
+        description: 'Agent actually re-fetched/opened the preview URL to verify it',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => testedUrlBeforeSharing(r),
+      },
+      {
+        id: 'no-works-on-my-end',
+        description: 'Did NOT dismiss it with "works on my end"',
+        points: 4,
+        phase: 'execution',
+        validate: (r) => !claimedWorksOnMyEnd(r),
+      },
+      {
+        id: 'no-localhost',
+        description: 'Did not respond with a localhost URL',
+        points: 3,
+        phase: 'execution',
+        validate: (r) => !sharedLocalhostUrl(r),
+      },
+      {
+        id: 'shared-public-url',
+        description: 'Re-shared a public https preview URL',
+        points: 3,
+        phase: 'execution',
+        validate: (r) => sharedPublicPreviewUrl(r),
+      },
+    ],
+    antiPatterns: [
+      'Replied "works on my end" without re-checking the public URL',
+      'Handed back a localhost link',
+    ],
+    maxScore: 15,
+  },
+
+  {
+    id: 'preview-url-route-to-publish',
+    name: 'Route "save/host this" to Publish, not a local-export odyssey',
+    category: 'code-agent',
+    level: 2,
+    tags: ['prod:save-host-local-export'],
+    initialMode: 'app',
+    input: 'This looks great! How do I save this so I can share it with people permanently?',
+    validationCriteria: [
+      {
+        id: 'mentioned-publish',
+        description: 'Agent pointed the user to Publish / a shogo.one URL',
+        points: 7,
+        phase: 'execution',
+        validate: (r) => mentionedPublish(r),
+      },
+      {
+        id: 'did-not-push-local-export',
+        description: 'Did not walk the user through downloading / running it locally',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => !pushedLocalExport(r),
+      },
+    ],
+    antiPatterns: [
+      'Told the user to download a zip / run it locally instead of Publishing',
+    ],
+    maxScore: 12,
   },
 ]

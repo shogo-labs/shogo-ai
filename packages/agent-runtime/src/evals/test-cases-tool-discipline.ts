@@ -517,10 +517,120 @@ const EDIT_DISCIPLINE_EVALS: AgentEval[] = [
 ]
 
 // ---------------------------------------------------------------------------
+// C. WS5: auto-read fallback + write-then-edit must NOT raise read-before-edit
+//    Reproduces the #1 production tool error ("File has not been read yet",
+//    ~1.6k/wk). After the WS5 fix, edit_file auto-reads an unread existing file
+//    and write_file records read-state, so these sequences no longer error.
+// ---------------------------------------------------------------------------
+
+/** True if no edit_file output contains the read-before-edit rejection. */
+function noReadBeforeEditError(r: EvalResult): boolean {
+  return !editFileCalls(r).some(t => {
+    if (t.error === true) {
+      const out = JSON.stringify(t.output ?? '').toLowerCase()
+      return out.includes('has not been read')
+    }
+    return false
+  })
+}
+
+const EDIT_AUTOREAD_EVALS: AgentEval[] = [
+  {
+    id: 'tool-discipline-edit-after-write',
+    name: 'Modify a just-written file with edit_file (no read-before-edit error)',
+    category: 'edit-file',
+    level: 2,
+    tags: ['prod:file-has-not-been-read'],
+    input: [
+      'Do exactly two steps:',
+      '1. Use write_file to create `src/config.ts` with this single line:',
+      '   export const MAX_RETRIES = 3',
+      '2. Use edit_file to change the value from 3 to 5.',
+    ].join('\n'),
+    workspaceFiles: {},
+    validationCriteria: [
+      {
+        id: 'created-with-write',
+        description: 'Agent created src/config.ts with write_file',
+        points: 3,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.some(t => t.name === 'write_file' && pathOf(t).includes('config.ts')),
+      },
+      {
+        id: 'edited-the-file',
+        description: 'Agent then modified src/config.ts with edit_file',
+        points: 4,
+        phase: 'execution',
+        validate: (r) => editedPath(r, 'config.ts'),
+      },
+      {
+        id: 'no-read-before-edit-error',
+        description: 'edit_file after write_file did NOT fail with "has not been read"',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => noReadBeforeEditError(r),
+      },
+      {
+        id: 'no-edit-errors',
+        description: 'No edit_file call errored',
+        points: 3,
+        phase: 'execution',
+        validate: (r) => noEditErrors(r) && editFileCalls(r).length > 0,
+      },
+    ],
+    antiPatterns: [
+      'edit_file failed with "File has not been read yet" after the file was just written',
+    ],
+    maxScore: 15,
+  },
+
+  {
+    id: 'tool-discipline-edit-existing-no-error',
+    name: 'Edit an existing file without a spurious read-before-edit failure',
+    category: 'edit-file',
+    level: 2,
+    tags: ['prod:file-has-not-been-read'],
+    input: [
+      'In `src/lib/numbers.ts`, change `average` so that for an empty array it returns `NaN` instead of 0.',
+      'Make the change with edit_file.',
+    ].join('\n'),
+    workspaceFiles: TS_UTIL_CODEBASE,
+    validationCriteria: [
+      {
+        id: 'edited-numbers',
+        description: 'Agent edited src/lib/numbers.ts',
+        points: 4,
+        phase: 'execution',
+        validate: (r) => editedPath(r, 'numbers.ts'),
+      },
+      {
+        id: 'no-read-before-edit-error',
+        description: 'No edit_file call failed with "has not been read" (auto-read fallback works)',
+        points: 6,
+        phase: 'execution',
+        validate: (r) => noReadBeforeEditError(r),
+      },
+      {
+        id: 'no-edit-errors',
+        description: 'No edit_file call errored',
+        points: 4,
+        phase: 'execution',
+        validate: (r) => noEditErrors(r) && editFileCalls(r).length > 0,
+      },
+    ],
+    antiPatterns: [
+      'edit_file failed with "File has not been read yet"',
+    ],
+    maxScore: 14,
+  },
+]
+
+// ---------------------------------------------------------------------------
 // Export combined
 // ---------------------------------------------------------------------------
 
 export const TOOL_DISCIPLINE_EVALS: AgentEval[] = [
   ...READ_ARG_EVALS,
   ...EDIT_DISCIPLINE_EVALS,
+  ...EDIT_AUTOREAD_EVALS,
 ]

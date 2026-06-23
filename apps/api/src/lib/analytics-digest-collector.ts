@@ -4,12 +4,15 @@
  * Analytics Digest Collector
  *
  * Runs daily to collect platform metrics and analyze user chat conversations
- * using Claude. Stores results in the analytics_digests table for historical
- * trend analysis and the admin AI Insights panel.
+ * with the platform "basic" model (resolved through the shared multi-provider
+ * resolver, so it works regardless of which provider that default points at).
+ * Stores results in the analytics_digests table for historical trend analysis
+ * and the admin AI Insights panel.
  *
  * Follows the same in-process setInterval pattern as infra-metrics-collector.ts.
  */
 
+import { generateText } from 'ai'
 import type { PrismaClient } from './prisma'
 import {
   getUserFunnel,
@@ -20,6 +23,7 @@ import {
   type ConversationThread,
 } from '../services/analytics.service'
 import { getMaxOutputTokens, resolveAgentModeDefault } from '@shogo/model-catalog'
+import { resolveLanguageModel } from './resolve-language-model'
 
 const MAX_TOKENS_PER_CHUNK = 100_000
 const MAX_CHUNKS = 3
@@ -88,14 +92,38 @@ interface ChunkAnalysis {
   securityFlags: string[]
 }
 
-async function analyzeWithClaude(
+/**
+ * Strip a leading/trailing markdown code fence (```json … ```), which some
+ * providers add despite the "no fences" instruction. Anthropic typically
+ * returns raw JSON; OpenAI/Gemini/custom models are more fence-happy, so this
+ * keeps the universal path robust across providers.
+ */
+function stripCodeFence(text: string): string {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('```')) return trimmed
+  return trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim()
+}
+
+async function analyzeConversations(
   conversationText: string,
   metricsContext: string
 ): Promise<ChunkAnalysis> {
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) {
-    console.warn('[AnalyticsDigest] No ANTHROPIC_API_KEY — skipping AI analysis')
-    return { takeaways: ['AI analysis skipped: no API key'], intents: [], painPoints: [], securityFlags: [] }
+  // Route through the shared multi-provider resolver — the same path the chat,
+  // voice, and title-generation surfaces use — so the digest follows whatever
+  // the admin-overridable "basic" default points at (Anthropic, OpenAI, Gemini,
+  // or a custom OpenAI-compatible model) instead of being pinned to
+  // api.anthropic.com. The proxy resolves the id and meters usage server-side;
+  // the `analytics_digest` tag records it as internal admin cost (non-billable).
+  const modelId = resolveAgentModeDefault('basic')
+  const resolved = resolveLanguageModel(modelId, {
+    headers: { 'x-shogo-usage-tag': 'analytics_digest' },
+  })
+  if (!resolved) {
+    console.warn('[AnalyticsDigest] No model transport configured — skipping AI analysis')
+    return { takeaways: ['AI analysis skipped: no model transport'], intents: [], painPoints: [], securityFlags: [] }
   }
 
   const prompt = `You are analyzing user conversations from an AI-powered agent builder platform called Shogo. 
@@ -117,39 +145,16 @@ Analyze these conversations and return a JSON object with exactly this structure
 Focus on: what users are trying to build, whether they're succeeding, common patterns of confusion, and feature gaps.
 Return ONLY valid JSON, no markdown fences.`
 
-  // Use the platform default "basic" model (admin-overridable) rather than a
-  // hardcoded snapshot id. The previously pinned `claude-sonnet-4-20250514`
-  // was retired upstream and started returning 404s, silently breaking the
-  // daily AI Insights run.
-  const model = resolveAgentModeDefault('basic')
-
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: getMaxOutputTokens(model),
-        messages: [{ role: 'user', content: prompt }],
-      }),
+    const result = await generateText({
+      model: resolved.model,
+      maxOutputTokens: getMaxOutputTokens(resolved.billingModelId),
+      prompt,
     })
-
-    if (!response.ok) {
-      const err = await response.text()
-      console.error('[AnalyticsDigest] Claude API error:', err)
-      return { takeaways: [`AI analysis failed: ${response.status}`], intents: [], painPoints: [], securityFlags: [] }
-    }
-
-    const data = await response.json() as any
-    const text = data.content?.[0]?.text || ''
-    return JSON.parse(text) as ChunkAnalysis
+    return JSON.parse(stripCodeFence(result.text || '')) as ChunkAnalysis
   } catch (err: any) {
-    console.error('[AnalyticsDigest] Claude analysis error:', err.message)
-    return { takeaways: [`AI analysis error: ${err.message}`], intents: [], painPoints: [], securityFlags: [] }
+    console.error('[AnalyticsDigest] AI analysis error:', err?.message ?? err)
+    return { takeaways: [`AI analysis error: ${err?.message ?? err}`], intents: [], painPoints: [], securityFlags: [] }
   }
 }
 
@@ -236,7 +241,7 @@ export async function generateDigest(prisma: PrismaClient) {
     ].join('\n')
 
     const chunkResults = await Promise.all(
-      chunks.map(chunk => analyzeWithClaude(chunk, metricsContext))
+      chunks.map(chunk => analyzeConversations(chunk, metricsContext))
     )
     aiInsights = mergeAnalyses(chunkResults)
   }

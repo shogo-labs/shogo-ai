@@ -82,7 +82,10 @@ describe('edit_file guards', () => {
   // Read-before-edit enforcement
   // -------------------------------------------------------------------------
 
-  test('rejects edit when file has not been read', async () => {
+  // WS5: editing an unread but existing file now auto-reads it and proceeds,
+  // instead of returning the #1 production tool error "File has not been read
+  // yet". The exact old_string match is the safety check.
+  test('auto-reads an unread existing file and edits successfully', async () => {
     const ctx = createCtx()
     writeFileSync(join(TEST_DIR, 'hello.ts'), 'const a = 1\n')
     const result = await exec(ctx, 'edit_file', {
@@ -90,7 +93,46 @@ describe('edit_file guards', () => {
       old_string: 'const a = 1',
       new_string: 'const a = 2',
     })
-    expect(result.error).toContain('not been read')
+    expect(result.error).toBeUndefined()
+    expect(result.ok).toBe(true)
+    expect(readFileSync(join(TEST_DIR, 'hello.ts'), 'utf-8')).toContain('const a = 2')
+    // The auto-read seeded the cache.
+    expect(ctx.fileStateCache!.getRecord('hello.ts')).toBeDefined()
+  })
+
+  // WS5: read with one path spelling, edit with another — the cache key is
+  // normalized so this no longer trips read-before-edit (prod #1 error).
+  test('read then edit with a different path spelling does not error', async () => {
+    const ctx = createCtx()
+    writeFileSync(join(TEST_DIR, 'variant.ts'), 'const a = 1\n')
+    await exec(ctx, 'read_file', { path: './variant.ts' })
+    const result = await exec(ctx, 'edit_file', {
+      path: 'variant.ts',
+      old_string: 'const a = 1',
+      new_string: 'const a = 2',
+    })
+    expect(result.error).toBeUndefined()
+    expect(result.ok).toBe(true)
+  })
+
+  // WS5: write_file then edit_file on the same path. write_file now records
+  // read-state (instead of invalidating), so the follow-up edit doesn't trip
+  // the read-before-edit guard.
+  test('write_file then edit_file works without re-reading', async () => {
+    const ctx = createCtx()
+    const wr = await exec(ctx, 'write_file', {
+      path: 'made.ts',
+      content: 'export const MAX = 3\n',
+    })
+    expect(wr.ok).toBe(true)
+    const result = await exec(ctx, 'edit_file', {
+      path: 'made.ts',
+      old_string: 'export const MAX = 3',
+      new_string: 'export const MAX = 5',
+    })
+    expect(result.error).toBeUndefined()
+    expect(result.ok).toBe(true)
+    expect(readFileSync(join(TEST_DIR, 'made.ts'), 'utf-8')).toContain('MAX = 5')
   })
 
   test('succeeds after reading the file', async () => {

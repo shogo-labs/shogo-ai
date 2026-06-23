@@ -16,6 +16,7 @@ import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from 'child_process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
+import { isSearchEnabled } from './search-flag'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
@@ -83,7 +84,13 @@ function assertAllowedPath(targetPath: string, mode: 'read' | 'write' | 'exec', 
     return result
   }
 }
-import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
+import {
+  deriveApiUrl, derivePublicApiUrl,
+  listCheckpoints as apiListCheckpoints,
+  getCheckpointDiff as apiGetCheckpointDiff,
+  rollbackCheckpoint as apiRollbackCheckpoint,
+  type CheckpointCallResult,
+} from './internal-api'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
@@ -1096,6 +1103,24 @@ async function attachEditDiagnostics(
   }
 }
 
+/**
+ * Surface pending canvas/runtime errors (compile/render failures reported by
+ * the live preview) directly on a write/edit result so the agent sees runtime
+ * failures in-band, without having to remember to call read_lints (WS3). The
+ * buffer is consume-once (same as read_lints), so a fixed error stops
+ * re-appearing once the preview reloads cleanly.
+ */
+function attachCanvasRuntimeErrors(base: Record<string, unknown>): void {
+  try {
+    const entries = getCanvasRuntimeErrors()
+    if (entries.length === 0) return
+    base.runtimeErrors = entries.slice(-5).map(e => `[${e.phase}] ${e.error}`)
+    base.runtimeErrorHint =
+      'The live preview reported the runtime error(s) above. Fix the underlying cause (the data shape / contract, not just the throwing line) and re-verify. If the same class of error appears in multiple places, fix them all in one pass.'
+    clearCanvasRuntimeErrors()
+  } catch { /* best-effort */ }
+}
+
 function createWriteFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'write_file',
@@ -1137,7 +1162,17 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         ? (fileExists ? readFileSync(resolved, 'utf-8') : '') + content
         : content
       writeWithMetadata(resolved, payload, 'utf-8', target)
-      ctx.fileStateCache?.invalidate(filePath)
+      // Record post-write read-state (instead of invalidating) so a follow-up
+      // edit_file on this path doesn't trip the read-before-edit guard. Weak
+      // models often write_file an existing file then edit_file it; invalidating
+      // forced a spurious "File has not been read yet". payload is the final
+      // on-disk content (already existing+content for append).
+      try {
+        const writeMtime = statSync(resolved).mtimeMs
+        ctx.fileStateCache?.recordEdit(filePath, payload, writeMtime)
+      } catch {
+        ctx.fileStateCache?.invalidate(filePath)
+      }
       markEditedIfLintable(ctx, filePath)
       ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
 
@@ -1159,6 +1194,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         : content
       appendCanvasApiContractHint(ctx, filePath, finalContentForLint, base)
       await attachEditDiagnostics(ctx, filePath, resolved, base)
+      attachCanvasRuntimeErrors(base)
       const quickActionsResult = maybeValidateQuickActions(filePath, resolved, base)
       if (quickActionsResult) return textResult(quickActionsResult)
       const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
@@ -1617,7 +1653,7 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       'Performs exact string replacements in files.',
       '',
       'Usage:',
-      '- You must use read_file at least once before editing. This tool will error if you attempt an edit without reading.',
+      '- Prefer reading the file with read_file first so old_string matches exactly; if you have not read it, this tool auto-reads it for you before editing.',
       '- When editing text from read_file output, preserve the exact indentation (tabs/spaces) as it appears in the file content.',
       '- ALWAYS prefer editing existing files. NEVER use write_file for existing files unless replacing the entire content.',
       '- The edit will FAIL if old_string is not unique. Provide more surrounding context to make it unique, or use replace_all.',
@@ -1680,12 +1716,30 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      // Read-before-edit enforcement — block only if never read at all
-      const readRecord = ctx.fileStateCache?.getRecord(filePath)
+      // Read-before-edit: rather than hard-erroring when the agent edits a file
+      // it hasn't read this session (historically the #1 production tool error,
+      // ~1.6k/wk), auto-read it into the cache and proceed. The exact-string
+      // match pipeline below is itself the safety check — if the agent guessed
+      // old_string wrong it still gets a precise "old_string not found" with
+      // nearby context. This removes a pure round-trip ("read it first") that
+      // weak models routinely tripped on, especially after a path-spelling
+      // mismatch or a write_file.
+      let readRecord = ctx.fileStateCache?.getRecord(filePath)
       if (ctx.fileStateCache && !readRecord) {
-        return textResult({
-          error: 'File has not been read yet. Read it first with read_file before editing.',
-        })
+        try {
+          const seedMtime = statSync(resolved).mtimeMs
+          const seedContent = readFileSync(resolved, 'utf-8')
+          ctx.fileStateCache.recordRead(
+            filePath, seedMtime, seedContent.split('\n').length, undefined, seedContent,
+          )
+          readRecord = ctx.fileStateCache.getRecord(filePath)
+        } catch {
+          // Couldn't auto-read (race/permission) — fall back to the original
+          // guard rather than editing blind.
+          return textResult({
+            error: 'File has not been read yet. Read it first with read_file before editing.',
+          })
+        }
       }
 
       // Staleness detection — content-comparison fallback only for full reads
@@ -1813,6 +1867,7 @@ async function commitEdit(
   // introduce a new `fetch('/api/X')` get the same eager warning.
   appendCanvasApiContractHint(ctx, filePath, updated, base)
   await attachEditDiagnostics(ctx, filePath, resolved, base)
+  attachCanvasRuntimeErrors(base)
   const quickActionsResult = maybeValidateQuickActions(filePath, resolved, base)
   if (quickActionsResult) return textResult(quickActionsResult)
   const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
@@ -1945,7 +2000,11 @@ function createTodoWriteTool(ctx: ToolContext): AgentTool {
 function createAskUserTool(_ctx: ToolContext): AgentTool {
   return {
     name: 'ask_user',
-    description: 'Ask the user structured multiple-choice questions to gather requirements or clarify ambiguity. The UI will render interactive option selectors. Do not call any other tools after this — wait for the user\'s response.',
+    description: [
+      'Ask the user structured multiple-choice questions ONLY when you are blocked on a decision that genuinely requires their input: a true requirement ambiguity, an irreversible/destructive choice, or missing information you cannot obtain yourself (e.g. which of two products to build, a credential the user must provide).',
+      'Do NOT use ask_user to ask permission to continue work that was already requested, to confirm an obvious next step, or as a progress checkpoint — just keep going and complete the task, then summarize. This tool ENDS your turn and forces the user to reply, so every unnecessary call stalls the task and makes the user type "continue".',
+      'The UI will render interactive option selectors. Do not call any other tools after this — wait for the user\'s response.',
+    ].join(' '),
     label: 'Ask User',
     parameters: Type.Object({
       questions: Type.Array(Type.Object({
@@ -1962,6 +2021,95 @@ function createAskUserTool(_ctx: ToolContext): AgentTool {
     // for ask_user so the UI keeps the widget in interactive (input-available) state until
     // the user submits their answer as a new user message.
     execute: async () => textResult({ acknowledged: true }),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint Tool (WS4) — list / diff / rollback project snapshots
+// ---------------------------------------------------------------------------
+
+/** Surface a checkpoint API failure to the model, handling external-mode 409 gracefully. */
+function checkpointError(res: CheckpointCallResult<unknown>): AgentToolResult<any> {
+  if (res.code === 'checkpoints_disabled_in_external_mode') {
+    return textResult({
+      error: res.error,
+      external_mode: true,
+      hint: 'This is a folder-linked project — Shogo does not manage its git. Do NOT claim there is no history; tell the user to revert with their own git (e.g. `git reflog` / `git checkout`).',
+    })
+  }
+  return textResult({ error: res.error ?? 'Checkpoint operation failed', status: res.status })
+}
+
+function createCheckpointTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'checkpoint',
+    description: [
+      'Inspect and restore the project\'s automatic checkpoints (snapshots taken after each turn). Use this whenever the user wants to undo / "go back" / revert / restore an earlier state — the project HAS a checkpoint history even if `git log` in the sandbox looks empty, so NEVER tell the user "there is no git history".',
+      'Actions:',
+      '- list: show recent checkpoints (id, message, time). Start here to find the target.',
+      '- diff: show what changed between a checkpoint and now (requires checkpoint_id).',
+      '- rollback: restore the project to a checkpoint (requires checkpoint_id). This creates a new checkpoint first, so it is reversible.',
+      'Always `list` first, confirm the right target with the user when ambiguous, then `rollback`.',
+    ].join('\n'),
+    label: 'Checkpoints',
+    parameters: Type.Object({
+      action: Type.Union(
+        [Type.Literal('list'), Type.Literal('diff'), Type.Literal('rollback')],
+        { description: 'list | diff | rollback' },
+      ),
+      checkpoint_id: Type.Optional(Type.String({ description: 'Target checkpoint id (required for diff/rollback)' })),
+      to_checkpoint_id: Type.Optional(Type.String({ description: 'For diff: compare against this checkpoint instead of current state' })),
+      include_database: Type.Optional(Type.Boolean({ description: 'For rollback: also restore the database snapshot (default false)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { action, checkpoint_id, to_checkpoint_id, include_database } = params as {
+        action: 'list' | 'diff' | 'rollback'
+        checkpoint_id?: string
+        to_checkpoint_id?: string
+        include_database?: boolean
+      }
+      const projectId = ctx.projectId
+      if (!projectId) {
+        return textResult({ error: 'No project context is available, so checkpoints cannot be accessed.' })
+      }
+
+      if (action === 'list') {
+        const res = await apiListCheckpoints(projectId, 20)
+        if (!res.ok) return checkpointError(res)
+        const checkpoints = (res.data ?? []).map(cp => ({
+          id: cp.id,
+          message: cp.name || cp.message || '(no message)',
+          createdAt: cp.createdAt,
+          automatic: cp.isAutomatic ?? true,
+          filesChanged: cp.filesChanged,
+        }))
+        return textResult({
+          checkpoints,
+          count: checkpoints.length,
+          hint: checkpoints.length === 0
+            ? 'No checkpoints recorded yet for this project.'
+            : 'To revert, call checkpoint with action="rollback" and the chosen checkpoint_id.',
+        })
+      }
+
+      if (action === 'diff') {
+        if (!checkpoint_id) return textResult({ error: 'checkpoint_id is required for diff' })
+        const res = await apiGetCheckpointDiff(projectId, checkpoint_id, to_checkpoint_id)
+        if (!res.ok) return checkpointError(res)
+        return textResult({ diff: res.data })
+      }
+
+      // rollback
+      if (!checkpoint_id) return textResult({ error: 'checkpoint_id is required for rollback' })
+      const res = await apiRollbackCheckpoint(projectId, checkpoint_id, include_database)
+      if (!res.ok) return checkpointError(res)
+      return textResult({
+        ok: true,
+        rolledBack: true,
+        result: res.data,
+        note: 'Restored to the requested checkpoint. A new checkpoint was created first, so this is reversible. Re-verify the app still works.',
+      })
+    },
   }
 }
 
@@ -4828,7 +4976,9 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createDeleteFileTool(ctx), 'file_delete'),
     // search is disabled while local indexing is off (reindex-on-query hangs).
     // Re-enable with SHOGO_SEARCH_ENABLED=1 (also pre-warms the index — see gateway.ts start()).
-    ...(process.env.SHOGO_SEARCH_ENABLED === '1' ? [g(createSearchTool(ctx), 'file_read')] : []),
+    // isSearchEnabled() is the same gate every prompt/guide uses to decide
+    // whether to advertise `search`, so the prompt surface matches registration.
+    ...(isSearchEnabled() ? [g(createSearchTool(ctx), 'file_read')] : []),
     g(createImpactRadiusTool(ctx), 'file_read'),
     g(createDetectChangesTool(ctx), 'file_read'),
     g(createReviewContextTool(ctx), 'file_read'),
@@ -4838,6 +4988,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createMemorySearchTool(ctx),
     createTodoWriteTool(ctx),
     createAskUserTool(ctx),
+    createCheckpointTool(ctx),
     createNotifyUserErrorTool(),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),
@@ -5239,6 +5390,58 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
  * Maps group names (used in skill frontmatter) to individual gateway tool names.
  * Skills can reference either group names or individual tool names.
  */
+/**
+ * Tools the agent MUST be able to call in agent (edit) mode. The filesystem
+ * trio is unconditional; `exec` is core only when the shell capability is on
+ * (untrusted/restricted workspaces legitimately disable it). Used both to
+ * defensively re-add core tools if a registration/MCP-merge race ever drops
+ * them (the WS7 prod signature: `exec`/`edit_file`/`write_file` reported
+ * "not found" in agent mode) and as the contract the WS7 eval asserts.
+ */
+export function expectedCoreToolsForAgentMode(
+  config: import('./gateway').GatewayConfig,
+): string[] {
+  const core = ['read_file', 'write_file', 'edit_file']
+  if (config.shellEnabled !== false) core.push('exec')
+  return core
+}
+
+export type RestrictedMode = 'plan' | 'ask' | 'coordinator'
+
+/**
+ * Build a dispatch-only stub for a tool that exists in agent mode but was
+ * filtered out by the current restricted mode. The agent loop resolves tools by
+ * name via `tools.find()`; without a stub a hallucinated call to a filtered tool
+ * surfaces an opaque "Tool X not found". This returns a mode-aware error instead
+ * so the model self-corrects (switch to Agent mode / delegate) rather than
+ * looping. Stubs are NOT advertised (kept out of the iterated/mapped tool list),
+ * so they don't reintroduce the tool the mode intentionally hides.
+ */
+export function createModeUnavailableTool(
+  name: string,
+  mode: RestrictedMode,
+): AgentTool {
+  const modeLabel =
+    mode === 'plan' ? 'Plan mode' : mode === 'ask' ? 'Ask mode' : 'Coordinator mode'
+  const guidance =
+    mode === 'plan'
+      ? 'Plan mode is read-only — finish planning, then switch to Agent mode to edit files or run commands.'
+      : mode === 'ask'
+        ? 'Ask mode is read-only — switch to Agent mode to take this action.'
+        : 'This coordinator session is read-only — delegate the action to a worker agent instead of calling the tool directly.'
+  return {
+    name,
+    description: `(${name} is unavailable in ${modeLabel})`,
+    label: name,
+    parameters: Type.Object({}, { additionalProperties: true }),
+    execute: async () =>
+      textResult({
+        error: `The "${name}" tool is not available in ${modeLabel}. ${guidance}`,
+        toolUnavailableInMode: mode,
+      }),
+  }
+}
+
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec', 'exec_wait', 'terminal_exec', 'terminal_read'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],

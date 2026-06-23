@@ -24,6 +24,8 @@ import {
   COMPOSIO_AUTH_REQUIRED_MOCKS,
   COMPOSIO_GMAIL_SEND_MOCKS,
   COMPOSIO_GITHUB_PR_SKILL_SAVE_MOCKS,
+  COMPOSIO_AUTH_ERROR_MOCKS,
+  COMPOSIO_NOTFOUND_ERROR_MOCKS,
   AIRBNB_SKILL_SAVE_MOCKS,
   COMPOSIO_CALENDAR_FOLLOWUP_MOCKS,
   COMPOSIO_GMAIL_CALENDAR_MULTI_MOCKS,
@@ -68,6 +70,19 @@ import {
   toolCallArgsContain,
   installCalledWithoutCommand,
 } from './eval-helpers'
+
+// True if the response surfaces *actionable* reconnect / re-authorize guidance
+// to the user (rather than swallowing the error or asserting fake success).
+const surfacesReconnectGuidance = (r: any): boolean =>
+  responseContains(r, 'reconnect') ||
+  responseContains(r, 're-connect') ||
+  responseContains(r, 'reconnnect') ||
+  responseContains(r, 'reauthorize') ||
+  responseContains(r, 're-authorize') ||
+  responseContains(r, 'authorize again') ||
+  responseContains(r, 'expired') ||
+  (responseContains(r, 'connect') && responseContains(r, 'again')) ||
+  (responseContains(r, 'authoriz') && responseContains(r, 'gmail'))
 
 // ---------------------------------------------------------------------------
 // Test Cases
@@ -834,6 +849,116 @@ tools: [GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS, GOOGLECALENDAR_CREATE_EVENT, c
     antiPatterns: [
       'Agent tried to use the calendar skill for an email request',
       'Agent did not search for an email integration',
+    ],
+  },
+
+  // =========================================================================
+  // Case 11 (WS9): Auth-expired error surfacing — relay reconnect, don't loop
+  // Level 3 | Tool is connected but fails with a classified auth error.
+  // Prod signature: integration calls fail upstream (expired OAuth) and the
+  // agent either swallows it or retries the dead call instead of telling the
+  // user to reconnect.
+  // =========================================================================
+  {
+    id: 'composio-auth-error-surface',
+    name: 'Composio: Surface reconnect on expired-auth error (no loop)',
+    category: 'mcp-discovery',
+    level: 3,
+    tags: ['prod:integration-error-surfacing'],
+    // Gmail is already connected from a prior turn, so the agent goes straight
+    // to the send — which fails with an expired-OAuth error.
+    conversationHistory: [
+      { role: 'user', content: 'Connect my Gmail so you can send mail for me.' },
+      { role: 'assistant', content: 'Your Gmail integration is connected. I can send emails on your behalf now.' },
+    ],
+    input: 'Email john@example.com with subject "Status" and body "All on track for Friday."',
+    maxScore: 100,
+    toolMocks: withHiddenNativeTools(COMPOSIO_AUTH_ERROR_MOCKS, PURE_TOOL_CALL_HIDES),
+    validationCriteria: [
+      {
+        id: 'attempted-send',
+        description: 'Attempted the Gmail send (so it hit the auth error)',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => usedToolAnywhere(r, 'GMAIL_SEND_EMAIL'),
+      },
+      {
+        id: 'surfaced-reconnect',
+        description: 'Response tells the user to reconnect / re-authorize Gmail',
+        points: 35,
+        phase: 'execution',
+        validate: (r) => surfacesReconnectGuidance(r),
+      },
+      {
+        id: 'did-not-claim-sent',
+        description: 'Did NOT falsely claim the email was sent',
+        points: 25,
+        phase: 'execution',
+        validate: (r) =>
+          !(responseContains(r, 'sent') || responseContains(r, 'delivered') || responseContains(r, 'successfully')),
+      },
+      {
+        id: 'did-not-loop',
+        description: 'Did not hammer the failing tool (<= 2 send attempts)',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => toolCallCount(r, 'GMAIL_SEND_EMAIL') <= 2,
+      },
+    ],
+    antiPatterns: [
+      'Agent retried GMAIL_SEND_EMAIL repeatedly against the same expired auth',
+      'Agent claimed the email was sent despite the auth error',
+      'Agent gave no actionable next step (reconnect)',
+    ],
+  },
+
+  // =========================================================================
+  // Case 12 (WS9): Not-found slug — self-correct to a valid bound tool
+  // Level 3 | Agent guesses a dead slug; the classified error lists the valid
+  // bound tools. The agent should switch to the valid tool, not loop on the
+  // phantom one. Prod signature: YouTube upload calls 404 on a wrong slug.
+  // =========================================================================
+  {
+    id: 'composio-notfound-self-correct',
+    name: 'Composio: Recover from a not-found slug via the bound alternative',
+    category: 'mcp-discovery',
+    level: 3,
+    tags: ['prod:integration-error-surfacing'],
+    conversationHistory: [
+      { role: 'user', content: 'Connect YouTube so you can upload videos for me.' },
+      { role: 'assistant', content: 'YouTube is connected. I can upload videos for you now.' },
+    ],
+    input:
+      'Upload the file at uploads/demo.mp4 to YouTube with the title "Product Demo". If the first tool you try is not available, use the correct YouTube upload tool that is.',
+    maxScore: 100,
+    toolMocks: withHiddenNativeTools(COMPOSIO_NOTFOUND_ERROR_MOCKS, PURE_TOOL_CALL_HIDES),
+    validationCriteria: [
+      {
+        id: 'used-valid-upload-tool',
+        description: 'Called the valid bound upload tool (YOUTUBE_MULTIPART_UPLOAD_VIDEO)',
+        points: 40,
+        phase: 'execution',
+        validate: (r) => usedToolAnywhere(r, 'YOUTUBE_MULTIPART_UPLOAD_VIDEO'),
+      },
+      {
+        id: 'did-not-loop-dead-slug',
+        description: 'Did not repeatedly call the dead slug (<= 2 attempts)',
+        points: 30,
+        phase: 'execution',
+        validate: (r) => toolCallCount(r, 'YOUTUBE_UPLOAD_VIDEO') <= 2,
+      },
+      {
+        id: 'response-confirms-upload',
+        description: 'Response reflects a successful upload (or accurate status)',
+        points: 30,
+        phase: 'execution',
+        validate: (r) =>
+          responseContains(r, 'upload') || responseContains(r, 'uploaded') || responseContains(r, 'youtube'),
+      },
+    ],
+    antiPatterns: [
+      'Agent looped calling the unavailable YOUTUBE_UPLOAD_VIDEO slug',
+      'Agent gave up without trying the valid bound tool listed in the error hint',
     ],
   },
 ]

@@ -12,7 +12,7 @@
 import {
   OPTIMIZED_MCP_DISCOVERY_GUIDE,
   OPTIMIZED_PERSONALITY_GUIDE,
-  OPTIMIZED_TOOL_PLANNING_GUIDE,
+  buildToolPlanningGuide,
   OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
   OPTIMIZED_SKILL_MATCHING_GUIDE,
   OPTIMIZED_MEMORY_GUIDE,
@@ -114,7 +114,7 @@ edit_file({
  */
 export function buildGuideRegistry(promptOverrides?: Map<string, string>): Map<string, string> {
   const personalityGuide = promptOverrides?.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
-  const toolPlanningGuide = promptOverrides?.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
+  const toolPlanningGuide = promptOverrides?.get('tool_planning_guide') ?? buildToolPlanningGuide()
   const memoryGuide = promptOverrides?.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
   const skillMatchingGuide = promptOverrides?.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
   const constraintGuide = promptOverrides?.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE

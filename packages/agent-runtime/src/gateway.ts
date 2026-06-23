@@ -31,7 +31,7 @@ import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
-import { createTools, textResult, filterDisabledCapabilityTools } from './gateway-tools'
+import { createTools, textResult, filterDisabledCapabilityTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
@@ -488,6 +488,7 @@ export class AgentGateway {
     this.projectId = projectId
     this.config = this.loadConfig()
     this.sessionManager = new SessionManager(this.config.session)
+    this.fileStateCache.setWorkspaceDir(workspaceDir)
     this.mcpClientManager.setWorkspaceDir(workspaceDir)
     this.skillServerManager = new SkillServerManager({ workspaceDir })
 
@@ -1982,10 +1983,18 @@ export class AgentGateway {
     ])
     assembledTools = assembledTools.filter(t => !SUBAGENT_ONLY_TOOLS.has(t.name))
 
+    // Snapshot the full agent-mode tool set BEFORE any read-only mode
+    // restriction. Used to (a) guarantee core tools survive in agent mode and
+    // (b) build mode-aware dispatch stubs for tools a restricted mode removes.
+    const agentModeToolNames = new Set(assembledTools.map(t => t.name))
+
     // Interaction mode tool restrictions
+    let restrictedMode: RestrictedMode | null = null
     if (interactionMode === 'ask') {
+      restrictedMode = 'ask'
       assembledTools = []
     } else if (interactionMode === 'plan') {
+      restrictedMode = 'plan'
       const PLAN_MODE_ALLOWED = new Set([
         'read_file', 'search',
         'web',
@@ -1997,8 +2006,36 @@ export class AgentGateway {
     }
 
     if (this.config.coordinatorMode) {
+      restrictedMode = restrictedMode ?? 'coordinator'
       const { COORDINATOR_READONLY_TOOLS } = await import('./coordinator-prompt')
       assembledTools = assembledTools.filter(t => COORDINATOR_READONLY_TOOLS.has(t.name))
+    }
+
+    // WS7: in agent (edit) mode, guarantee the core tools are always callable.
+    // A registration/MCP-merge race or an unexpected filter previously dropped
+    // exec/edit_file/write_file, surfacing as "Tool not found" mid-session.
+    if (!restrictedMode) {
+      const present = new Set(assembledTools.map(t => t.name))
+      for (const name of expectedCoreToolsForAgentMode(this.config)) {
+        if (present.has(name)) continue
+        const recovered = baseTools.find(t => t.name === name)
+        if (recovered) {
+          console.warn(`${this.logPrefix} Core tool "${name}" was missing from the agent-mode tool set; re-adding it.`)
+          assembledTools.push(recovered)
+          present.add(name)
+        }
+      }
+    }
+
+    // WS7: dispatch-only stubs so a hallucinated call to a tool a restricted
+    // mode removed returns a mode-aware error instead of "Tool not found".
+    // Not advertised — injected only into the Proxy's `find` path below.
+    const modeFilteredStubs: AgentTool[] = []
+    if (restrictedMode) {
+      const activeNames = new Set(assembledTools.map(t => t.name))
+      for (const name of agentModeToolNames) {
+        if (!activeNames.has(name)) modeFilteredStubs.push(createModeUnavailableTool(name, restrictedMode))
+      }
     }
 
     let staticTools = assembledTools
@@ -2095,6 +2132,17 @@ export class AgentGateway {
           const merged = extras.length > 0 ? [...target, ...extras] : target
           if (prop === 'length') return merged.length
           if (prop === Symbol.iterator) return merged[Symbol.iterator].bind(merged)
+          // Dispatch (`find`) also matches the mode-aware stubs so a call to a
+          // mode-filtered tool yields a helpful error, not "Tool not found".
+          // The stubs are deliberately excluded from advertising surfaces
+          // (map/forEach/length/iterator/filter) so the mode still hides them.
+          if (prop === 'find' && modeFilteredStubs.length > 0) {
+            return (predicate: any, thisArg?: any) => {
+              const hit = merged.find(predicate, thisArg)
+              if (hit !== undefined) return hit
+              return modeFilteredStubs.find(predicate, thisArg)
+            }
+          }
           return (merged as any)[prop].bind(merged)
         }
         return Reflect.get(target, prop, receiver)
@@ -2944,7 +2992,7 @@ export class AgentGateway {
           chunker?.dispose()
           if (uiWriter) {
             const errorText = isIterationLimit
-              ? 'I reached my iteration limit before finishing the task. Send a follow-up message like "continue" to pick up where I left off.'
+              ? 'This task is taking more steps than a single run allows — I kept going as far as I could. Reply "continue" if you\'d like me to pick up where I left off.'
               : isBillingError
                 ? 'Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.'
                 : isProviderError

@@ -6,12 +6,11 @@
  *  - `chunkConversations` splitting behavior when a single thread
  *    exceeds the MAX_TOKENS_PER_CHUNK boundary (boundary push +
  *    MAX_CHUNKS cap).
- *  - `analyzeWithClaude` paths inside `generateDigest`:
+ *  - AI-analysis paths inside `generateDigest` (routed through the shared
+ *    multi-provider `resolveLanguageModel` + `ai` `generateText` seams):
  *      • happy-path JSON parse
- *      • non-OK response from Claude (returns a synthetic
- *        `AI analysis failed: <status>` takeaway).
- *      • fetch throwing (returns `AI analysis error: <msg>`).
- *      • missing ANTHROPIC_API_KEY skips the call entirely.
+ *      • model throwing (returns `AI analysis error: <msg>`).
+ *      • no transport configured skips the call entirely.
  *  - `generateDigest` with empty conversations — chunksProcessed=0,
  *    aiInsights=null, upsert still runs.
  *  - `startAnalyticsDigestCollector` schedules a setTimeout (verified
@@ -39,6 +38,29 @@ mock.module('../services/analytics.service', () => ({
   getChatConversations: async () => fixtures.conversations,
 }))
 
+// The collector resolves the basic default through the shared multi-provider
+// resolver and runs it via `ai` `generateText`. Both are mocked here so the
+// AI-analysis branches can be driven deterministically without a real provider.
+const aiState: { text?: string; throws?: boolean; throwMsg?: string; resolverReturnsNull?: boolean } = {}
+mock.module('@shogo/model-catalog', () => ({
+  getMaxOutputTokens: (_: string) => 4096,
+  resolveAgentModeDefault: (mode: string) => (mode === 'basic' ? 'claude-haiku-4-5' : 'claude-sonnet-4-6'),
+}))
+mock.module('../lib/resolve-language-model', () => ({
+  resolveLanguageModel: (id: string) =>
+    aiState.resolverReturnsNull ? null : { model: { __id: id }, billingModelId: id, provider: 'custom' },
+}))
+mock.module('ai', () => ({
+  generateText: async () => {
+    if (aiState.throws) throw new Error(aiState.throwMsg ?? 'boom')
+    return {
+      text:
+        aiState.text ??
+        JSON.stringify({ takeaways: ['x'], intents: [], painPoints: [], securityFlags: [] }),
+    }
+  },
+}))
+
 const {
   chunkConversations,
   mergeAnalyses,
@@ -47,18 +69,16 @@ const {
   stopAnalyticsDigestCollector,
 } = await import('../lib/analytics-digest-collector')
 
-const SAVED_ENV: Record<string, string | undefined> = {}
 beforeEach(() => {
-  SAVED_ENV.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
-  delete process.env.ANTHROPIC_API_KEY
   fixtures.conversations = { conversations: [] }
   fixtures.activity = { total: 0, users: [] }
+  aiState.text = undefined
+  aiState.throws = false
+  aiState.throwMsg = undefined
+  aiState.resolverReturnsNull = false
 })
 afterEach(() => {
-  if (SAVED_ENV.ANTHROPIC_API_KEY === undefined) delete process.env.ANTHROPIC_API_KEY
-  else process.env.ANTHROPIC_API_KEY = SAVED_ENV.ANTHROPIC_API_KEY
   stopAnalyticsDigestCollector?.()
-  delete (globalThis as any).fetch
 })
 
 // ─── chunkConversations boundary behavior ────────────────────────────────
@@ -131,9 +151,9 @@ describe('mergeAnalyses — edge cases', () => {
   })
 })
 
-// ─── analyzeWithClaude paths (via generateDigest) ────────────────────────
+// ─── AI-analysis paths (via generateDigest) ──────────────────────────────
 
-describe('generateDigest — Claude analysis paths', () => {
+describe('generateDigest — AI analysis paths', () => {
   function setOneConversation() {
     fixtures.conversations = {
       conversations: [{
@@ -147,14 +167,9 @@ describe('generateDigest — Claude analysis paths', () => {
     }
   }
 
-  test('happy path: parses JSON returned by Claude', async () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-fake'
+  test('happy path: parses JSON returned by the model', async () => {
     setOneConversation()
-    globalThis.fetch = (async () => Response.json({
-      content: [{ text: JSON.stringify({
-        takeaways: ['x'], intents: [], painPoints: [], securityFlags: [],
-      }) }],
-    })) as any
+    aiState.text = JSON.stringify({ takeaways: ['x'], intents: [], painPoints: [], securityFlags: [] })
 
     const upsert = mock(async (args: any) => ({ id: 'd1', ...args.create }))
     const digest = await generateDigest({ analyticsDigest: { upsert } } as any)
@@ -164,55 +179,38 @@ describe('generateDigest — Claude analysis paths', () => {
     expect(upsert.mock.calls[0][0].create.aiInsights.takeaways).toEqual(['x'])
   })
 
-  test('Claude non-OK response → synthetic "AI analysis failed: <status>" takeaway', async () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-fake'
+  test('model throwing → synthetic "AI analysis error: <msg>" takeaway', async () => {
     setOneConversation()
-    globalThis.fetch = (async () => new Response('upstream rate-limited', { status: 429 })) as any
+    aiState.throws = true
+    aiState.throwMsg = 'upstream 429'
 
     const errSpy = spyOn(console, 'error').mockImplementation(() => {})
     const upsert = mock(async (args: any) => ({ id: 'd2', ...args.create }))
     await generateDigest({ analyticsDigest: { upsert } } as any)
     errSpy.mockRestore()
 
-    expect(upsert).toHaveBeenCalledTimes(1)
     const insights = upsert.mock.calls[0][0].create.aiInsights
-    expect(insights.takeaways[0]).toBe('AI analysis failed: 429')
+    expect(insights.takeaways[0]).toBe('AI analysis error: upstream 429')
   })
 
-  test('fetch throwing → synthetic "AI analysis error: <msg>" takeaway', async () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-fake'
+  test('no transport configured → "AI analysis skipped: no model transport"', async () => {
     setOneConversation()
-    globalThis.fetch = (async () => { throw new Error('ENOTFOUND api.anthropic.com') }) as any
-
-    const errSpy = spyOn(console, 'error').mockImplementation(() => {})
-    const upsert = mock(async (args: any) => ({ id: 'd3', ...args.create }))
-    await generateDigest({ analyticsDigest: { upsert } } as any)
-    errSpy.mockRestore()
-
-    const insights = upsert.mock.calls[0][0].create.aiInsights
-    expect(insights.takeaways[0]).toBe('AI analysis error: ENOTFOUND api.anthropic.com')
-  })
-
-  test('missing ANTHROPIC_API_KEY → "AI analysis skipped: no API key"', async () => {
-    setOneConversation()
+    aiState.resolverReturnsNull = true
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
     const upsert = mock(async (args: any) => ({ id: 'd4', ...args.create }))
     await generateDigest({ analyticsDigest: { upsert } } as any)
     warnSpy.mockRestore()
 
     const insights = upsert.mock.calls[0][0].create.aiInsights
-    expect(insights.takeaways[0]).toBe('AI analysis skipped: no API key')
+    expect(insights.takeaways[0]).toBe('AI analysis skipped: no model transport')
   })
 
-  test('empty conversations → no Claude call, aiInsights stays null, upsert still runs', async () => {
+  test('empty conversations → no model call, aiInsights stays null, upsert still runs', async () => {
     fixtures.conversations = { conversations: [] }
-    let fetchCalled = false
-    globalThis.fetch = (async () => { fetchCalled = true; return Response.json({}) }) as any
 
     const upsert = mock(async (args: any) => ({ id: 'd-empty', ...args.create }))
     await generateDigest({ analyticsDigest: { upsert } } as any)
 
-    expect(fetchCalled).toBe(false)
     expect(upsert.mock.calls[0][0].create.aiInsights).toBeNull()
     expect(upsert.mock.calls[0][0].create.chunksProcessed).toBe(0)
     expect(upsert.mock.calls[0][0].create.messagesAnalyzed).toBe(0)
