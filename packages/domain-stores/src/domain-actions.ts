@@ -367,6 +367,8 @@ export function createDomainActions(store: IDomainStore) {
       content: string
       imageData?: string
       parts?: string
+      agent?: string
+      model?: string
     }) => {
       return store.chatMessageCollection.create(data)
     },

@@ -1,0 +1,18 @@
+# Code - OSS is intentionally kept out of the repository.
+# Use scripts/print-code-oss-clone-command.mjs to create a local checkout here.
+upstream/vscode/
+upstream/vscode-oss/
+
+# Local build and runtime outputs.
+.vscode-test/
+.build/
+out*/
+dist/
+extensions/shogo-core/dist/
+hardening/runtime/
+hardening/runtime-*/
+hardening/generated/last-launch.json
+.runtime-debug*/
+.cache/
+node_modules/
+*.log

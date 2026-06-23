@@ -1,0 +1,47 @@
+{
+  "phase": 6,
+  "platforms": {
+    "darwin": {
+      "bundleIdentifier": "ai.shogo.ide",
+      "signingRequired": true,
+      "notarizationRequired": true,
+      "hardenedRuntimeRequired": true,
+      "entitlementsReviewRequired": true,
+      "artifactTypes": ["dmg", "zip"]
+    },
+    "win32": {
+      "appUserModelId": "ai.shogo.ide",
+      "signingRequired": true,
+      "installerSmokeRequired": true,
+      "artifactTypes": ["exe", "msi"]
+    },
+    "linux": {
+      "desktopFile": "shogo-ide.desktop",
+      "iconName": "shogo-ide",
+      "sandboxNotesRequired": true,
+      "artifactTypes": ["AppImage", "deb", "rpm"]
+    }
+  },
+  "preflight": [
+    "materialize distribution product.json",
+    "build shogo-core extension",
+    "copy bundled extension into Code OSS extension folder",
+    "verify Open VSX gallery configuration",
+    "verify telemetry defaults are off",
+    "verify .shogo-ide data folder separation",
+    "verify shogo-ide:// protocol registration",
+    "verify workspace trust defaults",
+    "verify current Desktop legacy fallback still works"
+  ],
+  "postInstallSmoke": [
+    "launch Shogo IDE",
+    "open shogo-labs/shogo-ai workspace",
+    "Shogo activity view visible",
+    "Chat webview renders",
+    "Agent health command returns configured/not-configured status",
+    "Extensions view opens Open VSX results",
+    "Terminal opens through built-in Code OSS terminal",
+    "Git view detects repository",
+    "Legacy Shogo Desktop IDE fallback remains accessible"
+  ]
+}

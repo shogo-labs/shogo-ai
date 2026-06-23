@@ -1,0 +1,241 @@
+{
+  "generatedAt": "2026-06-19T17:04:41.147Z",
+  "phase": 6,
+  "ok": true,
+  "product": {
+    "name": "Shogo IDE",
+    "applicationName": "shogo-ide",
+    "protocol": "shogo-ide",
+    "dataFolder": ".shogo-ide",
+    "extensionGallery": "https://open-vsx.org/vscode/gallery",
+    "telemetryEnabled": false
+  },
+  "bundledExtension": {
+    "id": "shogo.shogo-core",
+    "version": "0.0.0",
+    "main": "./dist/extension.js",
+    "browser": "./dist/web.js",
+    "activityContainer": null
+  },
+  "releaseChannels": {
+    "phase": 6,
+    "channels": {
+      "insiders": {
+        "quality": "insiders",
+        "audience": "internal and early testers",
+        "autoUpdate": true,
+        "crashReporting": "opt-in",
+        "extensionGallery": "Open VSX",
+        "minimumChecks": [
+          "phase1:check",
+          "phase2:check",
+          "phase3:check",
+          "phase4:check",
+          "phase5:check",
+          "phase6:check",
+          "extension:typecheck",
+          "extension:build"
+        ]
+      },
+      "beta": {
+        "quality": "beta",
+        "audience": "trusted Shogo Desktop users",
+        "autoUpdate": true,
+        "crashReporting": "opt-in",
+        "extensionGallery": "Open VSX",
+        "minimumChecks": [
+          "all phase checks",
+          "desktop typecheck",
+          "signed macOS artifact",
+          "notarization receipt",
+          "diagnostics bundle smoke test"
+        ]
+      },
+      "stable": {
+        "quality": "stable",
+        "audience": "production users",
+        "autoUpdate": true,
+        "crashReporting": "opt-in",
+        "extensionGallery": "Open VSX",
+        "minimumChecks": [
+          "all beta checks",
+          "rollback artifact available",
+          "security checklist approved",
+          "extension compatibility smoke matrix",
+          "large repo launch test"
+        ]
+      }
+    },
+    "rollback": {
+      "required": true,
+      "strategy": "Keep the previous signed Shogo IDE artifact and bundled shogo-core VSIX available for one-click downgrade.",
+      "dataSafety": "Never delete .shogo-ide user data during rollback. Disable incompatible bundled extension versions instead."
+    }
+  },
+  "securityPolicy": {
+    "phase": 6,
+    "workspaceTrust": {
+      "requiredFor": [
+        "file writes",
+        "patch apply",
+        "shell commands",
+        "git writes",
+        "package installs",
+        "database migrations",
+        "deployments",
+        "network writes",
+        "external integrations"
+      ],
+      "restrictedModeAllows": [
+        "open Shogo chat",
+        "check agent health",
+        "explain explicitly selected code",
+        "show setup/status diagnostics"
+      ]
+    },
+    "commandApproval": {
+      "defaultRequired": true,
+      "alwaysRequireFor": [
+        "rm",
+        "mv overwrite",
+        "git push",
+        "git reset",
+        "git clean",
+        "package install",
+        "migration",
+        "deploy",
+        "network write"
+      ],
+      "denyPatterns": [
+        "rm -rf /",
+        "sudo rm",
+        "mkfs",
+        "diskutil erase",
+        "format",
+        "git push --force"
+      ]
+    },
+    "contextRedaction": {
+      "respectGitignore": true,
+      "respectShogoignore": true,
+      "neverSendByDefault": [
+        ".env",
+        ".env.*",
+        "*.pem",
+        "*.key",
+        "id_rsa",
+        "id_ed25519",
+        "node_modules",
+        ".git",
+        "dist",
+        "build"
+      ],
+      "maxInlineContextBytes": 24000
+    },
+    "webview": {
+      "strictCspRequired": true,
+      "nonceScriptsRequired": true,
+      "remoteScriptsAllowed": false,
+      "messageSchemaValidationRequired": true
+    },
+    "marketplace": {
+      "defaultGallery": "Open VSX",
+      "microsoftMarketplaceEnabled": false,
+      "manualVsixInstallAllowed": true
+    },
+    "telemetry": {
+      "default": "off",
+      "crashReports": "opt-in",
+      "mustRedact": [
+        "prompts",
+        "file contents",
+        "terminal output",
+        "environment variables",
+        "access tokens",
+        "git diffs"
+      ]
+    }
+  },
+  "packagingChecklist": {
+    "phase": 6,
+    "platforms": {
+      "darwin": {
+        "bundleIdentifier": "ai.shogo.ide",
+        "signingRequired": true,
+        "notarizationRequired": true,
+        "hardenedRuntimeRequired": true,
+        "entitlementsReviewRequired": true,
+        "artifactTypes": [
+          "dmg",
+          "zip"
+        ]
+      },
+      "win32": {
+        "appUserModelId": "ai.shogo.ide",
+        "signingRequired": true,
+        "installerSmokeRequired": true,
+        "artifactTypes": [
+          "exe",
+          "msi"
+        ]
+      },
+      "linux": {
+        "desktopFile": "shogo-ide.desktop",
+        "iconName": "shogo-ide",
+        "sandboxNotesRequired": true,
+        "artifactTypes": [
+          "AppImage",
+          "deb",
+          "rpm"
+        ]
+      }
+    },
+    "preflight": [
+      "materialize distribution product.json",
+      "build shogo-core extension",
+      "copy bundled extension into Code OSS extension folder",
+      "verify Open VSX gallery configuration",
+      "verify telemetry defaults are off",
+      "verify .shogo-ide data folder separation",
+      "verify shogo-ide:// protocol registration",
+      "verify workspace trust defaults",
+      "verify current Desktop legacy fallback still works"
+    ],
+    "postInstallSmoke": [
+      "launch Shogo IDE",
+      "open shogo-labs/shogo-ai workspace",
+      "Shogo activity view visible",
+      "Chat webview renders",
+      "Agent health command returns configured/not-configured status",
+      "Extensions view opens Open VSX results",
+      "Terminal opens through built-in Code OSS terminal",
+      "Git view detects repository",
+      "Legacy Shogo Desktop IDE fallback remains accessible"
+    ]
+  },
+  "requiredSourceFiles": [
+    "product.shogo.template.json",
+    "distribution/distribution.manifest.json",
+    "distribution/defaults/settings.json",
+    "distribution/defaults/layout.json",
+    "distribution/builtin-extensions/shogo-core.json",
+    "extensions/shogo-core/package.json",
+    "extensions/shogo-core/src/extension.ts",
+    "extensions/shogo-core/src/chatViewProvider.ts",
+    "extensions/shogo-core/src/commands.ts"
+  ],
+  "requiredGeneratedFiles": [
+    "distribution/generated/product.json",
+    "distribution/generated/distribution.generated.json"
+  ],
+  "findings": [],
+  "nextManualGates": [
+    "Code OSS checkout/package smoke test",
+    "macOS signing and notarization",
+    "Windows signing smoke test",
+    "Linux desktop-file/AppImage smoke test",
+    "Open VSX extension compatibility matrix",
+    "large repository startup test",
+    "rollback artifact test"
+  ]
+}

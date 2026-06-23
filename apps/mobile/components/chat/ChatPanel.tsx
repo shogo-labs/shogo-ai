@@ -118,6 +118,7 @@ import {
   type ChatContextValue,
   type ChatMessage,
 } from "./ChatContext"
+import { useIdeBridge } from "./ideBridge"
 
 // Stable empty array we hand to the chat context's `messages` field.
 // See the long comment near `contextValue` below — we intentionally do
@@ -333,6 +334,8 @@ export interface ChatPanelProps {
   onResolveSessionModel?: (modelId: string | null) => void
   /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
   isActive?: boolean
+  /** Enables IDE-specific context bridge and compact composer affordances. */
+  ideMode?: boolean
   /**
    * Optional message enrichment hook — called before each outgoing message
    * to prepend auto-collected workspace context (terminal output, git status,
@@ -747,10 +750,12 @@ export const ChatPanel = observer(function ChatPanel({
   onModelChange: controlledOnModelChange,
   onResolveSessionModel,
   isActive = true,
+  ideMode = false,
   enrichMessage,
 }: ChatPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
+  const ideBridge = useIdeBridge(ideMode)
 
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
@@ -2141,6 +2146,54 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       if (currentSessionId) {
+        const assistantParts = Array.isArray(message.parts) ? message.parts : []
+        const assistantText = assistantParts
+          .filter((p: any) => p?.type === "text" && typeof p.text === "string")
+          .map((p: any) => p.text)
+          .join("")
+          .trim()
+        const assistantHasToolParts = assistantParts.some((p: any) =>
+          p?.type === "tool-invocation" ||
+          p?.type === "tool-result" ||
+          p?.type === "dynamic-tool" ||
+          typeof p?.type === "string" && p.type.startsWith("tool-")
+        )
+
+        if (assistantText || assistantHasToolParts) {
+          const sessionIdForPersist = currentSessionId
+          const partsForPersist = assistantParts.length > 0 ? JSON.stringify(assistantParts) : undefined
+          setTimeout(() => {
+            void (async () => {
+              try {
+                await sessionMessages?.loadPage({ sessionId: sessionIdForPersist }, { limit: 10, offset: 0 })
+              } catch (err) {
+                console.warn("[ChatPanel] Assistant fallback dedupe refresh failed:", err)
+              }
+
+              const existingAssistant = sessionMessages?.all?.some((m: any) => {
+                if (m.sessionId !== sessionIdForPersist || m.role !== "assistant") return false
+                if (assistantText && typeof m.content === "string" && m.content.trim() === assistantText) return true
+                return !!partsForPersist && m.parts === partsForPersist
+              })
+              if (existingAssistant) return
+
+              actions
+                .addMessage({
+                  sessionId: sessionIdForPersist,
+                  role: "assistant",
+                  content: assistantText,
+                  parts: partsForPersist,
+                  agent: "technical",
+                  model: selectedModel,
+                })
+                .then(() => {
+                  console.log("[ChatPanel] Persisted assistant message from onFinish fallback")
+                })
+                .catch((err) => console.warn("[ChatPanel] Failed to persist assistant fallback:", err))
+            })()
+          }, 750)
+        }
+
         refetchUsageWallet()
 
         const toolCalls = extractToolCalls(message)
@@ -3593,7 +3646,7 @@ export const ChatPanel = observer(function ChatPanel({
 
       const fileArray = files || []
 
-      if (!content.trim() && fileArray.length === 0) {
+      if (!content.trim() && fileArray.length === 0 && (!references || references.length === 0)) {
         return
       }
 
@@ -3733,6 +3786,9 @@ export const ChatPanel = observer(function ChatPanel({
           bodyExtra.interactionMode = "agent"
           confirmedPlanRef.current = null
         }
+        if (ideMode && (ideBridge.context.activeFile || ideBridge.context.workspaceFolders.length > 0)) {
+          bodyExtra.ideContext = ideBridge.context
+        }
         if (references && references.length > 0) {
           // The runtime resolves these into real context (file contents +
           // workspace summaries) before the model runs. Passed through the
@@ -3764,6 +3820,8 @@ export const ChatPanel = observer(function ChatPanel({
       selectedModel,
       actions,
       enrichMessage,
+      ideMode,
+      ideBridge.context,
     ]
   )
 
@@ -5323,6 +5381,10 @@ export const ChatPanel = observer(function ChatPanel({
               restoreDraftRequest={restoreDraftRequest}
               projectId={projectId}
               projects={projectMentionOptions}
+              ideMode={ideMode}
+              ideContext={ideBridge.context}
+              ideFileSearch={ideBridge.listFiles}
+              onOpenIdeFile={ideBridge.openFile}
             />
           </View>
         </KeyboardAvoidingView>

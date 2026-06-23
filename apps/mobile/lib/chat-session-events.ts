@@ -25,9 +25,118 @@ type ChangeListener = (event: ChatSessionChange) => void
 type SelectListener = (event: ChatSessionSelectRequest) => void
 type NewChatListener = (event: ChatSessionNewChatRequest) => void
 
+type CrossWindowChatSessionChange = ChatSessionChange & {
+  eventId: string
+  sourceId: string
+  emittedAt: number
+}
+
 const changeListeners = new Set<ChangeListener>()
 const selectListeners = new Set<SelectListener>()
 const newChatListeners = new Set<NewChatListener>()
+
+const CROSS_WINDOW_CHANGE_CHANNEL = 'shogo:chat-session-change'
+const CROSS_WINDOW_STORAGE_KEY = 'shogo:last-chat-session-change'
+const SOURCE_ID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`
+const seenCrossWindowEvents = new Set<string>()
+let broadcastChannel: BroadcastChannel | null | undefined
+let crossWindowListenerInstalled = false
+
+function nextEventId(): string {
+  return `evt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function getBroadcastChannel(): BroadcastChannel | null {
+  if (broadcastChannel !== undefined) return broadcastChannel
+  if (typeof window === 'undefined' || typeof globalThis.BroadcastChannel !== 'function') {
+    broadcastChannel = null
+    return broadcastChannel
+  }
+  try {
+    broadcastChannel = new globalThis.BroadcastChannel(CROSS_WINDOW_CHANGE_CHANNEL)
+  } catch {
+    broadcastChannel = null
+  }
+  return broadcastChannel
+}
+
+function rememberCrossWindowEvent(eventId: string): boolean {
+  if (!eventId) return false
+  if (seenCrossWindowEvents.has(eventId)) return false
+  seenCrossWindowEvents.add(eventId)
+  if (seenCrossWindowEvents.size > 200) {
+    const first = seenCrossWindowEvents.values().next().value
+    if (first) seenCrossWindowEvents.delete(first)
+  }
+  return true
+}
+
+function isCrossWindowChatSessionChange(value: unknown): value is CrossWindowChatSessionChange {
+  if (!value || typeof value !== 'object') return false
+  const event = value as Partial<CrossWindowChatSessionChange>
+  return (
+    typeof event.eventId === 'string' &&
+    typeof event.sourceId === 'string' &&
+    typeof event.projectId === 'string'
+  )
+}
+
+function notifyLocalListeners(event: ChatSessionChange): void {
+  changeListeners.forEach((fn) => fn(event))
+}
+
+function receiveCrossWindowChange(value: unknown): void {
+  if (!isCrossWindowChatSessionChange(value)) return
+  if (value.sourceId === SOURCE_ID) return
+  if (!rememberCrossWindowEvent(value.eventId)) return
+  notifyLocalListeners({
+    projectId: value.projectId,
+    activeSessionId: value.activeSessionId,
+    refresh: value.refresh,
+  })
+}
+
+function installCrossWindowListener(): void {
+  if (crossWindowListenerInstalled || typeof window === 'undefined') return
+  crossWindowListenerInstalled = true
+
+  const channel = getBroadcastChannel()
+  if (channel) {
+    channel.addEventListener('message', (event) => receiveCrossWindowChange(event.data))
+  }
+
+  const maybeWindow = typeof window !== 'undefined' ? window : undefined
+  maybeWindow?.addEventListener('storage', (event) => {
+    if (event.key !== CROSS_WINDOW_STORAGE_KEY || !event.newValue) return
+    try {
+      receiveCrossWindowChange(JSON.parse(event.newValue))
+    } catch {
+      // Ignore malformed cross-window sync payloads.
+    }
+  })
+}
+
+function publishCrossWindowChange(event: ChatSessionChange): void {
+  const outbound: CrossWindowChatSessionChange = {
+    ...event,
+    eventId: nextEventId(),
+    sourceId: SOURCE_ID,
+    emittedAt: Date.now(),
+  }
+  rememberCrossWindowEvent(outbound.eventId)
+
+  getBroadcastChannel()?.postMessage(outbound)
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(CROSS_WINDOW_STORAGE_KEY, JSON.stringify(outbound))
+    }
+  } catch {
+    // localStorage is a best-effort fallback for windows without BroadcastChannel.
+  }
+}
+
+installCrossWindowListener()
 
 /**
  * Lightweight pub/sub bridging the project workspace and the AppSidebar (the
@@ -52,7 +161,8 @@ export const chatSessionEvents = {
   },
 
   emit(event: ChatSessionChange) {
-    changeListeners.forEach((fn) => fn(event))
+    notifyLocalListeners(event)
+    publishCrossWindowChange(event)
   },
 
   subscribeSelect(fn: SelectListener) {

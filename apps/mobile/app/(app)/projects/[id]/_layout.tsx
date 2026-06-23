@@ -119,6 +119,7 @@ import {
   FileText,
   ShieldCheck,
   Globe,
+  Plus,
 } from 'lucide-react-native'
 import {
   useToast,
@@ -286,8 +287,14 @@ export default observer(function ProjectLayout() {
     newChat?: string
     /** Bumped alongside `newChat` so the one-shot create re-fires on re-press. */
     newChatNonce?: string
+    /** When 'ide', render only the canonical chat for embedding in Shogo IDE. */
+    embed?: string
   }>()
   const projectId = params.id
+  const isIdeChatEmbed = params.embed === 'ide'
+    || (Platform.OS === 'web'
+      && typeof window !== 'undefined'
+      && new URLSearchParams(window.location.search).get('embed') === 'ide')
   const { width, height } = useWindowDimensions()
   const isWide = width >= WIDE_BREAKPOINT
   const insets = useSafeAreaInsets()
@@ -299,6 +306,36 @@ export default observer(function ProjectLayout() {
   const toast = useToast()
 
   const router = useRouter()
+
+  useEffect(() => {
+    if (!isIdeChatEmbed || Platform.OS !== 'web' || !projectId || typeof window === 'undefined') return
+
+    const lockedUrl = new URL(window.location.href)
+    lockedUrl.searchParams.set('tab', 'chat-fullscreen')
+    lockedUrl.searchParams.set('embed', 'ide')
+    const lockedHref = `${lockedUrl.pathname}${lockedUrl.search}${lockedUrl.hash}`
+
+    window.history.replaceState(window.history.state, '', lockedHref)
+    window.history.pushState({ ...(window.history.state ?? {}), shogoIdeProjectChat: true }, '', lockedHref)
+
+    const keepProjectChatLocked = () => {
+      window.history.replaceState(
+        { ...(window.history.state ?? {}), shogoIdeProjectChat: true },
+        '',
+        lockedHref,
+      )
+      window.history.pushState(
+        { ...(window.history.state ?? {}), shogoIdeProjectChat: true },
+        '',
+        lockedHref,
+      )
+      router.replace(lockedHref as any)
+    }
+
+    window.addEventListener('popstate', keepProjectChatLocked)
+    return () => window.removeEventListener('popstate', keepProjectChatLocked)
+  }, [isIdeChatEmbed, projectId, router])
+
   const store = useSDKDomain() as IDomainStore
   const { isReady: sdkReady } = useSDKReady()
   const actions = useDomainActions()
@@ -1196,6 +1233,7 @@ export default observer(function ProjectLayout() {
   }, [chatSessionId, projectId])
 
   const SESSION_PAGE_SIZE = 10
+  const IDE_SESSION_PAGE_SIZE = 100
 
   // Tracks which projects we've already seeded via loadPage so we don't
   // re-fetch the session list on every chatSessionId change. Without this,
@@ -1203,6 +1241,25 @@ export default observer(function ProjectLayout() {
   // (the root cause of the "[ChatPanel] Loading session from API" storm
   // when a project restores many open tabs).
   const seededProjectsRef = useRef<Set<string>>(new Set())
+
+  const refreshProjectChatSessions = useCallback(async () => {
+    if (!projectId || !store?.chatSessionCollection) return
+    const pageSize = isIdeChatEmbed ? IDE_SESSION_PAGE_SIZE : SESSION_PAGE_SIZE
+    let offset = 0
+
+    try {
+      do {
+        await store.chatSessionCollection.loadPage(
+          { contextId: projectId },
+          { limit: pageSize, offset },
+        )
+        offset += pageSize
+      } while (isIdeChatEmbed && store.chatSessionCollection.hasMore)
+      seededProjectsRef.current.add(projectId)
+    } catch (err) {
+      console.error('[ProjectLayout] Failed to refresh chat sessions:', err)
+    }
+  }, [projectId, store, isIdeChatEmbed])
 
   // Seed the chat session collection and, when no session is selected yet,
   // auto-select or create one. The seed always runs once per projectId; the
@@ -1217,15 +1274,7 @@ export default observer(function ProjectLayout() {
 
     const run = async () => {
       if (!seededProjectsRef.current.has(projectId)) {
-        try {
-          await store.chatSessionCollection.loadPage(
-            { contextId: projectId },
-            { limit: SESSION_PAGE_SIZE, offset: 0 },
-          )
-          seededProjectsRef.current.add(projectId)
-        } catch (err) {
-          console.error('[ProjectLayout] Failed to seed chat sessions:', err)
-        }
+        await refreshProjectChatSessions()
         if (cancelled) return
       }
 
@@ -1282,7 +1331,7 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, store, chatSessionId, actions, tabsHydration, params.newChat])
+  }, [projectId, store, chatSessionId, actions, tabsHydration, params.newChat, refreshProjectChatSessions])
 
   // After a 'restored-with-tabs' hydration, choose which restored tab is
   // active. Prefer the persisted `lastChatSession` if it's still in the list,
@@ -1421,7 +1470,7 @@ export default observer(function ProjectLayout() {
     AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(() => {})
   }, [])
 
-  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['canvas', 'chat-fullscreen', 'app-preview', 'external-preview']), [])
+  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['canvas', 'chat-fullscreen', 'app-preview', 'external-preview', 'ide']), [])
 
   // Storage key bumped to v2 to heal installs that were stuck in
   // 'chat-fullscreen' due to the pre-fix attention/preview conflation. Old v1
@@ -1449,7 +1498,8 @@ export default observer(function ProjectLayout() {
       !requested ||
       (requested !== 'canvas' &&
         requested !== 'chat-fullscreen' &&
-        requested !== 'external-preview')
+        requested !== 'external-preview' &&
+        requested !== 'ide')
     ) {
       return
     }
@@ -1877,6 +1927,18 @@ export default observer(function ProjectLayout() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store?.chatSessionCollection?.all, sessionNames, projectId, _sessionFieldsKey])
 
+  useEffect(() => {
+    if (!isIdeChatEmbed || chatSessions.length === 0) return
+    const sessionIds = chatSessions.map((session) => session.id)
+    setOpenChatTabIds((prev) => {
+      if (prev.length === sessionIds.length && prev.every((id, index) => id === sessionIds[index])) return prev
+      return sessionIds
+    })
+    if (!chatSessionId || !sessionIds.includes(chatSessionId)) {
+      setChatSessionId(sessionIds[0])
+    }
+  }, [isIdeChatEmbed, chatSessions, chatSessionId])
+
   const handleCreateNewSession = useCallback(async () => {
     if (!projectId) return
     try {
@@ -1913,6 +1975,54 @@ export default observer(function ProjectLayout() {
     }
   }, [actions, projectId, workspaceRuntimeEnabled, http])
 
+  const openChatWithContextInCurrentWindow = useCallback(async (markdown: string) => {
+    if (!projectId) return
+    const initialMessage = markdown.trim()
+    if (!initialMessage) return
+
+    try {
+      let newId: string | null = null
+      if (workspaceRuntimeEnabled) {
+        const res = await api.createProjectWorkspaceSession(http, projectId, {
+          inferredName: 'Debug with AI',
+        })
+        newId = res.session?.id ?? null
+        if (!newId && res.error) {
+          console.error('[ProjectLayout] Failed to create workspace chat for context:', res.error)
+        }
+      } else {
+        const newSession = await actions.createChatSession({
+          inferredName: 'Debug with AI',
+          contextType: 'project',
+          contextId: projectId,
+        })
+        newId = newSession?.id ?? null
+      }
+      if (!newId) return
+
+      setDebugInitMessages((prev) => ({ ...prev, [newId]: initialMessage }))
+      setOpenChatTabIds((prev) => (prev.includes(newId) ? prev : [...prev, newId]))
+      setChatSessionId(newId)
+      setChatCollapsed(false)
+      setActiveTab('chat')
+      if (!isWide || !canvasEnabled) setPreviewTab('chat-fullscreen')
+      chatSessionEvents.emit({ projectId, activeSessionId: newId, refresh: true })
+    } catch (err) {
+      console.error('[ProjectLayout] Failed to open chat with context:', err)
+    }
+  }, [actions, canvasEnabled, http, isWide, projectId, workspaceRuntimeEnabled])
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ markdown?: string }>).detail
+      const markdown = typeof detail?.markdown === 'string' ? detail.markdown : ''
+      void openChatWithContextInCurrentWindow(markdown)
+    }
+    window.addEventListener('shogo:chat:open-with-context', handler)
+    return () => window.removeEventListener('shogo:chat:open-with-context', handler)
+  }, [openChatWithContextInCurrentWindow])
+
   // Let the sidebar switch this project's chats IN PLACE (no navigation /
   // remount) while the project is already open. The sidebar emits a select
   // request instead of router.push when its row is the active project.
@@ -1935,6 +2045,21 @@ export default observer(function ProjectLayout() {
       void handleCreateNewSession()
     })
   }, [projectId, handleCreateNewSession])
+
+  useEffect(() => {
+    if (!projectId) return
+    return chatSessionEvents.subscribe(({ projectId: pid, activeSessionId, refresh }) => {
+      if (pid !== projectId) return
+      if (refresh) {
+        seededProjectsRef.current.delete(projectId)
+        void refreshProjectChatSessions()
+      }
+      if (isIdeChatEmbed && activeSessionId) {
+        setOpenChatTabIds((prev) => (prev.includes(activeSessionId) ? prev : [...prev, activeSessionId]))
+        setChatSessionId(activeSessionId)
+      }
+    })
+  }, [projectId, isIdeChatEmbed, refreshProjectChatSessions])
 
   // Honor a `newChat=1` arrival (sidebar "+" pressed on a project that wasn't
   // open yet): create one fresh chat per `newChatNonce`. Ref-guarded so
@@ -2335,6 +2460,34 @@ export default observer(function ProjectLayout() {
     [billingHasActive, billingHasAdvanced, billingRefetch],
   )
 
+  const handleOpenCodeWorkbench = useCallback(() => {
+    if (!projectId) return
+    const bridge =
+      Platform.OS === 'web' && typeof window !== 'undefined'
+        ? (window as unknown as {
+            shogoDesktop?: {
+              codeWorkbench?: {
+                open?: (opts: { projectId?: string; workspacePath?: string }) => Promise<{ ok?: boolean; error?: string }>
+              }
+            }
+          }).shogoDesktop?.codeWorkbench
+        : undefined
+    if (bridge?.open) {
+      void bridge.open({
+        projectId: projectId!,
+        ...(primaryFolderPath ? { workspacePath: primaryFolderPath } : {}),
+      }).then((result: { ok?: boolean; error?: string } | undefined) => {
+        if (result && result.ok === false) {
+          Alert.alert('Could not open Shogo IDE', result.error ?? 'Unknown error')
+        }
+      }).catch((err: unknown) => {
+        Alert.alert('Could not open Shogo IDE', err instanceof Error ? err.message : String(err))
+      })
+      return
+    }
+    handlePreviewTabChange('ide')
+  }, [handlePreviewTabChange, primaryFolderPath, projectId])
+
   // enrichMessage: auto-inject terminal context into every chat message.
   // Dynamically imports the desktop terminal store (no-op on mobile/web).
   // Must live before the loading early-return below so hook order is stable.
@@ -2404,82 +2557,13 @@ export default observer(function ProjectLayout() {
 
   // Loading state. We also gate on `runtimeReady` so the panels never
   // render with stale URLs — see `useAgentUrl` for the polling contract.
-  // The copy differs once project metadata has loaded but the per-project
-  // runtime is still booting, so the user understands why the wait is
-  // happening (a remote instance pins its own URL via `localAgentUrl`,
-  // which `useAgentUrl` treats as immediately-ready, so this only
-  // surfaces for the host/VM/K8s paths).
-  if (isLoading || !project || (!remoteProjectAgentBaseUrl && !runtimeReady)) {
-    const stillBootingRuntime = !isLoading && project && !remoteProjectAgentBaseUrl && !runtimeReady
-    // After STALL_THRESHOLD_MS (~45s) of polling, or on a 4xx/5xx
-    // response, surface what's happening and offer the user a way out —
-    // retrying in place, going back, or opening on web — instead of
-    // leaving them on an infinite "Starting your project…" spinner like
-    // the v1.0.8 TestFlight build (where the project runtime endpoint
-    // kept returning ready:false after the worklets stub crash + cold
-    // ASC subscription state).
-    const showStalledRecovery = stillBootingRuntime && (runtimeStalled || !!runtimeError)
-    return (
-      <>
-        <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
-        <View className="flex-1 bg-background items-center justify-center px-6">
-          {!showStalledRecovery && (
-            <>
-              <ActivityIndicator size="large" />
-              <Text className="text-muted-foreground mt-3 text-sm">
-                {stillBootingRuntime ? 'Starting your project…' : 'Loading project...'}
-              </Text>
-            </>
-          )}
-          {showStalledRecovery && (
-            <View className="w-full max-w-sm gap-3 items-center">
-              {/* Keep an indicator visible — polling continues in the
-                  background, and the recovery card on its own (no spinner,
-                  no progress) made the app look stuck even though
-                  useAgentUrl was still retrying. See iPad screenshot in
-                  PR #(fix/ios-sentry-launch-crash). */}
-              <ActivityIndicator size="small" />
-              <Text className="text-foreground text-base font-semibold text-center">
-                This is taking longer than expected
-              </Text>
-              <Text className="text-muted-foreground text-sm text-center">
-                {runtimeError
-                  ? `We couldn't reach your project's runtime${runtimeLastStatus ? ` (${runtimeLastStatus})` : ''}. Check your connection or try again.`
-                  : 'Your project runtime is still warming up. You can keep waiting, retry, or open it on the web.'}
-              </Text>
-              <View className="flex-row flex-wrap gap-2 mt-2 justify-center">
-                <Pressable
-                  onPress={() => retryAgentUrl()}
-                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
-                  accessibilityLabel="Retry connecting to your project"
-                >
-                  <Text className="text-foreground text-sm font-medium">Try again</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
-                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
-                  accessibilityLabel="Go back to projects list"
-                >
-                  <Text className="text-foreground text-sm font-medium">Go back</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    void openWebAppSession(`/projects/${projectId}`).catch((err) =>
-                      console.warn('[ProjectLayout] open-on-web failed:', err),
-                    )
-                  }}
-                  className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
-                  accessibilityLabel="Open this project on the web"
-                >
-                  <Text className="text-primary-foreground text-sm font-medium">Open on web</Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
-        </View>
-      </>
-    )
-  }
+  // Keep this as data for the final render branch instead of returning here:
+  // direct new-window loads start in this state, and returning before later
+  // hooks causes React hook-order error #310 when the project finishes loading.
+  const projectRouteLoading = isLoading || !project || (!remoteProjectAgentBaseUrl && !runtimeReady)
+  const stillBootingRuntime = !isLoading && !!project && !remoteProjectAgentBaseUrl && !runtimeReady
+  const showStalledRecovery = stillBootingRuntime && (runtimeStalled || !!runtimeError)
+
 
   /**
    * No tabs are open and we've finished hydrating from storage. This is the
@@ -2542,7 +2626,7 @@ export default observer(function ProjectLayout() {
             <PanelErrorBoundary panelName="Chat">
               <ChatPanel
                 featureId={projectId ?? null}
-                featureName={project.name}
+                featureName={project?.name ?? 'Project'}
                 phase={null}
                 chatSessionId={tabId}
                 onChatSessionChange={handleChatSessionChange}
@@ -2572,6 +2656,7 @@ export default observer(function ProjectLayout() {
                 onModelChange={handleModelChange}
                 onResolveSessionModel={handleResolveSessionModel}
                 className="flex-1"
+                ideMode={isIdeChatEmbed}
                 enrichMessage={enrichMessage}
               />
             </PanelErrorBoundary>
@@ -2582,6 +2667,7 @@ export default observer(function ProjectLayout() {
   )
 
   const hiddenTabs: string[] = ['app-preview'] // APP_MODE_DISABLED: always hide app-preview
+  if (isIdeChatEmbed) hiddenTabs.push('canvas', 'external-preview', 'ide', 'files', 'plans', 'settings')
   if (activeMode !== 'canvas') hiddenTabs.push('canvas')
   // Hide the external-only tabs on managed projects so the top-bar
   // stays uncluttered. The renderer/state for these panels is
@@ -2622,7 +2708,7 @@ export default observer(function ProjectLayout() {
   ) : null
 
   const topBarSharedProps = {
-    projectName: project.name,
+    projectName: project?.name ?? 'Project',
     projectId: projectId!,
     projects: allProjects,
     activeTab: effectiveTab,
@@ -2634,8 +2720,8 @@ export default observer(function ProjectLayout() {
       ? { enabled: billingData.effectiveBalance.overageEnabled, accumulatedUsd: billingData.effectiveBalance.overageAccumulatedUsd }
       : undefined,
     ownerName: user?.name || '',
-    projectCreatedAt: project.createdAt,
-    projectModifiedAt: project.updatedAt,
+    projectCreatedAt: project?.createdAt,
+    projectModifiedAt: project?.updatedAt,
     isStarred,
     onRenameProject: handleRenameProject,
     onToggleStar: handleToggleStar,
@@ -2679,6 +2765,177 @@ export default observer(function ProjectLayout() {
             if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
           }
         : undefined,
+    ideEmbed: isIdeChatEmbed,
+  }
+
+  if (projectRouteLoading) {
+    return (
+      <>
+        <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
+        <View className="flex-1 bg-background items-center justify-center px-6">
+          {!showStalledRecovery && (
+            <>
+              <ActivityIndicator size="large" />
+              <Text className="text-muted-foreground mt-3 text-sm">
+                {stillBootingRuntime ? 'Starting your project…' : 'Loading project...'}
+              </Text>
+            </>
+          )}
+          {showStalledRecovery && (
+            <View className="w-full max-w-sm gap-3 items-center">
+              <ActivityIndicator size="small" />
+              <Text className="text-foreground text-base font-semibold text-center">
+                This is taking longer than expected
+              </Text>
+              <Text className="text-muted-foreground text-sm text-center">
+                {runtimeError
+                  ? `We couldn't reach your project's runtime${runtimeLastStatus ? ` (${runtimeLastStatus})` : ''}. Check your connection or try again.`
+                  : 'Your project runtime is still warming up. You can keep waiting, retry, or open it on the web.'}
+              </Text>
+              <View className="flex-row flex-wrap gap-2 mt-2 justify-center">
+                <Pressable
+                  onPress={() => retryAgentUrl()}
+                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
+                  accessibilityLabel="Retry connecting to your project"
+                >
+                  <Text className="text-foreground text-sm font-medium">Try again</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
+                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
+                  accessibilityLabel="Go back to projects list"
+                >
+                  <Text className="text-foreground text-sm font-medium">Go back</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    void openWebAppSession(`/projects/${projectId}`).catch((err) =>
+                      console.warn('[ProjectLayout] open-on-web failed:', err),
+                    )
+                  }}
+                  className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
+                  accessibilityLabel="Open this project on the web"
+                >
+                  <Text className="text-primary-foreground text-sm font-medium">Open on web</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+        </View>
+      </>
+    )
+  }
+
+  if (isIdeChatEmbed) {
+    return (
+      <>
+        <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
+        <PlanStreamProvider>
+          <ChatBridgeProvider
+            chatSessionId={chatSessionId}
+            agentUrl={agentUrl}
+            initialEzModeActive={false}
+            initialAutoStartVoice={false}
+          >
+            <View className="flex-1 bg-background overflow-hidden">
+              <View className="h-11 flex-row items-center border-b border-border bg-background">
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  className="flex-1"
+                  contentContainerStyle={{ alignItems: 'center' }}
+                >
+                  {openChatTabIds.map((tabId) => {
+                    const session = chatSessions.find((candidate) => candidate.id === tabId)
+                    const isActive = tabId === chatSessionId
+                    const isStreaming = streamingTabIds.has(tabId)
+                    const isCompleted = completedTabIds.has(tabId)
+                    return (
+                      <Pressable
+                        key={tabId}
+                        onPress={() => setChatSessionId(tabId)}
+                        className={cn(
+                          'h-11 min-w-[150px] max-w-[240px] flex-row items-center gap-2 border-r border-border px-3',
+                          isActive ? 'bg-background' : 'bg-muted/30 opacity-70',
+                        )}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Open chat ${session?.name ?? 'Untitled chat'}`}
+                      >
+                        <MessageSquare
+                          size={15}
+                          className={cn(isActive ? 'text-foreground' : 'text-muted-foreground')}
+                        />
+                        <Text
+                          className={cn(
+                            'flex-1 text-sm font-medium',
+                            isActive ? 'text-foreground' : 'text-muted-foreground',
+                          )}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {session?.name ?? 'New Chat'}
+                        </Text>
+                        {isStreaming ? (
+                          <View className="h-2 w-2 rounded-full bg-orange-500" />
+                        ) : isCompleted ? (
+                          <View className="h-2 w-2 rounded-full bg-emerald-500" />
+                        ) : null}
+                        <Pressable
+                          onPress={(event) => {
+                            event.stopPropagation?.()
+                            setOpenChatTabIds((prev) => {
+                              const next = prev.filter((id) => id !== tabId)
+                              if (chatSessionId === tabId) {
+                                setChatSessionId(next[next.length - 1] ?? null)
+                              }
+                              return next
+                            })
+                          }}
+                          className="h-6 w-6 items-center justify-center rounded-md active:bg-muted"
+                          accessibilityRole="button"
+                          accessibilityLabel={`Close chat ${session?.name ?? 'Untitled chat'}`}
+                        >
+                          <XIcon size={14} className="text-muted-foreground" />
+                        </Pressable>
+                      </Pressable>
+                    )
+                  })}
+                </ScrollView>
+                <Pressable
+                  onPress={() => {
+                    void handleCreateNewSession()
+                  }}
+                  className="h-11 w-11 items-center justify-center border-l border-border active:bg-muted"
+                  accessibilityRole="button"
+                  accessibilityLabel="New chat"
+                >
+                  <Plus size={18} className="text-muted-foreground" />
+                </Pressable>
+              </View>
+              <View className="flex-1 min-w-0 bg-background">
+                <PanelErrorBoundary panelName="Shogo IDE Chat">
+                  {workspaceChatLoading ? (
+                    <View className="flex-1 items-center justify-center bg-background">
+                      <ActivityIndicator size="large" />
+                      <Text className="mt-3 text-sm text-muted-foreground">Loading project chat…</Text>
+                    </View>
+                  ) : showEmptyChatState ? (
+                    <View className="flex-1 bg-background items-center justify-center px-8">
+                      <MessageSquare size={28} className="text-muted-foreground" />
+                      <Text className="text-sm text-muted-foreground mt-3 text-center">
+                        No chat open. Press + to start a new project chat.
+                      </Text>
+                    </View>
+                  ) : (
+                    <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
+                  )}
+                </PanelErrorBoundary>
+              </View>
+            </View>
+          </ChatBridgeProvider>
+        </PlanStreamProvider>
+      </>
+    )
   }
 
   return (
@@ -2978,8 +3235,14 @@ export default observer(function ProjectLayout() {
             }
           >
             <PanelErrorBoundary panelName="IDE">
-              <IDEPanel visible={effectiveTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} isExternalProject={isExternalProject}
+              <IDEPanel
+                visible={effectiveTab === 'ide'}
+                projectId={projectId!}
+                projectName={project.name}
+                agentUrl={agentUrl}
+                isExternalProject={isExternalProject}
                 folderPath={primaryFolderPath ?? undefined}
+                onOpenCodeWorkbench={handleOpenCodeWorkbench}
               />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Files">

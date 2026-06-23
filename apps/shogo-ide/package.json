@@ -1,0 +1,22 @@
+{
+  "name": "@shogo/shogo-ide",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Shogo Code - OSS desktop IDE distribution workspace.",
+  "scripts": {
+    "phase1:check": "node scripts/phase1-check.mjs",
+    "phase2:check": "node scripts/phase2-check.mjs",
+    "phase3:check": "node scripts/phase3-check.mjs",
+    "phase4:check": "node scripts/phase4-check.mjs",
+    "phase5:check": "node scripts/phase5-check.mjs",
+    "phase6:check": "node scripts/phase6-check.mjs",
+    "distribution:materialize": "node scripts/materialize-distribution.mjs",
+    "hardening:report": "node scripts/generate-hardening-report.mjs",
+    "extension:build": "bun run --cwd extensions/shogo-core build",
+    "extension:typecheck": "bun run --cwd extensions/shogo-core typecheck",
+    "codeoss:clone:print": "node scripts/print-code-oss-clone-command.mjs",
+    "codeoss:patch": "node scripts/apply-code-oss-patches.mjs"
+  }
+}
