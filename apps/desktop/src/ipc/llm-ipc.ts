@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { BrowserWindow, ipcMain } from 'electron'
+import { ipcMain } from 'electron'
 
 const CH = {
   streamCommand: 'shogo:llm:stream-command',
@@ -31,10 +31,8 @@ export function registerLlmIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(CH.openChatWithContext, async (_event, markdown: string) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send('shogo:chat:open-with-context', { markdown })
-    }
+  ipcMain.handle(CH.openChatWithContext, async (event, markdown: string) => {
+    event.sender.send('shogo:chat:open-with-context', { markdown })
     return { ok: true }
   })
 }

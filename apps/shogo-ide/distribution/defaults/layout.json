@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "description": "Recommended first-run Shogo IDE layout for the Code - OSS distribution.",
+  "activityBar": {
+    "defaultContainer": "workbench.view.explorer",
+    "visibleContainers": [
+      "workbench.view.explorer",
+      "workbench.view.search",
+      "workbench.view.scm",
+      "workbench.view.debug",
+      "workbench.view.extensions"
+    ]
+  },
+  "chat": {
+    "defaultContainer": "shogo-agent-chat",
+    "autoOpenView": "shogo.agentChat"
+  },
+  "views": {
+    "shogo-agent-chat": [
+      "shogo.agentChat"
+    ]
+  },
+  "panel": {
+    "preserveBuiltIns": [
+      "workbench.panel.terminal",
+      "workbench.panel.output",
+      "workbench.panel.markers"
+    ]
+  },
+  "fallback": {
+    "currentMonacoIdeRemainsAvailable": true,
+    "phase2LauncherRemainsOptIn": true
+  }
+}

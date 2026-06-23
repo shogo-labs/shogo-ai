@@ -42,6 +42,7 @@ const IS_DEV = !app.isPackaged
 let manager: RecordingManager | null = null
 let detector: MeetingDetector | null = null
 let durationTimer: ReturnType<typeof setInterval> | null = null
+let recordingWindowResolver: (() => BrowserWindow | null) | null = null
 
 // Simple state machine that mirrors the UX we had before — when the mic
 // goes quiet for a while (inferred from the absence of an active
@@ -87,6 +88,10 @@ function sendToRenderer(channel: string, data?: unknown): void {
       win.webContents.send(channel, data)
     }
   }
+}
+
+function getRecordingWindow(): BrowserWindow | null {
+  return recordingWindowResolver?.() ?? null
 }
 
 function getManager(): RecordingManager {
@@ -139,12 +144,15 @@ function handleRecordingEvent(evt: RecordingEvent): void {
 // Public API (imported by main.ts + the HTTP bridge)
 // ---------------------------------------------------------------------------
 
+export function setRecordingWindowResolver(resolveWindow: () => BrowserWindow | null): void {
+  recordingWindowResolver = resolveWindow
+}
+
 export async function startRecording(): Promise<{ id: string; audioPath: string }> {
   const mgr = getManager()
   if (mgr.isRecording()) throw new Error('Already recording')
 
-  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
-  if (!win) throw new Error('Cannot start recording: no renderer window available')
+  if (!getRecordingWindow()) throw new Error('Cannot start recording: no renderer window available')
 
   const session = await mgr.startSession(process.platform)
 
@@ -425,8 +433,8 @@ export async function startRecordingHttpBridge(): Promise<void> {
     await startRecordingBridge({
       userDataDir: app.getPath('userData'),
       handlers: {
-        start: async () => invokeRendererStart(),
-        stop: async () => invokeRendererStop(),
+        start: async () => invokeRendererStart(getRecordingWindow()),
+        stop: async () => invokeRendererStop(getRecordingWindow()),
         status: () => getRecordingStatus(),
       },
     })

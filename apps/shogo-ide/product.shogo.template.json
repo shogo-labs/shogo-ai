@@ -1,0 +1,67 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vscode/main/product.schema.json",
+  "nameShort": "Shogo",
+  "nameLong": "Shogo IDE",
+  "applicationName": "shogo-ide",
+  "dataFolderName": ".shogo-ide",
+  "serverDataFolderName": ".shogo-ide-server",
+  "urlProtocol": "shogo-ide",
+  "licenseName": "MIT",
+  "licenseUrl": "https://github.com/shogo-labs/shogo-ai/blob/main/LICENSE",
+  "win32MutexName": "shogoide",
+  "darwinBundleIdentifier": "ai.shogo.ide",
+  "linuxIconName": "shogo-ide",
+  "quality": "oss",
+  "documentationUrl": "https://docs.shogo.ai",
+  "reportIssueUrl": "https://github.com/shogo-labs/shogo-ai/issues/new/choose",
+  "requestFeatureUrl": "https://github.com/shogo-labs/shogo-ai/issues/new/choose",
+  "privacyStatementUrl": "https://shogo.ai/privacy",
+  "telemetryOptOutUrl": "https://shogo.ai/privacy",
+  "extensionEnabledApiProposals": {
+    "shogo.shogo-core": [
+      "authSession",
+      "contribViewsRemote",
+      "terminalDataWriteEvent",
+      "treeViewMarkdownMessage"
+    ]
+  },
+  "builtInExtensions": [
+    {
+      "name": "shogo-core",
+      "version": "0.0.0",
+      "repo": "https://github.com/shogo-labs/shogo-ai",
+      "metadata": {
+        "id": "shogo.shogo-core",
+        "publisherId": "shogo",
+        "publisherDisplayName": "Shogo Labs"
+      }
+    }
+  ],
+  "extensionsGallery": {
+    "serviceUrl": "https://open-vsx.org/vscode/gallery",
+    "itemUrl": "https://open-vsx.org/vscode/item",
+    "resourceUrlTemplate": "https://open-vsx.org/vscode/unpkg/{publisher}/{name}/{version}/{path}",
+    "controlUrl": ""
+  },
+  "linkProtectionTrustedDomains": [
+    "https://shogo.ai",
+    "https://docs.shogo.ai",
+    "https://github.com/shogo-labs/shogo-ai",
+    "https://open-vsx.org"
+  ],
+  "enableTelemetry": false,
+  "aiConfig": {
+    "defaultAgentService": "local",
+    "requiresWorkspaceTrustForEdits": true,
+    "requiresWorkspaceTrustForCommands": true,
+    "requiresExplicitApprovalForNetworkWrites": true,
+    "upstreamCopilotDisabled": true,
+    "disabledUpstreamExtensionIds": [
+      "GitHub.copilot-chat",
+      "GitHub.copilot",
+      "vscode.github",
+      "vscode.github-authentication",
+      "vscode.microsoft-authentication"
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { cors } from 'hono/cors'
 import { csrf } from 'hono/csrf'
@@ -12,7 +12,7 @@ import { z } from 'zod'
 import { resolve, join } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
-import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'fs'
 import { auth } from './auth'
 import { getPriceId, getInstancePriceId, type PaidInstanceSize } from './config/stripe-prices'
 import { getCurrencyForCountry, formatPrice, SUPPORTED_CURRENCIES } from './config/currencies'
@@ -38,7 +38,7 @@ import * as workspaceModelsService from './services/workspace-models.service'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
-import { projectChatRoutes } from './routes/project-chat'
+import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -339,6 +339,108 @@ const PROJECT_ROOT = resolve(__filename, '../../../../')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 
 const app = new Hono()
+
+
+type ShogoIdeChatBody = {
+  projectId?: string
+  workspaceFolders?: unknown
+  ide?: { workspaceFolders?: unknown }
+  ideContext?: { workspaceFolders?: unknown }
+}
+
+function extractShogoIdeWorkspacePath(body: ShogoIdeChatBody): string | null {
+  const sources = [body.ideContext?.workspaceFolders, body.ide?.workspaceFolders, body.workspaceFolders]
+  for (const source of sources) {
+    if (!Array.isArray(source) || source.length === 0) continue
+    const first = source[0] as any
+    if (typeof first === 'string' && first.trim()) return first.replace(/^file:\/\//, '')
+    if (typeof first?.fsPath === 'string' && first.fsPath.trim()) return first.fsPath
+    if (typeof first?.uri === 'string' && first.uri.startsWith('file://')) return first.uri.replace(/^file:\/\//, '')
+  }
+  return null
+}
+
+async function resolveShogoIdeProjectId(body: ShogoIdeChatBody): Promise<string | null> {
+  if (typeof body.projectId === 'string' && body.projectId.trim()) {
+    const project = await prisma.project.findUnique({ where: { id: body.projectId }, select: { id: true } })
+    if (project) return project.id
+  }
+
+  const workspacePath = extractShogoIdeWorkspacePath(body)
+  if (!workspacePath) return null
+
+  let realWorkspacePath: string
+  try {
+    realWorkspacePath = realpathSync(workspacePath)
+  } catch {
+    realWorkspacePath = resolve(workspacePath)
+  }
+
+  const folder = await prisma.projectFolder.findFirst({
+    where: { path: realWorkspacePath },
+    select: { projectId: true },
+    orderBy: { lastOpenedAt: 'desc' },
+  })
+  if (folder?.projectId) return folder.projectId
+
+  const pathParts = realWorkspacePath.split(/[\\/]+/).filter(Boolean)
+  const basename = pathParts[pathParts.length - 1]
+  if (basename) {
+    const project = await prisma.project.findUnique({ where: { id: basename }, select: { id: true } }).catch(() => null)
+    if (project) return project.id
+  }
+
+  for (let current = realWorkspacePath; current && current !== '/'; current = resolve(current, '..')) {
+    const projectJsonPath = join(current, '.shogo', 'project.json')
+    if (!existsSync(projectJsonPath)) continue
+    try {
+      const parsed = JSON.parse(readFileSync(projectJsonPath, 'utf8')) as { projectId?: unknown }
+      if (typeof parsed.projectId !== 'string' || !parsed.projectId) continue
+      const project = await prisma.project.findUnique({ where: { id: parsed.projectId }, select: { id: true } })
+      if (project) return project.id
+    } catch {
+      return null
+    }
+  }
+
+  return null
+}
+
+const handleShogoIdeAgentChat = async (c: Context) => {
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    return c.json({ error: 'Shogo IDE agent chat is only available in local Desktop mode.' }, 404)
+  }
+
+  const bodyText = await c.req.text()
+  let body: ShogoIdeChatBody = {}
+  try {
+    body = bodyText ? JSON.parse(bodyText) : {}
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400)
+  }
+
+  const projectId = await resolveShogoIdeProjectId(body)
+  if (!projectId) {
+    return c.json({
+      error: 'Shogo IDE could not resolve this folder to a local Shogo project. Open the folder from Shogo Desktop once, then retry chat from the IDE.',
+    }, 412)
+  }
+
+  const router = projectChatRoutes({ runtimeManager: getRuntimeManager() })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/chat`
+  const headers = new Headers(c.req.raw.headers)
+  if (!headers.has('content-type')) headers.set('content-type', 'application/json')
+  return router.fetch(new Request(url.toString(), {
+    method: 'POST',
+    headers,
+    body: bodyText,
+    signal: c.req.raw.signal,
+  }))
+}
+
+app.post('/agent/chat', handleShogoIdeAgentChat)
+app.post('/api/agent/chat', handleShogoIdeAgentChat)
 
 // OpenTelemetry tracing — must be first middleware so all requests get spans
 app.use('*', tracingMiddleware)
@@ -2638,7 +2740,33 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         // takes ownership of `closeSession`; mark the handoff so the
         // finally guard below does not double-close.
         if (isChatStream && response.ok) {
-          outBody = teeChatStreamForBilling(outBody, projectId, chatSessionIdHeader)
+          const trackerProject = chatSessionIdHeader
+            ? await prisma.project.findUnique({
+                where: { id: projectId },
+                select: { id: true, workspaceId: true },
+              }).catch(() => null)
+            : null
+
+          if (trackerProject) {
+            let parsedBodyForTracker: any = {}
+            if (requestBody) {
+              try {
+                parsedBodyForTracker = JSON.parse(new TextDecoder().decode(requestBody))
+              } catch {
+                parsedBodyForTracker = {}
+              }
+            }
+            outBody = teeChatStreamForBilling(
+              outBody,
+              projectId,
+              chatSessionIdHeader,
+              (stream) => trackUsageFromStream(stream, parsedBodyForTracker, trackerProject, {
+                chatSessionId: chatSessionIdHeader,
+              }),
+            )
+          } else {
+            outBody = teeChatStreamForBilling(outBody, projectId, chatSessionIdHeader)
+          }
           billingSessionHandedOff = true
         }
         proxyClientSignal?.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })

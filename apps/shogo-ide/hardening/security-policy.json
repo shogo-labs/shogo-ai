@@ -1,0 +1,84 @@
+{
+  "phase": 6,
+  "workspaceTrust": {
+    "requiredFor": [
+      "file writes",
+      "patch apply",
+      "shell commands",
+      "git writes",
+      "package installs",
+      "database migrations",
+      "deployments",
+      "network writes",
+      "external integrations"
+    ],
+    "restrictedModeAllows": [
+      "open Shogo chat",
+      "check agent health",
+      "explain explicitly selected code",
+      "show setup/status diagnostics"
+    ]
+  },
+  "commandApproval": {
+    "defaultRequired": true,
+    "alwaysRequireFor": [
+      "rm",
+      "mv overwrite",
+      "git push",
+      "git reset",
+      "git clean",
+      "package install",
+      "migration",
+      "deploy",
+      "network write"
+    ],
+    "denyPatterns": [
+      "rm -rf /",
+      "sudo rm",
+      "mkfs",
+      "diskutil erase",
+      "format",
+      "git push --force"
+    ]
+  },
+  "contextRedaction": {
+    "respectGitignore": true,
+    "respectShogoignore": true,
+    "neverSendByDefault": [
+      ".env",
+      ".env.*",
+      "*.pem",
+      "*.key",
+      "id_rsa",
+      "id_ed25519",
+      "node_modules",
+      ".git",
+      "dist",
+      "build"
+    ],
+    "maxInlineContextBytes": 24000
+  },
+  "webview": {
+    "strictCspRequired": true,
+    "nonceScriptsRequired": true,
+    "remoteScriptsAllowed": false,
+    "messageSchemaValidationRequired": true
+  },
+  "marketplace": {
+    "defaultGallery": "Open VSX",
+    "microsoftMarketplaceEnabled": false,
+    "manualVsixInstallAllowed": true
+  },
+  "telemetry": {
+    "default": "off",
+    "crashReports": "opt-in",
+    "mustRedact": [
+      "prompts",
+      "file contents",
+      "terminal output",
+      "environment variables",
+      "access tokens",
+      "git diffs"
+    ]
+  }
+}

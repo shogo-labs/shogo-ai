@@ -14,6 +14,7 @@ interface IDEPanelProps {
   projectId: string
   projectName?: string | null
   agentUrl?: string | null
+  onOpenCodeWorkbench?: () => void
   isExternalProject?: boolean
   folderPath?: string | null
 }
@@ -28,15 +29,18 @@ interface IDEPanelProps {
  * are rendered as "backend-pending" placeholders until the agent-runtime
  * exposes those routes (follow-up phase).
  *
- * The Workbench stays MOUNTED even when the IDE tab is not visible (we just
- * hide it with `display: none`). This is essential for the live-edit feature:
- * the Workbench holds an SSE subscription that receives `file.changed` events
- * whenever the chat agent writes to disk, and unmounting/remounting on every
- * tab switch would constantly tear that subscription down — so the user would
- * miss any edits made while they were on another tab and have to refresh the
- * whole page to see them.
+ * In Shogo Desktop, this IDE tab remains the in-app editing surface while
+ * the footer can open/focus the managed external Shogo-IDE window.
  */
-export function IDEPanel({ visible, projectId, projectName, agentUrl, isExternalProject, folderPath }: IDEPanelProps) {
+export function IDEPanel({
+  visible,
+  projectId,
+  projectName,
+  agentUrl,
+  onOpenCodeWorkbench,
+  isExternalProject,
+  folderPath,
+}: IDEPanelProps) {
   // SdkFs is always-on: it's the canonical backend for writes, search, and
   // SSE subscriptions even when the desktop IPC fast-path is available
   // (DesktopFs wraps and delegates to it). Memo keeps the AgentClient +
@@ -52,20 +56,30 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl, isExternal
   // round-trip to agent-runtime. If no (web build, cloud mode, or external
   // folder-bound project), fall through to plain SdkFs.
   const [agentService, setAgentService] = useState<WorkspaceService | null>(sdkService)
+  const [desktopWorkspaceRoot, setDesktopWorkspaceRoot] = useState<string | null | undefined>(undefined)
   useEffect(() => {
     setAgentService(sdkService)
-    if (!sdkService) return
+    setDesktopWorkspaceRoot(undefined)
     const bridge = getDesktopFsBridge()
-    if (!bridge) return
+    if (!bridge) {
+      setDesktopWorkspaceRoot(null)
+      return
+    }
     let cancelled = false
-    void bridge.resolveWorkspace(projectId).then((res) => {
-      if (cancelled) return
-      if (res.ok && res.root) {
-        setAgentService(
-          new DesktopFs(bridge, res.root, sdkService, `project/${projectId} (desktop-fast-path)`),
-        )
-      }
-    })
+    void bridge.resolveWorkspace(projectId)
+      .then((res) => {
+        if (cancelled) return
+        const root = res.ok && res.root ? res.root : null
+        setDesktopWorkspaceRoot(root)
+        if (root && sdkService) {
+          setAgentService(
+            new DesktopFs(bridge, root, sdkService, `project/${projectId} (desktop-fast-path)`),
+          )
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDesktopWorkspaceRoot(null)
+      })
     return () => { cancelled = true }
   }, [sdkService, projectId])
 
@@ -106,6 +120,7 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl, isExternal
           fetchImpl={agentFetch}
           isExternalProject={isExternalProject}
           folderPath={folderPath}
+          onOpenCodeWorkbench={onOpenCodeWorkbench}
         />
       </div>
     </View>

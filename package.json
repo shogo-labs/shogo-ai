@@ -7,7 +7,8 @@
     "packages/*",
     "packages/sdk/examples/*",
     "apps/api",
-    "apps/mobile"
+    "apps/mobile",
+    "apps/shogo-ide"
   ],
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || exit 0",
@@ -61,6 +62,17 @@
     "desktop:build-web": "EXPO_PUBLIC_LOCAL_MODE=true EXPO_PUBLIC_API_URL=http://localhost:8002 bun run --cwd apps/mobile build",
     "desktop:dev": "DATABASE_URL=file:./shogo-local.db bun run db:generate:all && SHOGO_LOCAL_MODE=true bun run desktop:build-web && cd apps/desktop && npx tsc && node scripts/bundle-main.mjs && node scripts/bundle-pty-host.mjs && node scripts/bundle-extension-host.mjs && SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo-local.db npx electron .",
     "desktop:dev:clean": "rm -rf \"$HOME/Library/Application Support/Shogo/data\" && bun run desktop:dev",
+    "shogo-ide:phase1:check": "bun run --cwd apps/shogo-ide phase1:check",
+    "shogo-ide:phase2:check": "bun run --cwd apps/shogo-ide phase2:check",
+    "shogo-ide:phase3:check": "bun run --cwd apps/shogo-ide phase3:check",
+    "shogo-ide:phase4:check": "bun run --cwd apps/shogo-ide phase4:check",
+    "shogo-ide:phase5:check": "bun run --cwd apps/shogo-ide phase5:check",
+    "shogo-ide:phase6:check": "bun run --cwd apps/shogo-ide phase6:check",
+    "shogo-ide:distribution:materialize": "bun run --cwd apps/shogo-ide distribution:materialize",
+    "shogo-ide:hardening:report": "bun run --cwd apps/shogo-ide hardening:report",
+    "shogo-ide:extension:build": "bun run --cwd apps/shogo-ide extension:build",
+    "shogo-ide:extension:typecheck": "bun run --cwd apps/shogo-ide extension:typecheck",
+    "shogo-ide:codeoss:clone:print": "bun run --cwd apps/shogo-ide codeoss:clone:print",
     "docs:dev": "bun run --cwd apps/docs dev",
     "docs:build": "bun run --cwd apps/docs build",
     "typecheck": "bun --no-env-file scripts/run-typecheck.ts",

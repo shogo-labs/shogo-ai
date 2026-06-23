@@ -21,7 +21,9 @@ import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notif
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
-import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
+import http, { type Server as HttpServer } from 'http'
+import https from 'https'
+import { startLocalServer, stopLocalServer, getApiUrl } from './local-server'
 import { getWebDir, getBunPath, getDbPath } from './paths'
 import {
   routeShogoRequest,
@@ -41,6 +43,7 @@ import {
   startMeetingMonitor,
   cleanupRecording,
   startRecordingHttpBridge,
+  setRecordingWindowResolver,
 } from './recording'
 import { registerFsIpcHandlers } from './fs-ipc'
 import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
@@ -52,6 +55,7 @@ import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
 import { registerExtensionsIpcHandlers, disposeExtensionsIpcHandlers } from './extensions/ipc'
 import { createTray, destroyTray } from './tray'
+import { WindowManager } from './window-manager'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 import {
   openPreview,
@@ -66,6 +70,7 @@ import {
   onPreviewEvent,
   type PreviewBounds,
 } from './preview-views'
+import { openIdeWindow, disposeIdeServers } from './ide-views'
 
 // Shape of JSON responses from the local API's cloud-login endpoints
 // (used by the heartbeat + signout helpers below). Every field is optional
@@ -160,23 +165,25 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
-// Single-instance: keep one Shogo window per user. Second-instance just
-// focuses the existing window (no auth-callback handling — sign-in is
-// now driven by polling the cloud, not a deep link).
+// Single-instance: keep one Shogo app process per user. Second-instance
+// currently preserves legacy behavior by focusing the primary window
+// (no auth-callback handling — sign-in is now driven by polling the cloud,
+// not a deep link).
 if (!ensureSingleInstanceLock()) {
   process.exit(0)
 }
 
 app.on('second-instance', () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  }
+  windowManager.focusPrimaryWindow()
 })
 
 const IS_DEV = !app.isPackaged
 
-let mainWindow: BrowserWindow | null = null
+const windowManager = new WindowManager({
+  onWindowClosed: (window) => closeAllForWindow(window),
+})
+setRecordingWindowResolver(() => windowManager.getPrimaryWindow())
+
 let isCloudMode = false
 
 // --- Cloud sign-in: poll-based device flow (no deep link) ---
@@ -329,10 +336,7 @@ async function performCloudSignIn(
   })
 
   // Bring the main window forward so the user sees the result.
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  }
+  windowManager.focusPrimaryWindow()
 
   return { ok: true }
 }
@@ -585,6 +589,444 @@ async function repairLocalDatabaseInteractive(): Promise<void> {
   performDatabaseRepair(failures, dbPath)
 }
 
+let embeddedWebServer: HttpServer | null = null
+let embeddedWebServerUrl: string | null = null
+let embeddedWebServerStarting: Promise<string> | null = null
+const embeddedWebCookieJar = new Map<string, string>()
+
+const EMBEDDED_WEB_CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.wasm': 'application/wasm',
+}
+
+function embeddedWebContentType(filePath: string): string {
+  return EMBEDDED_WEB_CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+}
+
+function embeddedDesktopBridgeScript(): string {
+  const platform = process.platform
+  return `<script>
+(function(){
+  const apiUrl = window.location.origin;
+  const platform = ${JSON.stringify(platform)};
+  const vmProgressListeners = [];
+  const vmUpdateListeners = [];
+  const requestJson = async (path, fallback, init) => {
+    try {
+      const res = await fetch(apiUrl + path, Object.assign({ credentials: 'include' }, init || {}));
+      if (!res.ok) return fallback;
+      return await res.json();
+    } catch (_) {
+      return fallback;
+    }
+  };
+  const downloadVMImages = async () => {
+    try {
+      const res = await fetch(apiUrl + '/api/vm/images/download', { method: 'POST', credentials: 'include' });
+      if (!res.ok) return { success: false, error: 'Download failed: HTTP ' + res.status };
+      const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+      if (!reader) return { success: true };
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalResult = { success: true };
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const raw = line.slice(5).trim();
+          if (!raw) continue;
+          try {
+            const event = JSON.parse(raw);
+            if (typeof event.percent !== 'undefined') vmProgressListeners.forEach((fn) => { try { fn(event); } catch (_) {} });
+            if (typeof event.success !== 'undefined') finalResult = event;
+          } catch (_) {}
+        }
+      }
+      return finalResult;
+    } catch (err) {
+      return { success: false, error: err && err.message ? err.message : String(err) };
+    }
+  };
+  const bridge = {
+    platform,
+    isDesktop: true,
+    apiUrl,
+    getAppMode: async () => 'local',
+    getAppConfig: async () => ({ mode: 'local' }),
+    setAppMode: async () => ({ ok: false, error: 'Not available inside Shogo IDE embed' }),
+    clipboardWriteText: async (text) => { try { await navigator.clipboard.writeText(String(text || '')); return true; } catch (_) { return false; } },
+    clipboardReadText: async () => { try { return await navigator.clipboard.readText(); } catch (_) { return ''; } },
+    pickFolders: async () => ({ ok: false, error: 'Open folders from the main Shogo Desktop window.' }),
+    getVMImageStatus: async () => requestJson('/api/vm/images', { imagesPresent: false }),
+    downloadVMImages,
+    skipVMDownload: async () => ({ success: false, error: 'Not available inside Shogo IDE embed' }),
+    getVMStatus: async () => requestJson('/api/vm/status', { available: false, enabled: false }),
+    setVMConfig: async (config) => requestJson('/api/vm/config', { ok: false }, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config || {}) }),
+    onVMImageNeeded: () => {},
+    onVMImageDownloadProgress: (callback) => { if (typeof callback === 'function') vmProgressListeners.push(callback); },
+    checkVMImageUpdate: async () => requestJson('/api/vm/images/update-check', { available: false, currentVersion: null, latestVersion: '' }),
+    onVMImageUpdateAvailable: (callback) => { if (typeof callback === 'function') vmUpdateListeners.push(callback); },
+    removeVMImageUpdateListener: () => { vmUpdateListeners.length = 0; },
+    recycleVMPool: async () => requestJson('/api/vm/pool/recycle', { ok: false }, { method: 'POST' }),
+    startRecording: async () => ({ ok: false, error: 'Recording is not available inside Shogo IDE embed' }),
+    stopRecording: async () => ({ ok: false, error: 'Recording is not available inside Shogo IDE embed' }),
+    getRecordingStatus: async () => ({ isRecording: false, active: false }),
+    getMeetingConfig: async () => ({}),
+    setMeetingConfig: async () => ({ ok: false }),
+    onRecordingStarted: () => {},
+    onRecordingDuration: () => {},
+    onRecordingStopped: () => {},
+    removeRecordingListeners: () => {},
+    getUpdateStatus: async () => ({ status: 'idle', releaseName: null, availableVersion: null }),
+    onUpdateStatus: () => {},
+    removeUpdateListener: () => {},
+    downloadUpdate: async () => ({ ok: false, error: 'Updates are handled by Shogo Desktop' }),
+    dismissUpdate: async () => ({ ok: true }),
+    installUpdate: async () => {},
+    getBugReportConfig: async () => ({}),
+    getSystemInfo: async () => ({ appVersion: '', electronVersion: '', platform, arch: '', osVersion: '', totalMemoryMB: 0, freeMemoryMB: 0, cpuModel: '', cpuCores: 0, deviceName: 'Shogo IDE' }),
+    exportBugReport: async () => ({ ok: false, error: 'Open bug report export in Shogo Desktop' }),
+    startCloudLogin: async () => ({ ok: false, error: 'Open cloud login in Shogo Desktop' }),
+    signOutCloud: async () => ({ ok: false }),
+    onNavigate: () => {},
+    removeNavigateListener: () => {},
+    codeWorkbench: { open: async () => ({ ok: false, error: 'Already inside Shogo IDE' }) },
+  };
+  window.shogoDesktop = Object.assign({}, bridge, window.shogoDesktop || {});
+})();
+</script>`
+}
+
+function injectEmbeddedDesktopBridge(html: string): string {
+  const script = embeddedDesktopBridgeScript()
+  if (html.includes('window.shogoDesktop=Object.assign')) return html
+  if (html.includes('</head>')) return html.replace('</head>', `${script}</head>`)
+  return `${script}${html}`
+}
+
+function normalizeCookieHeader(value: string | string[] | undefined): string {
+  if (!value) return ''
+  return Array.isArray(value) ? value.join('; ') : value
+}
+
+function rememberEmbeddedSetCookies(value: string | string[] | undefined): void {
+  const cookies = Array.isArray(value) ? value : value ? [value] : []
+  for (const cookie of cookies) {
+    const pair = cookie.split(';', 1)[0]?.trim()
+    if (!pair) continue
+    const eq = pair.indexOf('=')
+    if (eq <= 0) continue
+    const name = pair.slice(0, eq).trim()
+    const cookieValue = pair.slice(eq + 1).trim()
+    if (!name) continue
+    if (!cookieValue) embeddedWebCookieJar.delete(name)
+    else embeddedWebCookieJar.set(name, cookieValue)
+  }
+}
+
+function getEmbeddedCookieHeader(existing: string | string[] | undefined): string | undefined {
+  const merged = new Map<string, string>()
+  const existingHeader = normalizeCookieHeader(existing)
+  for (const part of existingHeader.split(';')) {
+    const pair = part.trim()
+    if (!pair) continue
+    const eq = pair.indexOf('=')
+    if (eq <= 0) continue
+    merged.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim())
+  }
+  for (const [name, value] of embeddedWebCookieJar) merged.set(name, value)
+  const header = Array.from(merged.entries()).map(([name, value]) => `${name}=${value}`).join('; ')
+  return header || undefined
+}
+
+function proxyEmbeddedApiRequest(req: http.IncomingMessage, res: http.ServerResponse, requestUrl: URL): void {
+  const apiUrl = new URL(getApiUrl())
+  const headers = { ...req.headers, host: apiUrl.host }
+  const cookieHeader = getEmbeddedCookieHeader(req.headers.cookie)
+  if (cookieHeader) headers.cookie = cookieHeader
+  const proxyReq = http.request({
+    hostname: apiUrl.hostname,
+    port: apiUrl.port,
+    path: `${requestUrl.pathname}${requestUrl.search}`,
+    method: req.method,
+    headers,
+  }, (proxyRes) => {
+    const responseHeaders = { ...proxyRes.headers }
+    if (responseHeaders['set-cookie']) {
+      rememberEmbeddedSetCookies(responseHeaders['set-cookie'])
+      responseHeaders['set-cookie'] = (Array.isArray(responseHeaders['set-cookie'])
+        ? responseHeaders['set-cookie']
+        : [responseHeaders['set-cookie']]
+      ).map((cookie) => cookie.replace(/;\s*Domain=[^;]+/gi, ''))
+    }
+    res.writeHead(proxyRes.statusCode ?? 502, responseHeaders)
+    proxyRes.pipe(res)
+  })
+  proxyReq.on('error', (err) => {
+    res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }))
+  })
+  req.pipe(proxyReq)
+}
+
+function stopEmbeddedWebServer(): void {
+  embeddedWebServer?.close()
+  embeddedWebServer = null
+  embeddedWebServerUrl = null
+  embeddedWebServerStarting = null
+  embeddedWebCookieJar.clear()
+}
+
+async function getEmbeddedWebServerUrl(): Promise<string> {
+  if (embeddedWebServerUrl) return embeddedWebServerUrl
+  if (embeddedWebServerStarting) return embeddedWebServerStarting
+
+  embeddedWebServerStarting = new Promise((resolve, reject) => {
+    const webDir = getWebDir()
+    const server = http.createServer((req, res) => {
+      try {
+        const requestUrl = new URL(req.url || '/', 'http://127.0.0.1')
+        if (requestUrl.pathname.startsWith('/api/')) {
+          proxyEmbeddedApiRequest(req, res, requestUrl)
+          return
+        }
+        const decision = routeShogoRequest(requestUrl.pathname, webDir, (candidate) => {
+          try {
+            return fs.statSync(candidate).isFile()
+          } catch {
+            return false
+          }
+        })
+
+        if (decision.kind === 'not-found') {
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+          res.end(`Not Found: /${decision.urlPath}`)
+          return
+        }
+
+        const contentType = embeddedWebContentType(decision.absolutePath)
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        })
+        if (contentType.startsWith('text/html')) {
+          res.end(injectEmbeddedDesktopBridge(fs.readFileSync(decision.absolutePath, 'utf8')))
+          return
+        }
+        fs.createReadStream(decision.absolutePath).pipe(res)
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
+        res.end(err instanceof Error ? err.message : String(err))
+      }
+    })
+
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        server.close()
+        reject(new Error('Embedded web server did not bind to a TCP port'))
+        return
+      }
+      embeddedWebServer = server
+      embeddedWebServerUrl = `http://127.0.0.1:${address.port}`
+      console.log(`[Desktop] Embedded web server listening on ${embeddedWebServerUrl}`)
+      resolve(embeddedWebServerUrl)
+    })
+  })
+
+  return embeddedWebServerStarting
+}
+
+function getAppWindowUrl(pathWithQuery = '/'): string {
+  if (isCloudMode) {
+    return new URL(pathWithQuery, getCloudUrl()).toString()
+  }
+  if (IS_DEV) {
+    const devUrl = process.env.DESKTOP_DEV_URL || `http://localhost:8081`
+    return new URL(pathWithQuery, devUrl).toString()
+  }
+  return new URL(pathWithQuery, 'shogo://app').toString()
+}
+
+function canCheckHttpUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function isHttpUrlReachable(rawUrl: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+
+    try {
+      const url = new URL(rawUrl)
+      const client = url.protocol === 'https:' ? https : http
+      const req = client.request(url, { method: 'GET', timeout: 750 }, (res) => {
+        res.resume()
+        finish((res.statusCode ?? 500) < 500)
+      })
+      req.on('timeout', () => {
+        req.destroy()
+        finish(false)
+      })
+      req.on('error', () => finish(false))
+      req.end()
+    } catch {
+      finish(false)
+    }
+  })
+}
+
+async function getEmbeddableAppWindowUrl(pathWithQuery = '/'): Promise<string> {
+  if (isCloudMode) return getAppWindowUrl(pathWithQuery)
+
+  if (IS_DEV) {
+    const devBaseUrl = process.env.DESKTOP_DEV_URL || `http://localhost:8081`
+    const devUrl = new URL(pathWithQuery, devBaseUrl).toString()
+    if (canCheckHttpUrl(devUrl) && await isHttpUrlReachable(new URL('/', devBaseUrl).toString())) return devUrl
+  }
+
+  return new URL(pathWithQuery, await getEmbeddedWebServerUrl()).toString()
+}
+
+function loadAppWindow(window: BrowserWindow, pathWithQuery = '/'): void {
+  const url = getAppWindowUrl(pathWithQuery)
+  window.loadURL(url).catch(() => {
+    if (!isCloudMode && IS_DEV) {
+      loadProductionWeb(window)
+    }
+  })
+}
+
+function buildCodeWorkbenchPath(options: { projectId?: string; workspacePath?: string } = {}): string {
+  const projectPath = options.projectId ? `/(app)/projects/${encodeURIComponent(options.projectId)}` : '/(app)'
+  const params = new URLSearchParams({ tab: 'ide' })
+  if (options.workspacePath) params.set('workspacePath', options.workspacePath)
+  return `${projectPath}?${params.toString()}`
+}
+
+function buildCodeWorkbenchChatPath(options: { projectId: string; workspacePath?: string }): string {
+  const params = new URLSearchParams({ tab: 'chat-fullscreen', embed: 'ide' })
+  if (options.workspacePath) params.set('workspacePath', options.workspacePath)
+  return `/projects/${encodeURIComponent(options.projectId)}?${params.toString()}`
+}
+
+function openNewWindow(): void {
+  loadAppWindow(windowManager.createAppWindow())
+}
+
+async function openCodeWorkbenchWindow(
+  options: { projectId?: string; workspacePath?: string } = {},
+  ownerWindow?: BrowserWindow | null,
+): Promise<{ ok: true; windowId: number; url: string } | { ok: false; error: string }> {
+  if (!options.projectId) return { ok: false, error: 'project-id-required' }
+  return openIdeWindow(
+    options.projectId,
+    () => windowManager.createCodeWorkbenchWindow(options),
+    {
+      workspacePath: options.workspacePath,
+      ownerWindowId: ownerWindow?.id,
+      chatUrl: await getEmbeddableAppWindowUrl(buildCodeWorkbenchChatPath({
+        projectId: options.projectId,
+        workspacePath: options.workspacePath,
+      })),
+    },
+  )
+}
+
+function parseCodeWorkbenchOptionsFromUrl(rawUrl: string): { projectId?: string; workspacePath?: string } | null {
+  try {
+    const url = new URL(rawUrl)
+    const parts = url.pathname.split('/').filter(Boolean)
+    const projectIndex = parts.indexOf('projects')
+    const encodedProjectId = projectIndex >= 0 ? parts[projectIndex + 1] : undefined
+    if (!encodedProjectId) return null
+    const workspacePath = url.searchParams.get('workspacePath') ?? undefined
+    return { projectId: decodeURIComponent(encodedProjectId), workspacePath }
+  } catch {
+    return null
+  }
+}
+
+function getActiveCodeWorkbenchOptions(): { projectId?: string; workspacePath?: string } | null {
+  const focusedRecord = windowManager.getFocusedWindowRecord()
+  if (focusedRecord?.codeWorkbench?.projectId) return focusedRecord.codeWorkbench
+
+  const focusedUrl = focusedRecord?.browserWindow.webContents.getURL()
+  const focusedOptions = focusedUrl ? parseCodeWorkbenchOptionsFromUrl(focusedUrl) : null
+  if (focusedOptions?.projectId) return focusedOptions
+
+  const primaryUrl = windowManager.getPrimaryWindow()?.webContents.getURL()
+  return primaryUrl ? parseCodeWorkbenchOptionsFromUrl(primaryUrl) : null
+}
+
+function openActiveCodeWorkbenchFromMenu(): void {
+  const options = getActiveCodeWorkbenchOptions()
+  if (!options?.projectId) {
+    const win = BrowserWindow.getFocusedWindow() ?? windowManager.getPrimaryWindow()
+    const dialogOptions = {
+      type: 'info' as const,
+      message: 'Open a project first',
+      detail: 'Shogo IDE opens the workspace for the project currently selected in Shogo.',
+      buttons: ['OK'],
+    }
+    if (win) void dialog.showMessageBox(win, dialogOptions)
+    else void dialog.showMessageBox(dialogOptions)
+    return
+  }
+
+  const ownerWindow = BrowserWindow.getFocusedWindow() ?? windowManager.getPrimaryWindow()
+  void openCodeWorkbenchWindow(options, ownerWindow).then((result) => {
+    if (!result.ok) {
+      const win = BrowserWindow.getFocusedWindow() ?? windowManager.getPrimaryWindow()
+      const dialogOptions = {
+        type: 'error' as const,
+        message: 'Could not open Shogo IDE',
+        detail: result.error,
+        buttons: ['OK'],
+      }
+      if (win) void dialog.showMessageBox(win, dialogOptions)
+      else void dialog.showMessageBox(dialogOptions)
+    }
+  })
+}
+
+function buildDockMenu(): void {
+  if (process.platform !== 'darwin' || !app.dock) return
+  app.dock.setMenu(Menu.buildFromTemplate([
+    {
+      label: 'New Window',
+      click: () => { openNewWindow() },
+    },
+  ]))
+}
+
 function buildAppMenu(): void {
   const config = readConfig()
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -605,6 +1047,16 @@ function buildAppMenu(): void {
     {
       label: 'File',
       submenu: [
+        {
+          label: 'New Window',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => { openNewWindow() },
+        },
+        {
+          label: 'Open Shogo IDE',
+          click: () => { openActiveCodeWorkbenchFromMenu() },
+        },
+        { type: 'separator' },
         {
           label: config.mode === 'cloud' ? 'Switch to Local Mode' : 'Switch to Cloud Mode',
           click: () => {
@@ -649,6 +1101,11 @@ function buildAppMenu(): void {
     {
       label: 'Window',
       submenu: [
+        {
+          label: 'New Window',
+          click: () => { openNewWindow() },
+        },
+        { type: 'separator' },
         { role: 'minimize' },
         { role: 'zoom' },
         ...(process.platform === 'darwin' ? [
@@ -674,11 +1131,7 @@ function buildAppMenu(): void {
         {
           label: 'Report Bug...',
           click: () => {
-            if (mainWindow) {
-              if (mainWindow.isMinimized()) mainWindow.restore()
-              mainWindow.focus()
-              mainWindow.webContents.send('navigate', '/settings?tab=support')
-            }
+            windowManager.focusAndNavigatePrimaryWindow('/settings?tab=support')
           },
         },
       ],
@@ -690,6 +1143,9 @@ function buildAppMenu(): void {
 function registerIpcHandlers(): void {
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
+  ipcMain.handle('code-workbench:open', (event, options?: { projectId?: string; workspacePath?: string }) => {
+    return openCodeWorkbenchWindow(options ?? {}, windowManager.getWindowForWebContents(event.sender))
+  })
 
   // On-demand local-database repair, surfaced from the support/settings UI.
   // Detects failed migrations, confirms with the user, then backs up,
@@ -715,7 +1171,7 @@ function registerIpcHandlers(): void {
   // macOS. Returns absolute paths; the caller is responsible for POSTing
   // them to /api/local/projects/from-folders.
   ipcMain.handle('pick-folders', async (event, opts?: { multi?: boolean; defaultPath?: string }) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
     const properties: Array<
       'openDirectory' | 'multiSelections' | 'createDirectory' | 'showHiddenFiles'
     > = ['openDirectory', 'createDirectory']
@@ -863,12 +1319,7 @@ function registerIpcHandlers(): void {
       const { title, body, sessionId, projectId } = args
       const n = new Notification({ title, body, silent: false })
       n.on('click', () => {
-        if (mainWindow) {
-          if (mainWindow.isMinimized()) mainWindow.restore()
-          mainWindow.show()
-          mainWindow.focus()
-          mainWindow.webContents.send('notification-clicked', { sessionId, projectId })
-        }
+        windowManager.focusAndSendToPrimaryWindow('notification-clicked', { sessionId, projectId })
       })
       n.show()
     },
@@ -877,8 +1328,9 @@ function registerIpcHandlers(): void {
   // Source of truth for renderer inactivity detection on desktop —
   // document.hasFocus() is unreliable when another app is foregrounded on
   // macOS, so we defer to BrowserWindow.isFocused().
-  ipcMain.handle('get-window-focused', () => {
-    return !!mainWindow && mainWindow.isFocused()
+  ipcMain.handle('get-window-focused', (event) => {
+    const window = windowManager.getWindowForWebContents(event.sender)
+    return !!window && window.isFocused()
   })
 
   ipcMain.handle('check-vm-image-update', async () => {
@@ -899,10 +1351,11 @@ function registerIpcHandlers(): void {
 
   // --- Bug report / log sharing ---
 
-  ipcMain.handle('capture-screenshot', async () => {
-    if (!mainWindow) return { ok: false, error: 'No window available' }
+  ipcMain.handle('capture-screenshot', async (event) => {
+    const window = windowManager.getWindowForWebContents(event.sender)
+    if (!window) return { ok: false, error: 'No sender window available' }
     try {
-      const image = await mainWindow.webContents.capturePage()
+      const image = await window.webContents.capturePage()
       return { ok: true, base64: image.toPNG().toString('base64') }
     } catch (err) {
       return { ok: false, error: (err as Error)?.message || 'Screenshot capture failed' }
@@ -989,7 +1442,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     'preview:open',
     (event, args: { projectId: string; url: string; allowNonLocal?: boolean }) => {
-      const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()
+      const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
       if (!win) return { ok: false, error: 'no-window' }
       return openPreview(args?.projectId, args?.url, win, {
         allowNonLocal: !!args?.allowNonLocal,
@@ -997,145 +1450,81 @@ function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle('preview:close', (_event, args: { projectId: string }) => {
-    closePreview(args?.projectId)
+  ipcMain.handle('preview:close', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    closePreview(win.id, args.projectId)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:set-bounds', (_event, args: { projectId: string; bounds: PreviewBounds }) => {
+  ipcMain.handle('preview:set-bounds', (event, args: { projectId: string; bounds: PreviewBounds }) => {
     if (!args?.projectId || !args?.bounds) return { ok: false }
-    setPreviewBounds(args.projectId, args.bounds)
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    setPreviewBounds(win.id, args.projectId, args.bounds)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:set-visible', (_event, args: { projectId: string; visible: boolean }) => {
+  ipcMain.handle('preview:set-visible', (event, args: { projectId: string; visible: boolean }) => {
     if (!args?.projectId) return { ok: false }
-    setPreviewVisible(args.projectId, !!args.visible)
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    setPreviewVisible(win.id, args.projectId, !!args.visible)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:reload', (_event, args: { projectId: string }) => {
-    reloadPreview(args?.projectId)
+  ipcMain.handle('preview:reload', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    reloadPreview(win.id, args.projectId)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:go-back', (_event, args: { projectId: string }) => {
-    goBackPreview(args?.projectId)
+  ipcMain.handle('preview:go-back', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    goBackPreview(win.id, args.projectId)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:go-forward', (_event, args: { projectId: string }) => {
-    goForwardPreview(args?.projectId)
+  ipcMain.handle('preview:go-forward', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return { ok: false, error: 'project-id-required' }
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    goForwardPreview(win.id, args.projectId)
     return { ok: true }
   })
 
-  ipcMain.handle('preview:get-state', (_event, args: { projectId: string }) => {
-    return getPreviewState(args?.projectId)
+  ipcMain.handle('preview:get-state', (event, args: { projectId: string }) => {
+    if (!args?.projectId) return null
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return null
+    return getPreviewState(win.id, args.projectId)
   })
 
-  // Forward preview events to every renderer. The renderer ignores events
-  // for project IDs it doesn't care about, so a single shared channel is
-  // fine — there's only one BrowserWindow in practice.
   onPreviewEvent((ev) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (win.isDestroyed()) continue
-      try {
-        win.webContents.send('preview:event', ev)
-      } catch {}
-    }
+    windowManager.sendToWindow(ev.windowId, 'preview:event', ev)
   })
 }
 
 function createWindow(): void {
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 800,
-    minHeight: 600,
-    title: 'Shogo',
-    autoHideMenuBar: true,
-    webPreferences: {
-      // ⚠️ Do NOT use `path.join(__dirname, 'preload.js')` here. `scripts/bundle-main.mjs`
-      // runs `bun build --target node --format cjs` over this file, and Bun inlines
-      // `__dirname` as a string literal of the source file's directory at build time
-      // rather than leaving it as Node's runtime CJS builtin. On a CI runner that
-      // means `__dirname` ships as `/Users/runner/work/<org>/<repo>/apps/desktop/src`
-      // baked into `app.asar`, so on every other machine Electron tries to load a
-      // preload script from a path that doesn't exist — no IPC bridge gets installed,
-      // `window.shogoDesktop` is undefined, and the renderer fails over to the
-      // default `localhost:8002` API URL, which is wrong for the packaged desktop
-      // (it uses a dynamic port from `getApiPort()`). v1.7.8 shipped that regression.
-      //
-      // `app.getAppPath()` is supplied by Electron at runtime and is NOT subject to
-      // bundler inlining. It returns the directory containing the loaded
-      // `package.json` — `apps/desktop/` in dev, `…/Contents/Resources/app.asar/` in
-      // a packaged build — and `preload.js` is at `<that>/dist/preload.js` in both.
-      preload: path.join(app.getAppPath(), 'dist', 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      // sandbox is disabled so the preload script can require the audio
-      // capture pipeline (pcm-worklet.ts, audio-capture-manager.ts) via
-      // relative paths. contextIsolation=true + nodeIntegration=false still
-      // keep the main world insulated — only the contextBridge-exposed
-      // functions reach the page.
-      sandbox: false,
-      additionalArguments: [`--api-port=${getApiPort()}`],
-    },
-    show: false,
-  })
-
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show()
-  })
-
-  mainWindow.on('closed', () => {
-    if (mainWindow) closeAllForWindow(mainWindow)
-    mainWindow = null
-  })
-
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      shell.openExternal(url)
-    }
-    return { action: 'deny' }
-  })
-
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    const appOrigins = ['shogo://app', 'http://localhost']
-    const isInternal = appOrigins.some((origin) => url.startsWith(origin))
-    if (!isInternal) {
-      event.preventDefault()
-      if (url.startsWith('http://') || url.startsWith('https://')) {
-        shell.openExternal(url)
-      }
-    }
-  })
-
-  if (isCloudMode) {
-    mainWindow.loadURL(getCloudUrl())
-  } else if (IS_DEV) {
-    const devUrl = process.env.DESKTOP_DEV_URL || `http://localhost:8081`
-    mainWindow.loadURL(devUrl).catch(() => {
-      loadProductionWeb()
-    })
-  } else {
-    loadProductionWeb()
-  }
+  loadAppWindow(windowManager.createPrimaryWindow())
 }
 
-function loadProductionWeb(): void {
-  if (!mainWindow) return
-
+function loadProductionWeb(window: BrowserWindow): void {
   const webDir = getWebDir()
   const indexPath = path.join(webDir, 'index.html')
 
   if (!fs.existsSync(indexPath)) {
     console.error(`[Desktop] Web build not found at ${indexPath}`)
-    mainWindow.loadURL('data:text/html,<h1>Web build not found</h1><p>Run expo export --platform web first.</p>')
+    window.loadURL('data:text/html,<h1>Web build not found</h1><p>Run expo export --platform web first.</p>')
     return
   }
 
-  mainWindow.loadURL('shogo://app/')
+  window.loadURL('shogo://app/')
 }
 
 function registerProtocol(): void {
@@ -1291,7 +1680,8 @@ function setupSessionHandlers(): void {
         [
           "default-src 'self' shogo: https: http:",
           `connect-src *`,
-          `frame-src 'self' shogo: ${apiOrigin} http://localhost:*`,
+          `frame-src 'self' shogo: ${apiOrigin} http://localhost:* http://127.0.0.1:* https://*.vscode-cdn.net https:`,
+          `child-src 'self' shogo: ${apiOrigin} http://localhost:* http://127.0.0.1:* https://*.vscode-cdn.net https:`,
           "script-src 'self' shogo: blob: 'unsafe-inline' 'unsafe-eval'",
           "worker-src 'self' shogo: blob:",
           "style-src 'self' shogo: 'unsafe-inline'",
@@ -1396,6 +1786,7 @@ app.whenReady().then(async () => {
   registerPortsIpcHandlers()
   registerExtensionsIpcHandlers()
   buildAppMenu()
+  buildDockMenu()
 
   const skipLocalServer = !isCloudMode && process.env.SHOGO_SKIP_LOCAL_SERVER === 'true'
   if (!isCloudMode && !skipLocalServer) {
@@ -1444,7 +1835,11 @@ app.whenReady().then(async () => {
   createWindow()
 
   if (!isCloudMode) {
-    createTray()
+    createTray({
+      openMeetings: () => {
+        windowManager.focusAndNavigatePrimaryWindow('/meetings')
+      },
+    })
     startMeetingMonitor()
     startCloudLoginHeartbeat()
     void startRecordingHttpBridge()
@@ -1467,7 +1862,7 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!windowManager.hasWindows()) {
       createWindow()
     }
   })
@@ -1482,7 +1877,11 @@ app.on('window-all-closed', () => {
 let isQuitting = false
 app.on('before-quit', (event) => {
   console.log(`[Desktop] before-quit fired, isQuitting=${isQuitting}, isCloudMode=${isCloudMode}, applyingUpdate=${getIsApplyingUpdate()}`)
-  if (isQuitting || isCloudMode) return
+  if (isQuitting) return
+  if (isCloudMode) {
+    disposeIdeServers()
+    return
+  }
   isQuitting = true
 
   if (getIsApplyingUpdate()) {
@@ -1496,6 +1895,7 @@ app.on('before-quit', (event) => {
     disposeGitIpc()
     disposeRunIpc()
     disposeDebugIpc()
+    disposeIdeServers()
     stopLocalServer().catch(() => {})
     return
   }
@@ -1508,8 +1908,9 @@ app.on('before-quit', (event) => {
   disposePortsIpcHandlers()
   disposeExtensionsIpcHandlers()
   disposeGitIpc()
-    disposeRunIpc()
-    disposeDebugIpc()
+  disposeRunIpc()
+  disposeDebugIpc()
+  disposeIdeServers()
   Promise.allSettled([disposeTerminalIpc(), stopTerminalExecServer(), stopLocalServer()])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))

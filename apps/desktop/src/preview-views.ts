@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * preview-views.ts — Per-project `WebContentsView` overlay registry.
+ * preview-views.ts — Per-window, per-project `WebContentsView` overlay registry.
  *
  * The "external preview" feature lets users embed a real Chromium view of
  * their own dev server (e.g. `http://localhost:5173`) inside the project
@@ -13,9 +13,9 @@
  * overlay; React publishes a bounding rect via IPC and main keeps the view
  * aligned.
  *
- * The registry caches one view per `projectId`. Visibility toggles cheaply
- * (zero-sized bounds + `setVisible(false)`) so switching projects or
- * preview tabs does not need to recreate the view.
+ * The registry caches one view per owning window and `projectId`. Visibility
+ * toggles cheaply (zero-sized bounds + `setVisible(false)`) so switching
+ * projects or preview tabs does not need to recreate the view.
  *
  * Trust boundary: by default only `localhost` / `127.0.0.1` / `[::1]` /
  * `*.localhost` hosts are accepted. The renderer is expected to gate
@@ -35,6 +35,7 @@ export interface PreviewBounds {
 export type PreviewEventName = 'url-changed' | 'load-failed' | 'title-changed' | 'loading-changed'
 
 export interface PreviewEvent {
+  windowId: number
   projectId: string
   event: PreviewEventName
   url?: string
@@ -45,6 +46,9 @@ export interface PreviewEvent {
 }
 
 interface PreviewRecord {
+  key: string
+  windowId: number
+  projectId: string
   view: WebContentsView
   /** Owner window. We detach on window-close to avoid dangling references. */
   ownerWindow: BrowserWindow
@@ -112,6 +116,14 @@ function emit(ev: PreviewEvent): void {
   }
 }
 
+function previewKey(windowId: number, projectId: string): string {
+  return `${windowId}:${projectId}`
+}
+
+function getRecord(windowId: number, projectId: string): PreviewRecord | undefined {
+  return views.get(previewKey(windowId, projectId))
+}
+
 export function onPreviewEvent(cb: (ev: PreviewEvent) => void): () => void {
   eventListeners.add(cb)
   return () => {
@@ -120,6 +132,8 @@ export function onPreviewEvent(cb: (ev: PreviewEvent) => void): () => void {
 }
 
 function createView(projectId: string, ownerWindow: BrowserWindow): PreviewRecord {
+  const windowId = ownerWindow.id
+  const key = previewKey(windowId, projectId)
   // Per-project persistent partition so cookies/localStorage from one
   // user's dev server don't bleed into another's. `persist:` prefix
   // makes it survive across app launches.
@@ -149,23 +163,24 @@ function createView(projectId: string, ownerWindow: BrowserWindow): PreviewRecor
   })
 
   view.webContents.on('did-navigate', (_e, url) => {
-    emit({ projectId, event: 'url-changed', url })
+    emit({ windowId, projectId, event: 'url-changed', url })
   })
   view.webContents.on('did-navigate-in-page', (_e, url) => {
-    emit({ projectId, event: 'url-changed', url })
+    emit({ windowId, projectId, event: 'url-changed', url })
   })
   view.webContents.on('did-start-loading', () => {
-    emit({ projectId, event: 'loading-changed', loading: true })
+    emit({ windowId, projectId, event: 'loading-changed', loading: true })
   })
   view.webContents.on('did-stop-loading', () => {
-    emit({ projectId, event: 'loading-changed', loading: false })
+    emit({ windowId, projectId, event: 'loading-changed', loading: false })
   })
   view.webContents.on('page-title-updated', (_e, title) => {
-    emit({ projectId, event: 'title-changed', title })
+    emit({ windowId, projectId, event: 'title-changed', title })
   })
   view.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (!isMainFrame) return
     emit({
+      windowId,
       projectId,
       event: 'load-failed',
       url: validatedURL,
@@ -175,13 +190,16 @@ function createView(projectId: string, ownerWindow: BrowserWindow): PreviewRecor
   })
 
   const record: PreviewRecord = {
+    key,
+    windowId,
+    projectId,
     view,
     ownerWindow,
     lastBounds: null,
     attached: false,
     visible: true,
   }
-  views.set(projectId, record)
+  views.set(key, record)
   return record
 }
 
@@ -244,15 +262,9 @@ export function openPreview(
   if (!allowed.ok) return { ok: false, error: allowed.reason || 'url-not-allowed' }
   if (ownerWindow.isDestroyed()) return { ok: false, error: 'window-destroyed' }
 
-  let rec = views.get(projectId)
+  let rec = getRecord(ownerWindow.id, projectId)
   if (!rec) {
     rec = createView(projectId, ownerWindow)
-  } else if (rec.ownerWindow !== ownerWindow) {
-    // Window changed (unlikely in single-window Shogo, but handle it):
-    // detach from the old window and rebind. We don't recreate the
-    // webContents — that would discard the page state.
-    detach(rec)
-    rec.ownerWindow = ownerWindow
   }
 
   ensureAttached(rec)
@@ -261,6 +273,7 @@ export function openPreview(
   if (current !== url) {
     rec.view.webContents.loadURL(url).catch((err) => {
       emit({
+        windowId: ownerWindow.id,
         projectId,
         event: 'load-failed',
         url,
@@ -271,15 +284,15 @@ export function openPreview(
   return { ok: true }
 }
 
-export function setPreviewBounds(projectId: string, bounds: PreviewBounds): void {
-  const rec = views.get(projectId)
+export function setPreviewBounds(windowId: number, projectId: string, bounds: PreviewBounds): void {
+  const rec = getRecord(windowId, projectId)
   if (!rec) return
   rec.lastBounds = bounds
   applyBounds(rec)
 }
 
-export function setPreviewVisible(projectId: string, visible: boolean): void {
-  const rec = views.get(projectId)
+export function setPreviewVisible(windowId: number, projectId: string, visible: boolean): void {
+  const rec = getRecord(windowId, projectId)
   if (!rec) return
   rec.visible = visible
   if (visible) {
@@ -292,28 +305,28 @@ export function setPreviewVisible(projectId: string, visible: boolean): void {
   }
 }
 
-export function reloadPreview(projectId: string): void {
-  views.get(projectId)?.view.webContents.reload()
+export function reloadPreview(windowId: number, projectId: string): void {
+  getRecord(windowId, projectId)?.view.webContents.reload()
 }
 
-export function goBackPreview(projectId: string): void {
-  const wc = views.get(projectId)?.view.webContents
+export function goBackPreview(windowId: number, projectId: string): void {
+  const wc = getRecord(windowId, projectId)?.view.webContents
   if (wc?.navigationHistory.canGoBack()) wc.navigationHistory.goBack()
 }
 
-export function goForwardPreview(projectId: string): void {
-  const wc = views.get(projectId)?.view.webContents
+export function goForwardPreview(windowId: number, projectId: string): void {
+  const wc = getRecord(windowId, projectId)?.view.webContents
   if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward()
 }
 
-export function getPreviewState(projectId: string): {
+export function getPreviewState(windowId: number, projectId: string): {
   url: string
   title: string
   canGoBack: boolean
   canGoForward: boolean
   loading: boolean
 } | null {
-  const rec = views.get(projectId)
+  const rec = getRecord(windowId, projectId)
   if (!rec) return null
   const wc = rec.view.webContents
   return {
@@ -325,8 +338,8 @@ export function getPreviewState(projectId: string): {
   }
 }
 
-export function closePreview(projectId: string): void {
-  const rec = views.get(projectId)
+export function closePreview(windowId: number, projectId: string): void {
+  const rec = getRecord(windowId, projectId)
   if (!rec) return
   detach(rec)
   try {
@@ -339,7 +352,7 @@ export function closePreview(projectId: string): void {
   } catch (err) {
     console.warn('[preview] webContents.close failed:', err)
   }
-  views.delete(projectId)
+  views.delete(rec.key)
 }
 
 /**
@@ -347,7 +360,7 @@ export function closePreview(projectId: string): void {
  * to avoid leaking WebContents.
  */
 export function closeAllForWindow(window: BrowserWindow): void {
-  for (const [projectId, rec] of [...views.entries()]) {
-    if (rec.ownerWindow === window) closePreview(projectId)
+  for (const rec of [...views.values()]) {
+    if (rec.ownerWindow === window) closePreview(rec.windowId, rec.projectId)
   }
 }

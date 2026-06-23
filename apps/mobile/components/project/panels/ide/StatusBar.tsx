@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Check, GitBranch, Loader2, RefreshCw } from "lucide-react-native";
+import { ArrowDown, ArrowUp, Check, ExternalLink, GitBranch, Loader2, RefreshCw } from "lucide-react-native";
 import { useState } from "react";
 
 import { BranchPicker } from "./git/BranchPicker";
@@ -15,6 +15,7 @@ export function StatusBar({
   workspaceRoot,
   extensionItems = [],
   onRunExtensionCommand,
+  onOpenCodeWorkbench,
 }: {
   language: string;
   line: number;
@@ -33,6 +34,7 @@ export function StatusBar({
   workspaceRoot?: string | null;
   extensionItems?: ExtensionRuntimeStatusBarItem[];
   onRunExtensionCommand?: (commandId: string, args?: unknown[]) => void;
+  onOpenCodeWorkbench?: () => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -54,8 +56,8 @@ export function StatusBar({
   const rightExtensionItems = extensionItems.filter((item) => item.alignment === "right");
 
   return (
-    <div className="flex h-6 items-center justify-between bg-[#1e1e1e] px-3 text-[12px] text-[#cccccc]">
-      <div className="flex items-center gap-3">
+    <div className="flex h-6 items-center justify-between gap-3 bg-[#1e1e1e] px-3 text-[12px] text-[#cccccc]">
+      <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
         {git?.isRepo && git.branch ? (
           <>
             <button
@@ -65,10 +67,10 @@ export function StatusBar({
                   ? `Tracking ${git.upstream}${git.ahead || git.behind ? ` · ${git.ahead} ahead, ${git.behind} behind` : ""} · click to change branch`
                   : "No upstream · click to change branch"
               }
-              className="flex items-center gap-1 -mx-1 px-1 py-0.5 rounded hover:bg-white/15"
+              className="-mx-1 flex min-w-0 items-center gap-1 rounded px-1 py-0.5 hover:bg-white/15"
             >
               <GitBranch size={12} />
-              <span>{git.detached ? "HEAD detached" : git.branch}</span>
+              <span className="max-w-[150px] truncate sm:max-w-[220px]">{git.detached ? "HEAD detached" : git.branch}</span>
               {git.ahead > 0 && (
                 <span className="flex items-center gap-0.5 opacity-80">
                   <ArrowUp size={10} />
@@ -97,11 +99,23 @@ export function StatusBar({
             )}
           </>
         ) : null}
+        {onOpenCodeWorkbench ? (
+          <button
+            type="button"
+            onClick={onOpenCodeWorkbench}
+            title="Open or focus Shogo IDE"
+            aria-label="Open or focus Shogo IDE"
+            className="-mx-1 flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-orange-400 hover:bg-white/15 hover:text-orange-300"
+          >
+            <ExternalLink size={11} />
+            <span className="hidden sm:inline">Shogo IDE</span>
+          </button>
+        ) : null}
         {leftExtensionItems.map((item) => (
           <ExtensionStatusBarButton key={item.id} item={item} onRunCommand={onRunExtensionCommand} />
         ))}
       </div>
-      <div className="flex items-center gap-4">
+      <div className="flex shrink-0 items-center gap-4">
         {rightExtensionItems.map((item) => (
           <ExtensionStatusBarButton key={item.id} item={item} onRunCommand={onRunExtensionCommand} />
         ))}
