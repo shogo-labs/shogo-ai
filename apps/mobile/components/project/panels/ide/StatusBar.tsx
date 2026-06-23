@@ -5,6 +5,7 @@ import { BranchPicker } from "./git/BranchPicker";
 import type { GitSnapshot } from "./git/bridge";
 import type { ExtensionRuntimeStatusBarItem } from "./extensions/types";
 import { getDesktopGitBridge } from "./git/bridge";
+import { isDesktopRuntime } from "./terminal/pty-factory";
 
 export function StatusBar({
   language,
@@ -41,6 +42,7 @@ export function StatusBar({
   const [syncError, setSyncError] = useState<string | null>(null);
 
   const bridge = getDesktopGitBridge();
+  const canOpenCodeWorkbench = !!onOpenCodeWorkbench && isDesktopRuntime();
   const handleSync = async () => {
     if (!bridge || !workspaceRoot) return;
     setSyncing(true);
@@ -99,7 +101,7 @@ export function StatusBar({
             )}
           </>
         ) : null}
-        {onOpenCodeWorkbench ? (
+        {canOpenCodeWorkbench ? (
           <button
             type="button"
             onClick={onOpenCodeWorkbench}
