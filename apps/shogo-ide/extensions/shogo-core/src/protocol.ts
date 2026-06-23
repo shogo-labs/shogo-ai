@@ -28,16 +28,17 @@ export interface IdeContextAttachment {
   truncated?: boolean
 }
 
-export interface IdeContextState {
-  activeFile?: IdeActiveFileContext
-  workspaceFolders: IdeWorkspaceFolderContext[]
-  storedContext?: IdeContextAttachment[]
-}
-
 export interface IdeFileResult {
   type: 'file' | 'folder'
   path: string
   name: string
+}
+
+export interface IdeContextState {
+  activeFile?: IdeActiveFileContext
+  workspaceFolders: IdeWorkspaceFolderContext[]
+  workspaceItems?: IdeFileResult[]
+  storedContext?: IdeContextAttachment[]
 }
 
 export interface IdeReadFileResult {

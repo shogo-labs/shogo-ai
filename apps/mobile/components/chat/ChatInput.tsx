@@ -179,6 +179,7 @@ type MentionItem =
   | { kind: "project"; id: string; name: string }
 
 const MAX_MENTION_FILE_RESULTS = 8
+const MAX_IDE_MENTION_FILE_RESULTS = 80
 const MAX_MENTION_PROJECT_RESULTS = 8
 
 function referenceKey(ref: ChatReference): string {
@@ -672,11 +673,26 @@ function ChatInputImpl({
     }
     let cancelled = false
     const q = mentionQuery.trim().toLowerCase()
+    const filterIdeItems = (items: IdeFileResult[]) => {
+      const seen = new Set<string>()
+      return items.filter((item) => {
+        if (!item?.path || !item?.name || seen.has(item.path)) return false
+        seen.add(item.path)
+        return !q || item.path.toLowerCase().includes(q) || item.name.toLowerCase().includes(q)
+      }).slice(0, MAX_IDE_MENTION_FILE_RESULTS)
+    }
+    const contextItems = ideMode && Array.isArray(ideContext?.workspaceItems)
+      ? filterIdeItems(ideContext.workspaceItems)
+      : []
+    if (ideMode && contextItems.length > 0) setFileResults(contextItems)
     const timer = setTimeout(async () => {
       try {
         if (ideMode && ideFileSearch) {
           const results = await ideFileSearch(mentionQuery.trim())
-          if (!cancelled) setFileResults(results.slice(0, MAX_MENTION_FILE_RESULTS * 2))
+          if (!cancelled) {
+            const liveResults = filterIdeItems(results)
+            setFileResults(liveResults.length > 0 ? liveResults : contextItems)
+          }
           return
         }
 
@@ -741,9 +757,10 @@ function ChatInputImpl({
       cancelled = true
       clearTimeout(timer)
     }
-  }, [showMentionMenu, mentionQuery, agentClient, projectId, ideMode, ideFileSearch])
+  }, [showMentionMenu, mentionQuery, agentClient, projectId, ideMode, ideFileSearch, ideContext?.workspaceItems])
 
   const filteredProjects = useMemo(() => {
+    if (ideMode) return []
     const q = mentionQuery.trim().toLowerCase()
     const list = projects ?? []
     const matched = q
@@ -753,7 +770,7 @@ function ChatInputImpl({
         )
       : list
     return matched.slice(0, MAX_MENTION_PROJECT_RESULTS)
-  }, [projects, mentionQuery])
+  }, [projects, mentionQuery, ideMode])
 
   // Flat, ordered list backing keyboard navigation (files first, then projects).
   const mentionItems = useMemo<MentionItem[]>(
