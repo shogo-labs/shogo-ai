@@ -2148,6 +2148,68 @@ export const ChatPanel = observer(function ChatPanel({
       if (currentSessionId) {
         refetchUsageWallet()
 
+        // Read-only reconcile (no client writes). The assistant message is
+        // persisted server-side by the streaming proxy (trackUsageFromStream),
+        // which writes the canonical row only after the stream EOFs + billing
+        // close (+ possible auto-resume) — frequently *after* onFinish fires.
+        // The live turn is already on screen via useChat's in-memory messages;
+        // this just warms the local cache so a reload reflects the server row.
+        // We refetch with a short bounded retry until a new assistant row for
+        // this session appears, and NEVER POST (the server is the sole writer).
+        const sessionIdForReconcile = currentSessionId
+        const assistantParts = Array.isArray(message.parts) ? message.parts : []
+        const assistantText = assistantParts
+          .filter((p: any) => p?.type === "text" && typeof p.text === "string")
+          .map((p: any) => p.text)
+          .join("")
+          .trim()
+        const assistantHasContent =
+          assistantText.length > 0 ||
+          assistantParts.some(
+            (p: any) =>
+              p?.type === "tool-invocation" ||
+              p?.type === "tool-result" ||
+              p?.type === "dynamic-tool" ||
+              (typeof p?.type === "string" && p.type.startsWith("tool-"))
+          )
+
+        if (assistantHasContent) {
+          const priorAssistantIds = new Set(
+            (sessionMessages?.all ?? [])
+              .filter(
+                (m: any) =>
+                  m.sessionId === sessionIdForReconcile && m.role === "assistant"
+              )
+              .map((m: any) => m.id)
+          )
+          void (async () => {
+            const RECONCILE_ATTEMPTS = 5
+            const RECONCILE_DELAY_MS = 400
+            for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
+              await new Promise((resolve) => setTimeout(resolve, RECONCILE_DELAY_MS))
+              try {
+                await sessionMessages?.loadPage(
+                  { sessionId: sessionIdForReconcile },
+                  { limit: 10, offset: 0 }
+                )
+              } catch (err) {
+                console.warn("[ChatPanel] Assistant reconcile refresh failed:", err)
+                continue
+              }
+              const appeared = (sessionMessages?.all ?? []).some(
+                (m: any) =>
+                  m.sessionId === sessionIdForReconcile &&
+                  m.role === "assistant" &&
+                  !priorAssistantIds.has(m.id)
+              )
+              if (appeared) return
+            }
+            console.warn(
+              "[ChatPanel] Assistant message not yet persisted after reconcile retries — relying on next full reload"
+            )
+          })()
+        }
+
         const toolCalls = extractToolCalls(message)
         if (toolCalls.length > 0) {
           const platformFeaturesCollections: string[] = []
