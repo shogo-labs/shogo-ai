@@ -71,6 +71,7 @@ const grants = new Map<string, Grant[]>() // by workspaceId
 const usageEvents: UsageEvent[] = []
 const billingAccounts = new Map<string, BillingAccount>()
 const members: Member[] = []
+const workspaces = new Map<string, { id: string; name: string; slug: string }>()
 
 let usageEventCreateImpl: (data: any) => Promise<any> | any = (data) => {
   const ev: UsageEvent = {
@@ -222,6 +223,16 @@ const prismaApi = {
       )
     },
   },
+  workspace: {
+    findUnique: async ({ where }: any) => workspaces.get(where.id) ?? null,
+    upsert: async ({ where, create, update }: any) => {
+      const existing = workspaces.get(where.id)
+      if (existing) { Object.assign(existing, update); return existing }
+      const fresh = { id: where.id, ...create }
+      workspaces.set(where.id, fresh)
+      return fresh
+    },
+  },
   $transaction: async (fn: any) => fn(prismaApi),
 }
 
@@ -298,6 +309,7 @@ beforeEach(() => {
   usageEvents.length = 0
   billingAccounts.clear()
   members.length = 0
+  workspaces.clear()
   stripeCalls.length = 0
   logs.length = 0
   usageEventCreateImpl = (data) => {
@@ -601,6 +613,41 @@ describe('hasBalance (rolling windows)', () => {
       weeklyWindowStart: now0(), weeklyUsedUsd: 0,
     }))
     expect(await billing.hasBalance('w1', 0.1)).toBe(true)
+  })
+
+  // Regression: the API server's internal AI-proxy token uses the synthetic
+  // `system` workspace which has no Workspace row, so wallet allocation throws
+  // on the workspaceId FK. hasBalance must NOT propagate that as a 500 out of
+  // the proxy balance preflight — it returns false (clean usage-limit path).
+  it('returns false (no throw) when wallet allocation fails for a missing workspace', async () => {
+    const origCreate = prismaApi.usageWallet.create
+    prismaApi.usageWallet.create = async () => {
+      const err: any = new Error(
+        'Foreign key constraint violated on the constraint: `credit_ledgers_workspaceId_fkey`',
+      )
+      err.code = 'P2003'
+      throw err
+    }
+    try {
+      // Awaiting directly fails the test if hasBalance rejects (the bug we fixed).
+      const result = await billing.hasBalance('system', 0.01)
+      expect(result).toBe(false)
+    } finally {
+      prismaApi.usageWallet.create = origCreate
+    }
+  })
+})
+
+describe('ensureSystemWorkspace', () => {
+  it('idempotently creates the system sentinel workspace row', async () => {
+    await billing.ensureSystemWorkspace()
+    const ws = workspaces.get(billing.SYSTEM_WORKSPACE_ID)
+    expect(ws).toBeDefined()
+    expect(ws?.id).toBe('system')
+    // Once the row exists, allocateFreeWallet for `system` no longer FK-fails,
+    // so the internal usage path and any preflight fallback are both safe.
+    const wallet = await billing.allocateFreeWallet(billing.SYSTEM_WORKSPACE_ID)
+    expect(wallet.workspaceId).toBe('system')
   })
 })
 

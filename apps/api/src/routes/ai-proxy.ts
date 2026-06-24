@@ -1831,9 +1831,13 @@ export async function recordUsage(
   chatSessionId?: string | null,
   internalUsage?: { actionType: string } | null,
 ) {
-  // For API-key auth the projectId is a sentinel ('api-key'), not a real
-  // Project row. Pass null so the UsageEvent FK constraint is satisfied.
-  const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
+  // For API-key auth the projectId is a sentinel ('api-key'), and the API
+  // server's own internal proxy token uses the 'system' sentinel — neither is a
+  // real Project row. Pass null so the UsageEvent projectId FK is satisfied.
+  const billingProjectId =
+    tokenPayload.projectId === 'api-key' || tokenPayload.projectId === 'system'
+      ? null
+      : (tokenPayload.projectId || null)
 
   // Internal, non-billable completion (e.g. server-initiated title generation):
   // record the real cost for ADMIN cost-tracking only — never debit a wallet,
@@ -1845,6 +1849,12 @@ export async function recordUsage(
     const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
     if (totalTokens === 0) return
     try {
+      // The server's internal token attributes usage to the `system` sentinel
+      // workspace, which must exist as a real row for this UsageEvent to satisfy
+      // its workspaceId FK. Ensure it (idempotent, memoized) before recording.
+      if (tokenPayload.workspaceId === billingService.SYSTEM_WORKSPACE_ID) {
+        await billingService.ensureSystemWorkspace()
+      }
       const billingModel = proxyModelToBillingModel(model)
       const { rawUsd } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
       const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'

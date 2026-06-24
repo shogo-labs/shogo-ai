@@ -182,6 +182,51 @@ export async function allocateFreeWallet(workspaceId: string) {
 }
 
 /**
+ * Sentinel workspace id embedded in the API server's own internal AI-proxy
+ * token (see `lib/internal-proxy-config.ts`). Server-initiated LLM surfaces
+ * (analytics digest, title generation) route through the metered proxy and
+ * attribute their non-billable usage to this workspace.
+ *
+ * Historically this had no `Workspace` row, so the proxy had to be careful to
+ * skip every workspace-FK'd write for it. That is fragile: a single missed tag
+ * surfaces as `Foreign key constraint violated on ... credit_ledgers_workspaceId_fkey`
+ * (the legacy constraint name for `usage_wallets.workspaceId`), and internal
+ * cost-tracking `usage_events` were silently dropped. Ensuring a real row makes
+ * the sentinel FK-valid everywhere.
+ */
+export const SYSTEM_WORKSPACE_ID = 'system'
+
+let systemWorkspaceEnsured: Promise<void> | null = null
+
+/**
+ * Idempotently ensure the `system` sentinel Workspace row exists so internal
+ * usage recording (and any wallet allocation that races the internal tag) does
+ * not hit a foreign-key violation. Memoized after the first success; resets on
+ * failure so a transient error can be retried. No-op in local/SQLite mode.
+ */
+export async function ensureSystemWorkspace(): Promise<void> {
+  if (isLocalMode) return
+  if (systemWorkspaceEnsured) return systemWorkspaceEnsured
+  systemWorkspaceEnsured = (async () => {
+    try {
+      await prisma.workspace.upsert({
+        where: { id: SYSTEM_WORKSPACE_ID },
+        update: {},
+        create: {
+          id: SYSTEM_WORKSPACE_ID,
+          name: 'System (internal)',
+          slug: SYSTEM_WORKSPACE_ID,
+        },
+      })
+    } catch (err) {
+      console.warn('[billing] Failed to ensure system workspace row:', (err as any)?.message ?? err)
+      systemWorkspaceEnsured = null
+    }
+  })()
+  return systemWorkspaceEnsured
+}
+
+/**
  * Refill a workspace's wallet from its active super-admin grants. Used by
  * the monthly-refill cron and by `consumeUsage` as a safety net for free
  * workspaces that wouldn't otherwise receive a Stripe invoice. Paid
@@ -496,7 +541,21 @@ export async function hasBalance(
 
   let wallet = await prisma.usageWallet.findUnique({ where: { workspaceId } });
   if (!wallet) {
-    wallet = await allocateFreeWallet(workspaceId);
+    try {
+      wallet = await allocateFreeWallet(workspaceId);
+    } catch (err) {
+      // A non-existent / synthetic workspace (e.g. the API server's own
+      // internal proxy token uses the `system` sentinel workspace, which has no
+      // Workspace row) makes `allocateFreeWallet` throw on the workspace FK
+      // (`credit_ledgers_workspaceId_fkey`). Treat it as "no balance" instead
+      // of throwing a 500 out of the AI-proxy balance preflight — the request
+      // gets a clean usage-limit response rather than a hard error.
+      console.warn(
+        `[billing] hasBalance: could not allocate wallet for workspace ${workspaceId}:`,
+        (err as any)?.message ?? err,
+      )
+      return false;
+    }
   }
   if (!wallet) return false;
 
