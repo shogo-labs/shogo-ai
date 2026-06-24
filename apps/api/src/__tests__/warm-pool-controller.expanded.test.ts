@@ -1403,6 +1403,50 @@ describe('discoverExistingPods()', () => {
     expect((controller.deleteWarmPodService as any).mock.calls.length).toBeGreaterThanOrEqual(3)
   })
 
+  // Regression: prod-us v1.11.16 (2026-06-24). RevisionMissing/ContainerMissing
+  // is the normal transient state of a just-created Knative Service before its
+  // first Revision is minted. Deleting on sight created a
+  // create → RevisionMissing → delete (age ~3s) → recreate churn loop that
+  // never converged and tripped check-warm-pool-health ("0 Ready"). Fresh
+  // missing-revision ksvcs must be kept (in grace); only stuck-past-grace and
+  // terminal RevisionFailed get deleted.
+  test('keeps freshly-created RevisionMissing/ContainerMissing ksvcs (creation grace), deletes only past-grace + RevisionFailed', async () => {
+    const controller = new WarmPoolController({ namespace: 'expand-ns' }) as any
+    controller.deleteWarmPodService = mock(async () => {})
+
+    const now = Date.now()
+    customListItems.services = [
+      // Fresh RevisionMissing — must NOT be deleted (would re-create the churn).
+      {
+        metadata: { name: 'wp-fresh-missing', labels: { 'shogo.io/warm-pool-status': 'available' }, creationTimestamp: new Date(now - 3 * 1000).toISOString() },
+        status: { conditions: [{ type: 'Ready', status: 'False', reason: 'RevisionMissing' }] },
+      },
+      // Fresh ContainerMissing — same transient class, also kept.
+      {
+        metadata: { name: 'wp-fresh-container', labels: { 'shogo.io/warm-pool-status': 'available' }, creationTimestamp: new Date(now - 10 * 1000).toISOString() },
+        status: { conditions: [{ type: 'Ready', status: 'False', reason: 'ContainerMissing' }] },
+      },
+      // RevisionMissing past the creation grace window → genuinely stuck, delete.
+      {
+        metadata: { name: 'wp-stuck-missing', labels: { 'shogo.io/warm-pool-status': 'available' }, creationTimestamp: new Date(now - 10 * 60 * 1000).toISOString() },
+        status: { conditions: [{ type: 'Ready', status: 'False', reason: 'RevisionMissing' }] },
+      },
+      // RevisionFailed is terminal regardless of age → delete immediately.
+      {
+        metadata: { name: 'wp-failed-fresh', labels: { 'shogo.io/warm-pool-status': 'available' }, creationTimestamp: new Date(now - 2 * 1000).toISOString() },
+        status: { conditions: [{ type: 'Ready', status: 'False', reason: 'RevisionFailed' }] },
+      },
+    ]
+
+    await controller.discoverExistingPods()
+
+    const deleted = (controller.deleteWarmPodService as any).mock.calls.map((c: any[]) => c[0])
+    expect(deleted).not.toContain('wp-fresh-missing')
+    expect(deleted).not.toContain('wp-fresh-container')
+    expect(deleted).toContain('wp-stuck-missing')
+    expect(deleted).toContain('wp-failed-fresh')
+  })
+
   test('marks a pod hot from its ready Revision actualReplicas, never the Service status', async () => {
     // Regression for the prod-us/prod-india incident (2026-06-08): a Knative
     // Service status has no `actualReplicas` field — it lives on the Revision.
