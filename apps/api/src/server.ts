@@ -8035,6 +8035,13 @@ await (async () => {
   try {
     const { ensureInternalProxyConfig } = await import('./lib/internal-proxy-config')
     await ensureInternalProxyConfig()
+    // The internal proxy token attributes server-initiated LLM usage (analytics
+    // digest, title generation) to the `system` sentinel workspace. Ensure that
+    // workspace row exists so internal usage recording — and the balance
+    // preflight, if the internal tag is ever missed — never hits the workspace
+    // FK (`credit_ledgers_workspaceId_fkey`).
+    const { ensureSystemWorkspace } = await import('./services/billing.service')
+    await ensureSystemWorkspace()
   } catch (err: any) {
     console.log('[InternalProxy] Could not self-provision proxy creds (non-fatal):', err?.message ?? err)
   }
