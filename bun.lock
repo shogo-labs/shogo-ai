@@ -202,6 +202,10 @@
         "typescript": "^5.7.2",
       },
     },
+    "apps/shogo-ide": {
+      "name": "@shogo/shogo-ide",
+      "version": "0.0.0",
+    },
     "packages/agent": {
       "name": "@shogo-ai/agent",
       "version": "1.6.0",
@@ -2593,6 +2597,8 @@
     "@shogo/shared-runtime": ["@shogo/shared-runtime@workspace:packages/shared-runtime"],
 
     "@shogo/shared-ui": ["@shogo/shared-ui@workspace:packages/shared-ui"],
+
+    "@shogo/shogo-ide": ["@shogo/shogo-ide@workspace:apps/shogo-ide"],
 
     "@shogo/ui-kit": ["@shogo/ui-kit@workspace:packages/ui-kit"],
 
