@@ -2202,13 +2202,36 @@ export class WarmPoolController {
         // by inspecting actual pod containerStatuses (collected above).
         const podLevelReason = podBrokenReason.get(name)
 
-        // Detect permanently broken services (e.g. wrong image, RevisionMissing)
-        // and clean them up so the pool can replace them
-        const isBroken =
+        // Detect permanently broken services and clean them up so the pool
+        // can replace them.
+        //
+        // RevisionFailed is terminal: the Revision was created and then failed
+        // to come up (bad image digest, admission rejection, etc.), so more
+        // waiting won't recover it — delete on sight.
+        const isRevisionFailed =
+          readyCondition?.status === 'False' &&
+          readyCondition?.reason === 'RevisionFailed'
+
+        // RevisionMissing / ContainerMissing, by contrast, are the NORMAL
+        // transient state of a freshly-created Knative Service: the
+        // Configuration simply hasn't minted its first Revision yet. Under
+        // deploy-time load — when the whole pool is recycled onto a new runtime
+        // image at once and nodes cold-pull the ~7 GiB image — this state can
+        // persist well beyond a few seconds. Deleting on sight produced a
+        // create → RevisionMissing → delete (age ~3s) → recreate churn loop
+        // that never converged and tripped check-warm-pool-health with
+        // "N ksvcs exist but 0 are Ready" (prod-us v1.11.16, 2026-06-24).
+        // Give them the same creation grace window as Unschedulable and only
+        // delete once it has expired; a genuinely bad image surfaces as a
+        // pod-level ImagePullBackOff (handled above) well before then.
+        const isTransientlyMissing =
           readyCondition?.status === 'False' &&
           (readyCondition?.reason === 'RevisionMissing' ||
-           readyCondition?.reason === 'ContainerMissing' ||
-           readyCondition?.reason === 'RevisionFailed')
+           readyCondition?.reason === 'ContainerMissing')
+        const missingGraceExpired =
+          isTransientlyMissing && createdAt > 0 && (Date.now() - createdAt) > NAMESPACE_GC_CREATION_GRACE_MS
+
+        const isBroken = isRevisionFailed || missingGraceExpired
 
         // Detect Unschedulable services (cluster out of resources).
         // Give them a grace period in case nodes are scaling up, but
