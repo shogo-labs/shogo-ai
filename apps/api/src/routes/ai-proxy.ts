@@ -2549,8 +2549,11 @@ export function aiProxyRoutes() {
 
       // Enforce model tier: free/basic users can only use economy-tier models.
       // Local LLMs and BYOK OpenRouter calls are user-paid, so no tier check
-      // applies — the user is paying their own provider directly.
-      if (modelConfig.provider !== 'local' && modelConfig.provider !== 'openrouter' && !isLocalDev) {
+      // applies — the user is paying their own provider directly. Internal,
+      // non-billable completions (e.g. server-initiated title generation) also
+      // bypass tier gating: the admin picks the title model and it is never
+      // billed to or restricted by the end user's plan.
+      if (modelConfig.provider !== 'local' && modelConfig.provider !== 'openrouter' && !isLocalDev && !internalUsage) {
         const tier = resolveModelTier(request.model)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
@@ -3021,8 +3024,10 @@ export function aiProxyRoutes() {
         )
       }
 
-      // Enforce model tier: free/basic users can only use economy-tier models
-      if (!isLocal && !isLocalDev) {
+      // Enforce model tier: free/basic users can only use economy-tier models.
+      // Internal, non-billable completions bypass tier gating (see
+      // chat/completions for rationale).
+      if (!isLocal && !isLocalDev && !internalUsage) {
         const tier = resolveModelTier(resolvedModel)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
