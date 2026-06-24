@@ -120,6 +120,7 @@ import {
   ShieldCheck,
   Globe,
   Plus,
+  History,
 } from 'lucide-react-native'
 import {
   useToast,
@@ -1835,9 +1836,10 @@ export default observer(function ProjectLayout() {
   }, [isWide])
 
   const [sessionNames, setSessionNames] = useState<Record<string, string>>({})
+  const [ideChatHistoryOpen, setIdeChatHistoryOpen] = useState(false)
 
   useEffect(() => {
-    if (!showChatSessions || !store?.chatSessionCollection || !store?.chatMessageCollection) return
+    if (!(showChatSessions || ideChatHistoryOpen) || !store?.chatSessionCollection || !store?.chatMessageCollection) return
 
     const sessions = store.chatSessionCollection.all.filter((s: any) => s.contextId === projectId)
 
@@ -1874,7 +1876,7 @@ export default observer(function ProjectLayout() {
     }
 
     loadNames()
-  }, [showChatSessions, store, projectId])
+  }, [showChatSessions, ideChatHistoryOpen, store, projectId])
 
   // Touch every field the memo below projects so MobX's observer tracks them.
   // The .all getter is reference-stable for field-only updates (no map-
@@ -1930,13 +1932,16 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     if (!isIdeChatEmbed || chatSessions.length === 0) return
     const sessionIds = chatSessions.map((session) => session.id)
-    setOpenChatTabIds((prev) => {
-      if (prev.length === sessionIds.length && prev.every((id, index) => id === sessionIds[index])) return prev
-      return sessionIds
-    })
-    if (!chatSessionId || !sessionIds.includes(chatSessionId)) {
-      setChatSessionId(sessionIds[0])
+    const nextActiveSessionId =
+      chatSessionId && sessionIds.includes(chatSessionId) ? chatSessionId : sessionIds[0]
+
+    if (!chatSessionId || chatSessionId !== nextActiveSessionId) {
+      setChatSessionId(nextActiveSessionId)
     }
+
+    setOpenChatTabIds((prev) =>
+      prev.includes(nextActiveSessionId) ? prev : [...prev, nextActiveSessionId],
+    )
   }, [isIdeChatEmbed, chatSessions, chatSessionId])
 
   const handleCreateNewSession = useCallback(async () => {
@@ -2838,7 +2843,10 @@ export default observer(function ProjectLayout() {
             initialAutoStartVoice={false}
           >
             <View className="flex-1 bg-background overflow-hidden">
-              <View className="h-11 flex-row items-center border-b border-border bg-background">
+              <View
+                className="h-11 flex-row items-center border-b border-border bg-background"
+                style={{ zIndex: 20 }}
+              >
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
@@ -2901,9 +2909,59 @@ export default observer(function ProjectLayout() {
                     )
                   })}
                 </ScrollView>
+                <View className="relative">
+                  <Pressable
+                    onPress={() => {
+                      setIdeChatHistoryOpen((open) => !open)
+                      void refreshProjectChatSessions()
+                    }}
+                    className={cn(
+                      'h-11 w-11 items-center justify-center border-l border-border active:bg-muted',
+                      ideChatHistoryOpen && 'bg-muted',
+                    )}
+                    accessibilityRole="button"
+                    accessibilityLabel={ideChatHistoryOpen ? 'Hide chat history' : 'Show chat history'}
+                    accessibilityState={{ expanded: ideChatHistoryOpen }}
+                  >
+                    <History size={18} className="text-muted-foreground" />
+                  </Pressable>
+                  {ideChatHistoryOpen && (
+                    <View
+                      className="absolute right-0 top-11 w-[340px] overflow-hidden rounded-lg border border-border bg-background shadow-xl"
+                      style={{ height: Math.min(520, Math.max(300, height - 80)), zIndex: 100 }}
+                    >
+                      <ChatSessionSidebar
+                        sessions={chatSessions}
+                        currentSessionId={chatSessionId ?? undefined}
+                        onSelect={(sessionId) => {
+                          setOpenChatTabIds((prev) =>
+                            prev.includes(sessionId) ? prev : [...prev, sessionId],
+                          )
+                          setChatSessionId(sessionId)
+                          setIdeChatHistoryOpen(false)
+                        }}
+                        onCreate={() => {
+                          void handleCreateNewSession()
+                          setIdeChatHistoryOpen(false)
+                        }}
+                        onRename={handleRenameChatSession}
+                        onDelete={handleDeleteChatSession}
+                        onTogglePin={handleTogglePinChatSession}
+                        onToggleArchive={handleToggleArchiveChatSession}
+                        onLoadMore={handleLoadMoreSessions}
+                        hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                        isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                        streamingSessionIds={streamingTabIds}
+                        completedSessionIds={completedTabIds}
+                        projectId={projectId ?? undefined}
+                      />
+                    </View>
+                  )}
+                </View>
                 <Pressable
                   onPress={() => {
                     void handleCreateNewSession()
+                    setIdeChatHistoryOpen(false)
                   }}
                   className="h-11 w-11 items-center justify-center border-l border-border active:bg-muted"
                   accessibilityRole="button"
