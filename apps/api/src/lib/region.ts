@@ -71,3 +71,13 @@ export function isKnownRegion(regionId: string): boolean {
 export function homeRegionForNewWorkspace(): string | null {
   return RAW_REGION_ID
 }
+
+/**
+ * The homeRegion value to stamp on a user created (signed up) in this region.
+ * Pins the user's identity-scoped writes to the region they signed up in. Null
+ * in single-region/local mode, where the router treats null as "primary /
+ * local".
+ */
+export function homeRegionForNewUser(): string | null {
+  return RAW_REGION_ID
+}

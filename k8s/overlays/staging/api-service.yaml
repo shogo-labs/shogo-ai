@@ -476,6 +476,14 @@ spec:
               value: "staging"
             - name: REGION_LABEL
               value: "Staging (OCI)"
+            # Home-region write routing. Staging is single-region (no
+            # REGION_PEERS), so "shadow" only exercises the resolver + emits
+            # "[home-region-router] would-proxy" logs — it can never actually
+            # proxy (no peer) and every write resolves local, so this is safe.
+            # Use it to validate resolution/logging on real traffic before the
+            # production enforce rollout. "off" disables it entirely.
+            - name: HOME_REGION_ROUTING
+              value: "shadow"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
             - name: PROMOTED_POD_GC_ENABLED

@@ -16,11 +16,21 @@ const workspaces: Record<string, { homeRegion: string | null } | null> = {
   ws_india: { homeRegion: 'ap-mumbai-1' },
 }
 
+const users: Record<string, { homeRegion: string | null } | null> = {
+  user_eu: { homeRegion: 'eu-frankfurt-1' },
+  user_us: { homeRegion: 'us-ashburn-1' },
+  user_legacy: { homeRegion: null },
+}
+
 mock.module('../../lib/prisma', () => ({
   prisma: {
     workspace: {
       findUnique: async ({ where: { id } }: { where: { id: string } }) =>
         id in workspaces ? workspaces[id] : null,
+    },
+    user: {
+      findUnique: async ({ where: { id } }: { where: { id: string } }) =>
+        id in users ? users[id] : null,
     },
   },
 }))
@@ -37,8 +47,17 @@ mock.module('../../lib/region', () => ({
 }))
 
 let resolved: string | null = null
+let resolveThrows = false
 mock.module('../../lib/resolve-workspace-id', () => ({
-  resolveWorkspaceIdForRequest: async () => resolved,
+  resolveWorkspaceIdForRequest: async () => {
+    if (resolveThrows) throw new Error('boom')
+    return resolved
+  },
+}))
+
+let resolvedUser: string | null = null
+mock.module('../../lib/resolve-user-id', () => ({
+  resolveUserHomeRegionUserId: async () => resolvedUser,
 }))
 
 const proxyCalls: Array<{ region: string }> = []
@@ -59,6 +78,7 @@ function makeCtx(opts: { method?: string; path?: string; headers?: Record<string
   return {
     get: () => undefined,
     set: () => {},
+    json: (body: unknown, status?: number) => ({ __json: body, status: status ?? 200 }),
     req: {
       method: opts.method ?? 'POST',
       url: `https://eu.studio.shogo.ai${opts.path ?? '/api/workspaces/ws_us'}`,
@@ -81,6 +101,8 @@ const SAVED_MODE = process.env.HOME_REGION_ROUTING
 
 beforeEach(() => {
   resolved = null
+  resolvedUser = null
+  resolveThrows = false
   proxyCalls.length = 0
 })
 afterEach(() => {
@@ -190,6 +212,112 @@ describe('homeRegionWriteProxy', () => {
     resolved = 'ws_missing'
     const { next, wasCalled } = makeNext()
     await homeRegionWriteProxy(makeCtx({}), next)
+    expect(wasCalled()).toBe(true)
+    expect(proxyCalls).toHaveLength(0)
+  })
+
+  // --- platform-global -----------------------------------------------------
+  test('routes a platform-global (/api/admin) write to the primary region', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolved = null
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(makeCtx({ path: '/api/admin/model-definitions' }), next)
+    expect(wasCalled()).toBe(false)
+    expect(proxyCalls).toEqual([{ region: 'us-ashburn-1' }])
+  })
+
+  test('does not route /api/admin/regions (kept in SKIP_PREFIXES)', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolved = null
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(makeCtx({ path: '/api/admin/regions/failover' }), next)
+    expect(wasCalled()).toBe(true)
+    expect(proxyCalls).toHaveLength(0)
+  })
+
+  // --- identity ------------------------------------------------------------
+  test('proxies an identity write to the user home region', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolved = null
+    resolvedUser = 'user_us'
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(makeCtx({ path: '/api/users/user_us' }), next)
+    expect(wasCalled()).toBe(false)
+    expect(proxyCalls).toEqual([{ region: 'us-ashburn-1' }])
+  })
+
+  test('handles an identity write locally when the user home is this region', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolved = null
+    resolvedUser = 'user_eu'
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(makeCtx({ path: '/api/users/user_eu' }), next)
+    expect(wasCalled()).toBe(true)
+    expect(proxyCalls).toHaveLength(0)
+  })
+
+  test('treats a null user homeRegion as owned by the primary region', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolved = null
+    resolvedUser = 'user_legacy'
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(makeCtx({ path: '/api/notifications/n1' }), next)
+    expect(wasCalled()).toBe(false)
+    expect(proxyCalls).toEqual([{ region: 'us-ashburn-1' }])
+  })
+
+  test('workspace ownership wins over identity when both could resolve', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolved = 'ws_india'
+    resolvedUser = 'user_us'
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(makeCtx({ path: '/api/users/user_us' }), next)
+    expect(wasCalled()).toBe(false)
+    expect(proxyCalls).toEqual([{ region: 'ap-mumbai-1' }])
+  })
+
+  // --- fail-closed for money-sensitive writes ------------------------------
+  test('fails closed (503) for a billing write when the home peer is unreachable', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    workspaces.ws_unknown_home = { homeRegion: 'unknown-region-9' }
+    resolved = 'ws_unknown_home'
+    const { next, wasCalled } = makeNext()
+    const res = (await homeRegionWriteProxy(
+      makeCtx({ path: '/api/billing/charge' }),
+      next,
+    )) as any
+    expect(wasCalled()).toBe(false)
+    expect(proxyCalls).toHaveLength(0)
+    expect(res.status).toBe(503)
+  })
+
+  test('fails closed (503) on a redeem-license write when resolution errors', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolveThrows = true
+    const { next, wasCalled } = makeNext()
+    const res = (await homeRegionWriteProxy(
+      makeCtx({ path: '/api/workspaces/ws_us/redeem-license' }),
+      next,
+    )) as any
+    expect(wasCalled()).toBe(false)
+    expect(res.status).toBe(503)
+  })
+
+  test('fails open (local) on resolution error for a non-money write', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolveThrows = true
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(makeCtx({ path: '/api/projects/p1' }), next)
+    expect(wasCalled()).toBe(true)
+    expect(proxyCalls).toHaveLength(0)
+  })
+
+  test('shadow mode never fails closed even for money writes', async () => {
+    process.env.HOME_REGION_ROUTING = 'shadow'
+    workspaces.ws_unknown_home = { homeRegion: 'unknown-region-9' }
+    resolved = 'ws_unknown_home'
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(makeCtx({ path: '/api/billing/charge' }), next)
     expect(wasCalled()).toBe(true)
     expect(proxyCalls).toHaveLength(0)
   })

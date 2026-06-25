@@ -23,6 +23,7 @@ import { resolveAttributionForUser } from "./services/affiliate.service"
 import { evaluateAllowlist, recordSignIn } from "./services/project-auth-config.service"
 import { prisma } from "./lib/prisma"
 import { getFrontendUrl } from "./lib/cloud-urls"
+import { homeRegionForNewUser } from "./lib/region"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 const LOAD_TEST_SECRET = process.env.LOAD_TEST_SECRET
@@ -236,6 +237,16 @@ export const auth = betterAuth({
       emailVerified: "emailVerified",
       createdAt: "createdAt",
       updatedAt: "updatedAt",
+    },
+    // Multi-region write-ownership: persist `homeRegion` on the users row.
+    // `input: false` so it can never be set from the client — it is stamped
+    // server-side in the user.create.before hook to the signing-up region.
+    additionalFields: {
+      homeRegion: {
+        type: "string",
+        required: false,
+        input: false,
+      },
     },
   },
 
@@ -470,6 +481,11 @@ export const auth = betterAuth({
           if (user.name) {
             user.name = sanitizeName(user.name)
           }
+          // Stamp the write-ownership home region for this identity to the
+          // region the signup lands in. `input: false` on the additionalField
+          // means a client can never override it. Null in single-region/local
+          // mode, where the router treats null as primary/local.
+          ;(user as { homeRegion?: string | null }).homeRegion = homeRegionForNewUser()
           if (isLocalMode) {
             const existingCount = await prisma.user.count()
             if (existingCount >= 1) {
