@@ -66,6 +66,11 @@ const INTENTIONAL_DIFFERENCES: Allow[] = [
     reason:
       'Multi-region write-ownership marker. The cloud runs three active-active regions and routes a workspace\'s writes to its homeRegion; Shogo Desktop is single-region/local, so the column is meaningless there and intentionally omitted from the SQLite schema.',
   },
+  {
+    key: 'User.homeRegion',
+    reason:
+      'Multi-region write-ownership marker for identity-scoped rows. The cloud routes a user\'s identity writes to their homeRegion; Shogo Desktop is single-region/local, so the column is meaningless there and intentionally omitted from the SQLite schema.',
+  },
 ]
 
 const allowedKeys = new Set(INTENTIONAL_DIFFERENCES.map((a) => a.key))

@@ -40,6 +40,13 @@ model User {
   // access. Validated against the catalog in apps/api/src/lib/admin-scopes.ts.
   adminScopes         String[] @default([])
   onboardingCompleted Boolean  @default(false)
+  // Write-ownership region for this user's identity-scoped rows (the user row
+  // itself, notifications, etc.). Identity writes are routed to this region so
+  // a given user is only ever written in one place, keeping active-active
+  // logical replication conflict-free for identity data. Set to the creating
+  // region's REGION_ID on signup; null is treated as the primary region by the
+  // router. Cloud-only (single-region desktop ignores it).
+  homeRegion          String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -58,6 +65,7 @@ model User {
   projectAuthSignIns   ProjectAuthSignIn[]
 
   @@index([createdAt])
+  @@index([homeRegion])
   @@map("users")
 }
 

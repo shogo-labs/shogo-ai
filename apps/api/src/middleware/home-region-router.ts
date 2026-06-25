@@ -4,18 +4,29 @@
  * Home-region write router.
  *
  * Shogo Cloud runs three active-active regions that all replicate to each other.
- * Writing the same workspace's rows in two regions at once is what produced the
- * split-brain that poison-pilled logical replication. This middleware makes each
- * workspace single-writer: a mutating request that targets a workspace owned by
- * a *different* region is transparently proxied to that home region, which
- * writes to its own local primary. Reads stay local off the replica.
+ * Writing the same logical row in two regions at once is what produced the
+ * split-brain that poison-pilled logical replication. This middleware makes
+ * every row single-writer by proxying a mutating request to the region that
+ * *owns* the row; that region writes to its own local primary and the change
+ * replicates out. Reads stay local off the replica.
+ *
+ * Three ownership classes (checked in this order):
+ *   1. Workspace-owned   → `workspace.homeRegion` (most tenant data).
+ *   2. Platform-global   → the primary region (admin/catalog data).
+ *   3. Identity-owned    → `users.homeRegion` (the user row, notifications, …).
+ * Anything that resolves to none of these is handled locally.
  *
  * Gated by `HOME_REGION_ROUTING`:
  *   - `off`     (default): no-op.
- *   - `shadow`: log what *would* be proxied (resolved workspace + target) but
- *               still handle locally — used to validate resolution before
- *               enabling enforcement.
+ *   - `shadow`: log what *would* be proxied (resolved owner + target) but still
+ *               handle locally — used to validate resolution before enforcing.
  *   - `enforce`: actually proxy non-home writes.
+ *
+ * Fail behavior: by default we fail *open* (handle locally) when the home
+ * region's peer is unconfigured, to avoid 502-ing users on misconfig. For
+ * money-sensitive writes (`FAIL_CLOSED_PREFIXES` — billing / usage / license
+ * redemption) we fail *closed* with a 503 instead, because a wrong-region write
+ * to a counter/balance is worse than a transient failure.
  *
  * Must be registered AFTER `requireProjectAccess` so project routes have already
  * cached `c.get('workspaceId')` (cheap resolve) and access is verified first.
@@ -26,6 +37,7 @@ import { prisma } from '../lib/prisma'
 import { RAW_REGION_ID, PRIMARY_REGION, getPeer } from '../lib/region'
 import { proxyToPeer, isProxiedRequest } from '../lib/region-peer-proxy'
 import { resolveWorkspaceIdForRequest } from '../lib/resolve-workspace-id'
+import { resolveUserHomeRegionUserId } from '../lib/resolve-user-id'
 
 export type HomeRegionRoutingMode = 'off' | 'shadow' | 'enforce'
 
@@ -62,6 +74,87 @@ const SKIP_PREFIXES = [
   '/api/cli/login/',
 ]
 
+/**
+ * Platform-global surfaces with no per-tenant / per-user owner (admin console,
+ * global catalogs). These are pinned to the primary region so there is exactly
+ * one writer. `/api/admin/regions/` is already in `SKIP_PREFIXES` (it is its own
+ * cross-region proxy) and is excluded before we reach here.
+ */
+const PRIMARY_OWNED_PREFIXES = ['/api/admin/']
+
+/**
+ * Money-sensitive write surfaces. For these we fail *closed* (503) in `enforce`
+ * mode when we can't reach the owning region, rather than the default
+ * fail-open: a wrong-region write to a usage counter / wallet balance / license
+ * redemption corrupts data that LWW cannot safely reconcile.
+ */
+const FAIL_CLOSED_PREFIXES = [
+  '/api/billing',
+  '/api/usage-events',
+  '/api/usage-wallets',
+]
+
+function isFailClosed(path: string): boolean {
+  return (
+    FAIL_CLOSED_PREFIXES.some((p) => path.startsWith(p)) ||
+    // redeem-license lives under /api/workspaces/:id/redeem-license
+    path.includes('/redeem-license')
+  )
+}
+
+type OwnerKind = 'workspace' | 'platform' | 'identity'
+
+interface OwnerDecision {
+  targetRegion: string
+  ownerKind: OwnerKind
+  /** workspaceId / userId / pathname — for logging only. */
+  ownerId: string
+}
+
+/**
+ * Resolve which region owns the write, or null when nothing claims it (handled
+ * locally). May throw on a DB error during lookup; the caller decides whether
+ * that fails open or closed.
+ */
+async function resolveOwner(c: Context, path: string): Promise<OwnerDecision | null> {
+  // 1. Workspace-owned.
+  const workspaceId = await resolveWorkspaceIdForRequest(c)
+  if (workspaceId) {
+    const ws = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { homeRegion: true },
+    })
+    if (!ws) return null // unknown workspace — let the handler 404 it locally.
+    return {
+      targetRegion: ws.homeRegion || PRIMARY_REGION,
+      ownerKind: 'workspace',
+      ownerId: workspaceId,
+    }
+  }
+
+  // 2. Platform-global → primary region.
+  if (PRIMARY_OWNED_PREFIXES.some((p) => path.startsWith(p))) {
+    return { targetRegion: PRIMARY_REGION, ownerKind: 'platform', ownerId: path }
+  }
+
+  // 3. Identity-owned → the user's home region.
+  const userId = await resolveUserHomeRegionUserId(c)
+  if (userId) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { homeRegion: true },
+    })
+    if (!user) return null // unknown user — let the handler 404 it locally.
+    return {
+      targetRegion: user.homeRegion || PRIMARY_REGION,
+      ownerKind: 'identity',
+      ownerId: userId,
+    }
+  }
+
+  return null
+}
+
 function warn(message: string, fields: Record<string, unknown>) {
   console.warn(`[home-region-router] ${message}`, fields)
 }
@@ -81,48 +174,50 @@ export async function homeRegionWriteProxy(c: Context, next: Next) {
   const path = new URL(c.req.url).pathname
   if (SKIP_PREFIXES.some((p) => path.startsWith(p))) return next()
 
-  let workspaceId: string | null = null
-  try {
-    workspaceId = await resolveWorkspaceIdForRequest(c)
-  } catch (err) {
-    warn('workspace resolution failed; handling locally', {
-      path,
-      error: err instanceof Error ? err.message : String(err),
-    })
-    return next()
-  }
-  // Identity/global write (no workspace) — stays local.
-  if (!workspaceId) return next()
+  const failClosed = isFailClosed(path)
 
-  let homeRegion: string | null = null
+  let decision: OwnerDecision | null
   try {
-    const ws = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-      select: { homeRegion: true },
-    })
-    if (!ws) return next() // unknown workspace — let the handler 404 it locally.
-    homeRegion = ws.homeRegion
+    decision = await resolveOwner(c, path)
   } catch (err) {
-    warn('homeRegion lookup failed; handling locally', {
+    // Couldn't determine the owner. For money-sensitive writes, refuse rather
+    // than risk a wrong-region write; everything else falls open to local.
+    warn('owner resolution failed', {
       path,
-      workspaceId,
+      failClosed,
       error: err instanceof Error ? err.message : String(err),
     })
+    if (mode === 'enforce' && failClosed) {
+      return c.json({ error: 'home region routing unavailable' }, 503)
+    }
     return next()
   }
 
-  // Null homeRegion (legacy/unassigned) is owned by the primary region.
-  const effectiveHome = homeRegion || PRIMARY_REGION
-  if (effectiveHome === RAW_REGION_ID) return next()
+  // Nothing owns this write (or it's already owned here) — handle locally.
+  if (!decision) return next()
+  const { targetRegion, ownerKind, ownerId } = decision
+  if (targetRegion === RAW_REGION_ID) return next()
 
-  const peer = getPeer(effectiveHome)
+  const peer = getPeer(targetRegion)
   if (!peer) {
+    if (mode === 'enforce' && failClosed) {
+      // No route to the owning region for a money write — fail closed.
+      warn('no peer for home region; failing closed', {
+        path,
+        ownerKind,
+        ownerId,
+        homeRegion: targetRegion,
+        from: RAW_REGION_ID,
+      })
+      return c.json({ error: 'home region unavailable' }, 503)
+    }
     // We don't know how to reach the home region — fail open (local) rather
     // than 502 the user. Surfaced in logs so misconfig is visible.
     warn('no peer configured for homeRegion; handling locally', {
       path,
-      workspaceId,
-      homeRegion: effectiveHome,
+      ownerKind,
+      ownerId,
+      homeRegion: targetRegion,
       from: RAW_REGION_ID,
     })
     return next()
@@ -132,8 +227,9 @@ export async function homeRegionWriteProxy(c: Context, next: Next) {
     console.log('[home-region-router] would-proxy', {
       method: c.req.method,
       path,
-      workspaceId,
-      homeRegion: effectiveHome,
+      ownerKind,
+      ownerId,
+      homeRegion: targetRegion,
       from: RAW_REGION_ID,
     })
     return next()
@@ -142,9 +238,10 @@ export async function homeRegionWriteProxy(c: Context, next: Next) {
   console.log('[home-region-router] proxy', {
     method: c.req.method,
     path,
-    workspaceId,
-    homeRegion: effectiveHome,
+    ownerKind,
+    ownerId,
+    homeRegion: targetRegion,
     from: RAW_REGION_ID,
   })
-  return proxyToPeer(c, effectiveHome)
+  return proxyToPeer(c, targetRegion)
 }

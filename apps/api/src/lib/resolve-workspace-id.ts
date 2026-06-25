@@ -62,16 +62,32 @@ async function chatSessionWorkspace(sessionId: string): Promise<string | null> {
 
 type Lookup = (id: string) => Promise<string | null>
 
+/**
+ * Prisma client accessor names (camelCase, e.g. `starredProject`) of every
+ * model this resolver can resolve to a workspace. Populated as a side effect of
+ * building `RESOURCE_LOOKUPS` (via `directWs`/`viaProject`) plus the custom
+ * chain lookups below. Consumed by the resolver-coverage CI guard
+ * (`__tests__/resolver-coverage.test.ts`) so a newly added workspace-owned
+ * model can't silently become an unrouted (conflict-prone) write.
+ */
+const workspaceResolvedModels = new Set<string>(['project'])
+
 /** Generated/handwritten resources whose row carries a direct `workspaceId`. */
-const directWs = (model: string): Lookup => async (id) => {
-  const row = await db[model].findUnique({ where: { id }, select: { workspaceId: true } })
-  return row?.workspaceId ?? null
+const directWs = (model: string): Lookup => {
+  workspaceResolvedModels.add(model)
+  return async (id) => {
+    const row = await db[model].findUnique({ where: { id }, select: { workspaceId: true } })
+    return row?.workspaceId ?? null
+  }
 }
 
 /** Resources whose workspace is reached through a `projectId` column. */
-const viaProject = (model: string): Lookup => async (id) => {
-  const row = await db[model].findUnique({ where: { id }, select: { projectId: true } })
-  return row?.projectId ? projectWorkspace(row.projectId) : null
+const viaProject = (model: string): Lookup => {
+  workspaceResolvedModels.add(model)
+  return async (id) => {
+    const row = await db[model].findUnique({ where: { id }, select: { projectId: true } })
+    return row?.projectId ? projectWorkspace(row.projectId) : null
+  }
 }
 
 /**
@@ -107,6 +123,15 @@ const RESOURCE_LOOKUPS: Record<string, Lookup> = {
   instances: directWs('instance'),
   meetings: directWs('meeting'),
 }
+
+// Custom chain lookups above resolve these models without going through
+// `directWs`/`viaProject`, so record them explicitly for the coverage guard.
+for (const m of ['chatSession', 'chatMessage', 'toolCallLog']) {
+  workspaceResolvedModels.add(m)
+}
+
+/** @see workspaceResolvedModels */
+export const WORKSPACE_RESOLVED_MODELS: ReadonlySet<string> = workspaceResolvedModels
 
 /** Path segments that look like an id but are reserved keywords, not row ids. */
 const RESERVED_RESOURCE_IDS = new Set(['import', 'validate', 'heartbeat'])

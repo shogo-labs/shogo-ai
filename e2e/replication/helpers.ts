@@ -153,3 +153,40 @@ export async function getConflictStats(
   `)
   return result.rows
 }
+
+/** Count of subscriptions on a region, split by enabled/total. */
+export async function getEnabledSubCount(
+  p: Pool
+): Promise<{ enabled: number; total: number }> {
+  const r = await p.query(`
+    SELECT COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE subenabled)::int AS enabled
+    FROM pg_subscription
+    WHERE subname LIKE 'sub_from_%'
+  `)
+  return { enabled: r.rows[0]?.enabled ?? 0, total: r.rows[0]?.total ?? 0 }
+}
+
+/** Sum of apply+sync errors across every region — the mesh-wide conflict total. */
+export async function totalConflicts(env: TestEnv): Promise<number> {
+  let sum = 0
+  for (const region of ["us", "eu", "india"]) {
+    const stats = await getConflictStats(pool(env, region))
+    for (const s of stats) sum += Number(s.conflict_count)
+  }
+  return sum
+}
+
+/** Total / enabled subscription counts summed across every region. */
+export async function meshSubHealth(
+  env: TestEnv
+): Promise<{ enabled: number; total: number }> {
+  let enabled = 0
+  let total = 0
+  for (const region of ["us", "eu", "india"]) {
+    const s = await getEnabledSubCount(pool(env, region))
+    enabled += s.enabled
+    total += s.total
+  }
+  return { enabled, total }
+}
