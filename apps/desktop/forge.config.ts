@@ -103,6 +103,7 @@ if (missingRequired.length > 0) {
 // so they're still filtered with `existsSync`.
 const extraResource = [
   './resources/web',
+  './resources/apps',
   ...REQUIRED_RESOURCES,
   ...OPTIONAL_RESOURCES.filter((p) => fs.existsSync(p)),
 ].filter((p) => !(isWin32 && p === './resources/vm'))
@@ -231,8 +232,14 @@ const config: ForgeConfig = {
       // Dynamic import (not top-level) so the ESM .mjs module is
       // loaded by Node's ESM resolver, not via CJS `require()` which
       // hits ERR_REQUIRE_ESM on Node < 22.
-      const { runSyncWeb } = await import('./scripts/run-sync-web.mjs')
+      const [{ runBuildDesktop }, { runSyncWeb }, { runSyncShogoIde }] = await Promise.all([
+        import('./scripts/run-build-desktop.mjs'),
+        import('./scripts/run-sync-web.mjs'),
+        import('./scripts/run-sync-shogo-ide.mjs'),
+      ])
+      runBuildDesktop()
       runSyncWeb()
+      runSyncShogoIde()
     },
   },
 }
