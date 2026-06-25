@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'child_process'
 import { createHash } from 'crypto'
 import fs from 'fs'
 import path from 'path'
+import { getBunPath, getProjectRoot } from './paths'
 
 export interface ShogoIdeStatus {
   ok: true
@@ -70,7 +71,7 @@ let setupPromise: Promise<void> | null = null
 function resolveRepoRoot(): string {
   if (process.env.SHOGO_REPO_ROOT) return path.resolve(process.env.SHOGO_REPO_ROOT)
   if (process.env.SHOGO_IDE_REPO_ROOT) return path.resolve(process.env.SHOGO_IDE_REPO_ROOT)
-  return path.resolve(app.getAppPath(), '..', '..')
+  return getProjectRoot()
 }
 
 function pathNeedsNativeBuildWorkaround(candidate: string): boolean {
@@ -106,10 +107,36 @@ function appendSetupLog(workspacePath: string, message: string): void {
   fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`)
 }
 
+function setupCommandEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  const pathKey = process.platform === 'win32' ? 'Path' : 'PATH'
+  const pathSep = process.platform === 'win32' ? ';' : ':'
+  const bunPath = getBunPath()
+  const bunDir = path.isAbsolute(bunPath) ? path.dirname(bunPath) : null
+  const defaultPaths = process.platform === 'win32'
+    ? []
+    : ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
+  const existingPath = env[pathKey] || env.PATH || env.Path || ''
+  const pathEntries = [bunDir, ...defaultPaths, ...existingPath.split(pathSep)]
+    .filter((entry): entry is string => !!entry)
+  env[pathKey] = Array.from(new Set(pathEntries)).join(pathSep)
+  env.PATH = env[pathKey]
+  env.SHOGO_BUN_PATH = bunPath
+  if (!env.HOME && process.platform !== 'win32') env.HOME = app.getPath('home')
+  return env
+}
+
+function resolveSetupCommand(command: string): string {
+  if (command !== 'bun') return command
+  const bunPath = getBunPath()
+  return path.isAbsolute(bunPath) && fs.existsSync(bunPath) ? bunPath : command
+}
+
 function runSetupCommand(workspacePath: string, command: string, args: string[], cwd: string): Promise<void> {
+  const resolvedCommand = resolveSetupCommand(command)
   appendSetupLog(workspacePath, `$ ${[command, ...args].join(' ')}`)
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(resolvedCommand, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: setupCommandEnv() })
     child.stdout.on('data', (chunk) => appendSetupLog(workspacePath, String(chunk).trimEnd()))
     child.stderr.on('data', (chunk) => appendSetupLog(workspacePath, String(chunk).trimEnd()))
     child.on('error', reject)
@@ -131,6 +158,7 @@ function resolveNpmCliPath(): string | null {
   const globalNpmRoot = spawnSync('npm', ['root', '-g'], {
     encoding: 'utf8',
     timeout: 5_000,
+    env: setupCommandEnv(),
   })
 
   const candidates = [
@@ -253,7 +281,7 @@ function ensureBundledExtensionBuilt(workspacePath: string, sourcePath: string, 
   if (!manifest.scripts?.build) return
 
   appendSetupLog(workspacePath, `Building bundled extension: ${sourcePath}`)
-  const result = spawnSync('npm', ['run', 'build'], { cwd: sourcePath, encoding: 'utf8' })
+  const result = spawnSync('npm', ['run', 'build'], { cwd: sourcePath, encoding: 'utf8', env: setupCommandEnv() })
   if (result.stdout) appendSetupLog(workspacePath, result.stdout.trimEnd())
   if (result.stderr) appendSetupLog(workspacePath, result.stderr.trimEnd())
   if (result.status !== 0) {
