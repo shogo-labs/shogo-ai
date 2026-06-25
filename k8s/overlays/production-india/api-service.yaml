@@ -494,6 +494,11 @@ spec:
               value: "India (Mumbai)"
             - name: REGION_PEERS
               value: '[{"id":"us-ashburn-1","label":"US (Ashburn)","url":"https://152.70.192.220"},{"id":"eu-frankfurt-1","label":"EU (Frankfurt)","url":"https://79.76.126.115"}]'
+            # Home-region write routing. Start in "shadow" (logs would-proxy
+            # decisions, no behavior change); flip to "enforce" once staging
+            # logs look right. "off" disables it entirely.
+            - name: HOME_REGION_ROUTING
+              value: "shadow"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
             - name: PROMOTED_POD_GC_ENABLED

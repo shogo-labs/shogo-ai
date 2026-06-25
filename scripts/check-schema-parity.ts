@@ -60,6 +60,12 @@ const INTENTIONAL_DIFFERENCES: Allow[] = [
       'Stores desktop-app-only preferences (chosen instance size, last-opened workspace, etc.). Never persisted to the cloud DB.',
   },
   // PG-only models — none yet; SignupAttribution etc. should be mirrored.
+  // Cloud-only fields -------------------------------------------------------
+  {
+    key: 'Workspace.homeRegion',
+    reason:
+      'Multi-region write-ownership marker. The cloud runs three active-active regions and routes a workspace\'s writes to its homeRegion; Shogo Desktop is single-region/local, so the column is meaningless there and intentionally omitted from the SQLite schema.',
+  },
 ]
 
 const allowedKeys = new Set(INTENTIONAL_DIFFERENCES.map((a) => a.key))

@@ -272,6 +272,17 @@ export const auth = betterAuth({
       createdAt: "createdAt",
       updatedAt: "updatedAt",
     },
+    // Idempotent signup (multi-region split-brain prevention): when a user
+    // signs in with a social provider whose verified email already belongs to
+    // an existing account, link the new provider to that user instead of
+    // minting a second `users` row. Same-email matching only links for the
+    // trusted providers below (which return verified emails), avoiding the
+    // account-takeover risk of linking unverified emails.
+    accountLinking: {
+      enabled: true,
+      trustedProviders: ["google", "apple"],
+      allowDifferentEmails: false,
+    },
   },
 
   // Verification model configuration - uses Prisma's verifications table
@@ -464,7 +475,41 @@ export const auth = betterAuth({
             if (existingCount >= 1) {
               throw new Error('Local mode only supports a single account.')
             }
+            return { data: user }
           }
+
+          // Idempotent signup (multi-region): if a user with this email already
+          // exists — including a row that was just created in another region and
+          // replicated here — do NOT insert a duplicate identity. Surface a
+          // clean "account exists → sign in" error instead of letting the insert
+          // hit the `users.email` unique constraint and bubble up as a 500.
+          // This proactively handles the P2002 case before the write.
+          //
+          // Residual: a truly simultaneous (sub-second) same-email signup in two
+          // regions can pass this check in both before either row replicates.
+          // That rare case is still caught by the conflict watchdog + the
+          // identity-merge runbook in prod-investigation/recovery/recon/. We do
+          // NOT claim 100% prevention here.
+          if (user.email) {
+            try {
+              const existing = await prisma.user.findFirst({
+                where: { email: { equals: user.email, mode: 'insensitive' } },
+                select: { id: true },
+              })
+              if (existing) {
+                throw new APIError('UNPROCESSABLE_ENTITY', {
+                  code: 'USER_ALREADY_EXISTS',
+                  message: 'An account with this email already exists. Please sign in.',
+                })
+              }
+            } catch (err) {
+              // Re-throw our own clean error; swallow DB hiccups so a transient
+              // lookup failure never blocks legitimate signups.
+              if (err instanceof APIError) throw err
+              console.warn('[auth] duplicate-email pre-check failed; proceeding', err)
+            }
+          }
+
           return { data: user }
         },
         /**
