@@ -35,6 +35,8 @@ import { notifyPaymentReceipt, notifyPaymentFailed } from './services/billing-al
 import { STRIPE_API_VERSION, resolveInvoiceSubscriptionId } from './lib/stripe-helpers'
 import * as workspaceService from './services/workspace.service'
 import * as workspaceModelsService from './services/workspace-models.service'
+import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
+import { proxyToPeer } from './lib/region-peer-proxy'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
@@ -112,6 +114,7 @@ import {
   requireProjectAccess,
   isProjectReservedTopLevelPath,
 } from './middleware/auth'
+import { homeRegionWriteProxy } from './middleware/home-region-router'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
 
@@ -714,6 +717,13 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
   }
   return requireProjectAccess(c, next)
 })
+
+// Home-region write router: proxy workspace-scoped mutations to the region that
+// owns the workspace so tenant data is only ever written in one place (keeps
+// active-active logical replication conflict-free). No-op unless
+// HOME_REGION_ROUTING=shadow|enforce. Registered after requireProjectAccess so
+// project routes have already cached c.get('workspaceId').
+app.use('/api/*', homeRegionWriteProxy)
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
@@ -4974,16 +4984,8 @@ app.post('/api/admin/pods/:projectId/warmup', async (c) => {
 // Region Management Routes
 // =============================================================================
 
-const REGION_ID = process.env.REGION_ID || 'unknown'
-const REGION_LABEL = process.env.REGION_LABEL || REGION_ID
-const REGION_PEERS: Array<{ id: string; label: string; url: string }> = (() => {
-  try {
-    return JSON.parse(process.env.REGION_PEERS || '[]')
-  } catch {
-    return []
-  }
-})()
-const HOST_HEADER_FOR_PEERS = process.env.HOST_HEADER_FOR_PEERS || 'studio.shogo.ai'
+// Region identity/config + the cross-region proxy now live in ./lib/region and
+// ./lib/region-peer-proxy so the home-region write router shares them.
 
 app.get('/api/admin/regions', (c) => {
   return c.json({
@@ -4994,46 +4996,12 @@ app.get('/api/admin/regions', (c) => {
 
 app.all('/api/admin/regions/:regionId/*', async (c) => {
   const targetRegionId = c.req.param('regionId')
-  const peer = REGION_PEERS.find((p) => p.id === targetRegionId)
-
-  if (!peer) {
+  if (!getPeer(targetRegionId)) {
     return c.json({ error: `Unknown region: ${targetRegionId}` }, 404)
   }
-
-  const originalUrl = new URL(c.req.url)
-  const proxyPath = originalUrl.pathname.replace(`/api/admin/regions/${targetRegionId}`, '')
-  const targetUrl = new URL(proxyPath || '/', peer.url)
-  targetUrl.search = originalUrl.search
-
-  const headers = new Headers()
-  headers.set('Content-Type', c.req.header('Content-Type') || 'application/json')
-  headers.set('Host', HOST_HEADER_FOR_PEERS)
-  headers.set('Origin', `https://${HOST_HEADER_FOR_PEERS}`)
-  const cookie = c.req.header('Cookie')
-  if (cookie) headers.set('Cookie', cookie)
-  const authorization = c.req.header('Authorization')
-  if (authorization) headers.set('Authorization', authorization)
-
-  try {
-    const body = (c.req.method !== 'GET' && c.req.method !== 'HEAD')
-      ? await c.req.text()
-      : undefined
-
-    const resp = await fetch(targetUrl.toString(), {
-      method: c.req.method,
-      headers,
-      body,
-      ...(typeof Bun !== 'undefined' ? { tls: { rejectUnauthorized: false } } : {}),
-    } as any)
-
-    const respBody = await resp.text()
-    return new Response(respBody, {
-      status: resp.status,
-      headers: { 'Content-Type': resp.headers.get('Content-Type') || 'application/json' },
-    })
-  } catch (err: any) {
-    return c.json({ error: `Proxy to ${peer.label} failed: ${err.message}` }, 502)
-  }
+  return proxyToPeer(c, targetRegionId, {
+    stripPrefix: `/api/admin/regions/${targetRegionId}`,
+  })
 })
 
 // GET /api/admin/warm-pool - Extended warm pool status with promoted pods and GC stats

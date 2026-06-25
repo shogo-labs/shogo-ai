@@ -9,6 +9,7 @@
 
 import { customAlphabet } from 'nanoid'
 import { getUserOwnedWorkspaceCount } from '../services/workspace.service'
+import { homeRegionForNewWorkspace } from '../lib/region'
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6)
 
@@ -204,7 +205,14 @@ export const workspaceHooks: WorkspaceHooks = {
         input.slug = `${baseSlug}-${nanoid()}`
       }
     }
-    
+
+    // Pin write-ownership to the creating region unless the caller already set
+    // one (e.g. a proxied write from the workspace's home region). This keeps
+    // every workspace single-writer so its rows never conflict across regions.
+    if (input.homeRegion == null) {
+      input.homeRegion = homeRegionForNewWorkspace()
+    }
+
     return { ok: true, data: input }
   },
 

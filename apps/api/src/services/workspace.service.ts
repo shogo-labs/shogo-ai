@@ -7,6 +7,7 @@
 
 import { prisma, type Prisma } from '../lib/prisma';
 import { customAlphabet } from 'nanoid';
+import { homeRegionForNewWorkspace } from '../lib/region';
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6);
 
@@ -42,6 +43,9 @@ export async function createPersonalWorkspace(
       data: {
         name: workspaceName,
         slug,
+        // Pin write-ownership to the region that created the workspace so all
+        // workspace-scoped writes stay single-writer (replication-safe).
+        homeRegion: homeRegionForNewWorkspace(),
       },
     });
 
@@ -148,7 +152,11 @@ export async function createPaidWorkspace(
 
   const result = await prisma.$transaction(async (tx) => {
     const workspace = await tx.workspace.create({
-      data: { name: workspaceName, slug },
+      data: {
+        name: workspaceName,
+        slug,
+        homeRegion: homeRegionForNewWorkspace(),
+      },
     });
 
     const member = await tx.member.create({

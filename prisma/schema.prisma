@@ -131,6 +131,13 @@ model Workspace {
   // back-filled to "project" by the matching migration so behavior
   // for already-connected accounts is preserved.
   composioScope String       @default("workspace")
+  // Write-ownership region for this workspace. All writes to workspace-scoped
+  // rows (members, projects, billing, storage_usage, usage_wallets, etc.) are
+  // routed to this region so they are only ever written in one place — this is
+  // what keeps active-active logical replication conflict-free for tenant data.
+  // Set to the creating region's REGION_ID on create; null is treated as the
+  // primary region by the router. Cloud-only (single-region desktop ignores it).
+  homeRegion    String?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
@@ -163,6 +170,7 @@ model Workspace {
   modelVisibility        WorkspaceModelVisibility[]
 
   @@index([createdAt])
+  @@index([homeRegion])
   @@map("workspaces")
 }
 

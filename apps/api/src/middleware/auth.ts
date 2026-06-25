@@ -86,6 +86,11 @@ export interface AuthContext {
 declare module "hono" {
   interface ContextVariableMap {
     auth: AuthContext
+    /**
+     * Workspace this request acts on, cached by `requireProjectAccess` (and the
+     * workspace-id resolver) so the home-region write router doesn't re-query.
+     */
+    workspaceId?: string
   }
 }
 
@@ -403,6 +408,8 @@ export async function requireProjectAccess(c: Context, next: Next) {
   // Runtime-token is project-scoped: only the token's own projectId is trusted.
   if (auth?.via === 'runtimeToken') {
     if (auth.projectId === projectId) {
+      // Cache the token's workspace scope for the home-region write router.
+      if (auth.workspaceId) c.set("workspaceId", auth.workspaceId)
       await next()
       return
     }
@@ -446,6 +453,9 @@ export async function requireProjectAccess(c: Context, next: Next) {
     )
   }
 
+  // Cache the resolved workspace so the home-region write router can reuse it
+  // without a second project lookup.
+  c.set("workspaceId", project.workspaceId)
   await next()
 }
 
