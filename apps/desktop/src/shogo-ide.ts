@@ -6,7 +6,7 @@ import { spawn, spawnSync } from 'child_process'
 import { createHash } from 'crypto'
 import fs from 'fs'
 import path from 'path'
-import { getBunPath, getProjectRoot } from './paths'
+import { getBunPath, getDataDir, getProjectRoot } from './paths'
 
 export interface ShogoIdeStatus {
   ok: true
@@ -72,6 +72,70 @@ function resolveRepoRoot(): string {
   if (process.env.SHOGO_REPO_ROOT) return path.resolve(process.env.SHOGO_REPO_ROOT)
   if (process.env.SHOGO_IDE_REPO_ROOT) return path.resolve(process.env.SHOGO_IDE_REPO_ROOT)
   return getProjectRoot()
+}
+
+const PACKAGED_SHOGO_IDE_REQUIRED_FILES = [
+  'package.json',
+  'product.shogo.template.json',
+  path.join('scripts', 'materialize-distribution.mjs'),
+  path.join('distribution', 'generated', 'product.json'),
+  path.join('hardening', 'generated', 'production-readiness.json'),
+  path.join('extensions', 'shogo-core', 'package.json'),
+] as const
+
+function copyPackagedShogoIdeWorkspace(sourcePath: string, targetPath: string): void {
+  fs.mkdirSync(targetPath, { recursive: true })
+  fs.cpSync(sourcePath, targetPath, {
+    recursive: true,
+    force: true,
+    filter: (source) => {
+      const relative = path.relative(sourcePath, source)
+      if (!relative) return true
+      const parts = relative.split(path.sep)
+      return parts[0] !== 'node_modules' && parts[0] !== 'upstream' && parts[0] !== '.git'
+    },
+  })
+}
+
+function getPackagedShogoIdeSourcePath(): string {
+  return path.join(process.resourcesPath!, 'apps', 'shogo-ide')
+}
+
+function ensurePackagedShogoIdeWorkspace(): string {
+  const sourcePath = getPackagedShogoIdeSourcePath()
+  const targetPath = path.join(getDataDir(), 'shogo-ide')
+  const missingSourceFiles = PACKAGED_SHOGO_IDE_REQUIRED_FILES.filter((file) => !fs.existsSync(path.join(sourcePath, file)))
+  if (missingSourceFiles.length > 0) {
+    throw new Error(`Packaged Shogo IDE resources are incomplete. Missing: ${missingSourceFiles.map((file) => `apps/shogo-ide/${file}`).join(', ')}`)
+  }
+
+  const sourcePackage = JSON.parse(fs.readFileSync(path.join(sourcePath, 'package.json'), 'utf8')) as { version?: string }
+  const markerPath = path.join(targetPath, '.shogo-packaged-source.json')
+  const expectedMarker = JSON.stringify({ appVersion: app.getVersion(), shogoIdeVersion: sourcePackage.version ?? 'unknown' })
+  let currentMarker = ''
+  try {
+    currentMarker = fs.readFileSync(markerPath, 'utf8').trim()
+  } catch {
+    currentMarker = ''
+  }
+
+  const missingTargetFiles = PACKAGED_SHOGO_IDE_REQUIRED_FILES.some((file) => !fs.existsSync(path.join(targetPath, file)))
+  if (currentMarker !== expectedMarker || missingTargetFiles) {
+    copyPackagedShogoIdeWorkspace(sourcePath, targetPath)
+    fs.writeFileSync(markerPath, `${expectedMarker}\n`)
+  }
+
+  return targetPath
+}
+
+function resolveShogoIdeWorkspacePath(): string {
+  if (process.env.SHOGO_IDE_WORKSPACE_PATH) return path.resolve(process.env.SHOGO_IDE_WORKSPACE_PATH)
+  if (app.isPackaged) return ensurePackagedShogoIdeWorkspace()
+  return path.join(resolveRepoRoot(), 'apps', 'shogo-ide')
+}
+
+function resolveSetupCwd(): string {
+  return app.isPackaged ? getDataDir() : resolveRepoRoot()
 }
 
 function pathNeedsNativeBuildWorkaround(candidate: string): boolean {
@@ -372,7 +436,7 @@ export async function ensureShogoIdeSetup(status: ShogoIdeStatus): Promise<void>
         '1',
         'https://github.com/microsoft/vscode.git',
         status.codeOssCheckoutPath,
-      ], resolveRepoRoot())
+      ], resolveSetupCwd())
     }
 
     if (!fs.existsSync(status.generatedProductPath)) {
@@ -398,8 +462,7 @@ export async function ensureShogoIdeSetup(status: ShogoIdeStatus): Promise<void>
 }
 
 export function getShogoIdeStatus(): ShogoIdeStatus {
-  const repoRoot = resolveRepoRoot()
-  const workspacePath = path.join(repoRoot, 'apps', 'shogo-ide')
+  const workspacePath = resolveShogoIdeWorkspacePath()
   const productTemplatePath = path.join(workspacePath, 'product.shogo.template.json')
   const extensionManifestPath = path.join(workspacePath, 'extensions', 'shogo-core', 'package.json')
   const generatedProductPath = path.join(workspacePath, 'distribution', 'generated', 'product.json')

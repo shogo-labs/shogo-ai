@@ -58,6 +58,23 @@ function codeOssWorkspaceUrl(baseUrl: string, workspacePath: string): string {
   }
 }
 
+function extractCodeOssServerUrl(text: string): string | null {
+  const candidates = text.match(/https?:\/\/[^\s'"<>]+/g) ?? []
+  for (const candidate of candidates) {
+    const normalized = candidate.replace(/[),.;]+$/, '')
+    try {
+      const url = new URL(normalized)
+      if (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1' || url.hostname === '0.0.0.0') {
+        if (url.hostname === '0.0.0.0') url.hostname = '127.0.0.1'
+        return url.toString()
+      }
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
 function codeOssWebArgs(status: ReturnType<typeof getShogoIdeStatus>, workspacePath: string, desktopChatUrl?: string): string[] {
   const runtime = ensureShogoIdeRuntimeProfile(status.workspacePath, { desktopChatUrl, profileKey: workspacePath })
   const shogoCoreExtensionPath = path.join(status.workspacePath, 'extensions', 'shogo-core')
@@ -134,9 +151,9 @@ async function startIdeServer(workspacePath: string, desktopChatUrl?: string): P
       const text = chunk.toString()
       output.push(text)
       if (output.length > 40) output.splice(0, output.length - 40)
-      const match = text.match(/https?:\/\/[^\s]+/)
-      if (match && !resolvedUrl) {
-        resolvedUrl = match[0]
+      const url = extractCodeOssServerUrl(text)
+      if (url && !resolvedUrl) {
+        resolvedUrl = url
         clearTimeout(timeout)
         resolve(resolvedUrl)
       }
