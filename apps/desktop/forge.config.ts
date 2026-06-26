@@ -141,6 +141,12 @@ const extraResource = [
 //     aborting the whole batch the way windows-sign's single batched signtool
 //     invocation does.
 //
+// This hookFunction is wired into `packagerConfig` ONLY — NOT the Squirrel maker.
+// electron-winstaller signs via a generated SEA "signtool.exe" that
+// JSON.stringify()s the windowsSign options, which silently drops a function, so
+// a hookFunction can't survive there. The installer is signed in the `postMake`
+// hook instead (see the maker-squirrel + postMake notes below).
+//
 // IMPORTANT: signWithHook() in @electron/windows-sign SWALLOWS a hook's thrown
 // error (it only logs under debug and continues), so an unrecoverable signing
 // failure would otherwise silently ship a partially-signed, un-shippable build.
@@ -265,12 +271,22 @@ const config: ForgeConfig = {
   makers: [
     {
       name: '@electron-forge/maker-squirrel',
+      // NOTE: we intentionally do NOT pass `windowsSign` here. The Squirrel
+      // maker (electron-winstaller) signs via a generated "fake signtool.exe"
+      // (a Node SEA) and JSON.stringify()s the windowsSign options into it — so
+      // our in-memory `hookFunction` closure is silently dropped, leaving the
+      // SEA with empty options and failing to sign nupkg internals like
+      // ffmpeg.dll (this broke v1.11.22). The legacy `signWithParams` path would
+      // work but re-signs every PE file in the nupkg (~100 signatures), defeating
+      // the KeyLocker quota savings. The app's own Shogo.exe is already signed in
+      // the packager phase (the nupkg is built from the signed app dir), so the
+      // only thing left to sign is the installer — which we do in the `postMake`
+      // hook below (Setup.exe only, one signature).
       config: {
         name: 'Shogo',
         setupExe: 'Shogo-Setup.exe',
         ...(hasIcon ? { setupIcon: './resources/icon.ico', iconUrl: 'https://raw.githubusercontent.com/shogo-labs/shogo-ai/main/apps/desktop/resources/icon.ico' } : {}),
         ...(hasInstallGif ? { loadingGif: './resources/install-splash.gif' } : {}),
-        ...(windowsSign ? { windowsSign } : {}),
       },
     },
     {
@@ -318,6 +334,27 @@ const config: ForgeConfig = {
       runBuildDesktop()
       runSyncWeb()
       runSyncShogoIde()
+    },
+    // Sign the Windows installer (Shogo-Setup.exe) here rather than via the
+    // Squirrel maker's `windowsSign` (see the maker-squirrel NOTE above for why
+    // that path is incompatible with our exe-only hookFunction). This runs
+    // in-process so it reuses signWindowsFile() — which skips non-.exe files and
+    // applies the same KeyLocker retry / quota-exhaustion handling — meaning
+    // only Setup.exe itself consumes a signature here. No-ops on platforms /
+    // forks without signing configured (windowsSign undefined) and on macOS
+    // (no .exe artifacts to match).
+    postMake: async (_forgeConfig: unknown, makeResults: ReadonlyArray<{ platform: string; artifacts: string[] }>) => {
+      if (!windowsSign) return
+      for (const result of makeResults) {
+        if (result.platform !== 'win32') continue
+        for (const artifact of result.artifacts) {
+          // signWindowsFile() skips anything that isn't a .exe, so RELEASES /
+          // *.nupkg artifacts are ignored and only Shogo-Setup.exe is signed.
+          await signWindowsFile(artifact)
+        }
+      }
+      // Returning undefined leaves the artifact list unchanged (we sign in
+      // place; runMutatingHook keeps the original outputs on undefined).
     },
   },
 }
