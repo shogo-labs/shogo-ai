@@ -97,7 +97,7 @@ export class XtermSession {
     term.loadAddon(linksAddon)
 
     term.open(container)
-    fitAddon.fit()
+    try { fitAddon.fit() } catch { /* container may be zero-size at open */ }
 
     // Wire xterm → PTY. Record a command-boundary marker when the user
     // presses Enter so "Scroll to Previous/Next Command" has positions to jump to.
@@ -196,7 +196,15 @@ export class XtermSession {
 
   /** Re-fit on container resize. No-op before attach. */
   fit(): void {
-    if (this.disposed) return
+    // A resize can fire before `attach()` has set `this.term` (attach is
+    // async — it awaits the lazy xterm import), or after teardown. Bail so
+    // `this.term.cols` can't throw "Cannot read properties of null".
+    if (this.disposed || !this.term) return
+    // FitAddon.proposeDimensions() returns null when the container is
+    // detached or zero-size (collapsed panel / hidden split), and xterm then
+    // throws reading `.cols`. Skip until the container is actually laid out.
+    const el = this.container
+    if (el && (!el.isConnected || el.clientWidth === 0 || el.clientHeight === 0)) return
     const prevCols = this.term.cols
     const prevRows = this.term.rows
     try { this.fitAddon?.fit() } catch {}

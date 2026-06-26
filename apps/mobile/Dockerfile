@@ -90,18 +90,29 @@ RUN test -f dist/vs/loader.js && test -f dist/vs/editor/editor.main.js \
 RUN node scripts/inject-analytics.js
 
 # Upload source maps to Sentry (inject debug IDs, upload, then strip maps).
-# When SENTRY_AUTH_TOKEN is set (real deploys) a failed upload now FAILS the
+# When SENTRY_AUTH_TOKEN is set (real deploys) a failed upload FAILS the
 # build: shipping a minified bundle whose maps never reached Sentry silently
 # breaks symbolication for the whole release (this is exactly how
 # `production_web` issues like `Object.S` / `Qr` went unreadable), so a loud
-# failure is the lesser evil. Fork / contributor builds without the token
-# skip the step entirely and stay telemetry-free.
+# failure is the lesser evil.
+#
+# An EMPTY token on a *production* build (EXPO_PUBLIC_APP_ENV starts with
+# `production`) is the regression that actually shipped: the token wasn't
+# configured for the deploy environment, the whole block was skipped, and
+# every production_web event stayed minified while `.map` files were left
+# undeleted (and publicly served). Fail loudly in that case too. Fork /
+# contributor builds (non-production) without the token still skip and stay
+# telemetry-free.
 RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
       sentry-cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
       sentry-cli sourcemaps upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
       find ./dist -name '*.map' -delete; \
+    elif [ "${EXPO_PUBLIC_APP_ENV#production}" != "$EXPO_PUBLIC_APP_ENV" ]; then \
+      echo "ERROR: SENTRY_AUTH_TOKEN is empty on a production build (EXPO_PUBLIC_APP_ENV=$EXPO_PUBLIC_APP_ENV)." >&2; \
+      echo "Refusing to ship a web bundle whose source maps never reach Sentry — production_web issues would be unsymbolicated and .map files would leak publicly. Configure SENTRY_AUTH_TOKEN (project:releases scope) for this deploy environment." >&2; \
+      exit 1; \
     else \
-      echo "SENTRY_AUTH_TOKEN not set — skipping Sentry source map upload"; \
+      echo "SENTRY_AUTH_TOKEN not set — skipping Sentry source map upload (non-production build)"; \
     fi
 
 # =============================================================================

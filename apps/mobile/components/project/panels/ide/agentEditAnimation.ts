@@ -407,6 +407,9 @@ function restoreCursorAndScroll(
   rememberedPosition: ReturnType<editor.IStandaloneCodeEditor["getPosition"]>,
   rememberedScrollTop: number,
 ): void {
+  // The edit + restore can run after a tab swap / unmount disposed the
+  // model; touching a disposed model throws "Model is disposed!".
+  if (model.isDisposed() || ed.getModel() !== model) return;
   if (rememberedPosition) {
     const lineCount = model.getLineCount();
     const line = Math.min(rememberedPosition.lineNumber, lineCount);
@@ -436,6 +439,13 @@ function typewriterInsert(
 
     let progress = 0;
     const tick = () => {
+      // The typewriter drives ~1s of setTimeout ticks; a tab swap / unmount
+      // can dispose the model (or swap the editor to a different one)
+      // mid-animation. Touching it then throws "Model is disposed!".
+      if (model.isDisposed() || ed.getModel() !== model) {
+        resolve();
+        return;
+      }
       if (progress >= insertion.insertedLines.length) {
         const startLine = after + 1;
         const endLine = after + insertion.insertedLines.length;

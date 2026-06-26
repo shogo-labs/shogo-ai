@@ -41,6 +41,23 @@ function copyToClipboard(text: string): void {
     void navigator.clipboard?.writeText(text)
   } catch (_e) { /* noop */ }
 }
+
+/**
+ * FitAddon.fit() calls proposeDimensions(), which returns null when the
+ * terminal element is detached or has zero size (collapsed panel, hidden
+ * split, mid-teardown). xterm then throws "Cannot read properties of null
+ * (reading 'cols')". Guard on layout + swallow so a stray ResizeObserver /
+ * rAF tick during teardown can't crash the renderer.
+ */
+function safeFit(fit: XFitAddon | null | undefined, el: HTMLElement | null | undefined): void {
+  if (!fit) return
+  if (el && (!el.isConnected || el.clientWidth === 0 || el.clientHeight === 0)) return
+  try {
+    fit.fit()
+  } catch {
+    /* detached / zero-size terminal */
+  }
+}
 import { serializeTerminalCommands } from './context-aggregator'
 import { useShogoTheme, type ThemeSource, type XtermThemeColors } from './use-shogo-theme'
 import { SnapshotStore, captureScrollback, restoreScrollback } from './persistence/snapshot-store'
@@ -439,7 +456,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         term.loadAddon(links)
         term.loadAddon(search)
         term.open(container)
-        fit.fit()
+        safeFit(fit, container)
         termRef.current = term
         fitRef.current = fit
 
@@ -453,7 +470,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         const xtermEl = term.element!  // the .xterm root element
         xtermEl.style.marginLeft = `${GUTTER_W}px`
         // Refit so cols are recalculated against the narrower available width
-        requestAnimationFrame(() => { try { fit.fit() } catch {} })
+        requestAnimationFrame(() => safeFit(fit, container))
 
         // The gutterEl is absolutely positioned over the left strip of the
         // container so it appears to the left of the shifted xterm canvas.
@@ -910,7 +927,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         const offError = client.onError((err) => {
           batcher.write(`\r\n\x1b[31m[terminal error] ${err.message}\x1b[0m\r\n`)
         })
-        const ro = new ResizeObserver(() => fit.fit())
+        const ro = new ResizeObserver(() => safeFit(fit, container))
         ro.observe(container)
         client.resize(term.cols, term.rows)
         // First-terminal stagger fix: the bottom panel may still be
@@ -919,7 +936,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
         // refit one animation frame later — by then the layout has
         // settled and the shell receives the correct SIGWINCH column
         // count, eliminating the truncated-username wrap artifact.
-        requestAnimationFrame(() => { fitRef.current?.fit() })
+        requestAnimationFrame(() => safeFit(fitRef.current, container))
         if (autoFocus && !hidden) term.focus()
 
         // Publish terminal context to the module-level store so the chat
@@ -1046,7 +1063,7 @@ export const ShogoTerminalSurface = React.forwardRef<ShogoTerminalSurfaceHandle,
     React.useImperativeHandle(ref, () => ({
       clear: () => { clearGutterRef.current?.(); termRef.current?.clear() },
       focus: () => termRef.current?.focus(),
-      refit: () => fitRef.current?.fit(),
+      refit: () => safeFit(fitRef.current, hostRef.current),
       openFind: () => {
         setSearchOpen(true)
       },
