@@ -36,6 +36,8 @@ const DESKTOP_DIR = path.join(__dirname, '..');
 const REPO_ROOT = path.resolve(DESKTOP_DIR, '..', '..');
 const ENTRY = path.join(DESKTOP_DIR, 'src', 'main.ts');
 const OUT_FILE = path.join(DESKTOP_DIR, 'dist', 'main.js');
+const FS_IPC_ENTRY = path.join(DESKTOP_DIR, 'src', 'fs-ipc.ts');
+const FS_IPC_OUT_FILE = path.join(DESKTOP_DIR, 'dist', 'fs-ipc.js');
 
 /**
  * Bun walks upward from the input file looking for
@@ -128,8 +130,16 @@ if (!existsSync(ENTRY)) {
   console.error(`bundle-main: entry not found: ${ENTRY}`);
   process.exit(1);
 }
+if (!existsSync(FS_IPC_ENTRY)) {
+  console.error(`bundle-main: fs-ipc entry not found: ${FS_IPC_ENTRY}`);
+  process.exit(1);
+}
 if (!existsSync(OUT_FILE)) {
   console.error(`bundle-main: dist/main.js not found — did tsc run first?`);
+  process.exit(1);
+}
+if (!existsSync(FS_IPC_OUT_FILE)) {
+  console.error(`bundle-main: dist/fs-ipc.js not found — did tsc run first?`);
   process.exit(1);
 }
 
@@ -205,60 +215,61 @@ if (desktopSentryDsn) {
 // directly to CreateProcess on Windows / execvp on Unix. Bun receives one
 // argv entry `__SHOGO_WORKER_VERSION__="0.0.0"` with the inner quotes intact,
 // regardless of platform.
-const args = [
-  'build',
-  ENTRY,
-  '--target', 'node',
-  '--format', 'cjs',
-  '--outfile', OUT_FILE,
-  // DO NOT add `--sourcemap` here. With `--outfile`, any `--sourcemap` mode
-  // that produces a separate `.map` turns the build into a *multiple-output*
-  // build, and bun (1.3.x) then writes NOTHING to `--outfile` while still
-  // printing a success summary and exiting 0 — leaving `main.js` empty/stale.
-  // `result.status` below stays 0, so the broken bundle sails through and the
-  // packaged app silently does nothing at launch (zero output, never starts
-  // the local server). v1.11.12 (`--sourcemap=external`) failed loudly with
-  // "cannot use an external source map without --outdir"; v1.11.13 switched to
-  // `--sourcemap=linked`, which hit the silent-empty path above and shipped a
-  // dead `main.js` (caught only by the release Boot smoke test). If a
-  // main-process source map is ever needed again, switch to `--outdir dist`
-  // (which writes both files) AND assert `main.js` is non-empty before
-  // packaging — never re-add `--sourcemap` alongside `--outfile`.
-  '--define', `__SHOGO_WORKER_VERSION__="${workerPkg.version}"`,
-  '--define', `__SHOGO_DESKTOP_SENTRY_DSN__="${desktopSentryDsn}"`,
-  ...EXTERNALS.flatMap((p) => ['--external', p]),
-];
+function buildDesktopCjsBundle({ entry, outfile, minBytes, label, defines = [] }) {
+  const args = [
+    'build',
+    entry,
+    '--target', 'node',
+    '--format', 'cjs',
+    '--outfile', outfile,
+    // DO NOT add `--sourcemap` here. With `--outfile`, any `--sourcemap` mode
+    // that produces a separate `.map` turns the build into a *multiple-output*
+    // build, and bun (1.3.x) then writes NOTHING to `--outfile` while still
+    // printing a success summary and exiting 0 — leaving the output empty/stale.
+    ...defines.flatMap(([key, value]) => ['--define', `${key}="${value}"`]),
+    ...EXTERNALS.flatMap((p) => ['--external', p]),
+  ];
 
-console.log('[bundle-main] running:');
-console.log(`  bun ${args.map((a) => (/\s|"/.test(a) ? JSON.stringify(a) : a)).join(' ')}`);
-const result = spawnSync('bun', args, { cwd: DESKTOP_DIR, stdio: 'inherit', shell: false });
-if (result.error) {
-  console.error('[bundle-main] failed to invoke bun:', result.error.message);
-  process.exit(1);
-}
-if (result.status !== 0) {
-  console.error(`[bundle-main] bun build failed (exit ${result.status ?? 'signal:' + result.signal})`);
-  process.exit(result.status ?? 1);
+  console.log(`[bundle-main] running ${label}:`);
+  console.log(`  bun ${args.map((a) => (/\s|"/.test(a) ? JSON.stringify(a) : a)).join(' ')}`);
+  const result = spawnSync('bun', args, { cwd: DESKTOP_DIR, stdio: 'inherit', shell: false });
+  if (result.error) {
+    console.error(`[bundle-main] failed to invoke bun for ${label}:`, result.error.message);
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    console.error(`[bundle-main] bun build failed for ${label} (exit ${result.status ?? 'signal:' + result.signal})`);
+    process.exit(result.status ?? 1);
+  }
+
+  const outBytes = statSync(outfile).size;
+  if (outBytes < minBytes) {
+    console.error(
+      `[bundle-main] ✗ ${path.relative(DESKTOP_DIR, outfile)} is only ${outBytes} bytes — bun reported success but did not write a real bundle.`,
+    );
+    console.error('  This is the silent --outfile failure; do not package an empty/stale process module.');
+    process.exit(1);
+  }
+  const sizeKb = (outBytes / 1024).toFixed(1);
+  console.log(`[bundle-main] ✓ wrote ${path.relative(DESKTOP_DIR, outfile)} (${sizeKb} KB)`);
 }
 
-// Hard floor on the output size. `bun build` can exit 0 while writing an
-// empty/stale `--outfile` (see the `--sourcemap` note above) — `result.status`
-// won't catch it, so verify the bundle is actually there. The real bundle is
-// ~600 KB; anything under 50 KB means the write silently failed and we must NOT
-// let it reach packaging (an empty main.js = an app that launches and does
-// nothing, which is how v1.11.13 shipped a dead build past every exit-code
-// check and only died in the Boot smoke test).
-const outBytes = statSync(OUT_FILE).size;
-const MIN_BUNDLE_BYTES = 50 * 1024;
-if (outBytes < MIN_BUNDLE_BYTES) {
-  console.error(
-    `[bundle-main] ✗ dist/main.js is only ${outBytes} bytes — bun reported success but did not write a real bundle.`,
-  );
-  console.error('  This is the silent --outfile failure; do not package an empty main process.');
-  process.exit(1);
-}
-const sizeKb = (outBytes / 1024).toFixed(1);
-console.log(`[bundle-main] ✓ wrote dist/main.js (${sizeKb} KB)`);
+buildDesktopCjsBundle({
+  entry: ENTRY,
+  outfile: OUT_FILE,
+  minBytes: 50 * 1024,
+  label: 'main process',
+  defines: [
+    ['__SHOGO_WORKER_VERSION__', workerPkg.version],
+    ['__SHOGO_DESKTOP_SENTRY_DSN__', desktopSentryDsn],
+  ],
+});
+buildDesktopCjsBundle({
+  entry: FS_IPC_ENTRY,
+  outfile: FS_IPC_OUT_FILE,
+  minBytes: 20 * 1024,
+  label: 'fs IPC module',
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Post-bundle safety check: refuse to ship a bundle that leaks the build host's
@@ -285,7 +296,11 @@ console.log(`[bundle-main] ✓ wrote dist/main.js (${sizeKb} KB)`);
 // inlined by Bun.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const bundleSource = readFileSync(OUT_FILE, 'utf8');
+const bundleSources = [
+  { file: OUT_FILE, source: readFileSync(OUT_FILE, 'utf8') },
+  { file: FS_IPC_OUT_FILE, source: readFileSync(FS_IPC_OUT_FILE, 'utf8') },
+];
+const bundleSource = bundleSources.map(({ source }) => source).join('\n');
 const forbidden = [
   // Plain absolute paths to anywhere inside the build checkout. Catches `__dirname`
   // inlines, `__filename` inlines, and any other path that snuck through.
@@ -340,4 +355,13 @@ if (leaks.length > 0) {
   process.exit(1);
 }
 
-console.log('[bundle-main] ✓ no build-host paths leaked into bundle');
+for (const { file, source } of bundleSources) {
+  const unresolvedWorkspaceRequire = /require\(["']@shogo\/(?:agent-runtime)\/src\//.exec(source);
+  if (unresolvedWorkspaceRequire) {
+    console.error(`[bundle-main] ✗ ${path.relative(DESKTOP_DIR, file)} contains unresolved workspace source require: ${unresolvedWorkspaceRequire[0]}`);
+    console.error('  Workspace source imports must be bundled before packaging because app.asar does not include monorepo packages.');
+    process.exit(1);
+  }
+}
+
+console.log('[bundle-main] ✓ no build-host paths or unresolved workspace source requires leaked into bundles');

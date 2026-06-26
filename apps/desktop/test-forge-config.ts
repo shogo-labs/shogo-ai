@@ -34,7 +34,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 
+import { runBuildDesktop } from './scripts/run-build-desktop.mjs'
 import { runSyncWeb } from './scripts/run-sync-web.mjs'
+import { runSyncShogoIde } from './scripts/run-sync-shogo-ide.mjs'
 
 let passed = 0
 let failed = 0
@@ -59,18 +61,14 @@ interface Call {
   args: readonly string[]
 }
 
-type SpawnFn = (
-  command: string,
-  args: readonly string[],
-  options?: unknown,
-) => SpawnSyncReturns<Buffer>
+type SpawnFn = NonNullable<Parameters<typeof runSyncWeb>[0]>
 
 function makeSpawn(
   result: Partial<SpawnSyncReturns<Buffer>>,
   recorder: Call[],
 ): SpawnFn {
-  return (command, args) => {
-    recorder.push({ command, args: [...args] })
+  return ((command: string, args?: readonly string[]) => {
+    recorder.push({ command, args: [...(args ?? [])] })
     return {
       pid: 0,
       output: [],
@@ -80,7 +78,7 @@ function makeSpawn(
       signal: null,
       ...result,
     } as SpawnSyncReturns<Buffer>
-  }
+  }) as SpawnFn
 }
 
 console.log('runSyncWeb (forge.config.ts prePackage hook)')
@@ -233,7 +231,69 @@ assertTrue(
   typeof runSyncWeb === 'function',
 )
 
-// 7. forge.config.ts actually wires `runSyncWeb` into the `prePackage`
+// 7. Shogo IDE package sync helper is wired and invokes the integrity script.
+{
+  const scriptPath = path.join(__dirname, 'scripts', 'sync-shogo-ide.mjs')
+  const calls: Call[] = []
+  let captured: unknown
+  try {
+    runSyncShogoIde(makeSpawn({ status: 0 }, calls), scriptPath)
+  } catch (err) {
+    captured = err
+  }
+  assertTrue(
+    'run-sync-shogo-ide.mjs happy path does not throw',
+    captured === undefined,
+    captured,
+  )
+  assertTrue(
+    'run-sync-shogo-ide.mjs spawned node once',
+    calls.length === 1 && calls[0]?.command === 'node',
+    JSON.stringify(calls),
+  )
+  assertTrue(
+    'run-sync-shogo-ide.mjs invokes sync-shogo-ide.mjs',
+    calls[0]?.args[0] === scriptPath,
+    JSON.stringify(calls[0]?.args),
+  )
+  assertTrue(
+    'sync-shogo-ide.mjs exists on disk',
+    fs.existsSync(scriptPath),
+    `expected ${scriptPath}`,
+  )
+  assertTrue(
+    'run-sync-shogo-ide.mjs exports runSyncShogoIde as a callable',
+    typeof runSyncShogoIde === 'function',
+  )
+}
+
+// 8. Desktop build helper is wired and invokes `npm run build` so Forge cannot
+//    package stale `dist/` output.
+{
+  const calls: Call[] = []
+  let captured: unknown
+  try {
+    runBuildDesktop(makeSpawn({ status: 0 }, calls))
+  } catch (err) {
+    captured = err
+  }
+  assertTrue(
+    'run-build-desktop.mjs happy path does not throw',
+    captured === undefined,
+    captured,
+  )
+  assertTrue(
+    'run-build-desktop.mjs invokes npm run build',
+    calls.length === 1 && calls[0]?.command === 'npm' && calls[0]?.args.join(' ') === 'run build',
+    JSON.stringify(calls),
+  )
+  assertTrue(
+    'run-build-desktop.mjs exports runBuildDesktop as a callable',
+    typeof runBuildDesktop === 'function',
+  )
+}
+
+// 9. forge.config.ts actually wires `runBuildDesktop`, `runSyncWeb` and `runSyncShogoIde` into the `prePackage`
 //    hook. We read the file as text rather than importing it because
 //    importing fires the top-level REQUIRED_RESOURCES.filter()
 //    process.exit(1) on any checkout that hasn't downloaded
@@ -251,6 +311,16 @@ assertTrue(
     'no `prePackage:` key found in forge.config.ts',
   )
   assertTrue(
+    'forge.config.ts prePackage calls runBuildDesktop',
+    /runBuildDesktop\s*\(/.test(forgeConfigSrc),
+    'no `runBuildDesktop(` invocation found in forge.config.ts',
+  )
+  assertTrue(
+    'forge.config.ts imports runBuildDesktop from the .mjs helper',
+    /run-build-desktop\.mjs/.test(forgeConfigSrc),
+    'forge.config.ts no longer references run-build-desktop.mjs',
+  )
+  assertTrue(
     'forge.config.ts prePackage calls runSyncWeb',
     /runSyncWeb\s*\(/.test(forgeConfigSrc),
     'no `runSyncWeb(` invocation found in forge.config.ts',
@@ -259,6 +329,41 @@ assertTrue(
     'forge.config.ts imports runSyncWeb from the .mjs helper',
     /run-sync-web\.mjs/.test(forgeConfigSrc),
     'forge.config.ts no longer references run-sync-web.mjs',
+  )
+  assertTrue(
+    'forge.config.ts prePackage calls runSyncShogoIde',
+    /runSyncShogoIde\s*\(/.test(forgeConfigSrc),
+    'no `runSyncShogoIde(` invocation found in forge.config.ts',
+  )
+  assertTrue(
+    'forge.config.ts imports runSyncShogoIde from the .mjs helper',
+    /run-sync-shogo-ide\.mjs/.test(forgeConfigSrc),
+    'forge.config.ts no longer references run-sync-shogo-ide.mjs',
+  )
+  assertTrue(
+    'forge.config.ts ships resources/apps as an extraResource',
+    forgeConfigSrc.includes("'./resources/apps'"),
+    'resources/apps is not listed in extraResource',
+  )
+}
+
+{
+  const ideViewsPath = path.join(__dirname, 'src', 'ide-views.ts')
+  const ideViewsSrc = fs.readFileSync(ideViewsPath, 'utf8')
+  assertTrue(
+    'ide-views.ts extracts Code OSS URLs through a dedicated filter',
+    /extractCodeOssServerUrl\s*\(/.test(ideViewsSrc),
+    'no extractCodeOssServerUrl helper found in ide-views.ts',
+  )
+  assertTrue(
+    'ide-views.ts only accepts local Code OSS server URLs',
+    ideViewsSrc.includes("url.hostname === '127.0.0.1'") && ideViewsSrc.includes("url.hostname === 'localhost'"),
+    'local server hostname allow-list is missing',
+  )
+  assertTrue(
+    'ide-views.ts no longer resolves the first arbitrary HTTPS URL from launch output',
+    !ideViewsSrc.includes('const match = text.match(/https?:\\/\\/[^\\s]+/)'),
+    'generic first-URL extraction would incorrectly accept https://nodejs.org inspector help output',
   )
 }
 
