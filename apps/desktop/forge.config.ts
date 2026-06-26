@@ -108,42 +108,45 @@ const extraResource = [
   ...OPTIONAL_RESOURCES.filter((p) => fs.existsSync(p)),
 ].filter((p) => !(isWin32 && p === './resources/vm'))
 
-// Windows code signing via DigiCert KeyLocker (cloud HSM). The cert's
-// private key is non-exportable, so we can't use the legacy
-// `certificateFile`/`certificatePassword` flow. Instead the CI workflow
-// installs the KeyLocker KSP, syncs the cert into the Windows store, and
-// exports WINDOWS_SIGN_WITH_PARAMS — which must contain ONLY the cert
-// selector (`/sha1 <thumbprint>`). @electron/windows-sign always appends
-// its own `/fd` (from `hashes`) and `/tr`+`/td` (from `timestampServer`),
-// so including those in signWithParams makes signtool fail with "You
-// cannot use the /fd option twice". signtool resolves the synced cert via
-// the thumbprint and signs through the KSP, so the key never leaves the
-// HSM. `hashes: ['sha256']` pins single SHA-256 signing — the default is
-// [sha1, sha256], and the deprecated SHA-1 pass is rejected by DigiCert.
-// Shared between packagerConfig (app binaries) and the Squirrel maker
-// (Shogo-Setup.exe). Undefined -> unsigned build (forks / local dev).
+// Windows code signing via DigiCert KeyLocker (cloud HSM). The cert's private
+// key is non-exportable, so we can't use the legacy
+// `certificateFile`/`certificatePassword` flow. Instead the CI workflow installs
+// the KeyLocker KSP, syncs the cert into the Windows store, and exports
+// WINDOWS_SIGN_WITH_PARAMS — which must contain ONLY the cert selector
+// (`/sha1 <thumbprint>`). signtool resolves the synced cert via the thumbprint
+// and signs through the KSP, so the key never leaves the HSM. `hashes:
+// ['sha256']` pins single SHA-256 signing (the default [sha1, sha256] dual-pass
+// is rejected by DigiCert). Undefined -> unsigned build (forks / local dev).
 // See .github/workflows/desktop-release-windows.yml.
-// DigiCert KeyLocker (the cloud HSM backing our cert) intermittently fails a
-// single signtool call with `SignerSign() failed` / 0x8009002d partway through
-// signing the ~100 binaries in the Electron bundle — even though the same cert
-// + credentials sign every other file in the SAME run. This bricked the
-// v1.11.21 Windows release after 30+ files had already signed cleanly.
-// @electron/windows-sign batches every file into one signtool invocation and
-// does not retry, so a single transient HSM blip fails the entire tagged
-// release.
 //
-// Switch to a per-file `hookFunction` that delegates back to windows-sign's own
-// `sign()` for ONE file (reusing its exact signtool args + vendored signtool
-// resolution — note we deliberately DON'T pass hookFunction there, so it routes
-// to signtool instead of recursing into this hook) and retries the known
-// transient HSM / timestamp errors with backoff. Per-file granularity means one
-// flaky file is retried in isolation instead of aborting the whole batch.
+// We sign via a per-file `hookFunction` rather than letting
+// @electron/windows-sign batch-sign the whole bundle, for two reasons:
 //
-// IMPORTANT: signWithHook() in @electron/windows-sign swallows a hook's thrown
-// error (it only logs it under debug and continues), so an unrecoverable
-// signing failure would otherwise silently ship a partially-signed,
-// un-shippable build. We therefore hard-exit the packager process on final
-// failure so the release fails loudly instead.
+//  1. SIGNATURE BUDGET. DigiCert KeyLocker certs have a HARD limit of 1,000
+//     signatures per cert per validity year (DigiCert-hosted: can't be
+//     exceeded, only topped up in CertCentral). The Electron bundle contains
+//     ~100 signable PE files (electron DLLs + node-pty .node addons), so
+//     signing every one burned the whole quota in ~10 releases and bricked the
+//     v1.11.21 Windows release with `SignerSign() failed` / 0x8009002d
+//     ("signature limit reached"). For Windows trust + SmartScreen only the
+//     executables a user actually launches matter: the app (Shogo.exe), the
+//     Squirrel installer (Shogo-Setup.exe) and the Squirrel auto-updater
+//     (Update.exe). Bundled DLLs/.node run fine unsigned — Windows doesn't
+//     enforce Authenticode on loaded libraries outside WDAC/AppLocker — so the
+//     hook SKIPS every non-.exe file, cutting ~100 signatures/release down to a
+//     handful and extending the quota ~20-30x.
+//
+//  2. ROBUSTNESS. Per-file granularity lets us retry one flaky file (e.g. a
+//     briefly-unreachable DigiCert timestamp server) in isolation instead of
+//     aborting the whole batch the way windows-sign's single batched signtool
+//     invocation does.
+//
+// IMPORTANT: signWithHook() in @electron/windows-sign SWALLOWS a hook's thrown
+// error (it only logs under debug and continues), so an unrecoverable signing
+// failure would otherwise silently ship a partially-signed, un-shippable build.
+// We therefore hard-exit the packager process on failure so the release fails
+// loudly. We deliberately DON'T pass hookFunction into the inner sign() call, so
+// it routes to signtool instead of recursing into this hook.
 type WindowsSignFn = (opts: {
   files: string[]
   signWithParams?: string | string[]
@@ -152,12 +155,22 @@ type WindowsSignFn = (opts: {
   signToolPath?: string
 }) => Promise<void>
 
-const TRANSIENT_SIGN_ERROR =
-  /0x8009002d|SignerSign\(\) failed|unexpected internal error|timestamp server (?:either )?could not be reached|specified timestamp server/i
+// 0x8009002d / "SignerSign() failed" from the KeyLocker KSP, with our (proven)
+// cert + signtool config, means the cert's signature quota is exhausted — a HARD
+// limit no retry can clear. Fail fast with an actionable message instead of
+// burning ~20 min retrying every file.
+const QUOTA_EXHAUSTED_ERROR = /0x8009002d|SignerSign\(\) failed/i
+// Genuinely transient failures worth retrying (DigiCert timestamp service /
+// network hiccups).
+const TRANSIENT_SIGN_ERROR = /timestamp|ETIMEDOUT|ECONNRESET|ECONNREFUSED|getaddrinfo|socket hang up/i
 
-async function signWindowsFileWithRetry(fileToSign: string): Promise<void> {
+async function signWindowsFile(fileToSign: string): Promise<void> {
+  // Sign only executables to conserve KeyLocker signatures (see above). DLLs and
+  // .node addons run fine unsigned; skipping them is the whole point of the hook.
+  if (!/\.exe$/i.test(fileToSign)) return
+
   const { sign } = (await import('@electron/windows-sign')) as unknown as { sign: WindowsSignFn }
-  const maxAttempts = 5
+  const maxAttempts = 4
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       await sign({
@@ -167,14 +180,24 @@ async function signWindowsFileWithRetry(fileToSign: string): Promise<void> {
         hashes: ['sha256'],
         ...(process.env.SIGNTOOL_PATH ? { signToolPath: process.env.SIGNTOOL_PATH } : {}),
       })
+      console.log(`[windows-sign] signed ${fileToSign}`)
       return
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      const firstLine = message.split('\n')[0]
+      if (QUOTA_EXHAUSTED_ERROR.test(message)) {
+        console.error(
+          `::error title=KeyLocker signature quota likely exhausted::signtool failed with SignerSign()/0x8009002d on ` +
+            `${fileToSign}. DigiCert KeyLocker certs have a hard 1,000-signature/year limit. Buy more signatures in ` +
+            `CertCentral (order 1540997811, increments of 1,000) or wait for the subscription term to renew, then re-run. ${firstLine}`,
+        )
+        process.exit(1)
+      }
       if (attempt < maxAttempts && TRANSIENT_SIGN_ERROR.test(message)) {
         const backoffMs = 3000 * attempt
         console.warn(
           `[windows-sign] transient signing failure on ${fileToSign} ` +
-            `(attempt ${attempt}/${maxAttempts}); retrying in ${backoffMs}ms: ${message.split('\n')[0]}`,
+            `(attempt ${attempt}/${maxAttempts}); retrying in ${backoffMs}ms: ${firstLine}`,
         )
         await new Promise((resolve) => setTimeout(resolve, backoffMs))
         continue
@@ -185,7 +208,7 @@ async function signWindowsFileWithRetry(fileToSign: string): Promise<void> {
   }
 }
 
-const windowsSign = process.env.WINDOWS_SIGN_WITH_PARAMS ? { hookFunction: signWindowsFileWithRetry } : undefined
+const windowsSign = process.env.WINDOWS_SIGN_WITH_PARAMS ? { hookFunction: signWindowsFile } : undefined
 
 // node-pty ships prebuilt binaries for EVERY platform under prebuilds/
 // (darwin-arm64, darwin-x64, linux-x64, win32-x64, ...). On Windows,
