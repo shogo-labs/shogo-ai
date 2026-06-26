@@ -75,7 +75,16 @@ RUN node scripts/copy-monaco-vs.mjs
 
 # Build Expo web export (Metro bundler outputs to apps/mobile/dist/).
 # packages/*/dist are already pre-built in workspace-deps.
-RUN npx expo export --platform web
+#
+# `--source-maps` is REQUIRED for Sentry symbolication. Without it `expo
+# export` emits only minified JS (no `.map` files), so the `sentry-cli
+# sourcemaps upload` step below has nothing to upload — its report reads
+# "no sourcemap found, debug id …" for every bundle and production_web
+# stacks stay minified even though Debug IDs are injected. The flag writes
+# external `dist/_expo/static/js/web/*.js.map` files that carry matching
+# Debug IDs; the upload step ships them and the `find … -delete` below
+# strips them from the image so they never leak to nginx.
+RUN npx expo export --platform web --source-maps
 
 # Fail the build loudly if the self-hosted Monaco bundle didn't make it into
 # the export. Mirrors the integrity guard in apps/desktop/scripts/sync-web.mjs
