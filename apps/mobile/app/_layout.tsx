@@ -78,12 +78,85 @@ import { safeSetItem } from '../lib/safe-storage'
 import { setPendingLicenseCode } from '../lib/pending-license'
 import * as ExpoLinking from 'expo-linking'
 
+type SentryBeforeSend = NonNullable<Parameters<typeof Sentry.init>[0]>['beforeSend']
+type SentryErrorEvent = Parameters<NonNullable<SentryBeforeSend>>[0]
+
+/**
+ * production_web noise filter. These high-volume issues are environmental,
+ * not Shogo code defects — left unfiltered they bury real regressions in
+ * the dashboard and burn quota. Each branch maps to a specific issue
+ * confirmed during Sentry triage (see the triage plan, Tier 2).
+ */
+function isNoiseEvent(event: SentryErrorEvent): boolean {
+  const values = event.exception?.values ?? []
+  const messages = values
+    .map((v) => `${v.type ?? ''}: ${v.value ?? ''}`)
+    .concat(typeof event.message === 'string' ? [event.message] : [])
+  const frames = values.flatMap((v) => v.stacktrace?.frames ?? [])
+  const reqUrl = typeof event.request?.url === 'string' ? event.request.url : ''
+
+  // 1. Preview-iframe failures (top issue by volume). The sandboxed preview
+  //    app injects `frame_ant.js`, which fetches its own origin
+  //    (preview--<uuid>.shogo.ai). While the preview is booting / being torn
+  //    down those reject with "Failed to fetch" — surfaced here but owned by
+  //    the preview runtime, not studio.
+  const isPreviewIframe =
+    frames.some((f) => (f.filename ?? '').includes('frame_ant')) ||
+    messages.some((m) => /preview--[^\s)]+\.shogo\.ai/i.test(m)) ||
+    /preview--[^.\s/]+\.shogo\.ai/i.test(reqUrl)
+  if (isPreviewIframe) return true
+
+  // 2. Transient backend availability / network — server health, not a
+  //    client bug. The SDK surfaces 5xx as ShogoError; `AbortSignal.timeout`
+  //    surfaces as TimeoutError; dropped/blocked connections as
+  //    "Failed to fetch" / "Load failed" / "NetworkError".
+  const isTransientBackend = messages.some(
+    (m) =>
+      /Request failed with status 50[234]\b/.test(m) ||
+      /\bTimeoutError\b/.test(m) ||
+      /signal timed out/i.test(m) ||
+      /Failed to fetch\b/.test(m) ||
+      /\bLoad failed\b/.test(m) ||
+      /NetworkError when attempting to fetch/i.test(m),
+  )
+  if (isTransientBackend) return true
+
+  // 3. Browser-extension DOM races (e.g. Google Translate mutates the
+  //    React-owned DOM, then React's insertBefore/removeChild can't find the
+  //    node). Not reproducible in-app and unfixable from our side.
+  const isExtensionDomRace = messages.some(
+    (m) =>
+      /Failed to execute '(insertBefore|removeChild)' on 'Node'/.test(m) &&
+      /not a child of this node|node to be removed is not a child/.test(m),
+  )
+  if (isExtensionDomRace) return true
+
+  return false
+}
+
 Sentry.init({
   dsn: sentryDsn,
   environment: process.env.EXPO_PUBLIC_APP_ENV || 'development',
   release: process.env.EXPO_PUBLIC_BUILD_HASH || 'dev',
   tracesSampleRate: 0.2,
   enabled: !!sentryDsn,
+  // Web symbolication fix. `@sentry/react-native` installs a `RewriteFrames`
+  // integration that rewrites every frame's filename to `app:///<file>` — a
+  // native-bundle convention (Hermes / `index.android.bundle`) that is
+  // meaningless on web. On web it actively breaks symbolication: the Metro
+  // serializer injects Debug IDs into `globalThis._sentryDebugIds` keyed by the
+  // *real* bundle URL (`https://…/_expo/static/js/web/index-<hash>.js`), and
+  // core's `applyDebugIds` matches those against each frame's filename to build
+  // `event.debug_meta`. Once RewriteFrames has changed the filenames to
+  // `app:///index-<hash>.js`, that match fails and events ship with
+  // `debug_meta.images: []` → Sentry has no Debug ID to look up the uploaded
+  // source maps, so production_web stacks stay minified. Dropping the rewrite
+  // on web keeps frame filenames aligned with the injected Debug IDs; native
+  // builds keep the integration (they need `app:///`).
+  integrations: (defaultIntegrations) =>
+    Platform.OS === 'web'
+      ? defaultIntegrations.filter((i) => i.name !== 'RewriteFrames')
+      : defaultIntegrations,
   // Drop unhandled promise rejections whose "reason" was a non-Error value
   // (e.g. `Promise.reject(new Event(...))` from third-party libs, or string
   // rejections from Stripe / posthog). They show up in Sentry as a single
@@ -92,6 +165,10 @@ Sentry.init({
   // rejects with a non-Error, we'll still see breadcrumbs / network in
   // adjacent issues.
   beforeSend(event, hint) {
+    // Drop high-volume non-actionable noise (preview iframe, transient
+    // backend/network, browser-extension DOM races). See triage plan Tier 2.
+    if (isNoiseEvent(event)) return null
+
     const reason = hint?.originalException as unknown
     const isPlainEventReason =
       typeof reason !== 'undefined' &&

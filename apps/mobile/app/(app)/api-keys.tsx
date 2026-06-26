@@ -15,8 +15,8 @@ import {
   Pressable,
   Modal,
   ActivityIndicator,
-  Platform,
 } from 'react-native'
+import * as Clipboard from 'expo-clipboard'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -153,11 +153,17 @@ export default observer(function ApiKeysPage() {
   }
 
   const handleCopy = async (text: string) => {
-    if (Platform.OS === 'web') {
-      await navigator.clipboard.writeText(text)
+    // `navigator.clipboard.writeText` rejects with NotAllowedError on
+    // Windows/Electron when the document isn't focused. Use the
+    // cross-platform expo-clipboard helper and never let a copy failure
+    // surface as an unhandled rejection (Sentry SHOGO-DESKTOP-2).
+    try {
+      await Clipboard.setStringAsync(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (err) {
+      console.error('[ApiKeys] Clipboard write failed:', err)
     }
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
   }
 
   const closeCreateModal = () => {

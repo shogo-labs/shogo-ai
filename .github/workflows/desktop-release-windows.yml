@@ -162,6 +162,11 @@ jobs:
           # Tag renderer events with the release so they line up with the
           # main process and with the uploaded source maps below.
           EXPO_PUBLIC_BUILD_HASH: ${{ env.APP_VERSION }}
+          # Packaged release → tag renderer Sentry events as `production`.
+          # Without this, `_layout.tsx` falls back to `development` and every
+          # shipped desktop renderer crash is mislabeled (the main process
+          # already sets `production` via `app.isPackaged`).
+          EXPO_PUBLIC_APP_ENV: production
           # getSentryExpoConfig's serializer only injects Debug IDs + writes
           # maps here; the upload is the explicit sentry-cli step below.
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
