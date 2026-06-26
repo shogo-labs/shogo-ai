@@ -123,14 +123,69 @@ const extraResource = [
 // Shared between packagerConfig (app binaries) and the Squirrel maker
 // (Shogo-Setup.exe). Undefined -> unsigned build (forks / local dev).
 // See .github/workflows/desktop-release-windows.yml.
-const windowsSign = process.env.WINDOWS_SIGN_WITH_PARAMS
-  ? {
-      signWithParams: process.env.WINDOWS_SIGN_WITH_PARAMS,
-      timestampServer: 'http://timestamp.digicert.com',
-      hashes: ['sha256'],
-      ...(process.env.SIGNTOOL_PATH ? { signToolPath: process.env.SIGNTOOL_PATH } : {}),
+// DigiCert KeyLocker (the cloud HSM backing our cert) intermittently fails a
+// single signtool call with `SignerSign() failed` / 0x8009002d partway through
+// signing the ~100 binaries in the Electron bundle — even though the same cert
+// + credentials sign every other file in the SAME run. This bricked the
+// v1.11.21 Windows release after 30+ files had already signed cleanly.
+// @electron/windows-sign batches every file into one signtool invocation and
+// does not retry, so a single transient HSM blip fails the entire tagged
+// release.
+//
+// Switch to a per-file `hookFunction` that delegates back to windows-sign's own
+// `sign()` for ONE file (reusing its exact signtool args + vendored signtool
+// resolution — note we deliberately DON'T pass hookFunction there, so it routes
+// to signtool instead of recursing into this hook) and retries the known
+// transient HSM / timestamp errors with backoff. Per-file granularity means one
+// flaky file is retried in isolation instead of aborting the whole batch.
+//
+// IMPORTANT: signWithHook() in @electron/windows-sign swallows a hook's thrown
+// error (it only logs it under debug and continues), so an unrecoverable
+// signing failure would otherwise silently ship a partially-signed,
+// un-shippable build. We therefore hard-exit the packager process on final
+// failure so the release fails loudly instead.
+type WindowsSignFn = (opts: {
+  files: string[]
+  signWithParams?: string | string[]
+  timestampServer?: string
+  hashes?: string[]
+  signToolPath?: string
+}) => Promise<void>
+
+const TRANSIENT_SIGN_ERROR =
+  /0x8009002d|SignerSign\(\) failed|unexpected internal error|timestamp server (?:either )?could not be reached|specified timestamp server/i
+
+async function signWindowsFileWithRetry(fileToSign: string): Promise<void> {
+  const { sign } = (await import('@electron/windows-sign')) as unknown as { sign: WindowsSignFn }
+  const maxAttempts = 5
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await sign({
+        files: [fileToSign],
+        signWithParams: process.env.WINDOWS_SIGN_WITH_PARAMS,
+        timestampServer: 'http://timestamp.digicert.com',
+        hashes: ['sha256'],
+        ...(process.env.SIGNTOOL_PATH ? { signToolPath: process.env.SIGNTOOL_PATH } : {}),
+      })
+      return
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (attempt < maxAttempts && TRANSIENT_SIGN_ERROR.test(message)) {
+        const backoffMs = 3000 * attempt
+        console.warn(
+          `[windows-sign] transient signing failure on ${fileToSign} ` +
+            `(attempt ${attempt}/${maxAttempts}); retrying in ${backoffMs}ms: ${message.split('\n')[0]}`,
+        )
+        await new Promise((resolve) => setTimeout(resolve, backoffMs))
+        continue
+      }
+      console.error(`::error::[windows-sign] failed to sign ${fileToSign} after ${attempt} attempt(s): ${message}`)
+      process.exit(1)
     }
-  : undefined
+  }
+}
+
+const windowsSign = process.env.WINDOWS_SIGN_WITH_PARAMS ? { hookFunction: signWindowsFileWithRetry } : undefined
 
 // node-pty ships prebuilt binaries for EVERY platform under prebuilds/
 // (darwin-arm64, darwin-x64, linux-x64, win32-x64, ...). On Windows,
