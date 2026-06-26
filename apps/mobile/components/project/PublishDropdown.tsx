@@ -24,6 +24,7 @@ import {
   Globe,
   Lock,
   Users,
+  KeyRound,
   ExternalLink,
   CheckCircle,
   XCircle,
@@ -45,15 +46,36 @@ import { api } from '../../lib/api'
 import { useDomainHttp } from '../../contexts/domain'
 import { CustomDomainsSection } from './CustomDomainsSection'
 
-export type AccessLevel = 'anyone' | 'authenticated' | 'private'
+export type AccessLevel = 'anyone' | 'authenticated' | 'private' | 'password'
 
 const PUBLISH_DOMAIN = 'shogo.one'
+
+const SITE_PASSWORD_MIN_LENGTH = 4
 
 const ACCESS_OPTIONS: { value: AccessLevel; label: string; Icon: any }[] = [
   { value: 'anyone', label: 'Anyone', Icon: Globe },
   { value: 'authenticated', label: 'Authenticated users', Icon: Users },
   { value: 'private', label: 'Private', Icon: Lock },
+  { value: 'password', label: 'Password protected', Icon: KeyRound },
 ]
+
+// Map a publish error to user-facing copy. The thrown ShogoError carries the
+// raw response body in `details`, so we can switch on the structured server
+// code (e.g. the cloud-proxy codes returned by the local/desktop API) and fall
+// back to the server message otherwise.
+function publishErrorMessage(err: any): string {
+  const code: string | undefined = err?.details?.error?.code ?? err?.details?.code
+  switch (code) {
+    case 'cloud_signin_required':
+      return 'Sign in to Shogo Cloud to publish from the desktop app.'
+    case 'project_not_synced':
+      return 'Sync this project to Shogo Cloud before publishing.'
+    case 'cloud_unreachable':
+      return "Couldn't reach Shogo Cloud. Check your connection and try again."
+    default:
+      return err?.message || 'Failed to publish'
+  }
+}
 
 interface PublishDropdownProps {
   projectId: string
@@ -70,6 +92,12 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
     () => projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   )
   const [accessLevel, setAccessLevel] = useState<AccessLevel>('anyone')
+  // Shared site password (only for accessLevel === 'password'). Never
+  // pre-filled from the server (the raw value is never returned); `hasPassword`
+  // tells us whether a gate is already configured so we can show the right copy.
+  const [password, setPassword] = useState('')
+  const [hasPassword, setHasPassword] = useState(false)
+  const [isSavingPassword, setIsSavingPassword] = useState(false)
   const [isPublished, setIsPublished] = useState(false)
   const [publishedAt, setPublishedAt] = useState<number | null>(null)
   const [publishedSubdomain, setPublishedSubdomain] = useState<string | null>(null)
@@ -112,6 +140,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
         setPublishedAt(data.publishedAt ?? null)
         setPublishedCommitSha(data.publishedCommitSha ?? null)
         if (data.accessLevel) setAccessLevel(data.accessLevel as AccessLevel)
+        setHasPassword(data.hasPassword === true)
       }
       setAlwaysOn(data.alwaysOn === true)
       setAlwaysOnAllowance(data.alwaysOnAllowance ?? null)
@@ -145,14 +174,62 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
     setIsPublishing(true)
     setError(null)
     try {
-      const data = await api.publishProject(http, projectId, subdomain, accessLevel)
+      const data = await api.publishProject(
+        http,
+        projectId,
+        subdomain,
+        accessLevel,
+        accessLevel === 'password' && password ? password : undefined,
+      )
       setIsPublished(true)
       setPublishedSubdomain(data.subdomain)
       setPublishedAt(data.publishedAt)
+      if (typeof data.hasPassword === 'boolean') setHasPassword(data.hasPassword)
+      // The plaintext lives only in this submit; drop it from memory.
+      setPassword('')
     } catch (err: any) {
-      setError(err.message || 'Failed to publish')
+      setError(publishErrorMessage(err))
     } finally {
       setIsPublishing(false)
+    }
+  }
+
+  // Change the visitor access level. For an already-published app we persist
+  // immediately via PATCH (mirrors the always-on toggle). Switching TO
+  // `password` defers the PATCH until a password is entered + saved below;
+  // switching to any other level persists right away (clearing any gate).
+  const handleSelectAccess = async (value: AccessLevel) => {
+    setShowAccessPicker(false)
+    if (value === accessLevel) return
+    const prev = accessLevel
+    setAccessLevel(value)
+    setError(null)
+    if (!isPublished || value === 'password') return
+    try {
+      const data = await api.updatePublishSettings(http, projectId, { accessLevel: value })
+      setHasPassword(data.hasPassword === true)
+    } catch (err: any) {
+      setAccessLevel(prev)
+      setError(err?.message || 'Failed to update access')
+    }
+  }
+
+  // Persist a new shared password for an already-published app.
+  const handleSavePassword = async () => {
+    if (!isPublished || password.length < SITE_PASSWORD_MIN_LENGTH) return
+    setIsSavingPassword(true)
+    setError(null)
+    try {
+      const data = await api.updatePublishSettings(http, projectId, {
+        accessLevel: 'password',
+        password,
+      })
+      setHasPassword(data.hasPassword === true)
+      setPassword('')
+    } catch (err: any) {
+      setError(err?.message || 'Failed to set password')
+    } finally {
+      setIsSavingPassword(false)
     }
   }
 
@@ -164,6 +241,9 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
       setIsPublished(false)
       setPublishedSubdomain(null)
       setPublishedAt(null)
+      // Server resets access to `anyone` and clears the gate on unpublish.
+      setHasPassword(false)
+      setPassword('')
       // Unpublishing frees the always-on slot back to the workspace pool.
       setAlwaysOn(false)
       setAlwaysOnUsed((u) => Math.max(0, u - (alwaysOn ? 1 : 0)))
@@ -213,7 +293,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
       // HEAD moved — refresh the recorded live commit sha.
       await loadPublishState()
     } catch (err: any) {
-      setError(err.message || 'Failed to publish latest changes')
+      setError(publishErrorMessage(err))
     } finally {
       setIsRepublishing(false)
     }
@@ -225,10 +305,19 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
     }
   }
 
+  // Publishing as password-protected requires a password unless one is already
+  // configured for this (unchanged) subdomain — the server reuses the stored
+  // hash in that case.
+  const passwordSatisfied =
+    accessLevel !== 'password' ||
+    password.length >= SITE_PASSWORD_MIN_LENGTH ||
+    (hasPassword && subdomain === publishedSubdomain)
+
   const canPublish =
     subdomain.length >= 3 &&
     !subdomainStatus.checking &&
     (subdomainStatus.available === true || subdomain === publishedSubdomain) &&
+    passwordSatisfied &&
     !isPublishing
 
   const currentAccess = ACCESS_OPTIONS.find(o => o.value === accessLevel) || ACCESS_OPTIONS[0]
@@ -361,7 +450,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
                 {ACCESS_OPTIONS.map(({ value, label, Icon }) => (
                   <Pressable
                     key={value}
-                    onPress={() => { setAccessLevel(value); setShowAccessPicker(false) }}
+                    onPress={() => handleSelectAccess(value)}
                     className={cn('flex-row items-center gap-2 px-3 py-2.5', accessLevel === value && 'bg-accent')}
                   >
                     <Icon size={14} className="text-muted-foreground" />
@@ -370,6 +459,55 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
                     </Text>
                   </Pressable>
                 ))}
+              </View>
+            )}
+
+            {/* Shared site password (accessLevel === 'password'). The password
+                is enforced at the edge; visitors are prompted before the site
+                loads. For an already-published app, "Save" persists the new
+                password immediately; on first publish it's sent with Publish. */}
+            {accessLevel === 'password' && (
+              <View className="mt-2">
+                <View className="flex-row items-center gap-2">
+                  <TextInput
+                    value={password}
+                    onChangeText={setPassword}
+                    placeholder={hasPassword ? 'Password set — enter new to change' : 'Enter a password'}
+                    placeholderTextColor="#9ca3af"
+                    secureTextEntry
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    className="flex-1 h-10 px-3 text-sm text-foreground border border-border rounded-lg web:outline-none"
+                  />
+                  {isPublished && (
+                    <Pressable
+                      onPress={handleSavePassword}
+                      disabled={password.length < SITE_PASSWORD_MIN_LENGTH || isSavingPassword}
+                      className={cn(
+                        'h-10 px-3 rounded-lg items-center justify-center',
+                        password.length >= SITE_PASSWORD_MIN_LENGTH && !isSavingPassword ? 'bg-primary' : 'bg-muted',
+                      )}
+                    >
+                      {isSavingPassword ? (
+                        <ActivityIndicator size="small" />
+                      ) : (
+                        <Text
+                          className={cn(
+                            'text-xs font-medium',
+                            password.length >= SITE_PASSWORD_MIN_LENGTH ? 'text-primary-foreground' : 'text-muted-foreground',
+                          )}
+                        >
+                          Save
+                        </Text>
+                      )}
+                    </Pressable>
+                  )}
+                </View>
+                <Text className="text-[11px] text-muted-foreground mt-1">
+                  {hasPassword
+                    ? 'Visitors must enter this password. Leave blank to keep the current one.'
+                    : `Visitors must enter this password to view the site (min ${SITE_PASSWORD_MIN_LENGTH} characters).`}
+                </Text>
               </View>
             )}
           </View>

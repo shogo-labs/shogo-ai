@@ -222,6 +222,12 @@ model Project {
   // allotment (see billing.service.ts canEnableAlwaysOn + publish.ts).
   publishedAlwaysOn  Boolean          @default(false)
   accessLevel        AccessLevel      @default(anyone)
+  // SHA-256 hash (hex) of the published-site password, salted by subdomain
+  // (sha256(`${subdomain}:${password}`)). Only set when accessLevel ==
+  // `password`. Mirrored to the SITE_AUTH Cloudflare KV namespace by
+  // apps/api/src/routes/publish.ts so the edge Worker can gate visitors.
+  // Never returned to clients (GET publish exposes only `hasPassword`).
+  sitePasswordHash   String?
   category           ProjectCategory?
   siteTitle          String?
   siteDescription    String?
@@ -508,6 +514,10 @@ enum AccessLevel {
   anyone
   authenticated
   private
+  // Visitors must enter a shared site password (enforced at the edge by the
+  // *.shogo.one Worker via the SITE_AUTH KV namespace). The hash lives in
+  // Project.sitePasswordHash.
+  password
 }
 
 // Step the publish pipeline has reached for this project. The pipeline

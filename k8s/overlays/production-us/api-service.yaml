@@ -245,6 +245,17 @@ spec:
                   name: custom-domains-config
                   key: CF_SERVER_BACKED_KV_NAMESPACE_ID
                   optional: true
+            # Workers KV namespace for the published-site password gate. The
+            # *.shogo.one Worker prompts for a shared password on subdomains
+            # with an entry here. From the publish-hosting-oci output
+            # `site_auth_kv_namespace_id`. Optional — absent => publish.ts can't
+            # write the gate and password-protected sites serve publicly.
+            - name: CF_SITE_AUTH_KV_NAMESPACE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: custom-domains-config
+                  key: CF_SITE_AUTH_KV_NAMESPACE_ID
+                  optional: true
             - name: CUSTOM_DOMAIN_FALLBACK_ORIGIN
               valueFrom:
                 secretKeyRef:

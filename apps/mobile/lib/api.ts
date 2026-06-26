@@ -736,6 +736,8 @@ export const api = {
       subdomain?: string
       publishedAt?: number
       accessLevel?: string
+      /** Whether a site password is configured (the password itself is never returned). */
+      hasPassword?: boolean
       publishedCommitSha?: string
       publishedTag?: string
       publishStatus?: string
@@ -760,10 +762,19 @@ export const api = {
     return res.data
   },
 
-  async publishProject(http: HttpClient, projectId: string, subdomain: string, accessLevel: string) {
-    const res = await http.post<{ subdomain: string; publishedAt: number }>(
+  // `password` is only sent (and required) when accessLevel === 'password' and
+  // the site doesn't already have a password salted by this subdomain. The
+  // server hashes it; the raw value is never persisted.
+  async publishProject(
+    http: HttpClient,
+    projectId: string,
+    subdomain: string,
+    accessLevel: string,
+    password?: string,
+  ) {
+    const res = await http.post<{ subdomain: string; publishedAt: number; accessLevel?: string; hasPassword?: boolean }>(
       `/api/projects/${projectId}/publish`,
-      { subdomain, accessLevel },
+      { subdomain, accessLevel, ...(password ? { password } : {}) },
     )
     return res.data
   },
@@ -781,6 +792,8 @@ export const api = {
     projectId: string,
     settings: {
       accessLevel?: string
+      /** Shared site password; only used when accessLevel === 'password'. */
+      password?: string
       siteTitle?: string
       siteDescription?: string
       alwaysOn?: boolean
@@ -791,6 +804,7 @@ export const api = {
       subdomain: string
       publishedAt?: number
       accessLevel?: string
+      hasPassword?: boolean
       siteTitle?: string
       siteDescription?: string
       alwaysOn?: boolean

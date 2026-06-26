@@ -178,7 +178,14 @@ model Project {
   // When true, the published Knative service runs at min-scale=1 (never
   // scales to zero). Canonical comment in prisma/schema.prisma.
   publishedAlwaysOn  Boolean   @default(false)
+  // Mirrors `AccessLevel` enum in schema.prisma; SQLite has no enum support
+  // so we store the string. Allowed values: anyone, authenticated, private,
+  // password. Set by apps/api/src/routes/publish.ts.
   accessLevel        String    @default("anyone")
+  // SHA-256 hash (hex) of the published-site password, salted by subdomain.
+  // Only set when accessLevel == "password". Canonical comment in
+  // prisma/schema.prisma.
+  sitePasswordHash   String?
   category           String?
   siteTitle          String?
   siteDescription    String?

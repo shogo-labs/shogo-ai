@@ -85,6 +85,13 @@ variable "kourier_origin" {
   default     = null
 }
 
+variable "site_auth_secret" {
+  description = "HMAC signing secret used by the subdomain-router Worker to mint/verify the password-gate cookie (shogo_site_auth) for password-protected published sites. Bound to the Worker as SITE_AUTH_SECRET. Leave null/empty to disable the password gate even when the SITE_AUTH KV map has entries (the Worker guards on `env.SITE_AUTH_SECRET`). Use a long random value; rotating it invalidates all outstanding visitor sessions."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
 variable "oci_region" {
   description = "OCI region (e.g. us-ashburn-1)"
   type        = string
@@ -259,6 +266,22 @@ resource "cloudflare_workers_kv_namespace" "server_backed" {
 }
 
 # -----------------------------------------------------------------------------
+# Workers KV — published-site password gate (SITE_AUTH)
+# -----------------------------------------------------------------------------
+# Maps a published subdomain to the SHA-256 hash (hex) of
+# `${subdomain}:${password}`. Written by the API (apps/api/src/lib/
+# cloudflare-site-auth-kv.ts) when a project is published/updated with
+# accessLevel == `password`, deleted when the access level changes away from
+# `password` or on unpublish. Read by the subdomain-router Worker below to
+# gate every request for that subdomain behind a shared-password prompt (the
+# raw password is never stored). The namespace id is exported so the api ksvc
+# env can be wired to it (CF_SITE_AUTH_KV_NAMESPACE_ID).
+resource "cloudflare_workers_kv_namespace" "site_auth" {
+  account_id = var.cloudflare_account_id
+  title      = "shogo-site-auth-${var.environment}"
+}
+
+# -----------------------------------------------------------------------------
 # Cloudflare Worker — Subdomain Router
 # Routes *.shogo.one requests to the correct path in Object Storage.
 # Equivalent to the CloudFront Function in the AWS module.
@@ -291,6 +314,26 @@ resource "cloudflare_worker_script" "subdomain_router" {
   kv_namespace_binding {
     name         = "SERVER_BACKED"
     namespace_id = cloudflare_workers_kv_namespace.server_backed.id
+  }
+
+  # Bind the password-gate map so the Worker can tell which subdomains require a
+  # shared-password prompt. Always bound; the Worker still guards on the
+  # per-subdomain hash + `env.SITE_AUTH_SECRET`, so an empty map / unset secret
+  # is a no-op (sites serve publicly).
+  kv_namespace_binding {
+    name         = "SITE_AUTH"
+    namespace_id = cloudflare_workers_kv_namespace.site_auth.id
+  }
+
+  # HMAC secret for signing/verifying the password-gate cookie. Only bound when
+  # configured; the Worker guards on `env.SITE_AUTH_SECRET` presence so the
+  # gate is disabled (fails open to public) when unset.
+  dynamic "secret_text_binding" {
+    for_each = var.site_auth_secret != null && var.site_auth_secret != "" ? [1] : []
+    content {
+      name = "SITE_AUTH_SECRET"
+      text = var.site_auth_secret
+    }
   }
 
   # The Knative ingress origin for server-backed `/api/*`. Only bound when
@@ -371,6 +414,160 @@ resource "cloudflare_worker_script" "subdomain_router" {
       });
     }
 
+    // -----------------------------------------------------------------------
+    // Password gate (accessLevel == 'password').
+    //
+    // A subdomain with an entry in the SITE_AUTH KV namespace is served only
+    // after the visitor proves knowledge of a shared password. The KV value is
+    // sha256hex(subdomain + ':' + password) (matches apps/api/src/lib/
+    // cloudflare-site-auth-kv.ts). On success we set an HttpOnly cookie whose
+    // value is <expMs>.<hmacHex(SITE_AUTH_SECRET, subdomain + '|' + expMs)>, so
+    // the edge can re-validate without another KV/DB round trip. This is a soft
+    // shared-secret gate, not per-user authentication. NOTE: this HEREDOC is
+    // processed by Terraform, so the JS deliberately avoids JS template-literal
+    // interpolation and uses string concatenation throughout.
+    // -----------------------------------------------------------------------
+    const SITE_AUTH_COOKIE = 'shogo_site_auth';
+    const SITE_AUTH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+    const SITE_AUTH_ACTION = '/__shogo_auth';
+    const SITE_AUTH_ENCODER = new TextEncoder();
+
+    function siteAuthToHex(buf) {
+      const bytes = new Uint8Array(buf);
+      let out = '';
+      for (let i = 0; i < bytes.length; i++) {
+        out += bytes[i].toString(16).padStart(2, '0');
+      }
+      return out;
+    }
+
+    async function siteAuthSha256Hex(str) {
+      const digest = await crypto.subtle.digest('SHA-256', SITE_AUTH_ENCODER.encode(str));
+      return siteAuthToHex(digest);
+    }
+
+    async function siteAuthHmacHex(secret, message) {
+      const key = await crypto.subtle.importKey(
+        'raw', SITE_AUTH_ENCODER.encode(secret),
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+      );
+      const sig = await crypto.subtle.sign('HMAC', key, SITE_AUTH_ENCODER.encode(message));
+      return siteAuthToHex(sig);
+    }
+
+    // Length-checked, branch-light string compare (avoids early-exit timing
+    // leaks on the hash/HMAC comparison).
+    function siteAuthSafeEqual(a, b) {
+      if (typeof a !== 'string' || typeof b !== 'string') return false;
+      if (a.length !== b.length) return false;
+      let diff = 0;
+      for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+      return diff === 0;
+    }
+
+    function siteAuthGetCookie(request, name) {
+      const header = request.headers.get('Cookie') || '';
+      const parts = header.split(';');
+      for (let i = 0; i < parts.length; i++) {
+        const p = parts[i].trim();
+        const eq = p.indexOf('=');
+        if (eq > -1 && p.slice(0, eq) === name) return p.slice(eq + 1);
+      }
+      return null;
+    }
+
+    async function siteAuthVerifyCookie(secret, subdomain, value) {
+      if (!value) return false;
+      const dot = value.indexOf('.');
+      if (dot < 0) return false;
+      const expMs = value.slice(0, dot);
+      const sig = value.slice(dot + 1);
+      const expNum = parseInt(expMs, 10);
+      if (!expNum || expNum < Date.now()) return false;
+      const expected = await siteAuthHmacHex(secret, subdomain + '|' + expMs);
+      return siteAuthSafeEqual(sig, expected);
+    }
+
+    function siteAuthEscapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Only allow same-origin absolute paths as the post-unlock redirect target
+    // (blocks open-redirects via `//evil.com` or absolute URLs).
+    function siteAuthSafeNext(raw) {
+      if (!raw || raw.charAt(0) !== '/' || raw.charAt(1) === '/') return '/';
+      return raw;
+    }
+
+    function siteAuthLoginHtml(error, next) {
+      const msg = error ? '<p class="err">' + siteAuthEscapeHtml(error) + '</p>' : '';
+      return '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        + '<title>Password required</title><style>'
+        + 'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;'
+        + 'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0b0b0f;color:#e7e7ea}'
+        + '.card{width:100%;max-width:340px;padding:32px;background:#16161c;border:1px solid #26262e;border-radius:14px;box-sizing:border-box}'
+        + 'h1{font-size:18px;margin:0 0 6px}p{font-size:13px;color:#9a9aa5;margin:0 0 18px}'
+        + 'p.err{color:#ff6b6b;margin:0 0 12px}'
+        + 'input{width:100%;padding:11px 12px;font-size:14px;border-radius:9px;border:1px solid #33333d;'
+        + 'background:#0e0e13;color:#fff;box-sizing:border-box;margin-bottom:12px}'
+        + 'button{width:100%;padding:11px;font-size:14px;font-weight:600;border:0;border-radius:9px;'
+        + 'background:#6d5cff;color:#fff;cursor:pointer}button:hover{background:#5b4bf0}'
+        + '</style></head><body><form class="card" method="POST" action="' + SITE_AUTH_ACTION + '">'
+        + '<h1>This site is password protected</h1>'
+        + '<p>Enter the password to continue.</p>'
+        + msg
+        + '<input type="password" name="password" placeholder="Password" autofocus required>'
+        + '<input type="hidden" name="next" value="' + siteAuthEscapeHtml(next) + '">'
+        + '<button type="submit">Unlock</button>'
+        + '</form></body></html>';
+    }
+
+    function siteAuthLoginResponse(error, next) {
+      return new Response(siteAuthLoginHtml(error, next), {
+        status: 401,
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
+    }
+
+    // Returns a Response when the request should be intercepted (login page,
+    // failed/successful auth submission), or null when the visitor is already
+    // authenticated and the request should proceed to normal serving.
+    async function siteAuthGate(request, env, url, subdomain) {
+      if (!env.SITE_AUTH || !env.SITE_AUTH_SECRET) return null;
+      const pwHash = await env.SITE_AUTH.get(subdomain);
+      if (!pwHash) return null;
+      const secret = env.SITE_AUTH_SECRET;
+
+      if (request.method === 'POST' && url.pathname === SITE_AUTH_ACTION) {
+        let form = null;
+        try { form = await request.formData(); } catch (e) { form = null; }
+        const submitted = form ? (form.get('password') || '') : '';
+        const next = siteAuthSafeNext(form ? (form.get('next') || '/') : '/');
+        const ok = submitted
+          ? siteAuthSafeEqual(await siteAuthSha256Hex(subdomain + ':' + submitted), pwHash)
+          : false;
+        if (!ok) return siteAuthLoginResponse('Incorrect password. Try again.', next);
+        const expMs = Date.now() + SITE_AUTH_TTL_MS;
+        const cookieVal = expMs + '.' + (await siteAuthHmacHex(secret, subdomain + '|' + expMs));
+        const headers = new Headers();
+        headers.set('Location', next);
+        headers.set('Cache-Control', 'no-store');
+        headers.append(
+          'Set-Cookie',
+          SITE_AUTH_COOKIE + '=' + cookieVal + '; Path=/; Max-Age='
+            + Math.floor(SITE_AUTH_TTL_MS / 1000) + '; HttpOnly; Secure; SameSite=Lax'
+        );
+        return new Response(null, { status: 303, headers: headers });
+      }
+
+      const cookie = siteAuthGetCookie(request, SITE_AUTH_COOKIE);
+      if (await siteAuthVerifyCookie(secret, subdomain, cookie)) return null;
+      return siteAuthLoginResponse('', siteAuthSafeNext(url.pathname + url.search));
+    }
+
     export default {
       async fetch(request, env) {
         const url = new URL(request.url);
@@ -418,6 +615,14 @@ resource "cloudflare_worker_script" "subdomain_router" {
             308,
           );
         }
+
+        // Password gate: when this subdomain is password-protected, require a
+        // valid signed cookie before serving ANY path (static OR server-backed
+        // /api/*). Runs before the SERVER_BACKED proxy so the backend is gated
+        // too. No-op (returns null) for public sites or when the gate is
+        // unconfigured (fails open to public).
+        const gated = await siteAuthGate(request, env, url, subdomain);
+        if (gated) return gated;
 
         // SERVER-BACKED apps: proxy dynamic `/api/*` to the project's running
         // server.tsx via the Knative ingress instead of Object Storage. The
@@ -617,4 +822,9 @@ output "custom_domain_fallback_origin" {
 output "server_backed_kv_namespace_id" {
   description = "Workers KV namespace id for the server-backed publish map. Wire into the api ksvc as CF_SERVER_BACKED_KV_NAMESPACE_ID so publish.ts can flag/unflag server-backed subdomains."
   value       = cloudflare_workers_kv_namespace.server_backed.id
+}
+
+output "site_auth_kv_namespace_id" {
+  description = "Workers KV namespace id for the published-site password gate. Wire into the api ksvc as CF_SITE_AUTH_KV_NAMESPACE_ID so publish.ts can set/clear the per-subdomain password hash."
+  value       = cloudflare_workers_kv_namespace.site_auth.id
 }

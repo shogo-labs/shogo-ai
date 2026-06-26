@@ -47,6 +47,11 @@ const ROUTE_TABLE: RouteEntry[] = [
   // specific operations only make sense in the cloud.
   { pattern: /^\/api\/projects\/[^/]+\/publish/,           target: 'cloud' },
   { pattern: /^\/api\/projects\/[^/]+\/unpublish/,         target: 'cloud' },
+  // `/republish` ("Publish latest changes") must hit cloud too — it does NOT
+  // match the `/publish` pattern above (republish !== publish), so without this
+  // it would fall through to the `/api/projects` remote rule and be sent to the
+  // desktop's no-op stub instead of redeploying via the cloud pipeline.
+  { pattern: /^\/api\/projects\/[^/]+\/republish/,         target: 'cloud' },
   { pattern: /^\/api\/projects\/[^/]+\/thumbnail/,         target: 'cloud' },
   { pattern: /^\/api\/projects\/[^/]+\/s3\//,              target: 'cloud' },
   { pattern: /^\/api\/projects\/[^/]+\/heartbeat\/sync/,   target: 'cloud' },

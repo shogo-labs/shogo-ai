@@ -30,6 +30,15 @@ import {
   type CustomHostnameState,
 } from "../lib/cloudflare-custom-hostnames"
 import {
+  setSitePassword,
+  clearSitePassword,
+  hashSitePassword,
+} from "../lib/cloudflare-site-auth-kv"
+import { getShogoCloudUrl } from "../lib/cloud-urls"
+import { getUpstreamCredential } from "../lib/federated-upstream"
+import { isProjectCloudLinked } from "../lib/runtime/cloud-content-sync"
+import { shouldSkipForwardedHeader, shouldSkipResponseHeader } from "../lib/proxy-headers"
+import {
   cfStateToStatus,
   domainCompanion,
   canonicalForRow,
@@ -90,6 +99,68 @@ function isKubernetes(): boolean {
   return !!(process.env.KUBERNETES_SERVICE_HOST || process.env.PROJECT_NAMESPACE)
 }
 
+/**
+ * Forward a publish request from the local/desktop API to Shogo Cloud using the
+ * connected `SHOGO_API_KEY`. Mirrors the marketplace proxy (apps/api/src/routes/
+ * marketplace.ts): without this, local mode skips the entire build/upload/host
+ * pipeline (`isKubernetes()` is false) yet returns a fake 200 + live URL — so a
+ * desktop "publish" looked successful but nothing deployed. The router is
+ * invoked with a path stripped of the `/api` prefix (see server.ts), so we
+ * re-add it when building the upstream URL.
+ */
+async function proxyPublishToCloud(c: any, cloudKey: string): Promise<Response> {
+  const method = c.req.method
+  const search = new URL(c.req.url).search
+  const fullUrl = `${getShogoCloudUrl()}/api${c.req.path}${search}`
+
+  const headers = new Headers()
+  c.req.raw.headers.forEach((value: string, key: string) => {
+    const lower = key.toLowerCase()
+    if (shouldSkipForwardedHeader(lower)) return
+    // Replace the local session auth with the cloud API key below.
+    if (lower === "authorization") return
+    headers.set(key, value)
+  })
+  headers.set("Authorization", `Bearer ${cloudKey}`)
+
+  let upstream: Response
+  try {
+    upstream = await fetch(fullUrl, {
+      method,
+      headers,
+      body: method === "GET" || method === "HEAD" ? undefined : c.req.raw.body,
+      // @ts-expect-error duplex is required for streaming request bodies in Bun/Node fetch
+      duplex: "half",
+    })
+  } catch (err: any) {
+    console.error("[Publish] cloud proxy failed:", err?.message ?? err)
+    return c.json(
+      { error: { code: "cloud_unreachable", message: "Could not reach Shogo Cloud" } },
+      502,
+    )
+  }
+
+  // The cloud rejected the API key — surface a sign-in prompt rather than the
+  // raw 401 (which the UI would read as "not authorized for this project").
+  if (upstream.status === 401) {
+    return c.json(
+      { error: { code: "cloud_signin_required", message: "Sign in to Shogo Cloud to publish." } },
+      503,
+    )
+  }
+
+  const responseHeaders = new Headers()
+  upstream.headers.forEach((value, key) => {
+    if (shouldSkipResponseHeader(key)) return
+    responseHeaders.set(key, value)
+  })
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: responseHeaders,
+  })
+}
+
 // Reserved subdomains that cannot be used
 const RESERVED_SUBDOMAINS = new Set([
   "api", "www", "studio", "app", "admin", "mail", "email", "ftp", "ssh",
@@ -104,6 +175,15 @@ const RESERVED_SUBDOMAINS = new Set([
 const SUBDOMAIN_MIN_LENGTH = 3
 const SUBDOMAIN_MAX_LENGTH = 63
 const SUBDOMAIN_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
+
+// Visitor access levels. `password` gates the site behind a shared password
+// enforced at the *.shogo.one edge Worker (see cloudflare-site-auth-kv.ts);
+// `authenticated`/`private` are stored but not yet enforced at the edge.
+export type AccessLevel = "anyone" | "authenticated" | "private" | "password"
+const ACCESS_LEVELS = new Set<AccessLevel>(["anyone", "authenticated", "private", "password"])
+// Minimum length for a shared site password (a low bar — this is a soft gate,
+// not per-user credentials, but block trivially empty/short values).
+const SITE_PASSWORD_MIN_LENGTH = 4
 
 /**
  * Validate subdomain format and availability
@@ -254,6 +334,64 @@ async function syncCustomDomainKv(projectId: string, subdomain: string): Promise
     }
   } catch (err: any) {
     console.warn(`[Publish] syncCustomDomainKv(${projectId}) failed:`, err?.message ?? err)
+  }
+}
+
+type SitePasswordResolution =
+  | { ok: true; hash: string | null }
+  | { ok: false; code: string; message: string }
+
+/**
+ * Resolve the password hash to persist for a (re)publish or settings update.
+ *   - fresh hash when accessLevel == 'password' and a new password is given
+ *   - the existing hash when accessLevel == 'password', no new password, AND
+ *     the subdomain is unchanged (the stored hash is salted by subdomain, so a
+ *     subdomain change invalidates it and a new password must be supplied)
+ *   - null otherwise (any non-password level clears the gate)
+ * Returns a tagged result so callers can map bad input to a 400 without
+ * tripping the outer publish_failed/500 catch.
+ */
+function resolveSitePasswordHash(opts: {
+  accessLevel: AccessLevel
+  password?: string
+  subdomain: string
+  existingHash: string | null
+  existingSubdomain: string | null
+}): SitePasswordResolution {
+  const { accessLevel, password, subdomain, existingHash, existingSubdomain } = opts
+  if (accessLevel !== "password") return { ok: true, hash: null }
+  if (typeof password === "string" && password.length > 0) {
+    if (password.length < SITE_PASSWORD_MIN_LENGTH) {
+      return {
+        ok: false,
+        code: "password_too_short",
+        message: `Password must be at least ${SITE_PASSWORD_MIN_LENGTH} characters`,
+      }
+    }
+    return { ok: true, hash: hashSitePassword(subdomain, password) }
+  }
+  if (existingHash && existingSubdomain === subdomain) return { ok: true, hash: existingHash }
+  return {
+    ok: false,
+    code: "password_required",
+    message: "A password is required for password-protected sites",
+  }
+}
+
+/**
+ * Reflect the resolved access level + hash to the SITE_AUTH edge KV so the
+ * Worker gates (or stops gating) the subdomain. Best-effort — the KV helpers
+ * already swallow their own errors and no-op when unconfigured.
+ */
+async function syncSitePasswordKv(
+  subdomain: string,
+  accessLevel: AccessLevel,
+  hash: string | null,
+): Promise<void> {
+  if (accessLevel === "password" && hash) {
+    await setSitePassword(subdomain, hash)
+  } else {
+    await clearSitePassword(subdomain)
   }
 }
 
@@ -721,6 +859,57 @@ async function deleteFromS3(subdomain: string): Promise<void> {
 export function publishRoutes() {
   const router = new Hono()
 
+  // Local/desktop mode: publishing has no local hosting pipeline, so forward to
+  // Shogo Cloud when the project is cloud-linked and a cloud key is connected.
+  // Reads (GET) for local-only projects fall through to the local DB so the
+  // publish panel still renders; writes are blocked with an actionable error
+  // instead of the old fake-success stub. No-op in the cloud API (where
+  // SHOGO_LOCAL_MODE is unset), so the real pipeline below runs there.
+  router.use("*", async (c, next) => {
+    if (process.env.SHOGO_LOCAL_MODE !== "true") return next()
+
+    const method = c.req.method
+    const isWrite = method !== "GET" && method !== "HEAD"
+    // The router runs with the `/api` prefix stripped: /projects/:id/... .
+    const projectId = c.req.path.match(/^\/projects\/([^/]+)/)?.[1]
+
+    if (projectId) {
+      const linked = await isProjectCloudLinked(projectId)
+      if (!linked) {
+        if (isWrite) {
+          return c.json(
+            {
+              error: {
+                code: "project_not_synced",
+                message: "Sync this project to Shogo Cloud before publishing.",
+              },
+            },
+            409,
+          )
+        }
+        return next()
+      }
+    }
+
+    const cloudKey = await getUpstreamCredential()
+    if (!cloudKey) {
+      if (isWrite) {
+        return c.json(
+          {
+            error: {
+              code: "cloud_signin_required",
+              message: "Sign in to Shogo Cloud to publish.",
+            },
+          },
+          503,
+        )
+      }
+      return next()
+    }
+
+    return proxyPublishToCloud(c, cloudKey)
+  })
+
   /**
    * GET /subdomains/:subdomain/check - Check subdomain availability
    */
@@ -764,6 +953,7 @@ export function publishRoutes() {
           publishedSubdomain: true,
           publishedAt: true,
           accessLevel: true,
+          sitePasswordHash: true,
           siteTitle: true,
           siteDescription: true,
           publishStatus: true,
@@ -794,6 +984,8 @@ export function publishRoutes() {
         subdomain: project.publishedSubdomain ?? undefined,
         publishedAt: project.publishedAt ? new Date(project.publishedAt).getTime() : undefined,
         accessLevel: project.accessLevel ?? undefined,
+        // Never expose the hash/password; just whether a gate is configured.
+        hasPassword: !!project.sitePasswordHash,
         siteTitle: project.siteTitle ?? undefined,
         siteDescription: project.siteDescription ?? undefined,
         publishStatus: project.publishStatus ?? undefined,
@@ -819,17 +1011,22 @@ export function publishRoutes() {
       const projectId = c.req.param("projectId")
       const body = await c.req.json<{
         subdomain: string
-        accessLevel?: "anyone" | "authenticated" | "private"
+        accessLevel?: AccessLevel
+        password?: string
         siteTitle?: string
         siteDescription?: string
       }>()
 
-      const { subdomain: rawSubdomain, accessLevel = "anyone", siteTitle, siteDescription } = body
+      const { subdomain: rawSubdomain, accessLevel = "anyone", password, siteTitle, siteDescription } = body
       const subdomain = rawSubdomain.toLowerCase()
 
       const validation = validateSubdomain(subdomain)
       if (!validation.valid) {
         return c.json({ error: { code: "invalid_subdomain", message: validation.reason } }, 400)
+      }
+
+      if (!ACCESS_LEVELS.has(accessLevel)) {
+        return c.json({ error: { code: "invalid_access_level", message: `Unknown access level: ${accessLevel}` } }, 400)
       }
 
       // Get the project
@@ -859,6 +1056,19 @@ export function publishRoutes() {
         } catch (err) {
           console.warn("[Publish] Failed to delete old S3 files:", err)
         }
+      }
+
+      // Resolve the password-gate hash before doing any expensive build work so
+      // bad input (missing/short password) fails fast with a 400.
+      const sitePassword = resolveSitePasswordHash({
+        accessLevel,
+        password,
+        subdomain,
+        existingHash: (project as any).sitePasswordHash ?? null,
+        existingSubdomain: project.publishedSubdomain ?? null,
+      })
+      if (!sitePassword.ok) {
+        return c.json({ error: { code: sitePassword.code, message: sitePassword.message } }, 400)
       }
 
       // Resolve the always-on intent for this (re)publish: honor the saved
@@ -975,12 +1185,18 @@ export function publishRoutes() {
           publishError: null,
           publishStatusAt: publishedAt,
           accessLevel: accessLevel as any,
+          sitePasswordHash: sitePassword.hash,
           siteTitle,
           siteDescription,
           publishedAlwaysOn: alwaysOn,
           ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
         } as any,
       })
+
+      // Reflect the password gate to the edge. On a subdomain change also clear
+      // the old subdomain's gate (its hash was salted with the old subdomain).
+      if (previousSubdomain) await clearSitePassword(previousSubdomain)
+      await syncSitePasswordKv(subdomain, accessLevel, sitePassword.hash)
 
       // Record the live commit as a checkpoint so "what's live" is a real,
       // rollback-able point in history (idempotent on commitSha). Best-effort.
@@ -1013,6 +1229,7 @@ export function publishRoutes() {
           subdomain,
           publishedAt: publishedAt.getTime(),
           accessLevel,
+          hasPassword: !!sitePassword.hash,
         },
         200
       )
@@ -1074,6 +1291,10 @@ export function publishRoutes() {
         }
       }
 
+      // Drop the password gate so a later (unprotected) republish isn't stuck
+      // behind a stale prompt. The hash is also cleared from the DB below.
+      await clearSitePassword(project.publishedSubdomain)
+
       // Stop serving any custom domains (their content is gone). The CF
       // custom hostnames + DB rows are kept so a later republish restores
       // routing via syncCustomDomainKv.
@@ -1094,6 +1315,7 @@ export function publishRoutes() {
           publishError: null,
           publishStatusAt: new Date(),
           accessLevel: "anyone",
+          sitePasswordHash: null,
           siteTitle: null,
           siteDescription: null,
           publishedCommitSha: null,
@@ -1247,11 +1469,16 @@ export function publishRoutes() {
     try {
       const projectId = c.req.param("projectId")
       const body = await c.req.json<{
-        accessLevel?: "anyone" | "authenticated" | "private"
+        accessLevel?: AccessLevel
+        password?: string
         siteTitle?: string
         siteDescription?: string
         alwaysOn?: boolean
       }>()
+
+      if (body.accessLevel !== undefined && !ACCESS_LEVELS.has(body.accessLevel)) {
+        return c.json({ error: { code: "invalid_access_level", message: `Unknown access level: ${body.accessLevel}` } }, 400)
+      }
 
       const project = await prisma.project.findUnique({
         where: { id: projectId },
@@ -1269,6 +1496,28 @@ export function publishRoutes() {
       if (body.accessLevel !== undefined) updates.accessLevel = body.accessLevel
       if (body.siteTitle !== undefined) updates.siteTitle = body.siteTitle
       if (body.siteDescription !== undefined) updates.siteDescription = body.siteDescription
+
+      // Resolve the password gate when the access level and/or password change.
+      // Subdomain can't change via PATCH, so an existing hash stays valid for a
+      // password->password update with no new password (e.g. just toggling
+      // site title). `syncPassword` defers the KV write until after the DB
+      // update succeeds.
+      let syncPassword: { subdomain: string; accessLevel: AccessLevel; hash: string | null } | null = null
+      if (body.accessLevel !== undefined || body.password !== undefined) {
+        const effectiveAccessLevel = (body.accessLevel ?? (project.accessLevel as AccessLevel)) as AccessLevel
+        const resolved = resolveSitePasswordHash({
+          accessLevel: effectiveAccessLevel,
+          password: body.password,
+          subdomain: project.publishedSubdomain,
+          existingHash: (project as any).sitePasswordHash ?? null,
+          existingSubdomain: project.publishedSubdomain,
+        })
+        if (!resolved.ok) {
+          return c.json({ error: { code: resolved.code, message: resolved.message } }, 400)
+        }
+        updates.sitePasswordHash = resolved.hash
+        syncPassword = { subdomain: project.publishedSubdomain, accessLevel: effectiveAccessLevel, hash: resolved.hash }
+      }
 
       // Always-on toggle: entitlement-gated and only meaningful for
       // server-backed apps. Enforce the workspace slot cap on enable, then
@@ -1327,12 +1576,19 @@ export function publishRoutes() {
         })
       }
 
+      // Reflect the (possibly changed) password gate to the edge after the DB
+      // write succeeds.
+      if (syncPassword) {
+        await syncSitePasswordKv(syncPassword.subdomain, syncPassword.accessLevel, syncPassword.hash)
+      }
+
       return c.json(
         {
           url: `https://${project.publishedSubdomain}.${PUBLISH_DOMAIN}`,
           subdomain: project.publishedSubdomain,
           publishedAt: project.publishedAt?.getTime(),
           accessLevel: updatedProject.accessLevel,
+          hasPassword: !!(updatedProject as any).sitePasswordHash,
           siteTitle: updatedProject.siteTitle,
           siteDescription: updatedProject.siteDescription,
           alwaysOn: (updatedProject as any).publishedAlwaysOn === true,
