@@ -94,6 +94,15 @@ if (forceRegenerate || !existsSync(path.join(SOURCE, 'distribution', 'generated'
 if (forceRegenerate || !existsSync(path.join(SOURCE, 'hardening', 'generated', 'production-readiness.json'))) {
   run('bun', ['run', 'hardening:report'], { cwd: SOURCE })
 }
+// The shogo-core extension's dist/ is git-ignored and built by `tsc`, but the
+// release workflows only run `bun run build:packages` (which excludes
+// shogo-ide), so dist/extension.js is absent at package time and the integrity
+// check below would abort the whole tagged release. Build it on demand here —
+// mirroring the materialize/hardening regeneration above — so packaging is
+// self-healing in CI and locally without a separate workflow step.
+if (forceRegenerate || !existsSync(path.join(SOURCE, 'extensions', 'shogo-core', 'dist', 'extension.js'))) {
+  run('bun', ['run', 'extension:build'], { cwd: SOURCE })
+}
 assertTree(SOURCE, 'apps/shogo-ide')
 
 if (existsSync(DEST)) {
