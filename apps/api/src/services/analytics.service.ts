@@ -1959,6 +1959,9 @@ export interface ToolCallAnalyticsResult {
   tools: ToolCallStat[]
   totals: { totalCalls: number; totalErrors: number; successRate: number }
   daily: { date: string; calls: number; errors: number; successRate: number }[]
+  total: number
+  page: number
+  limit: number
 }
 
 /**
@@ -1989,9 +1992,11 @@ function toolCallFailed(status: string, result: unknown): boolean {
 export async function getToolCallAnalytics(
   scope: AnalyticsScope = {},
   period: AnalyticsPeriod = '30d',
-  options: { excludeInternal?: boolean } = {},
+  options: { excludeInternal?: boolean; page?: number; limit?: number } = {},
 ): Promise<ToolCallAnalyticsResult> {
   const { from, to } = periodToWindow(period)
+  const page = Math.max(1, options.page ?? 1)
+  const limit = Math.min(Math.max(1, options.limit ?? 10), 100)
 
   const where: any = { createdAt: { gte: from, lt: to } }
   if (scope.projectId) {
@@ -2038,7 +2043,7 @@ export async function getToolCallAnalytics(
     perDay.set(day, d)
   }
 
-  const tools: ToolCallStat[] = [...perTool.entries()]
+  const allTools: ToolCallStat[] = [...perTool.entries()]
     .map(([toolName, s]) => ({
       toolName,
       total: s.total,
@@ -2047,6 +2052,8 @@ export async function getToolCallAnalytics(
       avgDurationMs: s.durCount > 0 ? Math.round(s.durSum / s.durCount) : 0,
     }))
     .sort((a, b) => b.total - a.total)
+
+  const tools = allTools.slice((page - 1) * limit, page * limit)
 
   const daily: { date: string; calls: number; errors: number; successRate: number }[] = []
   const cursor = new Date(from)
@@ -2075,6 +2082,9 @@ export async function getToolCallAnalytics(
       successRate: totalCalls > 0 ? ((totalCalls - totalErrors) / totalCalls) * 100 : 100,
     },
     daily,
+    total: allTools.length,
+    page,
+    limit,
   }
 }
 

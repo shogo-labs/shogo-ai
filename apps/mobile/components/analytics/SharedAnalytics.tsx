@@ -1866,14 +1866,21 @@ export interface ToolCallAnalyticsData {
     successRate: number
   }
   daily: { date: string; calls: number; errors: number; successRate: number }[]
+  total?: number
+  page?: number
+  limit?: number
 }
 
 export function ToolCallAnalyticsPanel({
   data,
   loading,
+  page,
+  onPageChange,
 }: {
   data: ToolCallAnalyticsData | null
   loading?: boolean
+  page?: number
+  onPageChange?: (page: number) => void
 }) {
   if (loading) {
     return (
@@ -1963,6 +1970,23 @@ export function ToolCallAnalyticsPanel({
             <Text className="w-14 text-right text-[10px] text-muted-foreground">{formatDuration(t.avgDurationMs)}</Text>
           </View>
         ))}
+
+        {/* Pagination */}
+        {onPageChange && data.total != null && data.limit != null && data.total > data.limit && (() => {
+          const currentPage = page ?? data.page ?? 1
+          const totalPages = Math.max(1, Math.ceil(data.total / data.limit))
+          return (
+            <View className="flex-row items-center justify-center gap-4 mt-3">
+              <Pressable onPress={() => onPageChange(Math.max(1, currentPage - 1))} disabled={currentPage <= 1}>
+                <ChevronLeft size={16} className={currentPage <= 1 ? 'text-muted' : 'text-foreground'} />
+              </Pressable>
+              <Text className="text-xs text-muted-foreground">Page {currentPage} of {totalPages}</Text>
+              <Pressable onPress={() => onPageChange(currentPage + 1)} disabled={currentPage >= totalPages}>
+                <ChevronRight size={16} className={currentPage >= totalPages ? 'text-muted' : 'text-foreground'} />
+              </Pressable>
+            </View>
+          )
+        })()}
       </View>
 
       <MetricTrendChart
