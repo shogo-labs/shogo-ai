@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { createS3SyncForProject, isMacOSJunkName } from '@shogo/shared-runtime'
 import { prisma } from '../lib/prisma'
+import * as billingService from '../services/billing.service'
 import type { AuthContext } from '../middleware/auth'
 import { parseEnvFile } from '../lib/bundle-crypto'
 import {
@@ -127,8 +128,11 @@ const isExcludedRelPath = (relPath: string): boolean => {
 const BUNDLE_FORMAT_VERSION = '1.1'
 const SUPPORTED_BUNDLE_VERSIONS = new Set(['1.0', '1.1'])
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB per file
-const MAX_TOTAL_SIZE = 200 * 1024 * 1024 // 200 MB total bundle
+const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB per file (export-only)
+// Total import bundle caps, gated by plan tier. Pro+ (pro/business/enterprise)
+// may import large projects; Free/Basic are limited to a much smaller bundle.
+const MAX_TOTAL_SIZE_PRO = 500 * 1024 * 1024 // 500 MB total bundle (pro+)
+const MAX_TOTAL_SIZE_FREE = 50 * 1024 * 1024 // 50 MB total bundle (free/basic)
 
 // Heuristic: any object key matching this pattern in `agentConfig.channels`
 // or any `.env*` file is treated as a secret — redacted from the export and
@@ -1277,9 +1281,23 @@ export function projectExportImportRoutes() {
         return c.json({ error: 'Missing workspaceId in form data' }, 400)
       }
 
+      // Plan-gated bundle cap: Pro+ (pro/business/enterprise) may import up to
+      // 500 MB; Free/Basic are limited to 50 MB.
+      const isProPlus = await billingService.hasAdvancedModelAccess(workspaceId)
+      const cap = isProPlus ? MAX_TOTAL_SIZE_PRO : MAX_TOTAL_SIZE_FREE
+      const tooLargeMessage = isProPlus
+        ? 'Import bundle exceeds the 500 MB limit.'
+        : 'Import is limited to 50 MB on the Free and Basic plans. Upgrade to Pro to import projects up to 500 MB.'
+
+      // Reject early on the cheap `file.size` to avoid buffering an oversized
+      // upload into memory before rejecting it.
+      if (file.size > cap) {
+        return c.json({ error: tooLargeMessage }, 413)
+      }
+
       const arrayBuf = await file.arrayBuffer()
-      if (arrayBuf.byteLength > MAX_TOTAL_SIZE) {
-        return c.json({ error: 'File too large' }, 413)
+      if (arrayBuf.byteLength > cap) {
+        return c.json({ error: tooLargeMessage }, 413)
       }
       zipBuffer = new Uint8Array(arrayBuf)
     } else {

@@ -124,9 +124,16 @@ mock.module('@shogo-ai/sdk/agent', () => ({
 
 mock.module('../lib/runtime-token', () => ({ deriveRuntimeToken: () => 'tok' }))
 
+// Plan tier for the import size-cap branch. Flipped per-test; reset in beforeEach.
+let billingProPlus = false
+mock.module('../services/billing.service', () => ({
+  hasAdvancedModelAccess: async () => billingProPlus,
+}))
+
 beforeEach(() => {
   members.clear(); users.clear(); projects.clear()
   agentConfigs.length = 0; chatSessions.length = 0; chatMessages.length = 0
+  billingProPlus = false
 })
 
 const exportImportMod = await import('../routes/project-export-import')
@@ -286,6 +293,42 @@ describe('POST /import — additional edges', () => {
       method: 'POST', body: form,
     }))
     expect(res.status).toBe(200)
+  })
+
+  // ─── plan-gated bundle size caps ─────────────────────────────────────────
+  const MB = 1024 * 1024
+
+  function importReqWithSize(sizeBytes: number) {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const form = new FormData()
+    // Content is irrelevant for the size gate (it rejects before unzip).
+    form.append('file', new Blob([new Uint8Array(sizeBytes)]), 'big.zip')
+    form.append('workspaceId', 'w-1')
+    return new Request('http://x/api/projects/import', { method: 'POST', body: form })
+  }
+
+  test('free/basic upload > 50 MB → 413 with upgrade message', async () => {
+    billingProPlus = false
+    const res = await authedApp().fetch(importReqWithSize(51 * MB))
+    expect(res.status).toBe(413)
+    const body: any = await res.json()
+    expect(body.error).toMatch(/Upgrade to Pro/i)
+  })
+
+  test('pro+ upload between 50 MB and 500 MB is not rejected by the size gate', async () => {
+    billingProPlus = true
+    // 51 MB of junk: passes the 500 MB pro+ cap, then fails later in unzip —
+    // so any status other than 413 proves the size gate let it through.
+    const res = await authedApp().fetch(importReqWithSize(51 * MB))
+    expect(res.status).not.toBe(413)
+  })
+
+  test('pro+ upload > 500 MB → 413', async () => {
+    billingProPlus = true
+    const res = await authedApp().fetch(importReqWithSize(500 * MB + 1024))
+    expect(res.status).toBe(413)
+    const body: any = await res.json()
+    expect(body.error).toMatch(/500 MB/i)
   })
 })
 
