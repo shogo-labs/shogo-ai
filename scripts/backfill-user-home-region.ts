@@ -53,12 +53,15 @@ const HASH_ASSIGN_SQL = `CASE ${BUCKET_SQL}
   END`
 
 // Earliest workspace the user belongs to whose homeRegion is known. Correlated
-// on the outer `users.id` (no alias on the UPDATE/SELECT target).
+// on the outer `users.id` — must be qualified as `"users"."id"` because the
+// subquery's own `members`/`workspaces` both expose an `id` column, so a bare
+// `id` here is ambiguous (the outer target is unaliased in both the UPDATE and
+// the dry-run SELECT).
 const WORKSPACE_HOME_SQL = `(
     SELECT w."homeRegion"
     FROM "members" m
     JOIN "workspaces" w ON w."id" = m."workspaceId"
-    WHERE m."userId" = id AND w."homeRegion" IS NOT NULL
+    WHERE m."userId" = "users"."id" AND w."homeRegion" IS NOT NULL
     ORDER BY w."createdAt" ASC
     LIMIT 1
   )`

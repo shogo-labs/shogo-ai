@@ -467,10 +467,12 @@ app.use('*', secureHeaders({
 }))
 
 // Global request body size limit.
-// Set to 200 MB to match the largest legitimate upload on any route
-// (project import bundles, see MAX_TOTAL_SIZE in routes/project-export-import.ts).
-// Individual routes are responsible for enforcing their own tighter caps.
-app.use('*', bodyLimit({ maxSize: 200 * 1024 * 1024 }))
+// Set to 500 MB to match the largest legitimate upload on any route — Pro+
+// project import bundles (see MAX_TOTAL_SIZE_PRO in
+// routes/project-export-import.ts). This middleware runs before any route, so
+// it must permit the largest tier's bundle; per-route logic enforces tighter,
+// plan-gated caps (e.g. Free/Basic imports are limited to 50 MB).
+app.use('*', bodyLimit({ maxSize: 500 * 1024 * 1024 }))
 
 // =============================================================================
 // Global Error Handling
