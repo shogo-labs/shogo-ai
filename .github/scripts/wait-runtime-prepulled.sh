@@ -28,6 +28,17 @@
 # stuck node still fails the gate (with per-node diagnostics) once the
 # budget is exhausted.
 #
+# Pool freeze (run <eu-flake>, 2026-06-26): the gate races the cluster
+# autoscaler. While prepuller pods are still pulling the ~8 GB runtime image,
+# the autoscaler can reap a node it considers unneeded
+# (--scale-down-unneeded-time=5m) and later add a COLD one. Every membership
+# change moves the rollout's numberReady == desiredNumberScheduled target, so
+# the DaemonSet never converges inside the budget even though the image is
+# fine (EU failed attempt 1, passed clean on a manual re-run that happened to
+# land in a quiet window). For the duration of the gate we annotate every node
+# scale-down-disabled to hold the membership stable, and an EXIT trap
+# re-enables scale-down on every exit path so the pool is never left pinned.
+#
 # This MUST run AFTER "Deploy Image Prepuller" (which applies the new
 # RUNTIME_IMAGE tag, triggering a rolling update of the DaemonSet) and
 # BEFORE "Deploy Knative services" (which patches the api/warm-pool
@@ -46,11 +57,26 @@ NS="${1:?system namespace required}"
 TIMEOUT="${2:-1800}"
 
 DS=image-prepuller
+SCALE_DOWN_DISABLED_ANNOTATION="cluster-autoscaler.kubernetes.io/scale-down-disabled"
 
 if ! kubectl get daemonset "$DS" -n "$NS" >/dev/null 2>&1; then
   echo "::warning::wait-runtime-prepulled: DaemonSet $DS not found in $NS — skipping (prepuller not deployed)"
   exit 0
 fi
+
+# Hold the node pool steady for the gate window (see "Pool freeze" above) and
+# guarantee scale-down is restored no matter how we leave — success, timeout,
+# `set -e` abort, or an interrupt. Best-effort: a failure to (un)annotate must
+# never itself fail the deploy, hence the `|| true`.
+# shellcheck disable=SC2329  # invoked indirectly via the EXIT trap below
+reenable_scale_down() {
+  echo "Re-enabling cluster-autoscaler scale-down on all nodes..."
+  kubectl annotate nodes --all "${SCALE_DOWN_DISABLED_ANNOTATION}-" >/dev/null 2>&1 || true
+}
+trap reenable_scale_down EXIT
+
+echo "Disabling cluster-autoscaler scale-down on all nodes for the prepull gate window..."
+kubectl annotate nodes --all "${SCALE_DOWN_DISABLED_ANNOTATION}=true" --overwrite >/dev/null 2>&1 || true
 
 echo "Waiting up to ${TIMEOUT}s for $DS to finish pulling the runtime image onto every node in $NS..."
 if kubectl rollout status "daemonset/$DS" -n "$NS" --timeout="${TIMEOUT}s"; then
