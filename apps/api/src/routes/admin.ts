@@ -343,8 +343,10 @@ export function adminRoutes(): Hono {
     try {
       const url = new URL(c.req.url)
       const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const page = parseInt(url.searchParams.get('page') || '1', 10)
+      const limit = parseInt(url.searchParams.get('limit') || '10', 10)
       const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
-      const data = await analytics.getToolCallAnalytics({}, period, { excludeInternal })
+      const data = await analytics.getToolCallAnalytics({}, period, { excludeInternal, page, limit })
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Tool calls analytics error:', error)

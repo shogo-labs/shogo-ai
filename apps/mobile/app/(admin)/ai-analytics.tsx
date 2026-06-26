@@ -50,6 +50,7 @@ export default function AdminAIAnalyticsPage() {
   const [logPage, setLogPage] = useState(1)
   const [summaryPage, setSummaryPage] = useState(1)
   const [workspacePage, setWorkspacePage] = useState(1)
+  const [toolPage, setToolPage] = useState(1)
   const [spendGroupBy, setSpendGroupBy] = useState<SpendGroupBy>('model')
   const [spendMetric, setSpendMetric] = useState<SpendMetric>('spend')
   const [refreshing, setRefreshing] = useState(false)
@@ -81,7 +82,7 @@ export default function AdminAIAnalyticsPage() {
     const [sp, qual, tc, wsAct, us, uSum, uLog, ch] = await Promise.all([
       fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', { ...pParams, groupBy: spendGroupBy, metric: spendMetric }),
       fetchAdminJson<QualityTimeseriesPoint[]>('/analytics/quality-timeseries', pParams),
-      fetchAdminJson<ToolCallAnalyticsData>('/analytics/tool-calls', pParams),
+      fetchAdminJson<ToolCallAnalyticsData>('/analytics/tool-calls', { ...pParams, page: String(toolPage), limit: '10' }),
       fetchAdminJson<WorkspaceActivityData>('/analytics/workspace-activity', { ...pParams, page: String(workspacePage), limit: '20' }),
       fetchAdminJson<UsageBreakdownData>('/analytics/usage', pParams),
       fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { ...pParams, page: String(summaryPage), limit: '25' }),
@@ -97,7 +98,7 @@ export default function AdminAIAnalyticsPage() {
     setUsageSummary({ data: uSum, loading: false })
     setUsageLog({ data: uLog, loading: false })
     setChatStats({ data: ch, loading: false })
-  }, [period, logPage, summaryPage, workspacePage, spendGroupBy, spendMetric, internalParam])
+  }, [period, logPage, summaryPage, workspacePage, toolPage, spendGroupBy, spendMetric, internalParam])
 
   useEffect(() => {
     loadAll()
@@ -162,7 +163,12 @@ export default function AdminAIAnalyticsPage() {
 
       {/* Tool call analytics */}
       <View className="mb-4">
-        <ToolCallAnalyticsPanel data={toolCalls.data} loading={toolCalls.loading} />
+        <ToolCallAnalyticsPanel
+          data={toolCalls.data}
+          loading={toolCalls.loading}
+          page={toolPage}
+          onPageChange={setToolPage}
+        />
       </View>
 
       {/* Usage table (summary + event log) */}
