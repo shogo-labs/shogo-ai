@@ -276,6 +276,13 @@ variable "kourier_origin" {
   default     = null
 }
 
+variable "site_auth_secret" {
+  description = "Forwarded to `publish-hosting-oci`: HMAC secret the subdomain-router Worker uses to sign/verify the password-gate cookie for password-protected published sites (bound as SITE_AUTH_SECRET). Null/empty disables the gate (sites fail open to public) even when the SITE_AUTH KV map has entries. Use a long random value."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
 # -----------------------------------------------------------------------------
 # Autoscaler IAM
 # -----------------------------------------------------------------------------

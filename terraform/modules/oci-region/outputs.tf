@@ -147,6 +147,11 @@ output "server_backed_kv_namespace_id" {
   value       = one(module.publish_hosting[*].server_backed_kv_namespace_id)
 }
 
+output "site_auth_kv_namespace_id" {
+  description = "Workers KV namespace id for the published-site password gate (null when disabled). Wire into the api ksvc as CF_SITE_AUTH_KV_NAMESPACE_ID."
+  value       = one(module.publish_hosting[*].site_auth_kv_namespace_id)
+}
+
 # -----------------------------------------------------------------------------
 # Database connection info
 # For Tier 1: local CNPG (configured separately via K8s manifests)

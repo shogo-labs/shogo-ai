@@ -243,6 +243,10 @@ module "publish_hosting" {
   # Knative (Kourier) ingress so the Worker can proxy `/api/*`.
   kourier_origin = var.kourier_origin
 
+  # HMAC secret for the password-gate cookie on password-protected published
+  # sites. Null disables the edge gate (fail-open to public).
+  site_auth_secret = var.site_auth_secret
+
   # OCI Object Storage's PAR API has eventual consistency against bucket
   # creation. Without this depends_on, terraform parallelizes the
   # published_apps bucket creation and the PAR creation, and the PAR

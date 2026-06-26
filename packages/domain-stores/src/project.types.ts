@@ -12,7 +12,7 @@ export type ProjectTier = 'starter' | 'pro' | 'enterprise' | 'internal'
 
 export type ProjectStatus = 'draft' | 'active' | 'archived'
 
-export type AccessLevel = 'anyone' | 'authenticated' | 'private'
+export type AccessLevel = 'anyone' | 'authenticated' | 'private' | 'password'
 
 export type PublishStatus = 'idle' | 'building' | 'uploading' | 'configuring' | 'live' | 'failed'
 
