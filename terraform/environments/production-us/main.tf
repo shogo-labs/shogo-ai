@@ -241,10 +241,14 @@ module "us" {
   vcn_api_endpoint_cidr           = "10.0.0.0/28"
 
   # OCIR has 7 repos live (the module's 4-repo default would destroy 3).
+  # shogo-buildcache holds the durable buildx registry layer cache (one tag
+  # per build scope); the US registry is the build-time target shared by
+  # staging and production-us, so the cache only ever lands here.
   ocir_repositories = [
     "agent-runtime",
     "project-runtime",
     "shogo-api",
+    "shogo-buildcache",
     "shogo-docs",
     "shogo-runtime",
     "shogo-runtime-base",
