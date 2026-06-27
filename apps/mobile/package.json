@@ -9,7 +9,7 @@
     "dev:web": "node scripts/start-web.mjs",
     "dev:ios": "expo start --ios",
     "dev:android": "expo start --android",
-    "build": "node scripts/copy-monaco-vs.mjs && expo export --platform web",
+    "build": "node scripts/copy-monaco-vs.mjs && expo export --platform web --source-maps",
     "typecheck": "echo 'Skipping: requires Expo native environment'",
     "ios": "expo run:ios",
     "android": "expo run:android",

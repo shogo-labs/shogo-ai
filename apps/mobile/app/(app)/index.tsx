@@ -780,9 +780,21 @@ const HomeScreen = observer(function HomeScreen() {
         : COMPOSER_WRAPPER_WEB_LIGHT
       : COMPOSER_WRAPPER_NATIVE
 
+  // Unauthenticated local-mode sessions bounce back to the root router — but
+  // NEVER navigate during render. Calling `router.replace()` in the render body
+  // reschedules a navigation on every render while this screen is still mounted
+  // (e.g. onboarding's `handleComplete` replaces to `/(app)` even when
+  // `completeOnboarding` 401s, landing an unauthenticated user here), which
+  // React surfaces as "Maximum update depth exceeded" (#185, Sentry
+  // SHOGO-DESKTOP-3). Redirect once from an effect instead.
+  useEffect(() => {
+    if (!isAuthenticated && localMode) {
+      router.replace('/')
+    }
+  }, [isAuthenticated, localMode, router])
+
   if (!isAuthenticated) {
     if (localMode) {
-      router.replace('/')
       return null
     }
     return (
