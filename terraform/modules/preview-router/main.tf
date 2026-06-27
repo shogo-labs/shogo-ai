@@ -85,13 +85,8 @@ variable "zone_name" {
 }
 
 variable "preview_base_domain" {
-  description = "Parent domain for preview hostnames (e.g. preview.shogo.ai, or preview.staging.shogo.ai). Preview hosts are `{projectId}.{preview_base_domain}`. MUST be a subdomain of `zone_name`."
+  description = "Parent domain for preview hostnames (e.g. preview.shogo.ai, or preview.staging.shogo.ai). Preview hosts are `{projectId}.{preview_base_domain}`. MUST be `zone_name` or a subdomain of it (used to derive record names relative to the zone)."
   type        = string
-
-  validation {
-    condition     = endswith(var.preview_base_domain, ".${var.zone_name}") || var.preview_base_domain == var.zone_name
-    error_message = "preview_base_domain must be `zone_name` or a subdomain of it."
-  }
 }
 
 variable "region_anchors" {
