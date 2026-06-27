@@ -41,9 +41,13 @@ const KNATIVE_GROUP = "serving.knative.dev"
 const KNATIVE_VERSION = "v1"
 
 // Preview subdomain configuration
+// Previews live under a dedicated `*.preview.<base>` subtree owned by the
+// preview-router Cloudflare Worker (terraform/modules/preview-router). The
+// projectId is the FIRST DNS label so the Worker can parse it and the
+// `*.preview.<base>/*` route is a valid leading-wildcard match.
 // Format varies by environment:
-//   Non-production: preview--{projectId}.{env}.{baseDomain}
-//   Production:     preview--{projectId}.{baseDomain}
+//   Non-production: {projectId}.preview.{env}.{baseDomain}
+//   Production:     {projectId}.preview.{baseDomain}
 const PREVIEW_BASE_DOMAIN = process.env.PREVIEW_BASE_DOMAIN || "example.com"
 const PREVIEW_ENVIRONMENT = process.env.PREVIEW_ENVIRONMENT || process.env.ENVIRONMENT || "dev"
 const IS_PRODUCTION = PREVIEW_ENVIRONMENT === "production" || PREVIEW_ENVIRONMENT === "prod"
@@ -229,17 +233,19 @@ export interface ProjectPodStatus {
 
 /**
  * Build the preview subdomain for a project.
+ * Previews sit under a dedicated `*.preview.<base>` subtree owned by the
+ * preview-router Worker. The projectId is the first DNS label.
  * Format varies by environment:
- *   Non-production: preview--{projectId}.{env}.{baseDomain}
- *   Production:     preview--{projectId}.{baseDomain}
+ *   Non-production: {projectId}.preview.{env}.{baseDomain}
+ *   Production:     {projectId}.preview.{baseDomain}
  */
 export function getPreviewSubdomain(projectId: string): string {
   if (IS_PRODUCTION) {
-    // Production: preview--{id}.shogo.ai
-    return `preview--${projectId}.${PREVIEW_BASE_DOMAIN}`
+    // Production: {id}.preview.shogo.ai
+    return `${projectId}.preview.${PREVIEW_BASE_DOMAIN}`
   }
-  // Non-production (staging, dev, etc.): preview--{id}.{env}.shogo.ai
-  return `preview--${projectId}.${PREVIEW_ENVIRONMENT}.${PREVIEW_BASE_DOMAIN}`
+  // Non-production (staging, dev, etc.): {id}.preview.{env}.shogo.ai
+  return `${projectId}.preview.${PREVIEW_ENVIRONMENT}.${PREVIEW_BASE_DOMAIN}`
 }
 
 /**
@@ -393,7 +399,7 @@ export class KnativeProjectManager {
 
   /**
    * Create a DomainMapping for the project's preview subdomain.
-   * Maps preview--{projectId}--{env}.{domain} to the Knative Service.
+   * Maps {projectId}.preview.{env}.{domain} to the Knative Service.
    * @param serviceName - Override the target service name (defaults to project-{id}).
    *   Pass the warm pool service name when the project is served by a warm pod.
    */
@@ -447,11 +453,11 @@ export class KnativeProjectManager {
     }
 
     // Record this preview's hosting region in Workers KV so the
-    // `preview--*.shogo.ai` router Worker resolveOverrides cross-region traffic
+    // `*.preview.shogo.ai` router Worker resolveOverrides cross-region traffic
     // to this cluster's Kourier LB. Replaces the per-preview CF DNS record
     // (which hit the zone's 200-record quota). No-op when CF_* env vars are
-    // unset (single-region / local dev); the flat `*.shogo.ai` wildcard then
-    // routes to US as the fallback.
+    // unset (single-region / local dev); the `*.preview.shogo.ai` wildcard then
+    // routes to the default region as the fallback.
     await setPreviewRegion(projectId)
   }
 
@@ -1069,7 +1075,7 @@ export class KnativeProjectManager {
       { name: "PROJECT_DIR", value: workDir },
       // PUBLIC_PREVIEW_URL is the externally-reachable URL the runtime advertises
       // to its agents (for QA subagents, browser-use, etc.). In k8s this is the
-      // preview--{id}.{env}.shogo.ai subdomain served via the DomainMapping
+      // {id}.preview.{env}.shogo.ai subdomain served via the DomainMapping
       // created by createPreviewDomainMapping(). Locally the runtime falls back
       // to http://localhost:${PORT}/ when this is unset.
       { name: "PUBLIC_PREVIEW_URL", value: getPreviewUrl(projectId) },

@@ -31,7 +31,7 @@ const km = await import('../knative-project-manager')
 
 describe('getPreviewSubdomain — production branch', () => {
   it('omits the env segment when PREVIEW_ENVIRONMENT=production', () => {
-    expect(km.getPreviewSubdomain('proj-prod')).toBe('preview--proj-prod.shogo.ai')
-    expect(km.getPreviewUrl('proj-prod')).toBe('https://preview--proj-prod.shogo.ai')
+    expect(km.getPreviewSubdomain('proj-prod')).toBe('proj-prod.preview.shogo.ai')
+    expect(km.getPreviewUrl('proj-prod')).toBe('https://proj-prod.preview.shogo.ai')
   })
 })

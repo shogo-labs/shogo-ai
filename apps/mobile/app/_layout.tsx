@@ -97,13 +97,14 @@ function isNoiseEvent(event: SentryErrorEvent): boolean {
 
   // 1. Preview-iframe failures (top issue by volume). The sandboxed preview
   //    app injects `frame_ant.js`, which fetches its own origin
-  //    (preview--<uuid>.shogo.ai). While the preview is booting / being torn
+  //    (<uuid>.preview.shogo.ai). While the preview is booting / being torn
   //    down those reject with "Failed to fetch" — surfaced here but owned by
   //    the preview runtime, not studio.
+  const PREVIEW_HOST_RE = /(?:preview--[^.\s/]+|[^.\s/]+\.preview)\.shogo\.ai/i
   const isPreviewIframe =
     frames.some((f) => (f.filename ?? '').includes('frame_ant')) ||
-    messages.some((m) => /preview--[^\s)]+\.shogo\.ai/i.test(m)) ||
-    /preview--[^.\s/]+\.shogo\.ai/i.test(reqUrl)
+    messages.some((m) => PREVIEW_HOST_RE.test(m)) ||
+    PREVIEW_HOST_RE.test(reqUrl)
   if (isPreviewIframe) return true
 
   // 2. Transient backend availability / network — server health, not a

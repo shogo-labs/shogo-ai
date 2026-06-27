@@ -1,45 +1,58 @@
 # =============================================================================
 # Preview Router Module — Cloudflare Worker + KV
 # =============================================================================
-# Routes per-project preview traffic (`preview--{projectId}.<preview_base_domain>`)
-# to the Knative (Kourier) ingress of whichever region actually hosts the
-# project, WITHOUT a per-preview DNS record.
+# Routes per-project preview traffic (`{projectId}.<preview_base_domain>`, e.g.
+# `{projectId}.preview.shogo.ai`) to the Knative (Kourier) ingress of whichever
+# region actually hosts the project, WITHOUT a per-preview DNS record.
 #
 # Why this exists
 # ---------------
-# A single flat `*.<preview_base_domain>` wildcard can only point at one region.
-# The old approach overrode the wildcard with one proxied A record per live
-# preview, which scaled linearly with active previews and hit the zone's
-# 200-record quota (CF error 81045 "Record quota exceeded").
+# A single flat `*.shogo.ai` wildcard can only point at one region. The old
+# approach overrode the wildcard with one proxied A record per live preview
+# (`preview--{id}.shogo.ai`), which scaled linearly with active previews and hit
+# the zone's 200-record quota (CF error 81045 "Record quota exceeded").
 #
-# This module replaces those N records with:
+# Why a dedicated `*.preview.<base>` subtree
+# ------------------------------------------
+# Cloudflare Worker routes only allow a wildcard at the START of the hostname
+# (CF error 10022 rejects `preview--*.shogo.ai/*`). So a single Worker route
+# cannot target the old `preview--{id}.shogo.ai` scheme. Instead, previews live
+# under a dedicated `*.preview.<base>` subtree that the Worker owns entirely via
+# the valid leading-wildcard route `*.preview.<base>/*` — the same way the
+# publish Worker owns the dedicated `*.shogo.one` zone.
+#
+# This module provisions:
 #   - ONE Workers KV namespace (`PREVIEW_REGIONS`): projectId -> region code.
-#     Written by the API in each region when a preview DomainMapping is created,
-#     deleted when it's torn down. KV is effectively unlimited, so the
-#     200-record ceiling no longer applies.
-#   - ONE Worker on `preview--*.<preview_base_domain>/*` that reads the region
-#     from KV and `resolveOverride`s the connection to that region's Kourier
-#     anchor.
-#   - ONE proxied "anchor" A record per region (`kourier-<code>[.<infix>]` in
-#     the zone). resolveOverride requires the override host to be proxied in the
-#     same zone as the request host (the `*.<preview_base_domain>` wildcard
-#     already provides the proxied request host). Same mechanism the publish
-#     Worker uses for server-backed `/api/*` (see terraform/environments/
-#     production-us: `kourier_us` + resolveOverride).
+#     Written by the API in each region on DomainMapping create/delete. KV is
+#     effectively unlimited, so the 200-record ceiling no longer applies.
+#   - ONE proxied wildcard A record `*.preview.<base>` — the request host the
+#     route matches against and the resolveOverride source. Points at the
+#     default region's Kourier LB so previews work even with empty KV.
+#   - ONE advanced certificate pack covering `*.preview.<base>`. Universal SSL
+#     only covers the apex + a single `*.<zone>` level, so the 2nd-level
+#     wildcard needs an ACM advanced cert (mirrors the zone's existing
+#     `*.studio.shogo.ai` advanced cert). Total TLS only issues per-hostname
+#     certs for records that exist, so it cannot cover a wildcard-only subtree.
+#   - ONE proxied "anchor" A record per region (`kourier-preview-<code>`).
+#     resolveOverride requires the override host to be proxied in the same zone.
+#     Distinct from the publish Worker's `kourier-<code>` records (owned by the
+#     per-region states) to avoid cross-state ownership collisions.
+#   - ONE Worker on `*.preview.<base>/*` that reads the region from KV and
+#     `resolveOverride`s the connection to that region's anchor.
 #
 # Fallback: on any KV miss / unparseable host / missing binding the Worker
-# targets `default_region`, so previews in that region work with zero KV state
-# and the blast radius of a miss is "routed to the default region" rather than a
-# hard failure.
+# targets `default_region`, which is also where the wildcard points — so
+# default-region previews need zero KV state and a miss degrades to "routed to
+# the default region" rather than a hard failure.
 #
 # Multi-instance / multi-env safety
 # ---------------------------------
-# Anchor record names and the Worker route are namespaced by `preview_base_domain`
-# (e.g. prod `shogo.ai` vs staging `staging.shogo.ai`), so this module can be
-# instantiated once per environment against the SAME Cloudflare zone without
-# collision. Cloudflare picks the most-specific (longest) matching Worker route,
-# so a staging route `preview--*.staging.shogo.ai/*` takes precedence over a
-# prod route `preview--*.shogo.ai/*` for staging hostnames.
+# The wildcard, cert, anchors and route are all derived from `preview_base_domain`
+# (prod `preview.shogo.ai` vs staging `preview.staging.shogo.ai`), so this module
+# can be instantiated once per environment against the SAME Cloudflare zone
+# without collision. Cloudflare picks the most-specific (longest) matching Worker
+# route, so the staging route `*.preview.staging.shogo.ai/*` takes precedence over
+# the prod route `*.preview.shogo.ai/*` for staging hostnames.
 # =============================================================================
 
 terraform {
@@ -67,17 +80,22 @@ variable "cloudflare_zone_id" {
 }
 
 variable "zone_name" {
-  description = "Cloudflare zone NAME for `cloudflare_zone_id` (e.g. shogo.ai). Used to compute relative anchor record names when `preview_base_domain` is a subdomain of the zone."
+  description = "Cloudflare zone NAME for `cloudflare_zone_id` (e.g. shogo.ai). Used to compute record names relative to the zone."
   type        = string
 }
 
 variable "preview_base_domain" {
-  description = "Base domain for preview hostnames (e.g. shogo.ai, or staging.shogo.ai). Preview hosts are `preview--{projectId}.{preview_base_domain}`."
+  description = "Parent domain for preview hostnames (e.g. preview.shogo.ai, or preview.staging.shogo.ai). Preview hosts are `{projectId}.{preview_base_domain}`. MUST be a subdomain of `zone_name`."
   type        = string
+
+  validation {
+    condition     = endswith(var.preview_base_domain, ".${var.zone_name}") || var.preview_base_domain == var.zone_name
+    error_message = "preview_base_domain must be `zone_name` or a subdomain of it."
+  }
 }
 
 variable "region_anchors" {
-  description = "Map of region code (the value the API writes to KV, e.g. `us`/`eu`/`in`/`staging`) to that region's Kourier LoadBalancer IP. One proxied anchor record is created per entry."
+  description = "Map of region code (the value the API writes to KV, e.g. `us`/`eu`/`in`/`staging`) to that region's Kourier LoadBalancer IP. One proxied anchor record (`kourier-preview-<code>`) is created per entry."
   type        = map(string)
 
   validation {
@@ -97,19 +115,22 @@ variable "default_region" {
 }
 
 locals {
-  # Relative infix below the zone when preview_base_domain is a subdomain of the
-  # zone. prod: preview_base_domain == zone_name -> "" -> anchor `kourier-us`.
-  # staging: `staging.shogo.ai` under `shogo.ai` -> "staging" -> anchor
-  # `kourier-us.staging` (FQDN kourier-us.staging.shogo.ai).
-  anchor_infix = (
+  # preview_base_domain relative to the zone. prod: `preview.shogo.ai` under
+  # `shogo.ai` -> `preview`. staging: `preview.staging.shogo.ai` -> `preview.staging`.
+  preview_relative = (
     var.preview_base_domain == var.zone_name
-    ? ""
+    ? "@"
     : trimsuffix(var.preview_base_domain, ".${var.zone_name}")
   )
 
+  # Proxied wildcard request host: `*.preview.shogo.ai` -> record name `*.preview`.
+  wildcard_record_name = "*.${local.preview_relative}"
+
+  # Anchor records are namespaced (`kourier-preview-<code>`) to avoid colliding
+  # with the publish Worker's `kourier-<code>` records owned by per-region states.
   anchor_record_name = {
     for code in keys(var.region_anchors) :
-    code => local.anchor_infix == "" ? "kourier-${code}" : "kourier-${code}.${local.anchor_infix}"
+    code => "kourier-preview-${code}"
   }
 }
 
@@ -130,9 +151,10 @@ resource "cloudflare_workers_kv_namespace" "preview_regions" {
 # Region anchors — proxied A records the Worker resolveOverrides to
 # -----------------------------------------------------------------------------
 # Proxied because resolveOverride only works when both the request host and the
-# override host are orange-clouded in the same zone. They do NOT match this
-# module's `preview--*` Worker route, so the Worker's origin-pull subrequest
-# never re-enters the Worker (no self-loop) and no bypass route is required.
+# override host are orange-clouded in the same zone. Their names do NOT match
+# this module's `*.preview.<base>` Worker route, so the Worker's origin-pull
+# subrequest never re-enters the Worker (no self-loop) and no bypass route is
+# required.
 resource "cloudflare_record" "anchor" {
   for_each = var.region_anchors
 
@@ -143,6 +165,44 @@ resource "cloudflare_record" "anchor" {
   proxied = true
   ttl     = 1
   comment = "Preview-router resolveOverride anchor (${var.environment}/${each.key} Kourier LB)"
+}
+
+# -----------------------------------------------------------------------------
+# Proxied wildcard request host — `*.preview.<base>`
+# -----------------------------------------------------------------------------
+# This is the host the Worker route matches against and the resolveOverride
+# source (resolveOverride requires the request host to be proxied in the zone).
+# Points at the default region's LB so a preview resolves correctly even when
+# the Worker is bypassed or KV is empty.
+resource "cloudflare_record" "preview_wildcard" {
+  zone_id = var.cloudflare_zone_id
+  name    = local.wildcard_record_name
+  content = var.region_anchors[var.default_region]
+  type    = "A"
+  proxied = true
+  ttl     = 1
+  comment = "Preview-router wildcard request host (${var.environment}); Worker resolveOverrides per-project"
+}
+
+# -----------------------------------------------------------------------------
+# Advanced certificate pack — wildcard TLS for `*.preview.<base>`
+# -----------------------------------------------------------------------------
+# Universal SSL covers the apex + a single `*.<zone>` level only, so the
+# 2nd-level (or deeper) wildcard `*.preview.<base>` needs an ACM advanced cert.
+# Mirrors the zone's existing `*.studio.shogo.ai` advanced cert. DCV is handled
+# automatically by Cloudflare for a zone using CF nameservers.
+resource "cloudflare_certificate_pack" "preview" {
+  zone_id               = var.cloudflare_zone_id
+  type                  = "advanced"
+  hosts                 = [var.preview_base_domain, "*.${var.preview_base_domain}"]
+  validation_method     = "txt"
+  validity_days         = 90
+  certificate_authority = "google"
+  cloudflare_branding   = false
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -171,13 +231,12 @@ resource "cloudflare_worker_script" "preview_router" {
       return ANCHORS[DEFAULT_REGION] || Object.values(ANCHORS)[0];
     }
 
-    // preview--{projectId}.{base} -> projectId. The projectId is a UUID with
-    // no dots, so the first label after the `preview--` prefix is the id.
+    // {projectId}.preview.<base> -> projectId. The projectId is the first DNS
+    // label (a UUID with no dots), which the `*.preview.<base>` route captures.
     function projectIdFromHost(hostname) {
-      if (hostname.indexOf('preview--') !== 0) return null;
-      var rest = hostname.slice('preview--'.length);
-      var dot = rest.indexOf('.');
-      return dot === -1 ? rest : rest.slice(0, dot);
+      var dot = hostname.indexOf('.');
+      if (dot <= 0) return null;
+      return hostname.slice(0, dot);
     }
 
     export default {
@@ -187,9 +246,9 @@ resource "cloudflare_worker_script" "preview_router" {
 
         // Resolve the hosting region from KV. Any failure (unparseable host,
         // missing binding, KV miss, KV error) falls through to DEFAULT_REGION,
-        // which is also where the flat wildcard points — so default-region
-        // previews need no KV state and a miss degrades to "routed to the
-        // default region" instead of a hard failure.
+        // which is also where the wildcard points — so default-region previews
+        // need no KV state and a miss degrades to "routed to the default
+        // region" instead of a hard failure.
         let region = null;
         if (projectId && env.PREVIEW_REGIONS) {
           try { region = await env.PREVIEW_REGIONS.get(projectId); } catch (e) {}
@@ -198,24 +257,23 @@ resource "cloudflare_worker_script" "preview_router" {
         const anchor = anchorFor(region);
 
         // Keep the original preview host in the URL so Cloudflare sends
-        // Host: preview--{projectId}.{base} (which the regional Kourier
+        // Host: {projectId}.preview.<base> (which the regional Kourier
         // DomainMapping routes to the project's ksvc) and ONLY override DNS
         // resolution to the regional Kourier anchor. resolveOverride requires
         // both the URL host and the anchor to be proxied in this zone; the
-        // anchor host does not match this Worker's `preview--*` route, so the
-        // origin-pull subrequest does not re-enter the Worker (no loop).
+        // anchor host does not match this Worker's `*.preview.<base>` route, so
+        // the origin-pull subrequest does not re-enter the Worker (no loop).
         return fetch(request, { cf: { resolveOverride: anchor } });
       }
     };
   JS
 }
 
-# Route preview--*.{preview_base_domain} traffic through the Worker. The flat
-# `*.{preview_base_domain}` wildcard A record (managed elsewhere) supplies the
-# proxied request host this route matches against.
+# Route all `*.preview.<base>` traffic through the Worker. The proxied wildcard
+# record above supplies the request host this route matches against.
 resource "cloudflare_worker_route" "preview" {
   zone_id     = var.cloudflare_zone_id
-  pattern     = "preview--*.${var.preview_base_domain}/*"
+  pattern     = "*.${var.preview_base_domain}/*"
   script_name = cloudflare_worker_script.preview_router.name
 }
 
@@ -235,4 +293,14 @@ output "worker_name" {
 output "anchor_hostnames" {
   description = "The proxied Kourier anchor hostnames the Worker resolveOverrides to, by region code."
   value       = { for code, r in cloudflare_record.anchor : code => r.hostname }
+}
+
+output "preview_wildcard_hostname" {
+  description = "The proxied wildcard request host (`*.preview.<base>`) the Worker route matches."
+  value       = cloudflare_record.preview_wildcard.hostname
+}
+
+output "certificate_pack_id" {
+  description = "Advanced certificate pack id covering `*.preview.<base>`."
+  value       = cloudflare_certificate_pack.preview.id
 }

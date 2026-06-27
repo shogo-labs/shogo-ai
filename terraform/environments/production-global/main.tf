@@ -203,8 +203,9 @@ resource "cloudflare_record" "india_tunnel" {
 # Preview Router — per-project preview routing without per-preview DNS records
 # =============================================================================
 # Replaces the per-preview `preview--{id}.shogo.ai` A records (which hit the
-# zone's 200-record quota) with a Worker + KV that resolveOverrides each
-# preview to its hosting region's Kourier LB. See modules/preview-router.
+# zone's 200-record quota) with a Worker + KV that resolveOverrides each preview
+# (`{projectId}.preview.shogo.ai`) to its hosting region's Kourier LB. See
+# modules/preview-router.
 module "preview_router" {
   source = "../../modules/preview-router"
 
@@ -212,7 +213,7 @@ module "preview_router" {
   cloudflare_account_id = var.cloudflare_account_id
   cloudflare_zone_id    = var.cloudflare_zone_id
   zone_name             = "shogo.ai"
-  preview_base_domain   = "shogo.ai"
+  preview_base_domain   = "preview.shogo.ai"
 
   # Region code (the value the API writes to KV from REGION_ID) -> Kourier LB IP.
   region_anchors = {

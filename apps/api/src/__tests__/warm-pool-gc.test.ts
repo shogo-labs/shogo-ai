@@ -165,8 +165,8 @@ describe('WarmPoolController namespace garbage collection', () => {
 describe('WarmPoolController DomainMapping garbage collection', () => {
   test('deletes DomainMappings whose referenced services no longer exist', async () => {
     domainMappingItems = [
-      { metadata: { name: 'preview--missing.dev.example.com' }, spec: { ref: { name: 'deleted-service' } } },
-      { metadata: { name: 'preview--live.dev.example.com' }, spec: { ref: { name: 'live-service' } } },
+      { metadata: { name: 'missing.preview.dev.example.com' }, spec: { ref: { name: 'deleted-service' } } },
+      { metadata: { name: 'live.preview.dev.example.com' }, spec: { ref: { name: 'live-service' } } },
       { metadata: { name: '' }, spec: { ref: { name: 'ignored' } } },
     ]
     serviceItems = [
@@ -180,7 +180,7 @@ describe('WarmPoolController DomainMapping garbage collection', () => {
     const deletedMappings = capture
       .filter((c) => c.method === 'deleteNamespacedCustomObject' && c.args[0].plural === 'domainmappings')
       .map((c) => c.args[0].name)
-    expect(deletedMappings).toEqual(['preview--missing.dev.example.com'])
+    expect(deletedMappings).toEqual(['missing.preview.dev.example.com'])
   })
 
   test('returns zero for empty mapping lists and swallowed list failures', async () => {

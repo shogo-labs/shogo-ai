@@ -3,7 +3,7 @@
 #
 # One-time migration helper for the preview-router cutover (Option 1).
 #
-# The `preview--*.shogo.ai` router Worker resolves each preview to its hosting
+# The `*.preview.shogo.ai` router Worker resolves each preview to its hosting
 # region by reading `projectId -> region` from the PREVIEW_REGIONS Workers KV
 # namespace. Newly-created previews get their KV entry written by the API
 # (apps/api/src/lib/cloudflare-preview-region-kv.ts), but previews that already
@@ -62,15 +62,15 @@ put_kv() { # $1=projectId $2=region
 backfill_region() { # $1=region_code $2=context
   local region="$1" ctx="$2" n=0
   echo "=== region=$region context=$ctx ==="
-  # DomainMapping names are `preview--{projectId}.shogo.ai`; strip prefix+suffix
-  # to recover the bare projectId the Worker keys on.
-  while read -r host; do
-    [[ -z "$host" ]] && continue
-    local pid="${host#preview--}"; pid="${pid%%.*}"
+  # Preview DomainMappings carry `shogo.io/component=preview-domain` and the
+  # project UUID in the `shogo.io/project` label — read that directly so this is
+  # robust to the hostname scheme (`{projectId}.preview.<base>`).
+  while read -r pid; do
     [[ -z "$pid" ]] && continue
     put_kv "$pid" "$region" && n=$((n + 1))
-  done < <(kubectl --context="$ctx" get domainmappings.serving.knative.dev -A --no-headers 2>/dev/null \
-            | awk '{print $2}' | grep '^preview--')
+  done < <(kubectl --context="$ctx" get domainmappings.serving.knative.dev -A \
+            -l shogo.io/component=preview-domain \
+            -o jsonpath='{range .items[*]}{.metadata.labels.shogo\.io/project}{"\n"}{end}' 2>/dev/null)
   echo "  seeded: $n"
 }
 
