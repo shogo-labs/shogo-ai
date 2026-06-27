@@ -125,9 +125,9 @@ mock.module('../lib/prisma', () => withPrismaExports({
   },
 }))
 
-mock.module('../lib/cloudflare-dns', () => ({
-  upsertPreviewDnsRecord: async () => {},
-  deletePreviewDnsRecord: async () => {},
+mock.module('../lib/cloudflare-preview-region-kv', () => ({
+  setPreviewRegion: async () => false,
+  clearPreviewRegion: async () => false,
 }))
 
 mock.module('../services/database.service', () => ({

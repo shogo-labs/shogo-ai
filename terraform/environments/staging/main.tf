@@ -370,8 +370,54 @@ module "publish_hosting" {
 }
 
 # =============================================================================
+# Preview Router — preview routing without per-preview DNS records
+# =============================================================================
+# Staging mirror of the production-global preview-router so the Worker + KV +
+# resolveOverride mechanism can be exercised here before the production cutover.
+# Staging is single-region (us-ashburn-1, REGION_ID=staging), so there is one
+# anchor (`kourier-staging.staging.shogo.ai`) pointing at the staging Kourier
+# LB; `default_region = staging` means previews route correctly even with an
+# empty KV (the wildcard `*.staging.shogo.ai` already targets the same LB).
+#
+# The staging route `preview--*.staging.shogo.ai/*` is MORE SPECIFIC than the
+# production route `preview--*.shogo.ai/*` (both live in the shogo.ai zone), so
+# Cloudflare routes staging preview hostnames here — this also shields staging
+# from the production Worker once it is applied. See docs/preview-router.md.
+locals {
+  # Stable OCI-assigned address of the long-lived `kourier` Service in the
+  # staging cluster's kourier-system namespace (not terraform-managed here).
+  staging_kourier_lb_ip = "141.148.27.1"
+}
+
+module "preview_router" {
+  source = "../../modules/preview-router"
+
+  environment           = local.environment
+  cloudflare_account_id = var.cloudflare_account_id
+  cloudflare_zone_id    = var.cloudflare_zone_id
+  zone_name             = "shogo.ai"
+  preview_base_domain   = local.domain # staging.shogo.ai
+
+  # REGION_ID=staging (see k8s/overlays/staging/api-service.yaml) maps to the
+  # `staging` region code in cloudflare-preview-region-kv.ts.
+  region_anchors = {
+    staging = local.staging_kourier_lb_ip
+  }
+  default_region = "staging"
+}
+
+# =============================================================================
 # Outputs
 # =============================================================================
+
+# Wire into the staging api ksvc as CF_PREVIEW_REGIONS_KV_NAMESPACE_ID (via the
+# custom-domains-config secret) so new staging previews self-register.
+output "preview_regions_kv_namespace_id" {
+  description = "Workers KV namespace id for the staging preview region map."
+  value       = module.preview_router.preview_regions_kv_namespace_id
+}
+output "preview_router_worker_name" { value = module.preview_router.worker_name }
+output "preview_router_anchors" { value = module.preview_router.anchor_hostnames }
 
 output "cluster_endpoint" {
   description = "OKE cluster API endpoint"

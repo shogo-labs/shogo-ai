@@ -25,7 +25,7 @@ import * as fs from "fs"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
-import { upsertPreviewDnsRecord, deletePreviewDnsRecord } from './cloudflare-dns'
+import { setPreviewRegion, clearPreviewRegion } from './cloudflare-preview-region-kv'
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 import type { InstanceSizeName } from '../config/instance-sizes'
 import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
@@ -446,10 +446,13 @@ export class KnativeProjectManager {
       }
     }
 
-    // Keep the Cloudflare A record for this hostname pointing at this
-    // cluster's Kourier LB so cross-region routing picks the right origin.
-    // No-op when CF_* env vars are unset (single-region / local dev).
-    await upsertPreviewDnsRecord(domainName)
+    // Record this preview's hosting region in Workers KV so the
+    // `preview--*.shogo.ai` router Worker resolveOverrides cross-region traffic
+    // to this cluster's Kourier LB. Replaces the per-preview CF DNS record
+    // (which hit the zone's 200-record quota). No-op when CF_* env vars are
+    // unset (single-region / local dev); the flat `*.shogo.ai` wildcard then
+    // routes to US as the fallback.
+    await setPreviewRegion(projectId)
   }
 
   /**
@@ -531,8 +534,10 @@ export class KnativeProjectManager {
       }
     }
 
-    // Remove the matching Cloudflare record (no-op when unconfigured).
-    await deletePreviewDnsRecord(domainName)
+    // Remove the preview's region mapping from Workers KV (no-op when
+    // unconfigured). Best-effort: a leftover entry only ever resolves to a
+    // stale-but-proxied region and is overwritten on the next assignment.
+    await clearPreviewRegion(projectId)
   }
 
   /**
