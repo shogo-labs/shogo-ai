@@ -78,6 +78,7 @@ import {
   Trash2,
   Loader2,
   SlidersHorizontal,
+  Sparkles,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -1285,6 +1286,15 @@ function AccountNavLinks({
       >
         <ExternalLink size={18} className="text-muted-foreground" />
         <Text className="text-sm text-foreground">Docs</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => { Linking.openURL('https://docs.shogo.ai/changelog'); onClose() }}
+        role="menuitem"
+        accessibilityLabel="What's New"
+        className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+      >
+        <Sparkles size={18} className="text-muted-foreground" />
+        <Text className="text-sm text-foreground">What's New</Text>
       </Pressable>
     </View>
   )

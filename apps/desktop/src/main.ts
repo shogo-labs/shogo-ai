@@ -1123,6 +1123,10 @@ function buildAppMenu(): void {
           label: 'Documentation',
           click: () => { shell.openExternal('https://docs.shogo.ai') },
         },
+        {
+          label: "What's New",
+          click: () => { shell.openExternal('https://docs.shogo.ai/changelog') },
+        },
         { type: 'separator' },
         {
           label: 'Repair Local Database...',
