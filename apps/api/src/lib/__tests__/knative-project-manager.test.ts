@@ -57,10 +57,10 @@ afterEach(() => { ;(globalThis as any).fetch = origFetch })
 
 describe('getPreviewSubdomain / getPreviewUrl (dev environment)', () => {
   it('uses env-prefixed subdomain in non-production', () => {
-    expect(km.getPreviewSubdomain('proj-abc')).toBe('preview--proj-abc.dev.example.com')
+    expect(km.getPreviewSubdomain('proj-abc')).toBe('proj-abc.preview.dev.example.com')
   })
   it('wraps with https://', () => {
-    expect(km.getPreviewUrl('proj-abc')).toBe('https://preview--proj-abc.dev.example.com')
+    expect(km.getPreviewUrl('proj-abc')).toBe('https://proj-abc.preview.dev.example.com')
   })
 })
 

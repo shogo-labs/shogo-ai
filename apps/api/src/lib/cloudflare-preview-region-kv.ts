@@ -3,7 +3,7 @@
 /**
  * Cloudflare Workers KV — preview region map
  *
- * The `preview--*.shogo.ai` preview-router Worker (terraform/modules/
+ * The `*.preview.shogo.ai` preview-router Worker (terraform/modules/
  * preview-router) routes each preview to the Knative (Kourier) ingress of the
  * region that actually hosts it. It learns the region from the `PREVIEW_REGIONS`
  * KV namespace: `projectId -> region code` (`us` | `eu` | `in`).
@@ -19,8 +19,8 @@
  * 81045). KV is effectively unlimited, so the ceiling no longer applies.
  *
  * All exports are best-effort no-ops unless these are set (so a misconfigured
- * env can never fail a DomainMapping create/delete — the flat `*.shogo.ai`
- * wildcard still routes to US as a fallback):
+ * env can never fail a DomainMapping create/delete — the `*.preview.shogo.ai`
+ * wildcard still routes to the default region as a fallback):
  *   CF_CUSTOM_HOSTNAMES_TOKEN (or CF_API_TOKEN) — `Workers KV Storage:Edit`
  *   CF_ACCOUNT_ID
  *   CF_PREVIEW_REGIONS_KV_NAMESPACE_ID — from the preview-router output
@@ -78,7 +78,7 @@ function kvValueUrl(cfg: PreviewRegionKvConfig, projectId: string): string {
 
 /**
  * Record that `projectId`'s preview is hosted in this pod's region so the
- * preview-router Worker sends `preview--{projectId}.shogo.ai` to the correct
+ * preview-router Worker sends `{projectId}.preview.shogo.ai` to the correct
  * regional Kourier LB. Best-effort and idempotent — safe to call on every
  * preview DomainMapping (re)assignment. Returns false when unconfigured or on
  * a non-mappable region (the wildcard US fallback still applies).

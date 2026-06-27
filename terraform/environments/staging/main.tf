@@ -373,16 +373,17 @@ module "publish_hosting" {
 # Preview Router — preview routing without per-preview DNS records
 # =============================================================================
 # Staging mirror of the production-global preview-router so the Worker + KV +
-# resolveOverride mechanism can be exercised here before the production cutover.
-# Staging is single-region (us-ashburn-1, REGION_ID=staging), so there is one
-# anchor (`kourier-staging.staging.shogo.ai`) pointing at the staging Kourier
-# LB; `default_region = staging` means previews route correctly even with an
-# empty KV (the wildcard `*.staging.shogo.ai` already targets the same LB).
+# resolveOverride mechanism (and the advanced wildcard cert) can be exercised
+# here before the production cutover. Staging is single-region (us-ashburn-1,
+# REGION_ID=staging), so there is one anchor (`kourier-preview-staging`) pointing
+# at the staging Kourier LB; `default_region = staging` means previews route
+# correctly even with an empty KV.
 #
-# The staging route `preview--*.staging.shogo.ai/*` is MORE SPECIFIC than the
-# production route `preview--*.shogo.ai/*` (both live in the shogo.ai zone), so
-# Cloudflare routes staging preview hostnames here — this also shields staging
-# from the production Worker once it is applied. See docs/preview-router.md.
+# Staging previews live at `{projectId}.preview.staging.shogo.ai`; the route
+# `*.preview.staging.shogo.ai/*` is MORE SPECIFIC than the production route
+# `*.preview.shogo.ai/*` (both in the shogo.ai zone), so Cloudflare routes
+# staging preview hostnames here — also shielding staging from the production
+# Worker once it is applied. See docs/preview-router.md.
 locals {
   # Stable OCI-assigned address of the long-lived `kourier` Service in the
   # staging cluster's kourier-system namespace (not terraform-managed here).
@@ -396,7 +397,7 @@ module "preview_router" {
   cloudflare_account_id = var.cloudflare_account_id
   cloudflare_zone_id    = var.cloudflare_zone_id
   zone_name             = "shogo.ai"
-  preview_base_domain   = local.domain # staging.shogo.ai
+  preview_base_domain   = "preview.${local.domain}" # preview.staging.shogo.ai
 
   # REGION_ID=staging (see k8s/overlays/staging/api-service.yaml) maps to the
   # `staging` region code in cloudflare-preview-region-kv.ts.

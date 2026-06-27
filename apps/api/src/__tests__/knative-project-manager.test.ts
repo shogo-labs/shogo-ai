@@ -217,9 +217,9 @@ const {
 // =========================================================================
 
 describe('getPreviewSubdomain / getPreviewUrl', () => {
-  test('non-production format is preview--{id}.{env}.{base}', () => {
-    expect(getPreviewSubdomain('abc')).toBe('preview--abc.dev.example.com')
-    expect(getPreviewUrl('abc')).toBe('https://preview--abc.dev.example.com')
+  test('non-production format is {id}.preview.{env}.{base}', () => {
+    expect(getPreviewSubdomain('abc')).toBe('abc.preview.dev.example.com')
+    expect(getPreviewUrl('abc')).toBe('https://abc.preview.dev.example.com')
   })
 })
 
@@ -380,7 +380,7 @@ describe('createPreviewDomainMapping', () => {
     const create = capture.find((c) => c.method === 'createNamespacedCustomObject')
     expect(create).toBeDefined()
     const body = create!.args[0].body
-    expect(body.metadata.name).toBe('preview--p1.dev.example.com')
+    expect(body.metadata.name).toBe('p1.preview.dev.example.com')
     expect(body.spec.ref.name).toBe('project-p1')
   })
 
@@ -421,7 +421,7 @@ describe('updatePreviewDomainMapping', () => {
     }) as any
     const mgr = new KnativeProjectManager()
     await mgr.updatePreviewDomainMapping('p1', 'svc-2')
-    expect(lastUrl).toContain('/domainmappings/preview--p1.dev.example.com')
+    expect(lastUrl).toContain('/domainmappings/p1.preview.dev.example.com')
     expect((lastInit as any)?.method).toBe('PATCH')
     expect((lastInit as any)?.headers['Content-Type']).toBe('application/merge-patch+json')
     // Restore the file-scope stub for subsequent tests.
