@@ -9,9 +9,77 @@
 
 import { customAlphabet } from 'nanoid'
 import { getUserOwnedWorkspaceCount } from '../services/workspace.service'
+import { getEffectivePlanId } from '../services/billing.service'
 import { homeRegionForNewWorkspace } from '../lib/region'
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6)
+
+const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+
+/**
+ * Validate a request to create a "child" workspace under `parentWorkspaceId`.
+ *
+ * Child workspaces are free and pool the parent's plan/wallet/seats. They are
+ * only allowed when:
+ *   - the parent exists and is itself top-level (single-level hierarchy),
+ *   - the caller is an owner/admin/billing-admin of the parent (or a super admin), and
+ *   - the parent's effective plan is Business or Enterprise.
+ *
+ * Returns a `HookResult` error to reject, or `{ ok: true }` to allow.
+ */
+async function validateChildWorkspaceCreation(
+  parentWorkspaceId: string,
+  userId: string | undefined,
+  ctx: HookContext,
+): Promise<HookResult> {
+  if (!userId) {
+    return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
+  }
+
+  const parent = await ctx.prisma.workspace.findUnique({
+    where: { id: parentWorkspaceId },
+    include: { members: true },
+  })
+  if (!parent) {
+    return { ok: false, error: { code: "not_found", message: "Parent workspace not found" } }
+  }
+  // Single-level hierarchy: a child cannot itself be a parent.
+  if (parent.parentWorkspaceId) {
+    return {
+      ok: false,
+      error: { code: "invalid_parent", message: "Cannot nest workspaces more than one level deep" },
+    }
+  }
+
+  const superAdmin = await isSuperAdmin(ctx)
+  const member = parent.members.find((m: any) => m.userId === userId)
+  const isParentAdmin = !!member && (member.role === 'owner' || member.role === 'admin' || member.isBillingAdmin)
+  if (!superAdmin && !isParentAdmin) {
+    return {
+      ok: false,
+      error: {
+        code: "forbidden",
+        message: "Only owners or admins of the parent workspace can create child workspaces",
+      },
+    }
+  }
+
+  // Local mode unlocks all plan-gated features for development.
+  if (!isLocalMode) {
+    const plan = await getEffectivePlanId(parentWorkspaceId)
+    if (plan !== 'business' && plan !== 'enterprise') {
+      return {
+        ok: false,
+        error: {
+          code: "plan_required",
+          message: "Additional workspaces are included free on Business and Enterprise plans only",
+        },
+      }
+    }
+  }
+
+  return { ok: true }
+}
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -170,7 +238,15 @@ export const workspaceHooks: WorkspaceHooks = {
    */
   beforeCreate: async (input, ctx) => {
     const userId = ctx.body.ownerId || ctx.userId
-    if (userId) {
+    const parentWorkspaceId: string | null = input.parentWorkspaceId ?? ctx.body.parentWorkspaceId ?? null
+
+    if (parentWorkspaceId) {
+      // Free "child" workspace under a Business/Enterprise parent. Bypasses the
+      // one-free-workspace limit; the link itself is persisted in afterCreate
+      // (the generated create allowlist doesn't include parentWorkspaceId).
+      const childCheck = await validateChildWorkspaceCreation(parentWorkspaceId, userId, ctx)
+      if (!childCheck.ok) return childCheck
+    } else if (userId) {
       const ownedCount = await getUserOwnedWorkspaceCount(userId)
       if (ownedCount >= 1) {
         return {
@@ -220,6 +296,17 @@ export const workspaceHooks: WorkspaceHooks = {
    * After creating a workspace, create the owner membership
    */
   afterCreate: async (workspace, ctx) => {
+    // Persist the parent link for child workspaces. beforeCreate has already
+    // validated eligibility; the generated create allowlist strips
+    // parentWorkspaceId, so we set it here with an explicit update.
+    const parentWorkspaceId: string | null = ctx.body.parentWorkspaceId ?? null
+    if (parentWorkspaceId && parentWorkspaceId !== workspace.id) {
+      await ctx.prisma.workspace.update({
+        where: { id: workspace.id },
+        data: { parentWorkspaceId },
+      })
+    }
+
     const ownerId = ctx.body.ownerId || ctx.userId
     if (!ownerId) {
       console.warn("[Workspace] No ownerId provided, skipping owner membership creation")
@@ -297,14 +384,9 @@ export const workspaceHooks: WorkspaceHooks = {
       }
     }
 
-    // Super admins can delete any workspace
-    if (await isSuperAdmin(ctx)) {
-      return { ok: true }
-    }
-
     const workspace = await ctx.prisma.workspace.findUnique({
       where: { id },
-      include: { members: true },
+      include: { members: true, children: { select: { id: true } } },
     })
 
     if (!workspace) {
@@ -312,6 +394,25 @@ export const workspaceHooks: WorkspaceHooks = {
         ok: false,
         error: { code: "not_found", message: "Workspace not found" },
       }
+    }
+
+    // A parent workspace can't be deleted while it still has child workspaces
+    // pooling its plan — those children would be orphaned onto the free tier.
+    // This guard applies to super admins too (deletion would silently downgrade
+    // every child); detach or delete the children first.
+    if (workspace.children && workspace.children.length > 0) {
+      return {
+        ok: false,
+        error: {
+          code: "has_child_workspaces",
+          message: "This workspace has child workspaces. Delete or detach them before deleting it.",
+        },
+      }
+    }
+
+    // Super admins can delete any workspace (subject to the child guard above)
+    if (await isSuperAdmin(ctx)) {
+      return { ok: true }
     }
 
     const member = workspace.members.find((m: any) => m.userId === userId)

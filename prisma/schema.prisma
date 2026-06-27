@@ -146,10 +146,16 @@ model Workspace {
   // Set to the creating region's REGION_ID on create; null is treated as the
   // primary region by the router. Cloud-only (single-region desktop ignores it).
   homeRegion    String?
+  // Optional parent workspace. When set, this workspace is a "child" that
+  // pools the parent's plan, usage wallet, and seats (no subscription/wallet
+  // of its own). Only Business/Enterprise workspaces may have children.
+  parentWorkspaceId String?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
   // Relations
+  parent                 Workspace?   @relation("WorkspaceHierarchy", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
+  children               Workspace[]  @relation("WorkspaceHierarchy")
   projects               Project[]
   members                Member[]
   billingAccounts        BillingAccount[]
@@ -179,6 +185,7 @@ model Workspace {
 
   @@index([createdAt])
   @@index([homeRegion])
+  @@index([parentWorkspaceId])
   @@map("workspaces")
 }
 

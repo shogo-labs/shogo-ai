@@ -39,6 +39,7 @@ export interface ProjectType {
   publishedTag?: string
   publishedAlwaysOn: boolean
   accessLevel: AccessLevel
+  sitePasswordHash?: string
   category?: ProjectCategory
   siteTitle?: string
   siteDescription?: string
@@ -73,6 +74,7 @@ export interface ProjectCreateInput {
   publishedTag?: string
   publishedAlwaysOn?: boolean
   accessLevel?: AccessLevel
+  sitePasswordHash?: string
   category?: ProjectCategory
   siteTitle?: string
   siteDescription?: string
@@ -107,6 +109,7 @@ export interface ProjectUpdateInput {
   publishedTag?: string
   publishedAlwaysOn?: boolean
   accessLevel?: AccessLevel
+  sitePasswordHash?: string
   category?: ProjectCategory
   siteTitle?: string
   siteDescription?: string

@@ -17,6 +17,7 @@ export interface UserType {
   role: UserRole
   adminScopes: string
   onboardingCompleted: boolean
+  homeRegion?: string
   createdAt: Date
   updatedAt: Date
 }
@@ -29,6 +30,7 @@ export interface UserCreateInput {
   role?: UserRole
   adminScopes?: string
   onboardingCompleted?: boolean
+  homeRegion?: string
 }
 
 export interface UserUpdateInput {
@@ -39,4 +41,5 @@ export interface UserUpdateInput {
   role?: UserRole
   adminScopes?: string
   onboardingCompleted?: boolean
+  homeRegion?: string
 }
