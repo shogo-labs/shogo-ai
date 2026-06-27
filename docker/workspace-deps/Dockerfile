@@ -58,11 +58,14 @@ USER appuser
 
 # Full install as appuser → node_modules owned by uid 1001 from the start,
 # so downstream COPY --from=workspace-deps doesn't need --chown.
-# --frozen-lockfile keys this layer purely on bun.lock: app-only deploys (no
-# lockfile change) get a clean registry-cache hit, so node_modules keeps a
-# stable digest and downstream images pull only the changed source layers.
+# Plain `bun install` (NOT --frozen-lockfile): this branch's bun.lock has
+# known drift vs package.json, so --frozen-lockfile fails the build. Layer
+# reuse does not depend on it — BuildKit keys this RUN on the COPY'd
+# package.json/bun.lock parent layer, so with the durable registry cache an
+# app-only deploy (no lockfile change) is a clean cache hit and node_modules
+# keeps a stable digest without re-running install.
 RUN --mount=type=cache,target=/home/appuser/.bun/install/cache,uid=1001,gid=1001 \
-    bun install --frozen-lockfile
+    bun install
 
 # Source for everything build:packages and generate:routes touch. The SDK's
 # `dts: true` tsup pass needs every cross-package type import resolvable.
