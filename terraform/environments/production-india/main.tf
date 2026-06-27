@@ -180,9 +180,12 @@ module "india" {
   vcn_api_endpoint_cidr           = "10.2.0.0/28"
 
   # OCIR has 5 repos live (module default would destroy
-  # `shogo-runtime-base`).
+  # `shogo-runtime-base`). shogo-buildcache mirrors the US build-cache repo
+  # for symmetry; builds run against the US registry, so this stays empty
+  # here unless per-region builds are introduced later.
   ocir_repositories = [
     "shogo-api",
+    "shogo-buildcache",
     "shogo-docs",
     "shogo-runtime",
     "shogo-runtime-base",
