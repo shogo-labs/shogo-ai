@@ -124,9 +124,17 @@ const mockPrisma: any = {
   },
   member: {
     findMany: async (args: any) => {
-      const all = membersByWs.get(args.where.workspaceId) ?? []
+      const wsIds: string[] = args.where.workspaceId?.in ?? [args.where.workspaceId]
+      const all = wsIds.flatMap((id: string) => membersByWs.get(id) ?? [])
       return all.filter((m: any) => (args.where.projectId === null ? m.projectId == null : true))
     },
+  },
+  workspace: {
+    // No parent/child hierarchy in these tests: findUnique returns null so
+    // resolveBillingWorkspaceId resolves every workspace to itself, and there
+    // are never any children.
+    findUnique: async () => null,
+    findMany: async () => [],
   },
   billingAccount: {
     findUnique: async (args: any) => billingAccountsByWs.get(args.where.workspaceId) ?? null,

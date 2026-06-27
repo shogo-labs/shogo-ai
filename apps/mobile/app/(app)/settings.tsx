@@ -64,7 +64,7 @@ import {
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
-import { api, API_URL } from '../../lib/api'
+import { api, API_URL, type WorkspaceChildrenResponse } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { formatUsd, getWindowDisplays, getUsageLimitNotice, PLAN_PRICING } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
@@ -2515,6 +2515,173 @@ function InviteMembersModal({
 // BILLING TAB
 // ============================================================================
 
+// Read-only dashboard of the child workspaces that pool a Business/Enterprise
+// workspace's plan, plus a free "create workspace" affordance for admins. The
+// child workspaces share the parent's plan, usage wallet, and seats.
+const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
+  workspaceId,
+  planId,
+}: {
+  workspaceId: string
+  planId: string
+}) {
+  const http = useDomainHttp()
+  const { user } = useAuth()
+  const workspaces = useWorkspaceCollection()
+  const toast = useToast()
+
+  const [data, setData] = useState<WorkspaceChildrenResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [newName, setNewName] = useState('')
+  const [creating, setCreating] = useState(false)
+
+  const load = useCallback(async () => {
+    if (!http || !workspaceId) return
+    setLoading(true)
+    try {
+      const res = await api.getWorkspaceChildren(http, workspaceId)
+      setData(res ?? null)
+    } catch {
+      setData(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [http, workspaceId])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  // Prefer the server-resolved effective plan (covers enterprise-via-grant,
+  // where the local subscription planId is "free"); fall back to the prop.
+  const effectivePlan = data?.parent.plan ?? planId
+  const planAllowsChildren =
+    effectivePlan.startsWith('business') || effectivePlan.startsWith('enterprise')
+
+  const handleCreate = useCallback(async () => {
+    const name = newName.trim()
+    if (!name || !http || !user?.id || creating) return
+    setCreating(true)
+    try {
+      await api.createChildWorkspace(http, {
+        name,
+        parentWorkspaceId: workspaceId,
+        ownerId: user.id,
+      })
+      setNewName('')
+      await load()
+      // Refresh the global collection so the new workspace shows in the switcher.
+      try {
+        await workspaces.loadAll()
+      } catch {}
+      toast.show({
+        placement: 'top',
+        duration: 4000,
+        render: ({ id }: { id: string }) => (
+          <Toast nativeID={id} variant="outline" action="success">
+            <ToastTitle>Workspace created</ToastTitle>
+            <ToastDescription>“{name}” shares this plan&apos;s usage and seats.</ToastDescription>
+          </Toast>
+        ),
+      })
+    } catch (err: any) {
+      const msg = err?.message?.includes('plan_required')
+        ? 'Additional workspaces are included on Business and Enterprise plans only.'
+        : 'Could not create the workspace. Please try again.'
+      toast.show({
+        placement: 'top',
+        duration: 5000,
+        render: ({ id }: { id: string }) => (
+          <Toast nativeID={id} variant="outline" action="error">
+            <ToastTitle>Failed to create workspace</ToastTitle>
+            <ToastDescription>{msg}</ToastDescription>
+          </Toast>
+        ),
+      })
+    } finally {
+      setCreating(false)
+    }
+  }, [newName, http, user?.id, creating, workspaceId, load, workspaces, toast])
+
+  // Hide entirely for plans that can't have children and have none.
+  if (!planAllowsChildren && (!data || data.children.length === 0)) return null
+
+  const children = data?.children ?? []
+
+  return (
+    <Card>
+      <CardContent className="p-4 gap-3">
+        <View className="gap-1">
+          <Text className="text-sm font-semibold text-foreground">Workspaces</Text>
+          <Text className="text-xs text-muted-foreground">
+            {planAllowsChildren
+              ? 'Create additional workspaces at no extra cost. They share this plan\u2019s usage, billing, and seats. You can view their usage here.'
+              : 'These workspaces share this plan\u2019s usage, billing, and seats.'}
+          </Text>
+        </View>
+
+        {loading ? (
+          <View className="py-4 items-center">
+            <ActivityIndicator />
+          </View>
+        ) : children.length === 0 ? (
+          <Text className="text-xs text-muted-foreground">No additional workspaces yet.</Text>
+        ) : (
+          <View className="gap-2">
+            {children.map((child) => (
+              <View
+                key={child.id}
+                className="flex-row items-center justify-between rounded-lg border border-border p-3"
+              >
+                <View className="flex-1 pr-3">
+                  <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+                    {child.name}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">
+                    {child.memberCount} {child.memberCount === 1 ? 'member' : 'members'}
+                  </Text>
+                </View>
+                <View className="items-end">
+                  <Text className="text-xs text-muted-foreground">This month</Text>
+                  <Text className="text-sm font-medium text-foreground">
+                    {formatUsd(child.usageThisMonthUsd)}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {planAllowsChildren && (
+          <>
+            <Separator />
+            <View className="flex-row items-center gap-2">
+              <View className="flex-1">
+                <Input
+                  placeholder="New workspace name"
+                  value={newName}
+                  onChangeText={setNewName}
+                  disabled={creating}
+                  onSubmitEditing={handleCreate}
+                />
+              </View>
+              <Button
+                variant="default"
+                onPress={handleCreate}
+                disabled={creating || newName.trim().length === 0}
+              >
+                <Text className="text-primary-foreground font-medium text-sm">
+                  {creating ? 'Creating…' : 'Create'}
+                </Text>
+              </Button>
+            </View>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+})
+
 function BillingTab() {
   const router = useRouter()
   const http = useDomainHttp()
@@ -2681,6 +2848,8 @@ function BillingTab() {
           </View>
         </CardContent>
       </Card>
+
+      <WorkspaceFamilySection workspaceId={workspace.id} planId={planId} />
 
       {canUseOverage && Platform.OS === 'ios' && (
         <Card>

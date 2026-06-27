@@ -118,9 +118,15 @@ model Workspace {
   // "workspace" (one OAuth shared across the workspace); existing
   // workspaces are migrated to "project" to preserve current behavior.
   composioScope String   @default("workspace")
+  // Optional parent workspace. When set, this workspace is a "child" that
+  // pools the parent's plan, usage wallet, and seats (no subscription/wallet
+  // of its own). Only Business/Enterprise workspaces may have children.
+  parentWorkspaceId String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  parent                 Workspace?   @relation("WorkspaceHierarchy", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
+  children               Workspace[]  @relation("WorkspaceHierarchy")
   projects               Project[]
   members                Member[]
   billingAccounts        BillingAccount[]
@@ -148,6 +154,7 @@ model Workspace {
   chatSessions           ChatSession[]
   modelVisibility        WorkspaceModelVisibility[]
 
+  @@index([parentWorkspaceId])
   @@map("workspaces")
 }
 

@@ -67,11 +67,35 @@ export async function getSubscriptions(workspaceId: string) {
 }
 
 /**
- * Get USD usage wallet for a workspace.
+ * Resolve the workspace whose billing primitives (subscription, usage wallet,
+ * grants, seats) actually govern `workspaceId`.
+ *
+ * A "child" workspace (one with a `parentWorkspaceId`) pools its parent's
+ * plan, wallet, and seats — it has no subscription/wallet of its own. For such
+ * a workspace this returns the parent id; otherwise it returns the id
+ * unchanged. The `system` sentinel and local mode are passed through.
+ *
+ * Hierarchy is intentionally a single level: only Business/Enterprise (top-level)
+ * workspaces may have children, so we never need to walk more than one hop.
+ */
+export async function resolveBillingWorkspaceId(workspaceId: string): Promise<string> {
+  if (isLocalMode) return workspaceId
+  if (workspaceId === SYSTEM_WORKSPACE_ID) return workspaceId
+  const ws = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { parentWorkspaceId: true },
+  });
+  return ws?.parentWorkspaceId ?? workspaceId;
+}
+
+/**
+ * Get USD usage wallet for a workspace. Child workspaces resolve to the
+ * parent's wallet (pooled billing).
  */
 export async function getUsageWallet(workspaceId: string) {
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId);
   return prisma.usageWallet.findUnique({
-    where: { workspaceId },
+    where: { workspaceId: billingWorkspaceId },
   });
 }
 
@@ -133,14 +157,16 @@ export async function getEffectivePlanId(
   workspaceId: string,
   now: Date = new Date(),
 ): Promise<keyof typeof PLAN_RANK> {
+  // Child workspaces pool the parent's plan tier.
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId)
   const sub = await prisma.subscription.findFirst({
-    where: { workspaceId, status: { in: ['active', 'trialing'] } },
+    where: { workspaceId: billingWorkspaceId, status: { in: ['active', 'trialing'] } },
     select: { planId: true },
   })
   if (sub) {
     return normalizePlanId(sub.planId) ?? 'free'
   }
-  const grant = await getActiveGrantsForWorkspace(workspaceId, now)
+  const grant = await getActiveGrantsForWorkspace(billingWorkspaceId, now)
   return normalizePlanId(grant.planId) ?? 'free'
 }
 
@@ -158,6 +184,10 @@ export async function getEffectivePlanId(
  */
 export async function allocateFreeWallet(workspaceId: string) {
   const now = new Date();
+
+  // Child workspaces never get their own wallet — they pool the parent's.
+  // Resolve here so any caller (lazy allocation, checkout) is pooling-safe.
+  workspaceId = await resolveBillingWorkspaceId(workspaceId);
 
   const existing = await prisma.usageWallet.findUnique({
     where: { workspaceId },
@@ -426,13 +456,15 @@ export async function isBusinessOrHigherPlan(workspaceId: string): Promise<boole
 export async function getAlwaysOnAllowanceForWorkspace(workspaceId: string): Promise<number> {
   if (isLocalMode) return Infinity
   const now = new Date()
+  // Child workspaces inherit the parent's plan + pooled seats for entitlement.
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId)
   const [plan, sub, grant] = await Promise.all([
-    getEffectivePlanId(workspaceId, now),
+    getEffectivePlanId(billingWorkspaceId, now),
     prisma.subscription.findFirst({
-      where: { workspaceId, status: { in: ['active', 'trialing'] } },
+      where: { workspaceId: billingWorkspaceId, status: { in: ['active', 'trialing'] } },
       select: { seats: true },
     }),
-    getActiveGrantsForWorkspace(workspaceId, now),
+    getActiveGrantsForWorkspace(billingWorkspaceId, now),
   ])
   const seats = Math.max(1, (sub?.seats ?? 0) + (grant.freeSeats ?? 0))
   return getAlwaysOnAllowance(plan, seats)
@@ -498,10 +530,12 @@ export async function getUsageWindows(
   workspaceId: string,
 ): Promise<{ fiveHour: UsageWindowSnapshot; weekly: UsageWindowSnapshot }> {
   const now = new Date()
-  let wallet = await prisma.usageWallet.findUnique({ where: { workspaceId } })
-  if (!wallet) wallet = await allocateFreeWallet(workspaceId)
+  // Child workspaces read the parent's pooled wallet/windows.
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId)
+  let wallet = await prisma.usageWallet.findUnique({ where: { workspaceId: billingWorkspaceId } })
+  if (!wallet) wallet = await allocateFreeWallet(billingWorkspaceId)
 
-  const limits = await resolveWorkspaceWindowLimits(prisma, workspaceId, now)
+  const limits = await resolveWorkspaceWindowLimits(prisma, billingWorkspaceId, now)
   const five = rollWindow(wallet?.fiveHourWindowStart, wallet?.fiveHourUsedUsd ?? 0, now, FIVE_HOUR_MS)
   const week = rollWindow(wallet?.weeklyWindowStart, wallet?.weeklyUsedUsd ?? 0, now, SEVEN_DAY_MS)
 
@@ -539,10 +573,12 @@ export async function hasBalance(
 ): Promise<boolean> {
   if (isLocalMode) return true
 
-  let wallet = await prisma.usageWallet.findUnique({ where: { workspaceId } });
+  // Child workspaces draw against the parent's pooled wallet.
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId);
+  let wallet = await prisma.usageWallet.findUnique({ where: { workspaceId: billingWorkspaceId } });
   if (!wallet) {
     try {
-      wallet = await allocateFreeWallet(workspaceId);
+      wallet = await allocateFreeWallet(billingWorkspaceId);
     } catch (err) {
       // A non-existent / synthetic workspace (e.g. the API server's own
       // internal proxy token uses the `system` sentinel workspace, which has no
@@ -560,7 +596,7 @@ export async function hasBalance(
   if (!wallet) return false;
 
   const now = new Date();
-  const limits = await resolveWorkspaceWindowLimits(prisma, workspaceId, now);
+  const limits = await resolveWorkspaceWindowLimits(prisma, billingWorkspaceId, now);
 
   // Uncapped plan (enterprise): always has balance.
   if (limits == null) return true;
@@ -595,6 +631,13 @@ function isFkConstraintError(err: unknown): boolean {
 
 export interface ConsumeUsageParams {
   workspaceId: string
+  /**
+   * Workspace whose wallet/windows are actually debited. For a child
+   * workspace this is its parent (pooled billing); defaults to `workspaceId`
+   * resolved via `resolveBillingWorkspaceId`. The recorded `UsageEvent` always
+   * keeps the real `workspaceId` so per-child usage attribution is preserved.
+   */
+  billingWorkspaceId?: string
   projectId: string | null
   memberId: string
   actionType: string
@@ -660,16 +703,22 @@ export async function consumeUsage(
     return { success: true, remainingIncludedUsd: Infinity, overageChargedUsd: 0, source: 'daily' }
   }
 
+  // Resolve the workspace whose wallet is actually debited (parent for a
+  // child workspace). Overage charging and usage alerts operate on that
+  // pooled wallet, not the child.
+  const billingWorkspaceId =
+    params.billingWorkspaceId ?? (await resolveBillingWorkspaceId(workspaceId))
+
   for (let attempt = 0; ; attempt++) {
     try {
-      const result = await _consumeUsageTransaction(params)
+      const result = await _consumeUsageTransaction({ ...params, billingWorkspaceId })
       if (result.success) {
         if ((result.overageChargedUsd ?? 0) > 0) {
           // Fire-and-forget mid-cycle block charging. We invoice the user in
           // $100 trust blocks as accumulated overage crosses each boundary;
           // any leftover sub-$100 amount carries over and gets billed on the
           // next crossing or end-of-period reconciliation.
-          chargeOverageBlocks(workspaceId).catch((err) =>
+          chargeOverageBlocks(billingWorkspaceId).catch((err) =>
             console.error('[billing] failed to charge overage blocks:', err),
           )
         }
@@ -677,7 +726,7 @@ export async function consumeUsage(
         // included exhaustion, approaching spend cap, cap reached). The dedupe
         // ledger makes repeat calls a single cheap read once a threshold has
         // fired. Fire-and-forget so alerting never blocks usage recording.
-        evaluateUsageAlerts(workspaceId).catch((err) =>
+        evaluateUsageAlerts(billingWorkspaceId).catch((err) =>
           console.error('[billing] failed to evaluate usage alerts:', err),
         )
       }
@@ -730,16 +779,19 @@ async function _consumeUsageTransaction(
 ): Promise<ConsumeUsageResult> {
   const { workspaceId, projectId, memberId, actionType, billedUsd, actionMetadata } = params
   const rawUsd = params.rawUsd ?? null
+  // Wallet/windows are pooled to the billing workspace (parent for children);
+  // the UsageEvent below is still attributed to the real `workspaceId`.
+  const billingWorkspaceId = params.billingWorkspaceId ?? workspaceId
 
   return prisma.$transaction(async (tx) => {
     let wallet = await tx.usageWallet.findUnique({
-      where: { workspaceId },
+      where: { workspaceId: billingWorkspaceId },
     });
 
     if (!wallet) {
       try {
-        await allocateFreeWallet(workspaceId);
-        wallet = await tx.usageWallet.findUnique({ where: { workspaceId } });
+        await allocateFreeWallet(billingWorkspaceId);
+        wallet = await tx.usageWallet.findUnique({ where: { workspaceId: billingWorkspaceId } });
       } catch {
         // allocation failed, fall through
       }
@@ -752,7 +804,7 @@ async function _consumeUsageTransaction(
 
     // Resolve the workspace's rolling-window limits (plan + seats). `null`
     // means uncapped (enterprise): usage is unbounded within the windows.
-    const limits = await resolveWorkspaceWindowLimits(tx, workspaceId, now);
+    const limits = await resolveWorkspaceWindowLimits(tx, billingWorkspaceId, now);
 
     // Lazy window reset: a window "opens" on the first action and resets once
     // its full duration has elapsed (fixed-window-from-first-event).
@@ -838,7 +890,7 @@ async function _consumeUsageTransaction(
     }
 
     await tx.usageWallet.update({
-      where: { workspaceId },
+      where: { workspaceId: billingWorkspaceId },
       data: {
         fiveHourWindowStart: five.start,
         fiveHourUsedUsd: five.used,
@@ -1256,8 +1308,17 @@ export async function upsertBillingAccount(
  * billing.
  */
 export async function countActiveWorkspaceMembers(workspaceId: string): Promise<number> {
+  // Seats are pooled across a workspace "family": the billing (parent)
+  // workspace plus all of its children. A user who belongs to several
+  // workspaces in the same family counts once.
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId)
+  const children = await prisma.workspace.findMany({
+    where: { parentWorkspaceId: billingWorkspaceId },
+    select: { id: true },
+  })
+  const familyWorkspaceIds = [billingWorkspaceId, ...children.map((c: any) => c.id)]
   const rows = await prisma.member.findMany({
-    where: { workspaceId, projectId: null },
+    where: { workspaceId: { in: familyWorkspaceIds }, projectId: null },
     select: { userId: true },
   })
   const unique = new Set(rows.map((r: any) => r.userId))
@@ -1284,8 +1345,12 @@ export async function syncSeatsFromMembership(
   if (isLocalMode) return { ok: false, reason: 'local_mode' }
 
   try {
+    // A child workspace has no subscription of its own — its members count
+    // against the parent's pooled seats, so sync the parent's subscription.
+    const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId)
+
     const sub = await prisma.subscription.findFirst({
-      where: { workspaceId, status: { in: ['active', 'trialing'] } },
+      where: { workspaceId: billingWorkspaceId, status: { in: ['active', 'trialing'] } },
     })
     if (!sub) return { ok: false, reason: 'no_active_subscription' }
 
@@ -1294,8 +1359,8 @@ export async function syncSeatsFromMembership(
       return { ok: false, reason: 'basic_plan_single_seat' }
     }
 
-    const totalMembers = await countActiveWorkspaceMembers(workspaceId)
-    const grant = await getActiveGrantsForWorkspace(workspaceId)
+    const totalMembers = await countActiveWorkspaceMembers(billingWorkspaceId)
+    const grant = await getActiveGrantsForWorkspace(billingWorkspaceId)
     // v1: enforce a minimum of 1 paid Stripe seat. If a grant exceeds the
     // member count we still bill 1 seat so the Stripe subscription stays
     // active. Revisit later by pausing the seat item entirely when a
@@ -1316,7 +1381,7 @@ export async function syncSeatsFromMembership(
     if (desiredStripeSeats === sub.seats) {
       // Already in sync — still ensure the wallet allocation matches.
       await prisma.usageWallet.updateMany({
-        where: { workspaceId },
+        where: { workspaceId: billingWorkspaceId },
         data: {
           monthlyIncludedUsd: includedUsd,
           monthlyIncludedAllocationUsd: includedUsd,
@@ -1333,7 +1398,7 @@ export async function syncSeatsFromMembership(
         data: { seats: desiredStripeSeats },
       })
       await prisma.usageWallet.updateMany({
-        where: { workspaceId },
+        where: { workspaceId: billingWorkspaceId },
         data: {
           monthlyIncludedUsd: includedUsd,
           monthlyIncludedAllocationUsd: includedUsd,
@@ -1375,7 +1440,7 @@ export async function syncSeatsFromMembership(
     })
 
     await prisma.usageWallet.updateMany({
-      where: { workspaceId },
+      where: { workspaceId: billingWorkspaceId },
       data: {
         monthlyIncludedUsd: includedUsd,
         monthlyIncludedAllocationUsd: includedUsd,
@@ -1383,7 +1448,7 @@ export async function syncSeatsFromMembership(
     })
 
     console.log('[billing] Synced seats from membership:', {
-      workspaceId,
+      workspaceId: billingWorkspaceId,
       planId: sub.planId,
       previousSeats: sub.seats,
       newStripeSeats: desiredStripeSeats,

@@ -7500,6 +7500,87 @@ app.post('/api/workspaces/:id/leave', async (c) => {
   return c.json({ ok: true })
 })
 
+// Read-only "family" dashboard for a parent workspace: list the child
+// workspaces that pool this workspace's Business/Enterprise plan, with each
+// child's member count and month-to-date usage. Gated to owners/admins/billing
+// admins of the parent (and super admins). Usage is attributed per child even
+// though the wallet is pooled on the parent.
+app.get('/api/workspaces/:id/children', async (c) => {
+  const auth = c.get('auth') as any
+  const userId = auth?.userId
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const workspaceId = c.req.param('id')
+
+  const [user, parent] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, select: { role: true } }),
+    prisma.workspace.findUnique({ where: { id: workspaceId }, select: { id: true, name: true, slug: true } }),
+  ])
+  if (!parent) {
+    return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+  }
+
+  const isSuperAdmin = user?.role === 'super_admin'
+  if (!isSuperAdmin) {
+    const member = await prisma.member.findFirst({
+      where: { workspaceId, userId, projectId: null },
+      select: { role: true, isBillingAdmin: true },
+    })
+    const allowed = !!member && (member.role === 'owner' || member.role === 'admin' || member.isBillingAdmin)
+    if (!allowed) {
+      return c.json({ error: { code: 'forbidden', message: 'Workspace admin access required' } }, 403)
+    }
+  }
+
+  const children = await prisma.workspace.findMany({
+    where: { parentWorkspaceId: workspaceId },
+    select: { id: true, name: true, slug: true, description: true, createdAt: true },
+    orderBy: { createdAt: 'asc' },
+  })
+
+  // Month-to-date usage per child, attributed via UsageEvent.workspaceId.
+  const monthStart = new Date()
+  monthStart.setUTCDate(1)
+  monthStart.setUTCHours(0, 0, 0, 0)
+
+  const [plan, parentWindows, childDetails] = await Promise.all([
+    billingService.getEffectivePlanId(workspaceId),
+    billingService.getUsageWindows(workspaceId),
+    Promise.all(
+      children.map(async (child: any) => {
+        const [members, usageAgg] = await Promise.all([
+          prisma.member.findMany({
+            where: { workspaceId: child.id, projectId: null },
+            select: { userId: true },
+          }),
+          prisma.usageEvent.aggregate({
+            where: { workspaceId: child.id, createdAt: { gte: monthStart } },
+            _sum: { billedUsd: true },
+          }),
+        ])
+        const uniqueMembers = new Set(members.map((m: any) => m.userId))
+        return {
+          id: child.id,
+          name: child.name,
+          slug: child.slug,
+          description: child.description,
+          createdAt: child.createdAt,
+          memberCount: uniqueMembers.size,
+          usageThisMonthUsd: usageAgg._sum.billedUsd ?? 0,
+        }
+      }),
+    ),
+  ])
+
+  return c.json({
+    ok: true,
+    parent: { id: parent.id, name: parent.name, slug: parent.slug, plan },
+    // Pooled rolling-window budget shared across the whole family.
+    pooledWindows: parentWindows,
+    children: childDetails,
+  })
+})
+
 // =============================================================================
 // Invite Link Routes (custom, not auto-generated)
 // =============================================================================

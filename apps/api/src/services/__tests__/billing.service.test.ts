@@ -71,7 +71,7 @@ const grants = new Map<string, Grant[]>() // by workspaceId
 const usageEvents: UsageEvent[] = []
 const billingAccounts = new Map<string, BillingAccount>()
 const members: Member[] = []
-const workspaces = new Map<string, { id: string; name: string; slug: string }>()
+const workspaces = new Map<string, { id: string; name: string; slug: string; parentWorkspaceId?: string | null }>()
 
 let usageEventCreateImpl: (data: any) => Promise<any> | any = (data) => {
   const ev: UsageEvent = {
@@ -217,14 +217,24 @@ const prismaApi = {
   },
   member: {
     findMany: async ({ where }: any) => {
-      return members.filter((m) =>
-        m.workspaceId === where.workspaceId &&
-        (where.projectId === null ? m.projectId === null : true),
-      )
+      return members.filter((m) => {
+        const wsMatch = where.workspaceId?.in
+          ? where.workspaceId.in.includes(m.workspaceId)
+          : m.workspaceId === where.workspaceId
+        const projMatch = where.projectId === null ? m.projectId === null : true
+        return wsMatch && projMatch
+      })
     },
   },
   workspace: {
     findUnique: async ({ where }: any) => workspaces.get(where.id) ?? null,
+    findMany: async ({ where }: any) => {
+      let rows = Array.from(workspaces.values())
+      if (where?.parentWorkspaceId !== undefined) {
+        rows = rows.filter((w: any) => (w.parentWorkspaceId ?? null) === where.parentWorkspaceId)
+      }
+      return rows
+    },
     upsert: async ({ where, create, update }: any) => {
       const existing = workspaces.get(where.id)
       if (existing) { Object.assign(existing, update); return existing }
@@ -1333,5 +1343,69 @@ describe('consumeUsage — monthly boundary resets overage bookkeeping', () => {
     expect(r.source).toBe('window')
     // The vestigial monthly pool is untouched by the window path.
     expect(wallets.get('w1')!.monthlyIncludedUsd).toBe(100)
+  })
+})
+
+// ============================================================================
+// Pooled child workspaces (Business/Enterprise parent)
+// ============================================================================
+describe('pooled child workspaces', () => {
+  function setupFamily() {
+    workspaces.set('parent', { id: 'parent', name: 'Parent', slug: 'parent', parentWorkspaceId: null })
+    workspaces.set('child', { id: 'child', name: 'Child', slug: 'child', parentWorkspaceId: 'parent' })
+  }
+
+  it('resolveBillingWorkspaceId returns the parent for a child and self for a top-level workspace', async () => {
+    setupFamily()
+    expect(await billing.resolveBillingWorkspaceId('child')).toBe('parent')
+    expect(await billing.resolveBillingWorkspaceId('parent')).toBe('parent')
+    // Unknown workspace resolves to itself (no row -> no parent).
+    expect(await billing.resolveBillingWorkspaceId('ghost')).toBe('ghost')
+  })
+
+  it('getEffectivePlanId for a child resolves to the parent plan', async () => {
+    setupFamily()
+    setPlan('business', 3, 'parent')
+    expect(await billing.getEffectivePlanId('child')).toBe('business')
+    // The child itself has no subscription row.
+    expect(subs.get('child')).toBeUndefined()
+  })
+
+  it('getUsageWallet for a child returns the parent wallet', async () => {
+    setupFamily()
+    wallets.set('parent', freshWallet({ workspaceId: 'parent' }))
+    const w = await billing.getUsageWallet('child')
+    expect(w?.workspaceId).toBe('parent')
+  })
+
+  it('consumeUsage on a child debits the parent wallet but attributes the event to the child', async () => {
+    setupFamily()
+    setPlan('business', 3, 'parent') // finite rolling windows
+    wallets.set('parent', freshWallet({ workspaceId: 'parent' }))
+
+    const r = await billing.consumeUsage({
+      workspaceId: 'child', projectId: null, memberId: 'u1',
+      actionType: 'ai_proxy_completion', billedUsd: 0.5,
+    })
+
+    expect(r.success).toBe(true)
+    // The child never gets its own wallet — usage is pooled to the parent.
+    expect(wallets.get('child')).toBeUndefined()
+    expect(wallets.get('parent')!.fiveHourUsedUsd).toBeGreaterThan(0)
+    // The usage event is still attributed to the child for per-child reporting.
+    const ev = usageEvents.find((e) => e.actionType === 'ai_proxy_completion')
+    expect(ev?.workspaceId).toBe('child')
+  })
+
+  it('countActiveWorkspaceMembers pools distinct members across the family', async () => {
+    setupFamily()
+    members.push(
+      { workspaceId: 'parent', userId: 'u1', projectId: null },
+      { workspaceId: 'child', userId: 'u2', projectId: null },
+      { workspaceId: 'child', userId: 'u1', projectId: null }, // same user counts once
+    )
+    // Counting from either the parent or a child yields the family total.
+    expect(await billing.countActiveWorkspaceMembers('parent')).toBe(2)
+    expect(await billing.countActiveWorkspaceMembers('child')).toBe(2)
   })
 })

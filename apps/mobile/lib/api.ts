@@ -198,6 +198,23 @@ export interface WorkspaceCheckoutParams {
   cancelUrl?: string
 }
 
+export interface ChildWorkspaceSummary {
+  id: string
+  name: string
+  slug: string
+  description?: string | null
+  createdAt: string
+  memberCount: number
+  usageThisMonthUsd: number
+}
+
+export interface WorkspaceChildrenResponse {
+  ok: boolean
+  parent: { id: string; name: string; slug: string; plan: string }
+  pooledWindows?: unknown
+  children: ChildWorkspaceSummary[]
+}
+
 export interface RegionalCurrencyInfo {
   code: string
   symbol: string
@@ -388,6 +405,33 @@ export const api = {
       `/api/billing/workspace-plan?workspaceIds=${workspaceIds.join(',')}`
     )
     return res.data?.plans ?? {}
+  },
+
+  /**
+   * List the child workspaces pooling a parent (Business/Enterprise) workspace,
+   * with per-child member count and month-to-date usage. Read-only; gated to
+   * owners/admins/billing-admins of the parent server-side.
+   */
+  async getWorkspaceChildren(http: HttpClient, workspaceId: string) {
+    const res = await http.get<WorkspaceChildrenResponse>(`/api/workspaces/${workspaceId}/children`)
+    return res.data
+  },
+
+  /**
+   * Create a free child workspace under a Business/Enterprise parent. The
+   * server validates plan + admin eligibility, persists the parent link, and
+   * creates the owner membership. Returns the created workspace.
+   */
+  async createChildWorkspace(
+    http: HttpClient,
+    params: { name: string; description?: string; parentWorkspaceId: string; ownerId: string },
+  ) {
+    const res = await http.post<{ ok?: boolean; data?: { id: string; name: string; slug: string } }>(
+      '/api/workspaces',
+      params,
+    )
+    if (!res.data?.ok || !res.data.data) throw new Error('createChildWorkspace: workspace not created')
+    return res.data.data
   },
 
   async verifyCheckout(http: HttpClient, sessionId: string) {
