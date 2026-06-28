@@ -283,6 +283,10 @@ describe('AgentGateway integration', () => {
 
       expect(systemPromptSeen).toContain('## Running App Preview')
       expect(systemPromptSeen).toContain('https://preview--test-project.dev.shogo.ai')
+      // The public URL is the ONLY user-facing link — localhost must never be
+      // presented as the address to hand the user (only as the labeled internal
+      // curl address). This is the root-cause fix for the localhost leak.
+      expect(systemPromptSeen).not.toMatch(/reachable at \*\*http:\/\/localhost/)
       // The section must be the declared source of truth so the agent doesn't
       // go probe the filesystem / ports for it.
       expect(systemPromptSeen).toContain('single source of truth')

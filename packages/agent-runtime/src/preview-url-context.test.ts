@@ -42,12 +42,23 @@ describe('preview-url context', () => {
 
     test('localhost only appears as the internal address when a public URL exists', () => {
       const block = buildPreviewUrlBlock({ publicUrl: 'https://preview--demo.shogo.dev', runtimePort: 8080, hasDist: true })!
-      expect(block).toContain('Internal (from inside this runtime): `http://localhost:8080/`')
+      expect(block).toContain('Internal (from inside this runtime, for your own curl checks only): `http://localhost:8080/`')
     })
 
-    test('falls back to localhost only when no public URL but a built dist exists', () => {
-      const block = buildPreviewUrlBlock({ publicUrl: '', runtimePort: 8080, hasDist: true })
+    test('falls back to localhost as the user-facing link only when running locally', () => {
+      const block = buildPreviewUrlBlock({ publicUrl: '', runtimePort: 8080, hasDist: true, isLocal: true })!
+      expect(block).toMatch(/reachable at \*\*http:\/\/localhost:8080\/\*\*/)
+    })
+
+    test('in cloud with no public URL, NEVER presents localhost as the user-facing link', () => {
+      const block = buildPreviewUrlBlock({ publicUrl: '', runtimePort: 8080, hasDist: true, isLocal: false })!
+      // No user-facing "reachable at localhost" line at all.
+      expect(block).not.toMatch(/reachable at \*\*http:\/\/localhost/)
+      // localhost is still offered as the labeled internal curl address.
       expect(block).toContain('http://localhost:8080/')
+      expect(block).toContain('curl checks only')
+      // And it points the agent at Publish for a shareable link.
+      expect(block).toContain('publish')
     })
 
     test('returns null when there is nothing to serve', () => {

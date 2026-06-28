@@ -259,6 +259,83 @@ export async function rollbackCheckpoint(
   )
 }
 
+// ---------------------------------------------------------------------------
+// Publish wrappers — let the agent's `publish` tool deploy to {subdomain}.shogo.one
+//
+// The public publish route is session-authenticated and unreachable from the
+// pod; these call the cluster-internal mirror (auth: SA token / x-runtime-token)
+// so the tool can read publish state (first-publish vs republish) and trigger a
+// (re)publish. Reuses the same CheckpointCallResult envelope shape.
+// ---------------------------------------------------------------------------
+
+export interface PublishState {
+  published: boolean
+  subdomain: string | null
+  publishedAt: number | null
+  accessLevel: string | null
+  hasPassword: boolean
+  publishStatus: string | null
+}
+
+export interface PublishResult {
+  url: string
+  subdomain: string
+  publishedAt?: number
+  accessLevel?: string
+  hasPassword?: boolean
+}
+
+export interface PublishOptions {
+  subdomain: string
+  accessLevel?: 'anyone' | 'authenticated' | 'private' | 'password'
+  password?: string
+  siteTitle?: string
+  siteDescription?: string
+}
+
+async function publishFetch<T>(
+  path: string,
+  init: RequestInit & { parse?: (json: any) => T },
+): Promise<CheckpointCallResult<T>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  try {
+    const res = await fetch(`${apiUrl}${path}`, {
+      headers: getInternalHeaders(),
+      // Publish builds + uploads the app, which can take a while — be generous.
+      signal: AbortSignal.timeout(120_000),
+      ...init,
+    })
+    const json = (await res.json().catch(() => null)) as any
+    if (!res.ok) {
+      const err = json?.error
+      const message = typeof err === 'string' ? err : err?.message
+      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+    }
+    return { ok: true, status: res.status, data: init.parse ? init.parse(json) : (json as T) }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
+}
+
+export async function getPublishState(projectId: string): Promise<CheckpointCallResult<PublishState>> {
+  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/publish`, {
+    method: 'GET',
+    parse: (j) => j as PublishState,
+  })
+}
+
+export async function publishProject(
+  projectId: string,
+  opts: PublishOptions,
+): Promise<CheckpointCallResult<PublishResult>> {
+  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/publish`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    parse: (j) => j as PublishResult,
+  })
+}
+
 export async function postCostMetric(payload: AgentCostMetricPayload): Promise<void> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) return

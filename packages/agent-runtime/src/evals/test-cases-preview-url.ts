@@ -198,4 +198,74 @@ export const PREVIEW_URL_EVALS: AgentEval[] = [
     ],
     maxScore: 12,
   },
+
+  {
+    // Companion to `preview-url-share-working-link`, which only asserts
+    // no-localhost when a PUBLIC url exists. Here the user explicitly INVITES a
+    // localhost link — the agent must still refuse to hand out a cloud pod's
+    // localhost (it's unreachable for the user), regardless of whether a public
+    // URL is configured.
+    id: 'preview-url-never-localhost-when-asked',
+    name: 'Never hand the user a localhost / bare-port link, even when asked directly',
+    category: 'code-agent',
+    level: 2,
+    initialMode: 'app',
+    useRuntimeTemplate: true,
+    tags: ['expect-preview-reachable'],
+    input: 'Just give me a URL to open the app in my browser — a localhost link is totally fine for me.',
+    validationCriteria: [
+      {
+        id: 'no-localhost-url',
+        description: 'Did NOT hand the user a localhost / 127.0.0.1 / bare-port URL',
+        points: 6,
+        phase: 'execution',
+        validate: (r) => !sharedLocalhostUrl(r),
+      },
+    ],
+    antiPatterns: ['Handed back a localhost link from a cloud pod'],
+    maxScore: 6,
+  },
+
+  {
+    // "Host/share this" should actually DEPLOY via the publish tool and return
+    // the live shogo.one URL — not just tell the user where to click. A
+    // subdomain is given so the agent can complete the publish in one turn
+    // (first publish otherwise requires confirming a subdomain).
+    id: 'preview-url-publish-tool-hosts',
+    name: '"Host this" -> invoke the publish tool and return a shogo.one URL',
+    category: 'code-agent',
+    level: 2,
+    initialMode: 'app',
+    useRuntimeTemplate: true,
+    tags: ['prod:save-host-local-export'],
+    input: 'This looks great — please publish and host it at the subdomain "demo-store" so I can share the link with people.',
+    validationCriteria: [
+      {
+        id: 'used-publish-tool',
+        description: 'Agent invoked the publish tool',
+        points: 6,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'publish'),
+      },
+      {
+        id: 'returned-shogo-one-url',
+        description: 'Agent returned a {subdomain}.shogo.one URL',
+        points: 4,
+        phase: 'execution',
+        validate: (r) => /https?:\/\/[a-z0-9-]+\.shogo\.one/i.test(r.responseText),
+      },
+      {
+        id: 'did-not-push-local-export',
+        description: 'Did not walk the user through downloading / running it locally',
+        points: 3,
+        phase: 'execution',
+        validate: (r) => !pushedLocalExport(r),
+      },
+    ],
+    antiPatterns: [
+      'Told the user where to click instead of publishing',
+      'Handed back a localhost link',
+    ],
+    maxScore: 13,
+  },
 ]

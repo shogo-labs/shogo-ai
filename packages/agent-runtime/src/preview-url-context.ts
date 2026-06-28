@@ -41,35 +41,77 @@ export interface PreviewUrlBlockOptions {
   runtimePort: number
   /** Whether a built dist/index.html exists (the runtime is self-serving the app). */
   hasDist: boolean
+  /**
+   * Whether the runtime is running locally (a developer's machine) rather than
+   * in a cloud pod. When local, the `localhost` address IS the URL the user
+   * opens, so it is presented as the user-facing link. In cloud it is NEVER
+   * presented as the user-facing link (the user cannot reach it) — only as the
+   * clearly-labeled internal curl address. Defaults to `true` so non-cloud
+   * callers keep the local behaviour; the gateway always passes the real value.
+   */
+  isLocal?: boolean
 }
+
+const QA_GUIDANCE =
+  'When the user asks you to QA / test / try the app, spawn the **browser_qa** subagent and pass this URL as the target. This block is the single source of truth for the preview URL — do not read it from `vite.config.ts`, `package.json`, or any other file; those values are overridden by the launcher.'
 
 /**
  * Build the "Running App Preview" block, or null when there's no URL to share.
  *
- * Priority: a distinct PUBLIC_PREVIEW_URL is always the user-facing address;
- * localhost is only ever shown as the *internal* address, never as the link to
- * hand the user.
+ * This block is what the agent's system prompt hands it as the preview URL, so
+ * it is the *root cause* fix for "shared a localhost URL from a cloud pod":
+ *
+ *   - In cloud (a public URL exists, OR `isLocal` is false) the public preview
+ *     URL is the ONLY user-facing link. `localhost` appears at most as the
+ *     clearly-labeled internal curl address — never as the link to hand out.
+ *   - Locally (`isLocal` true, no public URL) `localhost` IS the URL the user
+ *     opens, so it is presented as the user-facing link — correct there.
  */
 export function buildPreviewUrlBlock(opts: PreviewUrlBlockOptions): string | null {
   const publicUrl = (opts.publicUrl ?? '').trim()
   const internalUrl = `http://localhost:${opts.runtimePort}/`
+  const isLocal = opts.isLocal ?? true
 
   if (publicUrl.length === 0 && !opts.hasDist) return null
 
-  const externalUrl = publicUrl.length > 0 ? publicUrl : internalUrl
   const hasDistinctPublic = publicUrl.length > 0 && publicUrl !== internalUrl
+  const lines: string[] = ['## Running App Preview', '']
 
-  const lines: string[] = [
-    '## Running App Preview',
-    '',
-    `The user's app is running and reachable at **${externalUrl}**.`,
-  ]
+  // A distinct public URL exists (the normal cloud case): it is the link.
   if (hasDistinctPublic) {
-    lines.push(`Internal (from inside this runtime): \`${internalUrl}\`.`)
+    lines.push(
+      `The user's app is running and reachable at **${publicUrl}**.`,
+      `Internal (from inside this runtime, for your own curl checks only): \`${internalUrl}\`.`,
+      '',
+      QA_GUIDANCE,
+    )
+    return lines.join('\n')
   }
+
+  // publicUrl === internalUrl: only happens locally, where a local dev server
+  // advertised its own localhost port as PUBLIC_PREVIEW_URL. It IS the user's
+  // URL, so present it as the link.
+  if (publicUrl.length > 0) {
+    lines.push(`The user's app is running and reachable at **${publicUrl}**.`, '', QA_GUIDANCE)
+    return lines.join('\n')
+  }
+
+  // No public URL.
+  if (isLocal) {
+    // Local dev: localhost is the real URL the user opens.
+    lines.push(`The user's app is running and reachable at **${internalUrl}**.`, '', QA_GUIDANCE)
+    return lines.join('\n')
+  }
+
+  // Cloud with no public URL (an env miss): NEVER present localhost as the
+  // link — the user cannot open it. Give only the labeled internal address and
+  // point at Publish for a shareable link.
   lines.push(
+    'The app is running inside this cloud runtime, but no public preview URL is currently available.',
+    `Internal address (for your own curl checks only — the user CANNOT open this): \`${internalUrl}\`.`,
+    'Do NOT give the user a localhost / 127.0.0.1 / bare-port URL — it will not load for them. If they need a shareable link, use the **publish** tool.',
     '',
-    'When the user asks you to QA / test / try the app, spawn the **browser_qa** subagent and pass this URL as the target. This block is the single source of truth for the preview URL — do not read it from `vite.config.ts`, `package.json`, or any other file; those values are overridden by the launcher.',
+    QA_GUIDANCE,
   )
   return lines.join('\n')
 }

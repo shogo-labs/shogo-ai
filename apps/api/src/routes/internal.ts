@@ -799,6 +799,97 @@ app.post('/projects/:projectId/checkpoints/:checkpointId/rollback', async (c) =>
 })
 
 /**
+ * GET /api/internal/projects/:projectId/publish — current publish state.
+ *
+ * Lets the agent's publish tool tell a first publish (no subdomain yet, must
+ * confirm one with the user) from a republish (reuse the live subdomain). Auth:
+ * K8s SA token (cluster) OR `x-runtime-token` (local desktop).
+ */
+app.get('/projects/:projectId/publish', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  try {
+    const { prisma } = await import('../lib/prisma')
+    const project = (await prisma.project.findUnique({
+      where: { id: projectId },
+      select: {
+        publishedSubdomain: true,
+        publishedAt: true,
+        accessLevel: true,
+        sitePasswordHash: true,
+        publishStatus: true,
+      } as any,
+    })) as Record<string, any> | null
+    if (!project) return c.json({ error: 'Project not found' }, 404)
+
+    return c.json({
+      ok: true,
+      published: !!project.publishedSubdomain,
+      subdomain: project.publishedSubdomain ?? null,
+      publishedAt: project.publishedAt ? new Date(project.publishedAt).getTime() : null,
+      accessLevel: project.accessLevel ?? null,
+      hasPassword: !!project.sitePasswordHash,
+      publishStatus: project.publishStatus ?? null,
+    })
+  } catch (err: any) {
+    console.error(`[Internal] publish state for ${projectId} failed:`, err.message)
+    return c.json({ error: 'Failed to get publish state' }, 500)
+  }
+})
+
+/**
+ * POST /api/internal/projects/:projectId/publish — publish/republish a project.
+ *
+ * Cluster-internal mirror of POST /api/projects/:id/publish so the agent's
+ * publish tool can deploy `{subdomain}.shogo.one` directly (the public route is
+ * session-authenticated and unreachable from the pod). Shares the exact same
+ * pipeline via `publishProject`. Auth: K8s SA token (cluster) OR
+ * `x-runtime-token` (local desktop).
+ */
+app.post('/projects/:projectId/publish', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  let body: { subdomain?: string; accessLevel?: any; password?: string; siteTitle?: string; siteDescription?: string }
+  try {
+    body = (await c.req.json()) as typeof body
+  } catch {
+    return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
+  }
+  if (!body.subdomain || typeof body.subdomain !== 'string') {
+    return c.json({ error: { code: 'subdomain_required', message: 'subdomain is required' } }, 400)
+  }
+
+  try {
+    const { publishProject } = await import('./publish')
+    const result = await publishProject(projectId, {
+      subdomain: body.subdomain,
+      accessLevel: body.accessLevel,
+      password: body.password,
+      siteTitle: body.siteTitle,
+      siteDescription: body.siteDescription,
+    })
+    if (!result.ok) {
+      return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
+    }
+    return c.json({
+      ok: true,
+      url: result.url,
+      subdomain: result.subdomain,
+      publishedAt: result.publishedAt,
+      accessLevel: result.accessLevel,
+      hasPassword: result.hasPassword,
+    })
+  } catch (err: any) {
+    console.error(`[Internal] publish for ${projectId} failed:`, err.message)
+    return c.json({ error: { code: 'publish_failed', message: 'Failed to publish' } }, 500)
+  }
+})
+
+/**
  * POST /api/internal/chat-sessions/:chatSessionId/worktree
  *   body: { worktreeBranch?, worktreeStatus?, worktreePath? }
  *

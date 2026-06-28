@@ -104,6 +104,8 @@ import {
   previewConsoleLogPath,
 } from './runtime-log-paths'
 import { shouldInjectPreviewUrl, buildPreviewUrlBlock } from './preview-url-context'
+import { detectLocalMode } from './preview-manager'
+import { LocalhostLinkRewriter, rewriteLocalhostLinks } from './preview-link-rewrite'
 
 const QUICK_ACTION_GUIDE = `## Quick Actions
 
@@ -2240,6 +2242,36 @@ export class AgentGateway {
     let uiReasoningId: string | null = null
     let pendingToolkitError: string | null = null
 
+    // Localhost -> public preview link rewriting (defense-in-depth). Active only
+    // in cloud (a public preview URL exists); a pass-through on a developer
+    // machine so local streaming is unchanged. The same rewrite is re-applied to
+    // the persisted/returned text after the loop so history + channel replies
+    // also never carry a localhost link the user can't open.
+    const previewPublicUrl = (this.previewManager?.isLocalMode ?? detectLocalMode())
+      ? ''
+      : (process.env.PUBLIC_PREVIEW_URL ?? '')
+    let linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
+
+    // Forward streamed assistant text (post-rewrite) to the chunker + UI,
+    // opening a UI text block lazily on first non-empty content.
+    const emitAssistantText = (text: string) => {
+      if (!text) return
+      if (chunker) chunker.push(text)
+      if (uiWriter) {
+        if (!uiTextId) {
+          uiTextId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+          uiWriter.write({ type: 'text-start', id: uiTextId })
+        }
+        uiWriter.write({ type: 'text-delta', id: uiTextId, delta: text })
+      }
+    }
+    // Drain any text the rewriter is holding (a trailing partial token) before a
+    // text block is closed (tool call / retry / end of turn) so nothing is lost
+    // or reordered across the boundary.
+    const flushAssistantText = () => {
+      emitAssistantText(linkRewriter.flush())
+    }
+
     // Gate map: onBeforeToolCall stores a promise per toolCallId that
     // resolves once the tool-input-start SSE events have had time to
     // flush to the client.  onAfterToolCall awaits this promise before
@@ -2686,14 +2718,7 @@ export class AgentGateway {
         },
         onTextDelta: (delta) => {
           runningContextEstimate += Math.ceil(delta.length / 4)
-          if (chunker) chunker.push(delta)
-          if (uiWriter) {
-            if (!uiTextId) {
-              uiTextId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-              uiWriter.write({ type: 'text-start', id: uiTextId })
-            }
-            uiWriter.write({ type: 'text-delta', id: uiTextId, delta })
-          }
+          emitAssistantText(linkRewriter.push(delta))
         },
         onInferenceRetry: (info) => {
           // The dropped model call is being re-issued. Close any in-progress
@@ -2701,6 +2726,9 @@ export class AgentGateway {
           // partial deltas, then emit an explicit marker the client + the
           // API-side accumulator key on to reset (avoids concatenating the
           // discarded partial with the regenerated output).
+          // Drop any text the rewriter was holding from the failed attempt and
+          // reset its scanner state so the regenerated output starts clean.
+          linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
           if (uiWriter && uiTextId) {
             uiWriter.write({ type: 'text-end', id: uiTextId })
             uiTextId = null
@@ -2727,6 +2755,7 @@ export class AgentGateway {
         },
         onToolCallStart: (toolName, toolCallId) => {
           this._lastTool = toolName
+          flushAssistantText()
           if (uiWriter && uiTextId) {
             uiWriter.write({ type: 'text-end', id: uiTextId })
             uiTextId = null
@@ -2744,6 +2773,7 @@ export class AgentGateway {
         onToolCallEnd: (_toolName, toolCallId) => {
         },
         onBeforeToolCall: async (toolName, args, toolCallId) => {
+          flushAssistantText()
           if (uiWriter && uiTextId) {
             uiWriter.write({ type: 'text-end', id: uiTextId })
             uiTextId = null
@@ -2904,6 +2934,24 @@ export class AgentGateway {
       }
       result.newMessages = accumulatedNewMessages
 
+      // Defense-in-depth: rewrite any localhost link the model emitted into the
+      // public preview URL in the persisted history + returned text too (the
+      // live UI stream is handled by linkRewriter above). No-op locally. Skips
+      // code spans/fences and `curl` lines — see preview-link-rewrite.ts.
+      if (previewPublicUrl) {
+        for (const msg of result.newMessages) {
+          if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
+          for (const block of msg.content as any[]) {
+            if (block?.type === 'text' && typeof block.text === 'string') {
+              block.text = rewriteLocalhostLinks(block.text, previewPublicUrl)
+            }
+          }
+        }
+        if (typeof result.text === 'string') {
+          result.text = rewriteLocalhostLinks(result.text, previewPublicUrl)
+        }
+      }
+
       // Persist messages to session FIRST — before any uiWriter calls that
       // could throw due to client disconnect.  This ensures "continue" after
       // stop always has the interrupted turn's context.
@@ -2960,6 +3008,9 @@ export class AgentGateway {
       // UI notifications below may throw if the client disconnected (stop).
       // Wrap in try/catch so session persistence above is never affected.
       try {
+        // Drain any assistant text the link rewriter is still holding before
+        // the streams close.
+        flushAssistantText()
         chunker?.flush()
         chunker?.dispose()
 
@@ -3599,6 +3650,9 @@ export class AgentGateway {
       publicUrl: process.env.PUBLIC_PREVIEW_URL,
       runtimePort: parseInt(process.env.PORT || '8080', 10),
       hasDist,
+      // Local dev can hand out localhost (the user opens it); a cloud pod never
+      // can. This is what stops localhost reaching the user-facing slot.
+      isLocal: this.previewManager?.isLocalMode ?? detectLocalMode(),
     })
   }
 
