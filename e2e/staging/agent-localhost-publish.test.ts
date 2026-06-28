@@ -32,7 +32,7 @@ import {
  *     bunx playwright test --config e2e/playwright.config.ts agent-localhost-publish
  */
 
-const TEST_USER = makeTestUser("LocalhostPublish")
+const TEST_USER = makeTestUser("PreviewPub")
 
 const INITIAL_BUILD_TIMEOUT_MS = 180_000
 
@@ -103,7 +103,27 @@ async function createProject(page: Page, prompt: string): Promise<string> {
   return m![1]
 }
 
-const LOCALHOST_RE = /localhost|127\.0\.0\.1|0\.0\.0\.0/
+/** Asks the agent to publish to an explicit subdomain and waits for it. */
+async function publishToSubdomain(page: Page, subdomain: string): Promise<string> {
+  await sendProjectChatMessage(
+    page,
+    `Publish this app now to the subdomain "${subdomain}". ` +
+      `I confirm that exact subdomain — use it verbatim, do not pick a ` +
+      `different name. Go ahead and publish immediately without asking me to ` +
+      `confirm again, then reply with the live URL.`,
+  )
+  // Publish builds/uploads/provisions (slow) on the happy path; a taken
+  // subdomain is rejected fast, well before that.
+  await waitForAgentResponse(page, 300_000)
+  return transcript(page)
+}
+
+// Match an actual localhost ADDRESS the user might be handed — a localhost URL
+// (`http://localhost…`), a host:port (`localhost:8080`), or a loopback IP.
+// Deliberately NOT the bare word "localhost", which legitimately appears in
+// unrelated UI text (e.g. an account name) and would false-positive against the
+// lowercased page body.
+const LOCALHOST_RE = /https?:\/\/localhost\b|\blocalhost[:/]|\b127\.0\.0\.1\b|\b0\.0\.0\.0\b/
 // e.g. https://<id>.preview.staging.shogo.ai or <id>.preview.shogo.ai
 const PREVIEW_URL_RE = /https?:\/\/[a-z0-9-]+\.preview\.[a-z0-9.-]*shogo\.ai/i
 const PUBLISHED_URL_RE = /https?:\/\/[a-z0-9-]+\.shogo\.one\b/i
@@ -207,5 +227,71 @@ test.describe("Agent preview hygiene + publish", () => {
     const status = res!.status()
     expect(status, `published URL ${publishedUrl} returned ${status}`).toBeLessThan(500)
     expect(status, `published URL ${publishedUrl} returned 404`).not.toBe(404)
+  })
+
+  test("agent honors a user-provided subdomain verbatim", async () => {
+    test.setTimeout(480_000)
+
+    // Keep the description neutral (no "publish"/"subdomain" hints) so the agent
+    // does not proactively publish during the initial build — we want the
+    // explicit instruction below to be an unambiguous FIRST publish.
+    await createProject(page, "A tiny single-page app that shows a greeting")
+    await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
+
+    // A distinctive subdomain the agent would NOT name-derive from "hello".
+    const subdomain = `e2e-keepme-${Date.now().toString(36)}`
+    const text = await publishToSubdomain(page, subdomain)
+
+    // The agent must publish to the EXACT subdomain the user named — never
+    // substitute a derived name. We assert on the subdomain (the behavior we
+    // control) rather than reachability, which currently depends on a known
+    // publish-bucket infra issue tracked separately.
+    expect(
+      text,
+      `agent must use the requested subdomain "${subdomain}", not substitute its own`,
+    ).toContain(subdomain)
+    // Any *.shogo.one URL it surfaced must be that subdomain — not a foreign one.
+    for (const m of text.matchAll(/https?:\/\/([a-z0-9-]+)\.shogo\.one/gi)) {
+      expect(
+        m[1],
+        `agent published to "${m[1]}.shogo.one" instead of requested "${subdomain}"`,
+      ).toBe(subdomain)
+    }
+  })
+
+  test("publishing a subdomain already taken by another project fails", async () => {
+    test.setTimeout(720_000)
+
+    const subdomain = `e2e-dup-${Date.now().toString(36)}`
+
+    // Project A reserves the subdomain. The subdomain reservation happens in
+    // the DB at publish time regardless of whether the static asset has fully
+    // propagated, so this is independent of CDN/bucket timing.
+    await createProject(page, "A tiny single-page greeting app")
+    await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
+    const textA = await publishToSubdomain(page, subdomain)
+    // The subdomain reservation lands in the DB at the start of publish (before
+    // build/upload), so Project A holds it regardless of the known bucket infra
+    // issue. We only need proof A targeted this exact subdomain.
+    expect(
+      textA,
+      `Project A should have published to subdomain "${subdomain}"`,
+    ).toContain(subdomain)
+
+    // Project B tries to grab the same subdomain — must be rejected.
+    await createProject(page, "A tiny single-page counter app")
+    await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
+    const textB = await publishToSubdomain(page, subdomain)
+
+    // The agent must surface that the subdomain is taken …
+    expect(
+      textB,
+      "agent should report that the subdomain is already in use",
+    ).toMatch(/already in use|already taken|is taken|not available|in use|unavailable/i)
+    // … and must NOT claim Project B is now live on that subdomain.
+    expect(
+      textB,
+      "agent must not falsely report a successful publish to a taken subdomain",
+    ).not.toMatch(new RegExp(`live at[^\\n]*${subdomain}\\.shogo\\.one`, "i"))
   })
 })
