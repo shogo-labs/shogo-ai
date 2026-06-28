@@ -261,7 +261,7 @@ spec:
                   key: CF_SITE_AUTH_KV_NAMESPACE_ID
                   optional: true
             # Workers KV namespace for the preview region map. The
-            # `preview--*.shogo.ai` router Worker reads `projectId -> region`
+            # `*.preview.shogo.ai` router Worker reads `projectId -> region`
             # here to resolveOverride each preview to its hosting region's
             # Kourier LB; the API (cloudflare-preview-region-kv.ts) writes it on
             # preview DomainMapping create/delete. From the edge-global
