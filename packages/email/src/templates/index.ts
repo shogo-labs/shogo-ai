@@ -31,6 +31,25 @@ export { memberJoinedTemplate } from './workspace/member-joined.js'
 export { memberRemovedTemplate } from './workspace/member-removed.js'
 export { accountDeletedTemplate } from './workspace/account-deleted.js'
 
+// Lifecycle — Drip
+export {
+  dripWelcomeTemplate,
+  dripQuickWinTemplate,
+  dripStuckNudgeTemplate,
+  dripFirstActionTemplate,
+  dripSocialProofTemplate,
+  dripReEngagementTemplate,
+  dripPowerUpTemplate,
+  dripHeartbeatTemplate,
+} from './lifecycle/drip.js'
+
+// Lifecycle — Conversion
+export {
+  conversionUsageLimitTemplate,
+  conversionPowerUserTemplate,
+  conversionWinBackTemplate,
+} from './lifecycle/conversion.js'
+
 // ─── Registry ────────────────────────────────────────────
 
 import type { EmailTemplate } from '../types.js'
@@ -50,6 +69,21 @@ import { usageApproachingLimitTemplate } from './billing/usage-approaching-limit
 import { memberJoinedTemplate } from './workspace/member-joined.js'
 import { memberRemovedTemplate } from './workspace/member-removed.js'
 import { accountDeletedTemplate } from './workspace/account-deleted.js'
+import {
+  dripWelcomeTemplate,
+  dripQuickWinTemplate,
+  dripStuckNudgeTemplate,
+  dripFirstActionTemplate,
+  dripSocialProofTemplate,
+  dripReEngagementTemplate,
+  dripPowerUpTemplate,
+  dripHeartbeatTemplate,
+} from './lifecycle/drip.js'
+import {
+  conversionUsageLimitTemplate,
+  conversionPowerUserTemplate,
+  conversionWinBackTemplate,
+} from './lifecycle/conversion.js'
 
 export const allTemplates: EmailTemplate[] = [
   welcomeTemplate,
@@ -66,6 +100,19 @@ export const allTemplates: EmailTemplate[] = [
   memberJoinedTemplate,
   memberRemovedTemplate,
   accountDeletedTemplate,
+  // Lifecycle — Drip
+  dripWelcomeTemplate,
+  dripQuickWinTemplate,
+  dripStuckNudgeTemplate,
+  dripFirstActionTemplate,
+  dripSocialProofTemplate,
+  dripReEngagementTemplate,
+  dripPowerUpTemplate,
+  dripHeartbeatTemplate,
+  // Lifecycle — Conversion
+  conversionUsageLimitTemplate,
+  conversionPowerUserTemplate,
+  conversionWinBackTemplate,
 ]
 
 /**
