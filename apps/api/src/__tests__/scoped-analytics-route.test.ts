@@ -171,7 +171,7 @@ describe('workspace basic endpoints', () => {
   test('usage-summary forwards period', async () => {
     seedMember()
     await call('GET', `/workspaces/${WS}/analytics/usage-summary?period=90d`)
-    expect(svcSpies.getUsageSummary).toHaveBeenCalledWith({ workspaceId: WS }, '90d')
+    expect(svcSpies.getUsageSummary).toHaveBeenCalledWith({ workspaceId: WS }, '90d', { page: 1, limit: 500 })
   })
 
   test('spend-timeseries: defaults groupBy=model, metric=spend, topN=8', async () => {
@@ -444,7 +444,7 @@ describe('me endpoints', () => {
 
   test('usage-summary forwards period', async () => {
     await call('GET', '/me/analytics/usage-summary?period=1y')
-    expect(svcSpies.getUsageSummary).toHaveBeenCalledWith({ userId: 'user_1' }, '1y')
+    expect(svcSpies.getUsageSummary).toHaveBeenCalledWith({ userId: 'user_1' }, '1y', { limit: 500 })
   })
 
   test('catch branch on me endpoint → 500', async () => {

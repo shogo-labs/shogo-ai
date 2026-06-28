@@ -23,6 +23,9 @@ mock.module('@shogo-ai/sdk/model-catalog', () => ({
   calculateDollarCost: () => 0,
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
+  inferProviderFromModel: (_id: string, fallback?: string) => fallback ?? 'custom',
 }))
 mock.module('@shogo/shared-runtime', () => ({
   RUNTIME_CONFIG: {
@@ -87,6 +90,8 @@ mock.module('@shogo/model-catalog', () => ({
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
   getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
+  inferProviderFromModel: (_id: string, fallback?: string) => fallback ?? 'custom',
   getMaxOutputTokens: (_id?: string) => 4096,
   MODEL_ALIASES: {} as Record<string, any>,
 }))
@@ -117,14 +122,20 @@ global.crypto = { randomUUID: mockRandomUUID } as any
 const mockPrismaProjectUpdate = mock(() => Promise.resolve({}))
 const mockPrismaProjectUpdateMany = mock(() => Promise.resolve({ count: 0 }))
 const mockPrismaProjectFindFirst = mock(() => Promise.resolve(null))
+const mockPrismaProjectFindMany = mock(() => Promise.resolve([]))
 const mockPrismaProject = {
   findUnique: mock(() => Promise.resolve({ workspaceId: 'test-workspace' })),
   findFirst: mockPrismaProjectFindFirst,
+  findMany: mockPrismaProjectFindMany,
   update: mockPrismaProjectUpdate,
   updateMany: mockPrismaProjectUpdateMany,
 }
 const mockPrismaClient = {
   project: mockPrismaProject,
+  // Warm pool loads persisted pool-size settings on start() and GC scans
+  // projects by service name; both are best-effort but must not throw on a
+  // missing mock member.
+  platformSetting: { findMany: mock(() => Promise.resolve([])) },
   $transaction: mock((fn: (tx: any) => Promise<any>) => fn({ project: mockPrismaProject })),
 }
 mock.module('../prisma', () => ({
@@ -951,6 +962,12 @@ describe('Warm Pool Integration', () => {
 describe('WarmPoolController — scaled-to-zero detection (Option 1)', () => {
   const READY_TRUE = { conditions: [{ type: 'Ready', status: 'True' }] } as const
 
+  // A Knative *Service*'s status carries no replica count; the live pod
+  // count lives on its backing *Revision* (`status.actualReplicas`), which
+  // discovery looks up via `latestReadyRevisionName`. So a ksvc fixture must
+  // name its ready revision and the revisions list must report that
+  // revision's replica count. `revisionsResponse()` builds the matching
+  // revisions list for a set of ksvc fixtures.
   function makeKsvc(name: string, opts: { actualReplicas?: number; status?: string } = {}) {
     return {
       metadata: {
@@ -961,17 +978,32 @@ describe('WarmPoolController — scaled-to-zero detection (Option 1)', () => {
         },
         creationTimestamp: new Date().toISOString(),
       },
-      status: { ...READY_TRUE, actualReplicas: opts.actualReplicas ?? 1 },
+      status: {
+        ...READY_TRUE,
+        latestReadyRevisionName: `${name}-00001`,
+        actualReplicas: opts.actualReplicas ?? 1,
+      },
+    }
+  }
+
+  function revisionsResponse(...ksvcs: ReturnType<typeof makeKsvc>[]) {
+    return {
+      items: ksvcs.map((k) => ({
+        metadata: { name: k.status.latestReadyRevisionName },
+        status: { actualReplicas: k.status.actualReplicas },
+      })),
     }
   }
 
   test('discovery marks pods with actualReplicas=0 as not hot', async () => {
+    const hotA = makeKsvc('warm-pool-hot-a', { actualReplicas: 1 })
+    const coldB = makeKsvc('warm-pool-cold-b', { actualReplicas: 0 })
     mockK8sCustomApi.listNamespacedCustomObject.mockClear()
+    // Default (revisions list) reports each revision's replica count; the
+    // first call (services list) returns the ksvcs.
+    mockK8sCustomApi.listNamespacedCustomObject.mockResolvedValue(revisionsResponse(hotA, coldB))
     mockK8sCustomApi.listNamespacedCustomObject.mockResolvedValueOnce({
-      items: [
-        makeKsvc('warm-pool-hot-a', { actualReplicas: 1 }),
-        makeKsvc('warm-pool-cold-b', { actualReplicas: 0 }),
-      ],
+      items: [hotA, coldB],
     })
 
     const controller = new WarmPoolController({ poolSize: 5, reconcileIntervalMs: 60_000 })
@@ -991,6 +1023,9 @@ describe('WarmPoolController — scaled-to-zero detection (Option 1)', () => {
     expect(cold?.hot).toBe(false)
 
     controller.stop()
+    // Restore the empty base so sibling tests that rely on it (and don't
+    // reset it themselves) keep seeing an empty discovery list.
+    mockK8sCustomApi.listNamespacedCustomObject.mockResolvedValue({ items: [] })
   })
 
   test('claim() prefers hot pods over scaled-to-zero pods', async () => {

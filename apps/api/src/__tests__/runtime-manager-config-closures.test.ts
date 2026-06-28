@@ -95,14 +95,16 @@ describe('WorkerRuntimeManager config closures (constructor wiring)', () => {
   })
 
   test('resolveBin: AGENT_RUNTIME_ENTRY env override wins when file exists', () => {
-    process.env.AGENT_RUNTIME_ENTRY = '/proc/self/exe'
+    // Use the running interpreter as a known-existing file that's portable
+    // across macOS and Linux (Linux's /proc/self/exe doesn't exist on macOS).
+    process.env.AGENT_RUNTIME_ENTRY = process.execPath
     new RuntimeManager()
     const cfg = capturedWorkerConfigs[0] as {
       resolveBin: () => { path: string; source: string } | null
     }
     const result = cfg.resolveBin()
     expect(result).not.toBeNull()
-    expect(result?.path).toBe('/proc/self/exe')
+    expect(result?.path).toBe(process.execPath)
     expect(result?.source).toBe('env')
   })
 
@@ -116,11 +118,22 @@ describe('WorkerRuntimeManager config closures (constructor wiring)', () => {
     expect(result).toBeNull()
   })
 
-  test('idleMs is 0 when SHOGO_LOCAL_MODE=true, undefined otherwise', () => {
+  test('idleMs defaults to the 45-min local reaper when SHOGO_LOCAL_MODE=true, undefined otherwise', () => {
     const prev = process.env.SHOGO_LOCAL_MODE
+    const prevIdle = process.env.RUNTIME_LOCAL_IDLE_MS
+    delete process.env.RUNTIME_LOCAL_IDLE_MS
+    // Local mode no longer disables the idle reaper (idleMs: 0); it now runs
+    // it on a 45-min default so runtimes don't accumulate forever. An explicit
+    // RUNTIME_LOCAL_IDLE_MS override still wins.
     process.env.SHOGO_LOCAL_MODE = 'true'
     new RuntimeManager()
-    expect(capturedWorkerConfigs[0]!.idleMs).toBe(0)
+    expect(capturedWorkerConfigs[0]!.idleMs).toBe(45 * 60 * 1000)
+
+    capturedWorkerConfigs.length = 0
+    process.env.RUNTIME_LOCAL_IDLE_MS = '1234'
+    new RuntimeManager()
+    expect(capturedWorkerConfigs[0]!.idleMs).toBe(1234)
+    delete process.env.RUNTIME_LOCAL_IDLE_MS
 
     capturedWorkerConfigs.length = 0
     process.env.SHOGO_LOCAL_MODE = 'false'
@@ -129,6 +142,8 @@ describe('WorkerRuntimeManager config closures (constructor wiring)', () => {
 
     if (prev === undefined) delete process.env.SHOGO_LOCAL_MODE
     else process.env.SHOGO_LOCAL_MODE = prev
+    if (prevIdle === undefined) delete process.env.RUNTIME_LOCAL_IDLE_MS
+    else process.env.RUNTIME_LOCAL_IDLE_MS = prevIdle
   })
 })
 

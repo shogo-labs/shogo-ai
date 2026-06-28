@@ -166,6 +166,11 @@ mock.module('../lib/prisma', () => ({
   },
 }))
 
+// analytics.service freezes `isSqlite = process.env.SHOGO_LOCAL_MODE === 'true'`
+// at module load. These tests drive the mocked Prisma store (findMany + JS
+// bucketing) rather than real Postgres raw-SQL bucketing, so select the
+// SQLite/local path before importing the module.
+process.env.SHOGO_LOCAL_MODE = 'true'
 const analytics = await import('../services/analytics.service')
 
 function rebuildModels() {

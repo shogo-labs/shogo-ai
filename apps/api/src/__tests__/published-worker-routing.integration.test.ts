@@ -82,17 +82,21 @@ afterAll(() => {
 interface RecordedCall {
   url: string
   headers: Record<string, string>
+  // Cloudflare-specific request init (`{ cf: { resolveOverride } }`) passed as
+  // fetch's second arg. The server-backed proxy keeps the published host in the
+  // URL and only overrides DNS resolution to the Kourier ingress via this.
+  cf?: any
 }
 let calls: RecordedCall[] = []
 const realFetch = globalThis.fetch
 
 function installFetch(handler: (url: string) => { status: number; body?: string }) {
-  globalThis.fetch = (async (input: any) => {
+  globalThis.fetch = (async (input: any, init?: any) => {
     const req: Request | null = input instanceof Request ? input : null
     const url = req ? req.url : typeof input === 'string' ? input : input.url
     const headers: Record<string, string> = {}
     if (req) req.headers.forEach((v, k) => { headers[k] = v })
-    calls.push({ url, headers })
+    calls.push({ url, headers, cf: init?.cf })
     const { status, body } = handler(url)
     return new Response(body ?? '', { status })
   }) as typeof fetch
@@ -125,9 +129,13 @@ describe('subdomain-router worker — server-backed /api proxy', () => {
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('{"id":"McCailey"}')
 
-    // Exactly one upstream call, and it went to the Kourier origin.
+    // Exactly one upstream call. The worker keeps the PUBLISHED host in the
+    // request URL (so Cloudflare sends Host: {subdomain}.{publish_domain}, which
+    // the DomainMapping routes to published-{id}) and only overrides DNS
+    // resolution to the Kourier ingress host via cf.resolveOverride.
     expect(calls.length).toBe(1)
-    expect(calls[0].url).toBe(`${KOURIER_ORIGIN}/api/collab/by-name/McCailey`)
+    expect(calls[0].url).toBe('https://august-29th-celebration-portal.shogo.one/api/collab/by-name/McCailey')
+    expect(calls[0].cf?.resolveOverride).toBe(KOURIER_ORIGIN.replace(/^https?:\/\//, ''))
     expect(calls[0].url.startsWith(OCI_ORIGIN)).toBe(false)
     // The published host is forwarded so the DomainMapping resolves at Kourier.
     // (`Host` is a forbidden fetch header in this runtime, so assert the

@@ -17,9 +17,12 @@ mock.module('@shogo/shared-runtime', () => ({
   },
 }))
 
-mock.module('@shogo/model-catalog', () => ({
-  getAgentModeOverrides: () => ({}),
-}))
+// NOTE: `@shogo/model-catalog` is intentionally NOT mocked here. Under
+// apps/api's `conditions = ["development"]` it resolves to real source
+// (`@shogo-ai/sdk/model-catalog` -> `@shogo-ai/agent/model-catalog`), and the
+// knative-workspace-manager import graph (build-workspace-env -> auto-tier-env)
+// statically imports `getAutoTierOverrides` / `inferProviderFromModel`. A
+// partial mock omits those and breaks the module at link time.
 
 mock.module('@kubernetes/client-node', () => ({
   KubeConfig: class {

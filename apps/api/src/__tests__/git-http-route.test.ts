@@ -278,7 +278,14 @@ describe('git-http route — POST handlers + auth edges', () => {
     expect(res.status).toBe(404)
   })
 
-  it('POST git-upload-pack: missing workspace dir returns 404 workspace_not_found', async () => {
+  // The stateless API auto-creates + `initRepo`s a missing workspace dir
+  // (the durable repo is hydrated from object storage), so a missing dir is
+  // no longer a 404 by itself. The workspace_not_found branch now fires when
+  // the repo genuinely can't be configured — i.e. `initRepo` throws.
+  it('POST git-upload-pack: returns 404 workspace_not_found when the repo cannot be configured', async () => {
+    // Synchronous throw: ensureRepoConfigured runs `void gitService.initRepo()`
+    // inside a sync try/catch, so a rejected promise wouldn't be caught.
+    initRepoMock.mockImplementationOnce((() => { throw new Error('hydrate failed') }) as any)
     const app = makeApp({ userId: 'u', isAuthenticated: true })
     const res = await app.request('/api/projects/p_nope/git/git-upload-pack', {
       method: 'POST', body: 'pack-data',
@@ -288,7 +295,8 @@ describe('git-http route — POST handlers + auth edges', () => {
     expect(body.error.code).toBe('workspace_not_found')
   })
 
-  it('GET info/refs: missing workspace dir returns 404 workspace_not_found', async () => {
+  it('GET info/refs: returns 404 workspace_not_found when the repo cannot be configured', async () => {
+    initRepoMock.mockImplementationOnce((() => { throw new Error('hydrate failed') }) as any)
     const app = makeApp({ userId: 'u', isAuthenticated: true })
     const res = await app.request('/api/projects/p_nope/git/info/refs?service=git-upload-pack')
     expect(res.status).toBe(404)

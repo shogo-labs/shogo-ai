@@ -43,6 +43,27 @@ mock.module('../services/analytics.service', () => ({
   getChatConversations: mock(async () => analyticsFixtures.conversations),
 }))
 
+// The collector no longer POSTs to api.anthropic.com directly — it routes
+// through the shared `resolveLanguageModel()` + `ai`'s `generateText()`. Mock
+// both seams so the test controls the AI output deterministically.
+mock.module('../lib/resolve-language-model', () => ({
+  resolveLanguageModel: (id: string, _opts?: any) => ({
+    model: { __id: id },
+    billingModelId: id,
+    provider: 'custom',
+  }),
+}))
+
+let digestAnalysisText = JSON.stringify({
+  takeaways: ['users build planners'],
+  intents: [{ category: 'planning', count: 2, examples: ['planner'] }],
+  painPoints: ['none'],
+  securityFlags: [],
+})
+mock.module('ai', () => ({
+  generateText: async (_opts: any) => ({ text: digestAnalysisText }),
+}))
+
 let chunkConversations: typeof import('../lib/analytics-digest-collector').chunkConversations
 let mergeAnalyses: typeof import('../lib/analytics-digest-collector').mergeAnalyses
 let generateDigest: typeof import('../lib/analytics-digest-collector').generateDigest
@@ -50,17 +71,6 @@ let startAnalyticsDigestCollector: typeof import('../lib/analytics-digest-collec
 let stopAnalyticsDigestCollector: typeof import('../lib/analytics-digest-collector').stopAnalyticsDigestCollector
 
 beforeEach(async () => {
-  process.env.ANTHROPIC_API_KEY = 'test-key'
-  globalThis.fetch = (async () => Response.json({
-    content: [{
-      text: JSON.stringify({
-        takeaways: ['users build planners'],
-        intents: [{ category: 'planning', count: 2, examples: ['planner'] }],
-        painPoints: ['none'],
-        securityFlags: [],
-      }),
-    }],
-  })) as any
   const mod = await import('../lib/analytics-digest-collector')
   chunkConversations = mod.chunkConversations
   mergeAnalyses = mod.mergeAnalyses
@@ -70,8 +80,6 @@ beforeEach(async () => {
 })
 
 afterEach(() => {
-  delete process.env.ANTHROPIC_API_KEY
-  delete (globalThis as any).fetch
   stopAnalyticsDigestCollector?.()
 })
 

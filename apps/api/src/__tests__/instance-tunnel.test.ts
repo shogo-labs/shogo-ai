@@ -244,7 +244,7 @@ describe('instance tunnel heartbeat and websocket client', () => {
 
   test('guards websocket header support and reports polling connectivity', async () => {
     expect(_testing.supportsWebSocketConstructorHeaders({})).toBe(false)
-    expect(() => _testing.createTunnelWebSocket('wss://x', { headers: {} }, {})).toThrow('Tunnel WebSocket auth requires Bun')
+    expect(() => _testing.createTunnelWebSocket('wss://x', { headers: {} }, {})).toThrow('Tunnel WebSocket auth requires a runtime with WebSocket header support')
 
     await markTunnelStarted()
     fetchQueue.push(

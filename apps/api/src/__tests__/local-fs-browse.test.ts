@@ -32,9 +32,13 @@ mock.module('../lib/prisma', () => ({ prisma: {} }))
 // below (which write to a sibling under os.tmpdir() via mkdtempSync) are
 // still genuinely outside the patched HOME. Per-file isolation under
 // run-tests-isolated.ts keeps this scoped.
-import { mkdirSync as _mkdirSyncForHome } from 'node:fs'
-const _fakeHome = join(os.tmpdir(), 'shogo-fake-home-' + Date.now() + '-' + Math.random().toString(36).slice(2))
-_mkdirSyncForHome(_fakeHome, { recursive: true })
+import { mkdirSync as _mkdirSyncForHome, realpathSync as _realpathSyncForHome } from 'node:fs'
+const _fakeHomeRaw = join(os.tmpdir(), 'shogo-fake-home-' + Date.now() + '-' + Math.random().toString(36).slice(2))
+_mkdirSyncForHome(_fakeHomeRaw, { recursive: true })
+// Canonicalise: macOS hard-links /var -> /private/var (and /tmp -> /private/tmp),
+// so the route's realpathSync() of a path under os.tmpdir() gains a /private
+// prefix. If HOME isn't canonical too, the isUnderHome() check fails on macOS.
+const _fakeHome = _realpathSyncForHome(_fakeHomeRaw)
 ;(os as { homedir: () => string }).homedir = () => _fakeHome
 
 const { localProjectsRoutes } = await import('../routes/local-projects')
