@@ -93,18 +93,61 @@ interface ChunkAnalysis {
 }
 
 /**
- * Strip a leading/trailing markdown code fence (```json … ```), which some
- * providers add despite the "no fences" instruction. Anthropic typically
- * returns raw JSON; OpenAI/Gemini/custom models are more fence-happy, so this
- * keeps the universal path robust across providers.
+ * Best-effort extraction of the digest JSON body from a model completion.
+ *
+ * The default "basic" model (Hoshi / MiMo) intermittently returns JSON that
+ * `JSON.parse` rejects. Measured against the live model on real prod data
+ * (~6% of chunks), the dominant failure is NOT prose/fence wrapping or
+ * truncation — it's the result being split into two *sibling* objects:
+ *
+ *   {"takeaways":[...],"intents":[...]} , {"painPoints":[...],"securityFlags":[...]}
+ *
+ * which is invalid JSON and previously dropped a whole chunk's insights
+ * (surfacing as `AI analysis error: JSON Parse error: Unexpected identifier`).
+ * Naive `{`…`}` extraction does not recover it, and `jsonrepair` "fixes" it
+ * into the wrong shape (`{"0":…,"1":…}`). Wrapping the siblings in an array
+ * and merging them back into one object faithfully reconstructs the result.
  */
-function stripCodeFence(text: string): string {
-  const trimmed = text.trim()
-  if (!trimmed.startsWith('```')) return trimmed
-  return trimmed
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/, '')
-    .trim()
+function parseLooseDigestJson(text: string): unknown {
+  let t = text.trim().replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+  // Prefer a fenced block when present (any / no language tag).
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
+  if (fence) t = fence[1].trim()
+  // Strip any prose around the JSON body.
+  const start = t.indexOf('{')
+  const end = t.lastIndexOf('}')
+  if (start !== -1 && end > start) t = t.slice(start, end + 1)
+
+  try {
+    return JSON.parse(t)
+  } catch {
+    // Sibling-objects case: wrap in an array and merge into a single object.
+    const parts = JSON.parse(`[${t}]`)
+    return Array.isArray(parts) ? Object.assign({}, ...parts) : parts
+  }
+}
+
+/**
+ * Parse a digest analysis completion into a normalized `ChunkAnalysis`.
+ * Throws when the output can't be parsed into an object carrying at least one
+ * of the expected keys — the caller uses that to trigger a single retry before
+ * falling back to an error placeholder. Exported for regression testing.
+ */
+export function tolerantParseDigest(text: string): ChunkAnalysis {
+  const parsed = parseLooseDigestJson(text) as Record<string, unknown> | null
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('digest analysis did not return a JSON object')
+  }
+  const EXPECTED = ['takeaways', 'intents', 'painPoints', 'securityFlags']
+  if (!EXPECTED.some((k) => k in parsed)) {
+    throw new Error('digest analysis JSON missing expected keys')
+  }
+  return {
+    takeaways: Array.isArray(parsed.takeaways) ? (parsed.takeaways as string[]) : [],
+    intents: Array.isArray(parsed.intents) ? (parsed.intents as ChunkAnalysis['intents']) : [],
+    painPoints: Array.isArray(parsed.painPoints) ? (parsed.painPoints as string[]) : [],
+    securityFlags: Array.isArray(parsed.securityFlags) ? (parsed.securityFlags as string[]) : [],
+  }
 }
 
 async function analyzeConversations(
@@ -143,18 +186,34 @@ Analyze these conversations and return a JSON object with exactly this structure
 }
 
 Focus on: what users are trying to build, whether they're succeeding, common patterns of confusion, and feature gaps.
-Return ONLY valid JSON, no markdown fences.`
+Return ONLY valid JSON, no markdown fences. Output a SINGLE JSON object with exactly these four keys — do not split the response into multiple objects.`
 
-  try {
+  // One generate+parse attempt. Parse failures are retried once because the
+  // basic model (MiMo) occasionally emits malformed JSON; `tolerantParseDigest`
+  // already recovers the common sibling-objects case, and the retry covers the
+  // rarer one-off malformations rather than dropping the whole chunk.
+  const runOnce = async (): Promise<ChunkAnalysis> => {
     const result = await generateText({
       model: resolved.model,
       maxOutputTokens: getMaxOutputTokens(resolved.billingModelId),
       prompt,
     })
-    return JSON.parse(stripCodeFence(result.text || '')) as ChunkAnalysis
-  } catch (err: any) {
-    console.error('[AnalyticsDigest] AI analysis error:', err?.message ?? err)
-    return { takeaways: [`AI analysis error: ${err?.message ?? err}`], intents: [], painPoints: [], securityFlags: [] }
+    return tolerantParseDigest(result.text || '')
+  }
+
+  try {
+    return await runOnce()
+  } catch (firstErr: any) {
+    console.warn(
+      '[AnalyticsDigest] analysis attempt failed, retrying once:',
+      firstErr?.message ?? firstErr,
+    )
+    try {
+      return await runOnce()
+    } catch (err: any) {
+      console.error('[AnalyticsDigest] AI analysis error:', err?.message ?? err)
+      return { takeaways: [`AI analysis error: ${err?.message ?? err}`], intents: [], painPoints: [], securityFlags: [] }
+    }
   }
 }
 

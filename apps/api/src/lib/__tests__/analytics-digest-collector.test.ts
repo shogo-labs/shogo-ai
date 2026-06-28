@@ -52,13 +52,19 @@ mock.module('../resolve-language-model', () => ({
   },
 }))
 
-// Controllable `ai` `generateText` seam.
-let generateBehavior: { text?: string; throws?: boolean; throwMsg?: string } = {}
+// Controllable `ai` `generateText` seam. `texts` (when set) returns a distinct
+// output per call so the parse-retry path can be exercised.
+let generateBehavior: { text?: string; texts?: string[]; throws?: boolean; throwMsg?: string } = {}
 const generateCalls: any[] = []
 mock.module('ai', () => ({
   generateText: async (opts: any) => {
+    const idx = generateCalls.length
     generateCalls.push(opts)
     if (generateBehavior.throws) throw new Error(generateBehavior.throwMsg ?? 'boom')
+    if (Array.isArray(generateBehavior.texts)) {
+      const arr = generateBehavior.texts
+      return { text: arr[idx] ?? arr[arr.length - 1] }
+    }
     return {
       text:
         generateBehavior.text ??
@@ -70,6 +76,7 @@ mock.module('ai', () => ({
 const {
   chunkConversations,
   mergeAnalyses,
+  tolerantParseDigest,
   generateDigest,
   startAnalyticsDigestCollector,
   stopAnalyticsDigestCollector,
@@ -196,6 +203,61 @@ describe('mergeAnalyses', () => {
     ])
     expect(m.painPoints).toEqual(['x', 'y'])
     expect(m.securityFlags).toEqual(['s'])
+  })
+})
+
+// Digest JSON recovery — prod signature: intermittent
+// `AI analysis error: JSON Parse error: Unexpected identifier` that dropped a
+// full chunk's insights. Measured against the live basic model (MiMo) on real
+// prod data, the dominant failure is the result split into two sibling objects
+// (`{takeaways,intents},{painPoints,securityFlags}`). `tolerantParseDigest`
+// recovers that (and prose/fence/think wrapping) instead of losing the chunk.
+describe('tolerantParseDigest (digest JSON recovery)', () => {
+  const full = {
+    takeaways: ['t'],
+    intents: [{ category: 'C', count: 2, examples: ['e'] }],
+    painPoints: ['p'],
+    securityFlags: ['s'],
+  }
+
+  it('parses a clean JSON object unchanged', () => {
+    expect(tolerantParseDigest(JSON.stringify(full))).toEqual(full)
+  })
+
+  it('recovers the sibling-objects malformation by merging into one object', () => {
+    const text =
+      '{"takeaways":["a","b"],"intents":[{"category":"Web","count":3,"examples":["x"]}]}' +
+      ',{"painPoints":["pp"],"securityFlags":["sf"]}'
+    const r = tolerantParseDigest(text)
+    expect(r.takeaways).toEqual(['a', 'b'])
+    expect(r.intents[0].category).toBe('Web')
+    expect(r.painPoints).toEqual(['pp'])
+    expect(r.securityFlags).toEqual(['sf'])
+  })
+
+  it('strips prose preamble and trailing text around the JSON body', () => {
+    const text = 'Here is the analysis:\n' + JSON.stringify(full) + '\nHope this helps!'
+    expect(tolerantParseDigest(text)).toEqual(full)
+  })
+
+  it('handles a ```json fenced block', () => {
+    expect(tolerantParseDigest('```json\n' + JSON.stringify(full) + '\n```')).toEqual(full)
+  })
+
+  it('drops <think> reasoning blocks before parsing', () => {
+    expect(tolerantParseDigest('<think>let me reason</think>' + JSON.stringify(full))).toEqual(full)
+  })
+
+  it('normalizes missing keys to empty arrays', () => {
+    expect(tolerantParseDigest('{"takeaways":["only"]}')).toEqual({
+      takeaways: ['only'], intents: [], painPoints: [], securityFlags: [],
+    })
+  })
+
+  it('throws on unparseable / wrong-shape output so the caller can retry', () => {
+    expect(() => tolerantParseDigest('totally not json')).toThrow()
+    expect(() => tolerantParseDigest('[1,2,3]')).toThrow() // array, not an object
+    expect(() => tolerantParseDigest('{"foo":1}')).toThrow() // no expected keys
   })
 })
 
@@ -327,6 +389,47 @@ describe('generateDigest', () => {
     })
     await generateDigest(fakePrisma)
     expect(upsertCalls[0].create.aiInsights.takeaways).toContain('fenced')
+  })
+
+  it('recovers a sibling-objects response in a single pass (no retry)', async () => {
+    generateBehavior = {
+      text:
+        '{"takeaways":["a"],"intents":[{"category":"X","count":1,"examples":["e"]}]}' +
+        ',{"painPoints":["p1","p2"],"securityFlags":["s1"]}',
+    }
+    convosImpl = async () => ({
+      conversations: [{ userName: 'a', projectName: 'p', templateId: null,
+        messages: [{ role: 'user', content: 'q' }] }],
+    })
+    await generateDigest(fakePrisma)
+    expect(generateCalls.length).toBe(1) // recovered without a retry
+    const ins = upsertCalls[0].create.aiInsights
+    expect(ins.takeaways).toContain('a')
+    expect(ins.intents[0].category).toBe('X')
+    expect(ins.painPoints).toEqual(expect.arrayContaining(['p1', 'p2']))
+    expect(ins.securityFlags).toContain('s1')
+  })
+
+  it('retries once and recovers when the first output is unparseable', async () => {
+    generateBehavior = {
+      texts: [
+        'I could not produce JSON this time, sorry.',
+        JSON.stringify({ takeaways: ['recovered'], intents: [], painPoints: [], securityFlags: [] }),
+      ],
+    }
+    const realWarn = console.warn
+    console.warn = () => {}
+    convosImpl = async () => ({
+      conversations: [{ userName: 'a', projectName: 'p', templateId: null,
+        messages: [{ role: 'user', content: 'q' }] }],
+    })
+    try {
+      await generateDigest(fakePrisma)
+      expect(generateCalls.length).toBe(2) // first failed, retried
+      expect(upsertCalls[0].create.aiInsights.takeaways).toContain('recovered')
+    } finally {
+      console.warn = realWarn
+    }
   })
 
   it('returns error branch when the model throws', async () => {
