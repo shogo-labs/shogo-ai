@@ -78,6 +78,13 @@ mock.module('@shogo/agent-runtime/src/agent-templates', () => ({
   getAgentTemplateById: getAgentTemplateByIdMock,
 }))
 
+// Pure string-formatter in prod; mocked here to avoid loading the heavy
+// Knative/k8s client module (and to make the derived URL deterministic).
+const getPreviewUrlMock = mock((projectId: string) => `https://${projectId}.preview.staging.shogo.ai`)
+mock.module('../lib/knative-project-manager', () => ({
+  getPreviewUrl: getPreviewUrlMock,
+}))
+
 const { buildProjectEnv } = await import('../lib/runtime/build-project-env')
 
 // ─── lifecycle ─────────────────────────────────────────────────────────────
@@ -119,6 +126,10 @@ beforeEach(() => {
   resolvePublicModelSyncMock.mockClear()
   getAgentTemplateByIdMock.mockReset()
   getAgentTemplateByIdMock.mockImplementation(() => null)
+  getPreviewUrlMock.mockReset()
+  getPreviewUrlMock.mockImplementation(
+    (projectId: string) => `https://${projectId}.preview.staging.shogo.ai`,
+  )
 })
 
 afterEach(() => {
@@ -182,6 +193,41 @@ describe('buildProjectEnv — proxy URLs', () => {
     process.env.API_PORT = '9999'
     const env = await buildProjectEnv('proj-6')
     expect(env.AI_PROXY_URL).toBe('http://api.shogo-prod.svc.cluster.local/api/ai/v1')
+  })
+})
+
+// ─── PUBLIC_PREVIEW_URL (cloud preview link) ──────────────────────────────
+//
+// Pooled/warm pods learn their project env through this builder. Without
+// PUBLIC_PREVIEW_URL the runtime falls back to a localhost link the user
+// can't open (and the gateway's localhost→preview rewriter stays disabled),
+// so it MUST be injected for cloud (k8s) — but never for desktop VMs, where
+// localhost IS the URL the user opens.
+describe('buildProjectEnv — PUBLIC_PREVIEW_URL', () => {
+  test('injects the deterministic preview URL in k8s (SYSTEM_NAMESPACE set)', async () => {
+    process.env.SYSTEM_NAMESPACE = 'shogo-staging'
+    const env = await buildProjectEnv('proj-pp')
+    expect(env.PUBLIC_PREVIEW_URL).toBe('https://proj-pp.preview.staging.shogo.ai')
+    expect(getPreviewUrlMock).toHaveBeenCalledWith('proj-pp')
+  })
+
+  test('omits PUBLIC_PREVIEW_URL off-cluster (desktop VM / local — no SYSTEM_NAMESPACE)', async () => {
+    const env = await buildProjectEnv('proj-pp-local')
+    expect(env.PUBLIC_PREVIEW_URL).toBeUndefined()
+    expect(getPreviewUrlMock).not.toHaveBeenCalled()
+  })
+
+  test('swallows a getPreviewUrl failure without blocking the rest of the env build', async () => {
+    process.env.SYSTEM_NAMESPACE = 'shogo-staging'
+    getPreviewUrlMock.mockImplementation(() => {
+      throw new Error('preview config missing')
+    })
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    const env = await buildProjectEnv('proj-pp-fail')
+    expect(env.PUBLIC_PREVIEW_URL).toBeUndefined()
+    expect(env.PROJECT_ID).toBe('proj-pp-fail')
+    expect(env.RUNTIME_AUTH_SECRET).toBe('runtime-token-stub')
+    errorSpy.mockRestore()
   })
 })
 
