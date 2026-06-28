@@ -95,6 +95,10 @@ describe('billing service local mode', () => {
     })
   })
 
+  test('canPublishSubdomain returns true in local mode regardless of plan', async () => {
+    expect(await billing.canPublishSubdomain('ws-local')).toBe(true)
+  })
+
   test('consumeUsage remains successful when local usage-event recording fails', async () => {
     usageEventCreateError = new Error('local db offline')
 

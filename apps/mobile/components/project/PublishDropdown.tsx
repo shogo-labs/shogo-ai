@@ -117,6 +117,10 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const [serverBacked, setServerBacked] = useState(false)
   const [isTogglingAlwaysOn, setIsTogglingAlwaysOn] = useState(false)
 
+  // Whether the workspace plan (Pro+) may publish to a new/changed subdomain.
+  // Defaults to true so the controls aren't gated before state loads.
+  const [planAllowsPublish, setPlanAllowsPublish] = useState(true)
+
   const [subdomainStatus, setSubdomainStatus] = useState<{
     checking: boolean
     available: boolean | null
@@ -146,6 +150,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
       setAlwaysOnAllowance(data.alwaysOnAllowance ?? null)
       setAlwaysOnUsed(data.alwaysOnUsed ?? 0)
       setServerBacked(data.serverBacked !== false)
+      setPlanAllowsPublish(data.canPublish !== false)
     } catch {}
   }, [http, projectId])
 
@@ -313,11 +318,16 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
     password.length >= SITE_PASSWORD_MIN_LENGTH ||
     (hasPassword && subdomain === publishedSubdomain)
 
+  // Publishing to a new/changed subdomain requires a Pro+ plan; republishing
+  // the same subdomain is always allowed (matches the server-side gate).
+  const planSatisfiesPublish = planAllowsPublish || subdomain === publishedSubdomain
+
   const canPublish =
     subdomain.length >= 3 &&
     !subdomainStatus.checking &&
     (subdomainStatus.available === true || subdomain === publishedSubdomain) &&
     passwordSatisfied &&
+    planSatisfiesPublish &&
     !isPublishing
 
   const currentAccess = ACCESS_OPTIONS.find(o => o.value === accessLevel) || ACCESS_OPTIONS[0]
@@ -581,6 +591,32 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
               on its own. */}
           {isPublished && <CustomDomainsSection projectId={projectId} http={http} />}
 
+          {/* Pro gate — publishing to a subdomain requires Pro+. Republishing
+              an already-live site is still allowed, so only show this when the
+              plan can't publish a new/changed subdomain. */}
+          {!planAllowsPublish && (
+            <Pressable
+              onPress={goToBilling}
+              className="mb-4 flex-row items-center gap-3 rounded-lg border border-border p-3"
+            >
+              <Globe size={16} className="text-muted-foreground" />
+              <View className="flex-1">
+                <View className="flex-row items-center gap-2">
+                  <Text className="text-sm font-medium text-foreground">Publish to a subdomain</Text>
+                  <View className="rounded px-1.5 bg-primary/10">
+                    <Text className="text-[10px] text-primary font-medium">Pro</Text>
+                  </View>
+                </View>
+                <Text className="text-[11px] text-muted-foreground mt-0.5">
+                  {isPublished
+                    ? 'Changing your URL requires Pro. You can still publish updates to your current URL.'
+                    : 'Get a public link at {subdomain}.shogo.one. Available on Pro & Business.'}
+                </Text>
+              </View>
+              <ExternalLink size={14} className="text-primary" />
+            </Pressable>
+          )}
+
           {/* Error */}
           {error && (
             <View className="p-3 bg-destructive/10 rounded-lg border border-destructive/20 mb-4">
@@ -639,19 +675,28 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
                 >
                   <Text className="text-sm font-medium text-foreground">Cancel</Text>
                 </Pressable>
-                <Pressable
-                  onPress={handlePublish}
-                  disabled={!canPublish}
-                  className={cn('flex-1 h-10 rounded-lg items-center justify-center', canPublish ? 'bg-primary' : 'bg-muted')}
-                >
-                  {isPublishing ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <Text className={cn('text-sm font-medium', canPublish ? 'text-primary-foreground' : 'text-muted-foreground')}>
-                      Publish
-                    </Text>
-                  )}
-                </Pressable>
+                {!planAllowsPublish ? (
+                  <Pressable
+                    onPress={goToBilling}
+                    className="flex-1 h-10 rounded-lg items-center justify-center bg-primary"
+                  >
+                    <Text className="text-sm font-medium text-primary-foreground">Upgrade to Pro</Text>
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    onPress={handlePublish}
+                    disabled={!canPublish}
+                    className={cn('flex-1 h-10 rounded-lg items-center justify-center', canPublish ? 'bg-primary' : 'bg-muted')}
+                  >
+                    {isPublishing ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text className={cn('text-sm font-medium', canPublish ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                        Publish
+                      </Text>
+                    )}
+                  </Pressable>
+                )}
               </>
             )}
           </View>
