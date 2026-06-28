@@ -558,6 +558,17 @@ describe('plan helpers (no local mode)', () => {
     subs.set('w1', [{ id: 's1', workspaceId: 'w1', stripeSubscriptionId: 's', stripeCustomerId: 'c', planId: 'business', seats: 1, status: 'active', billingInterval: 'monthly', currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today }])
     expect(await billing.isBusinessOrHigherPlan('w1')).toBe(true)
   })
+  it('canPublishSubdomain false for free and basic', async () => {
+    expect(await billing.canPublishSubdomain('w1')).toBe(false)
+    subs.set('w2', [{ id: 's2', workspaceId: 'w2', stripeSubscriptionId: 's', stripeCustomerId: 'c', planId: 'basic', seats: 1, status: 'active', billingInterval: 'monthly', currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today }])
+    expect(await billing.canPublishSubdomain('w2')).toBe(false)
+  })
+  it('canPublishSubdomain true for pro, business, enterprise', async () => {
+    for (const [ws, plan] of [['wp', 'pro'], ['wb', 'business'], ['we', 'enterprise']] as const) {
+      subs.set(ws, [{ id: `s_${ws}`, workspaceId: ws, stripeSubscriptionId: 's', stripeCustomerId: 'c', planId: plan, seats: 1, status: 'active', billingInterval: 'monthly', currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today }])
+      expect(await billing.canPublishSubdomain(ws)).toBe(true)
+    }
+  })
 })
 
 // ============================================================================

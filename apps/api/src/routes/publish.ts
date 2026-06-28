@@ -917,6 +917,21 @@ export async function publishProject(
       return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
     }
 
+    // Subdomain publishing is gated to Pro+. Only gate a first publish or a
+    // subdomain change — republishing the same subdomain stays allowed so a
+    // workspace that downgraded keeps a live site updatable.
+    if (project.publishedSubdomain !== subdomain) {
+      const { canPublishSubdomain } = await import("../services/billing.service")
+      if (!(await canPublishSubdomain(project.workspaceId))) {
+        return {
+          ok: false,
+          status: 402,
+          code: "plan_not_allowed",
+          message: "Publishing to a subdomain is available on Pro and higher plans. Upgrade to publish.",
+        }
+      }
+    }
+
     // Check if subdomain is available (unless it's the same project's subdomain)
     if (project.publishedSubdomain !== subdomain) {
       const existingProject = await prisma.project.findUnique({
@@ -1228,14 +1243,15 @@ export function publishRoutes() {
       // this app can use it at all (server-backed). `serverBacked` is read from
       // the edge KV flag (fast, no pod cold start); in local/unconfigured mode
       // we default it on so the toggle is testable.
-      const { getAlwaysOnAllowanceForWorkspace, countAlwaysOnUsed } = await import("../services/billing.service")
+      const { getAlwaysOnAllowanceForWorkspace, countAlwaysOnUsed, canPublishSubdomain } = await import("../services/billing.service")
       const { getServerBackedFlag } = await import("../lib/cloudflare-server-backed-kv")
-      const [alwaysOnAllowance, alwaysOnUsed, serverBackedFlag] = await Promise.all([
+      const [alwaysOnAllowance, alwaysOnUsed, serverBackedFlag, canPublish] = await Promise.all([
         getAlwaysOnAllowanceForWorkspace(project.workspaceId),
         countAlwaysOnUsed(project.workspaceId),
         project.publishedSubdomain
           ? getServerBackedFlag(project.publishedSubdomain)
           : Promise.resolve(null),
+        canPublishSubdomain(project.workspaceId),
       ])
 
       return c.json({
@@ -1254,6 +1270,8 @@ export function publishRoutes() {
         alwaysOnAllowance: Number.isFinite(alwaysOnAllowance) ? alwaysOnAllowance : null,
         alwaysOnUsed,
         serverBacked: serverBackedFlag ?? true,
+        // Whether the workspace plan (Pro+) may publish to a new subdomain.
+        canPublish,
       }, 200)
     } catch (error: any) {
       console.error("[Publish] Get publish state error:", error)

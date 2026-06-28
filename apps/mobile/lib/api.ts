@@ -793,6 +793,8 @@ export const api = {
       alwaysOnUsed?: number
       /** Whether the app has a backend (only then is always-on meaningful). */
       serverBacked?: boolean
+      /** Whether the workspace plan (Pro+) may publish to a new subdomain. */
+      canPublish?: boolean
     }>(
       `/api/projects/${projectId}/publish`,
     )

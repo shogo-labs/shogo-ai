@@ -435,6 +435,18 @@ export async function hasAdvancedModelAccess(workspaceId: string): Promise<boole
 }
 
 /**
+ * Check if workspace may publish to a subdomain (`{subdomain}.shogo.one`).
+ * Gated to Pro, Business, Enterprise (via paid subscription or a super-admin
+ * grant's `planId`). Returns false for Basic and free.
+ * In local mode returns true so publishing works during development.
+ */
+export async function canPublishSubdomain(workspaceId: string): Promise<boolean> {
+  if (isLocalMode) return true
+  const plan = await getEffectivePlanId(workspaceId)
+  return PLAN_RANK[plan] >= PLAN_RANK.pro
+}
+
+/**
  * Check if workspace has a Business or Enterprise plan, whether via
  * Stripe subscription or super-admin grant. Returns false for Pro,
  * free, or unconfigured workspaces.

@@ -2217,6 +2217,12 @@ function createPublishTool(ctx: ToolContext): AgentTool {
             code: res.code,
           })
         }
+        if (res.code === 'plan_not_allowed') {
+          return textResult({
+            error: 'Publishing to a subdomain requires a Pro (or higher) plan. Tell the user to upgrade in Settings > Billing to publish.',
+            code: res.code,
+          })
+        }
         return textResult({ error: res.error ?? 'Publish failed', code: res.code, status: res.status })
       }
 
