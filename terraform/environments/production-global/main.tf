@@ -200,43 +200,18 @@ resource "cloudflare_record" "india_tunnel" {
 }
 
 # =============================================================================
-# Preview Router — per-project preview routing without per-preview DNS records
+# Preview Router
 # =============================================================================
-# Replaces the per-preview `preview--{id}.shogo.ai` A records (which hit the
-# zone's 200-record quota) with a Worker + KV that resolveOverrides each preview
-# (`{projectId}.preview.shogo.ai`) to its hosting region's Kourier LB. See
-# modules/preview-router.
-module "preview_router" {
-  source = "../../modules/preview-router"
-
-  environment           = "production"
-  cloudflare_account_id = var.cloudflare_account_id
-  cloudflare_zone_id    = var.cloudflare_zone_id
-  zone_name             = "shogo.ai"
-  preview_base_domain   = "preview.shogo.ai"
-
-  # Region code (the value the API writes to KV from REGION_ID) -> Kourier LB IP.
-  region_anchors = {
-    us = var.us_lb_ip
-    eu = var.eu_lb_ip
-    in = var.india_lb_ip
-  }
-  default_region = "us"
-}
+# NOTE: The per-project preview router (Worker + KV for `*.preview.shogo.ai`)
+# lives in the `edge-global` environment, NOT here. It was moved there so it can
+# be applied via the standard terraform.yml CI flow on the S3 backend, without
+# first migrating production-global's existing LOCAL state (which owns
+# studio/docs LBs + tunnel records). See terraform/environments/edge-global and
+# docs/preview-router.md.
 
 # =============================================================================
 # Outputs
 # =============================================================================
-
-# Wire this into EVERY region's api ksvc as CF_PREVIEW_REGIONS_KV_NAMESPACE_ID
-# (via the custom-domains-config secret) so each region records the location of
-# the previews it hosts.
-output "preview_regions_kv_namespace_id" {
-  description = "Workers KV namespace id for the preview region map."
-  value       = module.preview_router.preview_regions_kv_namespace_id
-}
-output "preview_router_worker_name" { value = module.preview_router.worker_name }
-output "preview_router_anchors" { value = module.preview_router.anchor_hostnames }
 
 output "studio_lb_id" { value = cloudflare_load_balancer.studio.id }
 output "docs_lb_id" { value = cloudflare_load_balancer.docs.id }

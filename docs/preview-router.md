@@ -76,7 +76,7 @@ failure.
 
 | Piece | Location |
 |---|---|
-| Worker + KV + wildcard + cert + anchors + route | `terraform/modules/preview-router` (takes a `region_anchors` map + `default_region` + `preview_base_domain`); instantiated in `terraform/environments/production-global` (us/eu/in) and `terraform/environments/staging` (single `staging` region) |
+| Worker + KV + wildcard + cert + anchors + route | `terraform/modules/preview-router` (takes a `region_anchors` map + `default_region` + `preview_base_domain`); instantiated in `terraform/environments/edge-global` (production: us/eu/in) and `terraform/environments/staging` (single `staging` region) |
 | Preview host construction | `getPreviewSubdomain()` in `apps/api/src/lib/knative-project-manager.ts` (`{projectId}.preview.{env?}.{base}`) |
 | KV write/delete (per region) | `apps/api/src/lib/cloudflare-preview-region-kv.ts` |
 | Wiring | `KnativeProjectManager.createPreviewDomainMapping` → `setPreviewRegion(projectId)`; `deletePreviewDomainMapping` → `clearPreviewRegion(projectId)` |
@@ -126,10 +126,10 @@ The Worker route intercepts **all** `*.preview.shogo.ai` traffic the moment it
 exists. Because this is a NEW subtree, no existing preview is affected until the
 API starts minting `{id}.preview.shogo.ai` hostnames — so the cutover is safe:
 
-1. **Apply Terraform** (`production-global`). Creates the KV namespace, the
-   wildcard, the advanced cert pack, the 3 anchors, the Worker, and the route.
-   Capture `preview_regions_kv_namespace_id`. Wait for the cert pack to go
-   `active`.
+1. **Apply Terraform** (`edge-global`, via the terraform.yml `workflow_dispatch`
+   apply on the S3 backend). Creates the KV namespace, the wildcard, the advanced
+   cert pack, the 3 anchors, the Worker, and the route. Capture
+   `preview_regions_kv_namespace_id`. Wait for the cert pack to go `active`.
 2. **Wire the secret**: add `CF_PREVIEW_REGIONS_KV_NAMESPACE_ID` (= step 1 value)
    to the `custom-domains-config` secret in **every** production region
    namespace, then roll the API. From now on new previews are
