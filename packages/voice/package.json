@@ -123,17 +123,17 @@
     }
   },
   "devDependencies": {
-    "@ai-sdk/react": "^3.0.99",
+    "@ai-sdk/react": "^4.0.5",
     "@elevenlabs/react": "^1.1.1",
     "@elevenlabs/react-native": "^1.1.4",
     "@types/node": "^25.5.0",
     "@types/react": "^19.0.0",
     "@types/three": "^0.180.0",
-    "ai": "^6.0.97",
+    "ai": "^7.0.4",
     "expo-gl": "^15.0.0",
     "expo-three": "^8.0.0",
-    "react-native": "^0.81.0",
-    "three": "^0.180.0",
+    "react-native": "^0.86.0",
+    "three": "^0.185.0",
     "tsup": "^8.0.0",
     "typescript": "^6.0.2"
   },
