@@ -536,7 +536,7 @@ export type DeviceMode =
   | 'local-tunnel-unavailable'
   | 'not-applicable'
 
-function detectLocalMode(): boolean {
+export function detectLocalMode(): boolean {
   if (process.env.SHOGO_RUNTIME_MODE === 'local') return true
   if (process.env.SHOGO_RUNTIME_MODE === 'cloud') return false
   // K8s pods set KUBERNETES_SERVICE_HOST; absence implies local dev.
@@ -973,6 +973,18 @@ export class PreviewManager {
   /** URL the end user (or a QA subagent's browser) should navigate to. */
   get externalUrl(): string {
     return this.publicUrl && this.publicUrl.length > 0 ? this.publicUrl : this.internalUrl
+  }
+
+  /**
+   * User-facing external URL, or `null` when none is known. Unlike
+   * {@link externalUrl}, this NEVER falls back to `localhost` in cloud — a
+   * cloud pod's localhost is unreachable by the user, so handing it out is the
+   * "shared a localhost URL from a cloud pod" bug. Local dev (no public URL but
+   * `localMode`) still returns the localhost URL, since that IS the user's URL.
+   */
+  get externalUrlOrNull(): string | null {
+    if (this.publicUrl && this.publicUrl.length > 0) return this.publicUrl
+    return this.localMode ? this.internalUrl : null
   }
 
   get isStarted(): boolean {
@@ -2333,7 +2345,9 @@ export class PreviewManager {
     return {
       running,
       port: running ? this.runtimePort : null,
-      url: running ? this.externalUrl : null,
+      // Never hand out a cloud pod's localhost as the user-facing URL — see
+      // `externalUrlOrNull`. In local dev this still returns the localhost URL.
+      url: running ? this.externalUrlOrNull : null,
       internalUrl: running ? this.internalUrl : null,
       publicUrl: running && this.publicUrl ? this.publicUrl : null,
       workspaceDir: this.workspaceDir,

@@ -36,6 +36,9 @@ const store = {
   checkpointFindThrow: null as null | Error,
   checkpointCreateThrow: null as null | Error,
   createdCheckpoint: null as any,
+  publishResult: null as any,
+  publishThrow: null as null | Error,
+  publishCalledWith: null as any,
 }
 
 mock.module('../../lib/k8s-auth', () => ({
@@ -125,6 +128,16 @@ mock.module('../../services/cost-analytics.service', () => ({
   },
 }))
 
+// The internal POST publish route lazily `await import('./publish')` and calls
+// publishProject; mock it so the heavy build/Knative pipeline never runs.
+mock.module('../publish', () => ({
+  publishProject: async (projectId: string, opts: any) => {
+    store.publishCalledWith = { projectId, opts }
+    if (store.publishThrow) throw store.publishThrow
+    return store.publishResult
+  },
+}))
+
 const app = (await import('../internal')).default
 
 beforeEach(() => {
@@ -155,6 +168,9 @@ beforeEach(() => {
   store.checkpointFindThrow = null
   store.checkpointCreateThrow = null
   store.createdCheckpoint = null
+  store.publishResult = null
+  store.publishThrow = null
+  store.publishCalledWith = null
   delete process.env.SHOGO_LOCAL_MODE
 })
 
@@ -962,6 +978,185 @@ describe('validateAuth: workspace runtime token (local mode)', () => {
     store.workspaceVerify = { ok: false, reason: 'malformed' }
     const res = await app.request('/projects/proj-x/checkpoints/record', {
       method: 'POST', headers: { 'x-runtime-token': 'rt', ...JSON_H }, body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(200)
+  })
+})
+
+// ─── GET /projects/:projectId/publish ───────────────────────────────────────
+//
+// Read-only publish-state probe the agent's `publish` tool uses to tell a first
+// publish (no subdomain yet → must confirm with the user) from a republish
+// (reuse the live subdomain).
+describe('GET /projects/:projectId/publish', () => {
+  test('401 when no auth headers', async () => {
+    const res = await app.request('/projects/p1/publish')
+    expect(res.status).toBe(401)
+  })
+
+  test('404 when project does not exist', async () => {
+    store.prismaProjectFindUnique = null
+    const res = await app.request('/projects/missing/publish', { headers: { ...SA } })
+    expect(res.status).toBe(404)
+  })
+
+  test('200 reports the live subdomain + flags for a published project', async () => {
+    store.prismaProjectFindUnique = {
+      publishedSubdomain: 'my-site',
+      publishedAt: new Date('2026-01-02T03:04:05.000Z'),
+      accessLevel: 'public',
+      sitePasswordHash: null,
+      publishStatus: 'published',
+    }
+    const res = await app.request('/projects/p1/publish', { headers: { ...SA } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      ok: true,
+      published: true,
+      subdomain: 'my-site',
+      publishedAt: new Date('2026-01-02T03:04:05.000Z').getTime(),
+      accessLevel: 'public',
+      hasPassword: false,
+      publishStatus: 'published',
+    })
+  })
+
+  test('200 reports unpublished (no subdomain) with hasPassword when a hash is set', async () => {
+    store.prismaProjectFindUnique = {
+      publishedSubdomain: null,
+      publishedAt: null,
+      accessLevel: 'password',
+      sitePasswordHash: 'argon2-hash',
+      publishStatus: null,
+    }
+    const res = await app.request('/projects/p1/publish', { headers: { ...SA } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      ok: true,
+      published: false,
+      subdomain: null,
+      publishedAt: null,
+      accessLevel: 'password',
+      hasPassword: true,
+      publishStatus: null,
+    })
+  })
+
+  test('200 with runtime token in local mode', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: true, projectId: 'p-local' }
+    store.prismaProjectFindUnique = {
+      publishedSubdomain: null,
+      publishedAt: null,
+      accessLevel: 'public',
+      sitePasswordHash: null,
+      publishStatus: null,
+    }
+    const res = await app.request('/projects/p-local/publish', {
+      headers: { 'x-runtime-token': 'rt' },
+    })
+    expect(res.status).toBe(200)
+  })
+
+  test('500 when prisma throws', async () => {
+    store.prismaProjectFindUniqueThrow = new Error('db down')
+    const res = await app.request('/projects/p1/publish', { headers: { ...SA } })
+    expect(res.status).toBe(500)
+  })
+})
+
+// ─── POST /projects/:projectId/publish ──────────────────────────────────────
+//
+// Cluster-internal mirror of the session-authenticated POST /projects/:id/publish
+// so the agent's publish tool can deploy `{subdomain}.shogo.one` from the pod.
+// Delegates to the shared `publishProject` service (mocked here).
+describe('POST /projects/:projectId/publish', () => {
+  const ok = {
+    ok: true,
+    url: 'https://my-site.shogo.one',
+    subdomain: 'my-site',
+    publishedAt: 1700000000000,
+    accessLevel: 'public',
+    hasPassword: false,
+  }
+
+  test('401 when auth fails', async () => {
+    store.podIdentity = null
+    const res = await app.request('/projects/p1/publish', {
+      method: 'POST', headers: { ...JSON_H }, body: JSON.stringify({ subdomain: 'my-site' }),
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test('400 when body is not JSON', async () => {
+    const res = await app.request('/projects/p1/publish', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: '{not-json',
+    })
+    expect(res.status).toBe(400)
+  })
+
+  test('400 when subdomain missing', async () => {
+    const res = await app.request('/projects/p1/publish', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('subdomain_required')
+  })
+
+  test('200 publishes and forwards options to publishProject', async () => {
+    store.publishResult = ok
+    const res = await app.request('/projects/proj-x/publish', {
+      method: 'POST', headers: { ...SA, ...JSON_H },
+      body: JSON.stringify({
+        subdomain: 'my-site', accessLevel: 'public',
+        siteTitle: 'My Site', siteDescription: 'desc',
+      }),
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      ok: true,
+      url: 'https://my-site.shogo.one',
+      subdomain: 'my-site',
+      publishedAt: 1700000000000,
+      accessLevel: 'public',
+      hasPassword: false,
+    })
+    expect(store.publishCalledWith).toEqual({
+      projectId: 'proj-x',
+      opts: {
+        subdomain: 'my-site', accessLevel: 'public', password: undefined,
+        siteTitle: 'My Site', siteDescription: 'desc',
+      },
+    })
+  })
+
+  test('maps a structured publishProject failure to its status + code', async () => {
+    store.publishResult = { ok: false, code: 'subdomain_taken', message: 'Taken', status: 409 }
+    const res = await app.request('/projects/proj-x/publish', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ subdomain: 'taken' }),
+    })
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toEqual({ code: 'subdomain_taken', message: 'Taken' })
+  })
+
+  test('500 when publishProject throws', async () => {
+    store.publishThrow = new Error('knative down')
+    const res = await app.request('/projects/proj-x/publish', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ subdomain: 'my-site' }),
+    })
+    expect(res.status).toBe(500)
+    expect((await res.json()).error.code).toBe('publish_failed')
+  })
+
+  test('200 with runtime token in local mode', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    store.podIdentity = null
+    store.runtimeVerify = { ok: true, projectId: 'p-local' }
+    store.publishResult = ok
+    const res = await app.request('/projects/p-local/publish', {
+      method: 'POST', headers: { 'x-runtime-token': 'rt', ...JSON_H },
+      body: JSON.stringify({ subdomain: 'my-site' }),
     })
     expect(res.status).toBe(200)
   })

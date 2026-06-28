@@ -89,6 +89,8 @@ import {
   listCheckpoints as apiListCheckpoints,
   getCheckpointDiff as apiGetCheckpointDiff,
   rollbackCheckpoint as apiRollbackCheckpoint,
+  getPublishState as apiGetPublishState,
+  publishProject as apiPublishProject,
   type CheckpointCallResult,
 } from './internal-api'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
@@ -2108,6 +2110,130 @@ function createCheckpointTool(ctx: ToolContext): AgentTool {
         rolledBack: true,
         result: res.data,
         note: 'Restored to the requested checkpoint. A new checkpoint was created first, so this is reversible. Re-verify the app still works.',
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Publish Tool — deploy the app to {subdomain}.shogo.one (gated, internal-api)
+// ---------------------------------------------------------------------------
+
+/** GET the published URL a few times to confirm it serves 2xx (cold start). */
+async function verifyPublishedUrl(url: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        redirect: 'follow',
+        signal: AbortSignal.timeout(15_000),
+      })
+      // 401/403 means the site IS live but gated (password/private) — that's a
+      // successful publish, so treat any non-5xx, non-404 as reachable.
+      if (res.status < 500 && res.status !== 404) return true
+    } catch {
+      /* retry */
+    }
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 2000))
+  }
+  return false
+}
+
+function createPublishTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'publish',
+    description: [
+      'Publish the project to a public, persistent URL at `{subdomain}.shogo.one`. Use this whenever the user wants to "host", "share", "deploy", "save permanently", "put this online", or get a link they can send to other people — this is the durable path; do NOT walk them through downloading/exporting/running it locally.',
+      'First publish: a subdomain is required. Do NOT invent a public name silently — propose one (e.g. derived from the app/project name) and CONFIRM it with the user before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
+      'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
+      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user.',
+    ].join('\n'),
+    label: 'Publish',
+    parameters: Type.Object({
+      subdomain: Type.Optional(
+        Type.String({
+          description:
+            'Subdomain for {subdomain}.shogo.one. Required on first publish; omit to republish the existing one. Rules: 3-63 chars, lowercase letters/numbers/hyphens, no consecutive hyphens.',
+        }),
+      ),
+      access_level: Type.Optional(
+        Type.Union(
+          [Type.Literal('anyone'), Type.Literal('authenticated'), Type.Literal('private'), Type.Literal('password')],
+          { description: 'Who can view the site. Defaults to the existing setting (or "anyone" on first publish).' },
+        ),
+      ),
+      password: Type.Optional(
+        Type.String({ description: 'Shared site password — only when access_level is "password".' }),
+      ),
+      site_title: Type.Optional(Type.String({ description: 'Optional site title (meta).' })),
+      site_description: Type.Optional(Type.String({ description: 'Optional site description (meta).' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { subdomain, access_level, password, site_title, site_description } = params as {
+        subdomain?: string
+        access_level?: 'anyone' | 'authenticated' | 'private' | 'password'
+        password?: string
+        site_title?: string
+        site_description?: string
+      }
+      const projectId = ctx.projectId
+      if (!projectId) {
+        return textResult({ error: 'No project context is available, so the app cannot be published.' })
+      }
+
+      // Resolve first-publish vs republish from the current state.
+      const state = await apiGetPublishState(projectId)
+      const currentSubdomain = state.ok ? (state.data?.subdomain ?? null) : null
+
+      const requested = (subdomain ?? '').trim().toLowerCase()
+      const targetSubdomain = requested || currentSubdomain
+
+      if (!targetSubdomain) {
+        return textResult({
+          needs_subdomain: true,
+          hint:
+            'This project has not been published yet. Publishing creates a PUBLIC site, so confirm the subdomain with the user first. Propose one (3-63 chars, lowercase letters/numbers/hyphens, no consecutive hyphens) and, once they confirm, call publish again with `subdomain`.',
+        })
+      }
+
+      const res = await apiPublishProject(projectId, {
+        subdomain: targetSubdomain,
+        accessLevel: access_level,
+        password,
+        siteTitle: site_title,
+        siteDescription: site_description,
+      })
+
+      if (!res.ok) {
+        if (res.code === 'subdomain_taken') {
+          return textResult({
+            error: `The subdomain "${targetSubdomain}" is already in use. Ask the user to choose a different one, then publish again.`,
+            code: res.code,
+          })
+        }
+        if (res.code === 'invalid_subdomain') {
+          return textResult({
+            error: `"${targetSubdomain}" is not a valid subdomain (${res.error}). Ask the user for a valid one (3-63 chars, lowercase letters/numbers/hyphens, no consecutive hyphens).`,
+            code: res.code,
+          })
+        }
+        return textResult({ error: res.error ?? 'Publish failed', code: res.code, status: res.status })
+      }
+
+      const url = res.data?.url ?? `https://${targetSubdomain}.shogo.one`
+      const verified = await verifyPublishedUrl(url)
+      const wasRepublish = currentSubdomain != null && currentSubdomain === targetSubdomain
+
+      return textResult({
+        ok: true,
+        published: true,
+        url,
+        subdomain: res.data?.subdomain ?? targetSubdomain,
+        republished: wasRepublish,
+        verified,
+        note: verified
+          ? `The app is live at ${url}. Share this URL with the user.`
+          : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load.`,
       })
     },
   }
@@ -4989,6 +5115,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createTodoWriteTool(ctx),
     createAskUserTool(ctx),
     createCheckpointTool(ctx),
+    createPublishTool(ctx),
     createNotifyUserErrorTool(),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),

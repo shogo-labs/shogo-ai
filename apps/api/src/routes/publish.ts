@@ -854,6 +854,264 @@ async function deleteFromS3(subdomain: string): Promise<void> {
 }
 
 /**
+ * Options for {@link publishProject}. `subdomain` is required (the caller must
+ * have decided/confirmed it). Everything else mirrors the publish request body.
+ */
+export interface PublishProjectOptions {
+  subdomain: string
+  accessLevel?: AccessLevel
+  password?: string
+  siteTitle?: string
+  siteDescription?: string
+}
+
+/**
+ * Result of {@link publishProject}. `ok` distinguishes success from a mapped
+ * error so HTTP callers can `c.json({ error }, status)` and non-HTTP callers
+ * (the agent's internal publish route) can branch without parsing a Response.
+ */
+export interface PublishProjectResult {
+  ok: boolean
+  status: number
+  url?: string
+  subdomain?: string
+  publishedAt?: number
+  accessLevel?: AccessLevel
+  hasPassword?: boolean
+  code?: string
+  message?: string
+}
+
+/**
+ * Core publish pipeline shared by the session-authenticated route
+ * (POST /api/projects/:id/publish) and the internal/runtime route
+ * (POST /api/internal/projects/:id/publish, used by the agent's publish tool).
+ *
+ * Validates the subdomain + access level, builds/downloads/uploads the dist,
+ * provisions the published Knative service + DomainMapping, tags the commit,
+ * records a checkpoint, and persists publish state — preserving the exact error
+ * codes/statuses the route previously returned.
+ */
+export async function publishProject(
+  projectId: string,
+  opts: PublishProjectOptions,
+): Promise<PublishProjectResult> {
+  try {
+    const { subdomain: rawSubdomain, accessLevel = "anyone", password, siteTitle, siteDescription } = opts
+    const subdomain = rawSubdomain.toLowerCase()
+
+    const validation = validateSubdomain(subdomain)
+    if (!validation.valid) {
+      return { ok: false, status: 400, code: "invalid_subdomain", message: validation.reason }
+    }
+
+    if (!ACCESS_LEVELS.has(accessLevel)) {
+      return { ok: false, status: 400, code: "invalid_access_level", message: `Unknown access level: ${accessLevel}` }
+    }
+
+    // Get the project
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+    })
+    if (!project) {
+      return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
+    }
+
+    // Check if subdomain is available (unless it's the same project's subdomain)
+    if (project.publishedSubdomain !== subdomain) {
+      const existingProject = await prisma.project.findUnique({
+        where: { publishedSubdomain: subdomain },
+        select: { id: true },
+      })
+
+      if (existingProject) {
+        return { ok: false, status: 409, code: "subdomain_taken", message: "Subdomain is already in use" }
+      }
+    }
+
+    // If project already has a different subdomain, clean up old S3 files
+    if (project.publishedSubdomain && project.publishedSubdomain !== subdomain) {
+      try {
+        await deleteFromS3(project.publishedSubdomain)
+      } catch (err) {
+        console.warn("[Publish] Failed to delete old S3 files:", err)
+      }
+    }
+
+    // Resolve the password-gate hash before doing any expensive build work so
+    // bad input (missing/short password) fails fast with a 400.
+    const sitePassword = resolveSitePasswordHash({
+      accessLevel,
+      password,
+      subdomain,
+      existingHash: (project as any).sitePasswordHash ?? null,
+      existingSubdomain: project.publishedSubdomain ?? null,
+    })
+    if (!sitePassword.ok) {
+      return { ok: false, status: 400, code: sitePassword.code, message: sitePassword.message }
+    }
+
+    // Resolve the always-on intent for this (re)publish: honor the saved
+    // flag, but re-validate entitlement so a downgrade / seat removal since
+    // the last toggle clamps the app back to scale-to-zero. `configure`
+    // additionally clamps static apps (a warm pod is pointless for them).
+    let alwaysOn = (project as any).publishedAlwaysOn === true
+    if (alwaysOn) {
+      const { canEnableAlwaysOn } = await import("../services/billing.service")
+      const gate = await canEnableAlwaysOn(project.workspaceId, projectId)
+      if (!gate.allowed) {
+        console.warn(
+          `[Publish] always-on no longer entitled for ${projectId} (${gate.used}/${gate.allowance}) — clamping off`,
+        )
+        alwaysOn = false
+      }
+    }
+
+    // In Kubernetes: Build, download, and upload to S3
+    if (isKubernetes()) {
+      // Hold the publish-in-flight lock for the entire pipeline so the
+      // warm-pool GC can't yank the runtime ksvc out from under us.
+      await acquirePublishLock(projectId)
+      try {
+        // Step 1: Trigger build
+        await setPublishStatus(projectId, 'building')
+        const buildResult = await triggerBuild(projectId)
+        if (!buildResult.success) {
+          await setPublishStatus(projectId, 'failed', buildResult.code || 'build_failed')
+          return { ok: false, status: 500, code: buildResult.code || "build_failed", message: buildResult.error || "Build failed" }
+        }
+
+        // Step 2: Download dist files
+        let files: Map<string, Buffer>
+        try {
+          files = await downloadDistFiles(projectId)
+        } catch (err: any) {
+          console.error("[Publish] Failed to download dist files:", err)
+          const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+          const code = isTimeout ? 'download_timeout' : 'download_failed'
+          await setPublishStatus(projectId, 'failed', code)
+          return { ok: false, status: 500, code, message: err.message || "Failed to download build files" }
+        }
+
+        if (files.size === 0) {
+          await setPublishStatus(projectId, 'failed', 'no_files')
+          return { ok: false, status: 400, code: "no_files", message: "No files to publish - build may have failed" }
+        }
+
+        // Step 3: Upload to S3
+        await setPublishStatus(projectId, 'uploading')
+        try {
+          await uploadToS3(subdomain, files)
+        } catch (err: any) {
+          console.error("[Publish] Failed to upload to S3:", err)
+          await setPublishStatus(projectId, 'failed', 'upload_failed')
+          return { ok: false, status: 500, code: "upload_failed", message: err.message || "Failed to upload to S3" }
+        }
+
+        // Step 4+5: Provision the published service (server-backed pod OR
+        // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
+        await setPublishStatus(projectId, 'configuring')
+        try {
+          const { serverBacked } = await configurePublishedService(projectId, subdomain, { alwaysOn })
+          // Static apps never consume an always-on slot — clamp the persisted
+          // flag so the slot meter and DB stay accurate.
+          if (!serverBacked) alwaysOn = false
+        } catch (err: any) {
+          console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
+          await setPublishStatus(projectId, 'failed', 'configure_failed')
+          return { ok: false, status: 500, code: "configure_failed", message: err.message || "Failed to configure published service" }
+        }
+      } finally {
+        // Always release the lock, even on a thrown error path. The
+        // 10-min TTL is a backstop, not the primary release mechanism.
+        await releasePublishLock(projectId)
+      }
+    } else {
+      // Local development: Just log and update database
+      console.log(`[Publish] Local mode - would publish to ${subdomain}.${PUBLISH_DOMAIN}`)
+    }
+
+    // Tag the published commit in the durable git repo: a timestamped
+    // history tag plus the stable `published/<subdomain>` pointer the graph
+    // resolves "what's live" from. On a subdomain change we also drop the old
+    // `published/<oldSubdomain>` pointer in the same round trip. Tagging
+    // flushes the pod's git sync and hydrates the durable repo here.
+    const previousSubdomain =
+      project.publishedSubdomain && project.publishedSubdomain !== subdomain
+        ? project.publishedSubdomain
+        : undefined
+    const tagged = await tagPublishedCommit(projectId, subdomain, {
+      deletePointerSubdomains: previousSubdomain ? [previousSubdomain] : [],
+    })
+
+    // Update project with publish info
+    const publishedAt = new Date()
+    await prisma.project.update({
+      where: { id: projectId },
+      data: {
+        publishedSubdomain: subdomain,
+        publishedAt,
+        publishStatus: 'live' as any,
+        publishError: null,
+        publishStatusAt: publishedAt,
+        accessLevel: accessLevel as any,
+        sitePasswordHash: sitePassword.hash,
+        siteTitle,
+        siteDescription,
+        publishedAlwaysOn: alwaysOn,
+        ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
+      } as any,
+    })
+
+    // Reflect the password gate to the edge. On a subdomain change also clear
+    // the old subdomain's gate (its hash was salted with the old subdomain).
+    if (previousSubdomain) await clearSitePassword(previousSubdomain)
+    await syncSitePasswordKv(subdomain, accessLevel, sitePassword.hash)
+
+    // Record the live commit as a checkpoint so "what's live" is a real,
+    // rollback-able point in history (idempotent on commitSha). Best-effort.
+    if (tagged?.sha) {
+      try {
+        await recordCheckpointForCommit(projectId, tagged.sha, {
+          name: `Published to ${subdomain}`,
+          commitMessage: `Published ${subdomain}.${PUBLISH_DOMAIN}`,
+          isAutomatic: true,
+        })
+      } catch (err: any) {
+        console.warn(`[Publish] Failed to record publish checkpoint for ${projectId}:`, err?.message ?? err)
+      }
+    }
+
+    // Point any already-active custom domains at the (possibly new)
+    // subdomain prefix in the Worker's routing map.
+    await syncCustomDomainKv(projectId, subdomain)
+
+    // Auto-capture thumbnail after publish (fire-and-forget, delayed to let CDN propagate)
+    setTimeout(() => {
+      captureThumbnail(projectId, `https://${subdomain}.${PUBLISH_DOMAIN}`).catch((err) => {
+        console.warn('[Publish] Auto-thumbnail failed (non-blocking):', err.message)
+      })
+    }, 5000)
+
+    return {
+      ok: true,
+      status: 200,
+      url: `https://${subdomain}.${PUBLISH_DOMAIN}`,
+      subdomain,
+      publishedAt: publishedAt.getTime(),
+      accessLevel,
+      hasPassword: !!sitePassword.hash,
+    }
+  } catch (error: any) {
+    console.error("[Publish] Publish error:", error)
+    try {
+      await setPublishStatus(projectId, 'failed', 'publish_failed')
+    } catch {}
+    return { ok: false, status: 500, code: "publish_failed", message: error.message }
+  }
+}
+
+/**
  * Create publish routes
  */
 export function publishRoutes() {
@@ -1007,241 +1265,28 @@ export function publishRoutes() {
    * POST /projects/:projectId/publish - Publish a project
    */
   router.post("/projects/:projectId/publish", async (c) => {
+    const projectId = c.req.param("projectId")
+    let body: PublishProjectOptions
     try {
-      const projectId = c.req.param("projectId")
-      const body = await c.req.json<{
-        subdomain: string
-        accessLevel?: AccessLevel
-        password?: string
-        siteTitle?: string
-        siteDescription?: string
-      }>()
-
-      const { subdomain: rawSubdomain, accessLevel = "anyone", password, siteTitle, siteDescription } = body
-      const subdomain = rawSubdomain.toLowerCase()
-
-      const validation = validateSubdomain(subdomain)
-      if (!validation.valid) {
-        return c.json({ error: { code: "invalid_subdomain", message: validation.reason } }, 400)
-      }
-
-      if (!ACCESS_LEVELS.has(accessLevel)) {
-        return c.json({ error: { code: "invalid_access_level", message: `Unknown access level: ${accessLevel}` } }, 400)
-      }
-
-      // Get the project
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-      })
-      if (!project) {
-        return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
-      }
-
-      // Check if subdomain is available (unless it's the same project's subdomain)
-      if (project.publishedSubdomain !== subdomain) {
-        const existingProject = await prisma.project.findUnique({
-          where: { publishedSubdomain: subdomain },
-          select: { id: true },
-        })
-
-        if (existingProject) {
-          return c.json({ error: { code: "subdomain_taken", message: "Subdomain is already in use" } }, 409)
-        }
-      }
-
-      // If project already has a different subdomain, clean up old S3 files
-      if (project.publishedSubdomain && project.publishedSubdomain !== subdomain) {
-        try {
-          await deleteFromS3(project.publishedSubdomain)
-        } catch (err) {
-          console.warn("[Publish] Failed to delete old S3 files:", err)
-        }
-      }
-
-      // Resolve the password-gate hash before doing any expensive build work so
-      // bad input (missing/short password) fails fast with a 400.
-      const sitePassword = resolveSitePasswordHash({
-        accessLevel,
-        password,
-        subdomain,
-        existingHash: (project as any).sitePasswordHash ?? null,
-        existingSubdomain: project.publishedSubdomain ?? null,
-      })
-      if (!sitePassword.ok) {
-        return c.json({ error: { code: sitePassword.code, message: sitePassword.message } }, 400)
-      }
-
-      // Resolve the always-on intent for this (re)publish: honor the saved
-      // flag, but re-validate entitlement so a downgrade / seat removal since
-      // the last toggle clamps the app back to scale-to-zero. `configure`
-      // additionally clamps static apps (a warm pod is pointless for them).
-      let alwaysOn = (project as any).publishedAlwaysOn === true
-      if (alwaysOn) {
-        const { canEnableAlwaysOn } = await import("../services/billing.service")
-        const gate = await canEnableAlwaysOn(project.workspaceId, projectId)
-        if (!gate.allowed) {
-          console.warn(
-            `[Publish] always-on no longer entitled for ${projectId} (${gate.used}/${gate.allowance}) — clamping off`,
-          )
-          alwaysOn = false
-        }
-      }
-
-      // In Kubernetes: Build, download, and upload to S3
-      if (isKubernetes()) {
-        // Hold the publish-in-flight lock for the entire pipeline so the
-        // warm-pool GC can't yank the runtime ksvc out from under us.
-        await acquirePublishLock(projectId)
-        try {
-          // Step 1: Trigger build
-          await setPublishStatus(projectId, 'building')
-          const buildResult = await triggerBuild(projectId)
-          if (!buildResult.success) {
-            await setPublishStatus(projectId, 'failed', buildResult.code || 'build_failed')
-            return c.json({
-              error: { code: buildResult.code || "build_failed", message: buildResult.error || "Build failed" }
-            }, 500)
-          }
-
-          // Step 2: Download dist files
-          let files: Map<string, Buffer>
-          try {
-            files = await downloadDistFiles(projectId)
-          } catch (err: any) {
-            console.error("[Publish] Failed to download dist files:", err)
-            const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
-            const code = isTimeout ? 'download_timeout' : 'download_failed'
-            await setPublishStatus(projectId, 'failed', code)
-            return c.json({
-              error: { code, message: err.message || "Failed to download build files" }
-            }, 500)
-          }
-
-          if (files.size === 0) {
-            await setPublishStatus(projectId, 'failed', 'no_files')
-            return c.json({
-              error: { code: "no_files", message: "No files to publish - build may have failed" }
-            }, 400)
-          }
-
-          // Step 3: Upload to S3
-          await setPublishStatus(projectId, 'uploading')
-          try {
-            await uploadToS3(subdomain, files)
-          } catch (err: any) {
-            console.error("[Publish] Failed to upload to S3:", err)
-            await setPublishStatus(projectId, 'failed', 'upload_failed')
-            return c.json({
-              error: { code: "upload_failed", message: err.message || "Failed to upload to S3" }
-            }, 500)
-          }
-
-          // Step 4+5: Provision the published service (server-backed pod OR
-          // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
-          await setPublishStatus(projectId, 'configuring')
-          try {
-            const { serverBacked } = await configurePublishedService(projectId, subdomain, { alwaysOn })
-            // Static apps never consume an always-on slot — clamp the persisted
-            // flag so the slot meter and DB stay accurate.
-            if (!serverBacked) alwaysOn = false
-          } catch (err: any) {
-            console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
-            await setPublishStatus(projectId, 'failed', 'configure_failed')
-            return c.json({
-              error: { code: "configure_failed", message: err.message || "Failed to configure published service" }
-            }, 500)
-          }
-        } finally {
-          // Always release the lock, even on a thrown error path. The
-          // 10-min TTL is a backstop, not the primary release mechanism.
-          await releasePublishLock(projectId)
-        }
-      } else {
-        // Local development: Just log and update database
-        console.log(`[Publish] Local mode - would publish to ${subdomain}.${PUBLISH_DOMAIN}`)
-      }
-
-      // Tag the published commit in the durable git repo: a timestamped
-      // history tag plus the stable `published/<subdomain>` pointer the graph
-      // resolves "what's live" from. On a subdomain change we also drop the old
-      // `published/<oldSubdomain>` pointer in the same round trip. Tagging
-      // flushes the pod's git sync and hydrates the durable repo here.
-      const previousSubdomain =
-        project.publishedSubdomain && project.publishedSubdomain !== subdomain
-          ? project.publishedSubdomain
-          : undefined
-      const tagged = await tagPublishedCommit(projectId, subdomain, {
-        deletePointerSubdomains: previousSubdomain ? [previousSubdomain] : [],
-      })
-
-      // Update project with publish info
-      const publishedAt = new Date()
-      await prisma.project.update({
-        where: { id: projectId },
-        data: {
-          publishedSubdomain: subdomain,
-          publishedAt,
-          publishStatus: 'live' as any,
-          publishError: null,
-          publishStatusAt: publishedAt,
-          accessLevel: accessLevel as any,
-          sitePasswordHash: sitePassword.hash,
-          siteTitle,
-          siteDescription,
-          publishedAlwaysOn: alwaysOn,
-          ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
-        } as any,
-      })
-
-      // Reflect the password gate to the edge. On a subdomain change also clear
-      // the old subdomain's gate (its hash was salted with the old subdomain).
-      if (previousSubdomain) await clearSitePassword(previousSubdomain)
-      await syncSitePasswordKv(subdomain, accessLevel, sitePassword.hash)
-
-      // Record the live commit as a checkpoint so "what's live" is a real,
-      // rollback-able point in history (idempotent on commitSha). Best-effort.
-      if (tagged?.sha) {
-        try {
-          await recordCheckpointForCommit(projectId, tagged.sha, {
-            name: `Published to ${subdomain}`,
-            commitMessage: `Published ${subdomain}.${PUBLISH_DOMAIN}`,
-            isAutomatic: true,
-          })
-        } catch (err: any) {
-          console.warn(`[Publish] Failed to record publish checkpoint for ${projectId}:`, err?.message ?? err)
-        }
-      }
-
-      // Point any already-active custom domains at the (possibly new)
-      // subdomain prefix in the Worker's routing map.
-      await syncCustomDomainKv(projectId, subdomain)
-
-      // Auto-capture thumbnail after publish (fire-and-forget, delayed to let CDN propagate)
-      setTimeout(() => {
-        captureThumbnail(projectId, `https://${subdomain}.${PUBLISH_DOMAIN}`).catch((err) => {
-          console.warn('[Publish] Auto-thumbnail failed (non-blocking):', err.message)
-        })
-      }, 5000)
-
-      return c.json(
-        {
-          url: `https://${subdomain}.${PUBLISH_DOMAIN}`,
-          subdomain,
-          publishedAt: publishedAt.getTime(),
-          accessLevel,
-          hasPassword: !!sitePassword.hash,
-        },
-        200
-      )
-    } catch (error: any) {
-      console.error("[Publish] Publish error:", error)
-      // Best-effort status update — the projectId comes from the route
-      // param so we may have crashed before validating it; swallow.
-      try {
-        await setPublishStatus(c.req.param("projectId"), 'failed', 'publish_failed')
-      } catch {}
-      return c.json({ error: { code: "publish_failed", message: error.message } }, 500)
+      body = await c.req.json<PublishProjectOptions>()
+    } catch {
+      return c.json({ error: { code: "invalid_body", message: "Invalid JSON body" } }, 400)
     }
+
+    const result = await publishProject(projectId, body)
+    if (!result.ok) {
+      return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
+    }
+    return c.json(
+      {
+        url: result.url,
+        subdomain: result.subdomain,
+        publishedAt: result.publishedAt,
+        accessLevel: result.accessLevel,
+        hasPassword: result.hasPassword,
+      },
+      200,
+    )
   })
 
   /**
