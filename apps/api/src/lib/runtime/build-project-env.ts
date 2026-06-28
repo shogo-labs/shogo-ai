@@ -133,6 +133,23 @@ export async function buildProjectEnv(
   env.ANTHROPIC_PROXY_URL = `${apiBase}/api/ai/anthropic`
   env.OPENAI_PROXY_URL = `${apiBase}/api/ai/v1`
 
+  // PUBLIC_PREVIEW_URL — the externally-reachable, deterministic preview URL
+  // ({projectId}.preview.{env}.shogo.ai). Pods created directly by the Knative
+  // manager get this baked into the Service spec, but pooled/warm pods are
+  // assigned via this shared env builder and otherwise never learn their public
+  // URL — so the agent falls back to a localhost link the user can't open (and
+  // the gateway's localhost→preview rewriter, which keys off this var, stays
+  // disabled). Inject it for cloud (k8s) only; desktop VMs intentionally leave
+  // it unset because there localhost IS the URL the user opens.
+  if (ns) {
+    try {
+      const { getPreviewUrl } = await import('../knative-project-manager')
+      env.PUBLIC_PREVIEW_URL = getPreviewUrl(projectId)
+    } catch (err: any) {
+      console.error(`[${prefix}] Failed to derive PUBLIC_PREVIEW_URL for ${projectId}:`, err.message)
+    }
+  }
+
   // Pin SHOGO_API_URL so the SDK's voice runtime-token proxy mode
   // (packages/sdk/src/voice/server.ts) reaches the in-cluster Shogo API
   // instead of falling back to http://localhost:8002. Same apiBase the
