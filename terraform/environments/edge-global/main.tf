@@ -58,5 +58,44 @@ module "install_shogo_ai" {
   environment           = "production"
 }
 
+# =============================================================================
+# Preview Router — per-project preview routing without per-preview DNS records
+# =============================================================================
+# Replaces the per-preview `preview--{id}.shogo.ai` A records (which hit the
+# zone's 200-record quota, CF error 81045) with a Worker + KV that
+# resolveOverrides each preview (`{projectId}.preview.shogo.ai`) to its hosting
+# region's Kourier LB. Lives here (not production-global) so it can be applied
+# via the standard terraform.yml CI flow on the S3 backend. See
+# modules/preview-router and docs/preview-router.md.
+module "preview_router" {
+  source = "../../modules/preview-router"
+
+  environment           = "production"
+  cloudflare_account_id = var.cloudflare_account_id
+  cloudflare_zone_id    = var.cloudflare_zone_id
+  zone_name             = "shogo.ai"
+  preview_base_domain   = "preview.shogo.ai"
+
+  # Region code (the value the API writes to KV from REGION_ID) -> Kourier LB IP.
+  region_anchors = {
+    us = var.us_lb_ip
+    eu = var.eu_lb_ip
+    in = var.india_lb_ip
+  }
+  default_region = "us"
+}
+
 output "install_url" { value = module.install_shogo_ai.install_url }
 output "releases_url" { value = module.install_shogo_ai.releases_url }
+
+# Wire this into EVERY region's api ksvc as CF_PREVIEW_REGIONS_KV_NAMESPACE_ID
+# (via the custom-domains-config secret) so each region records the location of
+# the previews it hosts.
+output "preview_regions_kv_namespace_id" {
+  description = "Workers KV namespace id for the preview region map."
+  value       = module.preview_router.preview_regions_kv_namespace_id
+}
+output "preview_router_worker_name" { value = module.preview_router.worker_name }
+output "preview_router_anchors" { value = module.preview_router.anchor_hostnames }
+output "preview_wildcard_hostname" { value = module.preview_router.preview_wildcard_hostname }
+output "preview_certificate_pack_id" { value = module.preview_router.certificate_pack_id }

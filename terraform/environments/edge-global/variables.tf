@@ -23,3 +23,28 @@ variable "github_token" {
   default     = null
   sensitive   = true
 }
+
+# -----------------------------------------------------------------------------
+# Preview-router region anchors — each region's Kourier LoadBalancer IP.
+# -----------------------------------------------------------------------------
+# Stable per-region OCI LB IPs (same values the production-global tunnel A
+# records use). Defaulted here so the standard terraform.yml CI apply, which
+# only passes the cloudflare_* vars to edge-global, needs no extra inputs.
+# Override via TF_VAR_* if a region's LB IP ever changes.
+variable "us_lb_ip" {
+  description = "US (us-ashburn-1) Kourier LoadBalancer IP"
+  type        = string
+  default     = "152.70.192.220"
+}
+
+variable "eu_lb_ip" {
+  description = "EU (eu-frankfurt-1) Kourier LoadBalancer IP"
+  type        = string
+  default     = "79.76.126.115"
+}
+
+variable "india_lb_ip" {
+  description = "India (ap-mumbai-1) Kourier LoadBalancer IP"
+  type        = string
+  default     = "161.118.170.159"
+}

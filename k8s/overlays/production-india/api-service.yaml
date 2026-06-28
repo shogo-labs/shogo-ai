@@ -264,7 +264,7 @@ spec:
             # `preview--*.shogo.ai` router Worker reads `projectId -> region`
             # here to resolveOverride each preview to its hosting region's
             # Kourier LB; the API (cloudflare-preview-region-kv.ts) writes it on
-            # preview DomainMapping create/delete. From the production-global
+            # preview DomainMapping create/delete. From the edge-global
             # output `preview_regions_kv_namespace_id`. Optional — absent =>
             # previews fall back to the flat `*.shogo.ai` wildcard (US). MUST be
             # the SAME namespace id in every region.
