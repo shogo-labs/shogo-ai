@@ -93,7 +93,7 @@
     "@opentelemetry/sdk-node": "^0.213.0",
     "@opentelemetry/sdk-trace-base": "^2.5.1",
     "@opentelemetry/semantic-conventions": "^1.39.0",
-    "@types/node": "^25.5.0",
+    "@types/node": "^26.0.1",
     "tsup": "^8.0.0",
     "typescript": "^6.0.2"
   },
