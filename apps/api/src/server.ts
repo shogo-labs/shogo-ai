@@ -30,6 +30,7 @@ import {
   sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail,
   sendMemberJoinedEmail, sendMemberRemovedEmail, sendAccountDeletedEmail,
 } from './services/email.service'
+import { identifyUser, suppressUser } from './services/customerio.service'
 import { getUnreadNotificationCount } from './services/notification.service'
 import { notifyPaymentReceipt, notifyPaymentFailed } from './services/billing-alerts.service'
 import { STRIPE_API_VERSION, resolveInvoiceSubscriptionId } from './lib/stripe-helpers'
@@ -6952,7 +6953,7 @@ app.post('/api/webhooks/stripe', async (c) => {
             try {
               const workspace = await prisma.workspace.findUnique({
                 where: { id: workspaceId },
-                include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } },
+                include: { members: { where: { role: 'owner' }, include: { user: { select: { id: true, email: true } } } } },
               })
               const ownerEmail = workspace?.members?.[0]?.user?.email
               if (ownerEmail) {
@@ -6968,6 +6969,16 @@ app.post('/api/webhooks/stripe', async (c) => {
                   includedUsdTotal: `$${includedUsd}`,
                   dashboardUrl: `${baseUrl}/billing`,
                 }).catch((err) => console.error('[Webhook] plan-upgraded email failed:', err))
+
+                // FIRE-AND-FORGET: update Customer.io profile with new plan
+                // and suppress from free-user drip/conversion sequences
+                const ownerId = workspace?.members?.[0]?.user?.id
+                if (ownerId) {
+                  identifyUser(ownerId, { email: ownerEmail, plan: planId })
+                    .catch((err) => console.error('[Webhook] CustomerIO identify failed:', err))
+                  suppressUser(ownerId)
+                    .catch((err) => console.error('[Webhook] CustomerIO suppress failed:', err))
+                }
               }
             } catch (emailErr: any) {
               console.error('[Webhook] plan-upgraded email lookup failed:', emailErr.message)

@@ -27,6 +27,7 @@ import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
 import { enrichWorkspaceReferences, enrichProjectReferences } from "../lib/chat-references"
+import { trackEvent } from "../services/customerio.service"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -901,6 +902,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       if (!await billingService.hasBalance(project.workspaceId)) {
         chatSpan.setAttribute("error.type", "usage_limit_reached")
         chatSpan.end()
+        // FIRE-AND-FORGET: track usage limit hit for conversion campaign C1
+        const limitUserId = (parsedBody as any)?.userId || c.req.header("X-Billing-User-Id")
+        if (limitUserId && limitUserId !== 'system') {
+          trackEvent(limitUserId, 'usage_limit_hit', { project_id: projectId }).catch(() => {})
+        }
         return c.json(
           { error: { code: "usage_limit_reached", message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue." } },
           402
@@ -1351,6 +1357,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           chatSpan.setAttribute("chat.status", response.status)
           chatSpan.setStatus({ code: SpanStatusCode.OK })
           chatSpan.end()
+
+          // FIRE-AND-FORGET: track chat message sent for drip campaign activation
+          if (billingUserId && billingUserId !== 'system') {
+            trackEvent(billingUserId, 'chat_message_sent', { project_id: projectId }).catch(() => {})
+          }
 
           return new Response(clientStream, {
             status: response.status,

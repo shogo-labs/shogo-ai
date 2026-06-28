@@ -19,6 +19,7 @@ import { APIError, createAuthMiddleware } from "better-auth/api"
 import { expo } from "@better-auth/expo"
 import { createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } from "./services/email.service"
+import { identifyUser, trackEvent } from "./services/customerio.service"
 import { resolveAttributionForUser } from "./services/affiliate.service"
 import { evaluateAllowlist, recordSignIn } from "./services/project-auth-config.service"
 import { prisma } from "./lib/prisma"
@@ -608,6 +609,17 @@ export const auth = betterAuth({
           }).catch((err) => {
             console.error(`Welcome email failed for ${user.email}:`, err)
           })
+
+          // FIRE-AND-FORGET: Identify user in Customer.io and fire signup event
+          identifyUser(user.id, {
+            email: user.email,
+            name: user.name || undefined,
+            plan: 'free',
+            created_at: Math.floor(Date.now() / 1000),
+          }).catch((err) => console.error('[CustomerIO] identify failed:', err))
+          trackEvent(user.id, 'signup', { email: user.email }).catch((err) =>
+            console.error('[CustomerIO] signup event failed:', err)
+          )
         },
       },
       update: {

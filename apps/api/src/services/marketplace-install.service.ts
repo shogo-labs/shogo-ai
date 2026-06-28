@@ -14,6 +14,7 @@ import {
   extractSnapshotToProject,
 } from './marketplace-snapshot-storage.service'
 import { createS3SyncForProject } from '@shogo/shared-runtime'
+import { trackEvent } from './customerio.service'
 
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
@@ -337,7 +338,20 @@ export async function installAgent(params: {
     return row
   })
 
+  // FIRE-AND-FORGET: track project creation for lifecycle campaigns
+  _trackProjectCreated(userId, newProject.id, listing.title)
+
   return { projectId: newProject.id, installId: install.id }
+}
+
+// FIRE-AND-FORGET helper — defined outside installAgent so it is hoisted
+// away from the happy-path return.
+function _trackProjectCreated(userId: string, projectId: string, templateName: string): void {
+  trackEvent(userId, 'project_created', {
+    project_id: projectId,
+    source: 'template',
+    template_name: templateName,
+  }).catch((err) => console.warn('[CustomerIO] project_created event failed:', err?.message ?? err))
 }
 
 export interface CheckForUpdatesResult {

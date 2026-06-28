@@ -20,6 +20,7 @@ import {
 } from '../services/checkpoint.service'
 import { prisma } from '../lib/prisma'
 import { hydrateRepo } from '../services/git-repo-store'
+import { trackEvent } from '../services/customerio.service'
 
 const app = new Hono()
 
@@ -286,6 +287,19 @@ app.put('/heartbeat/config/:projectId', async (c) => {
       where: { projectId },
       data,
     })
+
+    // FIRE-AND-FORGET: track first heartbeat scheduled when enabling for the first time
+    if (enabled && !existing.heartbeatEnabled) {
+      // Look up the project owner to identify the user
+      prisma.project.findUnique({
+        where: { id: projectId },
+        select: { createdBy: true },
+      }).then((proj) => {
+        if (proj?.createdBy) {
+          trackEvent(proj.createdBy, 'first_heartbeat_scheduled', { project_id: projectId }).catch(() => {})
+        }
+      }).catch(() => {})
+    }
 
     return c.json({ ok: true, nextHeartbeatAt: data.nextHeartbeatAt })
   } catch (err: any) {
