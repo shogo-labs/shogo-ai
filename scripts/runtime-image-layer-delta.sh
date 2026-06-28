@@ -44,11 +44,13 @@ echo
 i=0
 for ref in "${REFS[@]}"; do
   i=$((i + 1))
-  # A ref may be a bare digest, a sha256:... digest, or a tag.
+  # A ref may be a sha256:... digest, a bare 64-hex digest, or a tag.
   case "$ref" in
-    sha256:*) target="$REPO@$ref" ;;
-    *:*)      target="$REPO:$ref" ;;          # tag with explicit name not supported; treat as tag
-    *)        target="$REPO@sha256:$ref" ;;    # bare hex → digest
+    sha256:*)                target="$REPO@$ref" ;;
+    *[!0-9a-f]* | "")        target="$REPO:$ref" ;;       # contains non-hex → tag
+    *)
+      if [[ ${#ref} -eq 64 ]]; then target="$REPO@sha256:$ref"  # 64-hex → digest
+      else target="$REPO:$ref"; fi ;;                           # short hex → tag
   esac
   if ! docker buildx imagetools inspect --raw "$target" 2>/dev/null \
        | jq -r '.layers[] | "\(.digest) \(.size)"' > "$WORK/img$i.layers"; then
