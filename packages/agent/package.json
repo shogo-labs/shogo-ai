@@ -107,7 +107,7 @@
   "devDependencies": {
     "@mariozechner/pi-ai": "^0.73.1",
     "@mariozechner/pi-agent-core": "^0.73.1",
-    "@types/node": "^25.5.0",
+    "@types/node": "^26.0.1",
     "tsup": "^8.0.0",
     "typescript": "^6.0.2"
   },
