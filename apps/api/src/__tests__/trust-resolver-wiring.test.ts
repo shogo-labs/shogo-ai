@@ -125,12 +125,16 @@ describe('trust resolver wiring — gateway.ts', () => {
   test('per-turn refresh runs at the top of _agentTurnInner', () => {
     // The whole point of the fix: every turn must reconcile with the
     // DB BEFORE the system prompt is built or any tool runs.
-    const inner = src.match(/_agentTurnInner[\s\S]{0,2000}/)?.[0] ?? ''
-    expect(inner).toContain('await refreshTrust()')
+    // Anchor on the method DEFINITION (not its earlier call site) and use a
+    // window wide enough to span the refresh + the system-prompt build, which
+    // have drifted further apart as the turn setup grew.
+    const inner = src.match(/private async _agentTurnInner\([\s\S]{0,4000}/)?.[0] ?? ''
+    const refreshIdx = inner.indexOf('await refreshTrust()')
+    const bootstrapIdx = inner.indexOf('loadBootstrapContext')
+    expect(refreshIdx).toBeGreaterThanOrEqual(0)
+    expect(bootstrapIdx).toBeGreaterThanOrEqual(0)
     // Refresh must happen before loadBootstrapContext (system prompt).
-    expect(inner.indexOf('await refreshTrust()')).toBeLessThan(
-      inner.indexOf('loadBootstrapContext'),
-    )
+    expect(refreshIdx).toBeLessThan(bootstrapIdx)
   })
 
   test('system prompt builder no longer reads process.env.TRUST_LEVEL', () => {

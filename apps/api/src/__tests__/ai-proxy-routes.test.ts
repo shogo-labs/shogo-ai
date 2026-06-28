@@ -25,6 +25,11 @@ mock.module('../lib/prisma', () => withPrismaExports({
       findFirst: async () => ({ id: 'test-project', name: 'Test' }),
       findUnique: async () => ({ id: 'test-project', workspaceId: 'test-workspace' }),
     },
+    // Balance checks first resolve a workspace to its billing workspace
+    // (child workspaces pool into a parent). Standalone workspace → self.
+    workspace: {
+      findUnique: async () => ({ parentWorkspaceId: null }),
+    },
     subscription: {
       findFirst: async () => null,
     },

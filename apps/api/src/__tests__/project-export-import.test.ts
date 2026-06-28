@@ -77,6 +77,19 @@ let projectIdCounter = 0
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
+    // Plan/entitlement checks during import resolve the billing workspace
+    // (child workspaces pool into a parent) and then read the effective plan
+    // from any active subscription/grant. These fixtures are standalone
+    // free-tier workspaces: self billing, no sub, no grants.
+    workspace: {
+      findUnique: async () => ({ parentWorkspaceId: null }),
+    },
+    subscription: {
+      findFirst: async () => null,
+    },
+    workspaceGrant: {
+      findMany: async () => [],
+    },
     member: {
       findFirst: async (args: any) => {
         for (const m of members.values()) {

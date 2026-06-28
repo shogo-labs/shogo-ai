@@ -28,6 +28,12 @@ let grantRows: Grant[] = []
 let projectRows: Project[] = []
 
 const prismaApi = {
+  // Allowance resolution now first maps a workspace to its billing workspace
+  // (child workspaces pool into a parent). These fixtures are standalone
+  // workspaces, so they resolve to themselves (no parentWorkspaceId).
+  workspace: {
+    findUnique: async () => ({ parentWorkspaceId: null }),
+  },
   subscription: {
     findFirst: async ({ where, select }: any) => {
       if (!subRow) return null

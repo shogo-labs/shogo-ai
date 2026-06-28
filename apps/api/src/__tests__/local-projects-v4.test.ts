@@ -96,6 +96,12 @@ function makeTx() {
 
 const prisma: any = {
   ...makeTx(),
+  // GET /:id (and the workspace-session routes) fold project-to-project
+  // attachments into the payload via listAttachments() -> projectAttachment.
+  // No attachments are exercised here, so an empty list is sufficient.
+  projectAttachment: {
+    findMany: mock(async () => []),
+  },
   $transaction: mock(async (fn: any) => fn(makeTx())),
 }
 

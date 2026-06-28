@@ -71,6 +71,11 @@ mock.module('../lib/prisma', () => withPrismaExports({
       findFirst: async () => null,
       findUnique: async () => null,
     },
+    // Balance checks first resolve a workspace to its billing workspace
+    // (child workspaces pool into a parent). ws-cloud is standalone → self.
+    workspace: {
+      findUnique: async () => ({ parentWorkspaceId: null }),
+    },
     apiKey: {
       findUnique: async ({ where }: any) => {
         // Hashed key lookup — tests pre-stage a hash that resolveApiKey computes.

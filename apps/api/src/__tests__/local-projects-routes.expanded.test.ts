@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { Hono } from 'hono'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import os from 'os'
 import { join } from 'path'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
@@ -127,8 +127,14 @@ beforeEach(async () => {
   // so we redirect homedir() to a writable tmp ancestor for the duration
   // of the suite. afterAll() doesn't need to restore because each test
   // file runs in its own process under run-tests-isolated.ts.
-  ;(os as { homedir: () => string }).homedir = () => os.tmpdir()
-  rootDir = mkdtempSync(join(os.tmpdir(), 'shogo-local-projects-'))
+  // macOS hard-links /var -> /private/var (and /tmp -> /private/tmp), so the
+  // `/fs/browse` + folder routes' `realpathSync()` of a path under os.tmpdir()
+  // gains a `/private` prefix that no longer matches a non-canonical homedir.
+  // Canonicalise both the fake home and the sandbox root so the isUnderHome()
+  // check lines up on macOS and Linux alike.
+  const realTmp = realpathSync(os.tmpdir())
+  ;(os as { homedir: () => string }).homedir = () => realTmp
+  rootDir = realpathSync(mkdtempSync(join(realTmp, 'shogo-local-projects-')))
   childDir = join(rootDir, 'child')
   otherDir = join(rootDir, 'other')
   mkdirSync(childDir)
@@ -464,12 +470,16 @@ describe('localProjectsRoutes folder management', () => {
       body: JSON.stringify({ path: otherDir }),
     })).status).toBe(404)
 
+    // Managed projects may now link local folders too (they mount into the
+    // anchor merged-root runtime); the added folder is never primary.
     projects.get('project-1').workingMode = 'managed'
-    expect((await appWithAuth().request('http://api.test/project-1/folders', {
+    const managedAdd = await appWithAuth().request('http://api.test/project-1/folders', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path: otherDir }),
-    })).status).toBe(409)
+    })
+    expect(managedAdd.status).toBe(201)
+    expect((await json(managedAdd)).folder.isPrimary).toBe(false)
   })
 
   test('folder routes reject invalid add paths and missing delete folders', async () => {
