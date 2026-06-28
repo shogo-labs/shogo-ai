@@ -2144,7 +2144,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
     name: 'publish',
     description: [
       'Publish the project to a public, persistent URL at `{subdomain}.shogo.one`. Use this whenever the user wants to "host", "share", "deploy", "save permanently", "put this online", or get a link they can send to other people — this is the durable path; do NOT walk them through downloading/exporting/running it locally.',
-      'First publish: a subdomain is required. Do NOT invent a public name silently — propose one (e.g. derived from the app/project name) and CONFIRM it with the user before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
+      'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
       'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user.',
     ].join('\n'),
@@ -2153,7 +2153,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       subdomain: Type.Optional(
         Type.String({
           description:
-            'Subdomain for {subdomain}.shogo.one. Required on first publish; omit to republish the existing one. Rules: 3-63 chars, lowercase letters/numbers/hyphens, no consecutive hyphens.',
+            'Subdomain for {subdomain}.shogo.one. Required on first publish; omit to republish the existing one. When the user names a subdomain, use it EXACTLY as given (only lowercased) — never substitute your own. Rules: 3-63 chars, lowercase letters/numbers/hyphens, no consecutive hyphens.',
         }),
       ),
       access_level: Type.Optional(
