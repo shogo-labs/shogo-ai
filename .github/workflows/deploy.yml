@@ -702,6 +702,9 @@ jobs:
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_SITE_ID }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_SITE_ID="${{ secrets.CUSTOMERIO_SITE_ID }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_TRACKING_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_TRACKING_API_KEY="${{ secrets.CUSTOMERIO_TRACKING_API_KEY }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_APP_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_APP_API_KEY="${{ secrets.CUSTOMERIO_APP_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
@@ -1206,6 +1209,9 @@ jobs:
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_SITE_ID }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_SITE_ID="${{ secrets.CUSTOMERIO_SITE_ID }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_TRACKING_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_TRACKING_API_KEY="${{ secrets.CUSTOMERIO_TRACKING_API_KEY }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_APP_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_APP_API_KEY="${{ secrets.CUSTOMERIO_APP_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
@@ -1819,6 +1825,9 @@ jobs:
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_SITE_ID }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_SITE_ID="${{ secrets.CUSTOMERIO_SITE_ID }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_TRACKING_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_TRACKING_API_KEY="${{ secrets.CUSTOMERIO_TRACKING_API_KEY }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_APP_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_APP_API_KEY="${{ secrets.CUSTOMERIO_APP_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
@@ -2421,6 +2430,9 @@ jobs:
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_SITE_ID }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_SITE_ID="${{ secrets.CUSTOMERIO_SITE_ID }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_TRACKING_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_TRACKING_API_KEY="${{ secrets.CUSTOMERIO_TRACKING_API_KEY }}"); fi
+          if [ -n "${{ secrets.CUSTOMERIO_APP_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=CUSTOMERIO_APP_API_KEY="${{ secrets.CUSTOMERIO_APP_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
