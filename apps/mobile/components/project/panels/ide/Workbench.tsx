@@ -210,7 +210,6 @@ export function Workbench({
   fetchImpl,
   isExternalProject = true,
   folderPath,
-  onOpenCodeWorkbench,
 }: {
   agentService: WorkspaceService;
   agentLabel?: string;
@@ -242,8 +241,6 @@ export function Workbench({
   isExternalProject?: boolean;
   /** Absolute path to the project's primary folder (for external/open-folder projects). */
   folderPath?: string | null;
-  /** Open/focus the managed external Shogo-IDE window from the status bar. */
-  onOpenCodeWorkbench?: () => void;
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
@@ -2267,7 +2264,6 @@ export function Workbench({
         workspaceRoot={gitWorkspaceRoot}
         extensionItems={extensionsSummary.statusBarItems}
         onRunExtensionCommand={runExtensionCommand}
-        onOpenCodeWorkbench={onOpenCodeWorkbench}
       />
 
 
