@@ -191,6 +191,7 @@ export interface ProjectTopBarProps {
   canvasThemeSupported?: boolean | null
   onCanvasRefresh?: () => void
   onCanvasOpenInNewTab?: () => void
+  onOpenCodeWorkbench?: () => void
   ideEmbed?: boolean
 }
 
@@ -363,6 +364,7 @@ export function ProjectTopBar({
   canvasThemeSupported,
   onCanvasRefresh,
   onCanvasOpenInNewTab,
+  onOpenCodeWorkbench,
   ideEmbed = false,
 }: ProjectTopBarProps) {
   const router = useRouter()
@@ -404,6 +406,7 @@ export function ProjectTopBar({
   }, [activeChatSessionId, chatRenameValue, onRenameChat])
 
   const isCanvasActive = activeTab === 'canvas'
+  const isIdeActive = activeTab === 'ide'
 
   // Workspace Trust badge: external (folder-linked) projects only, and
   // only when the parent wired up a toggle handler + a known trust level.
@@ -922,6 +925,19 @@ export function ProjectTopBar({
               onToggle={onToggleTrust!}
               busy={trustBusy}
             />
+          )}
+          {isIdeActive && onOpenCodeWorkbench && (
+            <Pressable
+              onPress={onOpenCodeWorkbench}
+              className="h-8 flex-row items-center gap-1.5 rounded-lg border border-orange-500/40 bg-orange-500/10 px-3 active:bg-orange-500/15"
+              accessibilityRole="button"
+              accessibilityLabel="Open in Shogo IDE"
+            >
+              <ExternalLink size={14} className="text-orange-400" />
+              <Text className="text-xs font-semibold text-orange-400">
+                {isWide ? 'Open in Shogo IDE' : 'Open in IDE'}
+              </Text>
+            </Pressable>
           )}
           {isCanvasActive && (
             <PublishDropdown

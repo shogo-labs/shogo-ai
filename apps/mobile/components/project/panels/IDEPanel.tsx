@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useEffect, useMemo, useState } from 'react'
-import { Platform, View, Text, Pressable } from 'react-native'
-import { Code2, ExternalLink } from 'lucide-react-native'
+import { Platform, View, Text } from 'react-native'
+import { Code2 } from 'lucide-react-native'
 import { Workbench } from './ide/Workbench'
 import { sdkFsFor } from './ide/workspace/sdkFs'
 import { DesktopFs, getDesktopFsBridge } from './ide/workspace/desktopFs'
@@ -14,7 +14,6 @@ interface IDEPanelProps {
   projectId: string
   projectName?: string | null
   agentUrl?: string | null
-  onOpenCodeWorkbench?: () => void
   isExternalProject?: boolean
   folderPath?: string | null
 }
@@ -37,7 +36,6 @@ export function IDEPanel({
   projectId,
   projectName,
   agentUrl,
-  onOpenCodeWorkbench,
   isExternalProject,
   folderPath,
 }: IDEPanelProps) {
@@ -110,23 +108,6 @@ export function IDEPanel({
 
   return (
     <View style={{ flex: 1, minHeight: 0, display: visible ? 'flex' : 'none' }}>
-      {onOpenCodeWorkbench && (
-        <View className="h-10 flex-row items-center justify-between border-b border-border bg-background px-3">
-          <View className="flex-row items-center gap-2">
-            <Code2 size={14} className="text-muted-foreground" />
-            <Text className="text-xs font-semibold text-foreground">IDE</Text>
-          </View>
-          <Pressable
-            onPress={onOpenCodeWorkbench}
-            className="h-7 flex-row items-center gap-1.5 rounded-md border border-orange-500/40 bg-orange-500/10 px-2.5 active:bg-orange-500/15"
-            accessibilityRole="button"
-            accessibilityLabel="Open full Shogo IDE"
-          >
-            <ExternalLink size={12} className="text-orange-400" />
-            <Text className="text-[10px] font-semibold text-orange-400">Open full Shogo IDE</Text>
-          </Pressable>
-        </View>
-      )}
       <div style={{ flex: 1, minHeight: 0 }}>
         <Workbench
           agentService={agentService}
