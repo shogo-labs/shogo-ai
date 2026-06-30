@@ -2772,6 +2772,7 @@ export default observer(function ProjectLayout() {
             if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
           }
         : undefined,
+    onOpenCodeWorkbench: handleOpenCodeWorkbench,
     ideEmbed: isIdeChatEmbed,
   }
 
@@ -3300,7 +3301,6 @@ export default observer(function ProjectLayout() {
                 projectId={projectId!}
                 projectName={project.name}
                 agentUrl={agentUrl}
-                onOpenCodeWorkbench={handleOpenCodeWorkbench}
                 isExternalProject={isExternalProject}
                 folderPath={primaryFolderPath ?? undefined}
               />
