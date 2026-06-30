@@ -685,6 +685,12 @@ app.use(
       '/api/affiliates/lookup',
       '/api/affiliates/click',
       '/api/affiliates/visit',
+      // Anonymous wake endpoints hit by the edge Workers / loading page when a
+      // visitor lands on a sleeping published subdomain or preview link. They
+      // only nudge the activator / provision a pod keyed by a real published
+      // subdomain or (UUID) project id; no tenant data is exposed.
+      '/api/published/',
+      '/api/preview/',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
@@ -1791,6 +1797,90 @@ app.delete('/api/projects/:projectId/domains/:domainId', async (c) => {
   url.pathname = `/projects/${c.req.param('projectId')}/domains/${c.req.param('domainId')}`
   const newReq = new Request(url.toString(), { method: 'DELETE', headers: c.req.raw.headers })
   return router.fetch(newReq)
+})
+
+// =============================================================================
+// Wake-on-visit (anonymous) — used by the edge Workers' loading interstitial.
+//
+// When a visitor lands on a sleeping published subdomain ({sub}.shogo.one) or a
+// preview link ({projectId}.preview.shogo.ai), the page itself can't reach a
+// scaled-to-zero / never-provisioned backend. The Worker serves a loading page
+// that polls these endpoints; each call nudges the Knative activator (published)
+// or provisions + wakes the runtime pod (preview), and reports readiness so the
+// page can reload into the real app. Unauthenticated by design (visitors are
+// anonymous); keyed only by a real published subdomain or a UUID project id,
+// rate-limited by the global /api/* limiter, and exposes no tenant data.
+// =============================================================================
+
+const WAKE_RESPONSE_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Cache-Control': 'no-store',
+}
+
+// Wake a published, server-backed app ({subdomain}.shogo.one -> published-{id}).
+app.get('/api/published/:subdomain/wake', async (c) => {
+  const subdomain = (c.req.param('subdomain') || '').toLowerCase()
+  try {
+    const project = await prisma.project.findUnique({
+      where: { publishedSubdomain: subdomain },
+      select: { id: true },
+    })
+    if (!project) {
+      return c.json({ ready: false, error: 'not_found' }, 404, WAKE_RESPONSE_HEADERS)
+    }
+    // No cluster locally — nothing to wake; tell the page to proceed.
+    if (!isKubernetes()) {
+      return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
+    }
+    const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
+    // A short probe against published-{id}/ready both reports readiness AND
+    // triggers scale-from-zero via the activator. The page keeps polling rather
+    // than holding one request open across a multi-minute cold start.
+    const ready = await getKnativeProjectManager().healthCheckPublished(project.id, 5000)
+    return c.json({ ready }, 200, WAKE_RESPONSE_HEADERS)
+  } catch (err: any) {
+    console.warn(`[published/wake] ${subdomain} failed:`, err?.message || err)
+    return c.json({ ready: false, error: 'wake_failed' }, 200, WAKE_RESPONSE_HEADERS)
+  }
+})
+
+// Wake a dev preview ({projectId}.preview.shogo.ai). Unlike published apps, the
+// preview DomainMapping + pod are provisioned lazily by getProjectPodUrl(), so a
+// never-opened project has nothing for Kourier to route to. We kick provisioning
+// in the background and report readiness as it comes up.
+app.get('/api/preview/:projectId/wake', async (c) => {
+  const projectId = c.req.param('projectId')
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true },
+    })
+    if (!project) {
+      return c.json({ ready: false, error: 'not_found' }, 404, WAKE_RESPONSE_HEADERS)
+    }
+    if (!isKubernetes()) {
+      return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
+    }
+    const { getProjectPodUrl, getKnativeProjectManager } = await import('./lib/knative-project-manager')
+    const manager = getKnativeProjectManager()
+    const status = await manager.getStatus(projectId)
+    // Already serving — fast path.
+    if (status.exists && status.ready && status.replicas > 0) {
+      return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
+    }
+    // Provision (if missing) and/or wake in the background. getProjectPodUrl
+    // dedupes concurrent in-flight claims, so repeated polls don't stack pods.
+    getProjectPodUrl(projectId).catch((err: any) => {
+      console.warn(`[preview/wake] getProjectPodUrl(${projectId}) failed:`, err?.message || err)
+    })
+    // If the service exists and Knative reports Ready (but is scaled to zero),
+    // an active probe wakes it via the activator and confirms readiness.
+    const ready = status.exists && status.ready ? await manager.healthCheck(projectId) : false
+    return c.json({ ready }, 200, WAKE_RESPONSE_HEADERS)
+  } catch (err: any) {
+    console.warn(`[preview/wake] ${projectId} failed:`, err?.message || err)
+    return c.json({ ready: false, error: 'wake_failed' }, 200, WAKE_RESPONSE_HEADERS)
+  }
 })
 
 // =============================================================================

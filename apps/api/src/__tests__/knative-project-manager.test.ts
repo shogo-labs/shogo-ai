@@ -908,3 +908,41 @@ describe('waitForReady', () => {
     await expect(mgr.waitForReady('p-timeout', 100)).rejects.toThrow(/did not become ready/)
   })
 })
+
+// Published-service wake helpers back the public /api/published/:sub/wake
+// endpoint: they probe published-{id}/ready (NOT the project's preview service),
+// which both reports readiness and nudges the Knative activator from zero.
+describe('healthCheckPublished + waitForPublishedReady', () => {
+  beforeEach(() => {
+    capture.length = 0
+  })
+
+  test('publishedServiceUrl targets the published-{id} service', () => {
+    const mgr = new KnativeProjectManager()
+    expect(mgr.publishedServiceUrl('p-pub')).toContain('published-p-pub')
+  })
+
+  test('healthCheckPublished is true when published-{id}/ready returns 2xx', async () => {
+    const mgr = new KnativeProjectManager()
+    nextFetch = () => new Response('{"ready":true}', { status: 200 })
+    expect(await mgr.healthCheckPublished('p-pub')).toBe(true)
+  })
+
+  test('healthCheckPublished is false when /ready returns 503 (still cold)', async () => {
+    const mgr = new KnativeProjectManager()
+    nextFetch = () => new Response('{"ready":false}', { status: 503 })
+    expect(await mgr.healthCheckPublished('p-pub')).toBe(false)
+  })
+
+  test('waitForPublishedReady resolves true once the pod answers', async () => {
+    const mgr = new KnativeProjectManager()
+    nextFetch = () => new Response('', { status: 200 })
+    expect(await mgr.waitForPublishedReady('p-pub', 5000)).toBe(true)
+  })
+
+  test('waitForPublishedReady resolves false after timeout while cold', async () => {
+    const mgr = new KnativeProjectManager()
+    nextFetch = () => new Response('', { status: 503 })
+    expect(await mgr.waitForPublishedReady('p-pub', 100)).toBe(false)
+  })
+})

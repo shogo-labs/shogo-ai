@@ -995,6 +995,67 @@ export class KnativeProjectManager {
   }
 
   /**
+   * In-cluster URL of a *published* service (`published-{projectId}`). When the
+   * service is scaled to zero this address routes through the Knative activator,
+   * so a request to it both reports readiness AND triggers scale-from-zero.
+   */
+  publishedServiceUrl(projectId: string): string {
+    return `http://published-${projectId}.${this.namespace}.svc.cluster.local`
+  }
+
+  /**
+   * Active health probe against a *published* service (`published-{projectId}`),
+   * NOT the project's preview/runtime service (that's `healthCheck`). Hitting
+   * `/ready` through the cluster-internal address nudges the Knative activator
+   * to scale the published pod up from zero, so this doubles as a wake trigger.
+   *
+   * Returns true only when the published pod answers `/ready` with 2xx (in
+   * published mode `/ready` gates on the inner API server being healthy — see
+   * packages/agent-runtime/src/published-readiness.ts). A short timeout keeps
+   * this non-blocking: the visitor's loading page polls repeatedly rather than
+   * holding one long request open across a multi-minute cold start.
+   */
+  async healthCheckPublished(projectId: string, timeoutMs: number = 5000): Promise<boolean> {
+    const url = this.publishedServiceUrl(projectId)
+    try {
+      const response = await fetch(`${url}/ready`, {
+        method: "GET",
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      return response.ok
+    } catch {
+      // Timeout / connection refused / still cold-starting — not ready yet. The
+      // request still reached the activator, so scale-from-zero is in flight.
+      return false
+    }
+  }
+
+  /**
+   * Poll `healthCheckPublished` until the published pod is ready or the timeout
+   * elapses. Useful when the caller wants to block server-side (e.g. an
+   * always-on flip or an admin warmup); the public wake endpoint instead fires
+   * a single short probe and lets the browser poll.
+   */
+  async waitForPublishedReady(projectId: string, timeoutMs: number = 120000): Promise<boolean> {
+    const startTime = Date.now()
+    let pollCount = 0
+    while (Date.now() - startTime < timeoutMs) {
+      pollCount++
+      if (await this.healthCheckPublished(projectId)) {
+        console.log(
+          `[KnativeProjectManager] Published ${projectId} ready (waited ${Date.now() - startTime}ms, polls: ${pollCount})`,
+        )
+        return true
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+    }
+    console.log(
+      `[KnativeProjectManager] Published ${projectId} not ready within ${timeoutMs}ms (polls: ${pollCount})`,
+    )
+    return false
+  }
+
+  /**
    * Resolve the Knative Service name for a project.
    * Checks the DB for a saved knativeServiceName (promoted warm pod),
    * falls back to the project-{id} convention.
