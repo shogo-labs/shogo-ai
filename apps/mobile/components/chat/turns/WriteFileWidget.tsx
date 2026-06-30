@@ -12,6 +12,9 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { FilePlus2, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
 import { getBasename, getLanguageLabel } from "./file-lang-map"
+import { isDeliverable } from "../../../lib/deliverable"
+import { useChatContextSafe } from "../ChatContext"
+import { DownloadChip } from "./DownloadChip"
 
 const MAX_PREVIEW_LINES = 40
 const MAX_PREVIEW_CHARS = 4000
@@ -108,9 +111,15 @@ export const WriteFileWidget = memo(function WriteFileWidget({
     else setInternalExpanded(!internalExpanded)
   }
 
+  const chatContext = useChatContextSafe()
   const { path, content, append, bytes } = useMemo(() => extractWriteData(tool), [tool.args, tool.result])
   const basename = getBasename(path)
   const langLabel = getLanguageLabel(path)
+  // Auto-offer a download for deliverable files the agent wrote (PPT, PDF,
+  // CSV, ZIP, video, …). Only once the write succeeded and only for the
+  // curated allowlist so intermediate source writes don't sprout chips.
+  const showDownload =
+    tool.state === "success" && path !== "unknown" && isDeliverable(path)
   const { display, truncated, totalLines } = truncateContent(content)
   const displayLines = (showFull ? content : display).split("\n")
 

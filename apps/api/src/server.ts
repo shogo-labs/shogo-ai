@@ -3199,92 +3199,32 @@ app.put('/api/projects/:projectId/files/*', async (c) => {
   return router.fetch(newReq)
 })
 
-// Download project source code as tar.gz archive
+// Download project source code as a ZIP archive.
+//
+// Historically this returned a tar.gz: locally via `tar`, and in Kubernetes by
+// proxying to a pod `GET /download` handler. That pod handler does not exist,
+// so the k8s path always 404'd. We now delegate to the source-only export
+// (`POST /api/projects/:id/export` with `sourceOnly: true`), which is k8s-safe
+// (it pulls files via the agent pod's `/agent/workspace/bundle`) and returns a
+// plain project ZIP. The original request headers (cookies/session) are
+// forwarded so `requireProjectAccess` re-validates on the internal dispatch.
 app.get('/api/projects/:projectId/download', async (c) => {
   const projectId = c.req.param('projectId')
-  
-  if (isKubernetes()) {
-    // In Kubernetes: Proxy to runtime pod
-    try {
-      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const podUrl = await getProjectPodUrl(projectId)
-      const targetUrl = `${podUrl}/download`
-      
-      console.log(`[FilesProxy] Proxying download to ${targetUrl}`)
-      
-      const response = await fetch(targetUrl)
-      const responseHeaders = new Headers()
-      response.headers.forEach((value, key) => {
-        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-          responseHeaders.set(key, value)
-        }
-      })
-      
-      return new Response(response.body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error: any) {
-      console.error('[FilesProxy] Download error:', error)
-      return c.json({
-        error: { code: 'proxy_error', message: error.message || 'Failed to download project' }
-      }, 502)
-    }
-  }
-  
-  // Local development: Create tar.gz from workspace directory
-  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const projectDir = resolve(workspacesDir, projectId)
-  
-  if (!existsSync(projectDir)) {
-    return c.json({
-      error: { code: 'not_found', message: 'Project directory not found' }
-    }, 404)
-  }
-  
-  try {
-    const excludes = [
-      'node_modules', '.git', '.next', 'dist', 'build', '.cache',
-      '.output', '.nuxt', '.bun', '.vite',
-      // macOS detritus — AppleDouble sidecars (`._*`) are binary resource-fork
-      // blobs that crash Metro's Babel parser if they survive into the imported
-      // workspace. The rest are Finder/Spotlight noise.
-      '._*', '.DS_Store', '__MACOSX', '.AppleDouble',
-    ]
-    const excludeArgs = excludes.flatMap((dir: string) => ['--exclude', dir])
 
-    const result = Bun.spawnSync(
-      ['tar', '-czf', '-', ...excludeArgs, '-C', projectDir, '.'],
-      {
-        stdout: 'pipe',
-        stderr: 'pipe',
-        // Prevent BSD `tar` on macOS from re-injecting AppleDouble entries
-        // synthesized from extended attributes at archive time.
-        env: { ...process.env, COPYFILE_DISABLE: '1' },
-      }
-    )
-    
-    if (result.exitCode !== 0) {
-      return c.json({
-        error: { code: 'archive_error', message: 'Failed to create archive' }
-      }, 500)
-    }
-    
-    const archiveBuffer = result.stdout
-    return new Response(new Uint8Array(archiveBuffer) as any, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/gzip',
-        'Content-Disposition': `attachment; filename="${projectId}.tar.gz"`,
-        'Content-Length': String(archiveBuffer.byteLength),
-      },
-    })
-  } catch (error: any) {
-    console.error('[FilesProxy] Download archive error:', error)
-    return c.json({
-      error: { code: 'download_error', message: error.message || 'Failed to create download' }
-    }, 500)
-  }
+  const url = new URL(c.req.url)
+  url.pathname = `/api/projects/${projectId}/export`
+  url.search = ''
+
+  const headers = new Headers(c.req.raw.headers)
+  headers.set('content-type', 'application/json')
+
+  const exportReq = new Request(url.toString(), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ sourceOnly: true }),
+  })
+
+  return app.fetch(exportReq)
 })
 
 // =============================================================================
