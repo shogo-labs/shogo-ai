@@ -64,7 +64,7 @@ import {
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
-import { api, API_URL, type WorkspaceChildrenResponse } from '../../lib/api'
+import { api, API_URL, isInvitationExpired, type WorkspaceChildrenResponse } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { formatUsd, getWindowDisplays, getUsageLimitNotice, PLAN_PRICING } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
@@ -1890,69 +1890,83 @@ const PeopleTab = observer(function PeopleTab() {
           <View>
             <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Received</Text>
             {receivedInvites.length === 0 ? (
-              <Card><CardContent className="py-6 items-center"><Text className="text-sm text-muted-foreground">No pending invitations</Text></CardContent></Card>
+              <Card><CardContent className="py-6 items-center"><Text className="text-sm text-muted-foreground">No invitations</Text></CardContent></Card>
             ) : (
               <Card>
                 <CardContent className="p-0">
-                  {receivedInvites.map((inv: any) => (
-                    <View key={inv.id} className="p-4 border-b border-border">
-                      <View className="flex-row items-center justify-between mb-1">
-                        <Text className="text-base font-semibold text-foreground">
-                          {inv.workspace?.name || inv.workspaceName || 'Workspace'}
+                  {receivedInvites.map((inv: any) => {
+                    const expired = isInvitationExpired(inv)
+                    const isAccepting = processingInvite?.id === inv.id && processingInvite?.action === 'accept'
+                    const isDeclining = processingInvite?.id === inv.id && processingInvite?.action === 'decline'
+                    return (
+                      <View key={inv.id} className="p-4 border-b border-border">
+                        <View className="flex-row items-center justify-between mb-1">
+                          <Text className="text-base font-semibold text-foreground">
+                            {inv.workspace?.name || inv.workspaceName || 'Workspace'}
+                          </Text>
+                          <View className="flex-row items-center gap-2">
+                            {expired && (
+                              <View className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/40">
+                                <Text className="text-xs text-amber-700 dark:text-amber-300">Expired</Text>
+                              </View>
+                            )}
+                            <View className="px-2 py-0.5 rounded bg-muted">
+                              <Text className="text-xs text-muted-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
+                            </View>
+                          </View>
+                        </View>
+                        <Text className="text-sm text-muted-foreground mb-3">
+                          {expired ? 'This invitation has expired. You can dismiss it or ask for a new invite.' : "You've been invited to join this workspace"}
                         </Text>
-                        <View className="px-2 py-0.5 rounded bg-muted">
-                          <Text className="text-xs text-muted-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
+                        <View className="flex-row gap-2">
+                          <Pressable
+                            disabled={expired || processingInvite?.id === inv.id}
+                            onPress={async () => {
+                              setProcessingInvite({ id: inv.id, action: 'accept' })
+                              try {
+                                await actions.acceptInvitation(inv.id, user?.id || '', {
+                                  workspaceId: inv.workspaceId,
+                                  role: inv.role,
+                                  projectId: inv.projectId,
+                                })
+                                setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                              } catch {}
+                              loadPeopleData()
+                              invitationEvents.emit()
+                              setProcessingInvite(null)
+                            }}
+                            className={cn('flex-1 h-10 rounded-lg items-center justify-center', expired ? 'bg-muted' : 'bg-primary', (expired || processingInvite?.id === inv.id) && 'opacity-50')}
+                          >
+                            {isAccepting ? (
+                              <ActivityIndicator size="small" color="white" />
+                            ) : (
+                              <Text className={cn('text-sm font-medium', expired ? 'text-muted-foreground' : 'text-primary-foreground')}>{expired ? 'Expired' : 'Accept'}</Text>
+                            )}
+                          </Pressable>
+                          <Pressable
+                            disabled={processingInvite?.id === inv.id}
+                            onPress={async () => {
+                              setProcessingInvite({ id: inv.id, action: 'decline' })
+                              try {
+                                await actions.declineInvitation(inv.id)
+                                setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                              } catch {}
+                              loadPeopleData()
+                              invitationEvents.emit()
+                              setProcessingInvite(null)
+                            }}
+                            className={cn('flex-1 h-10 border border-border rounded-lg items-center justify-center', processingInvite?.id === inv.id && 'opacity-50')}
+                          >
+                            {isDeclining ? (
+                              <ActivityIndicator size="small" />
+                            ) : (
+                              <Text className="text-sm font-medium text-foreground">{expired ? 'Dismiss' : 'Decline'}</Text>
+                            )}
+                          </Pressable>
                         </View>
                       </View>
-                      <Text className="text-sm text-muted-foreground mb-3">You've been invited to join this workspace</Text>
-                      <View className="flex-row gap-2">
-                        <Pressable
-                          disabled={processingInvite?.id === inv.id}
-                          onPress={async () => {
-                            setProcessingInvite({ id: inv.id, action: 'accept' })
-                            try {
-                              await actions.acceptInvitation(inv.id, user?.id || '', {
-                                workspaceId: inv.workspaceId,
-                                role: inv.role,
-                                projectId: inv.projectId,
-                              })
-                              setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
-                            } catch {}
-                            loadPeopleData()
-                            invitationEvents.emit()
-                            setProcessingInvite(null)
-                          }}
-                          className={cn('flex-1 h-10 bg-primary rounded-lg items-center justify-center', processingInvite?.id === inv.id && 'opacity-50')}
-                        >
-                          {processingInvite?.id === inv.id && processingInvite.action === 'accept' ? (
-                            <ActivityIndicator size="small" color="white" />
-                          ) : (
-                            <Text className="text-sm font-medium text-primary-foreground">Accept</Text>
-                          )}
-                        </Pressable>
-                        <Pressable
-                          disabled={processingInvite?.id === inv.id}
-                          onPress={async () => {
-                            setProcessingInvite({ id: inv.id, action: 'decline' })
-                            try {
-                              await actions.declineInvitation(inv.id)
-                              setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
-                            } catch {}
-                            loadPeopleData()
-                            invitationEvents.emit()
-                            setProcessingInvite(null)
-                          }}
-                          className={cn('flex-1 h-10 border border-border rounded-lg items-center justify-center', processingInvite?.id === inv.id && 'opacity-50')}
-                        >
-                          {processingInvite?.id === inv.id && processingInvite.action === 'decline' ? (
-                            <ActivityIndicator size="small" />
-                          ) : (
-                            <Text className="text-sm font-medium text-foreground">Decline</Text>
-                          )}
-                        </Pressable>
-                      </View>
-                    </View>
-                  ))}
+                    )
+                  })}
                 </CardContent>
               </Card>
             )}
