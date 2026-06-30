@@ -181,3 +181,90 @@ describe('subdomain-router worker — server-backed /api proxy', () => {
     expect(calls[0].url).toBe(`${OCI_ORIGIN}/august-29th-celebration-portal/index.html`)
   })
 })
+
+// Wake-on-visit: a server-backed published app scales to zero when idle. The
+// Worker serves a loading page for cold document navigations and exposes a
+// /__shogo/wake control endpoint the page polls (which probes published-{id}
+// /ready through Kourier, waking the pod via the activator).
+describe('subdomain-router worker — wake-on-visit', () => {
+  test('/__shogo/wake on a server-backed subdomain probes the pod /ready via Kourier', async () => {
+    installFetch((url) => (url.endsWith('/ready') ? { status: 200 } : { status: 404 }))
+    const env = makeEnv(['august-29th-celebration-portal'])
+    const req = new Request('https://august-29th-celebration-portal.shogo.one/__shogo/wake')
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ready: true })
+    // Probed the published host's /ready, resolving DNS to the Kourier ingress.
+    expect(calls.length).toBe(1)
+    expect(calls[0].url).toBe('https://august-29th-celebration-portal.shogo.one/ready')
+    expect(calls[0].cf?.resolveOverride).toBe(KOURIER_ORIGIN.replace(/^https?:\/\//, ''))
+  })
+
+  test('/__shogo/wake reports not-ready while the pod is cold (503)', async () => {
+    installFetch(() => ({ status: 503 }))
+    const env = makeEnv(['august-29th-celebration-portal'])
+    const req = new Request('https://august-29th-celebration-portal.shogo.one/__shogo/wake')
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ready: false })
+  })
+
+  test('/__shogo/wake on a NON-server-backed subdomain is always ready (no pod to wake)', async () => {
+    installFetch(() => ({ status: 200 }))
+    const env = makeEnv([]) // nothing server-backed
+    const req = new Request('https://plain-static-site.shogo.one/__shogo/wake')
+
+    const res = await workerModule.fetch(req, env)
+    expect(await res.json()).toEqual({ ready: true })
+    expect(calls.length).toBe(0) // never probes upstream
+  })
+
+  test('document navigation on a COLD server-backed app returns the loading page', async () => {
+    installFetch((url) => (url.endsWith('/ready') ? { status: 503 } : { status: 200, body: '<html>app</html>' }))
+    const env = makeEnv(['august-29th-celebration-portal'])
+    const req = new Request('https://august-29th-celebration-portal.shogo.one/', {
+      headers: { Accept: 'text/html' },
+    })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    const html = await res.text()
+    expect(html).toContain('Waking things up')
+    expect(html).toContain('/__shogo/wake')
+    // Only the readiness probe ran; the OCI shell was NOT served while cold.
+    expect(calls.length).toBe(1)
+    expect(calls[0].url).toBe('https://august-29th-celebration-portal.shogo.one/ready')
+  })
+
+  test('document navigation on a WARM server-backed app serves the shell from OCI', async () => {
+    installFetch((url) => (url.endsWith('/ready') ? { status: 200 } : { status: 200, body: '<html>home</html>' }))
+    const env = makeEnv(['august-29th-celebration-portal'])
+    const req = new Request('https://august-29th-celebration-portal.shogo.one/', {
+      headers: { Accept: 'text/html' },
+    })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('<html>home</html>')
+    // Probe first (warm), then OCI index.html.
+    const ociCall = calls.find((c) => c.url.startsWith(OCI_ORIGIN))
+    expect(ociCall?.url).toBe(`${OCI_ORIGIN}/august-29th-celebration-portal/index.html`)
+  })
+
+  test('document navigation on a STATIC app skips the wake probe entirely', async () => {
+    installFetch(() => ({ status: 200, body: '<html>static</html>' }))
+    const env = makeEnv([]) // not server-backed
+    const req = new Request('https://plain-static-site.shogo.one/', {
+      headers: { Accept: 'text/html' },
+    })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('<html>static</html>')
+    // Straight to OCI — no /ready probe for a static app.
+    expect(calls.length).toBe(1)
+    expect(calls[0].url).toBe(`${OCI_ORIGIN}/plain-static-site/index.html`)
+  })
+})

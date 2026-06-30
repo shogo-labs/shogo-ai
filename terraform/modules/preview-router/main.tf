@@ -109,6 +109,12 @@ variable "default_region" {
   }
 }
 
+variable "api_wake_origin" {
+  description = "Base origin of the Shogo API (e.g. https://api.shogo.ai) that the preview-router Worker calls to provision + wake a preview pod on visit. Unlike published apps, a preview's Knative DomainMapping + pod are created lazily by the API (getProjectPodUrl), so a preview that was never opened in Studio has nothing for Kourier to route to. When set, the Worker serves a loading page on first navigation that polls `GET {api_wake_origin}/api/preview/{projectId}/wake` (an anonymous endpoint) and reloads once the pod is ready. Leave null to disable the wake/loading behavior (the Worker then proxies transparently as before)."
+  type        = string
+  default     = null
+}
+
 locals {
   # preview_base_domain relative to the zone. prod: `preview.shogo.ai` under
   # `shogo.ai` -> `preview`. staging: `preview.staging.shogo.ai` -> `preview.staging`.
@@ -217,6 +223,17 @@ resource "cloudflare_worker_script" "preview_router" {
     namespace_id = cloudflare_workers_kv_namespace.preview_regions.id
   }
 
+  # Origin of the Shogo API the Worker calls to provision + wake a preview pod
+  # on visit. Only bound when configured; the Worker guards on
+  # `env.API_WAKE_ORIGIN` and falls back to transparent proxying when unset.
+  dynamic "plain_text_binding" {
+    for_each = var.api_wake_origin != null && var.api_wake_origin != "" ? [1] : []
+    content {
+      name = "API_WAKE_ORIGIN"
+      text = var.api_wake_origin
+    }
+  }
+
   content = <<-JS
     const ANCHORS = ${jsonencode({ for code, r in cloudflare_record.anchor : code => r.hostname })};
     const DEFAULT_REGION = '${var.default_region}';
@@ -234,10 +251,103 @@ resource "cloudflare_worker_script" "preview_router" {
       return hostname.slice(0, dot);
     }
 
+    // A top-level HTML navigation (not an asset, /api/* call, or control path).
+    function isDocumentRequest(request, url) {
+      if (request.method !== 'GET') return false;
+      const accept = request.headers.get('Accept') || '';
+      if (accept.indexOf('text/html') === -1) return false;
+      const p = url.pathname;
+      if (p === '/api' || p.indexOf('/api/') === 0) return false;
+      if (p.indexOf('/__shogo/') === 0) return false;
+      const last = p.split('/').pop() || '';
+      const dot = last.lastIndexOf('.');
+      if (dot > -1) {
+        const ext = last.slice(dot + 1).toLowerCase();
+        if (ext && ext !== 'html' && ext !== 'htm') return false;
+      }
+      return true;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Ask the API to provision + wake this project's preview pod and report
+    // readiness. A preview that was never opened in Studio has no DomainMapping
+    // / pod yet, so the API creates it on demand (getProjectPodUrl). Returns
+    // false (degrade to transparent proxy / keep polling) when no API origin is
+    // configured or the call fails.
+    async function previewWake(env, projectId, timeoutMs) {
+      if (!env.API_WAKE_ORIGIN || !projectId) return false;
+      const base = env.API_WAKE_ORIGIN.replace(/\/+$/, '');
+      const ctrl = new AbortController();
+      const timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+      try {
+        const resp = await fetch(base + '/api/preview/' + projectId + '/wake', {
+          signal: ctrl.signal,
+          headers: { 'User-Agent': 'Cloudflare-Worker-Wake' },
+        });
+        if (!resp.ok) return false;
+        const data = await resp.json();
+        return !!(data && data.ready);
+      } catch (e) {
+        return false;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    function wakeJsonResponse(ready) {
+      return new Response(JSON.stringify({ ready: !!ready }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      });
+    }
+
+    function shogoLoadingResponse(label) {
+      const safe = escapeHtml(label || 'your app');
+      const html = '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        + '<title>Waking up</title><style>'
+        + 'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;'
+        + 'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0b0b0f;color:#e7e7ea}'
+        + '.card{width:100%;max-width:360px;padding:40px 32px;text-align:center;box-sizing:border-box}'
+        + '.spin{width:38px;height:38px;margin:0 auto 22px;border:3px solid #2a2a33;border-top-color:#6d5cff;'
+        + 'border-radius:50%;animation:s 0.9s linear infinite}'
+        + '@keyframes s{to{transform:rotate(360deg)}}'
+        + 'h1{font-size:17px;margin:0 0 8px;font-weight:600}'
+        + 'p{font-size:13px;color:#9a9aa5;margin:0;line-height:1.5}'
+        + '.host{margin-top:14px;font-size:11px;color:#6f6f7a;font-family:ui-monospace,monospace}'
+        + '</style></head><body><div class="card">'
+        + '<div class="spin"></div>'
+        + '<h1>Waking things up</h1>'
+        + '<p>This preview went to sleep after sitting idle. It is starting back up &mdash; this usually takes a few seconds.</p>'
+        + '<div class="host">' + safe + '</div>'
+        + '</div>'
+        + '<script>(function(){function poll(){'
+        + 'fetch("/__shogo/wake",{cache:"no-store"})'
+        + '.then(function(r){return r.ok?r.json():{ready:false};})'
+        + '.then(function(d){if(d&&d.ready){location.reload();return;}setTimeout(poll,2000);})'
+        + '.catch(function(){setTimeout(poll,2500);});}'
+        + 'setTimeout(poll,800);})();</script>'
+        + '</body></html>';
+      return new Response(html, {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
+    }
+
     export default {
       async fetch(request, env) {
         const url = new URL(request.url);
         const projectId = projectIdFromHost(url.hostname);
+
+        // Wake control endpoint, polled by the loading page below. Always
+        // available (returns {ready:false} when no API origin is configured).
+        if (url.pathname === '/__shogo/wake' || url.pathname === '/__shogo/ready') {
+          return wakeJsonResponse(await previewWake(env, projectId, 8000));
+        }
 
         // Resolve the hosting region from KV. Any failure (unparseable host,
         // missing binding, KV miss, KV error) falls through to DEFAULT_REGION,
@@ -250,6 +360,17 @@ resource "cloudflare_worker_script" "preview_router" {
         }
 
         const anchor = anchorFor(region);
+
+        // Top-level navigation: make sure the preview backend is up before
+        // proxying. A preview never opened in Studio has no DomainMapping/pod
+        // (Kourier would hard-fail); a cold one can exceed the edge timeout. If
+        // the API says it isn't ready, serve a loading page that provisions +
+        // wakes it and reloads. Only when an API origin is configured; otherwise
+        // proxy transparently (no behavior change).
+        if (env.API_WAKE_ORIGIN && projectId && isDocumentRequest(request, url)) {
+          const ready = await previewWake(env, projectId, 8000);
+          if (!ready) return shogoLoadingResponse(url.hostname);
+        }
 
         // Keep the original preview host in the URL so Cloudflare sends
         // Host: {projectId}.preview.<base> (which the regional Kourier

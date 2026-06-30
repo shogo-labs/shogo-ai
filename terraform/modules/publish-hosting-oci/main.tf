@@ -568,6 +568,114 @@ resource "cloudflare_worker_script" "subdomain_router" {
       return siteAuthLoginResponse('', siteAuthSafeNext(url.pathname + url.search));
     }
 
+    // -----------------------------------------------------------------------
+    // Wake-on-visit (server-backed apps).
+    //
+    // Server-backed published apps scale to zero when idle. The static shell
+    // loads from Object Storage even while the pod is asleep, so its first
+    // client-side /api/* call hits a cold backend whose cold start can exceed
+    // the edge timeout — the visitor just sees an error. For server-backed
+    // subdomains we instead detect a cold backend on the document request and
+    // serve a small loading page that polls /__shogo/wake until the pod answers
+    // /ready, then reloads. The probe itself routes through the Knative
+    // activator, which scales the pod up from zero. Static apps never sleep
+    // (served from the edge) so this path is skipped for them.
+    // -----------------------------------------------------------------------
+    const WAKE_PATHS = ['/__shogo/wake', '/__shogo/ready'];
+
+    async function isServerBacked(env, subdomain) {
+      if (!env.SERVER_BACKED) return false;
+      try { return !!(await env.SERVER_BACKED.get(subdomain)); } catch (e) { return false; }
+    }
+
+    // Probe published-{id}/ready via the Kourier ingress (same routing as the
+    // /api/* proxy: keep the published host in the URL so the DomainMapping
+    // resolves to published-{id}, only override DNS to Kourier). Same-zone
+    // subrequests skip this Worker, so there is no self-loop. Returns true when
+    // the pod answers /ready 2xx; a short timeout keeps the loading page polling
+    // rather than holding one request open across a long cold start.
+    async function probePublishedReady(env, subdomain, url, timeoutMs) {
+      const KOURIER_ORIGIN = (env.KOURIER_ORIGIN || '').replace(/\/+$/, '');
+      if (!KOURIER_ORIGIN) return false;
+      const kourierHost = KOURIER_ORIGIN.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+      const publishedHost = subdomain + '.' + PUBLISH_DOMAIN;
+      const probeUrl = url.protocol + '//' + publishedHost + '/ready';
+      const ctrl = new AbortController();
+      const timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+      try {
+        const resp = await fetch(probeUrl, {
+          cf: { resolveOverride: kourierHost },
+          signal: ctrl.signal,
+          headers: { 'User-Agent': 'Cloudflare-Worker-Wake' },
+        });
+        return resp.ok;
+      } catch (e) {
+        return false;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    function wakeJsonResponse(ready) {
+      return new Response(JSON.stringify({ ready: !!ready }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      });
+    }
+
+    // A top-level HTML navigation (not an asset, /api/* call, or control path).
+    function isDocumentRequest(request, url) {
+      if (request.method !== 'GET') return false;
+      const accept = request.headers.get('Accept') || '';
+      if (accept.indexOf('text/html') === -1) return false;
+      const p = url.pathname;
+      if (p === '/api' || p.indexOf('/api/') === 0) return false;
+      if (p.indexOf('/__shogo/') === 0) return false;
+      const last = p.split('/').pop() || '';
+      const dot = last.lastIndexOf('.');
+      if (dot > -1) {
+        const ext = last.slice(dot + 1).toLowerCase();
+        if (ext && ext !== 'html' && ext !== 'htm') return false;
+      }
+      return true;
+    }
+
+    function shogoLoadingHtml(label) {
+      const safe = siteAuthEscapeHtml(label || 'your app');
+      return '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        + '<title>Waking up</title><style>'
+        + 'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;'
+        + 'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0b0b0f;color:#e7e7ea}'
+        + '.card{width:100%;max-width:360px;padding:40px 32px;text-align:center;box-sizing:border-box}'
+        + '.spin{width:38px;height:38px;margin:0 auto 22px;border:3px solid #2a2a33;border-top-color:#6d5cff;'
+        + 'border-radius:50%;animation:s 0.9s linear infinite}'
+        + '@keyframes s{to{transform:rotate(360deg)}}'
+        + 'h1{font-size:17px;margin:0 0 8px;font-weight:600}'
+        + 'p{font-size:13px;color:#9a9aa5;margin:0;line-height:1.5}'
+        + '.host{margin-top:14px;font-size:11px;color:#6f6f7a;font-family:ui-monospace,monospace}'
+        + '</style></head><body><div class="card">'
+        + '<div class="spin"></div>'
+        + '<h1>Waking things up</h1>'
+        + '<p>This app went to sleep after sitting idle. It is starting back up &mdash; this usually takes a few seconds.</p>'
+        + '<div class="host">' + safe + '</div>'
+        + '</div>'
+        + '<script>(function(){function poll(){'
+        + 'fetch("/__shogo/wake",{cache:"no-store"})'
+        + '.then(function(r){return r.ok?r.json():{ready:false};})'
+        + '.then(function(d){if(d&&d.ready){location.reload();return;}setTimeout(poll,2000);})'
+        + '.catch(function(){setTimeout(poll,2500);});}'
+        + 'setTimeout(poll,800);})();</script>'
+        + '</body></html>';
+    }
+
+    function shogoLoadingResponse(label) {
+      return new Response(shogoLoadingHtml(label), {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
+    }
+
     export default {
       async fetch(request, env) {
         const url = new URL(request.url);
@@ -624,6 +732,15 @@ resource "cloudflare_worker_script" "subdomain_router" {
         const gated = await siteAuthGate(request, env, url, subdomain);
         if (gated) return gated;
 
+        // Wake control endpoint, polled by the loading page below. For
+        // server-backed apps this probes published-{id}/ready (waking the pod
+        // via the activator) and reports readiness; static apps are always
+        // "ready" (served from the edge).
+        if (WAKE_PATHS.indexOf(url.pathname) !== -1) {
+          if (!(await isServerBacked(env, subdomain))) return wakeJsonResponse(true);
+          return wakeJsonResponse(await probePublishedReady(env, subdomain, url, 5000));
+        }
+
         // SERVER-BACKED apps: proxy dynamic `/api/*` to the project's running
         // server.tsx via the Knative ingress instead of Object Storage. The
         // backend is reached at KOURIER_ORIGIN (a DNS-only host that lands on
@@ -653,6 +770,16 @@ resource "cloudflare_worker_script" "subdomain_router" {
             backendReq.headers.set('X-Forwarded-Proto', 'https');
             return fetch(backendReq, { cf: { resolveOverride: kourierHost } });
           }
+        }
+
+        // Server-backed app + top-level navigation: if the backend is asleep,
+        // serve a loading page that wakes it instead of the static shell (whose
+        // /api/* calls would fail against a scaled-to-zero pod). The probe nudges
+        // the activator so the pod is already cold-starting while the visitor
+        // waits. Skipped for static apps (no backend to wake).
+        if (isDocumentRequest(request, url) && (await isServerBacked(env, subdomain))) {
+          const ready = await probePublishedReady(env, subdomain, url, 3000);
+          if (!ready) return shogoLoadingResponse(subdomain + '.' + PUBLISH_DOMAIN);
         }
 
         const originUrl = buildOriginUrl(subdomain, url.pathname);

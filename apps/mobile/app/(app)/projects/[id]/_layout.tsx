@@ -99,6 +99,7 @@ import {
 } from '../../../../components/project/panels'
 import { FoldersPanel } from '../../../../components/project/panels/FoldersPanel'
 import { CustomDomainsSection } from '../../../../components/project/CustomDomainsSection'
+import { AlwaysOnSection } from '../../../../components/project/AlwaysOnSection'
 import { CheckpointGraphNative } from '../../../../components/project/panels/ide/graph/CheckpointGraphNative'
 import { TrustPrompt, type TrustDecision } from '../../../../components/project/TrustPrompt'
 import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
@@ -121,6 +122,7 @@ import {
   Globe,
   Plus,
   History,
+  Zap,
 } from 'lucide-react-native'
 import {
   useToast,
@@ -3521,6 +3523,20 @@ export default observer(function ProjectLayout() {
                     id: 'publishing',
                     label: 'PUBLISHING',
                     items: [
+                      {
+                        id: 'always-on',
+                        label: 'Always on',
+                        icon: Zap,
+                        render: () => (
+                          <PanelErrorBoundary panelName="Always on">
+                            <AlwaysOnSection
+                              projectId={projectId!}
+                              http={http}
+                              embedded={false}
+                            />
+                          </PanelErrorBoundary>
+                        ),
+                      },
                       {
                         id: 'custom-domains',
                         label: 'Custom domain',
