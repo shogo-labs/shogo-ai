@@ -791,7 +791,7 @@ export const api = {
       alwaysOnAllowance?: number | null
       /** Always-on slots currently consumed across the workspace. */
       alwaysOnUsed?: number
-      /** Whether the app has a backend (only then is always-on meaningful). */
+      /** Whether the app has a backend (DB/API routes) vs. a static export. */
       serverBacked?: boolean
       /** Whether the workspace plan (Pro+) may publish to a new subdomain. */
       canPublish?: boolean

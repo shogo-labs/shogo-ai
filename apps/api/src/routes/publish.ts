@@ -678,10 +678,10 @@ async function configurePublishedService(
   const manager = getKnativeProjectManager()
 
   const serverBacked = await detectServerBacked(projectId)
-  // Always-on only applies to server-backed apps — a static app is served
-  // from object storage/edge, so a warm pod is pointless. Clamp to scale-to-
-  // zero for static even if the project row says alwaysOn.
-  const minScale = serverBacked && opts?.alwaysOn ? 1 : 0
+  // Always-on keeps a warm replica for BOTH service types so the first visit
+  // after idle never pays a cold start. A static app keeps a (much cheaper)
+  // nginx pod warm; a server-backed app keeps the heavier runtime pod warm.
+  const minScale = opts?.alwaysOn ? 1 : 0
   if (serverBacked) {
     const serviceUrl = await manager.createPublishedServerService(projectId, subdomain, { minScale })
     console.log(`[Publish] Server-backed published service ready: ${serviceUrl} (min-scale=${minScale})`)
@@ -968,8 +968,8 @@ export async function publishProject(
 
     // Resolve the always-on intent for this (re)publish: honor the saved
     // flag, but re-validate entitlement so a downgrade / seat removal since
-    // the last toggle clamps the app back to scale-to-zero. `configure`
-    // additionally clamps static apps (a warm pod is pointless for them).
+    // the last toggle clamps the app back to scale-to-zero. Applies to both
+    // static and server-backed apps.
     let alwaysOn = (project as any).publishedAlwaysOn === true
     if (alwaysOn) {
       const { canEnableAlwaysOn } = await import("../services/billing.service")
@@ -1027,10 +1027,7 @@ export async function publishProject(
         // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
         await setPublishStatus(projectId, 'configuring')
         try {
-          const { serverBacked } = await configurePublishedService(projectId, subdomain, { alwaysOn })
-          // Static apps never consume an always-on slot — clamp the persisted
-          // flag so the slot meter and DB stay accurate.
-          if (!serverBacked) alwaysOn = false
+          await configurePublishedService(projectId, subdomain, { alwaysOn })
         } catch (err: any) {
           console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
           await setPublishStatus(projectId, 'failed', 'configure_failed')
@@ -1414,7 +1411,7 @@ export function publishRoutes() {
       const subdomain = project.publishedSubdomain
 
       // Re-validate always-on entitlement on each republish (clamp off on a
-      // downgrade); `configure` further clamps static apps.
+      // downgrade). Applies to both static and server-backed apps.
       let alwaysOn = (project as any).publishedAlwaysOn === true
       if (alwaysOn) {
         const { canEnableAlwaysOn } = await import("../services/billing.service")
@@ -1467,8 +1464,7 @@ export function publishRoutes() {
           // republish never clobbers accumulated end-user writes.
           await setPublishStatus(projectId, 'configuring')
           try {
-            const { serverBacked } = await configurePublishedService(projectId, subdomain, { alwaysOn })
-            if (!serverBacked) alwaysOn = false
+            await configurePublishedService(projectId, subdomain, { alwaysOn })
           } catch (err: any) {
             console.warn("[Publish] Failed to reconfigure published service:", err.message)
           }
@@ -1582,24 +1578,12 @@ export function publishRoutes() {
         syncPassword = { subdomain: project.publishedSubdomain, accessLevel: effectiveAccessLevel, hash: resolved.hash }
       }
 
-      // Always-on toggle: entitlement-gated and only meaningful for
-      // server-backed apps. Enforce the workspace slot cap on enable, then
-      // flip the live Knative service's min-scale in place (no rebuild).
+      // Always-on toggle: entitlement-gated for both static and server-backed
+      // apps. Enforce the workspace slot cap on enable, then flip the live
+      // Knative service's min-scale in place (no rebuild).
       if (body.alwaysOn !== undefined) {
         const wantOn = body.alwaysOn === true
         if (wantOn) {
-          const serverBacked = isKubernetes() ? await detectServerBacked(projectId) : true
-          if (!serverBacked) {
-            return c.json(
-              {
-                error: {
-                  code: "not_server_backed",
-                  message: "Always on only applies to apps with a backend (database or API routes).",
-                },
-              },
-              400,
-            )
-          }
           const { canEnableAlwaysOn } = await import("../services/billing.service")
           const gate = await canEnableAlwaysOn(project.workspaceId, projectId)
           if (!gate.allowed) {
