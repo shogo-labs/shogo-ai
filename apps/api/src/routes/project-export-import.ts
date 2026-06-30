@@ -202,6 +202,7 @@ function collectWorkspaceFiles(
   dir: string,
   baseDir: string,
   skipped: Array<{ path: string; reason: string }> = [],
+  extraExcludedDirs?: Set<string>,
 ): Record<string, Uint8Array> {
   const files: Record<string, Uint8Array> = {}
   if (!existsSync(dir)) return files
@@ -209,6 +210,8 @@ function collectWorkspaceFiles(
   const entries = readdirSync(dir, { withFileTypes: true })
   for (const entry of entries) {
     if (EXCLUDED_DIRS.has(entry.name)) continue
+    // Caller-supplied extra exclusions (e.g. build dirs for source-only ZIP).
+    if (extraExcludedDirs?.has(entry.name)) continue
     // macOS detritus: `._*` AppleDouble sidecars crash Metro's Babel parser
     // on import. Drop the whole subtree for junk dirs like `__MACOSX/`.
     if (isMacOSJunkName(entry.name)) continue
@@ -217,7 +220,10 @@ function collectWorkspaceFiles(
     const relPath = relative(baseDir, fullPath).replace(/\\/g, '/')
 
     if (entry.isDirectory()) {
-      Object.assign(files, collectWorkspaceFiles(fullPath, baseDir, skipped))
+      Object.assign(
+        files,
+        collectWorkspaceFiles(fullPath, baseDir, skipped, extraExcludedDirs),
+      )
     } else if (entry.isFile()) {
       if (isExcludedRelPath(relPath)) {
         skipped.push({ path: relPath, reason: 'excluded-pattern' })
@@ -239,6 +245,98 @@ function collectWorkspaceFiles(
     }
   }
   return files
+}
+
+/**
+ * Collect a project's workspace files for export, transparently sourcing them
+ * from the live agent pod (Kubernetes, via `/agent/workspace/bundle`) or from
+ * local disk (`WORKSPACES_DIR`). Returns flat workspace-relative paths (no
+ * `workspace/` prefix). Shared by both the `.shogo` export and the source-only
+ * ZIP so they always agree on provenance, exclusions, and k8s behaviour.
+ */
+async function collectExportWorkspaceFiles(
+  projectId: string,
+  opts: { extraExcludedDirs?: Set<string> } = {},
+): Promise<{
+  files: Record<string, Uint8Array>
+  sourceMode: 'k8s' | 'k8s-fallback-empty' | 'local'
+  fileSkipped: Array<{ path: string; reason: string }>
+  warnings: string[]
+}> {
+  const files: Record<string, Uint8Array> = {}
+  const fileSkipped: Array<{ path: string; reason: string }> = []
+  const warnings: string[] = []
+  let sourceMode: 'k8s' | 'k8s-fallback-empty' | 'local' = 'local'
+
+  const extra = opts.extraExcludedDirs
+  const hasExcludedSegment = (relPath: string): boolean =>
+    !!extra && extra.size > 0 && relPath.split('/').some((seg) => extra.has(seg))
+
+  if (isKubernetes()) {
+    sourceMode = 'k8s'
+    try {
+      const { getProjectPodUrl } = await import('../lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      // Pod-side workspace endpoints require the per-project runtime token —
+      // without it the pod returns 401, we flip to `k8s-fallback-empty`, and
+      // the export ships with no workspace/* entries.
+      const agent = new AgentClient({
+        baseUrl: podUrl,
+        headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
+      })
+      const bundle: WorkspaceBundle = await agent.getWorkspaceBundle()
+      const bundleFiles =
+        bundle && typeof bundle === 'object' && bundle.files && typeof bundle.files === 'object'
+          ? bundle.files
+          : {}
+      if (Object.keys(bundleFiles).length === 0) {
+        warnings.push(
+          'Runtime pod returned an empty workspace bundle; the agent may be cold-starting or have no files yet.',
+        )
+      }
+
+      // Defensive normalisation: older runtime pods returned Windows-style
+      // backslash paths which, when zipped verbatim, became literal-backslash
+      // filenames after extraction.
+      let backslashCount = 0
+      for (const [rawRelPath, base64Data] of Object.entries(bundleFiles)) {
+        const relPath = rawRelPath.replace(/\\/g, '/')
+        if (relPath !== rawRelPath) backslashCount++
+
+        if (isExcludedRelPath(relPath) || hasExcludedSegment(relPath)) {
+          fileSkipped.push({ path: relPath, reason: 'excluded-pattern' })
+          continue
+        }
+        files[relPath] = new Uint8Array(Buffer.from(base64Data, 'base64'))
+      }
+      if (backslashCount > 0) {
+        warnings.push(
+          `Runtime pod returned ${backslashCount} workspace path(s) with backslash separators; normalised on the API side. The pod build may be outdated.`,
+        )
+      }
+    } catch (err: any) {
+      sourceMode = 'k8s-fallback-empty'
+      warnings.push(
+        `Could not reach agent pod for workspace files: ${err?.message || 'unknown error'}`,
+      )
+      console.warn(
+        `[Export] Could not reach agent pod for workspace files: ${err.message}`,
+      )
+    }
+  } else {
+    const workspaceDir = join(WORKSPACES_DIR, projectId)
+    const workspaceFiles = collectWorkspaceFiles(
+      workspaceDir,
+      workspaceDir,
+      fileSkipped,
+      opts.extraExcludedDirs,
+    )
+    for (const [relPath, data] of Object.entries(workspaceFiles)) {
+      files[relPath] = data
+    }
+  }
+
+  return { files, sourceMode, fileSkipped, warnings }
 }
 
 // ─── Import internals ──────────────────────────────────────────
@@ -865,7 +963,13 @@ export function projectExportImportRoutes() {
     const reqBody = (await c.req.json().catch(() => ({}))) as {
       includeChats?: boolean
       password?: string
+      sourceOnly?: boolean
     }
+    // `sourceOnly` produces a plain `.zip` of just the workspace source files
+    // (flattened, no `project.json`/`manifest.json`/`chat-history`, build
+    // artifacts excluded) — what users mean by "download my project as a ZIP".
+    // The default `.shogo` bundle is unchanged so import still round-trips.
+    const sourceOnly = reqBody.sourceOnly === true
     // Default to including chats; only an explicit `false` disables.
     const includeChats = reqBody.includeChats !== false
     // Optional archive password. When present, the entire `.shogo` archive is
@@ -881,6 +985,43 @@ export function projectExportImportRoutes() {
     })
     if (!project) {
       return c.json({ error: 'Project not found' }, 404)
+    }
+
+    // ─── Source-only ZIP ────────────────────────────────────────────────
+    // Plain archive of the workspace source for "Download project (ZIP)".
+    // Reuses the same k8s-safe collection path as the `.shogo` export, so it
+    // works in Kubernetes (pulls files via the agent pod's
+    // /agent/workspace/bundle) where the old `GET /download` tar.gz route 404s.
+    if (sourceOnly) {
+      const BUILD_DIRS = new Set(['dist', 'build'])
+      const { files } = await collectExportWorkspaceFiles(projectId, {
+        extraExcludedDirs: BUILD_DIRS,
+      })
+      const sourceZip: Record<string, Uint8Array> = {}
+      for (const [relPath, data] of Object.entries(files)) {
+        sourceZip[relPath] = data
+      }
+      // Always ship a valid, non-empty archive (e.g. cold-starting pod / empty
+      // workspace) so the client download never yields a 0-entry zip.
+      if (Object.keys(sourceZip).length === 0) {
+        sourceZip['README.txt'] = strToU8(
+          'This project has no downloadable source files yet.\n',
+        )
+      }
+      const zippedSource = zipSync(sourceZip, { level: 6 })
+      const sourceName =
+        project.name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60) || 'project'
+      const sourceBody = zippedSource.buffer.slice(
+        zippedSource.byteOffset,
+        zippedSource.byteOffset + zippedSource.byteLength,
+      ) as ArrayBuffer
+      return new Response(sourceBody, {
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="${sourceName}.zip"`,
+          'Content-Length': String(zippedSource.byteLength),
+        },
+      })
     }
 
     const chatSessions = includeChats
@@ -979,79 +1120,14 @@ export function projectExportImportRoutes() {
     // it). `sourceMode` records whether files came from the live agent pod
     // (k8s) or directly from disk (local), and `fileSkipped` lists what we
     // intentionally dropped.
-    const fileSkipped: Array<{ path: string; reason: string }> = []
-    const exportWarnings: string[] = []
-    let sourceMode: 'k8s' | 'k8s-fallback-empty' | 'local' = 'local'
-
-    if (isKubernetes()) {
-      sourceMode = 'k8s'
-      try {
-        const { getProjectPodUrl } = await import('../lib/knative-project-manager')
-        const podUrl = await getProjectPodUrl(projectId)
-        // Pod-side workspace endpoints require the per-project runtime token —
-        // matches warm-pool-controller / heartbeat-scheduler / voice-context.
-        // Without this header the pod returns 401, the catch below flips
-        // sourceMode to `k8s-fallback-empty`, and the export ships with no
-        // workspace/* entries (including AGENTS.md / TOOLS.md / STACK.md /
-        // HEARTBEAT.md / MEMORY.md — the "Context Files").
-        const agent = new AgentClient({
-          baseUrl: podUrl,
-          headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
-        })
-        const bundle: WorkspaceBundle = await agent.getWorkspaceBundle()
-        const bundleFiles =
-          bundle && typeof bundle === 'object' && bundle.files && typeof bundle.files === 'object'
-            ? bundle.files
-            : {}
-        if (Object.keys(bundleFiles).length === 0) {
-          exportWarnings.push(
-            'Runtime pod returned an empty workspace bundle; the agent may be cold-starting or have no files yet.',
-          )
-        }
-
-        // Defensive normalisation: older runtime pods returned Windows-style
-        // backslash paths (e.g. `memory\2026-04-09.md`) which, when zipped
-        // verbatim, became literal-backslash filenames after extraction —
-        // breaking memory/, .shogo/, src/ etc. on the importer's machine.
-        // The runtime is fixed (server.ts collectBundleFiles), but old pods
-        // may still be live: normalise here so the bundle is always sane.
-        let backslashCount = 0
-        for (const [rawRelPath, base64Data] of Object.entries(bundleFiles)) {
-          const relPath = rawRelPath.replace(/\\/g, '/')
-          if (relPath !== rawRelPath) backslashCount++
-
-          if (isExcludedRelPath(relPath)) {
-            fileSkipped.push({ path: relPath, reason: 'excluded-pattern' })
-            continue
-          }
-          zipContents[`workspace/${relPath}`] = new Uint8Array(
-            Buffer.from(base64Data, 'base64'),
-          )
-        }
-        if (backslashCount > 0) {
-          exportWarnings.push(
-            `Runtime pod returned ${backslashCount} workspace path(s) with backslash separators; normalised on the API side. The pod build may be outdated.`,
-          )
-        }
-      } catch (err: any) {
-        sourceMode = 'k8s-fallback-empty'
-        exportWarnings.push(
-          `Could not reach agent pod for workspace files: ${err?.message || 'unknown error'}`,
-        )
-        console.warn(
-          `[Export] Could not reach agent pod for workspace files: ${err.message}`,
-        )
-      }
-    } else {
-      const workspaceDir = join(WORKSPACES_DIR, projectId)
-      const workspaceFiles = collectWorkspaceFiles(
-        workspaceDir,
-        workspaceDir,
-        fileSkipped,
-      )
-      for (const [relPath, data] of Object.entries(workspaceFiles)) {
-        zipContents[`workspace/${relPath}`] = data
-      }
+    const {
+      files: collectedFiles,
+      sourceMode,
+      fileSkipped,
+      warnings: exportWarnings,
+    } = await collectExportWorkspaceFiles(projectId)
+    for (const [relPath, data] of Object.entries(collectedFiles)) {
+      zipContents[`workspace/${relPath}`] = data
     }
 
     // ─── Context Files seed ────────────────────────────────────────────

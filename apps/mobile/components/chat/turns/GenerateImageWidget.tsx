@@ -16,6 +16,7 @@ import type { ToolCallData } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
+import { DownloadChip } from "./DownloadChip"
 
 export interface GenerateImageWidgetProps {
   tool: ToolCallData

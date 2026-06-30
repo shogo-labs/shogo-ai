@@ -65,6 +65,7 @@ import {
   ExternalLink,
   GitCommit,
   Upload,
+  Download,
   FolderTree,
   Globe,
   History,
@@ -1152,6 +1153,7 @@ function ProjectMenuView({
   const [showMoveModal, setShowMoveModal] = useState(false)
   const [showExportModal, setShowExportModal] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
+  const [isDownloadingZip, setIsDownloadingZip] = useState(false)
   const { features } = usePlatformConfig()
   const showBilling = features.billing
 
@@ -1213,6 +1215,58 @@ function ProjectMenuView({
   const handleExportProject = useCallback(() => {
     setShowExportModal(true)
   }, [])
+
+  // Plain source ZIP — the "Download project (ZIP)" most users mean (no
+  // `.shogo` metadata). Routes through the source-only export, which is
+  // Kubernetes-safe (the legacy `GET /download` tar.gz route 404s in k8s).
+  const runSourceDownload = useCallback(async () => {
+    if (isDownloadingZip) return
+    setIsDownloadingZip(true)
+    try {
+      const { blob, filename } = await api.exportProjectBlob(projectId, {
+        sourceOnly: true,
+      })
+
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      } else if (Platform.OS !== 'web') {
+        const { documentDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
+        const Sharing = await import('expo-sharing')
+        const dir = documentDirectory
+        if (!dir) throw new Error('Could not access app storage')
+        const fileUri = `${dir}${filename}`
+        const arrayBuf = await blob.arrayBuffer()
+        const bytes = new Uint8Array(arrayBuf)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+        const base64 = btoa(binary)
+        await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'application/zip',
+          UTI: 'public.zip-archive' as any,
+          dialogTitle: 'Download Project',
+        })
+      }
+      onClose()
+    } catch (err: any) {
+      console.error('[ProjectTopBar] Source download failed:', err)
+      if (Platform.OS !== 'web') {
+        const { Alert } = await import('react-native')
+        Alert.alert('Download Failed', err.message || 'Failed to download project')
+      } else if (typeof window !== 'undefined') {
+        window.alert(`Download Failed: ${err?.message || 'Failed to download project'}`)
+      }
+    } finally {
+      setIsDownloadingZip(false)
+    }
+  }, [projectId, isDownloadingZip, onClose])
 
   const menuItems: {
     icon: React.ElementType

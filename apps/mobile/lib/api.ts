@@ -1748,6 +1748,12 @@ export const api = {
       /** When set, the archive is ZipCrypto-encrypted with this password. */
       password?: string
       authCookie?: string | null
+      /**
+       * When true, returns a plain source-code `.zip` (just the workspace
+       * files, no `.shogo` metadata/manifest/chat-history) — what users mean
+       * by "Download project (ZIP)". Ignores `password`/`includeChats`.
+       */
+      sourceOnly?: boolean
     },
   ): Promise<{ blob: Blob; filename: string }> {
     const url = api.getProjectExportUrl(projectId)
@@ -1761,10 +1767,14 @@ export const api = {
       method: 'POST',
       credentials: Platform.OS === 'web' ? 'include' : 'omit',
       headers,
-      body: JSON.stringify({
-        includeChats: opts?.includeChats !== false,
-        ...(opts?.password ? { password: opts.password } : {}),
-      }),
+      body: JSON.stringify(
+        opts?.sourceOnly
+          ? { sourceOnly: true }
+          : {
+              includeChats: opts?.includeChats !== false,
+              ...(opts?.password ? { password: opts.password } : {}),
+            },
+      ),
     })
     if (!res.ok) {
       const text = await res.text()
@@ -1773,7 +1783,7 @@ export const api = {
 
     const disposition = res.headers.get('content-disposition') || ''
     const match = disposition.match(/filename="?([^"]+)"?/)
-    const filename = match?.[1] || 'project.shogo'
+    const filename = match?.[1] || (opts?.sourceOnly ? 'project.zip' : 'project.shogo')
 
     const blob = await res.blob()
     return { blob, filename }
