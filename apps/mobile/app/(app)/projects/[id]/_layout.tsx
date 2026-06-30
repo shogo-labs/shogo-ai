@@ -3300,9 +3300,9 @@ export default observer(function ProjectLayout() {
                 projectId={projectId!}
                 projectName={project.name}
                 agentUrl={agentUrl}
+                onOpenCodeWorkbench={handleOpenCodeWorkbench}
                 isExternalProject={isExternalProject}
                 folderPath={primaryFolderPath ?? undefined}
-                onOpenCodeWorkbench={handleOpenCodeWorkbench}
               />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Files">
