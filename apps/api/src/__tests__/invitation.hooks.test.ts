@@ -19,11 +19,14 @@ interface InvitationRow {
 
 const WORKSPACE_ID = 'ws-1'
 const ADMIN_USER_ID = 'user-admin'
+const INVITEE_USER_ID = 'user-invitee'
+const INVITEE_EMAIL = 'invitee@example.com'
 
 let invitations: InvitationRow[]
 let idCounter: number
 
 function matchesScope(row: InvitationRow, where: any): boolean {
+  if (where.id !== undefined && row.id !== where.id) return false
   if (where.email !== undefined && row.email !== where.email) return false
   if (where.workspaceId !== undefined && row.workspaceId !== where.workspaceId) return false
   if (where.projectId !== undefined && row.projectId !== where.projectId) return false
@@ -33,8 +36,15 @@ function matchesScope(row: InvitationRow, where: any): boolean {
   return true
 }
 
-function makeCtx() {
+function makeCtx(userId = ADMIN_USER_ID) {
   const prisma = {
+    user: {
+      findUnique: async ({ where }: { where: any }) => {
+        if (where.id === INVITEE_USER_ID) return { email: INVITEE_EMAIL }
+        if (where.id === ADMIN_USER_ID) return { email: 'admin@example.com' }
+        return null
+      },
+    },
     member: {
       findFirst: async ({ where }: { where: any }) => {
         if (where.userId === ADMIN_USER_ID && where.workspaceId === WORKSPACE_ID) {
@@ -47,6 +57,10 @@ function makeCtx() {
       findUnique: async () => null,
     },
     invitation: {
+      findUnique: async ({ where }: { where: any }) => {
+        const row = invitations.find((item) => matchesScope(item, where))
+        return row ? { ...row, workspace: { members: [] } } : null
+      },
       findFirst: async ({ where }: { where: any }) =>
         invitations.find((row) => matchesScope(row, where)) ?? null,
       deleteMany: async ({ where }: { where: any }) => {
@@ -56,7 +70,7 @@ function makeCtx() {
       },
     },
   }
-  return { body: {}, params: {}, query: {}, userId: ADMIN_USER_ID, prisma }
+  return { body: {}, params: {}, query: {}, userId, prisma }
 }
 
 beforeEach(() => {
@@ -106,6 +120,21 @@ describe('invitationHooks.beforeCreate duplicate check', () => {
     expect(invitations).toHaveLength(0)
   })
 
+  test('expired status invite does not block a re-invite', async () => {
+    seedInvitation({
+      status: 'expired',
+      expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+    })
+
+    const result = await invitationHooks.beforeCreate!(
+      { email: 'Invitee@example.com', workspaceId: WORKSPACE_ID, role: 'member' },
+      makeCtx() as any,
+    )
+
+    expect(result?.ok).toBe(true)
+    expect(result?.data?.email).toBe('invitee@example.com')
+  })
+
   test('no existing invite proceeds normally', async () => {
     const result = await invitationHooks.beforeCreate!(
       { email: 'invitee@example.com', workspaceId: WORKSPACE_ID, role: 'member' },
@@ -114,5 +143,72 @@ describe('invitationHooks.beforeCreate duplicate check', () => {
 
     expect(result?.ok).toBe(true)
     expect(result?.data?.expiresAt).toBeInstanceOf(Date)
+  })
+})
+
+describe('invitationHooks.beforeUpdate invitee actions', () => {
+  test('expired invite can be declined by the invitee', async () => {
+    const invitation = seedInvitation({
+      email: INVITEE_EMAIL,
+      expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+    })
+
+    const result = await invitationHooks.beforeUpdate!(
+      invitation.id,
+      { status: 'declined' },
+      makeCtx(INVITEE_USER_ID) as any,
+    )
+
+    expect(result?.ok).toBe(true)
+    expect(result?.data?.status).toBe('declined')
+  })
+
+  test('expired status invite can be declined by the invitee', async () => {
+    const invitation = seedInvitation({
+      email: INVITEE_EMAIL,
+      status: 'expired',
+      expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+    })
+
+    const result = await invitationHooks.beforeUpdate!(
+      invitation.id,
+      { status: 'declined' },
+      makeCtx(INVITEE_USER_ID) as any,
+    )
+
+    expect(result?.ok).toBe(true)
+    expect(result?.data?.status).toBe('declined')
+  })
+
+  test('expired invite cannot be accepted by the invitee', async () => {
+    const invitation = seedInvitation({
+      email: INVITEE_EMAIL,
+      expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+    })
+
+    const result = await invitationHooks.beforeUpdate!(
+      invitation.id,
+      { status: 'accepted' },
+      makeCtx(INVITEE_USER_ID) as any,
+    )
+
+    expect(result?.ok).toBe(false)
+    expect(result?.error?.code).toBe('expired')
+  })
+
+  test('active invite can be accepted by the invitee', async () => {
+    const invitation = seedInvitation({
+      email: INVITEE_EMAIL,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    })
+
+    const result = await invitationHooks.beforeUpdate!(
+      invitation.id,
+      { status: 'accepted' },
+      makeCtx(INVITEE_USER_ID) as any,
+    )
+
+    expect(result?.ok).toBe(true)
+    expect(result?.data?.status).toBe('accepted')
   })
 })

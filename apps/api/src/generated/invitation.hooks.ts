@@ -362,16 +362,21 @@ export const invitationHooks: InvitationHooks = {
     // Invitees can accept or decline
     const userEmail = await getUserEmail(ctx.prisma, userId)
     if (userEmail && userEmail === invitation.email.toLowerCase()) {
-      const actionableStatuses = ['pending', 'accepted']
+      const actionableStatuses = ['pending', 'accepted', 'expired']
       if (!actionableStatuses.includes(invitation.status)) {
         return { ok: false, error: { code: "bad_request", message: "Invitation can no longer be modified" } }
       }
-      if (invitation.expiresAt && new Date(invitation.expiresAt) < new Date()) {
+
+      if (input.status === 'declined') {
+        return { ok: true, data: { status: 'declined' } }
+      }
+
+      if (invitation.status === 'expired' || (invitation.expiresAt && new Date(invitation.expiresAt) < new Date())) {
         return { ok: false, error: { code: "expired", message: "Invitation has expired" } }
       }
-      const allowedStatuses = ['accepted', 'declined']
-      if (input.status && allowedStatuses.includes(input.status)) {
-        return { ok: true, data: { status: input.status } }
+
+      if (input.status === 'accepted') {
+        return { ok: true, data: { status: 'accepted' } }
       }
     }
 
