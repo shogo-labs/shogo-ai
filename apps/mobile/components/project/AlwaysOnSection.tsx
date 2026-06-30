@@ -4,15 +4,16 @@
  * AlwaysOnSection - the "Always on" (min-scale=1, never sleeps) control for a
  * published project, shared between the Publish dropdown and project Settings.
  *
- * "Always on" keeps a warm pod for a server-backed published app so visitors
- * never hit a cold start. It's entitlement-gated (Pro+ and a pooled number of
- * slots per workspace); enabling it server-side may 402 when the plan/slots are
- * exhausted, which we surface as an upgrade prompt.
+ * "Always on" keeps a warm pod for a published app so visitors never hit a cold
+ * start. It works for both static apps (a cheap warm nginx pod) and
+ * server-backed apps (the heavier runtime pod). It's entitlement-gated (Pro+
+ * and a pooled number of slots per workspace); enabling it server-side may 402
+ * when the plan/slots are exhausted, which we surface as an upgrade prompt.
  *
  * Two layouts via `embedded`:
  *  - embedded (default): compact bordered card rendered inside the Publish
- *    dropdown. Collapses to null when the app isn't published / isn't
- *    server-backed (keeps the dropdown clean).
+ *    dropdown. Collapses to null when the app isn't published (keeps the
+ *    dropdown clean).
  *  - embedded={false}: standalone, scrollable Settings pane with explanatory
  *    empty states instead of rendering nothing.
  *
@@ -58,7 +59,6 @@ export function AlwaysOnSection({
 
   const [loading, setLoading] = useState(true)
   const [isPublished, setIsPublished] = useState(false)
-  const [serverBacked, setServerBacked] = useState(false)
   const [alwaysOn, setAlwaysOn] = useState(false)
   // null allowance = unlimited (enterprise/local).
   const [alwaysOnAllowance, setAlwaysOnAllowance] = useState<number | null>(null)
@@ -70,7 +70,6 @@ export function AlwaysOnSection({
     try {
       const data = await api.getPublishState(http, projectId)
       setIsPublished(!!data.subdomain)
-      setServerBacked(data.serverBacked !== false)
       setAlwaysOn(data.alwaysOn === true)
       setAlwaysOnAllowance(data.alwaysOnAllowance ?? null)
       setAlwaysOnUsed(data.alwaysOnUsed ?? 0)
@@ -173,7 +172,7 @@ export function AlwaysOnSection({
 
   // ── Embedded (publish dropdown): collapse to null unless meaningful ────────
   if (embedded) {
-    if (loading || !isPublished || !serverBacked) return null
+    if (loading || !isPublished) return null
     return <View className="mb-4 rounded-lg border border-border p-3">{control}</View>
   }
 
@@ -202,13 +201,6 @@ export function AlwaysOnSection({
     body = (
       <Text className="text-[11px] text-muted-foreground">
         Publish this app first, then you can keep it always on.
-      </Text>
-    )
-  } else if (!serverBacked) {
-    body = (
-      <Text className="text-[11px] text-muted-foreground">
-        Always on only applies to apps with a backend. This app is served as static files from the
-        edge, so it&apos;s already instant for every visitor.
       </Text>
     )
   } else {
