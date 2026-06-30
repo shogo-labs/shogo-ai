@@ -405,6 +405,14 @@ module "preview_router" {
     staging = local.staging_kourier_lb_ip
   }
   default_region = "staging"
+
+  # Wake-on-visit: a preview's Knative DomainMapping + pod are created lazily by
+  # the API (getProjectPodUrl), so a preview that was never opened in Studio —
+  # or one that has since scaled to zero — has nothing for Kourier to route to.
+  # Pointing the Worker at the staging API makes it serve a loading interstitial
+  # on first navigation that polls `GET /api/preview/{projectId}/wake` and
+  # reloads once the pod is ready, instead of erroring.
+  api_wake_origin = "https://studio.staging.shogo.ai"
 }
 
 # =============================================================================
