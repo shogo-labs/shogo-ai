@@ -11,6 +11,7 @@ resources:
   - api-service.yaml
   - api-tunnel-ingress.yaml
   - web-service.yaml
+  - studio-ws-ingress.yaml
   - docs-service.yaml
 
 labels:
