@@ -83,6 +83,14 @@ module "preview_router" {
     in = var.india_lb_ip
   }
   default_region = "us"
+
+  # Wake-on-visit: a preview's Knative DomainMapping + pod are created lazily by
+  # the API (getProjectPodUrl), so a preview that was never opened in Studio — or
+  # one that has since scaled to zero — has nothing for Kourier to route to.
+  # Pointing the Worker at the production API makes it serve a loading
+  # interstitial on first navigation that polls `GET /api/preview/{projectId}/wake`
+  # and reloads once the pod is ready, instead of erroring.
+  api_wake_origin = "https://studio.shogo.ai"
 }
 
 output "install_url" { value = module.install_shogo_ai.install_url }
