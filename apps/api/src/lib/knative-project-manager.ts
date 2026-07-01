@@ -66,6 +66,12 @@ function hashProjectIdToLockKey(projectId: string): number {
   return hash
 }
 
+// How long tryClaimWarmPod will poll (non-blocking) for the per-project
+// advisory lock before giving up and falling back to a cold start. The wait
+// never pins a pooled connection (see advisory-lock.ts), so this only bounds
+// request latency under contention, not connection-pool pressure.
+const WARM_CLAIM_LOCK_BUDGET_MS = 15_000
+
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
@@ -2254,58 +2260,68 @@ async function tryClaimWarmPod(
     // project simultaneously. Advisory locks are session-scoped and don't
     // require holding a transaction open during the long /pool/assign call.
     const { prisma } = await import('./prisma')
+    const { pollAdvisoryLock } = await import('./advisory-lock')
     const lockKey = hashProjectIdToLockKey(projectId)
 
-    // pg_try_advisory_lock returns true if we acquired it, false if another
-    // session already holds it. If contended, re-check the DB — the winning
-    // replica may have already written knativeServiceName.
+    // Acquire the per-project advisory lock with a BOUNDED, NON-BLOCKING
+    // poll. We deliberately NEVER call the blocking pg_advisory_lock():
+    // a blocked waiter holds its Prisma-pool connection for the whole wait,
+    // and under contention (a slow holder) dozens of waiters pinned the pool
+    // until ordinary queries such as prisma.invitation.count() could not get
+    // a connection — the 2026-07-01 ap-mumbai-1 outage. pg_try_advisory_lock
+    // returns immediately, so between poll attempts the connection is
+    // returned to the pool and the wait can never exhaust it.
     //
-    // NOTE: pg_advisory_lock() returns `void`, which Prisma cannot deserialize
-    // via $queryRawUnsafe (raw query engine fails with
-    // "Failed to deserialize column of type 'void'"). Use $executeRawUnsafe
-    // for void-returning statements; $queryRawUnsafe for functions that
-    // return a scalar we actually read.
-    const acquiredRows = await prisma.$queryRawUnsafe<{ acquired: boolean }[]>(
-      `SELECT pg_try_advisory_lock($1) AS acquired`, lockKey,
-    )
-    const acquired = acquiredRows[0]?.acquired === true
-
-    if (!acquired) {
-      // Another replica is actively claiming for this project. Wait briefly
-      // for it to finish, then check if it wrote a service name.
-      console.log(`[KnativeProjectManager] Warm pool claim lock contended for ${projectId} — waiting for other replica`)
-      await new Promise((r) => setTimeout(r, 5000))
-
+    // pg_try_advisory_lock returns a scalar boolean → $queryRawUnsafe.
+    const tryClaimLock = async (): Promise<boolean> => {
+      const rows = await prisma.$queryRawUnsafe<{ acquired: boolean }[]>(
+        `SELECT pg_try_advisory_lock($1) AS acquired`, lockKey,
+      )
+      return rows[0]?.acquired === true
+    }
+    // A winning replica may have written knativeServiceName; reuse it.
+    const reuseIfClaimed = async (phase: string): Promise<string | null> => {
       const project = await prisma.project.findUnique({
         where: { id: projectId },
         select: { knativeServiceName: true },
       })
       if (project?.knativeServiceName) {
-        const url = `http://${project.knativeServiceName}.${NAMESPACE}.svc.cluster.local`
         console.log(
-          `[KnativeProjectManager] Warm pool claim for ${projectId} resolved by another replica: ${project.knativeServiceName} (elapsed: ${Date.now() - t0}ms)`
+          `[KnativeProjectManager] Warm pool claim for ${projectId} resolved ${phase}: ${project.knativeServiceName} (elapsed: ${Date.now() - t0}ms)`
         )
-        return url
+        return `http://${project.knativeServiceName}.${NAMESPACE}.svc.cluster.local`
+      }
+      return null
+    }
+
+    // Fast path first; only poll (and only re-check the DB) on contention.
+    let acquired = await tryClaimLock()
+    if (!acquired) {
+      console.log(`[KnativeProjectManager] Warm pool claim lock contended for ${projectId} — polling (non-blocking) up to ${WARM_CLAIM_LOCK_BUDGET_MS}ms`)
+      const reused = await reuseIfClaimed('by another replica')
+      if (reused) return reused
+
+      acquired = await pollAdvisoryLock(
+        lockKey,
+        { tryLock: tryClaimLock },
+        { budgetMs: WARM_CLAIM_LOCK_BUDGET_MS },
+      )
+
+      if (!acquired) {
+        // Never won the lock within budget. Re-check once more; otherwise
+        // fall back to a cold start rather than block the pool waiting.
+        const reusedAfter = await reuseIfClaimed('after lock wait')
+        if (reusedAfter) return reusedAfter
+        console.log(`[KnativeProjectManager] Could not acquire warm pool claim lock for ${projectId} within ${WARM_CLAIM_LOCK_BUDGET_MS}ms — falling back to cold start`)
+        return null
       }
 
-      // Other replica may have failed — proceed with our own claim.
-      // Try to acquire the lock now (blocking). pg_advisory_lock returns
-      // void — must use $executeRawUnsafe, not $queryRawUnsafe.
-      await prisma.$executeRawUnsafe(`SELECT pg_advisory_lock($1)`, lockKey)
       console.log(`[KnativeProjectManager] Acquired warm pool claim lock for ${projectId} after contention`)
-
-      // Re-check after acquiring — other replica may have finished between our wait and lock
-      const recheck = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { knativeServiceName: true },
-      })
-      if (recheck?.knativeServiceName) {
-        await prisma.$executeRawUnsafe(`SELECT pg_advisory_unlock($1)`, lockKey)
-        const url = `http://${recheck.knativeServiceName}.${NAMESPACE}.svc.cluster.local`
-        console.log(
-          `[KnativeProjectManager] Warm pool claim for ${projectId} resolved after lock acquisition: ${recheck.knativeServiceName} (elapsed: ${Date.now() - t0}ms)`
-        )
-        return url
+      // The winner may have finished between our last check and acquisition.
+      const reusedPostAcq = await reuseIfClaimed('after lock acquisition')
+      if (reusedPostAcq) {
+        await prisma.$executeRawUnsafe(`SELECT pg_advisory_unlock($1)`, lockKey).catch(() => {})
+        return reusedPostAcq
       }
     }
 

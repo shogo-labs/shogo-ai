@@ -15,16 +15,24 @@
  * Design mirrors the project path deliberately so the two stay in lockstep:
  *   - `pg_try_advisory_lock` first (non-blocking) so the common uncontended
  *     case is one round-trip.
- *   - On contention, fall back to a blocking `pg_advisory_lock` so the loser
- *     waits for the winner to finish spawning, then runs `fn()` itself —
- *     `fn` is expected to short-circuit when it observes the runtime is
- *     already up (the resolver re-checks service existence after acquiring).
- *   - Always release in `finally`.
+ *   - On contention, POLL `pg_try_advisory_lock` with capped backoff up to a
+ *     bounded budget so the loser waits for the winner to finish spawning,
+ *     then runs `fn()` itself — `fn` is expected to short-circuit when it
+ *     observes the runtime is already up (the resolver re-checks service
+ *     existence after acquiring). If the budget is exhausted we run `fn()`
+ *     WITHOUT the lease rather than block: `fn` self-guards, so an
+ *     un-serialized run is at worst a redundant no-op.
+ *   - Always release in `finally` (only when we actually hold it).
+ *
+ * We deliberately NEVER issue a blocking `pg_advisory_lock`: a blocked waiter
+ * holds its Prisma-pool connection for the entire wait, and under contention
+ * that pinned the pool until ordinary queries could not get a connection (the
+ * 2026-07-01 ap-mumbai-1 outage). Polling `pg_try_advisory_lock` returns the
+ * connection to the pool between attempts, so the wait can never exhaust it.
  *
  * Advisory locks are session-scoped (not transaction-scoped), so we don't
  * hold a transaction open across the long spawn. This matches the existing
- * project claim path; the same Prisma-pooled-connection caveat applies and
- * is accepted repo-wide.
+ * project claim path.
  *
  * HOST / desktop mode is single-process and SQLite-backed (no
  * `pg_advisory_lock`), so the resolver does NOT take this lease there — the
@@ -58,15 +66,28 @@ export function hashWorkspaceIdToLockKey(workspaceId: string): number {
   return hash
 }
 
+/**
+ * How long we poll (non-blocking) for the spawn lease before proceeding
+ * without it. Generous because a real spawn can take tens of seconds and we
+ * want the loser to wait for the winner in the common case — but the wait
+ * never pins a pooled connection, so a large budget costs latency, not
+ * connections.
+ */
+const SPAWN_LEASE_WAIT_BUDGET_MS = 60_000
+
 export interface WorkspaceSpawnLeaseSeams {
   /** Non-blocking acquire. Resolves true if the lock was taken. */
   _tryLock?: (key: number) => Promise<boolean>
-  /** Blocking acquire. Resolves once the lock is held. */
-  _lock?: (key: number) => Promise<void>
   /** Release a held lock. */
   _unlock?: (key: number) => Promise<void>
+  /** Sleep between poll attempts (tests inject a fake clock). */
+  _sleep?: (ms: number) => Promise<void>
+  /** Clock source (tests inject a fake clock). */
+  _now?: () => number
   /** Override the key derivation (tests). */
   _hashKey?: (workspaceId: string) => number
+  /** Total non-blocking poll budget before proceeding without the lease. */
+  _budgetMs?: number
   /** Log tag. */
   logTag?: string
 }
@@ -79,13 +100,6 @@ async function defaultTryLock(key: number): Promise<boolean> {
     key,
   )
   return rows[0]?.acquired === true
-}
-
-async function defaultLock(key: number): Promise<void> {
-  const { prisma } = await import('../prisma')
-  // pg_advisory_lock returns void — must use $executeRawUnsafe (Prisma can't
-  // deserialize a void column via $queryRawUnsafe).
-  await prisma.$executeRawUnsafe(`SELECT pg_advisory_lock($1)`, key)
 }
 
 async function defaultUnlock(key: number): Promise<void> {
@@ -110,21 +124,29 @@ export async function withWorkspaceSpawnLease<T>(
   const tag = seams.logTag ?? 'WorkspaceSpawnLease'
   const hashKey = seams._hashKey ?? hashWorkspaceIdToLockKey
   const tryLock = seams._tryLock ?? defaultTryLock
-  const lock = seams._lock ?? defaultLock
   const unlock = seams._unlock ?? defaultUnlock
+  const budgetMs = seams._budgetMs ?? SPAWN_LEASE_WAIT_BUDGET_MS
 
   const key = hashKey(workspaceId)
 
-  let held = false
-  const acquired = await tryLock(key)
-  if (acquired) {
-    held = true
-  } else {
-    // Another replica is spawning this workspace. Block until it releases,
-    // then proceed — fn() short-circuits if the runtime came up meanwhile.
-    console.log(`[${tag}] spawn lease contended for ${workspaceId} — waiting for the active replica`)
-    await lock(key)
-    held = true
+  let held = await tryLock(key)
+  if (!held) {
+    // Another replica is spawning this workspace. Poll (non-blocking) until
+    // it releases, then proceed — fn() short-circuits if the runtime came up
+    // meanwhile. We never issue a blocking lock, so waiting cannot pin a
+    // pooled connection. If the budget is exhausted we run fn() anyway
+    // (un-serialized); fn is required to self-guard, so that is at worst a
+    // redundant no-op.
+    console.log(`[${tag}] spawn lease contended for ${workspaceId} — polling (non-blocking) up to ${budgetMs}ms`)
+    const { pollAdvisoryLock } = await import('../advisory-lock')
+    held = await pollAdvisoryLock(
+      key,
+      { tryLock, sleep: seams._sleep, now: seams._now },
+      { budgetMs },
+    )
+    if (!held) {
+      console.warn(`[${tag}] could not acquire spawn lease for ${workspaceId} within ${budgetMs}ms — proceeding without it (fn must self-guard)`)
+    }
   }
 
   try {

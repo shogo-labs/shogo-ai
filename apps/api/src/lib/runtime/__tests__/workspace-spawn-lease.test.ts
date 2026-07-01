@@ -45,6 +45,17 @@ describe('hashWorkspaceIdToLockKey', () => {
   })
 })
 
+/** Deterministic fake clock so poll tests never touch real timers. */
+function fakeClock(startedAt = 0) {
+  let t = startedAt
+  return {
+    now: () => t,
+    sleep: async (ms: number) => {
+      t += ms
+    },
+  }
+}
+
 describe('withWorkspaceSpawnLease', () => {
   it('runs fn while holding the lock and releases after (uncontended path)', async () => {
     const order: string[] = []
@@ -59,9 +70,6 @@ describe('withWorkspaceSpawnLease', () => {
           order.push('tryLock')
           return true
         },
-        _lock: async () => {
-          order.push('lock(blocking)')
-        },
         _unlock: async () => {
           order.push('unlock')
         },
@@ -71,21 +79,48 @@ describe('withWorkspaceSpawnLease', () => {
     expect(order).toEqual(['tryLock', 'fn', 'unlock'])
   })
 
-  it('blocks on the lock when the non-blocking try is contended', async () => {
+  it('polls (non-blocking) when contended and runs fn once the lease frees', async () => {
+    const clock = fakeClock()
+    let tries = 0
     const order: string[] = []
     await withWorkspaceSpawnLease('ws-1', async () => { order.push('fn') }, {
+      // Free on the 3rd attempt.
       _tryLock: async () => {
-        order.push('tryLock(false)')
-        return false
-      },
-      _lock: async () => {
-        order.push('lock(blocking)')
+        tries++
+        order.push(`try(${tries >= 3})`)
+        return tries >= 3
       },
       _unlock: async () => {
         order.push('unlock')
       },
+      _sleep: clock.sleep,
+      _now: clock.now,
+      _budgetMs: 10_000,
     })
-    expect(order).toEqual(['tryLock(false)', 'lock(blocking)', 'fn', 'unlock'])
+    // First try (orchestration) false, poll tries again false, then true.
+    expect(order).toEqual(['try(false)', 'try(false)', 'try(true)', 'fn', 'unlock'])
+  })
+
+  it('proceeds WITHOUT the lease when the poll budget is exhausted (fn self-guards)', async () => {
+    const clock = fakeClock()
+    let ran = false
+    let unlockCalls = 0
+    const result = await withWorkspaceSpawnLease('ws-1', async () => {
+      ran = true
+      return 'ran-unserialized'
+    }, {
+      _tryLock: async () => false, // never free
+      _unlock: async () => {
+        unlockCalls++
+      },
+      _sleep: clock.sleep,
+      _now: clock.now,
+      _budgetMs: 1_000,
+    })
+    expect(ran).toBe(true)
+    expect(result).toBe('ran-unserialized')
+    // Never held the lease → must not release it.
+    expect(unlockCalls).toBe(0)
   })
 
   it('releases the lock even when fn throws', async () => {
@@ -103,22 +138,6 @@ describe('withWorkspaceSpawnLease', () => {
     expect(unlocked).toBe(true)
   })
 
-  it('does not unlock if the lock was never acquired (lock throws)', async () => {
-    let unlockCalls = 0
-    await expect(
-      withWorkspaceSpawnLease('ws-1', async () => 'never', {
-        _tryLock: async () => false,
-        _lock: async () => {
-          throw new Error('db down')
-        },
-        _unlock: async () => {
-          unlockCalls++
-        },
-      }),
-    ).rejects.toThrow('db down')
-    expect(unlockCalls).toBe(0)
-  })
-
   it('swallows a failed unlock (advisory locks auto-release on session end)', async () => {
     const result = await withWorkspaceSpawnLease('ws-1', async () => 'ok', {
       _tryLock: async () => true,
@@ -131,28 +150,19 @@ describe('withWorkspaceSpawnLease', () => {
 
   it('serializes two overlapping leases on the same workspace', async () => {
     // Model a single advisory lock with a tiny in-memory mutex: tryLock
-    // succeeds only when free; lock() waits for release.
+    // succeeds only when free. The loser polls (real short timers) until the
+    // winner releases.
     let locked = false
-    const waiters: Array<() => void> = []
     const seams = {
       _tryLock: async (_k: number) => {
         if (locked) return false
         locked = true
         return true
       },
-      _lock: async (_k: number) => {
-        if (!locked) {
-          locked = true
-          return
-        }
-        await new Promise<void>((resolve) => waiters.push(resolve))
-        locked = true
-      },
       _unlock: async (_k: number) => {
         locked = false
-        const next = waiters.shift()
-        if (next) next()
       },
+      _budgetMs: 2_000,
     }
 
     const events: string[] = []
