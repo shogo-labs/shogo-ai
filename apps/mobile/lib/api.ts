@@ -58,6 +58,13 @@ export function createHttpClient(baseUrl?: string): HttpClient {
   })
 }
 
+export function isInvitationExpired(invitation: { status?: string; expiresAt?: string | number | Date | null }): boolean {
+  if (invitation.status === 'expired') return true
+  if (!invitation.expiresAt) return false
+  const expiresAt = new Date(invitation.expiresAt).getTime()
+  return Number.isFinite(expiresAt) && expiresAt <= Date.now()
+}
+
 // ─── Backend API helpers ────────────────────────────────────
 // For domain CRUD (projects, chat sessions, etc.) use `useDomainActions()`.
 // This `api` object is for non-domain endpoints (billing, analytics, etc.)
@@ -1091,7 +1098,7 @@ export const api = {
       `/api/invitations?email=${encodeURIComponent(email)}`,
     )
     const items = res.data?.items
-    return (Array.isArray(items) ? items : []).filter((i: any) => i.status === 'pending')
+    return (Array.isArray(items) ? items : []).filter((i: any) => i.status === 'pending' || i.status === 'expired')
   },
 
   // ─── Account ──────────────────────────────────────────
