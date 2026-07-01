@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
- * Stash for a license-key redeem code captured from a deep link
- * (`/billing?redeem=CODE` / `shogo://billing?redeem=CODE`).
+ * Stash for a license-key redeem code captured from a non-iOS deep link
+ * (`/billing?redeem=CODE` or a native Android link with `redeem=CODE`).
  *
- * A brand-new user who opens a redeem link is bounced through
+ * A brand-new non-iOS user who opens a redeem link is bounced through
  * sign-up + onboarding, which drops the `redeem` query param. We stash
  * the code at app load (root layout) and consume it once the user is
  * authenticated and has a workspace, routing them to billing with the

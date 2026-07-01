@@ -110,6 +110,8 @@ export default observer(function BillingPage() {
 
   const http = useDomainHttp()
   const currentWorkspace = useActiveWorkspace()
+  const billingWorkspace = currentWorkspace ?? workspaces?.all?.[0] ?? null
+  const isWorkspaceLoading = Boolean(user?.id && workspaces?.isLoading && !billingWorkspace)
 
   const {
     subscription,
@@ -119,7 +121,7 @@ export default observer(function BillingPage() {
     refetchUsageWallet,
     planSource,
     usageWindows,
-  } = useBillingData(currentWorkspace?.id)
+  } = useBillingData(billingWorkspace?.id)
   // A grant-conferred plan has no Stripe customer / portal, so hide
   // "Manage" / Stripe-only affordances and let "Free Plan"-style copy
   // adapt by checking `planSource === 'subscription'` instead of just
@@ -157,6 +159,7 @@ export default observer(function BillingPage() {
   const contentHorizontalPadding = isTabletWidth ? 24 : 16
   // Wider container on iPad portrait so the new 2-column plan grid breathes.
   const contentMaxWidth = width >= 1280 ? 1200 : width >= 768 ? 920 : 720
+  const canRedeemLicenseKeys = Platform.OS !== 'ios'
 
   type IapToastVariant = 'success' | 'error' | 'info'
   const showIapToast = useCallback((variant: IapToastVariant, title: string, description: string) => {
@@ -174,9 +177,11 @@ export default observer(function BillingPage() {
     })
   }, [toast])
 
-  // Deep-link landing: shogo://billing?redeem=CODE (or <web>/billing?redeem=CODE)
-  // prefills the license-key field and focuses it so the recipient just taps Redeem.
+  // Deep-link landing outside iOS prefills the license-key field. iOS must
+  // not unlock paid digital features through mechanisms other than App Store
+  // In-App Purchase.
   useEffect(() => {
+    if (!canRedeemLicenseKeys) return
     const code = Array.isArray(redeemParam) ? redeemParam[0] : redeemParam
     if (!code) return
     setLicenseCode(code.trim().toUpperCase())
@@ -185,12 +190,13 @@ export default observer(function BillingPage() {
     clearPendingLicenseCode()
     const t = setTimeout(() => licenseInputRef.current?.focus(), 350)
     return () => clearTimeout(t)
-  }, [redeemParam])
+  }, [canRedeemLicenseKeys, redeemParam])
 
   const handleRedeemLicense = useCallback(async () => {
+    if (!canRedeemLicenseKeys) return
     const code = licenseCode.trim()
     if (!code) return
-    const workspaceId = currentWorkspace?.id
+    const workspaceId = billingWorkspace?.id
     if (!workspaceId) {
       showIapToast('error', 'No workspace selected', 'Pick a workspace before redeeming a key.')
       return
@@ -220,7 +226,7 @@ export default observer(function BillingPage() {
     } finally {
       setIsRedeeming(false)
     }
-  }, [licenseCode, currentWorkspace?.id, http, refetchSubscription, refetchUsageWallet, showIapToast])
+  }, [canRedeemLicenseKeys, licenseCode, billingWorkspace?.id, http, refetchSubscription, refetchUsageWallet, showIapToast])
 
   const getIapTransactionKey = useCallback((purchase: IapPurchaseResult) => {
     const transactionId = purchase.transactionId?.trim()
@@ -240,7 +246,7 @@ export default observer(function BillingPage() {
       onVerified?: () => void
     } = {},
   ): Promise<'processed' | 'duplicate' | 'failed'> => {
-    const workspaceId = currentWorkspace?.id
+    const workspaceId = billingWorkspace?.id
     if (!workspaceId) return 'failed'
 
     const key = getIapTransactionKey(purchase)
@@ -291,14 +297,14 @@ export default observer(function BillingPage() {
     } finally {
       iapTransactionsInFlightRef.current.delete(key)
     }
-  }, [currentWorkspace?.id, getIapTransactionKey, http, refetchSubscription, refetchUsageWallet, showIapToast])
+  }, [billingWorkspace?.id, getIapTransactionKey, http, refetchSubscription, refetchUsageWallet, showIapToast])
 
   // Global StoreKit listener — finishes any pending transaction that gets
   // delivered async (Ask to Buy approval, app relaunched mid-purchase, etc.).
   // Without this, transactions sit in the StoreKit queue forever and Apple
   // rejects the build for "unfinished transactions on relaunch."
   useEffect(() => {
-    if (Platform.OS !== 'ios' || !currentWorkspace?.id) return
+    if (Platform.OS !== 'ios' || !billingWorkspace?.id) return
     const teardown = initIapListeners(
       async (purchase) => {
         await processIapPurchase(purchase, {
@@ -314,10 +320,10 @@ export default observer(function BillingPage() {
       },
     )
     return teardown
-  }, [currentWorkspace?.id, processIapPurchase, showIapToast])
+  }, [billingWorkspace?.id, processIapPurchase, showIapToast])
 
   const handleRestorePurchases = useCallback(async () => {
-    if (Platform.OS !== 'ios' || !currentWorkspace?.id) return
+    if (Platform.OS !== 'ios' || !billingWorkspace?.id) return
     setIsRestoreLoading(true)
     try {
       const purchases = await restorePurchases()
@@ -343,7 +349,7 @@ export default observer(function BillingPage() {
     } finally {
       setIsRestoreLoading(false)
     }
-  }, [currentWorkspace?.id, processIapPurchase, showIapToast])
+  }, [billingWorkspace?.id, processIapPurchase, showIapToast])
 
 
   useEffect(() => {
@@ -387,7 +393,7 @@ export default observer(function BillingPage() {
   }, [regionalPricing])
 
   const handleCheckout = useCallback(async (planType: 'pro' | 'business' | 'basic', seats: number) => {
-    if (!currentWorkspace?.id) return
+    if (!billingWorkspace?.id) return
     setIsCheckoutLoading(true)
     try {
       const planId = planType
@@ -403,11 +409,11 @@ export default observer(function BillingPage() {
       // ============================================================
       if (Platform.OS === 'ios') {
         try {
-          trackInitiateCheckout({ planId, billingInterval, seats: 1, workspaceId: currentWorkspace.id })
+          trackInitiateCheckout({ planId, billingInterval, seats: 1, workspaceId: billingWorkspace.id })
           const result = await purchaseSubscription({
             plan: planType,
             interval: billingInterval,
-            workspaceId: currentWorkspace.id,
+            workspaceId: billingWorkspace.id,
           })
           const purchaseResult = await processIapPurchase(result, {
             successTitle: 'Subscription activated',
@@ -416,7 +422,7 @@ export default observer(function BillingPage() {
               planId,
               billingInterval,
               seats: 1,
-              workspaceId: currentWorkspace.id,
+              workspaceId: billingWorkspace.id,
               sessionId: result.transactionId,
             }),
           })
@@ -446,18 +452,18 @@ export default observer(function BillingPage() {
         ? ExpoLinking.createURL('billing')
         : (typeof window !== 'undefined' ? window.location.origin : undefined)
       console.log('[Billing] checkout start', { planId, seats: safeSeats, billingInterval, isNative, redirectBase })
-      trackInitiateCheckout({ planId, billingInterval, seats: safeSeats, workspaceId: currentWorkspace.id })
+      trackInitiateCheckout({ planId, billingInterval, seats: safeSeats, workspaceId: billingWorkspace.id })
 
       const data = await api.createCheckoutSession(http, {
-        workspaceId: currentWorkspace.id,
+        workspaceId: billingWorkspace.id,
         planId,
         seats: safeSeats,
         billingInterval,
         userEmail: user?.email,
         referralId: getRewardfulReferral(),
         ...(redirectBase && {
-          successUrl: `${redirectBase}/?workspace=${currentWorkspace.id}&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-          cancelUrl: `${redirectBase}/?workspace=${currentWorkspace.id}&checkout=canceled`,
+          successUrl: `${redirectBase}/?workspace=${billingWorkspace.id}&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: `${redirectBase}/?workspace=${billingWorkspace.id}&checkout=canceled`,
         }),
       })
       console.log('[Billing] checkout session created', { url: data.url ? '(received)' : '(missing)' })
@@ -485,7 +491,7 @@ export default observer(function BillingPage() {
                   const verifyResult = await api.verifyCheckout(http, sessionId)
                   console.log('[Billing] verify result:', verifyResult)
                   if (checkout === 'success') {
-                    trackPurchase({ planId: verifyResult.planId, billingInterval, seats: (verifyResult as { seats?: number }).seats ?? safeSeats, workspaceId: currentWorkspace?.id, sessionId })
+                    trackPurchase({ planId: verifyResult.planId, billingInterval, seats: (verifyResult as { seats?: number }).seats ?? safeSeats, workspaceId: billingWorkspace?.id, sessionId })
                   }
                 } catch (verifyErr) {
                   console.warn('[Billing] verify failed (webhook will handle):', verifyErr)
@@ -506,10 +512,10 @@ export default observer(function BillingPage() {
     } finally {
       setIsCheckoutLoading(false)
     }
-  }, [http, currentWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchUsageWallet])
+  }, [http, billingWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchUsageWallet])
 
   const handleManageSubscription = useCallback(async () => {
-    if (!currentWorkspace?.id) return
+    if (!billingWorkspace?.id) return
     setIsPortalLoading(true)
     try {
       // iOS: route to native App Store subscriptions screen (Apple requirement).
@@ -529,7 +535,7 @@ export default observer(function BillingPage() {
         : window.location.href
       console.log('[Billing] portal start', { isNative, returnUrl })
 
-      const data = await api.createPortalSession(http, currentWorkspace.id, returnUrl)
+      const data = await api.createPortalSession(http, billingWorkspace.id, returnUrl)
       if (data.url) {
         if (!isNative) {
           window.location.href = data.url
@@ -547,7 +553,7 @@ export default observer(function BillingPage() {
     } finally {
       setIsPortalLoading(false)
     }
-  }, [http, currentWorkspace?.id, refetchSubscription, refetchUsageWallet])
+  }, [http, billingWorkspace?.id, refetchSubscription, refetchUsageWallet])
 
   const handleManageBillingOnWeb = useCallback(() => {
     openWebAppSession('/billing').catch((err) =>
@@ -555,7 +561,7 @@ export default observer(function BillingPage() {
     )
   }, [])
 
-  if (isAuthLoading || isBillingLoading) {
+  if (isAuthLoading || isWorkspaceLoading || isBillingLoading) {
     return (
       <View className="flex-1 bg-background p-6">
         <View className="gap-4">
@@ -567,7 +573,7 @@ export default observer(function BillingPage() {
     )
   }
 
-  if (!user || !currentWorkspace) {
+  if (!user || !billingWorkspace) {
     return (
       <View className="flex-1 bg-background p-6">
         <View className="items-center justify-center py-12">
@@ -625,7 +631,7 @@ export default observer(function BillingPage() {
             <View className="flex-row items-center gap-3 flex-1">
               <View className="h-10 w-10 rounded-full bg-primary/10 items-center justify-center">
                 <Text className="text-lg font-semibold text-primary">
-                  {currentWorkspace.name?.[0]?.toUpperCase() || 'W'}
+                  {billingWorkspace.name?.[0]?.toUpperCase() || 'W'}
                 </Text>
               </View>
               <View className="flex-1">
@@ -664,42 +670,43 @@ export default observer(function BillingPage() {
       </Card>
 
       {/* Billing history (recent Stripe invoices) */}
-      <BillingHistory workspaceId={currentWorkspace.id} />
+      <BillingHistory workspaceId={billingWorkspace.id} />
 
-      {/* Redeem a license key */}
-      <Card className="mb-4">
-        <CardContent className="p-4 gap-3">
-          <View className="flex-row items-center gap-2">
-            <KeyRound size={16} className="text-primary" />
-            <Text className="text-sm font-medium text-foreground">Redeem a license key</Text>
-          </View>
-          <Text className="text-xs text-muted-foreground">
-            Have a license key? Redeem it to upgrade this workspace.
-          </Text>
-          <View className="flex-row items-center gap-2">
-            <TextInput
-              ref={licenseInputRef}
-              value={licenseCode}
-              onChangeText={setLicenseCode}
-              placeholder="SHGO-PRO-XXXX-XXXX-XXXX"
-              placeholderTextColor="#9ca3af"
-              autoCapitalize="characters"
-              autoCorrect={false}
-              editable={!isRedeeming}
-              onSubmitEditing={handleRedeemLicense}
-              returnKeyType="done"
-              className="flex-1 border border-border rounded-lg px-3 py-2 text-sm font-mono text-foreground bg-background"
-            />
-            <Button
-              size="sm"
-              onPress={handleRedeemLicense}
-              disabled={isRedeeming || !licenseCode.trim()}
-            >
-              {isRedeeming ? 'Redeeming...' : 'Redeem'}
-            </Button>
-          </View>
-        </CardContent>
-      </Card>
+      {canRedeemLicenseKeys && (
+        <Card className="mb-4">
+          <CardContent className="p-4 gap-3">
+            <View className="flex-row items-center gap-2">
+              <KeyRound size={16} className="text-primary" />
+              <Text className="text-sm font-medium text-foreground">Redeem a license key</Text>
+            </View>
+            <Text className="text-xs text-muted-foreground">
+              Have a license key? Redeem it to upgrade this workspace.
+            </Text>
+            <View className="flex-row items-center gap-2">
+              <TextInput
+                ref={licenseInputRef}
+                value={licenseCode}
+                onChangeText={setLicenseCode}
+                placeholder="SHGO-PRO-XXXX-XXXX-XXXX"
+                placeholderTextColor="#9ca3af"
+                autoCapitalize="characters"
+                autoCorrect={false}
+                editable={!isRedeeming}
+                onSubmitEditing={handleRedeemLicense}
+                returnKeyType="done"
+                className="flex-1 border border-border rounded-lg px-3 py-2 text-sm font-mono text-foreground bg-background"
+              />
+              <Button
+                size="sm"
+                onPress={handleRedeemLicense}
+                disabled={isRedeeming || !licenseCode.trim()}
+              >
+                {isRedeeming ? 'Redeeming...' : 'Redeem'}
+              </Button>
+            </View>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Usage Display — time-gated rolling windows */}
       <Card className="mb-8">

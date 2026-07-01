@@ -209,13 +209,13 @@ function useCaptureTemplateDeepLink() {
   }, [])
 }
 
-// Capture a license-key redeem code from the deep link before the (app)
-// auth guard can redirect an unauthenticated user to sign-in (which drops
-// the query param). The home screen consumes it once the user is signed in
-// and has a workspace. See lib/pending-license.ts.
+// Capture a non-iOS license-key redeem code before the (app) auth guard can
+// redirect an unauthenticated user to sign-in. iOS upgrades must use App Store
+// In-App Purchase only.
 function useCaptureRedeemDeepLink() {
   const nativeUrl = ExpoLinking.useURL()
   useEffect(() => {
+    if (Platform.OS === 'ios') return
     if (Platform.OS === 'web') {
       if (typeof window === 'undefined') return
       const params = new URLSearchParams(window.location.search)
