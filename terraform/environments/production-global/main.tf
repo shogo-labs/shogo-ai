@@ -130,6 +130,40 @@ resource "cloudflare_load_balancer" "studio" {
 }
 
 # =============================================================================
+# Load Balancer — api.shogo.ai (public OpenAI-compatible API)
+# =============================================================================
+# The docs/blog advertise `https://api.shogo.ai/v1` as the OpenAI-compatible
+# base URL for the Hoshi models. Serve it from the same three regional Kourier
+# origins as studio/docs with latency steering.
+#
+# History: `api.shogo.ai` was previously a STALE Cloudflare CNAME (from the
+# retired AWS EKS deployment) pointing at a now-deleted ELB
+# `k8s-kouriers-kourier-9a7244743d-...elb.us-east-1.amazonaws.com`; that target
+# NXDOMAIN'd, so clients hit `Could not resolve host: api.shogo.ai`. That record
+# has since been deleted. `api.shogo.ai` now falls through the proxied
+# `*.shogo.ai` wildcard to the US Kourier LB, and the k8s `api-public` Ingress
+# (k8s/overlays/production-*/api-public-ingress.yaml, applied in all three
+# regions) routes the host straight to the api ksvc — so the endpoint is
+# already live, US-origin only.
+#
+# This Load Balancer is the resilience upgrade: it overrides the wildcard for
+# this exact host with geo latency-steering + health failover across all three
+# regional Kourier LBs (matching studio/docs). Requires an account-scoped token
+# with Load Balancing:Edit. Applying it is non-disruptive — the more-specific LB
+# hostname simply supersedes the wildcard fallback.
+resource "cloudflare_load_balancer" "api" {
+  zone_id     = var.cloudflare_zone_id
+  name        = "api.shogo.ai"
+  description = "Multi-region LB for api.shogo.ai (public OpenAI-compatible API)"
+  proxied     = true
+
+  steering_policy  = "dynamic_latency"
+  default_pool_ids = local.pool_ids
+  fallback_pool_id = cloudflare_load_balancer_pool.us.id
+  session_affinity = "none"
+}
+
+# =============================================================================
 # Load Balancer — docs.shogo.ai
 # =============================================================================
 
@@ -214,6 +248,7 @@ resource "cloudflare_record" "india_tunnel" {
 # =============================================================================
 
 output "studio_lb_id" { value = cloudflare_load_balancer.studio.id }
+output "api_lb_id" { value = cloudflare_load_balancer.api.id }
 output "docs_lb_id" { value = cloudflare_load_balancer.docs.id }
 output "eu_studio_record" { value = cloudflare_record.eu_studio.hostname }
 output "india_studio_record" { value = cloudflare_record.india_studio.hostname }

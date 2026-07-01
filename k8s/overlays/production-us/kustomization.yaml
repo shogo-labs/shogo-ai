@@ -5,6 +5,7 @@ resources:
   - namespace.yaml
   - api-service.yaml
   - api-tunnel-ingress.yaml
+  - api-public-ingress.yaml
   - web-service.yaml
   - studio-ws-ingress.yaml
   - docs-service.yaml

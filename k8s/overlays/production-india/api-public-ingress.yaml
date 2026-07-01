@@ -1,0 +1,63 @@
+# =============================================================================
+# Public API Ingress (OpenAI-compatible) — Production India (Mumbai)
+# =============================================================================
+# Serves the public, OpenAI-compatible API on the dedicated `api.shogo.ai`
+# host advertised in the docs/blog (base URL `https://api.shogo.ai/v1`).
+#
+# See k8s/overlays/production-us/api-public-ingress.yaml for the full
+# rationale. Short version: the api server mounts the public router at both
+# `/v1` and `/api/v1`, but `studio.shogo.ai` is fronted by the studio web
+# container which serves the SPA for a bare `/v1`. Routing `api.shogo.ai`
+# straight at the `api` ksvc (via a direct Ingress, not a DomainMapping) makes
+# the root `/v1/*` paths reach the real handler and passes WS Upgrade.
+#
+# `api.shogo.ai` is a single Cloudflare Load Balancer (production-global)
+# steering across all three regional Kourier LBs, so this host is served
+# identically in every region.
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-public-direct
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: public-api
+    environment: production
+    region: ap-mumbai-1
+spec:
+  type: ClusterIP
+  selector:
+    serving.knative.dev/service: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8012
+      protocol: TCP
+---
+apiVersion: networking.internal.knative.dev/v1alpha1
+kind: Ingress
+metadata:
+  name: api-public
+  namespace: shogo-production-system
+  annotations:
+    networking.knative.dev/ingress.class: kourier.ingress.networking.knative.dev
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: public-api
+    environment: production
+    region: ap-mumbai-1
+spec:
+  httpOption: Enabled
+  rules:
+    - hosts:
+        - api.shogo.ai
+      visibility: ExternalIP
+      http:
+        paths:
+          - splits:
+              - serviceName: api-public-direct
+                serviceNamespace: shogo-production-system
+                servicePort: 80
+                percent: 100
