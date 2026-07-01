@@ -14,7 +14,6 @@ interface IDEPanelProps {
   projectId: string
   projectName?: string | null
   agentUrl?: string | null
-  onOpenCodeWorkbench?: () => void
   isExternalProject?: boolean
   folderPath?: string | null
 }
@@ -30,14 +29,13 @@ interface IDEPanelProps {
  * exposes those routes (follow-up phase).
  *
  * In Shogo Desktop, this IDE tab remains the in-app editing surface while
- * the footer can open/focus the managed external Shogo-IDE window.
+ * its header can open/focus the managed external Shogo-IDE window.
  */
 export function IDEPanel({
   visible,
   projectId,
   projectName,
   agentUrl,
-  onOpenCodeWorkbench,
   isExternalProject,
   folderPath,
 }: IDEPanelProps) {
@@ -110,7 +108,7 @@ export function IDEPanel({
 
   return (
     <View style={{ flex: 1, minHeight: 0, display: visible ? 'flex' : 'none' }}>
-      <div style={{ position: 'absolute', inset: 0 }}>
+      <div style={{ flex: 1, minHeight: 0 }}>
         <Workbench
           agentService={agentService}
           agentLabel={projectName || `project/${projectId}`}
@@ -120,7 +118,6 @@ export function IDEPanel({
           fetchImpl={agentFetch}
           isExternalProject={isExternalProject}
           folderPath={folderPath}
-          onOpenCodeWorkbench={onOpenCodeWorkbench}
         />
       </div>
     </View>

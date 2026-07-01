@@ -1,11 +1,10 @@
-import { ArrowDown, ArrowUp, Check, ExternalLink, GitBranch, Loader2, RefreshCw } from "lucide-react-native";
+import { ArrowDown, ArrowUp, Check, GitBranch, Loader2, RefreshCw } from "lucide-react-native";
 import { useState } from "react";
 
 import { BranchPicker } from "./git/BranchPicker";
 import type { GitSnapshot } from "./git/bridge";
 import type { ExtensionRuntimeStatusBarItem } from "./extensions/types";
 import { getDesktopGitBridge } from "./git/bridge";
-import { isDesktopRuntime } from "./terminal/pty-factory";
 
 export function StatusBar({
   language,
@@ -16,7 +15,6 @@ export function StatusBar({
   workspaceRoot,
   extensionItems = [],
   onRunExtensionCommand,
-  onOpenCodeWorkbench,
 }: {
   language: string;
   line: number;
@@ -35,14 +33,12 @@ export function StatusBar({
   workspaceRoot?: string | null;
   extensionItems?: ExtensionRuntimeStatusBarItem[];
   onRunExtensionCommand?: (commandId: string, args?: unknown[]) => void;
-  onOpenCodeWorkbench?: () => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
 
   const bridge = getDesktopGitBridge();
-  const canOpenCodeWorkbench = !!onOpenCodeWorkbench && isDesktopRuntime();
   const handleSync = async () => {
     if (!bridge || !workspaceRoot) return;
     setSyncing(true);
@@ -100,18 +96,6 @@ export function StatusBar({
               </span>
             )}
           </>
-        ) : null}
-        {canOpenCodeWorkbench ? (
-          <button
-            type="button"
-            onClick={onOpenCodeWorkbench}
-            title="Open or focus Shogo IDE"
-            aria-label="Open or focus Shogo IDE"
-            className="-mx-1 flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-orange-400 hover:bg-white/15 hover:text-orange-300"
-          >
-            <ExternalLink size={11} />
-            <span className="hidden sm:inline">Shogo IDE</span>
-          </button>
         ) : null}
         {leftExtensionItems.map((item) => (
           <ExtensionStatusBarButton key={item.id} item={item} onRunCommand={onRunExtensionCommand} />
