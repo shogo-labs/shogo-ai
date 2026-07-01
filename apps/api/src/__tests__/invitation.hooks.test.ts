@@ -180,6 +180,23 @@ describe('invitationHooks.beforeUpdate invitee actions', () => {
     expect(result?.data?.status).toBe('declined')
   })
 
+  test('already-declined invite can be dismissed again by the invitee', async () => {
+    const invitation = seedInvitation({
+      email: INVITEE_EMAIL,
+      status: 'declined',
+      expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+    })
+
+    const result = await invitationHooks.beforeUpdate!(
+      invitation.id,
+      { status: 'declined' },
+      makeCtx(INVITEE_USER_ID) as any,
+    )
+
+    expect(result?.ok).toBe(true)
+    expect(result?.data?.status).toBe('declined')
+  })
+
   test('expired invite cannot be accepted by the invitee', async () => {
     const invitation = seedInvitation({
       email: INVITEE_EMAIL,
@@ -194,6 +211,23 @@ describe('invitationHooks.beforeUpdate invitee actions', () => {
 
     expect(result?.ok).toBe(false)
     expect(result?.error?.code).toBe('expired')
+  })
+
+  test('declined invite cannot be accepted by the invitee', async () => {
+    const invitation = seedInvitation({
+      email: INVITEE_EMAIL,
+      status: 'declined',
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    })
+
+    const result = await invitationHooks.beforeUpdate!(
+      invitation.id,
+      { status: 'accepted' },
+      makeCtx(INVITEE_USER_ID) as any,
+    )
+
+    expect(result?.ok).toBe(false)
+    expect(result?.error?.code).toBe('bad_request')
   })
 
   test('active invite can be accepted by the invitee', async () => {
