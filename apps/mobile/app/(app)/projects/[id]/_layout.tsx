@@ -2772,6 +2772,7 @@ export default observer(function ProjectLayout() {
             if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
           }
         : undefined,
+    onOpenCodeWorkbench: handleOpenCodeWorkbench,
     ideEmbed: isIdeChatEmbed,
   }
 
@@ -3302,7 +3303,6 @@ export default observer(function ProjectLayout() {
                 agentUrl={agentUrl}
                 isExternalProject={isExternalProject}
                 folderPath={primaryFolderPath ?? undefined}
-                onOpenCodeWorkbench={handleOpenCodeWorkbench}
               />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Files">
