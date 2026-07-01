@@ -1257,6 +1257,31 @@ export async function proxyAnthropicStream(
       }
     },
     flush(controller) {
+      // OpenAI-compatible clients (pi-ai sets `stream_options.include_usage`)
+      // read token usage from a terminal chunk that has empty `choices` and a
+      // `usage` object. Anthropic carries usage out-of-band (on `message_start`
+      // / `message_delta`), so we synthesize that terminal chunk here. Without
+      // it the agent runtime parses `completion_tokens: 0` and misreports a
+      // fully-streamed answer as "Agent produced no output — possible provider
+      // error" once the turn completes.
+      const promptTokens = inputTokens + cachedInputTokens
+      controller.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({
+            id: completionId,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: request.model,
+            choices: [],
+            usage: {
+              prompt_tokens: promptTokens,
+              completion_tokens: outputTokens,
+              total_tokens: promptTokens + outputTokens,
+              prompt_tokens_details: { cached_tokens: cachedInputTokens },
+            },
+          })}\n\n`,
+        ),
+      )
       controller.enqueue(encoder.encode('data: [DONE]\n\n'))
       onComplete?.(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)
     },
@@ -1362,6 +1387,27 @@ function convertAnthropicStreamEvent(event: any, id: string, model: string): any
                   },
                 ],
               },
+              finish_reason: null,
+            },
+          ],
+        }
+      }
+      // Anthropic streams extended thinking as `thinking_delta`. Map it to the
+      // OpenAI-compatible `reasoning_content` delta field that pi-ai reads, so
+      // reasoning is surfaced on the chat-completions conversion path instead of
+      // being silently dropped. (`signature_delta` carries the opaque thinking
+      // signature; it has no place in the OpenAI stream shape and is not echoed
+      // back on this path, so we drop it.)
+      if (event.delta?.type === 'thinking_delta') {
+        return {
+          id,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: { reasoning_content: event.delta.thinking ?? '' },
               finish_reason: null,
             },
           ],

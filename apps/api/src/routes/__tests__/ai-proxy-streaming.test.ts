@@ -26,7 +26,10 @@ import {
   scanForTerminalEvent,
   parseRetryAfter,
   isRetryableNetworkError,
+  proxyAnthropicStream,
   type StreamErrorPayload,
+  type ChatCompletionRequest,
+  type ModelConfig,
 } from '../ai-proxy'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -436,5 +439,108 @@ describe('wrapSseForErrorVisibility', () => {
     expect(payload.error.code).toBe('idle_timeout')
     expect(payload.error.retryable).toBe(true)
     expect(payload.error.message).toContain('No data from anthropic')
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────────────
+// proxyAnthropicStream → OpenAI-compatible conversion (chat-completions path)
+//
+// Native-Anthropic models reached via the OpenAI chat-completions endpoint
+// (e.g. DB-defined models the agent infers as a `custom`/openai-completions
+// model) are streamed through this converter. Regression coverage for two
+// data-loss bugs that surfaced as a fully-streamed answer being flagged
+// "Agent produced no output — possible provider error", plus missing thinking:
+//   1. Usage must be relayed as a terminal OpenAI chunk (pi-ai reads
+//      completion_tokens from it). Without it the agent saw output=0.
+//   2. Anthropic `thinking_delta` must map to `reasoning_content` so reasoning
+//      is not silently dropped on this path.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** Parse OpenAI SSE text into the array of `data:` JSON chunks (skips [DONE]). */
+function parseOpenAIChunks(sse: string): any[] {
+  const chunks: any[] = []
+  for (const line of sse.split('\n')) {
+    if (!line.startsWith('data: ')) continue
+    const data = line.slice(6).trim()
+    if (!data || data === '[DONE]') continue
+    try { chunks.push(JSON.parse(data)) } catch { /* ignore non-JSON */ }
+  }
+  return chunks
+}
+
+describe('proxyAnthropicStream → OpenAI conversion (usage relay + thinking)', () => {
+  const origFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = origFetch })
+
+  const ANTHROPIC_SSE =
+    'event: message_start\n' +
+    'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":3}}}\n\n' +
+    'event: content_block_start\n' +
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n' +
+    'event: content_block_delta\n' +
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me reason. "}}\n\n' +
+    'event: content_block_delta\n' +
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG-should-be-dropped"}}\n\n' +
+    'event: content_block_start\n' +
+    'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n' +
+    'event: content_block_delta\n' +
+    'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello world"}}\n\n' +
+    'event: message_delta\n' +
+    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}\n\n' +
+    'event: message_stop\n' +
+    'data: {"type":"message_stop"}\n\n'
+
+  const request: ChatCompletionRequest = {
+    model: 'claude-opus-4-8',
+    messages: [{ role: 'user', content: 'hi' }],
+    stream: true,
+  }
+  const modelConfig: ModelConfig = {
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-8',
+    displayName: 'Claude Opus 4.8',
+  }
+
+  test('relays a terminal usage chunk so completion_tokens > 0 (no false "no output")', async () => {
+    scriptFetch([new Response(ANTHROPIC_SSE, { status: 200 })])
+    let completed: { input: number; output: number; cachedIn: number; cacheWrite: number } | null = null
+    const res = await proxyAnthropicStream(request, 'k', modelConfig, (input, output, cachedIn, cacheWrite) => {
+      completed = { input, output, cachedIn, cacheWrite }
+    })
+    const chunks = parseOpenAIChunks(await collect(res.body!))
+
+    const usageChunk = chunks.find((c) => c.usage)
+    expect(usageChunk).toBeDefined()
+    expect(usageChunk.usage.completion_tokens).toBe(7)
+    expect(usageChunk.usage.prompt_tokens).toBe(15) // input_tokens (12) + cache_read (3)
+    expect(usageChunk.usage.total_tokens).toBe(22)
+    expect(usageChunk.usage.prompt_tokens_details.cached_tokens).toBe(3)
+    // Standard OpenAI usage chunk carries no choices.
+    expect(usageChunk.choices).toEqual([])
+
+    // Billing side-channel still fires with the real Anthropic numbers.
+    expect(completed).toEqual({ input: 12, output: 7, cachedIn: 3, cacheWrite: 0 })
+  })
+
+  test('maps Anthropic thinking_delta → reasoning_content and drops signature_delta', async () => {
+    scriptFetch([new Response(ANTHROPIC_SSE, { status: 200 })])
+    const res = await proxyAnthropicStream(request, 'k', modelConfig)
+    const sse = await collect(res.body!)
+    const chunks = parseOpenAIChunks(sse)
+
+    const reasoning = chunks
+      .map((c) => c.choices?.[0]?.delta?.reasoning_content)
+      .filter((v) => typeof v === 'string')
+      .join('')
+    expect(reasoning).toBe('Let me reason. ')
+
+    const text = chunks
+      .map((c) => c.choices?.[0]?.delta?.content)
+      .filter((v) => typeof v === 'string')
+      .join('')
+    expect(text).toBe('Hello world')
+
+    // The opaque thinking signature must never leak into the OpenAI stream.
+    expect(sse).not.toContain('SIG-should-be-dropped')
   })
 })
