@@ -3021,6 +3021,42 @@ export class PreviewManager {
   }
 
   /**
+   * Lazily revive a sidecar that crashed *beyond* the restart cap.
+   *
+   * `handleCrash()` deliberately gives up after `MAX_CRASH_RESTARTS`
+   * consecutive failures to avoid a hot spawn loop — but that left the
+   * `/api/*` proxy returning a permanent 503 ("API server not ready",
+   * phase=`crashed`) until a human hit `POST /preview/restart`. That manual
+   * step is exactly the friction users reported as "the API randomly dies and
+   * never comes back".
+   *
+   * Calling this from the proxy on a null-port request turns the *next user
+   * API call* into the recovery trigger: reset the crash budget and re-attempt
+   * a single start. The phase flips to `restarting`, which is inside the
+   * proxy's startup-grace set, so the same request can pick up the freshly
+   * bound port instead of erroring. A genuinely-broken `server.tsx` simply
+   * crashes back to `crashed` and the following request retries — bounded,
+   * self-healing, and no busy loop (concurrent requests during recovery see a
+   * non-`crashed` phase and skip re-spawning).
+   *
+   * Returns true when a recovery attempt was kicked off.
+   */
+  maybeRecoverApiServer(): boolean {
+    if (this.apiPhase !== 'crashed') return false
+    if (this.intentionalStop || this.regenerating) return false
+
+    console.log(`[${LOG_PREFIX}] API server is in 'crashed' state; attempting on-demand recovery`)
+    // Fresh budget for this user-initiated attempt, and flip out of `crashed`
+    // immediately so concurrent requests don't each spawn a sidecar.
+    this.crashCount = 0
+    this.apiPhase = 'restarting'
+    void this.startApiServer().catch((err: any) => {
+      console.error(`[${LOG_PREFIX}] On-demand API recovery failed: ${err?.message ?? err}`)
+    })
+    return true
+  }
+
+  /**
    * Force-kill any process listening on the API port. Used before
    * spawning a fresh server so a leaked previous process (or an
    * unrelated user-spawned binary) can't squat the port and EADDRINUSE

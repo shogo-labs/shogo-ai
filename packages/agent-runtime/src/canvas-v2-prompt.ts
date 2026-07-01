@@ -279,7 +279,7 @@ const [loading, setLoading] = useState(true)
 useEffect(() => {
   fetch('/api/leads')
     .then(r => r.json())
-    .then(res => { setLeads(res.items); setLoading(false) })
+    .then(res => { setLeads(res.items ?? []); setLoading(false) })
     .catch(() => setLoading(false))
 }, [])
 \`\`\`
@@ -338,7 +338,10 @@ useEffect(() => {
       if (!r.ok) throw new Error('Failed to load')
       return r.json()
     })
-    .then(res => { setItems(res.items); setLoading(false) })
+    // Always unwrap the list envelope with a fallback — the response body is
+    // { ok, items, total }, never a raw array. res.items ?? [] keeps
+    // .map()/.filter() from throwing on error bodies or empty results.
+    .then(res => { setItems(res.items ?? []); setLoading(false) })
     .catch(err => { setError(err.message); setLoading(false) })
 }, [])
 

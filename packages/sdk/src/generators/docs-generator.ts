@@ -260,11 +260,17 @@ export function generateModelDoc(
       lines.push(`| \`${field.name}\` | \`${mapFieldType(field)}\` | Filter by ${field.name} |`)
     }
     lines.push('')
-    lines.push('**Response:** `200 OK`')
+    lines.push('**Response:** `200 OK` — results are wrapped in an envelope. The array lives under `items`; the response body itself is an object, NOT an array:')
     lines.push('')
     lines.push('```json')
-    lines.push(`[{ ${scalarFields.slice(0, 3).map(f => `"${f.name}": ...`).join(', ')}, ... }]`)
+    lines.push('{')
+    lines.push('  "ok": true,')
+    lines.push(`  "items": [{ ${scalarFields.slice(0, 3).map(f => `"${f.name}": ...`).join(', ')}, ... }],`)
+    lines.push('  "total": 0')
+    lines.push('}')
     lines.push('```')
+    lines.push('')
+    lines.push('> Read the rows from `res.items` — always with a fallback: `const rows = res.items ?? []`. Calling `.map()` / `.filter()` on the response body directly throws `filter is not a function`.')
     lines.push('')
 
     // GET by ID
@@ -274,7 +280,7 @@ export function generateModelDoc(
     lines.push(`GET ${apiBase}/${routePath}/:${idField.name}`)
     lines.push('```')
     lines.push('')
-    lines.push('**Response:** `200 OK` | `404 Not Found`')
+    lines.push('**Response:** `200 OK` — `{ "ok": true, "data": { ... } }` (read `res.data`) | `404 Not Found` — `{ "error": { "code", "message" } }`')
     lines.push('')
 
     // CREATE
@@ -303,7 +309,7 @@ export function generateModelDoc(
     lines.push('}')
     lines.push('```')
     lines.push('')
-    lines.push('**Response:** `201 Created`')
+    lines.push('**Response:** `201 Created` — `{ "ok": true, "data": { ... } }` (read `res.data`)')
     lines.push('')
 
     // UPDATE
@@ -315,7 +321,7 @@ export function generateModelDoc(
     lines.push('')
     lines.push('**Request body:** Any subset of fields from `' + name + 'UpdateInput`.')
     lines.push('')
-    lines.push('**Response:** `200 OK` | `404 Not Found`')
+    lines.push('**Response:** `200 OK` — `{ "ok": true, "data": { ... } }` (read `res.data`) | `404 Not Found`')
     lines.push('')
 
     // DELETE
@@ -325,7 +331,7 @@ export function generateModelDoc(
     lines.push(`DELETE ${apiBase}/${routePath}/:${idField.name}`)
     lines.push('```')
     lines.push('')
-    lines.push('**Response:** `200 OK` | `404 Not Found`')
+    lines.push('**Response:** `200 OK` — `{ "ok": true }` | `404 Not Found`')
     lines.push('')
   }
 
