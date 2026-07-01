@@ -63,11 +63,21 @@ export function initInstrumentation(config: InstrumentationConfig): void {
 
   console.log(`[OTEL] Configuring ${serviceName} → ${endpoint}/v1/traces`)
 
+  // Telemetry ingest MUST be non-blocking and happen in the background: a slow
+  // or unreachable collector (e.g. SigNoz Cloud ingest timing out) must never
+  // block, delay, or fail the host process. In prod we observed OTLP exports
+  // hanging on the default 10s timeout and surfacing as spurious non-zero exits
+  // in short-lived `shogo generate` / `server.tsx` boots — which then cascaded
+  // into the API-sidecar crash loop and 503s. Bounding the export timeout keeps
+  // a failed flush from lingering on the event loop.
+  const exportTimeoutMs = Number(process.env.OTEL_EXPORTER_TIMEOUT_MS ?? 3000)
+
   let traceExporter: OTLPTraceExporter
   try {
     traceExporter = new OTLPTraceExporter({
       url: `${endpoint}/v1/traces`,
       headers,
+      timeoutMillis: exportTimeoutMs,
     })
   } catch (err: any) {
     console.error(`[OTEL] Failed to create exporter: ${err.message}`)
@@ -75,8 +85,18 @@ export function initInstrumentation(config: InstrumentationConfig): void {
   }
 
   const isProduction = process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging'
+  // Background batching with a bounded queue: spans flush off the hot path on a
+  // timer, and a persistently-unreachable collector drops spans (bounded
+  // memory) instead of backing up or blocking. Dev keeps the eager
+  // SimpleSpanProcessor for immediate local visibility — still bounded by the
+  // short export timeout above.
   const spanProcessor = isProduction
-    ? new BatchSpanProcessor(traceExporter)
+    ? new BatchSpanProcessor(traceExporter, {
+        maxQueueSize: 2048,
+        maxExportBatchSize: 512,
+        scheduledDelayMillis: 5000,
+        exportTimeoutMillis: exportTimeoutMs,
+      })
     : new SimpleSpanProcessor(traceExporter)
 
   sdk = new NodeSDK({
@@ -121,13 +141,26 @@ export function initInstrumentation(config: InstrumentationConfig): void {
 }
 
 export async function shutdownInstrumentation(): Promise<void> {
-  if (sdk) {
-    try {
-      await sdk.shutdown()
-      console.log('[OTEL] Tracing shut down')
-    } catch (err: any) {
-      console.error('[OTEL] Error shutting down:', err.message)
-    }
+  if (!sdk) return
+  // Never let a hung flush block process shutdown — race the SDK's final
+  // export against a short deadline so exit is bounded even if the collector
+  // is unreachable. Errors are swallowed (telemetry is best-effort and must
+  // not affect the host's exit code).
+  const shutdownTimeoutMs = Number(process.env.OTEL_SHUTDOWN_TIMEOUT_MS ?? 2000)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      sdk.shutdown(),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, shutdownTimeoutMs)
+      }),
+    ])
+    console.log('[OTEL] Tracing shut down')
+  } catch (err: any) {
+    console.error('[OTEL] Error shutting down:', err.message)
+  } finally {
+    if (timer) clearTimeout(timer)
+    sdk = null
   }
 }
 

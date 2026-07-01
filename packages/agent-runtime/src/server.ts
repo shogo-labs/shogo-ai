@@ -4163,6 +4163,14 @@ app.all('/api/*', async (c) => {
   // 100 ms, total budget 3 s) and short-circuits the moment the port
   // becomes available.
   let port = pm.apiServerPort
+  // Self-heal: if the sidecar crashed beyond its restart cap, an incoming API
+  // request is the trigger to revive it — reset the crash budget and re-attempt
+  // a single start — instead of returning 503 forever until a manual
+  // /preview/restart. This flips the phase to `restarting`, so the grace-window
+  // poll below can pick up the freshly bound port within this same request.
+  if (port == null && pm.apiServerPhase === 'crashed') {
+    pm.maybeRecoverApiServer()
+  }
   if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
     const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
     while (port == null && Date.now() < deadline) {
@@ -4270,6 +4278,10 @@ if (IS_WORKSPACE_RUNTIME) {
     if (!pm) return projectNotAttached(c, projectId)
 
     let port = pm.apiServerPort
+    // Self-heal a crashed-beyond-recovery sidecar on demand (see root `/api/*`).
+    if (port == null && pm.apiServerPhase === 'crashed') {
+      pm.maybeRecoverApiServer()
+    }
     if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
       const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
       while (port == null && Date.now() < deadline) {

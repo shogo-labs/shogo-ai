@@ -45,8 +45,12 @@ mock.module('@opentelemetry/api', () => ({
 
 let sdkStartShouldThrow = false
 let sdkShutdownShouldThrow = false
+let sdkShutdownHangs = false
 const sdkStartMock = mock(() => { if (sdkStartShouldThrow) throw new Error('start boom') })
-const sdkShutdownMock = mock(async () => { if (sdkShutdownShouldThrow) throw new Error('shutdown boom') })
+const sdkShutdownMock = mock(async () => {
+  if (sdkShutdownShouldThrow) throw new Error('shutdown boom')
+  if (sdkShutdownHangs) await new Promise(() => {}) // never resolves
+})
 let lastSdkConfig: any = null
 class FakeNodeSDK {
   constructor(public config: any) { lastSdkConfig = config }
@@ -67,7 +71,7 @@ mock.module('@opentelemetry/exporter-trace-otlp-http', () => ({
   OTLPTraceExporter: FakeOTLPTraceExporter,
 }))
 
-class FakeBatchSpanProcessor { constructor(public exp: any) {} }
+class FakeBatchSpanProcessor { constructor(public exp: any, public opts?: any) {} }
 class FakeSimpleSpanProcessor { constructor(public exp: any) {} }
 mock.module('@opentelemetry/sdk-trace-base', () => ({
   BatchSpanProcessor: FakeBatchSpanProcessor,
@@ -92,7 +96,7 @@ import {
 // ---- Env + console helpers ----
 const ENV_KEYS = [
   'OTEL_EXPORTER_OTLP_ENDPOINT', 'OTEL_LOG_LEVEL', 'SIGNOZ_INGESTION_KEY',
-  'OTEL_SERVICE_NAME', 'NODE_ENV',
+  'OTEL_SERVICE_NAME', 'NODE_ENV', 'OTEL_EXPORTER_TIMEOUT_MS', 'OTEL_SHUTDOWN_TIMEOUT_MS',
 ]
 let savedEnv: Record<string, string | undefined>
 let savedConsoleLog: any
@@ -109,6 +113,7 @@ beforeEach(() => {
   console.error = (...a: any[]) => { errs.push(a.join(' ')) }
   sdkStartShouldThrow = false
   sdkShutdownShouldThrow = false
+  sdkShutdownHangs = false
   exporterShouldThrow = false
   sdkStartMock.mockClear()
   sdkShutdownMock.mockClear()
@@ -192,6 +197,29 @@ describe('initInstrumentation', () => {
     expect(lastExporterConfig.headers['signoz-ingestion-key']).toBeUndefined()
   })
 
+  it('bounds the exporter timeout so ingest never blocks (default 3000ms)', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    initInstrumentation({ serviceName: 'svc' })
+    expect(lastExporterConfig.timeoutMillis).toBe(3000)
+  })
+
+  it('honors OTEL_EXPORTER_TIMEOUT_MS override for the exporter timeout', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    process.env.OTEL_EXPORTER_TIMEOUT_MS = '750'
+    initInstrumentation({ serviceName: 'svc' })
+    expect(lastExporterConfig.timeoutMillis).toBe(750)
+  })
+
+  it('configures the prod BatchSpanProcessor with a bounded, background-friendly queue', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    process.env.NODE_ENV = 'production'
+    initInstrumentation({ serviceName: 'svc' })
+    const proc = lastSdkConfig.spanProcessors[0]
+    expect(proc).toBeInstanceOf(FakeBatchSpanProcessor)
+    expect(proc.opts.maxQueueSize).toBe(2048)
+    expect(proc.opts.exportTimeoutMillis).toBe(3000)
+  })
+
   it('OTEL_SERVICE_NAME env overrides config.serviceName', () => {
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
     process.env.OTEL_SERVICE_NAME = 'env-svc'
@@ -260,6 +288,25 @@ describe('shutdownInstrumentation', () => {
     sdkShutdownShouldThrow = true
     await shutdownInstrumentation()
     expect(errs.some(e => e.includes('Error shutting down'))).toBe(true)
+  })
+
+  it('is non-blocking: resolves within the deadline even if sdk.shutdown() hangs', async () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    process.env.OTEL_SHUTDOWN_TIMEOUT_MS = '20'
+    initInstrumentation({ serviceName: 'svc' })
+    sdkShutdownHangs = true
+    const start = Date.now()
+    await shutdownInstrumentation() // must NOT hang forever on a stuck flush
+    expect(Date.now() - start).toBeLessThan(1000)
+  })
+
+  it('is idempotent — a second shutdown is a no-op once sdk is cleared', async () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    initInstrumentation({ serviceName: 'svc' })
+    await shutdownInstrumentation()
+    sdkShutdownMock.mockClear()
+    await shutdownInstrumentation()
+    expect(sdkShutdownMock).not.toHaveBeenCalled()
   })
 })
 

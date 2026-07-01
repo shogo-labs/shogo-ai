@@ -7,7 +7,7 @@
  * assignment line. Assertions validate structural integrity + key markers.
  */
 import { describe, test, expect } from 'bun:test'
-import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE } from '../canvas-v2-prompt'
+import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE } from '../canvas-v2-prompt'
 import {
   OPTIMIZED_CANVAS_EXAMPLES,
   OPTIMIZED_MEMORY_GUIDE,
@@ -38,6 +38,16 @@ describe('canvas-v2-prompt constants', () => {
     expect(typeof CANVAS_V2_BACKEND_GUIDE).toBe('string')
     expect(CANVAS_V2_BACKEND_GUIDE.length).toBeGreaterThan(200)
     expect(CANVAS_V2_BACKEND_GUIDE).toContain('Backend')
+  })
+  // Regression guard for the ".filter is not a function" crash class: the
+  // canonical fetch examples the model copies MUST unwrap the list envelope
+  // with a fallback (`res.items ?? []`), never read the body as a raw array.
+  test('canvas fetch examples unwrap the list envelope with a fallback', () => {
+    expect(CANVAS_V2_BACKEND_GUIDE).toContain('res.items ?? []')
+    expect(CANVAS_V2_REACT_GUIDE).toContain('res.items ?? []')
+    // Neither guide should show the unguarded `setX(res.items)` pattern.
+    expect(CANVAS_V2_BACKEND_GUIDE).not.toContain('setLeads(res.items)')
+    expect(CANVAS_V2_REACT_GUIDE).not.toContain('setItems(res.items)')
   })
 })
 

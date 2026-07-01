@@ -32,11 +32,18 @@ if (isEnabled) {
   console.log(`[OTEL] Configuring exporter → ${endpoint}/v1/traces`)
   console.log(`[OTEL] Ingestion key present: ${!!process.env.SIGNOZ_INGESTION_KEY}`)
 
+  // Telemetry ingest is best-effort and must be non-blocking: a slow/unreachable
+  // collector (SigNoz Cloud ingest timing out) must never block the request path
+  // or delay process exit. Bound the export timeout so a failed flush resolves
+  // fast in the background instead of hanging on the OTLP default (10s).
+  const exportTimeoutMs = Number(process.env.OTEL_EXPORTER_TIMEOUT_MS ?? 3000)
+
   let traceExporter: OTLPTraceExporter
   try {
     traceExporter = new OTLPTraceExporter({
       url: `${endpoint}/v1/traces`,
       headers,
+      timeoutMillis: exportTimeoutMs,
     })
   } catch (err: any) {
     console.error(`[OTEL] Failed to create OTLPTraceExporter: ${err.message}`)
@@ -45,8 +52,15 @@ if (isEnabled) {
   }
 
   const isProduction = process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging'
+  // Background batching with a bounded queue: exports run off the hot path and a
+  // persistently-unreachable collector drops spans instead of backing up.
   const spanProcessor = isProduction
-    ? new BatchSpanProcessor(traceExporter)
+    ? new BatchSpanProcessor(traceExporter, {
+        maxQueueSize: 2048,
+        maxExportBatchSize: 512,
+        scheduledDelayMillis: 5000,
+        exportTimeoutMillis: exportTimeoutMs,
+      })
     : new SimpleSpanProcessor(traceExporter)
 
   let instrumentations: any[] = []
@@ -62,6 +76,7 @@ if (isEnabled) {
     const metricExporter = new OTLPMetricExporter({
       url: `${endpoint}/v1/metrics`,
       headers,
+      timeoutMillis: exportTimeoutMs,
     })
     metricReader = new PeriodicExportingMetricReader({
       exporter: metricExporter,
@@ -114,12 +129,23 @@ if (isEnabled) {
 }
 
 export async function shutdownTracing(): Promise<void> {
-  if (sdk) {
-    try {
-      await sdk.shutdown()
-      console.log('[OTEL] Tracing shut down')
-    } catch (err: any) {
-      console.error('[OTEL] Error shutting down tracing:', err.message)
-    }
+  if (!sdk) return
+  // Bound shutdown so a hung final flush can't block process exit; telemetry
+  // is best-effort and must never affect the host's exit code.
+  const shutdownTimeoutMs = Number(process.env.OTEL_SHUTDOWN_TIMEOUT_MS ?? 2000)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      sdk.shutdown(),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, shutdownTimeoutMs)
+      }),
+    ])
+    console.log('[OTEL] Tracing shut down')
+  } catch (err: any) {
+    console.error('[OTEL] Error shutting down tracing:', err.message)
+  } finally {
+    if (timer) clearTimeout(timer)
+    sdk = null
   }
 }
