@@ -18,6 +18,14 @@ const DATABASE_URL_FALLBACK = 'postgres://unused:unused@localhost:5432/unused'
 export default defineConfig({
   schema: isLocalMode ? 'prisma/schema.local.prisma' : 'prisma/schema.prisma',
   datasource: {
-    url: process.env.DATABASE_URL ?? DATABASE_URL_FALLBACK,
+    // Prisma CLI commands (notably `migrate deploy`) MUST connect DIRECTLY,
+    // never through a transaction-mode PgBouncer: `migrate deploy` takes a
+    // session-scoped advisory lock and issues DDL, both of which are unsafe
+    // when acquire/statements can land on different pooled backends. So prefer
+    // DATABASE_DIRECT_URL (-> platform-pg-rw) here. The RUNTIME client is
+    // unaffected — it uses the PrismaPg adapter on DATABASE_URL (the pooler)
+    // in apps/api/src/lib/prisma.ts. Locally/desktop DATABASE_DIRECT_URL is
+    // unset and this falls back to DATABASE_URL.
+    url: process.env.DATABASE_DIRECT_URL ?? process.env.DATABASE_URL ?? DATABASE_URL_FALLBACK,
   },
 })

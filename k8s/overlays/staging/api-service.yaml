@@ -286,11 +286,30 @@ spec:
               value: "wss://tunnel.staging.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-staging-system:6379"
+            # Conventional pooler split (durable fix for advisory-lock pool
+            # exhaustion, validated HERE before any prod region): DATABASE_URL
+            # points at the transaction-mode PgBouncer (platform-pg-pooler-rw,
+            # see k8s/cnpg/staging-oci/platform-pooler.yaml). Session-scoped work
+            # that must pin a backend — advisory locks (withAdvisoryLock /
+            # withGlobalJobLock) and Prisma migrate — uses DATABASE_DIRECT_URL
+            # -> platform-pg-rw. Ops MUST add the `DATABASE_DIRECT_URL` key to
+            # the postgres-credentials secret and repoint `DATABASE_URL` at the
+            # pooler BEFORE applying this manifest — see
+            # k8s/cnpg/logical-replication/RUNBOOK.md.
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: postgres-credentials
                   key: DATABASE_URL
+            - name: DATABASE_DIRECT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_DIRECT_URL
+            - name: PRISMA_POOL_SIZE
+              value: "25"
+            - name: ADVISORY_LOCK_POOL_SIZE
+              value: "4"
             - name: BETTER_AUTH_SECRET
               valueFrom:
                 secretKeyRef:
