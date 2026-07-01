@@ -29,6 +29,7 @@ import { setPreviewRegion, clearPreviewRegion } from './cloudflare-preview-regio
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 import type { InstanceSizeName } from '../config/instance-sizes'
 import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
+import { fnv1a64 } from './advisory-lock'
 
 const knativeTracer = trace.getTracer('shogo-knative-manager')
 
@@ -55,15 +56,11 @@ const IS_PRODUCTION = PREVIEW_ENVIRONMENT === "production" || PREVIEW_ENVIRONMEN
 // Log preview configuration on module load
 console.log(`[knative-project-manager] Preview config: PREVIEW_BASE_DOMAIN=${PREVIEW_BASE_DOMAIN}, PREVIEW_ENVIRONMENT=${PREVIEW_ENVIRONMENT}, IS_PRODUCTION=${IS_PRODUCTION}`)
 
-// Hash a project UUID to a stable 32-bit integer for use as a PostgreSQL
-// advisory lock key. Uses a simple FNV-1a hash to distribute evenly.
-function hashProjectIdToLockKey(projectId: string): number {
-  let hash = 0x811c9dc5 // FNV offset basis
-  for (let i = 0; i < projectId.length; i++) {
-    hash ^= projectId.charCodeAt(i)
-    hash = (hash * 0x01000193) | 0 // FNV prime, force 32-bit
-  }
-  return hash
+// Hash a project UUID to a stable 64-bit signed BIGINT for use as a
+// PostgreSQL advisory lock key. 64 bits keeps cross-collision with the
+// workspace / cron advisory keyspaces negligible.
+function hashProjectIdToLockKey(projectId: string): bigint {
+  return fnv1a64(projectId)
 }
 
 // How long tryClaimWarmPod will poll (non-blocking) for the per-project
@@ -2260,25 +2257,9 @@ async function tryClaimWarmPod(
     // project simultaneously. Advisory locks are session-scoped and don't
     // require holding a transaction open during the long /pool/assign call.
     const { prisma } = await import('./prisma')
-    const { pollAdvisoryLock } = await import('./advisory-lock')
+    const { withAdvisoryLock } = await import('./advisory-lock')
     const lockKey = hashProjectIdToLockKey(projectId)
 
-    // Acquire the per-project advisory lock with a BOUNDED, NON-BLOCKING
-    // poll. We deliberately NEVER call the blocking pg_advisory_lock():
-    // a blocked waiter holds its Prisma-pool connection for the whole wait,
-    // and under contention (a slow holder) dozens of waiters pinned the pool
-    // until ordinary queries such as prisma.invitation.count() could not get
-    // a connection — the 2026-07-01 ap-mumbai-1 outage. pg_try_advisory_lock
-    // returns immediately, so between poll attempts the connection is
-    // returned to the pool and the wait can never exhaust it.
-    //
-    // pg_try_advisory_lock returns a scalar boolean → $queryRawUnsafe.
-    const tryClaimLock = async (): Promise<boolean> => {
-      const rows = await prisma.$queryRawUnsafe<{ acquired: boolean }[]>(
-        `SELECT pg_try_advisory_lock($1) AS acquired`, lockKey,
-      )
-      return rows[0]?.acquired === true
-    }
     // A winning replica may have written knativeServiceName; reuse it.
     const reuseIfClaimed = async (phase: string): Promise<string | null> => {
       const project = await prisma.project.findUnique({
@@ -2294,76 +2275,65 @@ async function tryClaimWarmPod(
       return null
     }
 
-    // Fast path first; only poll (and only re-check the DB) on contention.
-    let acquired = await tryClaimLock()
-    if (!acquired) {
-      console.log(`[KnativeProjectManager] Warm pool claim lock contended for ${projectId} — polling (non-blocking) up to ${WARM_CLAIM_LOCK_BUDGET_MS}ms`)
-      const reused = await reuseIfClaimed('by another replica')
-      if (reused) return reused
+    // Serialize the claim with a per-project advisory lock, taken on a
+    // DEDICATED connection (bypasses PgBouncer/Prisma pool) with a bounded,
+    // NON-BLOCKING wait. We never issue a blocking pg_advisory_lock: a
+    // blocked waiter would pin its connection for the whole wait and, under
+    // contention, exhaust the pool — the 2026-07-01 ap-mumbai-1 outage. The
+    // entire assign runs inside the lock body so acquire+release land on the
+    // same backend session (required for session-scoped locks under
+    // transaction pooling).
+    const claim = await withAdvisoryLock<string | null>(
+      lockKey,
+      async () => {
+        // We hold the lock. Re-check: a peer may have finished during our wait.
+        const reused = await reuseIfClaimed('after lock acquisition')
+        if (reused) return reused
 
-      acquired = await pollAdvisoryLock(
-        lockKey,
-        { tryLock: tryClaimLock },
-        { budgetMs: WARM_CLAIM_LOCK_BUDGET_MS },
-      )
+        const envVars = await warmPool.buildProjectEnv(projectId)
+        const envTime = Date.now()
+        console.log(`[KnativeProjectManager] buildProjectEnv for ${projectId}: ${envTime - t0}ms`)
 
-      if (!acquired) {
-        // Never won the lock within budget. Re-check once more; otherwise
-        // fall back to a cold start rather than block the pool waiting.
-        const reusedAfter = await reuseIfClaimed('after lock wait')
-        if (reusedAfter) return reusedAfter
-        console.log(`[KnativeProjectManager] Could not acquire warm pool claim lock for ${projectId} within ${WARM_CLAIM_LOCK_BUDGET_MS}ms — falling back to cold start`)
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          const pod = warmPool.claim()
+          if (!pod) {
+            console.log(`[KnativeProjectManager] No warm pod available for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS})`)
+            break
+          }
+
+          console.log(`[KnativeProjectManager] Claimed warm pod ${pod.serviceName} for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS})`)
+
+          try {
+            const assignStart = Date.now()
+            await warmPool.assign(pod, projectId, envVars)
+            const assignEnd = Date.now()
+            console.log(`[KnativeProjectManager] assign for ${projectId}: ${assignEnd - assignStart}ms (total warm pipeline: ${assignEnd - t0}ms)`)
+
+            manager.createPreviewDomainMapping(projectId, pod.serviceName).catch((err: any) => {
+              console.error(`[KnativeProjectManager] Failed to create preview DomainMapping for warm pod ${pod.serviceName}:`, err.message)
+            })
+
+            return pod.url
+          } catch (assignErr: any) {
+            console.warn(`[KnativeProjectManager] Warm pod ${pod.serviceName} unreachable for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS}): ${assignErr.message}`)
+          }
+        }
+
+        console.log(`[KnativeProjectManager] All warm pool attempts exhausted for ${projectId} after ${Date.now() - t0}ms — falling back to cold start`)
         return null
-      }
+      },
+      { budgetMs: WARM_CLAIM_LOCK_BUDGET_MS },
+    )
 
-      console.log(`[KnativeProjectManager] Acquired warm pool claim lock for ${projectId} after contention`)
-      // The winner may have finished between our last check and acquisition.
-      const reusedPostAcq = await reuseIfClaimed('after lock acquisition')
-      if (reusedPostAcq) {
-        await prisma.$executeRawUnsafe(`SELECT pg_advisory_unlock($1)`, lockKey).catch(() => {})
-        return reusedPostAcq
-      }
+    if (!claim.held) {
+      // Couldn't win the lock within budget. A peer may have written the
+      // mapping while we waited; otherwise fall back to a cold start.
+      console.log(`[KnativeProjectManager] Could not acquire warm pool claim lock for ${projectId} within ${WARM_CLAIM_LOCK_BUDGET_MS}ms — checking for peer mapping / cold start`)
+      const reused = await reuseIfClaimed('after lock wait')
+      return reused ?? null
     }
 
-    // We hold the advisory lock — proceed with claim. Release in finally block.
-    try {
-      const envVars = await warmPool.buildProjectEnv(projectId)
-      const envTime = Date.now()
-      console.log(`[KnativeProjectManager] buildProjectEnv for ${projectId}: ${envTime - t0}ms`)
-
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        const pod = warmPool.claim()
-        if (!pod) {
-          console.log(`[KnativeProjectManager] No warm pod available for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS})`)
-          break
-        }
-
-        console.log(`[KnativeProjectManager] Claimed warm pod ${pod.serviceName} for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS})`)
-
-        try {
-          const assignStart = Date.now()
-          await warmPool.assign(pod, projectId, envVars)
-          const assignEnd = Date.now()
-          console.log(`[KnativeProjectManager] assign for ${projectId}: ${assignEnd - assignStart}ms (total warm pipeline: ${assignEnd - t0}ms)`)
-
-          manager.createPreviewDomainMapping(projectId, pod.serviceName).catch((err: any) => {
-            console.error(`[KnativeProjectManager] Failed to create preview DomainMapping for warm pod ${pod.serviceName}:`, err.message)
-          })
-
-          return pod.url
-        } catch (assignErr: any) {
-          console.warn(`[KnativeProjectManager] Warm pod ${pod.serviceName} unreachable for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS}): ${assignErr.message}`)
-        }
-      }
-
-      console.log(`[KnativeProjectManager] All warm pool attempts exhausted for ${projectId} after ${Date.now() - t0}ms — falling back to cold start`)
-      return null
-    } finally {
-      // Always release the advisory lock. pg_advisory_unlock returns bool
-      // but we don't care about the result — use $executeRawUnsafe for
-      // consistency with the blocking pg_advisory_lock above.
-      await prisma.$executeRawUnsafe(`SELECT pg_advisory_unlock($1)`, lockKey).catch(() => {})
-    }
+    return claim.result ?? null
   } catch (err: any) {
     const elapsed = Date.now() - t0
     console.error(`[KnativeProjectManager] Warm pool claim failed for ${projectId} after ${elapsed}ms:`, err.message)

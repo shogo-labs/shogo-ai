@@ -18,6 +18,11 @@ process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-
 import { describe, test, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test'
 import { withK8sExports, type K8sCallLog } from './helpers/k8s-mock'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
+// The warm-pool claim serializes via withAdvisoryLock on a DEDICATED pg
+// connection. Rather than mock.module the shared advisory-lock module (which
+// is process-global in Bun and would corrupt advisory-lock.test.ts), we
+// override only its default client acquisition through a reset-able test seam.
+import { __setAdvisoryLockAcquireClientForTests } from '../lib/advisory-lock'
 
 // Force kubernetes-mode for the lifetime of this test file. `isKubernetes()`
 // reads `KUBERNETES_SERVICE_HOST` lazily so we can set it before importing
@@ -51,6 +56,7 @@ let workspaceInstanceSize = 'small'
 let queryRawRows: any[] = [{ acquired: true }]
 const executeRawCalls: string[] = []
 const projectUpdateCalls: any[] = []
+const advisoryLockCalls: { key: bigint }[] = []
 let warmPoolMock: any
 
 mock.module('@kubernetes/client-node', () => withK8sExports({
@@ -164,6 +170,7 @@ mock.module('../lib/warm-pool-controller', () => ({
   getWarmPoolController: () => warmPoolMock,
 }))
 
+
 // Stub `fetch` so `mergePatchKnativeService`, `updatePreviewDomainMapping`,
 // and `healthCheck` calls don't escape the test process.
 const originalFetch = globalThis.fetch
@@ -171,10 +178,22 @@ let nextFetch: () => Response = () => new Response('{}', { status: 200, headers:
 
 beforeAll(() => {
   globalThis.fetch = (async () => nextFetch() as any) as any
+  // Grant the warm-pool claim lock in-memory (no real pg pool). Records the
+  // key so tests can assert the claim ran under the advisory lock.
+  __setAdvisoryLockAcquireClientForTests(async () => ({
+    tryLock: async (key: bigint) => {
+      advisoryLockCalls.push({ key })
+      return true
+    },
+    unlock: async () => {},
+    release: () => {},
+  }))
 })
 
 afterAll(() => {
   globalThis.fetch = originalFetch
+  // Reset the seam so it never leaks into other test files.
+  __setAdvisoryLockAcquireClientForTests(null)
 })
 
 beforeEach(() => {
@@ -190,6 +209,7 @@ beforeEach(() => {
   queryRawRows = [{ acquired: true }]
   executeRawCalls.length = 0
   projectUpdateCalls.length = 0
+  advisoryLockCalls.length = 0
   warmPoolMock = {
     getAssignedPod: () => null,
     getStatus: () => ({ enabled: false }),
@@ -768,7 +788,8 @@ describe('getProjectPodUrl (module-level helper)', () => {
 
     expect(url).toBe(pod.url)
     expect(assignCalls[0]).toEqual([pod, 'p-warm', { PROJECT_ID: 'p-warm', EXTRA: '1' }])
-    expect(executeRawCalls).toContain('SELECT pg_advisory_unlock($1)')
+    // The claim ran under the dedicated-connection advisory lock.
+    expect(advisoryLockCalls.length).toBeGreaterThan(0)
     expect(capture.some((c) => c.method === 'createNamespacedCustomObject' && c.args[0].plural === 'domainmappings')).toBe(true)
   })
 
