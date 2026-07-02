@@ -42,6 +42,7 @@ import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
+import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -4719,6 +4720,11 @@ app.post('/api/projects/:projectId/chat', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
 
+  // Region-pin: if this session's workspace lives in a peer region, proxy the
+  // whole turn there so the runtime that owns the stream buffer serves it.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
+
   activeProxyConnections++
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
@@ -4870,6 +4876,10 @@ app.get('/api/projects/:projectId/chat/:chatSessionId/turn', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
 
+  // Region-pin: the turn snapshot lives in the region that owns the buffer.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
+
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
@@ -4883,6 +4893,12 @@ app.get('/api/projects/:projectId/chat/:chatSessionId/turn', async (c) => {
 app.get('/api/projects/:projectId/chat/:chatSessionId/stream', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
+
+  // Region-pin: resume must hit the region that holds the in-memory stream
+  // buffer. Serving it locally in the wrong region 204s (no buffer) or 404s
+  // (project row not yet replicated) — the resume-storm root cause.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
 
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
@@ -4907,6 +4923,10 @@ app.get('/api/projects/:projectId/chat/:chatSessionId/stream', async (c) => {
 app.post('/api/projects/:projectId/chat/stop', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
+
+  // Region-pin: stop must reach the region running the turn's agent loop.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
 
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })

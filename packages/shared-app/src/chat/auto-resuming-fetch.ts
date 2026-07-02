@@ -132,6 +132,13 @@ export function createAutoResumingFetch(
       logger,
       turnId,
       onChunk: options.onChunk,
+      // Carry the original request's credentials mode onto the internal
+      // resume GET so same-site cookies — notably Cloudflare's `__cflb`
+      // load-balancer affinity cookie — ride along and keep the reconnect
+      // pinned to the region that owns the turn's stream buffer. Without
+      // this the resume can be geo-steered to a different region that has
+      // no buffer (204) or hasn't replicated the project row yet (404).
+      credentials: init?.credentials,
     })
 
     // Re-construct the Response so the AI SDK reads from our durable body
@@ -156,6 +163,12 @@ interface DurableBodyOpts {
   logger: { warn: (...args: any[]) => void; log: (...args: any[]) => void } | null
   turnId: string
   onChunk?: (info: { bytes: number; resumed: boolean }) => void
+  /**
+   * Credentials mode forwarded from the original chat POST to the internal
+   * resume GET so affinity cookies (e.g. Cloudflare `__cflb`) are sent and
+   * the reconnect stays in the region that owns the stream buffer.
+   */
+  credentials?: RequestCredentials
 }
 
 function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
@@ -169,6 +182,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
     logger,
     turnId,
     onChunk,
+    credentials,
   } = opts
 
   return new ReadableStream<Uint8Array>({
@@ -286,14 +300,23 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           let resumeRes: Response
           try {
             const url = `${resumeUrl}?fromSeq=${lastSeq}`
-            resumeRes = await fetcher(url, { method: 'GET' })
+            resumeRes = await fetcher(url, { method: 'GET', credentials })
           } catch (err: any) {
             warn(`resume fetch threw: ${err?.message || err}`)
             continue
           }
 
-          if (resumeRes.status === 204 || !resumeRes.body) {
-            log(`resume returned ${resumeRes.status} — turn no longer buffered, stopping`)
+          // Only a 200 with a body is a resumable stream. Any other status is
+          // terminal: 204 = turn no longer buffered; 4xx/5xx (e.g. a 404 from
+          // a region that doesn't own the session, a 401/403 auth failure, a
+          // 503 from a down home-region peer) is NOT a stream and must never
+          // be pumped into the AI SDK body or retried. Retrying a hard 404
+          // here is what produced the observed "50-75 stream 404s/min" storm:
+          // the error body has bytes > 0, which reset the attempt counter and
+          // looped forever. Stop and let the UI surface a Retry instead.
+          if (resumeRes.status !== 200 || !resumeRes.body) {
+            log(`resume returned ${resumeRes.status} — not a resumable stream, stopping`)
+            try { resumeRes.body?.cancel() } catch { /* noop */ }
             break
           }
 
