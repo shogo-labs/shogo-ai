@@ -16,9 +16,16 @@ rules:
   - apiGroups: ["serving.knative.dev"]
     resources: ["domainmappings"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # `revisions` is REQUIRED for warm-pool hot/cold detection: the controller
+  # reads each pool Service's latest Revision status (actualReplicas) to tell a
+  # HOT pod (>=1 running replica, instant claim) from a scaled-to-zero one (~20s
+  # activator cold start). Without `list revisions` the controller gets a 403,
+  # treats every pool pod as cold, and every "warm" claim silently eats a
+  # scale-from-zero — i.e. the pool is only nominally warm. `configurations`/
+  # `routes` + `watch` round out read access and match the production overlay.
   - apiGroups: ["serving.knative.dev"]
-    resources: ["services"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
+    resources: ["services", "revisions", "configurations", "routes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["list"]
@@ -550,13 +557,13 @@ spec:
             - name: REGION_LABEL
               value: "Staging (OCI)"
             # Home-region write routing. Staging is single-region (no
-            # REGION_PEERS), so "shadow" only exercises the resolver + emits
-            # "[home-region-router] would-proxy" logs — it can never actually
-            # proxy (no peer) and every write resolves local, so this is safe.
-            # Use it to validate resolution/logging on real traffic before the
-            # production enforce rollout. "off" disables it entirely.
+            # REGION_PEERS), so "enforce" exercises the resolver + fail-closed
+            # decision paths but every write still resolves local (no peer to
+            # proxy to) — behaviourally safe, and validates the enforce code
+            # path on real traffic ahead of the per-region production rollout.
+            # "shadow" logs only; "off" disables it entirely.
             - name: HOME_REGION_ROUTING
-              value: "shadow"
+              value: "enforce"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
             - name: PROMOTED_POD_GC_ENABLED
