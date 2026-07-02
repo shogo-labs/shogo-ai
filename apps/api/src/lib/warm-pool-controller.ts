@@ -812,6 +812,13 @@ export class WarmPoolController {
     if (candidates.length === 0) {
       poolColdStartCounter.add(1)
       console.warn(`[WarmPool] COLD START: no warm pod available — user will experience delay`)
+      // The pool is fully drained — this is the exact moment we most need to
+      // refill. The normal replenishment triggers only fire when a pod is
+      // successfully claimed (below), so without this an exhausted pool would
+      // stay empty until the next periodic reconcile, forcing every request in
+      // the burst onto a per-project cold start (thundering herd). Kick an
+      // immediate (debounced) burst reconcile so capacity comes back ASAP.
+      this.scheduleBurstReconcile()
       return null
     }
 

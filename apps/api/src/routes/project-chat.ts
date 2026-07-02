@@ -1429,7 +1429,24 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             continue
           }
 
-          // Non-transient error or max retries reached
+          // Retries exhausted on a transient/connection error. The pod is
+          // unreachable because it's still cold-starting, was evicted, or the
+          // node is momentarily at capacity — NOT because the server is broken.
+          // Surface a retryable 503 (client shows "starting…" + retries) rather
+          // than a hard 500 that reads as a permanent failure. This is the
+          // "it shouldn't fail if the warm pool runs out" contract: exhaustion
+          // degrades to a slower, retryable path, never an error.
+          if (isTransientError || isAbortError) {
+            console.warn(`[ProjectChat] Pod unreachable after ${MAX_RETRIES} attempts for ${projectId} (${podUrl}) — returning retryable 503`)
+            chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "pod_unreachable" })
+            chatSpan.end()
+            return c.json(
+              { error: { code: "pod_starting", message: "Project runtime is starting up and not reachable yet. Please retry in a few seconds.", retryable: true } },
+              503
+            )
+          }
+
+          // Genuinely unexpected error — surface to the outer handler.
           throw fetchError
         }
       }
@@ -1458,6 +1475,28 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: error.message })
       chatSpan.recordException(error)
       chatSpan.end()
+      // A warm-pool miss / cold start / node-at-capacity surfaces here as a
+      // connection or timeout error (ECONNREFUSED/RESET/TIMEDOUT, fetch abort,
+      // or a "not ready / did not become ready / unavailable" from resolution).
+      // These are transient and retryable — the runtime is (re)starting, not
+      // broken — so we MUST NOT return a hard 500 the client treats as
+      // permanent. Only genuinely unexpected errors fall through to 500.
+      const code = error?.code || error?.cause?.code
+      const msg = String(error?.message || "")
+      const isTransient =
+        code === "ECONNREFUSED" || code === "ECONNRESET" || code === "ETIMEDOUT" ||
+        error?.name === "TimeoutError" || error?.name === "AbortError" ||
+        // pod/runtime transients + Prisma connection-pool backpressure
+        // ("Timed out fetching a new connection from the connection pool",
+        // "Can't reach database server", "too many connections") — all are
+        // load-shed conditions the client should retry, not hard 500s.
+        /ECONNREFUSED|ECONNRESET|ETIMEDOUT|connection refused|Unable to connect|FailedToOpenSocket|fetch failed|timeout|timed out|not ready|starting|did not become ready|unavailable|connection pool|reach database|too many connections/i.test(msg)
+      if (isTransient) {
+        return c.json(
+          { error: { code: "pod_starting", message: "Project runtime is starting up. Please retry in a few seconds.", retryable: true } },
+          503
+        )
+      }
       return c.json(
         { error: { code: "proxy_error", message: error.message || "Proxy failed" } },
         500
