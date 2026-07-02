@@ -13,7 +13,14 @@ metadata:
     app.kubernetes.io/part-of: shogo
     environment: staging
 spec:
-  instances: 1
+  # 2 instances = primary + 1 hot standby, spread across nodes (CNPG soft
+  # pod anti-affinity + the staging pool's per-node eviction protection) so a
+  # single node loss never takes the database down. This MUST stay >=2: the
+  # live staging cluster runs 2 and a `kubectl apply` with instances:1 would
+  # scale down and delete the standby. NOTE: these staging CNPG manifests are
+  # applied MANUALLY (they are not wired into .github/workflows/deploy.yml,
+  # which only applies the production platform-publication.yaml).
+  instances: 2
 
   enablePDB: false
 
