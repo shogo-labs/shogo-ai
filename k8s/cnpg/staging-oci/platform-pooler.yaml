@@ -55,6 +55,9 @@ spec:
     enablePodMonitor: true
   template:
     spec:
+      # DB data-path: same top priority as the Postgres cluster so PgBouncer is
+      # never evicted for a runtime-pod burst (see priority-classes.yaml).
+      priorityClassName: shogo-db-critical
       nodeSelector:
         node.kubernetes.io/purpose: system
       containers: []

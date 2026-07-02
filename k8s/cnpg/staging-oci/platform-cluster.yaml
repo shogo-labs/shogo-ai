@@ -17,6 +17,16 @@ spec:
 
   enablePDB: false
 
+  # Highest scheduling priority in the cluster. Under node memory pressure the
+  # kubelet evicts by QoS then Pod priority; before this the DB ran at the
+  # default priority (0) and shared nodes with burstable warm-pool runtime pods,
+  # so a runtime memory burst could (and did, 2026-07-01) take the node — and
+  # this database — down. shogo-db-critical (value 1e6) guarantees Postgres is
+  # the last thing evicted and can preempt runtime pods for a slot if needed.
+  # PriorityClass is defined in k8s/overlays/staging/priority-classes.yaml and
+  # MUST exist in the cluster before this Cluster is (re)applied.
+  priorityClassName: shogo-db-critical
+
   postgresql:
     parameters:
       max_connections: "400"

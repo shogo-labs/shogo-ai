@@ -83,6 +83,32 @@ const WARM_POOL_MAX_AGE_MS = parseInt(
 
 const WARM_POOL_MIN_PODS = parseInt(process.env.WARM_POOL_MIN_PODS || '2', 10)
 
+// Warm-pool pod resource envelope. The memory REQUEST is intentionally low
+// (768Mi) relative to the LIMIT (8Gi): warm-pool memory is deliberately
+// OVERCOMMITTED because most pool pods idle near their request and only a
+// handful actively bundle at multi-GiB at any instant. That statistical
+// multiplexing is what lets a node hold ~25 pods instead of ~6 — it's the
+// economic point of the pool, not a bug. Do NOT "fix" this by setting
+// request == limit (Guaranteed QoS); that would gut density.
+//
+// Overcommit is only dangerous without a node-level safety net. The safety net
+// is: (1) kubelet eviction with a real headroom buffer, which sheds pods when
+// a correlated burst pushes a node toward memory pressure, and (2) the
+// PriorityClass hierarchy (shogo-workspace-low < default < shogo-api-critical
+// < shogo-db-critical) so eviction always sacrifices the cheap, restartable
+// warm pods first and never CNPG Postgres. Before those existed, a create
+// burst overpacked a node, the (100Mi-buffer) kubelet lost the reclaim race,
+// got starved, and the node went NotReady taking the co-tenant DB with it
+// (2026-07-01 staging incident).
+//
+// These stay env-configurable as an OPERATIONAL KNOB — e.g. bumping the request
+// floor mid-incident caps worst-case per-node density without a code deploy —
+// but the defaults preserve the intended overcommit for every environment.
+const WARM_POOL_POD_MEM_REQUEST = process.env.WARM_POOL_POD_MEM_REQUEST || '768Mi'
+const WARM_POOL_POD_MEM_LIMIT = process.env.WARM_POOL_POD_MEM_LIMIT || '8Gi'
+const WARM_POOL_POD_CPU_REQUEST = process.env.WARM_POOL_POD_CPU_REQUEST || '200m'
+const WARM_POOL_POD_CPU_LIMIT = process.env.WARM_POOL_POD_CPU_LIMIT || '1000m'
+
 // Keep-alive ping interval: how often we hit `/health` on each warm-pool
 // ksvc to reset Knative's `scale-to-zero-pod-retention-period` timer.
 // Must be comfortably shorter than the retention period set in the
@@ -2580,6 +2606,15 @@ export class WarmPoolController {
       spec: {
         template: {
           metadata: {
+            labels: {
+              // Common label on every warm-pool POD (Knative propagates
+              // spec.template.metadata.labels down to the pod). Gives the
+              // podAntiAffinity below a stable selector to spread pool pods
+              // across nodes, and lets pod-level tooling identify pool pods
+              // directly (the per-service serving.knative.dev labels are unique
+              // per pod, so they can't match "all pool pods").
+              [POOL_LABEL_KEY]: 'true',
+            },
             annotations: {
               // Scale-to-zero policy:
               //
@@ -2633,6 +2668,35 @@ export class WarmPoolController {
             timeoutSeconds: 3600,
             responseStartTimeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
+            // Soft anti-affinity: prefer to place each warm-pool pod on a node
+            // that isn't already hosting one. Warm-pool memory is overcommitted
+            // on purpose (low request / high limit), so concentrating many pool
+            // pods on a single node makes a correlated burst far more likely to
+            // trip that node's memory pressure at once. Spreading them lowers
+            // the per-node burst concentration (belt-and-suspenders with the
+            // node-level kubelet eviction + PriorityClass fixes from the
+            // 2026-07-01 incident). It's `preferred`, not `required`, so it
+            // never blocks scheduling when nodes are scarce — the pod still
+            // lands somewhere, just spread out when there's a choice.
+            // Requires `kubernetes.podspec-affinity: enabled` in config-features
+            // (already set by terraform/modules/knative-oci).
+            affinity: {
+              podAntiAffinity: {
+                preferredDuringSchedulingIgnoredDuringExecution: [
+                  {
+                    weight: 100,
+                    podAffinityTerm: {
+                      topologyKey: 'kubernetes.io/hostname',
+                      labelSelector: {
+                        matchExpressions: [
+                          { key: POOL_LABEL_KEY, operator: 'In', values: ['true'] },
+                        ],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
             // NOTE: `topologySpreadConstraints` was previously declared here
             // to spread warm-pool pods across nodes (anti-co-tenancy belt-
             // and-suspenders after the 2026-05-14 DiskPressure cascade), but
@@ -2700,8 +2764,21 @@ export class WarmPoolController {
                   // 2 GiB request is the typical actual usage (template deps
                   // + project + dist), well under the 5 GiB ceiling, but it
                   // tells the scheduler the truth so it stops overpacking.
-                  requests: { memory: '768Mi', cpu: '200m', 'ephemeral-storage': '2Gi' },
-                  limits: { memory: '8Gi', cpu: '1000m', 'ephemeral-storage': '5Gi' },
+                  //
+                  // memory/cpu request+limit are env-tunable (see
+                  // WARM_POOL_POD_MEM_* above): staging closes the request/limit
+                  // gap to Guaranteed QoS so a create burst can't overpack a
+                  // node; prod keeps the historical 768Mi/8Gi envelope.
+                  requests: {
+                    memory: WARM_POOL_POD_MEM_REQUEST,
+                    cpu: WARM_POOL_POD_CPU_REQUEST,
+                    'ephemeral-storage': '2Gi',
+                  },
+                  limits: {
+                    memory: WARM_POOL_POD_MEM_LIMIT,
+                    cpu: WARM_POOL_POD_CPU_LIMIT,
+                    'ephemeral-storage': '5Gi',
+                  },
                 },
                 volumeMounts: [{ name: 'project-data', mountPath: workDir }],
                 startupProbe: {
