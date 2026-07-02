@@ -81,8 +81,18 @@ spec:
   template:
     metadata:
       annotations:
-        autoscaling.knative.dev/min-scale: "1"
+        # min-scale=2 keeps a warm second replica so the first burst of
+        # CPU-bound sign-ups (Better Auth password hashing is synchronous and
+        # blocks the event loop) doesn't all pile onto a single pod.
+        autoscaling.knative.dev/min-scale: "2"
         autoscaling.knative.dev/max-scale: "5"
+        # target=25 concurrent requests/pod. The default (100) let a single pod
+        # absorb heavy concurrency before scaling, so CPU-bound sign-up hashing
+        # starved reads on that pod (get-session p99 hit ~6s at 150 users).
+        # Lowering it scales out sooner and spreads the event-loop blocking:
+        # at 150 users this cut get-session p99 ~6.3s -> ~0.9s and sign-up p95
+        # ~29s -> ~16s with 0 failures. Validated via load-tests/staging_mix.
+        autoscaling.knative.dev/target: "25"
         # ─── Long-lived chat stream + WebSocket support ────────────────────
         # The desktop tunnel WebSocket bypasses Knative entirely via
         # api-tunnel-ingress.yaml (label-selector Service direct to the
@@ -308,6 +318,13 @@ spec:
                   key: DATABASE_DIRECT_URL
             - name: PRISMA_POOL_SIZE
               value: "25"
+            # Better Auth opens its OWN pg pool (apps/api/src/auth.ts), separate
+            # from Prisma. Left unset it defaults to 60 conns/pod, so per-pod
+            # client conns to PgBouncer are 25 (Prisma) + 60 = 85, not 25. Cap it
+            # so pods x (PRISMA_POOL_SIZE + AUTH_POOL_SIZE) stays well under the
+            # pooler's max_client_conn.
+            - name: AUTH_POOL_SIZE
+              value: "10"
             - name: ADVISORY_LOCK_POOL_SIZE
               value: "4"
             - name: BETTER_AUTH_SECRET

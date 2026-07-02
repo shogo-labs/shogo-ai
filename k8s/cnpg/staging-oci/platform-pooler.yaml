@@ -8,11 +8,16 @@
 # backend (advisory locks, migrations) uses DATABASE_DIRECT_URL -> platform-pg-rw.
 #
 # Connection budget (platform-pg max_connections = 400 in staging):
-#   pooler server conns  = instances(2) x default_pool_size(40)  = 80
-#   dedicated lock conns  (direct, ADVISORY_LOCK_POOL_SIZE)      ~ pods x 6
+#   pooler server conns  = instances(2) x default_pool_size(50)  = 100
+#   dedicated lock conns  (direct, ADVISORY_LOCK_POOL_SIZE)      ~ pods x 4
 #   migrations / CNPG / monitoring / replica                     ~ 40
 #   ---------------------------------------------------------------------
 #   comfortably < 400
+#
+# Client side (app -> pooler): per pod = PRISMA_POOL_SIZE(25) + AUTH_POOL_SIZE(10)
+# = 35. At max-scale (5 pods) that is 175 client conns, well under
+# max_client_conn(1000). AUTH_POOL_SIZE MUST be set on the api overlay — Better
+# Auth's pg pool otherwise defaults to 60/pod.
 #
 # NOTE: transaction pooling + prepared statements. PgBouncer >= 1.21 tracks
 # protocol-level prepared statements when max_prepared_statements > 0, which is
@@ -40,7 +45,7 @@ spec:
     poolMode: transaction
     parameters:
       max_client_conn: "1000"
-      default_pool_size: "40"
+      default_pool_size: "50"
       min_pool_size: "5"
       reserve_pool_size: "5"
       reserve_pool_timeout: "3"
@@ -50,7 +55,6 @@ spec:
     enablePodMonitor: true
   template:
     spec:
-      affinity:
-        nodeSelector:
-          node.kubernetes.io/purpose: system
+      nodeSelector:
+        node.kubernetes.io/purpose: system
       containers: []
