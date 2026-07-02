@@ -191,6 +191,28 @@ variable "placement_ad_names" {
   default     = []
 }
 
+variable "kubelet_extra_args" {
+  # Passed to `oke-init.sh --kubelet-extra-args "<value>"` in the node cloud-init
+  # (the OCI-documented way to tune the kubelet on managed nodes, custom images
+  # included). Use it to set node-level memory-pressure protection —
+  # --kube-reserved / --system-reserved / --eviction-hard / --eviction-soft —
+  # so an overcommitted warm-pool burst causes the kubelet to shed low-priority
+  # pods EARLY instead of starving itself and taking the node (and any co-tenant
+  # like CNPG) down (2026-07-01 staging incident: default evictionHard was only
+  # memory.available<100Mi).
+  #
+  # When set to a non-empty string, the node cloud-init is emitted even for
+  # custom images (which normally get node_metadata={}). NOTE: the main pool's
+  # `lifecycle.ignore_changes` includes `node_metadata`, so changing this on an
+  # already-provisioned pool does NOT propagate on a normal apply — see the
+  # rollout runbook (temporarily drop node_metadata from ignore_changes, apply,
+  # then recycle nodes canary-first). Empty string (default) preserves the
+  # historical behavior for every environment that doesn't opt in.
+  description = "Extra kubelet args passed to oke-init.sh (e.g. --eviction-hard/--kube-reserved). Empty disables the custom cloud-init override for custom images."
+  type        = string
+  default     = ""
+}
+
 variable "ssh_public_key" {
   description = "SSH public key for node access (optional)"
   type        = string
@@ -220,6 +242,34 @@ locals {
   all_ads              = data.oci_identity_availability_domains.ads.availability_domains[*].name
   availability_domains = length(var.placement_ad_names) > 0 ? var.placement_ad_names : local.all_ads
   use_custom_image     = var.image_id != ""
+
+  # Worker node cloud-init. Runs OKE's oke-init.sh (which bootstraps the
+  # kubelet), preceded by oci-growfs + the inotify sysctl drop-in. When
+  # var.kubelet_extra_args is set we append `--kubelet-extra-args "..."` to the
+  # oke-init.sh invocation — the OCI-documented way to tune kubelet flags
+  # (--eviction-hard / --kube-reserved etc.) on managed nodes.
+  node_oke_init_line = var.kubelet_extra_args != "" ? "bash /var/run/oke-init.sh --kubelet-extra-args \"${var.kubelet_extra_args}\"" : "bash /var/run/oke-init.sh"
+
+  node_user_data = base64encode(join("\n", [
+    "#!/bin/bash",
+    "curl --fail -H \"Authorization: Bearer Oracle\" -L0 http://169.254.169.254/opc/v2/instance/metadata/oke_init_script | base64 --decode >/var/run/oke-init.sh",
+    "bash /usr/libexec/oci-growfs -y",
+    "cat >/etc/sysctl.d/99-shogo-inotify.conf <<'EOF'",
+    "fs.inotify.max_user_watches = 1048576",
+    "fs.inotify.max_user_instances = 8192",
+    "EOF",
+    "sysctl --system",
+    local.node_oke_init_line,
+  ])
+
+  # Custom OKE images ship their own bootstrap, so emitting user_data that
+  # overrides it caused RegisterTimeOut in the past — hence custom images
+  # normally get node_metadata={}. But when we NEED to inject kubelet args
+  # (var.kubelet_extra_args set), we must run our own cloud-init even on a
+  # custom image; that path re-runs oke-init.sh the OCI-recommended way, so it
+  # boots correctly AND applies the kubelet flags. Validate on a canary node
+  # before recycling the whole pool (see rollout runbook).
+  node_metadata_map = (local.use_custom_image && var.kubelet_extra_args == "") ? {} : { user_data = local.node_user_data }
 }
 
 # -----------------------------------------------------------------------------
@@ -334,19 +384,14 @@ resource "oci_containerengine_node_pool" "main" {
   # makes future replacement nodes correct from boot before kubelet is
   # ready, and the DaemonSet guarantees correctness on every running node.
   # Do NOT remove either side without removing the other.
-  node_metadata = local.use_custom_image ? {} : {
-    user_data = base64encode(join("\n", [
-      "#!/bin/bash",
-      "curl --fail -H \"Authorization: Bearer Oracle\" -L0 http://169.254.169.254/opc/v2/instance/metadata/oke_init_script | base64 --decode >/var/run/oke-init.sh",
-      "bash /usr/libexec/oci-growfs -y",
-      "cat >/etc/sysctl.d/99-shogo-inotify.conf <<'EOF'",
-      "fs.inotify.max_user_watches = 1048576",
-      "fs.inotify.max_user_instances = 8192",
-      "EOF",
-      "sysctl --system",
-      "bash /var/run/oke-init.sh",
-    ]))
-  }
+  #
+  # node_metadata comes from local.node_metadata_map: same cloud-init as before,
+  # but it ALSO emits for custom images when var.kubelet_extra_args is set, so we
+  # can inject node memory-pressure protection (--eviction-hard / --kube-reserved
+  # / --system-reserved). See the local for the RegisterTimeOut caveat + the
+  # canary rollout (node_metadata is in ignore_changes below, so applying to an
+  # existing pool requires a one-time removal + node recycle).
+  node_metadata = local.node_metadata_map
 
   initial_node_labels {
     key   = "node.kubernetes.io/purpose"
@@ -460,24 +505,10 @@ resource "oci_containerengine_node_pool" "workloads" {
     boot_volume_size_in_gbs = var.boot_volume_gb
   }
 
-  # See `oci_containerengine_node_pool.main.node_metadata` for context on why
-  # the inotify sysctl drop-in is duplicated here AND in
-  # k8s/base/inotify-tuner.yaml — short version: cloud-init for new-node
-  # boot order, DaemonSet for everything else (existing nodes, reboots,
-  # post-tf-apply, etc.).
-  node_metadata = local.use_custom_image ? {} : {
-    user_data = base64encode(join("\n", [
-      "#!/bin/bash",
-      "curl --fail -H \"Authorization: Bearer Oracle\" -L0 http://169.254.169.254/opc/v2/instance/metadata/oke_init_script | base64 --decode >/var/run/oke-init.sh",
-      "bash /usr/libexec/oci-growfs -y",
-      "cat >/etc/sysctl.d/99-shogo-inotify.conf <<'EOF'",
-      "fs.inotify.max_user_watches = 1048576",
-      "fs.inotify.max_user_instances = 8192",
-      "EOF",
-      "sysctl --system",
-      "bash /var/run/oke-init.sh",
-    ]))
-  }
+  # See `oci_containerengine_node_pool.main.node_metadata` for context. Shared
+  # local also injects var.kubelet_extra_args (node memory-pressure protection)
+  # and emits cloud-init for custom images when those args are set.
+  node_metadata = local.node_metadata_map
 
   initial_node_labels {
     key   = "node.kubernetes.io/purpose"

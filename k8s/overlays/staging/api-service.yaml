@@ -533,6 +533,18 @@ spec:
                   optional: true
             - name: WARM_POOL_MIN_PODS
               value: "5"
+            # Warm-pool memory is intentionally OVERCOMMITTED (request << limit):
+            # most pool pods idle near ~768Mi and only a few actively bundle at
+            # multi-GB at any instant, so a low request lets us bin-pack ~25
+            # pods/node instead of ~6 — that density is the whole point of the
+            # pool. We keep the overcommit here (defaults 768Mi req / 8Gi limit)
+            # and instead make it SAFE at the node level: kubelet eviction sheds
+            # the lowest-priority (shogo-workspace-low) pods early under memory
+            # pressure, and the CNPG PriorityClass (shogo-db-critical) guarantees
+            # the DB is never the victim. WARM_POOL_POD_MEM_REQUEST is left at its
+            # default but exposed as an operational knob: bumping the request
+            # floor caps worst-case per-node pod density during an incident
+            # without a code deploy.
             - name: REGION_ID
               value: "staging"
             - name: REGION_LABEL

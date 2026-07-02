@@ -8,6 +8,8 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
+  - priority-classes.yaml
+  - workspaces-resource-limits.yaml
   - api-service.yaml
   - api-tunnel-ingress.yaml
   - web-service.yaml

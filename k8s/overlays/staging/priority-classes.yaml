@@ -1,0 +1,47 @@
+# =============================================================================
+# PriorityClasses (staging) — protect the data plane from runtime pods
+# =============================================================================
+# Under node memory pressure the kubelet evicts pods in order of QoS class and
+# then Pod priority. Before the 2026-07-01 incident everything ran at the
+# default priority (0), so nothing guaranteed CNPG Postgres or the API would
+# survive a warm-pool burst — and they didn't (the node died with the DB on it).
+#
+# This establishes an explicit hierarchy so eviction/preemption always sacrifices
+# the runtime tier first and never the database:
+#     shogo-db-critical (1e6)  >  shogo-api-critical (9e5)  >  default (0)  >  shogo-workspace-low (-10)
+#
+# Cluster-scoped objects; defined only in the staging overlay so they exist only
+# in the staging cluster (prod manifests don't reference them yet).
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: shogo-db-critical
+value: 1000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  CNPG Postgres + PgBouncer. Highest priority: never evicted or preempted in
+  favor of API or workspace/runtime pods.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: shogo-api-critical
+value: 900000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  Platform API. High priority: evicted only after all workspace/runtime pods,
+  and outranks default-priority workloads.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: shogo-workspace-low
+value: -10
+globalDefault: false
+preemptionPolicy: Never
+description: >-
+  Warm-pool and project runtime pods. Below default priority so they are the
+  FIRST to be evicted under node pressure and never preempt other workloads.
