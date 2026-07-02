@@ -1370,16 +1370,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         } catch (fetchError: any) {
           lastError = fetchError
 
-          // Retry on connection errors. Bun's fetch reports connection
-          // failures with hint-style messages ("Unable to connect. Is the
-          // computer able to access the url?", "Was there a typo in the url or
-          // port?") and Bun-specific codes ("ConnectionRefused",
-          // "ConnectionClosed", "FailedToOpenSocket") — NOT the Node ECONN*
-          // codes — and the text often lives on `.cause` rather than `.message`.
-          // Match against the whole error (message + cause + code + name) so a
-          // pod that's still cold-starting / just (re)assigned is treated as a
-          // transient miss and retried, then downgraded to a retryable 503
-          // below — never surfaced as a hard 500.
+          // Detect connection-level failures (pod not reachable). Bun reports
+          // these with Bun-specific codes ("ConnectionRefused",
+          // "ConnectionClosed", "FailedToOpenSocket") and hint-style messages
+          // ("Unable to connect…", "Was there a typo in the url or port?"),
+          // often on `.cause` rather than `.message`, so match the whole error.
           const fetchErrText = [
             fetchError?.message,
             fetchError?.cause?.message,
@@ -1388,8 +1383,19 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             fetchError?.name,
             String(fetchError),
           ].filter(Boolean).join(' ')
-          const isTransientError =
+          const isConnectionError =
             /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|connection refused|connection closed|connection reset|unable to connect|typo in the url|failed to (open|connect)|FailedToOpenSocket|ConnectionRefused|ConnectionClosed|socket/i.test(fetchErrText)
+
+          // IMPORTANT (2026-07-02): do NOT fold connection errors into the long
+          // in-loop retry. Retrying an unreachable pod up to MAX_RETRIES (~45s)
+          // AND re-resolving the URL each attempt holds an API request slot +
+          // buffers for the whole window; under concurrent cold-start misses
+          // that pileup OOM-killed the 2Gi API pods and Kourier 502'd. Instead
+          // do only a FEW quick retries to ride out a pod that's seconds from
+          // ready, then bail to the retryable-503 path below so the slot frees
+          // immediately and the CLIENT drives the (cheap) backoff+retry.
+          const CONNECTION_RETRY_LIMIT = 3
+          const isTransientError = isConnectionError && attempt <= CONNECTION_RETRY_LIMIT
 
           const isClientAbort = fetchError.name === 'AbortError' && clientSignal?.aborted
           if (isClientAbort) {
@@ -1439,15 +1445,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             continue
           }
 
-          // Retries exhausted on a transient/connection error. The pod is
-          // unreachable because it's still cold-starting, was evicted, or the
-          // node is momentarily at capacity — NOT because the server is broken.
-          // Surface a retryable 503 (client shows "starting…" + retries) rather
-          // than a hard 500 that reads as a permanent failure. This is the
-          // "it shouldn't fail if the warm pool runs out" contract: exhaustion
-          // degrades to a slower, retryable path, never an error.
-          if (isTransientError || isAbortError) {
-            console.warn(`[ProjectChat] Pod unreachable after ${MAX_RETRIES} attempts for ${projectId} (${podUrl}) — returning retryable 503`)
+          // Connection failure that we're no longer retrying (either the quick
+          // connection-retry budget is spent, or it's an abort/timeout). The
+          // pod is unreachable because it's still cold-starting, was evicted, or
+          // the node is momentarily at capacity — NOT because the server is
+          // broken. Bail to a retryable 503 immediately so the API request slot
+          // frees up (avoids the OOM pileup a long in-loop retry caused) and let
+          // the CLIENT drive the backoff+retry. This is the "it shouldn't fail
+          // if the warm pool runs out" contract: exhaustion degrades to a
+          // slower, retryable path, never a hard error.
+          if (isConnectionError || isAbortError) {
+            console.warn(`[ProjectChat] Pod unreachable for ${projectId} (${podUrl}) after ${attempt} attempt(s) — returning retryable 503`)
             chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "pod_unreachable" })
             chatSpan.end()
             return c.json(
