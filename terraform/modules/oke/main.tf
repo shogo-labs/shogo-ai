@@ -260,7 +260,7 @@ locals {
     "EOF",
     "sysctl --system",
     local.node_oke_init_line,
-  ])
+  ]))
 
   # Custom OKE images ship their own bootstrap, so emitting user_data that
   # overrides it caused RegisterTimeOut in the past — hence custom images
