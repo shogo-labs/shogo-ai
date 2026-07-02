@@ -2595,7 +2595,7 @@ app.all('/api/projects/:projectId/preview', async (c) => {
 // Includes retry logic for cold-start scenarios where the pod may be scaling up.
 app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   if (isShuttingDown) {
-    return c.json({ error: { code: 'shutting_down', message: 'Server is shutting down, please retry' } }, 503)
+    return c.json({ error: { code: 'shutting_down', message: 'Server is shutting down, please retry', retryable: true } }, 503)
   }
 
   const projectId = c.req.param('projectId')
@@ -4714,7 +4714,7 @@ app.put('/api/projects/:projectId/heartbeat/sync', async (c) => {
 // POST /api/projects/:projectId/chat - Proxy chat to project pod
 app.post('/api/projects/:projectId/chat', async (c) => {
   if (isShuttingDown) {
-    return c.json({ error: { code: 'shutting_down', message: 'Server is shutting down, please retry' } }, 503)
+    return c.json({ error: { code: 'shutting_down', message: 'Server is shutting down, please retry', retryable: true } }, 503)
   }
 
   const authResult = await requireProjectAuth(c)

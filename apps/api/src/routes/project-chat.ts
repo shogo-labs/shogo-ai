@@ -1370,16 +1370,26 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         } catch (fetchError: any) {
           lastError = fetchError
 
-          // Retry on connection errors (ECONNREFUSED, ECONNRESET, etc.)
+          // Retry on connection errors. Bun's fetch reports connection
+          // failures with hint-style messages ("Unable to connect. Is the
+          // computer able to access the url?", "Was there a typo in the url or
+          // port?") and Bun-specific codes ("ConnectionRefused",
+          // "ConnectionClosed", "FailedToOpenSocket") — NOT the Node ECONN*
+          // codes — and the text often lives on `.cause` rather than `.message`.
+          // Match against the whole error (message + cause + code + name) so a
+          // pod that's still cold-starting / just (re)assigned is treated as a
+          // transient miss and retried, then downgraded to a retryable 503
+          // below — never surfaced as a hard 500.
+          const fetchErrText = [
+            fetchError?.message,
+            fetchError?.cause?.message,
+            fetchError?.code,
+            fetchError?.cause?.code,
+            fetchError?.name,
+            String(fetchError),
+          ].filter(Boolean).join(' ')
           const isTransientError =
-            fetchError.code === 'ECONNREFUSED' ||
-            fetchError.code === 'ECONNRESET' ||
-            fetchError.code === 'ETIMEDOUT' ||
-            fetchError.cause?.code === 'ECONNREFUSED' ||
-            fetchError.cause?.code === 'ECONNRESET' ||
-            fetchError.cause?.code === 'ETIMEDOUT' ||
-            fetchError.message?.includes('connection refused') ||
-            fetchError.message?.includes('ECONNREFUSED')
+            /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|connection refused|connection closed|connection reset|unable to connect|typo in the url|failed to (open|connect)|FailedToOpenSocket|ConnectionRefused|ConnectionClosed|socket/i.test(fetchErrText)
 
           const isClientAbort = fetchError.name === 'AbortError' && clientSignal?.aborted
           if (isClientAbort) {
@@ -1481,16 +1491,24 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // These are transient and retryable — the runtime is (re)starting, not
       // broken — so we MUST NOT return a hard 500 the client treats as
       // permanent. Only genuinely unexpected errors fall through to 500.
-      const code = error?.code || error?.cause?.code
-      const msg = String(error?.message || "")
+      // Match against the whole error (message + cause + code + name), because
+      // Bun connection failures keep their hint text on `.cause`/rendered form
+      // rather than `.message` (see the retry loop above). Covers pod/runtime
+      // connection transients AND Prisma connection-pool backpressure ("Timed
+      // out fetching a new connection from the connection pool", "Can't reach
+      // database server", "too many connections") — all load-shed conditions
+      // the client should retry, not hard 500s.
+      const errHaystack = [
+        error?.message,
+        error?.cause?.message,
+        error?.code,
+        error?.cause?.code,
+        error?.name,
+        String(error),
+      ].filter(Boolean).join(" ")
       const isTransient =
-        code === "ECONNREFUSED" || code === "ECONNRESET" || code === "ETIMEDOUT" ||
         error?.name === "TimeoutError" || error?.name === "AbortError" ||
-        // pod/runtime transients + Prisma connection-pool backpressure
-        // ("Timed out fetching a new connection from the connection pool",
-        // "Can't reach database server", "too many connections") — all are
-        // load-shed conditions the client should retry, not hard 500s.
-        /ECONNREFUSED|ECONNRESET|ETIMEDOUT|connection refused|Unable to connect|FailedToOpenSocket|fetch failed|timeout|timed out|not ready|starting|did not become ready|unavailable|connection pool|reach database|too many connections/i.test(msg)
+        /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|connection refused|connection closed|connection reset|unable to connect|typo in the url|failed to (open|connect)|FailedToOpenSocket|ConnectionRefused|ConnectionClosed|socket|fetch failed|timeout|timed out|not ready|starting|did not become ready|unavailable|connection pool|reach database|too many connections/i.test(errHaystack)
       if (isTransient) {
         return c.json(
           { error: { code: "pod_starting", message: "Project runtime is starting up. Please retry in a few seconds.", retryable: true } },
