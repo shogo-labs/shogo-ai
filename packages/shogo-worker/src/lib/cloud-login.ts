@@ -37,6 +37,7 @@
 import { spawn } from 'node:child_process';
 import { hostname, platform as osPlatform, arch } from 'node:os';
 import pc from 'picocolors';
+import { workerUserAgent } from './user-agent.ts';
 
 export interface CloudLoginResult {
   /** The minted shogo_sk_ key. */
@@ -135,7 +136,7 @@ export async function runCloudLogin(opts: CloudLoginOptions): Promise<CloudLogin
   // 1. Start
   const startRes = await fetchImpl(`${cloudUrl}/api/cli/login/start`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'user-agent': workerUserAgent() },
     body: JSON.stringify({
       deviceId: opts.deviceId,
       deviceName,
@@ -233,7 +234,7 @@ export async function runCloudLogin(opts: CloudLoginOptions): Promise<CloudLogin
         `${cloudUrl}/api/cli/login/poll?state=${encodeURIComponent(start.state)}`,
         {
           method: 'GET',
-          headers: { accept: 'application/json' },
+          headers: { accept: 'application/json', 'user-agent': workerUserAgent() },
           signal: AbortSignal.timeout(10_000),
         },
       ).catch((err) => {
@@ -292,32 +293,12 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-// Build-time injected worker version.
-//
-// Bundlers replace this identifier via `--define '__SHOGO_WORKER_VERSION__="x.y.z"'`
-// (see `apps/desktop/scripts/bundle-main.mjs`). When this module is consumed
-// as an unbundled npm library the identifier is undeclared at runtime, and the
-// `typeof` guard returns `'undefined'` without throwing.
-//
-// Previously this used `new URL('../../package.json', import.meta.url)` to
-// read the worker's own `package.json` at runtime. That works in unbundled
-// ESM but fails catastrophically once the worker is bundled into the
-// desktop's `dist/main.js`: Bun / esbuild inline `import.meta.url` as the
-// source file's `file:///...` URL at build time, which leaks the build
-// host's filesystem layout into shipped artifacts and points at a path that
-// doesn't exist on end-user machines. The same problem affects
-// `require.resolve('@shogo-ai/worker/package.json')` (statically analyzed
-// and inlined to a build-time absolute path). Bundle consumers must pass
-// the version in via `--define`; standalone library consumers fall back
-// to an `unknown` tag, which is purely diagnostic (this function feeds a
-// telemetry User-Agent string, nothing load-bearing).
-declare const __SHOGO_WORKER_VERSION__: string | undefined;
-
+// The build-time injected worker version (`shogo-cli/<version>`) is resolved
+// by the shared `workerUserAgent()` helper — see `./user-agent.ts` for the
+// bundler `--define` mechanism and the standalone-library fallback. It is used
+// here as the `deviceAppVersion` reported to the cloud during device login.
 function readWorkerVersion(): string {
-  if (typeof __SHOGO_WORKER_VERSION__ === 'string' && __SHOGO_WORKER_VERSION__.length > 0) {
-    return `shogo-cli/${__SHOGO_WORKER_VERSION__}`;
-  }
-  return 'shogo-cli/unknown';
+  return workerUserAgent();
 }
 
 function openInBrowser(url: string): Promise<void> {

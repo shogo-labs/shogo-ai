@@ -20,6 +20,7 @@
  * own state. The desktop AGPL copy keeps its module-global form.
  */
 import { hostname as osHostname, platform, arch as osArch } from 'node:os';
+import { workerUserAgent } from './user-agent.ts';
 
 /**
  * Structured reason returned to the cloud (and ultimately to a Studio
@@ -299,6 +300,7 @@ export class WorkerTunnel {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'User-Agent': workerUserAgent(),
         'x-api-key': this.opts.apiKey,
         'x-shogo-kind': this.opts.kind ?? 'cli-worker',
       },
@@ -573,6 +575,7 @@ export class WorkerTunnel {
     const wsInit: TunnelWebSocketInit = {
       headers: {
         Authorization: `Bearer ${this.opts.apiKey}`,
+        'User-Agent': workerUserAgent(),
         'x-shogo-hostname': hn,
         'x-shogo-name': name,
         'x-shogo-os': os,
