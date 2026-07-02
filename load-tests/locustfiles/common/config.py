@@ -33,6 +33,12 @@ class Config:
     # recognises the request and Knative routes it correctly.
     HOST_HEADER = os.getenv("HOST_HEADER", "")
 
+    # Origin header override -- decouples the CSRF/trusted Origin from the
+    # target host. Needed when the routing host (e.g. a Kourier LB / sslip
+    # domain) differs from a server-trusted origin (e.g. studio.staging.shogo.ai).
+    # When unset, the origin is derived from HOST_HEADER or API_BASE_URL.
+    ORIGIN_OVERRIDE = os.getenv("ORIGIN_OVERRIDE", "")
+
     # Per-region user ID range to avoid signup collisions across parallel instances
     USER_ID_MIN = int(os.getenv("USER_ID_MIN", "200000"))
     USER_ID_MAX = int(os.getenv("USER_ID_MAX", "999999"))

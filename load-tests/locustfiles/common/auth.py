@@ -24,7 +24,9 @@ class AuthManager:
     
     def __init__(self, api_base_url: str = None):
         self.api_base_url = api_base_url or config.API_BASE_URL
-        if config.HOST_HEADER:
+        if config.ORIGIN_OVERRIDE:
+            self._origin = config.ORIGIN_OVERRIDE.rstrip("/")
+        elif config.HOST_HEADER:
             self._origin = f"https://{config.HOST_HEADER}"
         else:
             self._origin = self._derive_origin(self.api_base_url)
