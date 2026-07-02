@@ -25,8 +25,10 @@
  * Fail behavior: by default we fail *open* (handle locally) when the home
  * region's peer is unconfigured, to avoid 502-ing users on misconfig. For
  * money-sensitive writes (`FAIL_CLOSED_PREFIXES` — billing / usage / license
- * redemption) we fail *closed* with a 503 instead, because a wrong-region write
- * to a counter/balance is worse than a transient failure.
+ * redemption) and region-affine chat writes (`isAffineChatPath`) we fail
+ * *closed* with a 503 instead: a wrong-region write to a counter/balance is
+ * worse than a transient failure, and a wrong-region chat turn strands its
+ * in-memory stream buffer (the client can never resume it).
  *
  * Must be registered AFTER `requireProjectAccess` so project routes have already
  * cached `c.get('workspaceId')` (cheap resolve) and access is verified first.
@@ -102,6 +104,23 @@ function isFailClosed(path: string): boolean {
   )
 }
 
+/**
+ * Region-affine chat surfaces. A chat turn's stream buffer lives in process
+ * memory in exactly one region, and a mutating chat request (start turn via
+ * `POST .../chat`, or `POST .../chat/stop`) served in the wrong region creates
+ * / targets a buffer the client can never resume from. So — like money writes
+ * — we fail *closed* (retryable 503) in enforce mode when the owning region is
+ * unreachable, letting the P0-hardened client retry into the correct region
+ * rather than silently starting a bufferless turn locally.
+ *
+ * Chat GET reads (`.../chat/:id/stream`, `.../chat/:id/turn`) are non-mutating
+ * and never reach this router (skipped at the MUTATING_METHODS guard); they are
+ * pinned separately by `apps/api/src/lib/chat-region-pin.ts`.
+ */
+function isAffineChatPath(path: string): boolean {
+  return /^\/api\/(projects|workspaces)\/[^/]+\/chat(\/|$)/.test(path)
+}
+
 type OwnerKind = 'workspace' | 'platform' | 'identity'
 
 interface OwnerDecision {
@@ -174,7 +193,10 @@ export async function homeRegionWriteProxy(c: Context, next: Next) {
   const path = new URL(c.req.url).pathname
   if (SKIP_PREFIXES.some((p) => path.startsWith(p))) return next()
 
-  const failClosed = isFailClosed(path)
+  // Money-sensitive writes and region-affine chat writes both fail closed:
+  // serving them in the wrong region corrupts data (money) or strands the
+  // stream buffer (chat). Everything else falls open to local on misconfig.
+  const failClosed = isFailClosed(path) || isAffineChatPath(path)
 
   let decision: OwnerDecision | null
   try {

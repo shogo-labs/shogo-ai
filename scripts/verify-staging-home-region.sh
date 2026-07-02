@@ -7,11 +7,13 @@
 #
 #   1. The add_user_home_region migration applied; homeRegion columns + indexes
 #      exist on users and workspaces.
-#   2. The API is deployed with HOME_REGION_ROUTING=shadow and is healthy.
+#   2. The API is deployed with HOME_REGION_ROUTING configured (shadow OR
+#      enforce — staging is now enforce) and is healthy.
 #   3. homeRegion is stamped on create: a fresh signup gets users.homeRegion =
 #      'staging' (proves the auth additionalField + create hook work end to end).
-#   4. The router is inert/safe: it emits "would-proxy" logs (if any) but never
-#      actually proxies (no peer) — normal traffic is unaffected.
+#   4. The router is inert/safe: because staging has no REGION_PEERS it never
+#      actually proxies (every write resolves local), even in enforce — so
+#      normal traffic is unaffected. This is the key single-region invariant.
 #
 # Config (env overrides):
 #   NS         k8s namespace          (default: shogo-staging-system)
@@ -73,7 +75,13 @@ if [ -z "$ROUTING" ]; then
   # Fall back to deployment if not a Knative service.
   ROUTING=$("${KC[@]}" get deploy -n "$NS" -l serving.knative.dev/service=api -o jsonpath='{range .items[*].spec.template.spec.containers[*]}{range .env[?(@.name=="HOME_REGION_ROUTING")]}{.value}{end}{end}' 2>/dev/null | clean)
 fi
-[ "$ROUTING" = "shadow" ] && pass "HOME_REGION_ROUTING=shadow" || fail "HOME_REGION_ROUTING is '${ROUTING:-<unset>}' (expected shadow)"
+# Accept either configured mode: staging is now "enforce" (single-region, so
+# it still never proxies — see check 4), but "shadow" is also valid pre-flip.
+if [ "$ROUTING" = "enforce" ] || [ "$ROUTING" = "shadow" ]; then
+  pass "HOME_REGION_ROUTING=$ROUTING (configured)"
+else
+  fail "HOME_REGION_ROUTING is '${ROUTING:-<unset>}' (expected shadow or enforce)"
+fi
 
 HTTP=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 "$API/api/health" 2>/dev/null) || HTTP="000"
 [ "$HTTP" = "200" ] && pass "$API/api/health -> 200" || fail "$API/api/health -> $HTTP"
