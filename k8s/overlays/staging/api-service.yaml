@@ -648,6 +648,14 @@ spec:
             requests:
               memory: "256Mi"
               cpu: "100m"
+            # Limit raised 2Gi -> 4Gi (2026-07-02). Under a 40-user cold-start burst
+            # the API buffers many concurrent proxied chat streams + per-request
+            # cold-start resolution state; at 2Gi peak pods OOMKilled (Kourier then
+            # 502'd mid-stream). The connection-retry cap (364a77d0) shrank the
+            # pileup but didn't fully clear the ceiling, so give the burst real
+            # headroom. Request stays 256Mi on purpose: the API tier is deliberately
+            # overcommitted (statistical multiplexing) and the node-level kubelet
+            # eviction + PriorityClasses make that overcommit safe.
             limits:
-              memory: "2Gi"
+              memory: "4Gi"
               cpu: "1"
