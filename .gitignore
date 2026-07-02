@@ -242,3 +242,5 @@ apps/mobile/dist.stale-*/
 apps/desktop/scripts/build-vm-image/.work/aarch64/
 
 apps/desktop/scripts/build-vm-image/output/aarch64/
+
+load-tests/.venv*
