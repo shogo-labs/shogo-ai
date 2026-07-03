@@ -1,0 +1,196 @@
+# CronJob: logical-replication conflict watchdog (self-heal).
+#
+# Productionized form of prod-investigation/recovery/recon/91_conflict_watchdog.sh.
+# For any LOCAL subscription that has auto-disabled (subenabled=false, the
+# subdisableonerr=t safety), it finds the latest fatal conflict LSN for that
+# subscription's replication origin in the local Postgres log, SKIPs that one
+# transaction (keep-local semantics), and re-enables the subscription. This
+# drains the occasional active-active collision that escapes single-writer
+# routing without a human, keeping the mesh up.
+#
+# SAFETY (a skip is a data-loss event — it drops one remote transaction):
+#   * Only the KNOWN-SAFE conflict classes are skipped:
+#     insert_exists / update_exists / multiple_unique_conflicts. Any other
+#     disable reason is NOT skipped — the job exits non-zero so the
+#     ReplicationMonitorFailing / job-failed alert pages a human.
+#   * SKIP_BUDGET caps skips per run. Hitting the budget (a conflict storm or a
+#     genuine bug producing endless distinct conflicts) stops auto-skipping and
+#     exits non-zero to page — so "auto-skip" can never silently become
+#     "auto-lose-unbounded-data".
+#   * Every skip prints a `WATCHDOG_SKIP` line (subname / relation / lsn) for
+#     the skip-review alert. Skips must be reviewed, not fire-and-forget.
+#
+# Deploy once per region (US/EU/India). It only ever touches LOCAL subscriptions
+# on the local primary — no cross-region access.
+#
+# Runs every 5 min, interleaved with replication-monitor (which detects; this
+# heals). Needs RBAC to read pod logs + exec psql on the local platform-pg
+# primary (see ServiceAccount/Role/RoleBinding below).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: conflict-watchdog
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: conflict-watchdog
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: conflict-watchdog
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: conflict-watchdog
+rules:
+  # Find the primary pod.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # Read the conflict LSN from the primary's Postgres log.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Run psql (SKIP + ENABLE) inside the primary pod.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: conflict-watchdog
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: conflict-watchdog
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: conflict-watchdog
+subjects:
+  - kind: ServiceAccount
+    name: conflict-watchdog
+    namespace: shogo-production-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: conflict-watchdog
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: conflict-watchdog
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 240
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: conflict-watchdog
+          containers:
+            - name: watchdog
+              # kubectl + jq + bash. Fully-qualified (nodes enforce short-name
+              # mode). Pin to the cluster's k8s minor; kubectl skew of +/-1
+              # minor is supported.
+              image: docker.io/alpine/k8s:1.29.1
+              env:
+                - name: NS
+                  value: shogo-production-system
+                - name: CLUSTER
+                  value: platform-pg
+                - name: SKIP_BUDGET
+                  value: "25"
+                - name: LOG_WINDOW
+                  value: "15m"
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  echo "=== Conflict Watchdog — $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+                  EXIT_RC=0
+                  SKIPS=0
+
+                  PRIMARY=$(kubectl get pods -n "$NS" \
+                    -l "cnpg.io/cluster=${CLUSTER},cnpg.io/instanceRole=primary" \
+                    -o jsonpath='{.items[0].metadata.name}')
+                  if [ -z "$PRIMARY" ]; then
+                    echo "CRITICAL: no primary pod found for cluster $CLUSTER"
+                    exit 1
+                  fi
+                  echo "primary: $PRIMARY"
+
+                  psql_primary() {
+                    kubectl exec -n "$NS" "$PRIMARY" -c postgres -- \
+                      psql -U postgres -d shogo -X -tAF'|' "$@"
+                  }
+
+                  # Disabled local subscriptions + their replication-origin name.
+                  DISABLED=$(psql_primary -c \
+                    "SELECT subname, 'pg_'||oid FROM pg_subscription WHERE NOT subenabled ORDER BY subname;")
+
+                  if [ -z "$DISABLED" ]; then
+                    echo "all local subscriptions enabled — nothing to do"
+                    exit 0
+                  fi
+
+                  while IFS='|' read -r SUB ORIGIN; do
+                    [ -z "${SUB:-}" ] && continue
+                    echo "--- disabled sub: $SUB (origin $ORIGIN) ---"
+
+                    # Latest fatal, known-safe conflict LSN for this origin.
+                    LINE=$(kubectl logs -n "$NS" "$PRIMARY" -c postgres --since="$LOG_WINDOW" 2>/dev/null \
+                      | grep -F 'conflict detected' \
+                      | jq -rc --arg o "$ORIGIN" '
+                          .record as $r
+                          | select(($r.message // "") | test("conflict detected"))
+                          | select(($r.message // "") | test("insert_exists|update_exists|multiple_unique_conflicts"))
+                          | select(($r.context // "") | test("\"" + $o + "\""))
+                          | (($r.context // "") | capture("finished at (?<l>[0-9A-F]+/[0-9A-F]+)").l) as $lsn
+                          | (($r.message // "") | (capture("relation \"(?<t>[^\"]+)\"").t) // "?") as $rel
+                          | "\($lsn)|\($rel)"
+                        ' 2>/dev/null | tail -1)
+
+                    LSN=${LINE%%|*}
+                    REL=${LINE#*|}
+
+                    if [ -z "$LSN" ]; then
+                      # Disabled, but no known-safe conflict in the window. Do NOT
+                      # blind-skip an unknown cause. Try a plain re-enable (covers
+                      # transient disables); if it stays down the monitor pages.
+                      echo "no known-safe conflict for $SUB in $LOG_WINDOW; re-enabling (no skip)"
+                      psql_primary -c "ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null || true
+                      echo "CRITICAL: $SUB was disabled with no known-safe conflict — review required"
+                      EXIT_RC=1
+                      continue
+                    fi
+
+                    if [ "$SKIPS" -ge "$SKIP_BUDGET" ]; then
+                      echo "CRITICAL: skip budget ($SKIP_BUDGET) exhausted this run; $SUB still disabled at $REL @ $LSN"
+                      echo "Not skipping further — conflict storm or a real bug. Paging."
+                      EXIT_RC=1
+                      continue
+                    fi
+
+                    echo "WATCHDOG_SKIP sub=$SUB relation=$REL lsn=$LSN"
+                    psql_primary -c \
+                      "ALTER SUBSCRIPTION $SUB SKIP (lsn='$LSN'); ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null
+                    SKIPS=$((SKIPS+1))
+                  done <<< "$DISABLED"
+
+                  echo "=== Watchdog complete (skips=$SKIPS exit=$EXIT_RC) ==="
+                  exit "$EXIT_RC"
+              resources:
+                requests:
+                  memory: "96Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "192Mi"
+                  cpu: "200m"

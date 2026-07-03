@@ -56,6 +56,28 @@ import { resolve } from 'node:path'
 const REGIONS = ['us', 'eu', 'india'] as const
 const REPO_ROOT = resolve(import.meta.dir, '..')
 
+/**
+ * Tables that are DELIBERATELY excluded from the live `shogo_all_pub`
+ * publication despite the CR declaring `tablesInSchema: public`.
+ *
+ * These are region-local additive counters (running USD / byte totals) that
+ * corrupt under logical replication's last_update_wins and poison-pill the
+ * apply worker via their `workspaceId` unique index. They are region-local
+ * until the single-writer work lands and they rejoin the mesh — see
+ * `docs/runbooks/usage-wallet-single-writer-plan.md`.
+ *
+ * IMPORTANT DRIFT NOTE: a `FOR TABLES IN SCHEMA public` publication cannot
+ * exclude individual tables (`ALTER PUBLICATION ... DROP TABLE` is unsupported
+ * on schema-level pubs). To exclude these two, the LIVE publication was hand-
+ * converted to `puballtables=false` (a hand-list), so the live DB drifts from
+ * this CR. If the Publication CR is ever re-reconciled by CNPG it will recreate
+ * `shogo_all_pub` as FOR-ALL-TABLES and re-add these two, reintroducing the
+ * poison pills. `replication-monitor.yaml` has an inverse guard (READDED) that
+ * pages if that happens. Keep this list in sync with the monitor's
+ * EXCLUDED_TABLES.
+ */
+export const INTENTIONALLY_UNPUBLISHED = ['storage_usage', 'usage_wallets'] as const
+
 interface Violation {
   file: string
   message: string
