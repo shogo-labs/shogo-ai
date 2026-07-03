@@ -23,7 +23,7 @@
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
-interface LogEntry {
+export interface LogEntry {
   level: LogLevel
   msg: string
   service: string
@@ -65,6 +65,27 @@ export interface Logger {
   child(extra: Record<string, unknown>): Logger
 }
 
+/**
+ * Optional sink that forwards every emitted log entry to an external
+ * destination (e.g. an OpenTelemetry `LoggerProvider` for OTLP export to
+ * SigNoz). Kept as a plain callback so this module has ZERO OpenTelemetry
+ * dependency — `instrumentation.ts` installs the sink only when OTEL is
+ * configured, and userland consumers that just want a console logger are
+ * unaffected. See `setOtelLogSink`.
+ */
+export type LogSink = (entry: LogEntry) => void
+
+let logSink: LogSink | null = null
+
+/**
+ * Register (or clear, with `null`) a sink invoked for every log entry after
+ * it is written to the console. Errors thrown by the sink are swallowed —
+ * telemetry must never break application logging.
+ */
+export function setOtelLogSink(sink: LogSink | null): void {
+  logSink = sink
+}
+
 export function createLogger(service: string, defaultExtra?: Record<string, unknown>): Logger {
   function log(level: LogLevel, msg: string, extra?: Record<string, unknown>): void {
     if (!shouldLog(level)) return
@@ -90,6 +111,16 @@ export function createLogger(service: string, defaultExtra?: Record<string, unkn
       default:
         console.log(formatted)
         break
+    }
+
+    // Forward the structured entry to the OTEL log sink (if configured) so it
+    // reaches SigNoz on /v1/logs, correlated with the active span.
+    if (logSink) {
+      try {
+        logSink(entry)
+      } catch {
+        // best-effort: never let telemetry break logging
+      }
     }
   }
 
