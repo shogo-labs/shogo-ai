@@ -29,11 +29,22 @@
  */
 
 import { diag, DiagConsoleLogger, DiagLogLevel, trace, SpanStatusCode, type Span } from '@opentelemetry/api'
+import { logs, SeverityNumber } from '@opentelemetry/api-logs'
 import { NodeSDK } from '@opentelemetry/sdk-node'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http'
 import { BatchSpanProcessor, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
+import { BatchLogRecordProcessor, SimpleLogRecordProcessor, type LogRecordProcessor } from '@opentelemetry/sdk-logs'
 import { resourceFromAttributes } from '@opentelemetry/resources'
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions'
+import { setOtelLogSink, type LogLevel } from './logger'
+
+const SEVERITY_BY_LEVEL: Record<LogLevel, { number: SeverityNumber; text: string }> = {
+  debug: { number: SeverityNumber.DEBUG, text: 'DEBUG' },
+  info: { number: SeverityNumber.INFO, text: 'INFO' },
+  warn: { number: SeverityNumber.WARN, text: 'WARN' },
+  error: { number: SeverityNumber.ERROR, text: 'ERROR' },
+}
 
 let sdk: NodeSDK | null = null
 
@@ -99,6 +110,30 @@ export function initInstrumentation(config: InstrumentationConfig): void {
       })
     : new SimpleSpanProcessor(traceExporter)
 
+  // Logs: export structured log records (emitted via `createLogger`) to the
+  // same OTLP endpoint on /v1/logs, correlated with the active span. Batched
+  // in prod so exports stay off the hot path; eager in dev for visibility.
+  let logRecordProcessors: LogRecordProcessor[] = []
+  try {
+    const logExporter = new OTLPLogExporter({
+      url: `${endpoint}/v1/logs`,
+      headers,
+      timeoutMillis: exportTimeoutMs,
+    })
+    logRecordProcessors = [
+      isProduction
+        ? new BatchLogRecordProcessor(logExporter, {
+            maxQueueSize: 2048,
+            maxExportBatchSize: 512,
+            scheduledDelayMillis: 5000,
+            exportTimeoutMillis: exportTimeoutMs,
+          })
+        : new SimpleLogRecordProcessor(logExporter),
+    ]
+  } catch (err: any) {
+    console.warn(`[OTEL] Failed to create log exporter for ${serviceName}: ${err.message}`)
+  }
+
   sdk = new NodeSDK({
     resource: resourceFromAttributes({
       [ATTR_SERVICE_NAME]: serviceName,
@@ -106,6 +141,7 @@ export function initInstrumentation(config: InstrumentationConfig): void {
       'deployment.environment.name': process.env.NODE_ENV || 'development',
     }),
     spanProcessors: [spanProcessor],
+    logRecordProcessors,
     instrumentations: [],
   })
 
@@ -116,6 +152,24 @@ export function initInstrumentation(config: InstrumentationConfig): void {
     console.error(`[OTEL] SDK failed to start: ${err.message}`)
     sdk = null
     return
+  }
+
+  // Route `createLogger` output through the OTEL LoggerProvider that NodeSDK
+  // registered globally, so runtime-service logs land in SigNoz correlated
+  // with traces. No-op if the log exporter above failed to initialize.
+  if (logRecordProcessors.length > 0) {
+    const otelLogger = logs.getLogger(serviceName)
+    setOtelLogSink((entry) => {
+      const { level, msg, service, timestamp, ...attrs } = entry
+      const severity = SEVERITY_BY_LEVEL[level] ?? SEVERITY_BY_LEVEL.info
+      otelLogger.emit({
+        severityNumber: severity.number,
+        severityText: severity.text,
+        body: msg,
+        attributes: { service, ...attrs },
+      })
+    })
+    console.log(`[OTEL] Logs exporter enabled for ${serviceName} → ${endpoint}/v1/logs`)
   }
 
   // Emit a startup verification span so devs can quickly confirm the
@@ -142,6 +196,8 @@ export function initInstrumentation(config: InstrumentationConfig): void {
 
 export async function shutdownInstrumentation(): Promise<void> {
   if (!sdk) return
+  // Stop forwarding logs before the provider shuts down.
+  setOtelLogSink(null)
   // Never let a hung flush block process shutdown — race the SDK's final
   // export against a short deadline so exit is bounded even if the collector
   // is unreachable. Errors are swallowed (telemetry is best-effort and must
