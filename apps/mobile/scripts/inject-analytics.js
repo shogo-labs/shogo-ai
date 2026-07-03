@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Injects analytics scripts (GA4, FB Pixel, Rewardful) into the exported
-// index.html. Runs as a post-export build step because Expo's "single" output
-// mode strips <script> tags from +html.tsx during export.
+// Injects analytics scripts (GA4, FB Pixel, Rewardful) and web shell
+// attributes into the exported index.html. Runs as a post-export build step
+// because Expo's "single" output mode strips some +html.tsx customizations.
 
 const fs = require('fs')
 const path = require('path')
@@ -9,6 +9,7 @@ const path = require('path')
 const HTML_PATH = path.resolve(__dirname, '..', 'dist', 'index.html')
 const GA4_ID = process.env.EXPO_PUBLIC_GA4_ID || ''
 const FB_PIXEL_ID = process.env.EXPO_PUBLIC_FB_PIXEL_ID || ''
+const GOOGLE_NOTRANSLATE_META = '<meta name="google" content="notranslate">'
 
 let snippets = ''
 
@@ -30,12 +31,32 @@ if (FB_PIXEL_ID) {
   console.log(`[inject-analytics] FB Pixel ${FB_PIXEL_ID} injected`)
 }
 
-if (!snippets) {
-  console.log('[inject-analytics] No analytics configured, skipping')
-  process.exit(0)
+let html = fs.readFileSync(HTML_PATH, 'utf8')
+
+html = html.replace(/<html([^>]*)>/, (_tag, attrs) => {
+  let nextAttrs = attrs
+  if (!/\btranslate=/.test(nextAttrs)) nextAttrs += ' translate="no"'
+  if (/\bclass=/.test(nextAttrs)) {
+    nextAttrs = nextAttrs.replace(/class="([^"]*)"/, (_match, classes) => {
+      const nextClasses = new Set(classes.split(/\s+/).filter(Boolean))
+      nextClasses.add('notranslate')
+      return `class="${Array.from(nextClasses).join(' ')}"`
+    })
+  } else {
+    nextAttrs += ' class="notranslate"'
+  }
+  return `<html${nextAttrs}>`
+})
+
+if (!html.includes('name="google" content="notranslate"')) {
+  html = html.replace('</head>', `${GOOGLE_NOTRANSLATE_META}</head>`)
 }
 
-let html = fs.readFileSync(HTML_PATH, 'utf8')
-html = html.replace('</head>', snippets + '</head>')
+if (snippets) {
+  html = html.replace('</head>', snippets + '</head>')
+} else {
+  console.log('[inject-analytics] No analytics configured, only injected shell guards')
+}
+
 fs.writeFileSync(HTML_PATH, html)
 console.log(`[inject-analytics] Done — wrote ${HTML_PATH}`)
