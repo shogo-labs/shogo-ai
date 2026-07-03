@@ -777,9 +777,9 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
     const p = form.provider
     if (!isDiscoveryProvider(p)) return
     if (KEY_GATED_DISCOVERY.has(p) && !keyState[p]?.configured) return
-    if (discovered[p] || discoveryLoading[p]) return
+    if (discovered[p] || discoveryLoading[p] || discoveryError[p]) return
     loadDiscovery(p)
-  }, [showForm, editingId, form.provider, keyState, discovered, discoveryLoading, loadDiscovery])
+  }, [showForm, editingId, form.provider, keyState, discovered, discoveryLoading, discoveryError, loadDiscovery])
 
   const applyDiscovered = useCallback((m: DiscoveredModel) => {
     setForm((f) => ({
