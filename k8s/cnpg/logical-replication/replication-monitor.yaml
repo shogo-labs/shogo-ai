@@ -67,6 +67,15 @@ spec:
 
                   EXIT_RC=0
 
+                  # Tables intentionally NOT in shogo_all_pub: region-local
+                  # additive counters (running USD / byte totals) that corrupt
+                  # under last_update_wins and poison-pill the apply worker on
+                  # their workspaceId unique index. They are region-local until
+                  # the single-writer work lands and they rejoin the mesh — see
+                  # docs/runbooks/usage-wallet-single-writer-plan.md. Keep this
+                  # list in sync with scripts/check-publication-drift.ts.
+                  EXCLUDED_TABLES="'storage_usage','usage_wallets'"
+
                   echo "--- Subscription Status ---"
                   psql -X -t -A -F'|' -c "
                     SELECT subname,
@@ -100,30 +109,37 @@ spec:
                     ORDER BY subname;
                   " 2>/dev/null || echo "(pg_stat_subscription_stats not available)"
 
-                  # An apply error pins the slot and stalls every later
-                  # transaction in the WAL behind the bad one. Operators
-                  # need a page within the polling interval, not 15 hours
-                  # later (incident 2026-05-26).
-                  APPLY_ERRORS=$(psql -X -t -A -c "
+                  # NOTE: apply_error_count / sync_error_count are CUMULATIVE
+                  # counters since the last pg_stat_reset_subscription_stats.
+                  # They do NOT reset when a conflict is resolved, so after any
+                  # incident (e.g. the 2026-06/07 mesh recovery left US at
+                  # eu=324 / india=70) they stay > 0 forever. Gating a page on
+                  # `apply_error_count > 0` would therefore fire permanently.
+                  # We report them for context only; the actionable, non-
+                  # cumulative signal is a subscription that is CURRENTLY
+                  # disabled (an apply error with subdisableonerr=t disables the
+                  # sub → pid IS NULL, caught by both the STOPPED check above and
+                  # the DISABLED check below).
+                  DISABLED=$(psql -X -t -A -c "
                     SELECT count(*)
-                    FROM pg_stat_subscription_stats
-                    WHERE subname LIKE 'sub_from_%'
-                      AND apply_error_count > 0;
-                  " 2>/dev/null || echo "0")
+                    FROM pg_subscription
+                    WHERE subname LIKE 'sub_from_%' AND NOT subenabled;
+                  ")
 
-                  if [ "$APPLY_ERRORS" -gt 0 ]; then
-                    echo "CRITICAL: $APPLY_ERRORS subscription(s) have apply_error_count > 0!"
+                  if [ "$DISABLED" -gt 0 ]; then
+                    echo "CRITICAL: $DISABLED subscription(s) are DISABLED!"
                     psql -X -t -A -F'|' -c "
-                      SELECT subname, apply_error_count, sync_error_count
-                      FROM pg_stat_subscription_stats
-                      WHERE subname LIKE 'sub_from_%'
-                        AND (apply_error_count > 0 OR sync_error_count > 0)
+                      SELECT subname, subenabled, subdisableonerr
+                      FROM pg_subscription
+                      WHERE subname LIKE 'sub_from_%' AND NOT subenabled
                       ORDER BY subname;
-                    " 2>/dev/null || true
-                    echo "Check the publisher's pg log for the LSN, then:"
-                    echo "  ALTER SUBSCRIPTION <sub> SKIP (lsn = '<X/Y>');"
+                    "
+                    echo "A disabled sub is usually a poison-pill conflict. Check the"
+                    echo "publisher's pg log for the LSN, then:"
+                    echo "  ALTER SUBSCRIPTION <sub> SKIP (lsn = '<X/Y>'); ALTER SUBSCRIPTION <sub> ENABLE;"
                     echo "or fix the underlying duplicate row. See"
-                    echo "k8s/cnpg/logical-replication/RUNBOOK.md step 9."
+                    echo "k8s/cnpg/logical-replication/RUNBOOK.md step 9. The conflict"
+                    echo "watchdog (recon/91_conflict_watchdog.sh) automates safe skips."
                     EXIT_RC=1
                   fi
 
@@ -174,11 +190,14 @@ spec:
                   fi
 
                   echo "--- Publication Completeness ---"
-                  # With `tablesInSchema: public` (see platform-publication.yaml)
-                  # this should always be 0 — Postgres auto-includes new tables.
-                  # Non-zero means someone reverted the publication to a
-                  # hand-listed `objects[].table` set; the CI guard
-                  # `bun run check:publication` should have prevented that.
+                  # Every public table (except _prisma% and the intentionally
+                  # region-local EXCLUDED_TABLES) must be in shogo_all_pub. The
+                  # CR declares `tablesInSchema: public` (auto-include), but the
+                  # LIVE publication is currently a hand-list (puballtables=f)
+                  # that omits the EXCLUDED_TABLES — a deliberate deviation, not
+                  # the #501 stale-hand-list bug. A non-zero count here means a
+                  # table other than the known exclusions fell out of the
+                  # publication.
                   UNPUBLISHED=$(psql -X -t -A -c "
                     SELECT count(*)
                     FROM pg_tables t
@@ -188,6 +207,7 @@ spec:
                       AND pt.pubname = 'shogo_all_pub'
                     WHERE t.schemaname = 'public'
                       AND t.tablename NOT LIKE '_prisma%'
+                      AND t.tablename NOT IN (${EXCLUDED_TABLES})
                       AND pt.tablename IS NULL;
                   ")
 
@@ -202,9 +222,30 @@ spec:
                         AND pt.pubname = 'shogo_all_pub'
                       WHERE t.schemaname = 'public'
                         AND t.tablename NOT LIKE '_prisma%'
+                        AND t.tablename NOT IN (${EXCLUDED_TABLES})
                         AND pt.tablename IS NULL
                       ORDER BY t.tablename;
                     "
+                    EXIT_RC=1
+                  fi
+
+                  # Inverse guard: if an EXCLUDED_TABLE ever REappears in the
+                  # publication (e.g. the Publication CR got re-reconciled to
+                  # FOR TABLES IN SCHEMA public and re-added them), that will
+                  # reintroduce the additive-counter poison pills. Page on it.
+                  READDED=$(psql -X -t -A -c "
+                    SELECT count(*)
+                    FROM pg_publication_tables
+                    WHERE pubname = 'shogo_all_pub'
+                      AND tablename IN (${EXCLUDED_TABLES});
+                  ")
+
+                  if [ "$READDED" -gt 0 ]; then
+                    echo "CRITICAL: $READDED region-local table(s) were re-added to the publication!"
+                    echo "storage_usage / usage_wallets must stay region-local until the"
+                    echo "single-writer work lands. Re-exclude them and check whether the"
+                    echo "Publication CR re-reconciled. See"
+                    echo "docs/runbooks/usage-wallet-single-writer-plan.md."
                     EXIT_RC=1
                   fi
 

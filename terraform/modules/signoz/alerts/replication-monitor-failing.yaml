@@ -1,0 +1,85 @@
+# SigNoz alert: cross-region replication monitor failing / not reporting
+#
+# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
+# SigNoz HTTP API (POST /api/v1/rules with this body). These YAMLs are the
+# source of truth for the alert definitions but are NOT applied by
+# `terraform apply` — importing is a manual step (same as the other files in
+# this directory).
+#
+# Why: `k8s/cnpg/logical-replication/replication-monitor.yaml` is a per-region
+# CronJob (every 5 min) that exits NON-ZERO on any replication-health failure
+# class — stopped apply worker, disabled subscription, inactive/bloated slot,
+# unpublished table, stale subscription, or a missing _prisma_migrations
+# REPLICA trigger. It correctly turns the K8s Job red on those conditions.
+#
+# BUT until this alert existed, nothing paged on that red Job. The deploy.yml
+# and warm-pool-monitor comments referred to "the existing kube_job_status_failed
+# alert" that was never actually created, so during the 2026-06/07 mesh incident
+# the replication-monitor Jobs sat in `Failed` for 8 days / 35h / 23h across the
+# three regions without paging anyone — the exact "ran 15 hours undetected"
+# failure the monitor was built to prevent (incident 2026-05-26).
+#
+# Signal: page when a region's replication-monitor CronJob has had no SUCCESSFUL
+# completion for 3 polling intervals (15 min). This catches (a) the Job failing
+# repeatedly, (b) the Job not being scheduled at all, and (c) a stuck Job — and
+# it auto-clears the moment a green run lands, unlike alerting on
+# kube_job_status_failed (whose failed Jobs linger under failedJobsHistoryLimit
+# and would leave the alert stuck firing after recovery).
+
+alert: ReplicationMonitorFailing
+ruleType: threshold_rule
+condition:
+  compositeQuery:
+    queryType: promql
+    promQueries:
+      A:
+        query: |
+          min by (cluster) (
+            time()
+            - kube_cronjob_status_last_successful_time{
+                namespace="shogo-production-system",
+                cronjob="replication-monitor"
+              }
+          )
+        legend: "{{cluster}}"
+        disabled: false
+  op: ">"
+  target: 900 # 15m = 3 missed 5-minute intervals
+  matchType: "1" # at-least-once-during
+  selectedQuery: A
+evalWindow: "5m0s"
+frequency: "1m0s"
+labels:
+  severity: critical
+  team: platform
+  incident_class: logical_replication
+annotations:
+  summary: "replication-monitor has not succeeded in 15+ min (a region's mesh may be broken)"
+  description: |
+    A region's cross-region replication-monitor CronJob has not had a
+    successful run in 15+ minutes. The monitor fails (exits non-zero) on any
+    of: a subscription apply worker stopped, an inactive/bloated replication
+    slot, a public table missing from the publication, a subscription trailing
+    the local publication (missing REFRESH), or the _prisma_migrations REPLICA
+    trigger being absent. A failing/absent monitor means one of those is
+    happening OR the monitor itself isn't running — either way the mesh is
+    unobserved.
+
+    Triage:
+    1. Find the failing region + read the last run:
+       kubectl get jobs -n shogo-production-system | grep replication-monitor
+       kubectl logs -n shogo-production-system job/<newest replication-monitor job>
+    2. The log names the exact failing class (STOPPED sub, inactive slot,
+       >100MB WAL lag, unpublished table, stale sub, missing prisma trigger).
+    3. Check every region's subscriptions:
+       kubectl exec -n shogo-production-system <platform-pg pod> -c postgres -- \
+         psql -U postgres -d shogo -c \
+         "SELECT subname, subenabled FROM pg_subscription ORDER BY subname;"
+    4. For a disabled sub / poison-pill conflict, follow
+       k8s/cnpg/logical-replication/RUNBOOK.md step 9 (skip the LSN or fix the
+       duplicate row). The conflict watchdog
+       (prod-investigation/recovery/recon/91_conflict_watchdog.sh) automates the
+       known-safe skips.
+
+    Runbook: k8s/cnpg/logical-replication/RUNBOOK.md
+    Plan: docs/runbooks/mesh-durably-healthy-plan.md

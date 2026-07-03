@@ -1735,6 +1735,21 @@ jobs:
           fi
           echo "✓ skip_replicated_migrations_trg is REPLICA-mode on US"
 
+      # Re-assert the region-local exclusion of storage_usage + usage_wallets
+      # from shogo_all_pub BEFORE refreshing subscribers. The CR above declares
+      # `FOR TABLES IN SCHEMA public` (which cannot exclude tables); these two
+      # are 🔴 additive counters that poison-pill the mesh, so they are kept
+      # region-local until the single-writer work lands. This step is idempotent
+      # and FAILS LOUD if CNPG ever reconciled the pub to a schema-level
+      # publication (which would re-add them). See the SQL header and
+      # docs/runbooks/usage-wallet-single-writer-plan.md.
+      - name: Re-assert region-local publication exclusion
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+            < k8s/cnpg/logical-replication/exclude-region-local-tables.sql \
+            || { echo "::error::region-local publication exclusion failed on US"; exit 1; }
+
       - name: Refresh logical replication subscriptions
         run: |
           for SUB in sub_from_eu sub_from_india; do
@@ -2165,6 +2180,14 @@ jobs:
             exit 1
           fi
           echo "✓ skip_replicated_migrations_trg is REPLICA-mode on EU"
+
+      # Re-assert the region-local exclusion (see the US job for full rationale).
+      - name: Re-assert region-local publication exclusion
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+            < k8s/cnpg/logical-replication/exclude-region-local-tables.sql \
+            || { echo "::error::region-local publication exclusion failed on EU"; exit 1; }
 
       - name: Refresh logical replication subscriptions
         run: |
@@ -2746,6 +2769,14 @@ jobs:
             exit 1
           fi
           echo "✓ skip_replicated_migrations_trg is REPLICA-mode on India"
+
+      # Re-assert the region-local exclusion (see the US job for full rationale).
+      - name: Re-assert region-local publication exclusion
+        run: |
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+            < k8s/cnpg/logical-replication/exclude-region-local-tables.sql \
+            || { echo "::error::region-local publication exclusion failed on India"; exit 1; }
 
       - name: Refresh logical replication subscriptions
         run: |
