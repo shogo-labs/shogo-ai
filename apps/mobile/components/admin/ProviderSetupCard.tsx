@@ -26,13 +26,20 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi } from '@shogo-ai/sdk'
 import { invalidateVisibleModelsCache } from '../../lib/visible-models'
+import {
+  getProvidersNeedingModelDiscovery,
+  type ProviderKeyState,
+  type SetupProviderId,
+} from './providerModelDiscovery'
 
-export const SETUP_PROVIDERS = [
+export const SETUP_PROVIDERS: Array<{
+  id: SetupProviderId
+  name: string
+  placeholder: string
+}> = [
   { id: 'openai', name: 'OpenAI', placeholder: 'sk-…' },
   { id: 'anthropic', name: 'Anthropic', placeholder: 'sk-ant-…' },
-] as const
-
-export type SetupProviderId = (typeof SETUP_PROVIDERS)[number]['id']
+]
 
 interface DiscoveredProviderModel {
   id: string
@@ -90,7 +97,7 @@ export function ProviderSetupCard({
 }) {
   const [isLoading, setIsLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
-  const [keyState, setKeyState] = useState<Record<string, { configured: boolean; mask: string }>>({})
+  const [keyState, setKeyState] = useState<Record<string, ProviderKeyState>>({})
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [enabledIds, setEnabledIds] = useState<Set<string>>(new Set())
   const [models, setModels] = useState<Record<string, DiscoveredProviderModel[]>>({})
@@ -155,12 +162,15 @@ export function ProviderSetupCard({
 
   // Once a provider's key is known to be configured, fetch its live model list.
   useEffect(() => {
-    for (const p of SETUP_PROVIDERS) {
-      if (keyState[p.id]?.configured && !models[p.id] && !loadingModels[p.id]) {
-        loadProviderModels(p.id)
-      }
+    for (const provider of getProvidersNeedingModelDiscovery({
+      keyState,
+      models,
+      loadingModels,
+      modelError,
+    })) {
+      loadProviderModels(provider)
     }
-  }, [keyState, models, loadingModels, loadProviderModels])
+  }, [keyState, models, loadingModels, modelError, loadProviderModels])
 
   const saveKey = useCallback(async (provider: SetupProviderId) => {
     const key = drafts[provider]
