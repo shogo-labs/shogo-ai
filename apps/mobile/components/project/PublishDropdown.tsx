@@ -339,6 +339,16 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
             )}
           </View>
 
+          {/* Explainer: preview vs published. The preview URL is a temporary
+              builder preview that sleeps when idle; publishing creates a
+              permanent, always-fast link that stays up on its own. */}
+          {!isPublished && (
+            <Text className="text-[11px] text-muted-foreground mb-4 leading-4">
+              Your preview link is a temporary builder preview that sleeps when idle. Publishing
+              creates a permanent, always-fast link you can share.
+            </Text>
+          )}
+
           {/* Published URL banner */}
           {isPublished && publishedSubdomain && (
             <View className="gap-1 p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/20 mb-4">
@@ -526,7 +536,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
                 <Text className="text-[11px] text-muted-foreground mt-0.5">
                   {isPublished
                     ? 'Changing your URL requires Pro. You can still publish updates to your current URL.'
-                    : 'Get a public link at {subdomain}.shogo.one. Available on Pro & Business.'}
+                    : 'Get a permanent public link on your own name.shogo.one address. Available on Pro & Business.'}
                 </Text>
               </View>
               <ExternalLink size={14} className="text-primary" />

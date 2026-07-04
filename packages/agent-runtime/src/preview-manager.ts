@@ -18,7 +18,7 @@
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import { createHash } from 'crypto'
 import { join } from 'path'
-import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
+import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
@@ -448,6 +448,100 @@ function resolveApiServerPort(): number {
     if (Number.isFinite(n) && n > 0) return n
   }
   return DEFAULT_API_SERVER_PORT
+}
+
+/**
+ * Parse the socket inode(s) LISTENing on `port` from the contents of a Linux
+ * `/proc/net/tcp` (or `/proc/net/tcp6`) table.
+ *
+ * The kernel encodes each row's `local_address` as `HEXIP:HEXPORT` and the
+ * connection state as a 2-char hex code (column index 3), where `0A` is
+ * `TCP_LISTEN`. The socket inode is column index 9. We return the decimal
+ * inodes so the caller can map them back to owning PIDs via `/proc/<pid>/fd`.
+ *
+ * This is the dependency-free backbone of {@link PreviewManager.forceKillPort}
+ * on the production runtime image, which ships neither `lsof` nor `fuser`.
+ *
+ * Exported for unit testing.
+ */
+export function parseListeningInodesForPort(procNetTcp: string, port: number): Set<string> {
+  const inodes = new Set<string>()
+  // /proc/net/tcp renders the port as an upper-case, zero-padded 4-char hex.
+  const wantHexPort = port.toString(16).toUpperCase().padStart(4, '0')
+  for (const line of procNetTcp.split('\n')) {
+    const cols = line.trim().split(/\s+/)
+    // Skip the `sl local_address ...` header and any short/malformed row.
+    if (cols.length < 10 || cols[0] === 'sl') continue
+    if (cols[3] !== '0A') continue // not TCP_LISTEN
+    const local = cols[1]
+    const colon = local.lastIndexOf(':')
+    if (colon === -1) continue
+    if (local.slice(colon + 1).toUpperCase() !== wantHexPort) continue
+    const inode = cols[9]
+    if (inode && inode !== '0') inodes.add(inode)
+  }
+  return inodes
+}
+
+/**
+ * Resolve the PID(s) holding a LISTEN socket on `port` purely from `/proc`.
+ * Reads `/proc/net/tcp{,6}` for the socket inode(s) on the port, then scans
+ * every `/proc/<pid>/fd/*` symlink for a matching `socket:[<inode>]`.
+ *
+ * Linux-only and best-effort: any failure (non-Linux, EPERM scanning another
+ * user's fds, tables absent) yields an empty list rather than throwing.
+ */
+function findPidsHoldingPortViaProc(port: number): number[] {
+  if (process.platform !== 'linux') return []
+  const pids = new Set<number>()
+  try {
+    const inodes = new Set<string>()
+    for (const tbl of ['/proc/net/tcp', '/proc/net/tcp6']) {
+      try {
+        for (const ino of parseListeningInodesForPort(readFileSync(tbl, 'utf-8'), port)) {
+          inodes.add(ino)
+        }
+      } catch {
+        // Table absent (e.g. IPv6 disabled) — try the next one.
+      }
+    }
+    if (inodes.size === 0) return []
+
+    const targets = new Set<string>()
+    for (const ino of inodes) targets.add(`socket:[${ino}]`)
+
+    let procDirs: string[]
+    try {
+      procDirs = readdirSync('/proc')
+    } catch {
+      return []
+    }
+    for (const entry of procDirs) {
+      if (!/^\d+$/.test(entry)) continue
+      let fds: string[]
+      try {
+        fds = readdirSync(`/proc/${entry}/fd`)
+      } catch {
+        // Process exited between readdir(/proc) and here, or not ours to read.
+        continue
+      }
+      for (const fd of fds) {
+        let link: string
+        try {
+          link = readlinkSync(`/proc/${entry}/fd/${fd}`)
+        } catch {
+          continue
+        }
+        if (targets.has(link)) {
+          pids.add(Number(entry))
+          break
+        }
+      }
+    }
+  } catch {
+    // Best-effort — waitForPortRelease still gives the kernel time to clean up.
+  }
+  return [...pids]
 }
 
 const SCHEMA_DEBOUNCE_MS = 1500
@@ -1620,7 +1714,7 @@ export class PreviewManager {
 
     return new Promise<void>((resolve) => {
       const force = setTimeout(() => {
-        if (!proc.killed) proc.kill('SIGKILL')
+        this.killApiServerProcessGroup(proc, 'SIGKILL')
         resolve()
       }, 5000)
 
@@ -1629,9 +1723,30 @@ export class PreviewManager {
         resolve()
       })
 
-      proc.kill('SIGTERM')
+      this.killApiServerProcessGroup(proc, 'SIGTERM')
       this.apiServerProcess = null
     })
+  }
+
+  /**
+   * Signal the API sidecar and (on POSIX) every process in its group. The
+   * group is established at spawn via `detached: true` in `startApiServer()`,
+   * so a single `process.kill(-pid, …)` reaches any children `server.tsx`
+   * spawned — preventing them from stranding as orphans that squat the API
+   * port. Mirrors {@link killBuildWatchProcessGroup}. Falls back to signalling
+   * the leader directly on Windows, when the OS already reaped it (`!proc.pid`),
+   * or when the group signal raises (typically ESRCH — group already empty).
+   */
+  private killApiServerProcessGroup(proc: ChildProcess, signal: NodeJS.Signals): void {
+    if (process.platform === 'win32' || !proc.pid) {
+      try { proc.kill(signal) } catch { /* already gone */ }
+      return
+    }
+    try {
+      process.kill(-proc.pid, signal)
+    } catch {
+      try { proc.kill(signal) } catch { /* already gone */ }
+    }
   }
 
   /**
@@ -2679,8 +2794,39 @@ export class PreviewManager {
     await new Promise((resolve) => setTimeout(resolve, 3000))
   }
 
+  /**
+   * Reap an orphaned API sidecar from a prior agent-runtime incarnation that
+   * is still holding this project's API port.
+   *
+   * The sidecar is spawned detached (its own process group) so killApiServer
+   * can group-kill it cleanly — but that also means a SIGKILL of the
+   * agent-runtime parent (macOS jetsam, or the WorkerRuntimeManager teardown
+   * budget firing before the graceful drain) can strand it holding the port.
+   * On the next start that stranded process would EADDRINUSE our fresh spawn
+   * and bounce us through the crash handler into a sustained /api/* 503.
+   *
+   * Scoped strictly to whoever currently holds `this.apiPort` (forceKillPort
+   * resolves the owner via lsof/fuser or, on the slim prod image, /proc), so
+   * it can never touch a sibling workspace's sidecar on a different port. This
+   * is the API-sidecar analog of {@link reapStaleViteWatchers}.
+   */
+  private async reapStaleApiSidecars(): Promise<void> {
+    if (await this.isPortFree()) return
+    console.warn(
+      `[${LOG_PREFIX}] API port ${this.apiPort} occupied at start — reaping stale sidecar from a prior incarnation`,
+    )
+    await this.forceKillPort()
+    await this.waitForPortRelease()
+  }
+
   private async startApiServer(): Promise<void> {
     const cwd = this.bundlerCwd
+
+    // Clear any orphaned sidecar squatting our port BEFORE the (slower)
+    // generate/drift steps below, so the fresh spawn never races an
+    // EADDRINUSE. The isPortFree/forceKill block just before spawn remains as
+    // a second line of defense for a squatter that appears mid-startup.
+    await this.reapStaleApiSidecars()
 
     // The runtime template no longer ships a hand-written `server.tsx`
     // — it's generated by the SDK from `shogo.config.json` (see
@@ -2795,6 +2941,44 @@ export class PreviewManager {
     // without an intervening spawn.
     this.intentionalStop = false
 
+    // Final guard: if the port is STILL held after the force-kill + wait above,
+    // do NOT blind-spawn into EADDRINUSE (which crashes immediately and bounces
+    // through handleCrash — a hot loop). Instead back off and retry on the same
+    // bounded schedule as crash recovery, so a genuinely stuck squatter (e.g.
+    // a foreign process on this port that we lack permission to kill) degrades
+    // to a clean, capped retry rather than a crash storm.
+    if (!(await this.isPortFree())) {
+      this.crashCount++
+      if (this.crashCount > MAX_CRASH_RESTARTS) {
+        console.error(
+          `[${LOG_PREFIX}] Port ${this.apiPort} still occupied after force-kill; ` +
+            `exceeded ${MAX_CRASH_RESTARTS} attempts — giving up (phase=crashed). ` +
+            `The next /api/* request will trigger on-demand recovery.`,
+        )
+        this.apiPhase = 'crashed'
+        this.hasApiServer = false
+        return
+      }
+      const backoff = Math.min(
+        CRASH_BACKOFF_BASE_MS * Math.pow(2, this.crashCount - 1),
+        CRASH_BACKOFF_MAX_MS,
+      )
+      console.warn(
+        `[${LOG_PREFIX}] Port ${this.apiPort} still occupied after force-kill; ` +
+          `retrying startApiServer in ${backoff}ms (attempt ${this.crashCount}/${MAX_CRASH_RESTARTS})`,
+      )
+      this.apiPhase = 'restarting'
+      if (this.crashRestartTimer) clearTimeout(this.crashRestartTimer)
+      this.crashRestartTimer = setTimeout(() => {
+        this.crashRestartTimer = null
+        if (this.intentionalStop || this.regenerating) return
+        void this.startApiServer().catch((err: any) => {
+          console.error(`[${LOG_PREFIX}] Port-contention retry failed: ${err?.message ?? err}`)
+        })
+      }, backoff)
+      return
+    }
+
     // Pass the resolved port through every name `server.tsx` and the SDK
     // template scripts might consult: `PORT` is the canonical Bun.serve
     // input; `API_SERVER_PORT` and the legacy `SKILL_SERVER_PORT` alias
@@ -2802,9 +2986,17 @@ export class PreviewManager {
     // host-side runtime checks.
     const portStr = String(this.apiPort)
 
+    // POSIX: spawn the sidecar as its own process-group leader (pgid == pid)
+    // so killApiServer can tear down the whole subtree — server.tsx plus any
+    // grandchildren it spawns — with one `process.kill(-pid, …)` instead of
+    // leaving them stranded holding the port. Mirrors startBuildWatch()'s
+    // detach for vite. Windows has no PGID concept (and `detached` there opens
+    // a separate console window), so keep the attached default on win32.
+    const useProcessGroup = process.platform !== 'win32'
     const proc = spawn(pkg.bunBinary, ['run', 'server.tsx'], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: useProcessGroup,
       env: resolveApiServerEnv({
         parentEnv: process.env,
         portStr,
@@ -2814,6 +3006,13 @@ export class PreviewManager {
     })
 
     this.apiServerProcess = proc
+
+    // Drop the detached leader from the event-loop ref-count (the HTTP server
+    // keeps the loop alive anyway); stdio pipes stay ref'd so the build-log
+    // writer keeps draining stdout/stderr. Matches startBuildWatch().
+    if (useProcessGroup) {
+      try { proc.unref() } catch { /* unref is best-effort */ }
+    }
 
     proc.stdout?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
@@ -3088,25 +3287,43 @@ export class PreviewManager {
   }
 
   private forceKillPortPosix(): void {
+    const pids = new Set<string>()
+
+    // Preferred: lsof / fuser (present on dev machines / macOS).
     try {
       const result = execSync(
         `lsof -ti :${this.apiPort} 2>/dev/null || fuser ${this.apiPort}/tcp 2>/dev/null || true`,
         { encoding: 'utf-8', timeout: 5000 },
       ).trim()
-      if (!result) return
-
-      const pids = result.split(/\s+/).filter(Boolean)
-      for (const pid of pids) {
-        try {
-          process.kill(Number(pid), 'SIGKILL')
-          console.log(`[${LOG_PREFIX}] Force-killed leaked process ${pid} on port ${this.apiPort}`)
-        } catch {
-          // Process already exited / permission denied — fine.
-        }
-      }
+      for (const pid of result.split(/\s+/).filter(Boolean)) pids.add(pid)
     } catch {
-      // lsof / fuser missing on this platform; waitForPortRelease will
-      // still give the kernel time to clean up the socket.
+      // lsof / fuser missing — fall through to the /proc scan below.
+    }
+
+    // Fallback for slim containers: the production runtime image ships neither
+    // lsof nor fuser, so the block above finds nothing and forceKillPort used
+    // to be a silent no-op — a leaked/slow-releasing socket then sent
+    // startApiServer straight into an EADDRINUSE crash loop. Resolve the port
+    // owner directly from /proc so the kill always works.
+    if (pids.size === 0) {
+      for (const pid of findPidsHoldingPortViaProc(this.apiPort)) pids.add(String(pid))
+    }
+
+    if (pids.size === 0) return
+
+    // Never signal ourselves or our parent — the agent-runtime listens on its
+    // own PORT (not this.apiPort), but guard defensively so a bad match can't
+    // take the whole runtime down.
+    const selfPid = String(process.pid)
+    const parentPid = String(process.ppid)
+    for (const pid of pids) {
+      if (pid === selfPid || pid === parentPid) continue
+      try {
+        process.kill(Number(pid), 'SIGKILL')
+        console.log(`[${LOG_PREFIX}] Force-killed leaked process ${pid} on port ${this.apiPort}`)
+      } catch {
+        // Process already exited / permission denied — fine.
+      }
     }
   }
 

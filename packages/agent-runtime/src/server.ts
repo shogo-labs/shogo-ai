@@ -4332,7 +4332,7 @@ if (IS_WORKSPACE_RUNTIME) {
     if (!pm) return projectNotAttached(c, parsed.projectId)
     const distDir = join(WORKSPACE_DIR, parsed.projectId, 'dist')
     const inFlight = BUILDING_PHASES.has(pm.phase)
-    return serveDistResponse(distDir, parsed.rest, inFlight) ?? c.notFound()
+    return serveDistResponse(distDir, parsed.rest, inFlight) ?? markedNotFound()
   })
 }
 
@@ -4799,6 +4799,16 @@ function isBuildLikelyInFlight(): boolean {
   return BUILDING_PHASES.has(phase)
 }
 
+// Marker header stamped on every response the agent-runtime itself
+// produces for a preview document. The Cloudflare preview-router Worker
+// uses its presence to distinguish an *infra* error (Kourier "no healthy
+// upstream" 404, activator/pod 503 — no marker) from the *app's own*
+// response (404 page, building placeholder — marked). Infra errors get
+// swapped for the "waking up" interstitial; marked responses pass through
+// untouched so a genuine app 404 never gets masked or reload-looped.
+const RUNTIME_MARKER_HEADER = 'x-shogo-runtime'
+const RUNTIME_MARKER_VALUE = '1'
+
 function renderBuildingPlaceholder(): Response {
   const html = `<!doctype html>
 <html lang="en">
@@ -4838,6 +4848,7 @@ function renderBuildingPlaceholder(): Response {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-cache, no-store, must-revalidate',
       'Retry-After': '2',
+      [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
     },
   })
 }
@@ -4873,13 +4884,18 @@ function serveDistResponse(
     if (ext === '.html') {
       const html = injectCanvasBridge(readFileSync(filePath, 'utf-8'))
       return new Response(html, {
-        headers: { 'Content-Type': mime, 'Cache-Control': 'no-cache' },
+        headers: {
+          'Content-Type': mime,
+          'Cache-Control': 'no-cache',
+          [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
+        },
       })
     }
     return new Response(readFileSync(filePath), {
       headers: {
         'Content-Type': mime,
         'Cache-Control': 'public, max-age=31536000, immutable',
+        [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
       },
     })
   }
@@ -4889,7 +4905,11 @@ function serveDistResponse(
   if (existsSync(indexPath)) {
     const html = injectCanvasBridge(readFileSync(indexPath, 'utf-8'))
     return new Response(html, {
-      headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
+      headers: {
+        'Content-Type': 'text/html',
+        'Cache-Control': 'no-cache',
+        [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
+      },
     })
   }
 
@@ -4905,6 +4925,19 @@ function serveDistResponse(
   return null
 }
 
+// A 404 the agent-runtime itself produced. Carries the runtime marker so
+// the preview-router Worker treats it as an app response (pass through),
+// not an infra "no upstream" 404 (which it would swap for the interstitial).
+function markedNotFound(): Response {
+  return new Response('Not Found', {
+    status: 404,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
+    },
+  })
+}
+
 app.get('*', (c) => {
   const urlPath = new URL(c.req.url).pathname
 
@@ -4913,10 +4946,10 @@ app.get('*', (c) => {
       urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
       urlPath.startsWith('/api') || urlPath.startsWith('/templates') ||
       urlPath.startsWith('/diagnostics')) {
-    return c.notFound()
+    return markedNotFound()
   }
 
-  return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? c.notFound()
+  return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? markedNotFound()
 })
 
 // =============================================================================
