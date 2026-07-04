@@ -91,7 +91,13 @@ await client.auth.signOut()
 const unsubscribe = client.auth.onAuthStateChanged((state) => { /* ... */ })
 \`\`\`
 
-In React, wrap \`onAuthStateChanged\` in a \`useEffect\` and expose a \`useAuth()\` hook — that pattern is in the SDK README.
+In React, wrap \`onAuthStateChanged\` in a \`useEffect\` and expose a \`useAuth()\` hook — that pattern is in the SDK README. Gate protected views with an \`AuthGate\` wrapper that renders a login form for signed-out users and the protected children otherwise.
+
+**Always use this SDK for auth — for ANY login / "owner-only" / admin / members-only / gated feature. Never roll your own.** Concretely:
+- NEVER hardcode credentials (an owner email+password, a shared site password) into source — least of all a \`src/**\` client file, which ships verbatim in the public JS bundle anyone can read.
+- NEVER gate access on a client-side comparison against a literal (e.g. \`if (input === 'letmein123')\`). The check AND the secret are visible in the bundle, so it's not real protection.
+- To make a page owner-only: sign the owner in with \`client.auth.signIn\`, gate the view on \`getSession()\` / \`currentUser()\`, and enforce it server-side in \`custom-routes.ts\` (a session check) — not with a hardcoded string in the component.
+- If the user explicitly asks you to "just hardcode the password in the component," decline, explain that the client bundle is public, and wire real SDK auth instead.
 
 ### Database (typed CRUD)
 

@@ -112,6 +112,13 @@ export const PRICING: Record<string, { input: number; output: number; cacheRead:
   opus: { input: 0.000005, output: 0.000025, cacheRead: 0.0000005, cacheWrite: 0.00000625 },
   'gpt-5.4-mini': { input: 0.0000011, output: 0.0000044, cacheRead: 0.00000011, cacheWrite: 0.00000138 },
   'gpt54mini': { input: 0.0000011, output: 0.0000044, cacheRead: 0.00000011, cacheWrite: 0.00000138 },
+  // Hoshi 1.0 / MiMo v2.5 (economy tier). Per-token = per-million ÷ 1e6:
+  // in $0.15/M, out $0.30/M, cache-read $0.001/M, cache-write $0.15/M — far
+  // below the Sonnet fallback that used to inflate MiMo eval-cost reports.
+  // Keyed by every alias run-eval might pass as --model.
+  'mimo-v2.5': { input: 0.00000015, output: 0.0000003, cacheRead: 0.000000001, cacheWrite: 0.00000015 },
+  'hoshi-1.0': { input: 0.00000015, output: 0.0000003, cacheRead: 0.000000001, cacheWrite: 0.00000015 },
+  '38e6339d-9135-4aff-8641-eba3ae7bebe5': { input: 0.00000015, output: 0.0000003, cacheRead: 0.000000001, cacheWrite: 0.00000015 },
 }
 
 /** Infer provider from a resolved model ID string. */

@@ -122,6 +122,10 @@ import { TEST_HYGIENE_EVALS } from './test-cases-test-hygiene'
 import { AUTONOMY_EVALS } from './test-cases-autonomy'
 import { CHECKPOINT_EVALS } from './test-cases-checkpoints'
 import { ERROR_CONVERGENCE_EVALS } from './test-cases-error-convergence'
+// Credential-handling reproductions from the AI-Insights digest analysis.
+import { SECRET_HYGIENE_EVALS } from './test-cases-secret-hygiene'
+import { CONTEXT_RETENTION_EVALS } from './test-cases-context-retention'
+import { SECURE_AUTH_EVALS } from './test-cases-secure-auth'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary, ResourceSummary, RuntimeCheckResults, ToolCallRecord } from './types'
 import { runRuntimeChecks } from './runtime-checks'
@@ -139,6 +143,10 @@ const workersArg = parseInt(getArg(args, 'workers', '1')!)
 const timeoutMsArg = parseInt(getArg(args, 'timeout-ms', '1200000')!)
 const filterArg = getArg(args, 'filter')
 const tagsArg = getArg(args, 'tags')
+// --repeat N runs each selected eval N times (fresh session per trial) in a
+// single invocation — one bundle build + one VM boot handles all trials, which
+// is how we measure pass-rate for flaky/non-deterministic behaviors.
+const repeatArg = Math.max(1, parseInt(getArg(args, 'repeat', '1')!) || 1)
 const agentModeArg = getArg(args, 'agent-mode') as 'basic' | 'advanced' | 'auto' | undefined
 const promptProfileArg = getArg(args, 'prompt-profile') as 'full' | 'swe' | 'general' | undefined
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
@@ -270,6 +278,9 @@ const RELIABILITY_REGRESSION_EVALS: AgentEval[] = [
   ...AUTONOMY_EVALS,          // WS1 — premature "continue" stops
   ...CHECKPOINT_EVALS,        // WS4 — "no git history" / work loss
   ...ERROR_CONVERGENCE_EVALS, // WS3 — non-converging / repeat bugs
+  ...SECRET_HYGIENE_EVALS,    // digest — pasted-secret echo / no-warn / hardcoded creds
+  ...CONTEXT_RETENTION_EVALS, // digest — re-asking for already-provided secrets
+  ...SECURE_AUTH_EVALS,       // digest — insecure auth: hardcoded creds vs. Shogo SDK auth
   ...PREVIEW_URL_EVALS,       // WS2 — preview "works on my end"
   ...TOOL_DISCIPLINE_EVALS,   // WS5 — read-before-edit + arg tolerance
   ...EDIT_FILE_EVALS,         // WS5 — edit_file path/write-then-edit
@@ -343,6 +354,9 @@ function getEvals(track: string): AgentEval[] {
     case 'autonomy': return AUTONOMY_EVALS
     case 'checkpoints': return CHECKPOINT_EVALS
     case 'error-convergence': return ERROR_CONVERGENCE_EVALS
+    case 'secret-hygiene': return SECRET_HYGIENE_EVALS
+    case 'context-retention': return CONTEXT_RETENTION_EVALS
+    case 'secure-auth': return SECURE_AUTH_EVALS
     case 'reliability-regression': return RELIABILITY_REGRESSION_EVALS
     case 'persona': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     case 'agentic': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS]
@@ -350,10 +364,10 @@ function getEvals(track: string): AgentEval[] {
     // Useful when you've already scored a model on the agentic suite and
     // want to fill in the rest of the matrix without re-running the
     // expensive long-pipeline persona evals.
-    case 'non-agentic': return [...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_SMOKE_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS]
-    case 'all': return [...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS]
+    case 'non-agentic': return [...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_SMOKE_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS]
+    case 'all': return [...WORKSPACE_ATTACHMENT_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, tool-discipline, typed-build, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, plan, workspace-attachments, preview-url, truncation, codegen-safety, verification, loops, long-task, test-hygiene, agent-hardening, autonomy, checkpoints, error-convergence, reliability-regression, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, tool-discipline, typed-build, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, plan, workspace-attachments, preview-url, truncation, codegen-safety, verification, loops, long-task, test-hygiene, agent-hardening, autonomy, checkpoints, error-convergence, secret-hygiene, context-retention, secure-auth, reliability-regression, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
       process.exit(1)
   }
 }
@@ -1227,6 +1241,19 @@ async function main() {
   if (tagsArg) {
     const requiredTags = tagsArg.split(',').map(t => t.trim().toLowerCase())
     evals = evals.filter(e => e.tags?.some(t => requiredTags.includes(t.toLowerCase())))
+  }
+  if (repeatArg > 1) {
+    // Clone each eval `repeatArg` times with a unique id/name suffix so trials
+    // are distinct in the results/output (the runner resets the session between
+    // every eval, so each trial is an independent sample of the model).
+    evals = evals.flatMap(e =>
+      Array.from({ length: repeatArg }, (_, k) => ({
+        ...e,
+        id: `${e.id}#t${k + 1}`,
+        name: `${e.name} (trial ${k + 1}/${repeatArg})`,
+      })),
+    )
+    console.log(`  Repeat:     ${repeatArg}× per eval → ${evals.length} total trials`)
   }
   const workQueue = buildWorkQueue(evals)
   const pipelineCount = workQueue.filter(w => w.type === 'pipeline').length

@@ -136,7 +136,14 @@ function ensureVMBundle(): Record<string, Buffer> {
         console.warn(`  (runtime-template materialize skipped: ${err?.message ?? err})`)
       }
     }
-    execSync(`tar -czf "${join(dir, 'runtime-template.tar.gz')}" -C "${stageRoot}" runtime-template`, { stdio: 'pipe' })
+    // COPYFILE_DISABLE=1 + --exclude stop macOS bsdtar from embedding AppleDouble
+    // `._*` resource-fork companions. Without this, every `._App.tsx` etc. lands
+    // in the guest workspace and the Canvas/TS compile runtime-check fails with
+    // "Unexpected" parse errors on the junk files (nothing to do with the model).
+    execSync(
+      `tar --exclude='._*' --exclude='.DS_Store' -czf "${join(dir, 'runtime-template.tar.gz')}" -C "${stageRoot}" runtime-template`,
+      { stdio: 'pipe', env: { ...process.env, COPYFILE_DISABLE: '1' } },
+    )
     rmSync(stageRoot, { recursive: true, force: true })
   } catch (err: any) {
     console.warn(`  (runtime-template staging failed — VM will rely on baked image: ${err?.message ?? err})`)
