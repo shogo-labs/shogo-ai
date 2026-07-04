@@ -1,0 +1,66 @@
+// SHOGO:CUSTOM-START prisma-header
+// Managed by Shogo. Do not add a datasource `url` or change the generator `provider` — the database URL is configured in prisma.config.ts (Prisma 7+).
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+// SHOGO:CUSTOM-END
+
+// Storefront order records.
+//
+// IMPORTANT: Orders are created SERVER-SIDE by the Stripe checkout route (see
+// the `stripe-checkout` skill), NOT from the browser. The product catalog the
+// customer browses lives in `src/data/store-content.ts` and must only ever
+// hold products the OWNER gave you. Never seed fake orders or fake products.
+//
+// The SDK auto-generates CRUD routes from each model:
+//   Order     -> GET/POST/PATCH/DELETE  /api/orders
+//   OrderItem -> GET/POST/PATCH/DELETE  /api/order-items
+// LIST returns { ok, items, total }; GET/POST/PATCH return { ok, data }.
+//
+// Money is stored as INTEGER minor units (cents/pence/paise) to avoid floating
+// point rounding bugs. `currency` is a lowercase ISO code ("usd", "gbp", "inr").
+
+model Order {
+  id              String      @id @default(cuid())
+  // Guest checkout details (from Stripe or the store form).
+  customerName    String?     @map("customer_name")
+  email           String?
+  phone           String?
+  // pending | paid | fulfilled | refunded | cancelled
+  status          String      @default("pending")
+  // Order total in minor units (sum of item unitAmount * quantity).
+  amountTotal     Int         @default(0) @map("amount_total")
+  currency        String      @default("usd")
+  // Stripe Checkout Session id, set once a session is created; used by the
+  // webhook to mark the order paid. Empty until Stripe is wired up.
+  stripeSessionId String?     @unique @map("stripe_session_id")
+  notes           String?
+  items           OrderItem[]
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id         String   @id @default(cuid())
+  orderId    String   @map("order_id")
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  // Snapshot of the product at purchase time — never a live lookup, so a later
+  // price/name change doesn't rewrite historical orders.
+  productId  String   @map("product_id")
+  name       String
+  unitAmount Int      @default(0) @map("unit_amount")
+  quantity   Int      @default(1)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([orderId])
+  @@map("order_items")
+}

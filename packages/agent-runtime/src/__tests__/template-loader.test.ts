@@ -55,6 +55,7 @@ import {
   getTemplateCanvasCodeDir,
   getTemplateSrcDir,
   getTemplatePrismaDir,
+  getTemplateCustomRoutesPath,
 } from '../template-loader'
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 
@@ -133,5 +134,29 @@ describe('template-loader path helpers', () => {
 
   test('getTemplatePrismaDir returns null when missing', () => {
     expect(getTemplatePrismaDir('__nope__')).toBeNull()
+  })
+
+  test('getTemplateCustomRoutesPath returns path when custom-routes.ts exists', () => {
+    setup()
+    try {
+      writeFileSync(join(FIXTURE, 'custom-routes.ts'), 'export default {}', 'utf-8')
+      const r = getTemplateCustomRoutesPath('__test_fixture__')
+      expect(r).not.toBeNull()
+      expect(r).toContain('custom-routes.ts')
+    } finally { teardown() }
+  })
+
+  test('getTemplateCustomRoutesPath falls back to the .tsx variant', () => {
+    setup()
+    try {
+      writeFileSync(join(FIXTURE, 'custom-routes.tsx'), 'export default {}', 'utf-8')
+      const r = getTemplateCustomRoutesPath('__test_fixture__')
+      expect(r).not.toBeNull()
+      expect(r).toContain('custom-routes.tsx')
+    } finally { teardown() }
+  })
+
+  test('getTemplateCustomRoutesPath returns null when missing', () => {
+    expect(getTemplateCustomRoutesPath('__nope__')).toBeNull()
   })
 })

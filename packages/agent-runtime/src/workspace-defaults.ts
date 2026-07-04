@@ -84,7 +84,7 @@ export function _resetWorkspaceInstallMutex(): void {
   inFlightInstalls.clear()
 }
 import { getAgentTemplateById } from './agent-templates'
-import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir, getTemplatePrismaDir, getTemplateDistDir } from './template-loader'
+import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir, getTemplatePrismaDir, getTemplateDistDir, getTemplateCustomRoutesPath } from './template-loader'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -300,6 +300,75 @@ export function resetWorkspaceDefaults(dir: string): void {
 }
 
 /**
+ * Read the runtime-template's pristine `custom-routes.ts` stub, or null if the
+ * runtime-template can't be resolved. Used to decide whether a workspace's
+ * `custom-routes.ts` is still the untouched default (safe to overwrite with a
+ * template's own) or has been edited (must be preserved).
+ */
+function readPristineCustomRoutesStub(): string | null {
+  const templatePath = getRuntimeTemplatePath()
+  if (!templatePath) return null
+  for (const name of ['custom-routes.ts', 'custom-routes.tsx']) {
+    const fp = join(templatePath, name)
+    if (existsSync(fp)) {
+      try {
+        return readFileSync(fp, 'utf-8')
+      } catch {
+        return null
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Overlay a template's own `custom-routes.ts` onto the workspace.
+ *
+ * Templates ship a bespoke server route (e.g. Stripe hosted checkout) at
+ * `templates/<id>/custom-routes.ts`. `server.tsx` already imports+mounts
+ * `./custom-routes`, and `seedRuntimeTemplate` first lays down the empty
+ * runtime-template stub — so we only need to replace that stub.
+ *
+ * Safety: we NEVER clobber a workspace whose `custom-routes.ts` differs from
+ * the pristine stub (i.e. the agent/user has written real routes). We only
+ * overwrite when the destination is missing or byte-identical to the stub.
+ * When the stub can't be resolved to compare against, we fall back to
+ * copy-only-if-missing so an edited file is never lost.
+ */
+function overlayTemplateCustomRoutes(dir: string, templateId: string): boolean {
+  const src = getTemplateCustomRoutesPath(templateId)
+  if (!src) return false
+
+  const destName = src.endsWith('.tsx') ? 'custom-routes.tsx' : 'custom-routes.ts'
+  const dest = join(dir, destName)
+  const stub = readPristineCustomRoutesStub()
+
+  const isSafeToOverwrite = (fp: string): boolean => {
+    if (!existsSync(fp)) return true
+    if (stub === null) return false // can't verify → don't risk a user's routes
+    try {
+      return readFileSync(fp, 'utf-8').trim() === stub.trim()
+    } catch {
+      return false
+    }
+  }
+
+  if (!isSafeToOverwrite(dest)) return false
+
+  // The runtime-template ships `custom-routes.ts`; if this template ships the
+  // `.tsx` variant, drop the pristine `.ts` stub so the two don't coexist
+  // (both would resolve for `./custom-routes` and shadow each other). Only
+  // remove it when it's still the untouched stub.
+  const sibling = join(dir, destName === 'custom-routes.ts' ? 'custom-routes.tsx' : 'custom-routes.ts')
+  if (existsSync(sibling) && isSafeToOverwrite(sibling)) {
+    rmSync(sibling, { force: true })
+  }
+
+  cpSync(src, dest, { force: true })
+  return true
+}
+
+/**
  * Seed workspace from a template. DEPRECATED — kept only as a no-op
  * shim while the consolidation rolls out. The marketplace install
  * flow's `copyWorkspaceFiles` already lays down everything this used
@@ -364,6 +433,11 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
     cpSync(templatePrismaDir, join(dir, 'prisma'), { recursive: true, force: true })
   }
 
+  // Bespoke server route the CRUD generator can't express (e.g. Stripe
+  // hosted checkout). Overwrites only the pristine runtime-template stub —
+  // see `overlayTemplateCustomRoutes`.
+  overlayTemplateCustomRoutes(dir, templateId)
+
   // Pre-built dist/ — see `getTemplateDistDir` doc-comment. We rm the
   // existing dist/ first because vite emits hashed filenames (e.g.
   // `index-AQQBZ6vm.js`) and `cpSync(force:true)` only overwrites files
@@ -407,6 +481,10 @@ export function overlayAgentTemplateCodeDirs(dir: string, templateId: string): b
   if (templatePrismaDir) {
     mkdirSync(join(dir, 'prisma'), { recursive: true })
     cpSync(templatePrismaDir, join(dir, 'prisma'), { recursive: true, force: true })
+    didAnything = true
+  }
+
+  if (overlayTemplateCustomRoutes(dir, templateId)) {
     didAnything = true
   }
 

@@ -1,0 +1,10 @@
+{
+  "heartbeatInterval": 3600,
+  "heartbeatEnabled": false,
+  "channels": [],
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-sonnet-4-5"
+  },
+  "activeMode": "app"
+}

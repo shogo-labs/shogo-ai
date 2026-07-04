@@ -34,6 +34,7 @@ let templateLoaderState: {
   srcDir?: string | null
   prismaDir?: string | null
   distDir?: string | null
+  customRoutesPath?: string | null
 } = {}
 mock.module('../template-loader', () => ({
   getTemplateShogoDir: (_id: string) => templateLoaderState.shogoDir ?? null,
@@ -42,6 +43,7 @@ mock.module('../template-loader', () => ({
   getTemplateSrcDir: (_id: string) => templateLoaderState.srcDir ?? null,
   getTemplatePrismaDir: (_id: string) => templateLoaderState.prismaDir ?? null,
   getTemplateDistDir: (_id: string) => templateLoaderState.distDir ?? null,
+  getTemplateCustomRoutesPath: (_id: string) => templateLoaderState.customRoutesPath ?? null,
 }))
 
 // --- Mock agent-templates ---
@@ -323,6 +325,31 @@ describe('overlayAgentTemplateCodeDirs', () => {
     expect(existsSync(join(dir, 'prisma', 'schema.prisma'))).toBe(true)
     expect(existsSync(join(dir, 'dist', 'stale.js'))).toBe(false)
     expect(existsSync(join(dir, 'dist', 'index.html'))).toBe(true)
+  })
+
+  test('copies a template custom-routes.ts when the workspace has none', () => {
+    agentTemplateLookup['cr1'] = { id: 'cr1' }
+    const routesDir = makeTmp()
+    const customRoutesPath = join(routesDir, 'custom-routes.ts')
+    writeFileSync(customRoutesPath, '// TEMPLATE ROUTES\nexport default {}')
+    templateLoaderState = { customRoutesPath }
+    const dir = makeTmp()
+    expect(wd.overlayAgentTemplateCodeDirs(dir, 'cr1')).toBe(true)
+    expect(readFileSync(join(dir, 'custom-routes.ts'), 'utf-8')).toContain('TEMPLATE ROUTES')
+  })
+
+  test('never clobbers an already-edited custom-routes.ts', () => {
+    agentTemplateLookup['cr2'] = { id: 'cr2' }
+    const routesDir = makeTmp()
+    const customRoutesPath = join(routesDir, 'custom-routes.ts')
+    writeFileSync(customRoutesPath, '// TEMPLATE ROUTES')
+    templateLoaderState = { customRoutesPath }
+    const dir = makeTmp()
+    // Simulate a workspace whose routes the agent/user already edited (differs
+    // from the pristine runtime-template stub).
+    writeFileSync(join(dir, 'custom-routes.ts'), '// USER EDITED — keep me')
+    expect(wd.overlayAgentTemplateCodeDirs(dir, 'cr2')).toBe(false)
+    expect(readFileSync(join(dir, 'custom-routes.ts'), 'utf-8')).toContain('USER EDITED')
   })
 })
 
