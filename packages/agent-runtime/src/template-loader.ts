@@ -107,6 +107,30 @@ export function getTemplateSrcDir(templateId: string): string | null {
 }
 
 /**
+ * Get the path to a template's `custom-routes.ts` (or `.tsx`) for direct
+ * copying to the workspace root.
+ *
+ * `server.tsx` (SDK-generated) is NOT editable by templates, and the
+ * auto-generated CRUD covers per-model routes — but some templates need a
+ * bespoke server route the CRUD generator can't express (e.g. a Stripe
+ * hosted-checkout endpoint). That code belongs in `custom-routes.ts`, which
+ * mounts under `/api/` and is never regenerated. Templates ship it at their
+ * root; the seeding overlay lays it down over the runtime-template's empty
+ * stub (and only over that stub — never over a workspace whose routes have
+ * already been edited; see `overlayTemplateCustomRoutes`).
+ *
+ * Prefers `.ts`; falls back to `.tsx` for routes that render JSX. Returns null
+ * when the template ships neither.
+ */
+export function getTemplateCustomRoutesPath(templateId: string): string | null {
+  for (const name of ['custom-routes.ts', 'custom-routes.tsx']) {
+    const fp = join(TEMPLATES_BASE, templateId, name)
+    if (existsSync(fp)) return fp
+  }
+  return null
+}
+
+/**
  * Get the path to a template's prisma/ directory for direct copying.
  * Templates that define their own Prisma schema (models for the auto-
  * generated CRUD server) ship it in prisma/schema.prisma. When present,

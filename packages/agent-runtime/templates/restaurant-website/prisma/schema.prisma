@@ -1,0 +1,63 @@
+// SHOGO:CUSTOM-START prisma-header
+// Managed by Shogo. Do not add a datasource `url` or change the generator `provider` — the database URL is configured in prisma.config.ts (Prisma 7+).
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+// SHOGO:CUSTOM-END
+
+// Restaurant / local-business site persistence.
+//
+// IMPORTANT: These two models hold data that REAL VISITORS submit at runtime
+// (table bookings and contact-form messages). They are NOT for the business's
+// own content (name, menu, hours, gallery) — that lives in
+// `src/data/site-content.ts` and must only ever hold details the OWNER gave
+// you. Never seed fake reservations or messages into these tables.
+//
+// The SDK auto-generates CRUD routes from each model:
+//   Reservation    -> GET/POST/PATCH/DELETE  /api/reservations
+//   ContactMessage -> GET/POST/PATCH/DELETE  /api/contact-messages
+// LIST returns { ok, items, total }; GET/POST/PATCH return { ok, data }.
+
+model Reservation {
+  id            String   @id @default(cuid())
+  // Guest-supplied booking details.
+  name          String
+  email         String?
+  phone         String?
+  partySize     Int      @default(2) @map("party_size")
+  // ISO date (YYYY-MM-DD) and a human time label ("7:30 PM"). Kept as strings
+  // so the public form stays timezone-agnostic — the business reads them as-is.
+  date          String
+  time          String
+  notes         String?
+  // new | confirmed | seated | cancelled | no_show — the owner (via the agent)
+  // moves bookings through this lifecycle.
+  status        String   @default("new")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([date])
+  @@index([status])
+  @@map("reservations")
+}
+
+model ContactMessage {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  phone     String?
+  subject   String?
+  message   String
+  // new | read | replied — track follow-up without a separate CRM.
+  status    String   @default("new")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("contact_messages")
+}
