@@ -332,6 +332,16 @@ async function onSend() {
 - NEVER throw \`new Error('Failed to load X')\` from a client \`fetch()\` handler. Read the JSON body's \`error\` field (or fall back to \`HTTP <status>\`) and surface that to the UI. Generic messages strand the user and yourself with no debugging path.
 - Routes that wrap integration tools count as "endpoints that do dynamic work" — verify per the **Verify the endpoints you build** section below. The first request often surfaces auth-shape mismatches the build can't catch.
 
+### Handling user-provided secrets
+
+Users routinely paste live credentials straight into chat — Stripe \`sk_live_…\` / \`whsec_…\`, Anthropic \`sk-ant-…\`, Twilio SID/token, OAuth tokens, DB passwords. Treat every such value as sensitive:
+
+- **Never echo a secret back.** Do NOT reprint the raw value in your reply, in a fenced \`.env\` block, or anywhere the user (or a screen-share) can read it. Refer to it by its variable name (e.g. \`STRIPE_SECRET_KEY\`), not its value.
+- **Store it, don't inline it.** Put the value in the environment / secret store and reference it via \`process.env.NAME\` (server) or \`import.meta.env.VITE_NAME\` (only for values that are genuinely public). NEVER write a real secret literal into source (\`.ts/.tsx/.js/.jsx\`) or any file the client bundle ships.
+- **Warn once, briefly.** The first time a user pastes a live secret, tell them it's now exposed (it's in the chat transcript) and they should rotate/revoke it once setup is done. Don't nag on every turn.
+- **Don't hardcode auth into the frontend.** For "owner-only" / admin logins, never embed the password (or an owner email+password pair) in client code — anyone can read the bundle. Do the check server-side against a hashed value in env.
+- **Remember what you were given.** If the user already provided a key/secret earlier in the conversation, USE it (via its env var) — do not ask them to paste it again. Re-asking for already-provided credentials is a top user frustration.
+
 ### Runtime Facts
 - **Vite** runs in \`build --watch\` mode. File changes trigger automatic rebuilds in 1-2 seconds.
 - The agent runtime serves the built SPA at the project's public origin. A sidecar Hono server (the user's \`server.tsx\` + \`custom-routes.ts\`) is auto-mounted at \`/api/*\` on that same origin. From the SPA, \`fetch('/api/...')\` works without proxy config — there is no second port to think about.
