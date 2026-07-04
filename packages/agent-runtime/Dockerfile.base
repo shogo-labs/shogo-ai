@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl bash git git-lfs tar gzip zstd ca-certificates gnupg unzip \
     chromium nss-plugin-pem fonts-freefont-ttf \
     ffmpeg imagemagick ripgrep \
+    lsof psmisc \
     build-essential && \
     # Node 24 via nodesource
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \

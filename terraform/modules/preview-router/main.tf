@@ -338,6 +338,37 @@ resource "cloudflare_worker_script" "preview_router" {
       });
     }
 
+    // Infra-level error statuses. When one of these comes back WITHOUT the
+    // runtime marker header (see isRuntimeResponse) it originated at the edge /
+    // ingress (Kourier "no healthy upstream" 404, activator/pod 503) rather
+    // than the user's app — so we never surface it raw.
+    var INFRA_ERROR_STATUSES = { 404: true, 502: true, 503: true, 504: true };
+    // Transient statuses worth one automatic retry (pod warming, endpoint not
+    // yet propagated into Kourier). 404 is excluded — it doesn't self-heal on
+    // an immediate retry and is handled by the interstitial for documents.
+    var TRANSIENT_STATUSES = { 502: true, 503: true, 504: true };
+
+    // A response the agent-runtime itself produced stamps this marker header
+    // (packages/agent-runtime/src/server.ts). Its presence means the status —
+    // even a 404 — is the app's own response and must pass through untouched
+    // (never masked, never reload-looped). Its absence on an error status means
+    // the failure came from the ingress/activator, which we can safely swap for
+    // the loading interstitial.
+    function isRuntimeResponse(resp) {
+      return !!(resp && resp.headers && resp.headers.get('x-shogo-runtime'));
+    }
+
+    // Proxy to the regional Kourier anchor. Keeps the original preview host in
+    // the URL so Cloudflare sends Host: {projectId}.preview.<base> (which the
+    // regional Kourier DomainMapping routes to the project's ksvc) and ONLY
+    // overrides DNS resolution to the anchor. resolveOverride requires both the
+    // URL host and the anchor to be proxied in this zone; the anchor host does
+    // not match this Worker's route, so the origin-pull subrequest does not
+    // re-enter the Worker (no loop).
+    function proxyToAnchor(request, anchor) {
+      return fetch(request, { cf: { resolveOverride: anchor } });
+    }
+
     export default {
       async fetch(request, env) {
         const url = new URL(request.url);
@@ -361,25 +392,52 @@ resource "cloudflare_worker_script" "preview_router" {
 
         const anchor = anchorFor(region);
 
+        // Only GET requests are safe to retry or re-render. Anything with a
+        // body (POST/PUT/PATCH/DELETE) proxies straight through — retrying or
+        // swapping it for an interstitial could duplicate or drop a mutation.
+        if (request.method !== 'GET') {
+          return proxyToAnchor(request, anchor);
+        }
+
+        const isDoc = isDocumentRequest(request, url);
+
         // Top-level navigation: make sure the preview backend is up before
         // proxying. A preview never opened in Studio has no DomainMapping/pod
         // (Kourier would hard-fail); a cold one can exceed the edge timeout. If
         // the API says it isn't ready, serve a loading page that provisions +
         // wakes it and reloads. Only when an API origin is configured; otherwise
         // proxy transparently (no behavior change).
-        if (env.API_WAKE_ORIGIN && projectId && isDocumentRequest(request, url)) {
+        if (env.API_WAKE_ORIGIN && projectId && isDoc) {
           const ready = await previewWake(env, projectId, 8000);
           if (!ready) return shogoLoadingResponse(url.hostname);
         }
 
-        // Keep the original preview host in the URL so Cloudflare sends
-        // Host: {projectId}.preview.<base> (which the regional Kourier
-        // DomainMapping routes to the project's ksvc) and ONLY override DNS
-        // resolution to the regional Kourier anchor. resolveOverride requires
-        // both the URL host and the anchor to be proxied in this zone; the
-        // anchor host does not match this Worker's `*.preview.<base>` route, so
-        // the origin-pull subrequest does not re-enter the Worker (no loop).
-        return fetch(request, { cf: { resolveOverride: anchor } });
+        let resp = await proxyToAnchor(request, anchor);
+
+        // Transient ingress/activator error (pod still warming, endpoint not
+        // yet propagated into Kourier). Retry once after a short delay — the
+        // absent marker confirms it isn't the app's own 5xx.
+        if (TRANSIENT_STATUSES[resp.status] && !isRuntimeResponse(resp)) {
+          await new Promise(function (r) { setTimeout(r, 600); });
+          resp = await proxyToAnchor(request, anchor);
+        }
+
+        // Still an infra-level error the app did not produce: never surface the
+        // raw 404/503. For a document navigation, serve the interstitial (it
+        // provisions + wakes the pod and reloads once ready) — but only when a
+        // wake origin is configured, otherwise the poll can't make progress and
+        // we'd spin forever, so fall back to returning the response. Sub-resource
+        // GETs have nothing to render, so they pass through unchanged.
+        if (
+          isDoc &&
+          env.API_WAKE_ORIGIN &&
+          INFRA_ERROR_STATUSES[resp.status] &&
+          !isRuntimeResponse(resp)
+        ) {
+          return shogoLoadingResponse(url.hostname);
+        }
+
+        return resp;
       }
     };
   JS

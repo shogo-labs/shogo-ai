@@ -73,13 +73,21 @@ interface RecordedCall {
 let calls: RecordedCall[] = []
 const realFetch = globalThis.fetch
 
-function installFetch(handler: (url: string) => { status: number; body?: string }) {
+function installFetch(
+  handler: (url: string, callIndex: number) => { status: number; body?: string; headers?: Record<string, string> },
+) {
   globalThis.fetch = (async (input: any, init?: any) => {
     const url = input instanceof Request ? input.url : typeof input === 'string' ? input : input.url
+    const callIndex = calls.length
     calls.push({ url, cf: init?.cf })
-    const { status, body } = handler(url)
-    return new Response(body ?? '', { status })
+    const { status, body, headers } = handler(url, callIndex)
+    return new Response(body ?? '', { status, headers })
   }) as typeof fetch
+}
+
+// Count how many times the preview pod (not the API wake endpoint) was proxied.
+function proxyCalls(): RecordedCall[] {
+  return calls.filter((c) => !c.url.includes('/api/preview/'))
 }
 
 afterEach(() => {
@@ -153,5 +161,104 @@ describe('preview-router worker — wake-on-visit', () => {
     expect(calls.every((c) => !c.url.includes('/api/preview/'))).toBe(true)
     const proxied = calls.find((c) => c.cf?.resolveOverride)
     expect(proxied?.cf?.resolveOverride).toBe(ANCHOR_HOST)
+  })
+})
+
+describe('preview-router worker — never surface a raw 404/503', () => {
+  test('document navigation: infra 503 from ingress (no marker) becomes the interstitial', async () => {
+    // Wake reports ready, but Kourier/activator still 503s (endpoint race).
+    installFetch((url) =>
+      url.includes('/api/preview/')
+        ? { status: 200, body: '{"ready":true}' }
+        : { status: 503, body: 'upstream connect error' },
+    )
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('Waking things up')
+    // 503 is transient → retried once, so the pod was proxied twice.
+    expect(proxyCalls().length).toBe(2)
+  })
+
+  test('document navigation: infra 404 from ingress (no marker) becomes the interstitial', async () => {
+    installFetch((url) =>
+      url.includes('/api/preview/')
+        ? { status: 200, body: '{"ready":true}' }
+        : { status: 404, body: 'no healthy upstream' },
+    )
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('Waking things up')
+    // 404 is not transient → no retry, single proxy attempt.
+    expect(proxyCalls().length).toBe(1)
+  })
+
+  test("document navigation: app's own 404 (marked) passes through untouched", async () => {
+    installFetch((url) =>
+      url.includes('/api/preview/')
+        ? { status: 200, body: '{"ready":true}' }
+        : { status: 404, body: '<html>my app 404</html>', headers: { 'x-shogo-runtime': '1' } },
+    )
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(404)
+    expect(await res.text()).toBe('<html>my app 404</html>')
+    // Marked response is not transient-retried and not masked.
+    expect(proxyCalls().length).toBe(1)
+  })
+
+  test('document navigation: transient 503 that recovers on retry returns the app', async () => {
+    installFetch((url, i) => {
+      if (url.includes('/api/preview/')) return { status: 200, body: '{"ready":true}' }
+      // First proxy attempt 503s, second succeeds.
+      return i <= 1
+        ? { status: 503, body: 'warming' }
+        : { status: 200, body: '<html>live</html>', headers: { 'x-shogo-runtime': '1' } }
+    })
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('<html>live</html>')
+    expect(proxyCalls().length).toBe(2)
+  })
+
+  test('sub-resource GET: infra 404 (no marker) passes through, not the interstitial', async () => {
+    // Assets/XHR have nothing to render — must not be swapped for HTML.
+    installFetch(() => ({ status: 404, body: 'nope' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://p1.preview.shogo.ai/assets/app.js', {
+      headers: { Accept: '*/*' },
+    })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(404)
+    expect(await res.text()).toBe('nope')
+    // Not a document → no wake call, no interstitial.
+    expect(calls.every((c) => !c.url.includes('/api/preview/'))).toBe(true)
+  })
+
+  test('non-GET request proxies straight through without retry or interstitial', async () => {
+    installFetch(() => ({ status: 503, body: 'busy' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://p1.preview.shogo.ai/api/data', {
+      method: 'POST',
+      headers: { Accept: 'text/html' },
+      body: 'x',
+    })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(503)
+    // Single proxy attempt, no wake, no retry.
+    expect(proxyCalls().length).toBe(1)
+    expect(calls.every((c) => !c.url.includes('/api/preview/'))).toBe(true)
   })
 })

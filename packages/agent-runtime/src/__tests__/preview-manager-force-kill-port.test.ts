@@ -43,7 +43,7 @@ mock.module('child_process', () => ({
   },
 }))
 
-const { PreviewManager } = await import('../preview-manager')
+const { PreviewManager, parseListeningInodesForPort } = await import('../preview-manager')
 
 const originalPlatform = process.platform
 
@@ -141,5 +141,56 @@ describe('PreviewManager.forceKillPort platform branching', () => {
 
     const taskkills = execCalls.filter((c) => c.startsWith('taskkill'))
     expect(taskkills).toEqual(['taskkill /F /PID 77777'])
+  })
+})
+
+// The /proc fallback is what makes forceKillPort actually work on the slim
+// production runtime image (no lsof, no fuser). These pin the pure parser that
+// resolves the LISTEN socket inode(s) for a port from a /proc/net/tcp table.
+describe('parseListeningInodesForPort (/proc/net/tcp parser)', () => {
+  // Port 3001 == 0x0BB9; state 0A == TCP_LISTEN; inode is column index 9.
+  const header =
+    '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode'
+
+  test('extracts the inode of a LISTEN socket on the requested port', () => {
+    const table = [
+      header,
+      '   0: 0100007F:0BB9 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 987654 1 0000 100 0 0 10 0',
+    ].join('\n')
+    expect([...parseListeningInodesForPort(table, 3001)]).toEqual(['987654'])
+  })
+
+  test('ignores rows in a non-LISTEN state even when the port matches', () => {
+    const table = [
+      header,
+      // st 01 == ESTABLISHED — a client connection to :3001, not a listener.
+      '   0: 0100007F:0BB9 0100007F:C001 01 00000000:00000000 00:00000000 00000000  1000        0 111111 1 0000 100 0 0 10 0',
+    ].join('\n')
+    expect([...parseListeningInodesForPort(table, 3001)]).toEqual([])
+  })
+
+  test('ignores LISTEN sockets on a different port', () => {
+    const table = [
+      header,
+      // 0x1F90 == 8080
+      '   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 222222 1 0000 100 0 0 10 0',
+    ].join('\n')
+    expect([...parseListeningInodesForPort(table, 3001)]).toEqual([])
+  })
+
+  test('matches a wildcard (0.0.0.0) bind and skips a zero inode', () => {
+    const table = [
+      header,
+      // wildcard bind on :3001, LISTEN, but inode 0 (kernel-internal) — skipped
+      '   0: 00000000:0BB9 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 0 1 0000 100 0 0 10 0',
+      // real listener on :3001
+      '   1: 00000000:0BB9 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 333333 1 0000 100 0 0 10 0',
+    ].join('\n')
+    expect([...parseListeningInodesForPort(table, 3001)]).toEqual(['333333'])
+  })
+
+  test('tolerates blank lines and the header without throwing', () => {
+    const table = ['', header, '', ''].join('\n')
+    expect([...parseListeningInodesForPort(table, 3001)]).toEqual([])
   })
 })
