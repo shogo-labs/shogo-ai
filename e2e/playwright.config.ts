@@ -25,7 +25,11 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,
-  workers: 1,
+  // Each hosted test provisions its own isolated account, so files can run
+  // concurrently. 4 workers in CI keeps the ~118-test suite under the job
+  // timeout (1 worker previously ran past 30m). Stays serial locally to avoid
+  // hammering a localhost target.
+  workers: process.env.CI ? 4 : 1,
   reporter: [["html", { outputFolder: "../test-results/e2e-report" }]],
   timeout: 120_000,
   expect: { timeout: 15_000 },
