@@ -214,7 +214,10 @@ async function main() {
   const wake = { warm: [] as number[], cold: [] as number[], coldboot: [] as number[], hostWarm: [] as number[], hostCold: [] as number[], bySource: {} as Record<string, number> }
   const wakeRecs: any[] = []
 
+  const woken = new Set<string>()
   const doWake = async (pid: string) => {
+    if (woken.has(pid)) return // oldest/newest can overlap when 2*sample > N
+    woken.add(pid)
     const a = await assign(pid)
     if (!a.ok) {
       wakeRecs.push({ pid, ok: false, err: `${a.status}` })
@@ -240,10 +243,14 @@ async function main() {
     // fire-and-forgets a suspend without timing it.
   }
 
-  console.log(`[measure] waking ${oldest.length} oldest + ${newest.length} newest projects...`)
-  // Oldest first (cold path), then newest (warm) — sequential to keep latency clean.
-  for (const pid of oldest) await doWake(pid)
+  console.log(`[measure] waking ${newest.length} newest + ${oldest.length} oldest projects...`)
+  // Newest FIRST: these are the most-recently suspended, so the likeliest to be
+  // still-local (warm) — and a cold-first order would spend minutes pulling the
+  // oldest from S3, during which GC evicts the newest too, cannibalizing the
+  // warm sample. Then oldest (the GC-evicted, cold/store path). Sequential to
+  // keep per-open latency uncontended.
   for (const pid of newest) await doWake(pid)
+  for (const pid of oldest) await doWake(pid)
 
   const final = await snapshotVms('final')
   series.push(final)
