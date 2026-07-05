@@ -1,4 +1,0 @@
-Method,Name,Error,Occurrences
-POST,assign(cold),"CatchResponseError('cold assign 500: {""error"":""FC API socket never appeared: /opt/fc-spike/run/fcvm-11-mr7p3wzq.sock""}')",1
-POST,suspend,HTTPError('500 Server Error: Internal Server Error for url: suspend'),7
-POST,assign(cold),"CatchResponseError('cold assign 500: {""error"":""FC API socket never appeared: /opt/fc-spike/run/fcvm-2-mr7p2s11.sock""}')",1
