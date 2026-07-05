@@ -21,7 +21,7 @@
  *     suspend or evict a project that is actively serving.
  */
 
-import { existsSync, readdirSync, rmSync } from 'fs'
+import { existsSync, readdirSync, rmSync, statSync } from 'fs'
 import { join } from 'path'
 import { CacheIndex, type CacheEntry } from './cache-index'
 import { Semaphore, Singleflight } from './concurrency'
@@ -70,6 +70,15 @@ export interface GcReport {
   bytesReclaimed: number
   disk: DiskUsage
 }
+
+/**
+ * Orphan reclaim never touches artifacts younger than this — the window in
+ * which a VM's files exist on disk but aren't yet recorded in a live map (mid
+ * cold-boot, mid-assign, mid-snapshot). Comfortably longer than the slowest
+ * boot+assign under heavy-op queueing, short enough that superseded files from
+ * a re-suspend are still reclaimed promptly.
+ */
+const ORPHAN_GRACE_MS = 180_000
 
 async function probeHealth(url: string, timeoutMs = 1000): Promise<boolean> {
   try {
@@ -638,6 +647,16 @@ export class MetalWarmPool {
       protectedPaths.add(s.snapshot.rootfs)
     }
 
+    // A cold boot creates a VM's rootfs/CoW, then boots + configures it, and
+    // only THEN records it in `assigned`; a suspend snapshots to disk before
+    // recording in `suspended`. In those in-flight windows the artifacts belong
+    // to no map yet, so a map-only guard would delete a live VM's files
+    // mid-flight (the root cause of "artifact missing/empty" torn pushes). A
+    // genuine orphan (from a re-suspend's superseded vmId, or index/disk drift)
+    // is by definition NOT being written right now, so an age gate reliably
+    // separates the two: never reap anything younger than the longest possible
+    // boot+assign, regardless of which map does or doesn't reference it.
+    const cutoff = Date.now() - ORPHAN_GRACE_MS
     let removed = 0
     const sweepDir = (dir: string, match: (name: string) => boolean, isRootfs = false): void => {
       let names: string[] = []
@@ -656,6 +675,12 @@ export class MetalWarmPool {
           const vmId = name.replace(/\.cow$/, '')
           const dmPath = `/dev/mapper/mvm-${vmId}`
           if (protectedPaths.has(dmPath)) continue
+        }
+        // Age gate: skip artifacts still within the in-flight grace window.
+        try {
+          if (statSync(full).mtimeMs > cutoff) continue
+        } catch {
+          continue // vanished under us — nothing to reclaim
         }
         try {
           if (isRootfs) this.mgr.releaseRootfs(full)
