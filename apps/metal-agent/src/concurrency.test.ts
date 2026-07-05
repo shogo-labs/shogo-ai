@@ -58,6 +58,36 @@ describe('Semaphore', () => {
     expect(peak).toBeLessThanOrEqual(2)
   })
 
+  test('stays within concurrency when acquires arrive continuously', async () => {
+    // Stress guard for the release()/acquire() hand-off: the earlier version
+    // returned the permit to the pool on release() and re-decremented on the
+    // woken waiter, so a fast-path acquire landing in between could steal it and
+    // drive permits negative (>max concurrent). release() now hands the permit
+    // straight to the next waiter. Staggered arrivals with jittered durations
+    // keep acquires racing wakeups; peak must never exceed max.
+    const max = 3
+    const sem = new Semaphore(max)
+    let active = 0
+    let peak = 0
+    const jobs: Promise<void>[] = []
+    for (let i = 0; i < 40; i++) {
+      jobs.push(
+        sem.run(async () => {
+          active++
+          peak = Math.max(peak, active)
+          await tick(1 + (i % 4))
+          active--
+        }),
+      )
+      // Yield between launches so some acquires land while waiters are woken.
+      if (i % 3 === 0) await tick(1)
+    }
+    await Promise.all(jobs)
+    expect(peak).toBeLessThanOrEqual(max)
+    expect(active).toBe(0)
+    expect(sem.available).toBe(max)
+  })
+
   test('releases a permit even when the job throws', async () => {
     const sem = new Semaphore(1)
     await expect(sem.run(async () => { throw new Error('x') })).rejects.toThrow('x')

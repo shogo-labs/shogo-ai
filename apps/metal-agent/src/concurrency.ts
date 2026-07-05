@@ -66,14 +66,20 @@ export class Semaphore {
       this.permits--
       return
     }
+    // No permit free: wait to be handed one DIRECTLY by release(). We must not
+    // decrement again on wake — release() transfers the permit to us without
+    // returning it to the pool, otherwise a concurrent fast-path acquire could
+    // steal it and permits would go negative (over-subscription).
     await new Promise<void>((resolve) => this.queue.push(resolve))
-    this.permits--
   }
 
   private release(): void {
-    this.permits++
     const next = this.queue.shift()
-    if (next) next()
+    if (next) {
+      next() // hand this permit straight to the waiter (permits stays reserved)
+      return
+    }
+    this.permits++
   }
 
   /** Run `fn` holding one permit; releases even if `fn` throws. */
