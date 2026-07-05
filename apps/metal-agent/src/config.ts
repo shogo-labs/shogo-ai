@@ -76,6 +76,21 @@ export const config = {
   /** Re-announce interval (also serves as a liveness heartbeat). */
   registerIntervalMs: parseInt(env('METAL_REGISTER_INTERVAL_MS', '30000'), 10),
 
+  /**
+   * Public per-VM port-forwarding (the pre-mesh data path). When the control
+   * plane can't route the private TAP guest IPs (e.g. OKE VCN-native pods that
+   * only have internet egress), the node-agent DNATs a host public port to each
+   * assigned guest's :guestPort and returns http://{publicHost}:{port} instead
+   * of the private guest URL. Locked to `fwdAllowCidr` so only the control
+   * plane's egress IP can reach the forwarded ports.
+   *   publicHost empty → disabled (return the private guest URL, mesh mode).
+   */
+  publicHost: env('METAL_PUBLIC_HOST', ''),
+  fwdPortBase: parseInt(env('METAL_FWD_PORT_BASE', '20000'), 10),
+  fwdPortSpan: parseInt(env('METAL_FWD_PORT_SPAN', '1000'), 10),
+  /** Source CIDR(s) allowed to reach forwarded ports, comma-sep. Empty = any. */
+  fwdAllowCidr: env('METAL_FWD_ALLOW_CIDR', ''),
+
   // --- Phase 3: snapshot lifecycle ------------------------------------------
 
   /**

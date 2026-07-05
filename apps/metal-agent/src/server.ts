@@ -22,9 +22,15 @@
 
 import { config } from './config'
 import { MetalWarmPool } from './pool'
+import { PortForward } from './port-forward'
 import { startRegistration } from './register'
 
 const pool = new MetalWarmPool()
+// Pre-mesh data path: DNAT a public host port to each assigned guest and hand
+// back http://{publicHost}:{port}. No-op (returns the private guest URL) unless
+// METAL_PUBLIC_HOST is set.
+const fwd = new PortForward()
+if (fwd.enabled) console.log(`[metal-agent] public port-forward on: ${config.publicHost}:${config.fwdPortBase}-${config.fwdPortBase + config.fwdPortSpan - 1} allow=${config.fwdAllowCidr || 'any'}`)
 
 async function json(req: Request): Promise<any> {
   try {
@@ -51,16 +57,21 @@ const server = Bun.serve({
         // cold miss returns null → fall back to a fresh warm assign.
         if (await pool.canResume(projectId)) {
           const r = await pool.resume(projectId)
-          if (r) return Response.json({ url: r.assigned.handle.agentUrl, mode: 'resumed', source: r.source, readyMs: r.readyMs })
+          if (r) {
+            const url = await fwd.ensure(projectId, r.assigned.handle.guestIp)
+            return Response.json({ url, mode: 'resumed', source: r.source, readyMs: r.readyMs })
+          }
         }
         const a = await pool.assign(projectId, env ?? {})
-        return Response.json({ url: a.handle.agentUrl, mode: 'assigned' })
+        const url = await fwd.ensure(projectId, a.handle.guestIp)
+        return Response.json({ url, mode: 'assigned' })
       }
 
       if (path === '/suspend' && req.method === 'POST') {
         const { projectId } = await json(req)
         if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
         const s = await pool.suspend(projectId)
+        fwd.remove(projectId)
         return Response.json({ ok: true, memBytes: s.snapshot.bytesMem })
       }
 
@@ -69,7 +80,8 @@ const server = Bun.serve({
         if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
         const r = await pool.resume(projectId)
         if (!r) return Response.json({ error: 'no restorable snapshot (cold miss)' }, { status: 409 })
-        return Response.json({ url: r.assigned.handle.agentUrl, source: r.source, readyMs: r.readyMs })
+        const url = await fwd.ensure(projectId, r.assigned.handle.guestIp)
+        return Response.json({ url, source: r.source, readyMs: r.readyMs })
       }
 
       if (path === '/touch' && req.method === 'POST') {
@@ -102,7 +114,10 @@ if (config.idleSuspendMs > 0) {
   console.log(`[metal-agent] idle-suspend on: idleMs=${config.idleSuspendMs} scan=${config.reapIntervalMs}ms store=${config.snapStore}`)
   reaper = setInterval(() => {
     pool.reapIdle().then(
-      (ids) => ids.length && console.log(`[metal-agent] idle-suspended: ${ids.join(', ')}`),
+      (ids) => {
+        for (const id of ids) fwd.remove(id)
+        if (ids.length) console.log(`[metal-agent] idle-suspended: ${ids.join(', ')}`)
+      },
       (err) => console.error('[metal-agent] reaper error:', err?.message ?? err),
     )
   }, config.reapIntervalMs)
@@ -111,6 +126,7 @@ if (config.idleSuspendMs > 0) {
 process.on('SIGTERM', async () => {
   stopRegistration()
   if (reaper) clearInterval(reaper)
+  fwd.removeAll()
   await pool.stop().catch(() => {})
   process.exit(0)
 })

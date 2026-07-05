@@ -158,3 +158,32 @@ Findings:
   per-VM DNAT) is up. Until then, `MetalWakeUser` against the node-agent is the faithful
   wake-path load test; the staging apps/api can only be load-tested at the metal *registry*
   endpoints (`StagingControlPlaneUser`).
+
+### Live in staging (2026-07-05) — control plane + per-VM DNAT data path
+
+`feat/metal-substrate-cp` deployed to staging (api-01040, metal off by default → enabled via
+`SHOGO_METAL_ENABLED=1` + `METAL_PROJECT_ALLOWLIST=metal-e2e-staging`). Data path uses the
+**restricted public per-VM DNAT** (`src/port-forward.ts`) instead of the mesh: the node-agent
+DNATs `160.202.128.229:20000+ → guestIp:8080`, locked to the OKE NAT egress IP (`157.151.142.64/32`).
+
+Verified end-to-end against the live staging cluster (`oke-staging`, ASH):
+
+| Leg | Result |
+| --- | --- |
+| Node-agent registers with staging control plane (`/api/internal/metal/register`) | `latitude-ash-1` **live** in `/status`, capacity 1×(2 vCPU/2 GB) |
+| Staging **api pod → woken guest** over DNAT (`/health`) | **HTTP 200 in ~15 ms** |
+| Real **wake** (suspend→`/assign` resume) host-reported | `mode: resumed`, **readyMs 49 ms**, 2 GB reclaimed on suspend |
+| DNAT port from a non-allowed source (laptop) | `http=000` — **blocked** (locked to OKE egress) |
+| Locust on `metal/status` (40 users, 60 s, over CF-origin TLS + auth) | 3266 reqs, **0 fails**, p50 87 ms / p95 94 ms / p99 370 ms, 55 rps |
+
+Findings / limitations:
+- **Per-pod controller state**: `MetalWarmPoolController` holds the host registry in memory, so a
+  fresh api revision/pod starts empty until the next 30 s heartbeat lands on it. With 2 api
+  replicas the host stays visible (each heartbeat round-robins within TTL), but at higher replica
+  counts a single resolution can hit a pod that hasn't heard the host yet → Knative fallback (safe
+  by design). Production should share the registry (e.g. Redis) or fan out heartbeats.
+- **Auth on drivable endpoints**: driving a resolution through an HTTP endpoint on the running api
+  requires a real session/API key (`requireAuth`), so the through-API wake was validated at the
+  data-path layer (api pod → node-agent → guest) rather than via a user-facing route.
+- **Staging TLS**: the LB serves a Cloudflare Origin cert (only trusted at CF's edge); the
+  node-agent registers directly to the LB IP with TLS verification disabled (`INSECURE_TLS=1`).

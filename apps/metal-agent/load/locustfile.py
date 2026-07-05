@@ -137,6 +137,12 @@ class MetalWakeUser(HttpUser):
             pass
 
 
+# Skip TLS verify (staging LB serves a Cloudflare Origin cert reached directly by
+# IP) and skip registration writes against a live controller when read-only.
+CP_INSECURE = os.environ.get("METAL_CP_INSECURE", "1") not in ("0", "false", "")
+CP_READONLY = os.environ.get("METAL_CP_READONLY", "0") not in ("0", "false", "")
+
+
 class StagingControlPlaneUser(HttpUser):
     """Load-tests the staging apps/api metal registry endpoints (bearer auth)."""
 
@@ -147,9 +153,14 @@ class StagingControlPlaneUser(HttpUser):
 
     def on_start(self):
         self.host_id = f"loadtest-host-{uuid.uuid4().hex[:8]}"
+        if CP_INSECURE:
+            self.client.verify = False
 
     @task(3)
     def register(self):
+        # Don't write fake hosts into a live controller when read-only.
+        if CP_READONLY:
+            return self.status()
         payload = {
             "hostId": self.host_id,
             "meshIp": "10.255.0.99",
