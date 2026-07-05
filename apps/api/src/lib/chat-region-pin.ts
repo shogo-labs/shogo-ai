@@ -28,7 +28,7 @@
 
 import type { Context } from 'hono'
 import { prisma } from './prisma'
-import { RAW_REGION_ID, getPeer } from './region'
+import { RAW_REGION_ID, REGION_PEERS, getPeer } from './region'
 import { proxyToPeer, isProxiedRequest } from './region-peer-proxy'
 
 /**
@@ -95,6 +95,12 @@ export async function pinChatToHomeRegion(
 ): Promise<Response | null> {
   // Single-region / local / desktop: nothing to pin.
   if (!RAW_REGION_ID) return null
+  // No peers configured → single-region deployment. There is nowhere to proxy
+  // and nothing to fail closed *to*, so the session is always served locally.
+  // Mirrors the home-region write router; without this a workspace whose
+  // homeRegion is a non-local region with no peer (a foreign/legacy value in
+  // single-region staging) would fail closed with a spurious 503 on chat reads.
+  if (REGION_PEERS.length === 0) return null
   if (!chatRegionPinEnabled()) return null
   // Already proxied here from a sibling region — handle locally, never re-proxy.
   if (isProxiedRequest(c)) return null
