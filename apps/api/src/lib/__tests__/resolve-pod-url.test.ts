@@ -79,6 +79,57 @@ describe('resolveProjectPodUrl', () => {
     })
   })
 
+  describe('metal substrate routing', () => {
+    it('routes metal when enabled and the project is eligible (wins over k8s)', async () => {
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isMetalEnabled: () => true,
+        _isMetalEligible: () => true,
+        _metalResolver: async () => 'http://10.8.0.2:8080',
+        _isKubernetes: () => true,
+        _k8sResolver: async () => 'http://pod.cluster/v1',
+      })
+      expect(res).toEqual({ mode: 'metal', url: 'http://10.8.0.2:8080' })
+    })
+
+    it('does NOT touch metal when the project is ineligible', async () => {
+      let metalCalls = 0
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isMetalEnabled: () => true,
+        _isMetalEligible: () => false,
+        _metalResolver: async () => { metalCalls++; return 'http://metal' },
+        _isKubernetes: () => true,
+        _k8sResolver: async () => 'http://pod.cluster/v1',
+      })
+      expect(metalCalls).toBe(0)
+      expect(res.mode).toBe('k8s')
+    })
+
+    it('falls back to k8s when the metal resolver throws (best-effort)', async () => {
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isMetalEnabled: () => true,
+        _isMetalEligible: () => true,
+        _metalResolver: async () => { throw new Error('no live metal host available') },
+        _isKubernetes: () => true,
+        _k8sResolver: async () => 'http://pod.cluster/v1',
+      })
+      expect(res).toEqual({ mode: 'k8s', url: 'http://pod.cluster/v1' })
+    })
+
+    it('falls back to host when metal fails and no k8s/VM isolation', async () => {
+      const mgr = fakeRuntimeManager()
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isMetalEnabled: () => true,
+        _isMetalEligible: () => true,
+        _metalResolver: async () => { throw new Error('all metal hosts failed') },
+        _isKubernetes: () => false,
+        _isVMIsolation: () => false,
+        runtimeManager: mgr as any,
+      })
+      expect(res.mode).toBe('host')
+      expect(mgr.start).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('VM transient failure handling', () => {
     it('throws the transient error by default (maxVMRetries=1)', async () => {
       await expect(

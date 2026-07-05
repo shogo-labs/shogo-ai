@@ -34,12 +34,14 @@
  */
 
 import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
+import { isMetalEnabled as metalEnabled, isMetalEligibleProject as metalEligible } from './metal-eligibility'
 
-export type PodMode = 'k8s' | 'vm' | 'host'
+export type PodMode = 'k8s' | 'vm' | 'host' | 'metal'
 
 export type ResolvedPod =
   | { mode: 'k8s'; url: string }
   | { mode: 'vm'; url: string }
+  | { mode: 'metal'; url: string }
   | { mode: 'host'; url: string; runtime: IProjectRuntime }
 
 export interface ResolvePodUrlOpts {
@@ -101,6 +103,14 @@ export interface ResolvePodUrlOpts {
    */
   _isKubernetes?: () => boolean
   _isVMIsolation?: () => boolean
+
+  /**
+   * Test-only overrides for the `metal` substrate branch. In production these
+   * are read from env / dynamically imported from metal-warm-pool-controller.
+   */
+  _isMetalEnabled?: () => boolean
+  _isMetalEligible?: (projectId: string) => boolean
+  _metalResolver?: (projectId: string) => Promise<string>
 }
 
 /**
@@ -116,6 +126,16 @@ function defaultIsKubernetes(): boolean {
 
 function defaultIsVMIsolation(): boolean {
   return process.env.SHOGO_VM_ISOLATION === 'true'
+}
+
+// Metal probes are pure env reads (metal-eligibility) — cheap to call on every
+// request; the heavy controller is only dynamically imported once eligible.
+function defaultIsMetalEnabled(): boolean {
+  return metalEnabled()
+}
+
+function defaultIsMetalEligible(projectId: string): boolean {
+  return metalEligible(projectId)
 }
 
 /**
@@ -135,6 +155,26 @@ export async function resolveProjectPodUrl(
   const tag = opts.logTag ?? 'PodResolver'
   const isKubernetes = opts._isKubernetes ?? defaultIsKubernetes
   const isVMIsolation = opts._isVMIsolation ?? defaultIsVMIsolation
+
+  // Metal microVM substrate (cloud-agnostic bare-metal, reached over the mesh).
+  // Gated per-project and BEST-EFFORT: any miss/host failure falls through to
+  // the existing Knative/VM/host cascade below, so it's safe to roll out behind
+  // the flag without risking a project becoming unreachable if a host is down.
+  const isMetalEnabled = opts._isMetalEnabled ?? defaultIsMetalEnabled
+  const isMetalEligible = opts._isMetalEligible ?? defaultIsMetalEligible
+  if (isMetalEnabled() && isMetalEligible(projectId)) {
+    try {
+      const resolve = opts._metalResolver
+        ?? (await import('./metal-warm-pool-controller')).getMetalProjectUrl
+      const url = await resolve(projectId)
+      return { mode: 'metal', url }
+    } catch (err: any) {
+      console.warn(
+        `[${tag}] metal resolve failed for ${projectId}; falling back to k8s/vm/host: ${err?.message ?? err}`,
+      )
+      // fall through to the standard cascade
+    }
+  }
 
   if (isKubernetes()) {
     const resolver = opts._k8sResolver

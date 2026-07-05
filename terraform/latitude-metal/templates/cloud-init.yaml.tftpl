@@ -1,0 +1,21 @@
+#cloud-config
+# Managed by terraform/latitude-metal. Injects host SSH access and (optionally)
+# runs the idempotent first-boot bootstrap that makes the host ready to run the
+# Firecracker node-agent (KVM check, firecracker + kernel, bun, ip_forward,
+# wireguard tooling, stopped metal-agent.service).
+disable_root: false
+ssh_pwauth: false
+%{ if enable_bootstrap ~}
+write_files:
+  - path: /opt/host-bootstrap.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      ${indent(6, bootstrap_script)}
+%{ endif ~}
+runcmd:
+  - mkdir -p /root/.ssh && chmod 700 /root/.ssh
+  - echo '${ssh_public_key}' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+%{ if enable_bootstrap ~}
+  - bash /opt/host-bootstrap.sh > /var/log/host-bootstrap.log 2>&1 || true
+%{ endif ~}

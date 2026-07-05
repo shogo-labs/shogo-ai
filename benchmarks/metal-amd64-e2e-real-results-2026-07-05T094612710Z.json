@@ -1,0 +1,103 @@
+{
+  "image": "agent-runtime (real)",
+  "iters": 10,
+  "config": {
+    "memMiB": 2048,
+    "vcpus": 2,
+    "rootfs": "/opt/fc-spike/img/runtime.ext4",
+    "init": "/usr/local/bin/fc-init"
+  },
+  "steps": {
+    "coldBootReadyMs": 12238,
+    "suspendMs": 2183,
+    "vmGoneAfterSuspend": true
+  },
+  "snapshot": {
+    "memBytes": 2147483648,
+    "stateBytes": 30297
+  },
+  "restore": {
+    "apiMs": {
+      "p50": 42.3,
+      "p95": 63.5,
+      "p99": 63.5,
+      "samples": [
+        34,
+        50.7,
+        38.5,
+        63.5,
+        38.6,
+        38.8,
+        42.3,
+        50.9,
+        41.7,
+        56.8
+      ]
+    },
+    "readyMs": {
+      "p50": 56,
+      "p95": 71.3,
+      "p99": 71.3,
+      "samples": [
+        40.4,
+        56,
+        54.5,
+        68.8,
+        44,
+        54.5,
+        47.8,
+        56.1,
+        56.8,
+        71.3
+      ]
+    }
+  },
+  "correctness": {
+    "baseline": {
+      "status": "ok",
+      "projectId": "__POOL__",
+      "runtimeType": "unified",
+      "poolMode": true,
+      "uptime": 0,
+      "fast": true,
+      "gateway": {
+        "running": false
+      }
+    },
+    "warmed": {
+      "status": "ok",
+      "projectId": "__POOL__",
+      "runtimeType": "unified",
+      "poolMode": true,
+      "uptime": 0,
+      "fast": true,
+      "gateway": {
+        "running": false
+      }
+    },
+    "firstAfter": {
+      "status": "ok",
+      "projectId": "__POOL__",
+      "runtimeType": "unified",
+      "poolMode": true,
+      "uptime": 0,
+      "fast": true,
+      "gateway": {
+        "running": false
+      }
+    },
+    "checks": {
+      "bootedInPoolMode": true,
+      "survivedRestore": true,
+      "restoreFasterThanReboot": true,
+      "hostRamFreedOnSuspend": true
+    }
+  },
+  "slo": {
+    "target_ready_p95_ms": 2000,
+    "actual_ready_p95_ms": 71.3,
+    "coldBootReadyMs": 12238,
+    "speedup": 218.5
+  },
+  "pass": true
+}
