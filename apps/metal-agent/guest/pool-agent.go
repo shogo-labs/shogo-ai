@@ -48,6 +48,13 @@ var (
 	bootID    = randHex(8)
 	startedAt = time.Now()
 	counter   atomic.Int64
+	// lastRequestAt is the wall-clock (ms) of the last real request the guest
+	// served. The node-agent polls /pool/activity to fold this into idle
+	// tracking, because user traffic reaches the guest over DNAT and never
+	// touches the node-agent — without it the reaper/GC would suspend or evict
+	// projects that are actively serving. Health/activity probes do NOT bump it
+	// (they'd mask real idleness).
+	lastRequestAt atomic.Int64
 
 	mu             sync.Mutex
 	assigned       string
@@ -57,6 +64,15 @@ var (
 	rehydrateCount int
 	quiesced       bool
 )
+
+// track wraps a handler so any real request refreshes lastRequestAt. The real
+// agent-runtime does the equivalent across its app routes.
+func track(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		lastRequestAt.Store(time.Now().UnixMilli())
+		next(w, r)
+	}
+}
 
 func randHex(n int) string {
 	b := make([]byte, n)
@@ -100,13 +116,22 @@ func main() {
 		}
 	}()
 
+	// /health and /pool/activity are the node-agent's own probes; they must NOT
+	// count as activity or idle projects would never be reaped.
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, statusPayload())
 	})
-	http.HandleFunc("/pool/status", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, statusPayload())
+	http.HandleFunc("/pool/activity", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"lastRequestAt": lastRequestAt.Load(),
+			"counter":       counter.Load(),
+			"bootID":        bootID,
+		})
 	})
-	http.HandleFunc("/pool/assign", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/pool/status", track(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, statusPayload())
+	}))
+	http.HandleFunc("/pool/assign", track(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
 			return
@@ -128,7 +153,7 @@ func main() {
 		mu.Unlock()
 		fmt.Printf("ASSIGNED project=%s envKeys=%d\n", body.ProjectID, envCount)
 		writeJSON(w, http.StatusOK, map[string]any{"assigned": body.ProjectID, "bootID": bootID})
-	})
+	}))
 
 	// Pre-snapshot: the real runtime would flush the workspace + close AI-proxy/
 	// MCP/LSP/DB sockets here so the frozen image has no half-open connections.

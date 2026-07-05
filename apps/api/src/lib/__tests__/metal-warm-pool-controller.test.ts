@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { MetalWarmPoolController, NoMetalHostError } from '../metal-warm-pool-controller'
+import { MetalPlacementRegistry, _setMetalPlacementRegistry } from '../metal-placement-registry'
 import { isMetalEnabled, isMetalEligibleProject, rolloutBucket } from '../metal-eligibility'
 
 const REG = {
@@ -20,6 +21,16 @@ function fakeEnv() {
 }
 
 describe('MetalWarmPoolController', () => {
+  // Isolate the shared placement registry (lease/placement state) per test so
+  // reused projectIds don't leak state between cases. In prod this is Redis-
+  // backed and shared across replicas; here it's a fresh in-memory instance.
+  beforeEach(() => {
+    _setMetalPlacementRegistry(new MetalPlacementRegistry(() => null))
+  })
+  afterEach(() => {
+    _setMetalPlacementRegistry(null)
+  })
+
   it('throws NoMetalHostError when no host has registered', async () => {
     const c = new MetalWarmPoolController(fakeEnv(), (async () => new Response()) as any)
     await expect(c.getMetalProjectUrl('p1')).rejects.toBeInstanceOf(NoMetalHostError)

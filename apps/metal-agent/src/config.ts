@@ -131,12 +131,87 @@ export const config = {
   s3Region: env('S3_REGION', 'us-east-1'),
 
   /**
+   * Slim durable snapshots. The naive push is ~10 GB/project (full rootfs +
+   * uncompressed guest RAM); at 10k projects that is ~100 TB in S3 and a
+   * multi-GB download per cache miss. Slim mode shrinks that to ~1-2 GB:
+   *   - mem is gzip-streamed to the store and decompressed on pull;
+   *   - in dm rootfs mode the small CoW *diff* is pushed instead of the whole
+   *     image, and the read-only golden base is uploaded once per rootfs
+   *     identity (content-addressed under `basePrefix`) and reused by every
+   *     project on that base.
+   * Off by default (full artifacts). Requires host validation before prod.
+   */
+  snapSlim: env('METAL_SNAP_SLIM', '0') !== '0',
+  /** Content-addressed prefix for the shared golden base(s) in the store. */
+  snapBasePrefix: env('METAL_SNAP_BASE_PREFIX', 'metal-bases/'),
+  /** Local cache dir for golden bases pulled from the store (diff-mode restore). */
+  baseCacheDir: env('METAL_BASE_CACHE_DIR', `${WORK}/base-cache`),
+
+  /**
    * Rootfs identity stamped into snapshot metadata. A restore is only valid
    * against a byte-compatible rootfs, so if the host's golden rootfs changed
    * (new runtime image / deps) the durable snapshot is stale and we cold-boot
    * instead. Empty → derived cheaply from baseRootfs size+mtime at startup.
    */
   rootfsIdentity: env('METAL_ROOTFS_IDENTITY', ''),
+
+  // --- Phase 5: NVMe garbage collection / cache -----------------------------
+
+  /**
+   * Treat local NVMe as a bounded LRU cache of suspended snapshots, backed by
+   * the durable store. A background sweep reclaims disk when it crosses the
+   * high-water mark, evicting the least-recently-used *durably-backed* suspended
+   * projects down to the low-water mark. Evicted projects still resume — they
+   * pull from the durable store (a cache miss), so eviction is safe iff a
+   * durable copy exists. Requires METAL_SNAP_STORE=fs|s3 to evict live
+   * snapshots; with store=none the sweep only reclaims orphans.
+   */
+  gcIntervalMs: parseInt(env('METAL_GC_INTERVAL_MS', '30000'), 10),
+  /** Start evicting when NVMe (METAL_WORK filesystem) crosses this used %. */
+  diskHighPct: parseInt(env('METAL_DISK_HIGH_PCT', '85'), 10),
+  /** Evict down to this used %. Must be < diskHighPct. */
+  diskLowPct: parseInt(env('METAL_DISK_LOW_PCT', '70'), 10),
+  /**
+   * Optional absolute cap on the local snapshot cache (bytes). 0 = disabled
+   * (watermarks only). When set, the sweep also evicts to keep cache bytes
+   * under this ceiling regardless of overall disk %.
+   */
+  cacheMaxBytes: parseInt(env('METAL_CACHE_MAX_BYTES', '0'), 10),
+  /**
+   * Durable tiering: projects touched within this window keep a full live-RAM
+   * snapshot in the durable store (fast wake). When a project OUTSIDE the window
+   * is evicted locally, its durable snapshot is dropped too, so it falls back to
+   * the git/S3 workspace cold boot on next open (keeps the durable tier small).
+   * Default ~14 days.
+   */
+  durableActiveWindowMs: parseInt(env('METAL_DURABLE_ACTIVE_WINDOW_MS', String(14 * 24 * 60 * 60 * 1000)), 10),
+
+  /**
+   * Per-VM rootfs provisioning off the read-only golden image:
+   *   full    → full copyFileSync (safe everywhere; ~8 GiB per VM)
+   *   reflink → copy-on-write clone via COPYFILE_FICLONE (XFS reflink / Btrfs);
+   *             only diverged blocks consume disk. Falls back to a full copy
+   *             (with a warning) on a filesystem without reflink support.
+   *   dm      → host-side device-mapper snapshot: one shared RO base + a small
+   *             per-VM CoW store exposed as a single block device. Densest and
+   *             the only mode whose diff is separable for slim durable pushes,
+   *             but requires dmsetup/losetup on the host (see host-bootstrap.sh).
+   */
+  rootfsCow: env('METAL_ROOTFS_COW', 'reflink') as 'full' | 'reflink' | 'dm',
+  /** dm mode: directory for per-VM CoW store files (sparse). */
+  dmCowDir: env('METAL_DM_COW_DIR', `${WORK}/cow`),
+  /** dm mode: per-VM CoW store size, sparse-allocated (e.g. "2G"). */
+  dmCowSize: env('METAL_DM_COW_SIZE', '2G'),
+
+  /**
+   * Poll each assigned guest's /pool/activity on the reap interval to fold real
+   * user traffic (which reaches the guest via DNAT, bypassing the node-agent)
+   * into lastTouchedAt, so the idle reaper and GC never suspend/evict a project
+   * that is actively serving requests. Fails open (treats a project as active on
+   * poll failure) so we never evict on missing data.
+   */
+  activityPoll: env('METAL_ACTIVITY_POLL', '1') !== '0',
+  activityTimeoutMs: parseInt(env('METAL_ACTIVITY_TIMEOUT_MS', '1000'), 10),
 } as const
 
 export type MetalConfig = typeof config

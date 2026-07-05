@@ -21,6 +21,7 @@ import {
   getMetalWarmPoolController,
   type MetalHostRegistration,
 } from '../lib/metal-warm-pool-controller'
+import { getMetalPlacementRegistry } from '../lib/metal-placement-registry'
 
 function expectedToken(): string | undefined {
   return process.env.METAL_REGISTER_TOKEN || process.env.SHOGO_INTERNAL_SECRET
@@ -68,8 +69,44 @@ export function metalRoutes(): Hono {
         assigned: Number(body.load?.assigned ?? 0),
         suspended: Number(body.load?.suspended ?? 0),
       },
+      disk: body.disk
+        ? {
+            totalBytes: Number(body.disk.totalBytes ?? 0),
+            freeBytes: Number(body.disk.freeBytes ?? 0),
+            usedPct: Number(body.disk.usedPct ?? 0),
+            cacheBytes: Number(body.disk.cacheBytes ?? 0),
+            localCount: Number(body.disk.localCount ?? 0),
+          }
+        : undefined,
+      metrics: body.metrics && typeof body.metrics === 'object' ? body.metrics : undefined,
     })
 
+    return c.json({ ok: true })
+  })
+
+  // POST /api/internal/metal/placement — node-agent placement events, so the
+  // shared registry reflects host-side suspend/evict without a fat heartbeat.
+  //   suspended → project still cached locally on this host (prefer it on wake)
+  //   evicted   → local copy dropped (durable/S3 or cold); clear host affinity
+  app.post('/placement', async (c) => {
+    if (!authOk(c.req.header('authorization'))) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    let body: { hostId?: string; projectId?: string; event?: string }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ ok: false, error: 'invalid_json' }, 400)
+    }
+    if (!body?.projectId || !body?.event) {
+      return c.json({ ok: false, error: 'projectId and event are required' }, 400)
+    }
+    const registry = getMetalPlacementRegistry()
+    if (body.event === 'suspended' && body.hostId) {
+      await registry.setPlacement(String(body.projectId), String(body.hostId), 'local').catch(() => {})
+    } else if (body.event === 'evicted' || body.event === 'cold') {
+      await registry.clearPlacement(String(body.projectId)).catch(() => {})
+    }
     return c.json({ ok: true })
   })
 
