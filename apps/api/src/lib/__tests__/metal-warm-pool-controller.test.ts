@@ -115,6 +115,26 @@ describe('MetalWarmPoolController', () => {
     await expect(c.getMetalProjectUrl('p1')).rejects.toBeInstanceOf(NoMetalHostError)
   })
 
+  it('resolves via a host known only through the shared registry (cross-replica)', async () => {
+    // Simulate a multi-replica deployment: the node-agent's heartbeat landed on
+    // a SIBLING api pod, so this controller never saw registerHost() — but the
+    // sibling published the host to the shared registry. Without registry-aware
+    // discovery this would NoMetalHostError and (in metal-only mode) 503.
+    const shared = new MetalPlacementRegistry(() => null)
+    _setMetalPlacementRegistry(shared)
+    await shared.upsertHost({ ...REG, lastSeenAt: Date.now() })
+
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ url: 'http://10.8.0.2:8080', mode: 'assigned' }), { status: 200 })) as any
+    // NOTE: no c.registerHost(...) — this pod has an empty in-memory host map.
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl, Date.now, shared)
+    expect(c.liveHosts().length).toBe(0) // in-memory view is empty
+    expect(await c.liveHostCount()).toBe(1) // but the fleet view sees the sibling's host
+
+    const url = await c.getMetalProjectUrl('p1')
+    expect(url).toBe('http://10.8.0.2:8080')
+  })
+
   it('dedupes concurrent resolves for the same project', async () => {
     let calls = 0
     const fetchImpl = (async () => {
