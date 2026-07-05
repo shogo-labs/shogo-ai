@@ -19,6 +19,16 @@
 #   SNAP_STORE              durable snapshot store: none|fs|s3 (default none)
 #   SNAP_STORE_DIR          fs-store path (default $WORK/durable-snapshots)
 #   SNAP_BUCKET             s3-store bucket (OCI Object Storage; s3 backend only)
+#   --- control-plane registration (Phase 4) ---
+#   CONTROL_PLANE_URL       apps/api base URL to register with (default '' = standalone)
+#   REGISTER_TOKEN          shared bearer token (must match api METAL_REGISTER_TOKEN)
+#   MESH_IP                 addr the control plane dials for /assign (default LISTEN_HOST)
+#   REGION, HOST_ID         host metadata for routing/liveness
+#   --- public per-VM DNAT (pre-mesh data path) ---
+#   PUBLIC_HOST             host public IP; set to return http://PUBLIC_HOST:port URLs
+#   FWD_ALLOW_CIDR          source CIDR allowed to reach forwarded ports (control-plane egress)
+#   INSECURE_TLS            set to 1 to skip TLS verify on register (e.g. control plane
+#                           behind a Cloudflare Origin cert reached directly by IP)
 # =============================================================================
 set -euo pipefail
 
@@ -35,6 +45,13 @@ IDLE_SUSPEND_MS="${IDLE_SUSPEND_MS:-0}"
 SNAP_STORE="${SNAP_STORE:-none}"
 SNAP_STORE_DIR="${SNAP_STORE_DIR:-$WORK/durable-snapshots}"
 SNAP_BUCKET="${SNAP_BUCKET:-}"
+CONTROL_PLANE_URL="${CONTROL_PLANE_URL:-}"
+REGISTER_TOKEN="${REGISTER_TOKEN:-}"
+MESH_IP="${MESH_IP:-$LISTEN_HOST}"
+REGION="${REGION:-us}"
+HOST_ID="${HOST_ID:-$(echo "$SSH_TARGET" | sed 's/.*@//')}"
+PUBLIC_HOST="${PUBLIC_HOST:-}"
+FWD_ALLOW_CIDR="${FWD_ALLOW_CIDR:-}"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
@@ -65,6 +82,14 @@ METAL_IDLE_SUSPEND_MS=$IDLE_SUSPEND_MS
 METAL_SNAP_STORE=$SNAP_STORE
 METAL_SNAP_STORE_DIR=$SNAP_STORE_DIR
 METAL_SNAP_BUCKET=$SNAP_BUCKET
+METAL_CONTROL_PLANE_URL=$CONTROL_PLANE_URL
+METAL_REGISTER_TOKEN=$REGISTER_TOKEN
+METAL_MESH_IP=$MESH_IP
+METAL_REGION=$REGION
+METAL_HOST_ID=$HOST_ID
+METAL_PUBLIC_HOST=$PUBLIC_HOST
+METAL_FWD_ALLOW_CIDR=$FWD_ALLOW_CIDR
+${INSECURE_TLS:+NODE_TLS_REJECT_UNAUTHORIZED=0}
 ENV
 
 echo "== (re)load service =="
