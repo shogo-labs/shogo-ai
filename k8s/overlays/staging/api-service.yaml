@@ -566,6 +566,26 @@ spec:
               value: "enforce"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
+            # --- Metal microVM substrate (bare-metal Firecracker) -----------
+            # SHOGO_METAL_ALL_PROJECTS is the metal-only kill-switch: when
+            # "true", EVERY project is served by the metal warm-pool controller
+            # (node-agent /assign over the mesh) instead of Knative — there is
+            # no per-project choice and NO silent fallback. A metal miss returns
+            # a retryable 503 (pod_starting) so the client backs off while the
+            # microVM resumes/boots; traffic never quietly lands on Knative.
+            #
+            # PREREQS before flipping to "true" — otherwise every project 503s:
+            #   1. >=1 node-agent registered & live:
+            #        GET /api/internal/metal/status -> hosts.live > 0
+            #   2. REDIS_URL set (above) for cross-replica placement/leases.
+            #   3. The node-agent authenticates register+assign with
+            #      SHOGO_INTERNAL_SECRET (used as its METAL_REGISTER_TOKEN);
+            #      no dedicated METAL_REGISTER_TOKEN secret exists.
+            # Flip live once the fleet is up:
+            #   .github/scripts/sync-api-env.sh shogo-staging-system \
+            #       SHOGO_METAL_ALL_PROJECTS true
+            - name: SHOGO_METAL_ALL_PROJECTS
+              value: "false"
             - name: PROMOTED_POD_GC_ENABLED
               value: "true"
             # 30 min: needs to be longer than typical user-think-time

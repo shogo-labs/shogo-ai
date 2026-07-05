@@ -1750,6 +1750,22 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
+      // Metal-only mode: the project runs on the metal microVM substrate, not
+      // Knative. Report readiness off the live host fleet — the actual resume
+      // happens on the chat call (fast), same contract as the warm pool.
+      const { isMetalAllProjects } = await import("../lib/metal-eligibility")
+      if (isMetalAllProjects()) {
+        const { getMetalWarmPoolController } = await import("../lib/metal-warm-pool-controller")
+        const liveHosts = getMetalWarmPoolController().liveHosts().length
+        return c.json({
+          mode: "metal",
+          exists: true,
+          ready: liveHosts > 0,
+          url: null,
+          hosts: liveHosts,
+        })
+      }
+
       if (isKubernetes()) {
         // In Kubernetes: Check Knative Service status
         const { getKnativeProjectManager } = await import("../lib/knative-project-manager")

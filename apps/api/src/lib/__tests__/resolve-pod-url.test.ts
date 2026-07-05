@@ -130,6 +130,51 @@ describe('resolveProjectPodUrl', () => {
     })
   })
 
+  describe('metal-only mode (SHOGO_METAL_ALL_PROJECTS)', () => {
+    it('routes every project to metal', async () => {
+      const res = await resolveProjectPodUrl('any-proj', {
+        _isMetalEnabled: () => true,
+        _isMetalEligible: () => true,
+        _isMetalOnly: () => true,
+        _metalResolver: async () => 'http://10.8.0.2:8080',
+        _isKubernetes: () => true,
+        _k8sResolver: async () => 'http://pod.cluster/v1',
+      })
+      expect(res).toEqual({ mode: 'metal', url: 'http://10.8.0.2:8080' })
+    })
+
+    it('does NOT fall back to k8s when metal fails — throws a retryable "starting" error', async () => {
+      let k8sCalls = 0
+      await expect(
+        resolveProjectPodUrl('any-proj', {
+          _isMetalEnabled: () => true,
+          _isMetalEligible: () => true,
+          _isMetalOnly: () => true,
+          _metalResolver: async () => { throw new Error('no live metal host available') },
+          _isKubernetes: () => true,
+          _k8sResolver: async () => { k8sCalls++; return 'http://pod.cluster/v1' },
+        }),
+      ).rejects.toThrow(/starting/)
+      expect(k8sCalls).toBe(0)
+    })
+
+    it('does NOT fall back to host when metal fails in metal-only mode', async () => {
+      const mgr = fakeRuntimeManager()
+      await expect(
+        resolveProjectPodUrl('any-proj', {
+          _isMetalEnabled: () => true,
+          _isMetalEligible: () => true,
+          _isMetalOnly: () => true,
+          _metalResolver: async () => { throw new Error('all metal hosts failed') },
+          _isKubernetes: () => false,
+          _isVMIsolation: () => false,
+          runtimeManager: mgr as any,
+        }),
+      ).rejects.toThrow(/metal-only/)
+      expect(mgr.start).toHaveBeenCalledTimes(0)
+    })
+  })
+
   describe('VM transient failure handling', () => {
     it('throws the transient error by default (maxVMRetries=1)', async () => {
       await expect(
