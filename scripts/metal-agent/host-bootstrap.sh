@@ -4,9 +4,8 @@
 # =============================================================================
 # Turns a fresh Ubuntu bare-metal host into one that can run the Firecracker
 # microVM substrate: KVM check, Firecracker + guest kernel, bun, persistent IP
-# forwarding, WireGuard tooling, and a (stopped) metal-agent systemd unit. Code
-# + rootfs are pushed separately by deploy-agent.sh; this only makes the host
-# "ready to receive".
+# forwarding, and a (stopped) metal-agent systemd unit. Code + rootfs are pushed
+# separately on code deploy; this only makes the host "ready to receive".
 #
 # Safe to run repeatedly and non-destructively on a live host. This is also the
 # body of the Terraform cloud-init first-boot bootstrap (templates/cloud-init.yaml.tftpl).
@@ -33,11 +32,10 @@ apt-get update -qq
 apt-get install -y -qq \
   curl ca-certificates unzip jq \
   iproute2 iptables \
-  e2fsprogs \
-  wireguard-tools >/dev/null
+  e2fsprogs >/dev/null
 log "base packages ok"
 
-# --- Persistent IP forwarding (guests + mesh routing depend on it) ----------
+# --- Persistent IP forwarding (guest DNAT routing depends on it) ------------
 log "enabling net.ipv4.ip_forward (persistent)..."
 cat > /etc/sysctl.d/99-metal-agent.conf <<'SYSCTL'
 net.ipv4.ip_forward=1
@@ -75,7 +73,7 @@ fi
 # --- metal-agent systemd unit (stopped until code+rootfs deployed) ----------
 log "installing metal-agent.service (not started)..."
 install -d /opt/metal-agent
-# Environment defaults; deploy-agent.sh overwrites /etc/metal-agent.env.
+# Environment defaults; the code-deploy step overwrites /etc/metal-agent.env.
 if [ ! -f /etc/metal-agent.env ]; then
   cat > /etc/metal-agent.env <<ENV
 METAL_WORK=$WORK
@@ -84,11 +82,10 @@ METAL_GUEST_INIT=/usr/local/bin/fc-init
 METAL_MEM_MIB=2048
 METAL_VCPUS=2
 METAL_POOL_SIZE=0
-# Bind the node-agent to the mesh IP once WireGuard is up (0.0.0.0 pre-mesh).
 METAL_LISTEN_HOST=0.0.0.0
 METAL_LISTEN_PORT=9900
-# Phase 3 snapshot lifecycle (deploy-agent.sh overwrites): idle auto-suspend +
-# durable snapshot store. Off by default; enable per-host once validated.
+# Phase 3 snapshot lifecycle (env file is overwritten on code deploy): idle
+# auto-suspend + durable snapshot store. Off by default; enable per-host once validated.
 METAL_IDLE_SUSPEND_MS=0
 METAL_SNAP_STORE=none
 METAL_SNAP_STORE_DIR=$WORK/durable-snapshots
@@ -99,8 +96,6 @@ cat > /etc/systemd/system/metal-agent.service <<'UNIT'
 Description=Shogo Firecracker node-agent (microVM warm pool)
 After=network-online.target
 Wants=network-online.target
-# Mesh-first: prefer wg0 up, but don't hard-fail if the mesh isn't configured.
-After=wg-quick@wg0.service
 
 [Service]
 Type=simple
@@ -117,4 +112,4 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-log "done. deploy code with scripts/metal-agent/deploy-agent.sh, then: systemctl enable --now metal-agent"
+log "done. push node-agent code + rootfs to the host, then: systemctl enable --now metal-agent"
