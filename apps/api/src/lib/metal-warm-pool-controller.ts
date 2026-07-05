@@ -134,10 +134,43 @@ export class MetalWarmPoolController {
     void this.registry.upsertHost(scalars).catch(() => {})
   }
 
-  /** Hosts that heartbeat within HOST_TTL_MS. */
+  /** Hosts this replica has heard heartbeat from within HOST_TTL_MS. */
   liveHosts(): HostEntry[] {
     const cutoff = this.now() - HOST_TTL_MS
     return [...this.hosts.values()].filter((h) => h.lastSeenAt >= cutoff)
+  }
+
+  /**
+   * Live hosts across the WHOLE fleet, merging this replica's in-memory view
+   * with the shared registry (Redis). This is essential in multi-replica
+   * deployments: a node-agent's heartbeat lands on ONE api pod per interval
+   * (LB round-robin), so a pod that hasn't personally received a heartbeat
+   * within HOST_TTL_MS would otherwise see zero hosts and — in metal-only mode
+   * — 503 every project. The registry TTL (also HOST_TTL_MS) keeps the shared
+   * view fresh; on a Redis blip we degrade to the in-memory view. Local entries
+   * win on conflict (they carry the freshest load numbers this pod has seen).
+   */
+  async liveHostsShared(): Promise<HostEntry[]> {
+    const local = this.liveHosts()
+    let shared: HostScalars[] = []
+    try {
+      shared = await this.registry.listHosts()
+    } catch {
+      return local
+    }
+    const byId = new Map<string, HostEntry>()
+    for (const s of shared) {
+      // registry rows are already TTL-pruned; treat lastSeenAt as authoritative.
+      byId.set(s.hostId, { ...s, registeredAt: s.lastSeenAt })
+    }
+    // Local view overrides (fresher load/disk from this pod's own heartbeats).
+    for (const h of local) byId.set(h.hostId, h)
+    return [...byId.values()]
+  }
+
+  /** Fleet-wide live host count (registry-aware) for readiness checks. */
+  async liveHostCount(): Promise<number> {
+    return (await this.liveHostsShared()).length
   }
 
   /**
@@ -149,8 +182,7 @@ export class MetalWarmPoolController {
    *   3. hosts AT/OVER the high-watermark last (they're shedding via GC, so
    *      placing a new cold project there just fights the sweep).
    */
-  private candidates(projectId: string, placedHostId?: string): HostEntry[] {
-    const live = this.liveHosts()
+  private candidates(projectId: string, placedHostId: string | undefined, live: HostEntry[]): HostEntry[] {
     const preferId = placedHostId ?? this.projectHost.get(projectId)
     const preferred = preferId ? live.find((h) => h.hostId === preferId) : undefined
     const rest = live
@@ -197,7 +229,7 @@ export class MetalWarmPoolController {
           span.setAttribute('resolve.lease', 'acquired')
         }
 
-        const cands = this.candidates(projectId, placedHostId)
+        const cands = this.candidates(projectId, placedHostId, await this.liveHostsShared())
         if (cands.length === 0) {
           if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
           this.stats.noHost++

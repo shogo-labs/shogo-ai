@@ -1756,7 +1756,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const { isMetalAllProjects } = await import("../lib/metal-eligibility")
       if (isMetalAllProjects()) {
         const { getMetalWarmPoolController } = await import("../lib/metal-warm-pool-controller")
-        const liveHosts = getMetalWarmPoolController().liveHosts().length
+        const liveHosts = await getMetalWarmPoolController().liveHostCount()
         return c.json({
           mode: "metal",
           exists: true,
