@@ -64,6 +64,14 @@ export interface SnapshotMeta {
    */
   memCodec?: 'none' | 'gzip'
   rootfsMode?: 'full' | 'diff'
+  /**
+   * Codec of the stored rootfs artifact. In dm/diff slim mode the CoW store is a
+   * large sparse file that is almost all zeros (only diverged 4 KiB chunks hold
+   * data), so we gzip it: an ~8 GiB sparse diff collapses to the few MiB it
+   * actually contains, which is the difference between a multi-GiB cold pull and
+   * a fast one. 'none' = the artifact is stored raw.
+   */
+  rootfsCodec?: 'none' | 'gzip'
   baseIdentity?: string
   /**
    * Local path the pulled rootfs artifact must be materialized at. Differs from
@@ -139,10 +147,26 @@ async function writeGzip(srcPath: string, destPath: string): Promise<void> {
   const gz = Bun.file(srcPath).stream().pipeThrough(new CompressionStream('gzip'))
   await Bun.write(destPath, new Response(gz))
 }
-/** Stream a gzip source (readable) → inflate → local dest path. */
-async function writeGunzip(src: ReadableStream<Uint8Array>, destPath: string): Promise<void> {
+/**
+ * Inflate a local .gz file to a local dest path via the system `gunzip`.
+ *
+ * We do NOT use Bun's DecompressionStream here: piping a large (~300 MiB →
+ * ~2 GiB) gzip through `Bun.write(dest, new Response(stream.pipeThrough(
+ * DecompressionStream)))` silently aborts the process mid-inflate on the
+ * bare-metal host (the .gz itself is valid — system `zcat` inflates it fully).
+ * `gunzip -c src > dest` streams reliably with bounded memory.
+ */
+async function gunzipFile(srcGzPath: string, destPath: string): Promise<void> {
   await mkdir(dirname(destPath), { recursive: true })
-  await Bun.write(destPath, new Response(src.pipeThrough(new DecompressionStream('gzip'))))
+  const proc = Bun.spawn(['sh', '-c', 'exec gunzip -c "$0" > "$1"', srcGzPath, destPath], {
+    stdout: 'inherit',
+    stderr: 'pipe',
+  })
+  const code = await proc.exited
+  if (code !== 0) {
+    const err = await new Response(proc.stderr).text().catch(() => '')
+    throw new Error(`gunzip ${srcGzPath} → ${destPath} failed (exit ${code}): ${err.slice(0, 200)}`)
+  }
 }
 
 /**
@@ -167,19 +191,29 @@ class FsStore implements SnapshotStore {
   }
 
   async push(files: SnapshotFiles, meta: SnapshotMeta): Promise<void> {
+    // Never publish a torn snapshot: if a local artifact was evicted/deleted by
+    // a concurrent GC/reclaim while this push was queued, abort BEFORE writing
+    // meta.json so the durable store never gets a half-written (corrupt) set.
+    await assertArtifacts(files)
     const dir = this.base(meta.projectId)
     await mkdir(dir, { recursive: true })
     const rootfsMode = meta.rootfsMode ?? 'full'
-    const rootfsName = rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
+    // Slim + a CoW diff → gzip it (the sparse store is ~all zeros).
+    const rootfsCodec: 'none' | 'gzip' = this.slim && rootfsMode === 'diff' ? 'gzip' : 'none'
+    const rootfsName = (rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4') + (rootfsCodec === 'gzip' ? '.gz' : '')
     await copyFile(files.vmstate, join(dir, 'vmstate'))
-    await copyFile(files.rootfs, join(dir, rootfsName))
+    if (rootfsCodec === 'gzip') {
+      await writeGzip(files.rootfs, join(dir, rootfsName))
+    } else {
+      await copyFile(files.rootfs, join(dir, rootfsName))
+    }
     if (this.slim) {
       await writeGzip(files.mem, join(dir, 'mem.gz'))
     } else {
       await copyFile(files.mem, join(dir, 'mem'))
     }
     // Metadata written last so a reader never sees a torn set.
-    const full: SnapshotMeta = { ...meta, memCodec: this.slim ? 'gzip' : 'none', rootfsMode }
+    const full: SnapshotMeta = { ...meta, memCodec: this.slim ? 'gzip' : 'none', rootfsMode, rootfsCodec }
     await writeFile(join(dir, 'meta.json'), JSON.stringify(full))
   }
 
@@ -211,12 +245,16 @@ class FsStore implements SnapshotStore {
     }
     await copyFile(join(dir, 'vmstate'), files.vmstate)
     if (meta.memCodec === 'gzip') {
-      await writeGunzip(Bun.file(join(dir, 'mem.gz')).stream(), files.mem)
+      await gunzipFile(join(dir, 'mem.gz'), files.mem)
     } else {
       await copyFile(join(dir, 'mem'), files.mem)
     }
-    const rootfsName = meta.rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
-    await copyFile(join(dir, rootfsName), files.rootfs)
+    const baseName = meta.rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
+    if (meta.rootfsCodec === 'gzip') {
+      await gunzipFile(join(dir, `${baseName}.gz`), files.rootfs)
+    } else {
+      await copyFile(join(dir, baseName), files.rootfs)
+    }
     return { files, meta }
   }
 
@@ -274,19 +312,29 @@ class S3Store implements SnapshotStore {
   }
 
   async push(files: SnapshotFiles, meta: SnapshotMeta): Promise<void> {
+    // Never publish a torn snapshot (see FsStore.push). A missing/empty source
+    // aborts the push before any object is written to S3.
+    await assertArtifacts(files)
     const pid = meta.projectId
     const rootfsMode = meta.rootfsMode ?? 'full'
-    const rootfsName = rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
+    // Slim + a CoW diff → gzip the sparse (mostly-zero) store so a cold pull
+    // transfers the few MiB of real divergence, not the whole ~8 GiB device.
+    const rootfsCodec: 'none' | 'gzip' = this.slim && rootfsMode === 'diff' ? 'gzip' : 'none'
+    const rootfsName = (rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4') + (rootfsCodec === 'gzip' ? '.gz' : '')
     // Large artifacts stream from disk; Bun.file → S3Client.write handles it.
     if (this.slim) {
       await Bun.write(this.client.file(this.key(pid, 'mem.gz')), new Response(Bun.file(files.mem).stream().pipeThrough(new CompressionStream('gzip'))))
     } else {
       await this.client.write(this.key(pid, 'mem'), Bun.file(files.mem))
     }
-    await this.client.write(this.key(pid, rootfsName), Bun.file(files.rootfs))
+    if (rootfsCodec === 'gzip') {
+      await Bun.write(this.client.file(this.key(pid, rootfsName)), new Response(Bun.file(files.rootfs).stream().pipeThrough(new CompressionStream('gzip'))))
+    } else {
+      await this.client.write(this.key(pid, rootfsName), Bun.file(files.rootfs))
+    }
     await this.client.write(this.key(pid, 'vmstate'), Bun.file(files.vmstate))
     // Metadata last: presence of meta.json = a complete, restorable set.
-    const full: SnapshotMeta = { ...meta, memCodec: this.slim ? 'gzip' : 'none', rootfsMode }
+    const full: SnapshotMeta = { ...meta, memCodec: this.slim ? 'gzip' : 'none', rootfsMode, rootfsCodec }
     await this.client.write(this.key(pid, 'meta.json'), JSON.stringify(full))
   }
 
@@ -314,23 +362,43 @@ class S3Store implements SnapshotStore {
     }
     await this.download(this.key(projectId, 'vmstate'), files.vmstate)
     if (meta.memCodec === 'gzip') {
-      await writeGunzip(this.client.file(this.key(projectId, 'mem.gz')).stream(), files.mem)
+      await this.downloadGunzip(this.key(projectId, 'mem.gz'), files.mem)
     } else {
       await this.download(this.key(projectId, 'mem'), files.mem)
     }
-    const rootfsName = meta.rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
-    await this.download(this.key(projectId, rootfsName), files.rootfs)
+    const baseName = meta.rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
+    if (meta.rootfsCodec === 'gzip') {
+      await this.downloadGunzip(this.key(projectId, `${baseName}.gz`), files.rootfs)
+    } else {
+      await this.download(this.key(projectId, baseName), files.rootfs)
+    }
     return { files, meta }
   }
 
   private async download(key: string, dest: string): Promise<void> {
     await mkdir(dirname(dest), { recursive: true })
-    // Stream S3 → disk (mem/rootfs are multi-GB; never buffer them whole).
+    // S3 → disk via the client's file handle (Bun buffers/streams internally).
     await Bun.write(dest, this.client.file(key))
   }
 
+  /**
+   * Download a gzipped artifact then inflate it. We deliberately land the .gz on
+   * disk first and gunzip from the LOCAL file rather than piping the S3
+   * ReadableStream straight through a DecompressionStream: against OCI's
+   * S3-compat endpoint that direct pipe stalls, whereas the buffered download +
+   * local inflate is reliable (and the .gz is small — slim mode compresses the
+   * 2 GiB mem to ~300 MiB and the sparse CoW diff to a few MiB).
+   */
+  private async downloadGunzip(key: string, dest: string): Promise<void> {
+    await mkdir(dirname(dest), { recursive: true })
+    const tmp = `${dest}.gz.tmp`
+    await Bun.write(tmp, this.client.file(key))
+    await gunzipFile(tmp, dest)
+    await rm(tmp, { force: true }).catch(() => {})
+  }
+
   async remove(projectId: string): Promise<void> {
-    for (const name of ['meta.json', 'vmstate', 'mem', 'mem.gz', 'rootfs.ext4', 'rootfs.diff']) {
+    for (const name of ['meta.json', 'vmstate', 'mem', 'mem.gz', 'rootfs.ext4', 'rootfs.diff', 'rootfs.diff.gz']) {
       await this.client.delete(this.key(projectId, name)).catch(() => {})
     }
   }

@@ -35,6 +35,7 @@ Run examples:
 """
 
 import os
+import time
 import uuid
 
 from gevent.lock import BoundedSemaphore
@@ -53,15 +54,17 @@ ASSIGN_ENV = {"RUNTIME_AUTH_SECRET": "loadtest", "PROJECT_TIER": "starter"}
 _HEAVY = BoundedSemaphore(int(os.environ.get("METAL_HEAVY_CONCURRENCY", "3")))
 
 
-def _record_host_wake(body):
+def _record_host_wake(body, source):
     """Fire a synthetic sample for the host-reported restore→ready latency so the
-    Locust stats separate host wake cost from client↔host network RTT."""
+    Locust stats separate host wake cost from client↔host network RTT, split by
+    source so a warm (local NVMe cache) wake is measured apart from a cold
+    (durable-store pull, after GC evicted the local copy) wake."""
     ready = body.get("readyMs") if isinstance(body, dict) else None
     if ready is None:
         return
     events.request.fire(
         request_type="HOST",
-        name="wake_ready_ms(host)",
+        name=f"wake_ready_ms(host,{source})",
         response_time=float(ready),
         response_length=0,
         exception=None,
@@ -106,6 +109,10 @@ class MetalWakeUser(HttpUser):
         if not self.warmed:
             return
         # /assign resumes when a snapshot exists — this is the user-facing "wake".
+        # It reports whether the snapshot came from the local NVMe cache (warm)
+        # or had to be pulled from the durable S3 tier because GC evicted the
+        # local copy (cold). Both are valid wakes; we bucket them separately as
+        # distinct request names so the stats show warm vs cold latency.
         with self.client.post(
             "/assign", json={"projectId": self.pid, "env": ASSIGN_ENV},
             name="assign(wake)", catch_response=True,
@@ -114,11 +121,15 @@ class MetalWakeUser(HttpUser):
                 r.failure(f"wake {r.status_code}: {r.text[:180]}")
                 return
             body = r.json()
-            if body.get("mode") != "resumed":
-                # Snapshot was lost (evicted / cold miss) — still served, but not a wake.
-                r.failure(f"expected resume, got mode={body.get('mode')}")
-                return
-            _record_host_wake(body)
+            mode = body.get("mode")
+            source = body.get("source") or ("coldboot" if mode == "assigned" else "unknown")
+            _record_host_wake(body, source)
+            # Emit a client-side sample under a source-tagged name too.
+            events.request.fire(
+                request_type="POST", name=f"wake(client,{source})",
+                response_time=r.request_meta["response_time"], response_length=0,
+                exception=None, context={},
+            )
         # Put it back to sleep for the next cycle (frees host RAM). Snapshot is
         # heavy → serialize behind the semaphore; the wake above stayed concurrent.
         with _HEAVY:

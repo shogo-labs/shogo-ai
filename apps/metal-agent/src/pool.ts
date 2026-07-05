@@ -621,6 +621,12 @@ export class MetalWarmPool {
     for (const vm of this.available) protectedPaths.add(vm.handle.rootfs)
     for (const a of this.assigned.values()) {
       protectedPaths.add(a.handle.rootfs)
+      // A suspend-in-flight writes vmstate/mem to deterministic paths derived
+      // from the handle id BEFORE the project lands in `suspended`. Protect
+      // those prospective artifacts so a concurrent sweep can't delete a
+      // snapshot mid-CreateSnapshot (which would push a torn set durably).
+      protectedPaths.add(join(this.cfg.snapDir, `${a.handle.id}.vmstate`))
+      protectedPaths.add(join(this.cfg.snapDir, `${a.handle.id}.mem`))
       if (a.restoredFrom) {
         protectedPaths.add(a.restoredFrom.vmstate)
         protectedPaths.add(a.restoredFrom.mem)
