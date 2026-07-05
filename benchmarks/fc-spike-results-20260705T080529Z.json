@@ -1,0 +1,11 @@
+{
+  "config": {"mem_mib": 1024, "vcpus": 2, "iters": 20, "storm": 10,
+             "fc_version": "v1.10.1"},
+  "cold_boot_ms": 22,
+  "snapshot_create_ms": 1188,
+  "restore_api_ms": {"p50": 8, "p95": 8, "p99": 9,
+                     "samples": [9,8,8,7,8,8,8,7,8,8,8,8,8,8,7,8,8,7,8,8]},
+  "restore_ready_ms": {"p50": 99, "p95": 101,
+                       "samples": [100,99,99,99,100,101,100,99,98,100,101,99,99,100,99,98,99,100,99,100]},
+  "concurrent_storm": {"n": 10, "wall_ms": 14}
+}

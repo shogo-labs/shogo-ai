@@ -1,0 +1,217 @@
+# =============================================================================
+# Multi-arch Runtime Image (amd64 + arm64)
+# =============================================================================
+# The main deploy pipeline (deploy.yml) builds the runtime chain for linux/arm64
+# only (the OCI A1 / OKE fleet). The cloud-agnostic Firecracker substrate
+# (terraform/latitude-metal + apps/metal-agent) runs on x86 bare metal, which
+# needs a native linux/amd64 runtime image. This workflow builds the full
+# runtime chain (base -> workspace-deps -> runtime) NATIVELY on both arches
+# (no QEMU) and publishes a single multi-arch manifest:
+#
+#     <registry>/shogo/shogo-runtime:<env>-multiarch-<sha>
+#     <registry>/shogo/shogo-runtime:<env>-multiarch-latest
+#
+# `docker pull` of that tag resolves to the host's architecture, so the OKE
+# fleet (arm64) and the metal fleet (amd64) share one tag. The metal node-agent
+# then pulls it via scripts/metal-agent/deploy-real-image.sh with
+# RUNTIME_IMAGE=<registry>/shogo/shogo-runtime:<env>-multiarch-latest instead
+# of building on-host.
+#
+# Kept as a SEPARATE workflow (not folded into deploy.yml) so it can never
+# affect the production arm64 deploy path, and so api/web/docs stay arm64-only.
+# =============================================================================
+
+name: Runtime Image (multi-arch)
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Registry environment to publish to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+  push:
+    branches: [main]
+    paths:
+      # Only the runtime chain drives this image.
+      - 'packages/agent-runtime/**'
+      - 'packages/shared-runtime/**'
+      - 'docker/workspace-deps/Dockerfile'
+      - 'templates/runtime-template/**'
+      - 'package.json'
+      - 'bun.lock'
+      - '.github/workflows/runtime-multiarch.yml'
+
+concurrency:
+  group: runtime-multiarch-${{ github.ref_name }}-${{ inputs.environment || 'staging' }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the runtime chain natively, once per arch, and push the runtime image
+  # BY DIGEST (no shared tag yet — the merge job assembles the manifest list).
+  # base + workspace-deps are pushed under arch-suffixed intermediate tags so
+  # the runtime build (docker-container buildx driver) can FROM them by ref.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.arch }}
+    environment: ${{ (inputs.environment || 'staging') == 'production' && 'production-us' || 'staging' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    outputs:
+      registry: ${{ steps.reg.outputs.registry }}
+      prefix: ${{ steps.reg.outputs.prefix }}
+    steps:
+      - name: Free disk space (runtime image is ~14GB)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Compute registry + tag prefix
+        id: reg
+        run: |
+          echo "registry=${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}" >> "$GITHUB_OUTPUT"
+          echo "prefix=${{ inputs.environment || 'staging' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to OCIR
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
+            ${{ vars.OCI_REGION }}.ocir.io \
+            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+            --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build + push base (${{ matrix.arch }})
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: packages/agent-runtime/Dockerfile.base
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: false
+          tags: ${{ steps.reg.outputs.registry }}/shogo/shogo-runtime-base:mx-${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=registry,ref=${{ steps.reg.outputs.registry }}/shogo/buildcache:runtime-base-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ steps.reg.outputs.registry }}/shogo/buildcache:runtime-base-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Build + push workspace-deps (${{ matrix.arch }})
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: docker/workspace-deps/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: false
+          tags: ${{ steps.reg.outputs.registry }}/shogo/shogo-workspace-deps:mx-${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=registry,ref=${{ steps.reg.outputs.registry }}/shogo/buildcache:workspace-deps-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ steps.reg.outputs.registry }}/shogo/buildcache:workspace-deps-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Build + push runtime by digest (${{ matrix.arch }})
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: packages/agent-runtime/Dockerfile
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          build-args: |
+            BASE_IMAGE=${{ steps.reg.outputs.registry }}/shogo/shogo-runtime-base:mx-${{ github.sha }}-${{ matrix.arch }}
+            WORKSPACE_DEPS=${{ steps.reg.outputs.registry }}/shogo/shogo-workspace-deps:mx-${{ github.sha }}-${{ matrix.arch }}
+          # Push by digest only; the merge job assembles the shared tag into a
+          # manifest list from the two per-arch digests.
+          outputs: type=image,name=${{ steps.reg.outputs.registry }}/shogo/shogo-runtime,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ steps.reg.outputs.registry }}/shogo/buildcache:runtime-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ steps.reg.outputs.registry }}/shogo/buildcache:runtime-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.arch }}"
+          echo "runtime ${{ matrix.arch }} digest: ${{ steps.build.outputs.digest }}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-digest-${{ matrix.arch }}
+          path: /tmp/digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Assemble the two per-arch runtime digests into one multi-arch manifest tag.
+  # ---------------------------------------------------------------------------
+  merge:
+    name: Merge multi-arch manifest
+    needs: [build]
+    environment: ${{ (inputs.environment || 'staging') == 'production' && 'production-us' || 'staging' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/digests
+          pattern: runtime-digest-*
+          merge-multiple: true
+
+      - name: Login to OCIR
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
+            ${{ vars.OCI_REGION }}.ocir.io \
+            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+            --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Create + push multi-arch manifest
+        env:
+          REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          PREFIX: ${{ inputs.environment || 'staging' }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          REPO="${REGISTRY}/shogo/shogo-runtime"
+          AMD64="$(cat /tmp/digests/amd64)"
+          ARM64="$(cat /tmp/digests/arm64)"
+          echo "amd64=$AMD64"
+          echo "arm64=$ARM64"
+
+          docker buildx imagetools create \
+            -t "${REPO}:${PREFIX}-multiarch-${SHA}" \
+            -t "${REPO}:${PREFIX}-multiarch-latest" \
+            "${REPO}@${AMD64}" \
+            "${REPO}@${ARM64}"
+
+      - name: Verify manifest platforms
+        env:
+          REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          PREFIX: ${{ inputs.environment || 'staging' }}
+        run: |
+          docker buildx imagetools inspect "${REGISTRY}/shogo/shogo-runtime:${PREFIX}-multiarch-latest"

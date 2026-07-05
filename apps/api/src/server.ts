@@ -92,6 +92,7 @@ import { remoteAuditRoutes } from './routes/remote-audit'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
+import { metalRoutes } from './routes/metal'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { localProjectsRoutes } from './routes/local-projects'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
@@ -7366,6 +7367,13 @@ app.route('/api/internal', internalRoutes)
 // /api/internal/e2e so it inherits the existing auth-skip for
 // /api/internal/* (handlers enforce their own secret-based auth).
 app.route('/api/internal/e2e', internalE2eRoutes)
+
+// Metal substrate routes — bare-metal Firecracker node-agents heartbeat here
+// over the WireGuard mesh (register/status). Mounted under /api/internal/metal
+// so it inherits the /api/internal/* auth-skip; the handlers enforce their own
+// bearer-token auth (METAL_REGISTER_TOKEN / SHOGO_INTERNAL_SECRET). See
+// apps/api/src/routes/metal.ts and lib/metal-warm-pool-controller.ts.
+app.route('/api/internal/metal', metalRoutes())
 
 // =============================================================================
 // Current User Route (/api/me) - Returns user profile with role
