@@ -36,7 +36,7 @@
 
 import type { Context, Next } from 'hono'
 import { prisma } from '../lib/prisma'
-import { RAW_REGION_ID, PRIMARY_REGION, getPeer } from '../lib/region'
+import { RAW_REGION_ID, PRIMARY_REGION, REGION_PEERS, getPeer } from '../lib/region'
 import { proxyToPeer, isProxiedRequest } from '../lib/region-peer-proxy'
 import { resolveWorkspaceIdForRequest } from '../lib/resolve-workspace-id'
 import { resolveUserHomeRegionUserId } from '../lib/resolve-user-id'
@@ -184,6 +184,17 @@ export async function homeRegionWriteProxy(c: Context, next: Next) {
 
   // Single-region / local / desktop: nothing to route.
   if (!RAW_REGION_ID) return next()
+
+  // No peers configured → single-region deployment (e.g. staging with
+  // REGION_ID=staging and no REGION_PEERS). There is nowhere to proxy and
+  // nothing to fail closed *to*, so every write is necessarily local. Without
+  // this short-circuit, a workspace whose homeRegion resolves to a non-local
+  // region — a legacy null row defaults to PRIMARY_REGION ('us-ashburn-1'),
+  // which differs from a single-region pod's own REGION_ID — would hit an
+  // affine-chat/money write, find no peer, and fail closed with a spurious
+  // 503 "home region unavailable". This makes the documented single-region
+  // "router is inert, every write resolves local" invariant true in code.
+  if (REGION_PEERS.length === 0) return next()
 
   // Already proxied from a sibling region — handle it here, never re-proxy.
   if (isProxiedRequest(c)) return next()

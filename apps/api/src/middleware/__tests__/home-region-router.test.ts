@@ -43,6 +43,7 @@ const PEERS: Record<string, { id: string; label: string; url: string }> = {
 mock.module('../../lib/region', () => ({
   RAW_REGION_ID: 'eu-frankfurt-1',
   PRIMARY_REGION: 'us-ashburn-1',
+  REGION_PEERS: Object.values(PEERS),
   getPeer: (id: string) => PEERS[id],
 }))
 
