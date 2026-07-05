@@ -111,6 +111,7 @@ import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
 import { pushCanvasRuntimeError, getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
+import { recordCanvasRuntimeErrorEscaped } from './canvas-slo'
 import {
   recordCanvasErrorEntry,
   recordConsoleEntry,
@@ -4437,6 +4438,16 @@ app.post('/agent/canvas/error', async (c) => {
       timestamp: Date.now(),
       route,
       recentActions,
+    })
+
+    // SLO signal: a runtime/compile error reached the rendered canvas (the
+    // numerator for "Debug: runtime error sessions per 100 canvas projects").
+    // See canvas-slo.ts; paired with `canvas_typecheck_blocked` from the
+    // post-build type-check gate, which counts the escapes we prevented.
+    recordCanvasRuntimeErrorEscaped({
+      phase: body.phase || 'unknown',
+      error: body.error,
+      route,
     })
 
     // Mirror into the typed runtime-log dispatcher so the Output tab

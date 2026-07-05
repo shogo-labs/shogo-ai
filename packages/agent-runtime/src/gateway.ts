@@ -54,6 +54,7 @@ import { BlockChunker } from './block-chunker'
 import { CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
+import { CanvasTypecheckGate } from './canvas-typecheck'
 import {
   inferProviderFromModel as catalogInferProvider,
   resolveModelId,
@@ -443,6 +444,14 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
+  /**
+   * Post-build `tsc --noEmit` gate. Vite/Expo transpile without
+   * type-checking, so type errors (missing imports, boolean-as-component,
+   * wrong props) compile clean and crash at render time. This gate runs
+   * after each successful build and surfaces those errors into build.log +
+   * the in-band canvas-error buffer so they can't slip past a green build.
+   */
+  private canvasTypecheckGate: CanvasTypecheckGate | null = null
   /**
    * Direct handle on the runtime's PreviewManager (set by
    * `attachApiServer`). Held in addition to the `skillServerManager`
@@ -909,16 +918,29 @@ export class AgentGateway {
 
       const watcher = this.canvasFileWatcher
       const pm = this.previewManager
+      // Post-build type-check gate. Runs `tsc --noEmit` after each
+      // successful build to catch the type errors Vite/esbuild transpiles
+      // through (missing imports, boolean-as-component, wrong props) — the
+      // dominant source of "Debug: runtime error" chats. Self-disables for
+      // non-TS / tsc-less workspaces (see CanvasTypecheckGate.isApplicable).
+      const typecheckGate = new CanvasTypecheckGate(this.workspaceDir)
+      this.canvasTypecheckGate = typecheckGate
       // For Vite stacks, PreviewManager's `vite build --watch` is now
       // the only builder (see canvas-build-manager.ts file docstring on
       // the Windows EPERM race). Route the reload-toast signal through
       // it instead of CanvasBuildManager, which self-disables for vite
       // stacks. For Expo stacks vite-watch never starts and this
       // callback stays silent; CanvasBuildManager fires the reload as
-      // before.
-      pm?.setOnBuildComplete(() => watcher.broadcastReload())
+      // before. Both paths also kick the type-check gate.
+      pm?.setOnBuildComplete(() => {
+        watcher.broadcastReload()
+        typecheckGate.trigger()
+      })
       this.canvasBuildManager = new CanvasBuildManager(this.workspaceDir, {
-        onBuildComplete: () => watcher.broadcastReload(),
+        onBuildComplete: () => {
+          watcher.broadcastReload()
+          typecheckGate.trigger()
+        },
         onBuildError: (err) => console.error(`${this.logPrefix} Canvas build error:`, err),
         // Block the first canvas build (and every subsequent one until
         // deps settle) on the preview manager's in-flight install. See
@@ -1108,6 +1130,7 @@ export class AgentGateway {
     this.sessionPersistence?.close()
     await this.skillServerManager.stop()
     this.canvasBuildManager?.stop()
+    this.canvasTypecheckGate?.stop()
     // Without this, the `vite build --watch` child PreviewManager
     // spawned in `startBuildWatch()` survives the agent-runtime's
     // `process.exit(0)` in `gracefulShutdown` — it gets reparented to

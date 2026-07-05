@@ -166,6 +166,17 @@ Two-step check:
 
 If the endpoint requires auth or integration setup that hasn't happened yet (e.g. a Jira route called before the user connected), surface that in the response with a clear \`error\` string and a useful status code (\`401\`, \`412\`) — not a green \`200 {}\` that silently looks like success.
 
+### Verify the client RENDERS — a green build only means it compiled
+
+For Vite/React (and other esbuild-bundled) frontends, the bundler **transpiles without type-checking**. A missing import (\`Tabs is not defined\`), a value used as a component (\`Element type is invalid … got: boolean\`), a typo'd variable, or a wrong prop type all compile clean and produce a green \`built in N ms\` — then throw a white-screen error the moment the browser renders. This is the #1 source of "it built successfully" followed by a crashed preview. A green \`.shogo/logs/build.log\` proves compilation, NOT that the UI renders.
+
+Before declaring a UI change done:
+
+1. **Type-check / lint**: run \`read_lints\` (auto-scopes to the files you edited) or \`exec({ command: 'bun x tsc --noEmit' })\` and clear every error. Missing imports and undefined references only surface here, never in the Vite build.
+2. **Read the type-check line in the build log**: the runtime runs \`tsc --noEmit\` after each build. A \`[typecheck] ✗ … N type error(s)\` line in \`.shogo/logs/build.log\` means the app crashes at runtime even though \`built in N ms\` is also present — fix it, don't ship it.
+3. **Confirm it renders**: load the public preview URL (\`browser\` tool) or confirm no canvas runtime errors are reported before saying "done". Never report "built successfully" as if it means "works".
+4. **Fix the whole class**: if one import/reference is missing, verify every component, icon, and helper you referenced is imported/defined — don't fix one and re-run.
+
 ### Definition of Done = verified, not "should work"
 
 "Done" means you ran something that PROVES it works and saw the result — not that you edited the code and it looks right.
