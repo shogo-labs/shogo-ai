@@ -8,14 +8,28 @@
  * the same POST /pool/assign contract, and adds the substrate's headline
  * capability: suspend-to-snapshot on idle / restore-from-snapshot on open.
  *
- * Deliberately compact vs. the desktop controller (no LRU cap / balloon
- * right-sizing yet) — those transfer directly once this is wired behind the
- * `metal` pod-mode in resolveProjectPodUrl (Phase 4).
+ * Phase 5 turns local NVMe into a bounded LRU cache of suspended snapshots
+ * backed by the durable store:
+ *   - a persistent cache index survives restarts (deploys keep locality);
+ *   - a watermark+LRU GC sweep reclaims disk, evicting the least-recently-used
+ *     durably-backed suspended projects (they still resume, via a store pull);
+ *   - orphan reclaim recovers files no running VM or cache entry references;
+ *   - singleflight + a heavy-op semaphore keep concurrent opens/suspends from
+ *     stampeding the snapshot path;
+ *   - real user traffic (which reaches the guest via DNAT, bypassing the agent)
+ *     is folded into idle tracking via an activity poll, so the reaper/GC never
+ *     suspend or evict a project that is actively serving.
  */
 
-import { rmSync } from 'fs'
+import { existsSync, readdirSync, rmSync } from 'fs'
+import { join } from 'path'
+import { CacheIndex, type CacheEntry } from './cache-index'
+import { Semaphore, Singleflight } from './concurrency'
 import { config } from './config'
+import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
+import { planEvictions, type EvictionCandidate } from './gc-policy'
+import { M, metrics } from './metrics'
 import {
   assertArtifacts,
   computeRootfsIdentity,
@@ -35,12 +49,26 @@ export interface AssignedVm {
   handle: FcVmHandle
   assignedAt: number
   lastTouchedAt: number
+  /** Snapshot files this VM was restored from; protected from orphan reclaim. */
+  restoredFrom?: { vmstate: string; mem: string }
+  /** Last activity counter seen from the guest (for the activity poll). */
+  lastActivityAt?: number
 }
 
 export interface SuspendedVm {
   projectId: string
   snapshot: FcSnapshot
   suspendedAt: number
+  lastAccessAt: number
+}
+
+export interface GcReport {
+  triggered: boolean
+  evicted: string[]
+  durableRemoved: string[]
+  orphansRemoved: number
+  bytesReclaimed: number
+  disk: DiskUsage
 }
 
 async function probeHealth(url: string, timeoutMs = 1000): Promise<boolean> {
@@ -58,6 +86,13 @@ export class MetalWarmPool {
   private suspended = new Map<string, SuspendedVm>()
   private store: SnapshotStore
   private rootfsId: string
+  private index: CacheIndex
+  /** Collapses concurrent open (assign|resume) calls for the same project. */
+  private openFlight = new Singleflight<OpenResult | null>()
+  /** Collapses concurrent suspend calls for the same project. */
+  private suspendFlight = new Singleflight<SuspendedVm>()
+  /** Caps concurrent heavy NVMe ops (snapshot / restore / store pull|push). */
+  private heavy: Semaphore
 
   constructor(
     private mgr = new FirecrackerVMManager(),
@@ -66,6 +101,8 @@ export class MetalWarmPool {
   ) {
     this.store = store ?? createSnapshotStore(cfg)
     this.rootfsId = computeRootfsIdentity(cfg)
+    this.index = new CacheIndex(cfg.snapDir)
+    this.heavy = new Semaphore(parseInt(process.env.METAL_HEAVY_CONCURRENCY ?? '2', 10))
   }
 
   /**
@@ -121,7 +158,47 @@ export class MetalWarmPool {
   }
 
   async start(): Promise<void> {
+    this.rehydrate()
     await this.reconcile()
+  }
+
+  /**
+   * Rebuild the in-memory `suspended` map from the persistent index at startup
+   * so a node-agent restart keeps NVMe locality (no store re-pull stampede).
+   * Entries whose artifacts are missing are dropped (their index file removed).
+   */
+  rehydrate(): number {
+    let n = 0
+    for (const e of this.index.all()) {
+      const artifactsPresent =
+        existsSync(e.snapshotPath) && existsSync(e.memFilePath) && existsSync(e.rootfs)
+      if (!artifactsPresent) {
+        this.index.remove(e.projectId)
+        continue
+      }
+      const snapshot: FcSnapshot = {
+        vmId: e.vmId,
+        snapshotPath: e.snapshotPath,
+        memFilePath: e.memFilePath,
+        rootfs: e.rootfs,
+        net: e.net,
+        vcpus: e.vcpus,
+        memoryMB: e.memoryMB,
+        createdAt: e.createdAt,
+        bytesMem: e.bytesMem,
+        bytesState: e.bytesState,
+        bytesRootfs: e.bytesRootfs,
+      }
+      this.suspended.set(e.projectId, {
+        projectId: e.projectId,
+        snapshot,
+        suspendedAt: e.suspendedAt,
+        lastAccessAt: e.lastAccessAt,
+      })
+      n++
+    }
+    if (n) console.log(`[pool] rehydrated ${n} suspended snapshot(s) from cache index`)
+    return n
   }
 
   private claim(): PooledVm | null {
@@ -133,10 +210,45 @@ export class MetalWarmPool {
     return vm
   }
 
+  /**
+   * Open a project on this host: resume its snapshot if one exists (hot local
+   * OR durable store), else claim+assign a warm VM. Concurrent opens for the
+   * same project collapse into one via singleflight (no double cold-boot / no
+   * racing resumes).
+   */
+  async open(projectId: string, env: Record<string, string> = {}): Promise<OpenResult> {
+    const r = await this.openFlight.run(projectId, async () => {
+      // Idempotent: if the project is already live here, hand back the same VM
+      // rather than restoring a duplicate from the store (which a re-/assign
+      // for a live project — e.g. a control-plane replica routing to the placed
+      // host — would otherwise trigger).
+      const live = this.assigned.get(projectId)
+      if (live) {
+        live.lastTouchedAt = Date.now()
+        return { handle: live.handle, mode: 'assigned' as const }
+      }
+      if (await this.canResume(projectId)) {
+        const res = await this.resume(projectId)
+        if (res)
+          return {
+            handle: res.assigned.handle,
+            mode: 'resumed' as const,
+            source: res.source,
+            readyMs: res.readyMs,
+          }
+      }
+      const a = await this.assign(projectId, env)
+      return { handle: a.handle, mode: 'assigned' as const }
+    })
+    // openFlight value is never null here (assign throws on failure), but keep
+    // the type honest for canResume races.
+    return r as OpenResult
+  }
+
   /** Claim + assign a warm VM to a project (or boot one on a cold miss). */
   async assign(projectId: string, env: Record<string, string> = {}): Promise<AssignedVm> {
     let vm = this.claim()
-    if (!vm) vm = await this.bootOne(false)
+    if (!vm) vm = await this.heavy.run(() => this.bootOne(false))
 
     const res = await fetch(`${vm.handle.agentUrl}/pool/assign`, {
       method: 'POST',
@@ -156,36 +268,77 @@ export class MetalWarmPool {
    * Suspend an assigned project to a snapshot, freeing host RAM.
    * quiesce guest → snapshot (local NVMe) → push to durable store (if enabled).
    * The durable push is best-effort: a failure leaves the hot local snapshot
-   * intact so a same-host resume still works.
+   * intact so a same-host resume still works. Heavy steps run under the
+   * host-wide semaphore; concurrent suspends for one project collapse.
    */
   async suspend(projectId: string): Promise<SuspendedVm> {
-    const a = this.assigned.get(projectId)
-    if (!a) throw new Error(`project ${projectId} not assigned`)
+    return this.suspendFlight.run(projectId, async () => {
+      const a = this.assigned.get(projectId)
+      if (!a) throw new Error(`project ${projectId} not assigned`)
 
-    await this.callGuestHook(a.handle.agentUrl, 'quiesce', this.cfg.quiesceTimeoutMs)
-    const snapshot = await this.mgr.snapshotVM(a.handle)
-    this.assigned.delete(projectId)
-    const s: SuspendedVm = { projectId, snapshot, suspendedAt: Date.now() }
-    this.suspended.set(projectId, s)
+      await this.callGuestHook(a.handle.agentUrl, 'quiesce', this.cfg.quiesceTimeoutMs)
+      const snapshot = await this.heavy.run(() => this.mgr.snapshotVM(a.handle))
+      this.assigned.delete(projectId)
+      const now = Date.now()
+      const lastAccessAt = Math.max(a.lastTouchedAt, now)
+      const s: SuspendedVm = { projectId, snapshot, suspendedAt: now, lastAccessAt }
+      this.suspended.set(projectId, s)
+      this.writeIndex(s)
 
-    if (this.store.kind !== 'none') {
-      const meta: SnapshotMeta = {
-        projectId,
-        net: snapshot.net,
-        vcpus: snapshot.vcpus,
-        memoryMB: snapshot.memoryMB,
-        bytesMem: snapshot.bytesMem,
-        bytesState: snapshot.bytesState,
-        createdAt: snapshot.createdAt,
-        rootfsPath: snapshot.rootfs,
-        rootfsIdentity: this.rootfsId,
-        v: 1,
+      if (this.store.kind !== 'none') {
+        // In dm mode the durable rootfs artifact is the small CoW *diff*, not
+        // the mapper device; in full/reflink it's the image file itself.
+        const durable = this.mgr.durableRootfs(snapshot.rootfs)
+        const meta: SnapshotMeta = {
+          projectId,
+          net: snapshot.net,
+          vcpus: snapshot.vcpus,
+          memoryMB: snapshot.memoryMB,
+          bytesMem: snapshot.bytesMem,
+          bytesState: snapshot.bytesState,
+          createdAt: snapshot.createdAt,
+          rootfsPath: snapshot.rootfs,
+          rootfsArtifactPath: this.mgr.restoreRootfsArtifactPath(snapshot.rootfs),
+          rootfsMode: durable.mode,
+          baseIdentity: this.rootfsId,
+          rootfsIdentity: this.rootfsId,
+          v: 1,
+        }
+        await this.heavy
+          .run(() =>
+            this.store.push(
+              { vmstate: snapshot.snapshotPath, mem: snapshot.memFilePath, rootfs: durable.path },
+              meta,
+            ),
+          )
+          .catch((err) =>
+            console.error(`[pool] durable push failed for ${projectId} (local snapshot kept):`, err?.message ?? err),
+          )
       }
-      await this.store
-        .push({ vmstate: snapshot.snapshotPath, mem: snapshot.memFilePath, rootfs: snapshot.rootfs }, meta)
-        .catch((err) => console.error(`[pool] durable push failed for ${projectId} (local snapshot kept):`, err?.message ?? err))
+      return s
+    })
+  }
+
+  private writeIndex(s: SuspendedVm): void {
+    const e: CacheEntry = {
+      projectId: s.projectId,
+      vmId: s.snapshot.vmId,
+      snapshotPath: s.snapshot.snapshotPath,
+      memFilePath: s.snapshot.memFilePath,
+      rootfs: s.snapshot.rootfs,
+      net: s.snapshot.net,
+      vcpus: s.snapshot.vcpus,
+      memoryMB: s.snapshot.memoryMB,
+      bytesMem: s.snapshot.bytesMem,
+      bytesState: s.snapshot.bytesState,
+      bytesRootfs: s.snapshot.bytesRootfs,
+      createdAt: s.snapshot.createdAt,
+      suspendedAt: s.suspendedAt,
+      lastAccessAt: s.lastAccessAt,
+      rootfsIdentity: this.rootfsId,
+      v: 1,
     }
-    return s
+    this.index.put(e)
   }
 
   /** True if the project can be woken here — hot locally OR in the durable store. */
@@ -203,42 +356,62 @@ export class MetalWarmPool {
    * caller can fall back to a fresh assign. On success, returns the restore→
    * ready latency (the user-facing "wake" cost) and rehydrates the guest.
    */
-  async resume(projectId: string): Promise<{ assigned: AssignedVm; apiMs: number; readyMs: number; source: 'local' | 'store' } | null> {
+  async resume(
+    projectId: string,
+  ): Promise<{ assigned: AssignedVm; apiMs: number; readyMs: number; source: 'local' | 'store' } | null> {
     let s = this.suspended.get(projectId)
     let source: 'local' | 'store' = 'local'
 
     if (!s) {
-      if (this.store.kind === 'none') return null
-      const pulled = await this.store.pull(projectId, this.cfg.snapDir, this.rootfsId)
-      if (!pulled) return null // absent or stale → cold boot
+      if (this.store.kind === 'none') {
+        metrics.inc(M.resumeColdMiss)
+        return null
+      }
+      const pulled = await this.heavy.run(() => this.store.pull(projectId, this.cfg.snapDir, this.rootfsId))
+      if (!pulled) {
+        metrics.inc(M.resumeColdMiss)
+        return null // absent or stale → cold boot
+      }
       await assertArtifacts(pulled.files)
       const snapshot: FcSnapshot = {
         vmId: `restored-${projectId}`,
         snapshotPath: pulled.files.vmstate,
         memFilePath: pulled.files.mem,
-        rootfs: pulled.files.rootfs,
+        // The vmstate-baked backing path (dm device / image file), which
+        // prepareRestore rebuilds from the pulled artifact (CoW diff / image).
+        rootfs: pulled.meta.rootfsPath,
         net: pulled.meta.net,
         vcpus: pulled.meta.vcpus,
         memoryMB: pulled.meta.memoryMB,
         createdAt: pulled.meta.createdAt,
         bytesMem: pulled.meta.bytesMem,
         bytesState: pulled.meta.bytesState,
+        bytesRootfs: allocatedBytes(pulled.files.rootfs),
       }
-      s = { projectId, snapshot, suspendedAt: pulled.meta.createdAt }
+      s = { projectId, snapshot, suspendedAt: pulled.meta.createdAt, lastAccessAt: Date.now() }
       source = 'store'
     }
 
     const t0 = performance.now()
-    const handle = await this.mgr.restoreVM(s.snapshot)
+    const handle = await this.heavy.run(() => this.mgr.restoreVM(s!.snapshot))
     const apiMs = performance.now() - t0
     const readyMs = await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
 
     await this.callGuestHook(handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs)
 
+    // Now live (assigned), not a cache entry: drop the suspended entry + index.
     this.suspended.delete(projectId)
+    this.index.remove(projectId)
     const now = Date.now()
-    const a: AssignedVm = { projectId, handle, assignedAt: now, lastTouchedAt: now }
+    const a: AssignedVm = {
+      projectId,
+      handle,
+      assignedAt: now,
+      lastTouchedAt: now,
+      restoredFrom: { vmstate: s.snapshot.snapshotPath, mem: s.snapshot.memFilePath },
+    }
     this.assigned.set(projectId, a)
+    metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
     return { assigned: a, apiMs, readyMs: apiMs + readyMs, source }
   }
 
@@ -246,6 +419,42 @@ export class MetalWarmPool {
   touch(projectId: string): void {
     const a = this.assigned.get(projectId)
     if (a) a.lastTouchedAt = Date.now()
+  }
+
+  /**
+   * Fold real user traffic into idle tracking. User requests reach the guest
+   * over DNAT and never touch the node-agent, so without this the reaper/GC
+   * would suspend or evict busy projects. We poll each assigned guest's
+   * /pool/activity; a newer lastRequestAt (or a failed poll — fail open) bumps
+   * lastTouchedAt. Best-effort; a guest without the endpoint is treated as
+   * quietly active only when the poll times out, not on a clean 404.
+   */
+  async pollActivity(): Promise<void> {
+    if (!this.cfg.activityPoll) return
+    const now = Date.now()
+    await Promise.all(
+      [...this.assigned.values()].map(async (a) => {
+        try {
+          const res = await fetch(`${a.handle.agentUrl}/pool/activity`, {
+            signal: AbortSignal.timeout(this.cfg.activityTimeoutMs),
+          })
+          if (res.status === 404) return // guest opts out; rely on explicit touch
+          if (!res.ok) {
+            a.lastTouchedAt = now // fail open
+            return
+          }
+          const body = (await res.json()) as { lastRequestAt?: number }
+          const last = typeof body.lastRequestAt === 'number' ? body.lastRequestAt : 0
+          if (a.lastActivityAt === undefined) a.lastActivityAt = last
+          if (last > a.lastActivityAt) {
+            a.lastActivityAt = last
+            a.lastTouchedAt = now // real traffic since we last looked
+          }
+        } catch {
+          a.lastTouchedAt = now // fail open: never evict on missing data
+        }
+      }),
+    )
   }
 
   /**
@@ -272,6 +481,200 @@ export class MetalWarmPool {
     return this.assigned.get(projectId)
   }
 
+  // --- GC / cache management ------------------------------------------------
+
+  /** Bytes a suspended snapshot occupies on local NVMe (CoW-aware rootfs). */
+  private entryBytes(s: SuspendedVm): number {
+    return (s.snapshot.bytesMem ?? 0) + (s.snapshot.bytesState ?? 0) + (s.snapshot.bytesRootfs ?? 0)
+  }
+
+  private cacheBytes(): number {
+    let n = 0
+    for (const s of this.suspended.values()) n += this.entryBytes(s)
+    return n
+  }
+
+  disk(): DiskUsage {
+    return diskUsage(this.cfg.work)
+  }
+
+  /**
+   * The full GC sweep: reclaim orphaned files, then (if over the high watermark
+   * or the byte cap, or forced) evict least-recently-used durably-backed
+   * suspended snapshots down to the low watermark. Never touches running VMs,
+   * never evicts an un-backed snapshot, never evicts an in-flight project.
+   */
+  async gcSweep(opts: { force?: boolean } = {}): Promise<GcReport> {
+    metrics.inc(M.gcRuns)
+    const orphansRemoved = this.reclaimOrphans()
+
+    const disk = this.disk()
+    const evict: string[] = []
+    const durableRemoved: string[] = []
+    let bytesReclaimed = 0
+
+    const canEvictDurably = this.store.kind !== 'none'
+    const candidates: EvictionCandidate[] = [...this.suspended.values()].map((s) => ({
+      projectId: s.projectId,
+      bytes: this.entryBytes(s),
+      lastAccessAt: s.lastAccessAt,
+      // With no durable store we must not evict live snapshots (only orphans).
+      durableBacked: canEvictDurably,
+      inFlight: this.openFlight.has(s.projectId) || this.suspendFlight.has(s.projectId),
+    }))
+
+    const decision = planEvictions({
+      usedBytes: disk.usedBytes,
+      totalBytes: disk.totalBytes,
+      cacheBytes: this.cacheBytes(),
+      candidates,
+      highPct: this.cfg.diskHighPct,
+      lowPct: this.cfg.diskLowPct,
+      cacheMaxBytes: this.cfg.cacheMaxBytes,
+      force: opts.force,
+    })
+
+    for (const projectId of decision.evict) {
+      const s = this.suspended.get(projectId)
+      if (!s) continue
+      // Durable-tiering: a project that's been cold longer than the active
+      // window loses its live-RAM durable snapshot too (falls back to cold
+      // boot from git/S3 workspace), keeping the durable tier small.
+      const stale = Date.now() - s.lastAccessAt > this.cfg.durableActiveWindowMs
+      const bytes = this.entryBytes(s)
+      const ok = await this.evictForGc(projectId, { alsoDurable: stale })
+      if (!ok) continue
+      evict.push(projectId)
+      bytesReclaimed += bytes
+      if (stale && this.store.kind !== 'none') durableRemoved.push(projectId)
+    }
+
+    metrics.inc(M.gcEvicted, evict.length)
+    metrics.inc(M.gcBytesReclaimed, bytesReclaimed)
+    metrics.inc(M.gcOrphansRemoved, orphansRemoved)
+    metrics.inc(M.gcDurableRemoved, durableRemoved.length)
+    this.publishGauges()
+
+    const after = this.disk()
+    if (evict.length || orphansRemoved) {
+      console.log(
+        `[pool] gc: evicted=${evict.length} durableDropped=${durableRemoved.length} orphans=${orphansRemoved} ` +
+          `reclaimed=${(bytesReclaimed / 1e9).toFixed(2)}GB used=${after.usedPct.toFixed(1)}%`,
+      )
+    }
+    return { triggered: decision.triggered, evicted: evict, durableRemoved, orphansRemoved, bytesReclaimed, disk: after }
+  }
+
+  /**
+   * Guarded eviction of a suspended snapshot's local files. Safe only when a
+   * durable copy exists (verified fresh) — else the local copy is the only one
+   * and we'd lose it. Optionally also removes the durable copy (durable tiering).
+   */
+  async evictForGc(projectId: string, opts: { alsoDurable?: boolean } = {}): Promise<boolean> {
+    const s = this.suspended.get(projectId)
+    if (!s) return false
+    if (this.assigned.has(projectId)) return false // running — never evict
+    if (this.openFlight.has(projectId) || this.suspendFlight.has(projectId)) return false // in-flight
+
+    if (!opts.alsoDurable) {
+      // Must be durably backed & fresh before we drop the only local copy.
+      if (this.store.kind === 'none') return false
+      const head = await this.store.head(projectId)
+      if (!head || head.rootfsIdentity !== this.rootfsId) return false
+    }
+
+    this.deleteLocalArtifacts(s.snapshot)
+    this.suspended.delete(projectId)
+    this.index.remove(projectId)
+
+    if (opts.alsoDurable && this.store.kind !== 'none') {
+      await this.store.remove(projectId).catch(() => {})
+    }
+    return true
+  }
+
+  private deleteLocalArtifacts(snap: FcSnapshot): void {
+    for (const p of [snap.snapshotPath, snap.memFilePath]) {
+      try {
+        rmSync(p, { force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+    // rootfs may be a dm device / cow file — route through the manager so dm
+    // resources are torn down correctly.
+    try {
+      this.mgr.releaseRootfs(snap.rootfs)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /**
+   * Delete snapshot/rootfs files that no running VM or cache entry references.
+   * These accrue when a project is re-suspended (new VM id → new files, old
+   * ones orphaned) or when the index and disk drift. Files backing a running
+   * VM's memory mapping or a live cache entry are protected.
+   */
+  reclaimOrphans(): number {
+    const protectedPaths = new Set<string>()
+    for (const vm of this.available) protectedPaths.add(vm.handle.rootfs)
+    for (const a of this.assigned.values()) {
+      protectedPaths.add(a.handle.rootfs)
+      if (a.restoredFrom) {
+        protectedPaths.add(a.restoredFrom.vmstate)
+        protectedPaths.add(a.restoredFrom.mem)
+      }
+    }
+    for (const s of this.suspended.values()) {
+      protectedPaths.add(s.snapshot.snapshotPath)
+      protectedPaths.add(s.snapshot.memFilePath)
+      protectedPaths.add(s.snapshot.rootfs)
+    }
+
+    let removed = 0
+    const sweepDir = (dir: string, match: (name: string) => boolean, isRootfs = false): void => {
+      let names: string[] = []
+      try {
+        names = readdirSync(dir)
+      } catch {
+        return
+      }
+      for (const name of names) {
+        if (!match(name)) continue
+        const full = join(dir, name)
+        if (protectedPaths.has(full)) continue
+        // dm mode: cow files map to /dev/mapper paths in protectedPaths, so
+        // guard those by vmId derived from the filename.
+        if (isRootfs && this.cfg.rootfsCow === 'dm') {
+          const vmId = name.replace(/\.cow$/, '')
+          const dmPath = `/dev/mapper/mvm-${vmId}`
+          if (protectedPaths.has(dmPath)) continue
+        }
+        try {
+          if (isRootfs) this.mgr.releaseRootfs(full)
+          else rmSync(full, { force: true })
+          removed++
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    sweepDir(this.cfg.snapDir, (n) => n.endsWith('.vmstate') || n.endsWith('.mem'))
+    sweepDir(this.cfg.runDir, (n) => n.endsWith('.rootfs.ext4'), true)
+    if (this.cfg.rootfsCow === 'dm') sweepDir(this.cfg.dmCowDir, (n) => n.endsWith('.cow'), true)
+    return removed
+  }
+
+  private publishGauges(): void {
+    const disk = this.disk()
+    metrics.gauge(M.diskUsedPct, +disk.usedPct.toFixed(2))
+    metrics.gauge(M.diskFreeBytes, disk.freeBytes)
+    metrics.gauge(M.cacheLocalCount, this.suspended.size)
+    metrics.gauge(M.cacheLocalBytes, this.cacheBytes())
+  }
+
   /**
    * Drop the hot local snapshot (in-memory entry + on-disk artifacts) WITHOUT
    * touching the durable store. Simulates node-agent restart / a different host
@@ -281,22 +684,33 @@ export class MetalWarmPool {
   evictLocal(projectId: string): boolean {
     const s = this.suspended.get(projectId)
     if (!s) return false
-    for (const p of [s.snapshot.snapshotPath, s.snapshot.memFilePath, s.snapshot.rootfs]) {
-      try {
-        rmSync(p, { force: true })
-      } catch {
-        /* ignore */
-      }
-    }
+    this.deleteLocalArtifacts(s.snapshot)
     this.suspended.delete(projectId)
+    this.index.remove(projectId)
     return true
+  }
+
+  /** Capacity + cache summary for the registration heartbeat (scalars only). */
+  capacity() {
+    const disk = this.disk()
+    return {
+      totalBytes: disk.totalBytes,
+      freeBytes: disk.freeBytes,
+      usedPct: +disk.usedPct.toFixed(2),
+      cacheBytes: this.cacheBytes(),
+      localCount: this.suspended.size,
+    }
   }
 
   status() {
     const now = Date.now()
+    this.publishGauges()
     return {
       store: this.store.kind,
       idleSuspendMs: this.cfg.idleSuspendMs,
+      rootfsCow: this.cfg.rootfsCow,
+      disk: this.disk(),
+      cache: { localCount: this.suspended.size, localBytes: this.cacheBytes() },
       available: this.available.length,
       assigned: [...this.assigned.values()].map((a) => ({
         projectId: a.projectId,
@@ -308,6 +722,9 @@ export class MetalWarmPool {
         projectId: s.projectId,
         memBytes: s.snapshot.bytesMem,
         stateBytes: s.snapshot.bytesState,
+        rootfsBytes: s.snapshot.bytesRootfs,
+        lastAccessAt: s.lastAccessAt,
+        idleMs: now - s.lastAccessAt,
       })),
     }
   }
@@ -318,4 +735,11 @@ export class MetalWarmPool {
     this.available = []
     this.assigned.clear()
   }
+}
+
+export interface OpenResult {
+  handle: FcVmHandle
+  mode: 'assigned' | 'resumed'
+  source?: 'local' | 'store'
+  readyMs?: number
 }

@@ -19,11 +19,13 @@
  */
 
 import { spawn, type Subprocess } from 'bun'
-import { copyFileSync, existsSync, mkdirSync, openSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, openSync, rmSync } from 'fs'
 import { join } from 'path'
 import { config } from './config'
+import { allocatedBytes } from './disk'
 import { FcApi } from './fc-api'
 import { deriveNet, setupTap, teardownTap, defaultUplink, type VmNet } from './net'
+import { RootfsProvisioner } from './rootfs'
 
 export interface FcVmConfig {
   /** Guest-visible RAM ceiling (MiB). */
@@ -61,6 +63,8 @@ export interface FcSnapshot {
   createdAt: number
   bytesMem: number
   bytesState: number
+  /** Actual allocated NVMe bytes of the per-VM rootfs (CoW-aware). */
+  bytesRootfs: number
 }
 
 let VM_SEQ = 0
@@ -68,10 +72,12 @@ let VM_SEQ = 0
 export class FirecrackerVMManager {
   private procs = new Map<string, Subprocess>()
   private uplink = defaultUplink()
+  private rootfs: RootfsProvisioner
 
   constructor(private cfg = config) {
     mkdirSync(this.cfg.runDir, { recursive: true })
     mkdirSync(this.cfg.snapDir, { recursive: true })
+    this.rootfs = new RootfsProvisioner(this.cfg)
   }
 
   private baseBootArgs(net: VmNet, extra?: string): string {
@@ -126,10 +132,10 @@ export class FirecrackerVMManager {
 
     const socketPath = join(this.cfg.runDir, `${id}.sock`)
     const serialLog = join(this.cfg.runDir, `${id}.serial`)
-    const rootfs = join(this.cfg.runDir, `${id}.rootfs.ext4`)
 
-    // Per-VM writable rootfs copy off the golden image.
-    copyFileSync(this.cfg.baseRootfs, rootfs)
+    // Per-VM writable rootfs off the golden image (full copy / reflink CoW /
+    // dm-snapshot depending on METAL_ROOTFS_COW).
+    const rootfs = this.rootfs.provision(id)
     setupTap(net, this.uplink)
 
     this.spawnFc(id, socketPath, serialLog)
@@ -170,12 +176,31 @@ export class FirecrackerVMManager {
     }
     teardownTap(handle.net)
     rmSync(handle.socketPath, { force: true })
-    rmSync(handle.rootfs, { force: true })
+    this.rootfs.release(handle.rootfs)
   }
 
   isRunning(handle: FcVmHandle): boolean {
     const proc = this.procs.get(handle.id)
     return !!proc && proc.exitCode === null && !proc.killed
+  }
+
+  /**
+   * Tear down a per-VM rootfs's host resources (full/reflink: delete the file;
+   * dm: remove the mapper device + loop + CoW store). Used by the GC to reclaim
+   * an evicted snapshot's rootfs and to clean orphaned rootfs files.
+   */
+  releaseRootfs(rootfsPath: string): void {
+    this.rootfs.release(rootfsPath)
+  }
+
+  /** Durable-store artifact + mode for a rootfs (see RootfsProvisioner). */
+  durableRootfs(rootfsPath: string): { path: string; mode: 'full' | 'diff' } {
+    return this.rootfs.durableArtifact(rootfsPath)
+  }
+
+  /** Local path a pulled durable rootfs artifact must be materialized at. */
+  restoreRootfsArtifactPath(rootfsPath: string): string {
+    return this.rootfs.restoreArtifactPath(rootfsPath)
   }
 
   // TAP networking → guest reachable directly; no host-port forwarding needed.
@@ -227,6 +252,7 @@ export class FirecrackerVMManager {
       createdAt: Date.now(),
       bytesMem: memStat.size ?? 0,
       bytesState: stStat.size ?? 0,
+      bytesRootfs: allocatedBytes(handle.rootfs),
     }
   }
 
@@ -243,6 +269,9 @@ export class FirecrackerVMManager {
     const serialLog = join(this.cfg.runDir, `${id}.serial`)
 
     setupTap(snap.net, this.uplink) // recreate the exact device name
+    // Ensure the rootfs backing path baked into the vmstate is live again
+    // (dm-snapshot: rebuild the device from the persisted CoW store).
+    this.rootfs.prepareRestore(snap.rootfs)
 
     this.spawnFc(id, socketPath, serialLog)
     await this.waitForSocket(socketPath)

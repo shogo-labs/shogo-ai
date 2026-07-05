@@ -53,6 +53,26 @@ export interface SnapshotMeta {
   rootfsIdentity: string
   /** Store schema version, for forward-compat. */
   v: 1
+  /**
+   * Slim-mode fields (all optional; absent = legacy full/uncompressed snapshot):
+   *   memCodec   — 'gzip' if the stored mem artifact is compressed.
+   *   rootfsMode — 'diff' if the stored rootfs artifact is a CoW diff that must
+   *                be reconstructed against the shared base; 'full' otherwise.
+   *   baseIdentity — content-addressed key of the shared golden base the diff
+   *                applies to (dm mode). The local path to materialize the diff
+   *                on pull is `rootfsPath` (the dm CoW store path).
+   */
+  memCodec?: 'none' | 'gzip'
+  rootfsMode?: 'full' | 'diff'
+  baseIdentity?: string
+  /**
+   * Local path the pulled rootfs artifact must be materialized at. Differs from
+   * `rootfsPath` only in dm/diff mode: rootfsPath is the mapper DEVICE baked
+   * into the vmstate, while the diff artifact restores to the per-VM CoW store
+   * file (from which the device is rebuilt before LoadSnapshot). Absent = write
+   * to rootfsPath (full mode).
+   */
+  rootfsArtifactPath?: string
 }
 
 export interface PulledSnapshot {
@@ -62,6 +82,8 @@ export interface PulledSnapshot {
 
 export interface SnapshotStore {
   readonly kind: 'none' | 'fs' | 's3'
+  /** True if this store compresses mem + expects diff rootfs pushes (slim). */
+  readonly slim: boolean
   /** Push artifacts + metadata for a project (overwrites any prior). */
   push(files: SnapshotFiles, meta: SnapshotMeta): Promise<void>
   /** Metadata only — cheap existence/staleness probe. null = absent. */
@@ -72,6 +94,10 @@ export interface SnapshotStore {
    */
   pull(projectId: string, destDir: string, rootfsIdentity: string): Promise<PulledSnapshot | null>
   remove(projectId: string): Promise<void>
+  /** Upload the shared golden base once per identity (slim/diff mode). No-op otherwise. */
+  ensureBase(identity: string, baseRootfsPath: string): Promise<void>
+  /** Download the shared golden base to `destPath` (slim/diff restore). false = absent. */
+  pullBase(identity: string, destPath: string): Promise<boolean>
 }
 
 /** Cheap, allocation-free rootfs identity: size + mtime of the golden image. */
@@ -90,6 +116,7 @@ export function computeRootfsIdentity(cfg: MetalConfig): string {
 /** Local-only: durability disabled. Every op is a no-op / miss. */
 class NoneStore implements SnapshotStore {
   readonly kind = 'none' as const
+  readonly slim = false
   async push(): Promise<void> {}
   async head(): Promise<SnapshotMeta | null> {
     return null
@@ -98,6 +125,24 @@ class NoneStore implements SnapshotStore {
     return null
   }
   async remove(): Promise<void> {}
+  async ensureBase(): Promise<void> {}
+  async pullBase(): Promise<boolean> {
+    return false
+  }
+}
+
+// --- streaming (de)compression helpers -------------------------------------
+
+/** Stream a local file → gzip → a local dest path, no full buffering. */
+async function writeGzip(srcPath: string, destPath: string): Promise<void> {
+  await mkdir(dirname(destPath), { recursive: true })
+  const gz = Bun.file(srcPath).stream().pipeThrough(new CompressionStream('gzip'))
+  await Bun.write(destPath, new Response(gz))
+}
+/** Stream a gzip source (readable) → inflate → local dest path. */
+async function writeGunzip(src: ReadableStream<Uint8Array>, destPath: string): Promise<void> {
+  await mkdir(dirname(destPath), { recursive: true })
+  await Bun.write(destPath, new Response(src.pipeThrough(new DecompressionStream('gzip'))))
 }
 
 /**
@@ -110,22 +155,32 @@ class FsStore implements SnapshotStore {
   constructor(
     private root: string,
     private prefix: string,
+    readonly slim: boolean,
+    private basePrefix: string,
   ) {}
 
   private base(projectId: string): string {
     return join(this.root, this.prefix, projectId)
   }
+  private baseArtifact(identity: string): string {
+    return join(this.root, this.basePrefix, `${identity}.ext4`)
+  }
 
   async push(files: SnapshotFiles, meta: SnapshotMeta): Promise<void> {
-    const base = this.base(meta.projectId)
-    await mkdir(base, { recursive: true })
-    await Promise.all([
-      copyFile(files.vmstate, join(base, 'vmstate')),
-      copyFile(files.mem, join(base, 'mem')),
-      copyFile(files.rootfs, join(base, 'rootfs.ext4')),
-    ])
+    const dir = this.base(meta.projectId)
+    await mkdir(dir, { recursive: true })
+    const rootfsMode = meta.rootfsMode ?? 'full'
+    const rootfsName = rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
+    await copyFile(files.vmstate, join(dir, 'vmstate'))
+    await copyFile(files.rootfs, join(dir, rootfsName))
+    if (this.slim) {
+      await writeGzip(files.mem, join(dir, 'mem.gz'))
+    } else {
+      await copyFile(files.mem, join(dir, 'mem'))
+    }
     // Metadata written last so a reader never sees a torn set.
-    await writeFile(join(base, 'meta.json'), JSON.stringify(meta))
+    const full: SnapshotMeta = { ...meta, memCodec: this.slim ? 'gzip' : 'none', rootfsMode }
+    await writeFile(join(dir, 'meta.json'), JSON.stringify(full))
   }
 
   async head(projectId: string): Promise<SnapshotMeta | null> {
@@ -142,26 +197,46 @@ class FsStore implements SnapshotStore {
     const meta = await this.head(projectId)
     if (!meta) return null
     if (meta.rootfsIdentity !== rootfsIdentity) return null // stale → cold boot
-    const base = this.base(projectId)
+    const dir = this.base(projectId)
     await mkdir(destDir, { recursive: true })
     // vmstate/mem are passed to LoadSnapshot by path → any local path works.
-    // rootfs MUST land on the path baked into the vmstate (see SnapshotMeta).
-    await mkdir(dirname(meta.rootfsPath), { recursive: true })
+    // rootfs artifact MUST land where the manager expects it (device-baked path
+    // for full mode, per-VM CoW store for diff mode — see rootfsArtifactPath).
+    const rootfsDest = meta.rootfsArtifactPath ?? meta.rootfsPath
+    await mkdir(dirname(rootfsDest), { recursive: true })
     const files: SnapshotFiles = {
       vmstate: join(destDir, `${projectId}.vmstate`),
       mem: join(destDir, `${projectId}.mem`),
-      rootfs: meta.rootfsPath,
+      rootfs: rootfsDest,
     }
-    await Promise.all([
-      copyFile(join(base, 'vmstate'), files.vmstate),
-      copyFile(join(base, 'mem'), files.mem),
-      copyFile(join(base, 'rootfs.ext4'), files.rootfs),
-    ])
+    await copyFile(join(dir, 'vmstate'), files.vmstate)
+    if (meta.memCodec === 'gzip') {
+      await writeGunzip(Bun.file(join(dir, 'mem.gz')).stream(), files.mem)
+    } else {
+      await copyFile(join(dir, 'mem'), files.mem)
+    }
+    const rootfsName = meta.rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
+    await copyFile(join(dir, rootfsName), files.rootfs)
     return { files, meta }
   }
 
   async remove(projectId: string): Promise<void> {
     await rm(this.base(projectId), { recursive: true, force: true }).catch(() => {})
+  }
+
+  async ensureBase(identity: string, baseRootfsPath: string): Promise<void> {
+    const dest = this.baseArtifact(identity)
+    if (existsSync(dest)) return
+    await mkdir(dirname(dest), { recursive: true })
+    await copyFile(baseRootfsPath, dest)
+  }
+
+  async pullBase(identity: string, destPath: string): Promise<boolean> {
+    const src = this.baseArtifact(identity)
+    if (!existsSync(src)) return false
+    await mkdir(dirname(destPath), { recursive: true })
+    await copyFile(src, destPath)
+    return true
   }
 }
 
@@ -177,6 +252,8 @@ class S3Store implements SnapshotStore {
     bucket: string,
     private prefix: string,
     cfg: MetalConfig,
+    readonly slim: boolean,
+    private basePrefix: string,
   ) {
     // Imported lazily-typed; Bun provides S3Client at runtime.
     const { S3Client } = require('bun') as typeof import('bun')
@@ -192,15 +269,25 @@ class S3Store implements SnapshotStore {
   private key(projectId: string, name: string): string {
     return `${this.prefix}${projectId}/snapshot/${name}`
   }
+  private baseKey(identity: string): string {
+    return `${this.basePrefix}${identity}.ext4`
+  }
 
   async push(files: SnapshotFiles, meta: SnapshotMeta): Promise<void> {
     const pid = meta.projectId
+    const rootfsMode = meta.rootfsMode ?? 'full'
+    const rootfsName = rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
     // Large artifacts stream from disk; Bun.file → S3Client.write handles it.
-    await this.client.write(this.key(pid, 'mem'), Bun.file(files.mem))
-    await this.client.write(this.key(pid, 'rootfs.ext4'), Bun.file(files.rootfs))
+    if (this.slim) {
+      await Bun.write(this.client.file(this.key(pid, 'mem.gz')), new Response(Bun.file(files.mem).stream().pipeThrough(new CompressionStream('gzip'))))
+    } else {
+      await this.client.write(this.key(pid, 'mem'), Bun.file(files.mem))
+    }
+    await this.client.write(this.key(pid, rootfsName), Bun.file(files.rootfs))
     await this.client.write(this.key(pid, 'vmstate'), Bun.file(files.vmstate))
     // Metadata last: presence of meta.json = a complete, restorable set.
-    await this.client.write(this.key(pid, 'meta.json'), JSON.stringify(meta))
+    const full: SnapshotMeta = { ...meta, memCodec: this.slim ? 'gzip' : 'none', rootfsMode }
+    await this.client.write(this.key(pid, 'meta.json'), JSON.stringify(full))
   }
 
   async head(projectId: string): Promise<SnapshotMeta | null> {
@@ -217,15 +304,22 @@ class S3Store implements SnapshotStore {
     if (!meta) return null
     if (meta.rootfsIdentity !== rootfsIdentity) return null
     await mkdir(destDir, { recursive: true })
-    // rootfs MUST land on the vmstate-baked path (see SnapshotMeta.rootfsPath).
+    // rootfs artifact lands on the device-baked path (full) or the per-VM CoW
+    // store (diff); see SnapshotMeta.rootfsArtifactPath.
+    const rootfsDest = meta.rootfsArtifactPath ?? meta.rootfsPath
     const files: SnapshotFiles = {
       vmstate: join(destDir, `${projectId}.vmstate`),
       mem: join(destDir, `${projectId}.mem`),
-      rootfs: meta.rootfsPath,
+      rootfs: rootfsDest,
     }
     await this.download(this.key(projectId, 'vmstate'), files.vmstate)
-    await this.download(this.key(projectId, 'mem'), files.mem)
-    await this.download(this.key(projectId, 'rootfs.ext4'), files.rootfs)
+    if (meta.memCodec === 'gzip') {
+      await writeGunzip(this.client.file(this.key(projectId, 'mem.gz')).stream(), files.mem)
+    } else {
+      await this.download(this.key(projectId, 'mem'), files.mem)
+    }
+    const rootfsName = meta.rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
+    await this.download(this.key(projectId, rootfsName), files.rootfs)
     return { files, meta }
   }
 
@@ -236,8 +330,30 @@ class S3Store implements SnapshotStore {
   }
 
   async remove(projectId: string): Promise<void> {
-    for (const name of ['meta.json', 'vmstate', 'mem', 'rootfs.ext4']) {
+    for (const name of ['meta.json', 'vmstate', 'mem', 'mem.gz', 'rootfs.ext4', 'rootfs.diff']) {
       await this.client.delete(this.key(projectId, name)).catch(() => {})
+    }
+  }
+
+  async ensureBase(identity: string, baseRootfsPath: string): Promise<void> {
+    const key = this.baseKey(identity)
+    try {
+      // Skip if already uploaded (content-addressed by identity).
+      if ((await this.client.file(key).stat()).size > 0) return
+    } catch {
+      /* absent → upload */
+    }
+    await this.client.write(key, Bun.file(baseRootfsPath))
+  }
+
+  async pullBase(identity: string, destPath: string): Promise<boolean> {
+    const key = this.baseKey(identity)
+    try {
+      await mkdir(dirname(destPath), { recursive: true })
+      await Bun.write(destPath, this.client.file(key))
+      return true
+    } catch {
+      return false
     }
   }
 }
@@ -245,13 +361,13 @@ class S3Store implements SnapshotStore {
 export function createSnapshotStore(cfg: MetalConfig): SnapshotStore {
   switch (cfg.snapStore) {
     case 'fs':
-      return new FsStore(cfg.snapStoreDir, cfg.snapStorePrefix)
+      return new FsStore(cfg.snapStoreDir, cfg.snapStorePrefix, cfg.snapSlim, cfg.snapBasePrefix)
     case 's3':
       if (!cfg.snapStoreBucket) {
         console.warn('[snapshot-store] METAL_SNAP_STORE=s3 but no bucket configured — falling back to none')
         return new NoneStore()
       }
-      return new S3Store(cfg.snapStoreBucket, cfg.snapStorePrefix, cfg)
+      return new S3Store(cfg.snapStoreBucket, cfg.snapStorePrefix, cfg, cfg.snapSlim, cfg.snapBasePrefix)
     default:
       return new NoneStore()
   }

@@ -32,7 +32,8 @@ apt-get update -qq
 apt-get install -y -qq \
   curl ca-certificates unzip jq \
   iproute2 iptables \
-  e2fsprogs >/dev/null
+  e2fsprogs \
+  dmsetup lvm2 xfsprogs zstd >/dev/null
 log "base packages ok"
 
 # --- Persistent IP forwarding (guest DNAT routing depends on it) ------------
@@ -44,7 +45,8 @@ SYSCTL
 sysctl -p /etc/sysctl.d/99-metal-agent.conf >/dev/null
 
 # --- Firecracker + guest kernel ---------------------------------------------
-mkdir -p "$WORK/bin" "$WORK/img" "$WORK/run" "$WORK/snapshots"
+mkdir -p "$WORK/bin" "$WORK/img" "$WORK/run" "$WORK/snapshots" \
+         "$WORK/cow" "$WORK/base-cache" "$WORK/durable-snapshots"
 ARCH="$(uname -m)"  # x86_64 on Latitude c3-large-x86
 if [ ! -x "$WORK/bin/firecracker" ]; then
   log "installing firecracker v${FC_VERSION} ($ARCH)..."
@@ -62,6 +64,40 @@ if [ ! -f "$WORK/img/vmlinux" ]; then
   curl -fsSL "${KERNEL_URL:-$CI_BASE/vmlinux-6.1.102}" -o "$WORK/img/vmlinux"
 fi
 log "kernel: $(ls -la "$WORK/img/vmlinux" | awk '{print $5}') bytes"
+
+# --- Rootfs copy-on-write readiness (NVMe density / GC cache) ----------------
+# Each VM needs a private writable rootfs off the ~8 GiB golden image. A full
+# copy per VM wastes NVMe (only ~360 suspended/host); CoW extracts the true
+# per-project delta so the same host caches many more.
+#
+#   reflink (default) — COPYFILE_FICLONE clones share unchanged blocks. Needs
+#     the METAL_WORK filesystem to be XFS (reflink=1, the mkfs.xfs default since
+#     util-linux 5) or Btrfs. On ext4 the clone silently falls back to a FULL
+#     copy (correct, just not dense) and the agent logs a one-time warning.
+#   dm (opt-in) — device-mapper snapshot: one shared read-only base loop-mounted
+#     once + a small sparse per-VM CoW store in $WORK/cow, exposed as a single
+#     /dev/mapper device. Densest, and the CoW store IS the diff we push to S3.
+#     NOTES for operators enabling METAL_ROOTFS_COW=dm:
+#       * The dm device path is baked into the Firecracker vmstate, so it is
+#         rebuilt at the SAME name (mvm-<vmId>) from base + the persisted CoW
+#         store before every restore. Do not rename/relocate $WORK/cow.
+#       * A restore requires the golden base present locally — it is guaranteed,
+#         because a restore only runs where rootfsIdentity matches this host's
+#         base. Cross-host diff snapshots therefore need no base download.
+#       * A full CoW store invalidates its snapshot; $WORK/cow is sized sparse
+#         (METAL_DM_COW_SIZE, default 2G) and the GC loop's disk accounting
+#         alerts before the underlying filesystem fills.
+FS_TYPE="$(stat -f -c %T "$WORK" 2>/dev/null || echo unknown)"
+log "METAL_WORK ($WORK) filesystem: $FS_TYPE"
+if cp --reflink=always "$WORK/img/vmlinux" "$WORK/.reflink-probe" 2>/dev/null; then
+  log "reflink supported on $WORK — CoW rootfs clones will be sparse."
+  rm -f "$WORK/.reflink-probe"
+else
+  log "WARN: reflink NOT supported on $WORK ($FS_TYPE). METAL_ROOTFS_COW=reflink"
+  log "WARN: will fall back to full ~8 GiB rootfs copies. For density, put $WORK"
+  log "WARN: on XFS (mkfs.xfs defaults to reflink=1) or Btrfs, or use METAL_ROOTFS_COW=dm."
+  rm -f "$WORK/.reflink-probe" 2>/dev/null || true
+fi
 
 # --- bun (for the node-agent) -----------------------------------------------
 if [ ! -x /usr/local/bin/bun ]; then
@@ -89,6 +125,20 @@ METAL_LISTEN_PORT=9900
 METAL_IDLE_SUSPEND_MS=0
 METAL_SNAP_STORE=none
 METAL_SNAP_STORE_DIR=$WORK/durable-snapshots
+# Phase 5 NVMe garbage collection / cache. The GC loop runs by default and
+# reclaims orphans + evicts LRU suspended snapshots under disk pressure. Eviction
+# of live snapshots requires a durable store (METAL_SNAP_STORE=fs|s3); with
+# store=none only orphans are reclaimed. reflink CoW is the safe default.
+METAL_ROOTFS_COW=reflink
+METAL_DM_COW_DIR=$WORK/cow
+METAL_BASE_CACHE_DIR=$WORK/base-cache
+METAL_GC_INTERVAL_MS=30000
+METAL_DISK_HIGH_PCT=85
+METAL_DISK_LOW_PCT=70
+METAL_CACHE_MAX_BYTES=0
+METAL_DURABLE_ACTIVE_WINDOW_MS=1209600000
+METAL_SNAP_SLIM=0
+METAL_ACTIVITY_POLL=1
 ENV
 fi
 cat > /etc/systemd/system/metal-agent.service <<'UNIT'

@@ -18,10 +18,12 @@
  */
 
 import { config } from './config'
+import { metrics } from './metrics'
 import type { MetalWarmPool } from './pool'
 
 function payload(pool: MetalWarmPool) {
   const s = pool.status()
+  const cap = pool.capacity()
   return {
     hostId: config.hostId,
     meshIp: config.meshIp,
@@ -30,6 +32,16 @@ function payload(pool: MetalWarmPool) {
     arch: process.arch, // 'x64' | 'arm64' — control plane matches to image arch
     capacity: { poolSize: config.poolSize, memMiB: config.memMiB, vcpus: config.vcpus },
     load: { available: s.available, assigned: s.assigned.length, suspended: s.suspended.length },
+    // NVMe cache scalars so the control plane can route disk- and cache-aware
+    // (Phase 2) without shipping per-project cache manifests in the heartbeat.
+    disk: {
+      totalBytes: cap.totalBytes,
+      freeBytes: cap.freeBytes,
+      usedPct: cap.usedPct,
+      cacheBytes: cap.cacheBytes,
+      localCount: cap.localCount,
+    },
+    metrics: metrics.snapshot().counters,
     ts: Date.now(),
   }
 }
@@ -55,6 +67,26 @@ async function announce(pool: MetalWarmPool): Promise<boolean> {
     console.warn(`[metal-agent] register failed: ${err?.message ?? err}`)
     return false
   }
+}
+
+/**
+ * Report a placement event to the control plane so the shared registry reflects
+ * host-side suspend/evict promptly (instead of waiting for the next heartbeat).
+ * Best-effort and fire-and-forget: a failure just means the registry converges
+ * a little later. No-op when no control plane is configured.
+ */
+export function reportPlacement(event: 'suspended' | 'evicted' | 'cold', projectId: string): void {
+  if (!config.controlPlaneUrl) return
+  const url = `${config.controlPlaneUrl.replace(/\/$/, '')}/api/internal/metal/placement`
+  void fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(config.registerToken ? { Authorization: `Bearer ${config.registerToken}` } : {}),
+    },
+    body: JSON.stringify({ hostId: config.hostId, projectId, event }),
+    signal: AbortSignal.timeout(3000),
+  }).catch(() => {})
 }
 
 /**
