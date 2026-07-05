@@ -1,0 +1,19 @@
+{
+  "name": "@shogo-ai/metal-agent",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Per-host Firecracker node-agent for the cloud-agnostic microVM runtime substrate (Cloud Firecracker snapshots plan). Runs on bare-metal Linux hosts (e.g. Latitude.sh), manages a warm pool of Firecracker microVMs, and exposes the same /pool/assign + /health contract used by the K8s warm pool. Suspend-to-snapshot on idle, restore-from-snapshot on open.",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "bin": {
+    "metal-agent": "./src/server.ts"
+  },
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "e2e": "bun run src/e2e.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "project": "e2e-lifecycle-proj",
+  "store": "fs",
+  "config": {
+    "memMiB": 1024,
+    "vcpus": 2,
+    "idleSuspendMs": 0
+  },
+  "steps": {
+    "suspendMs": 1984,
+    "resumeSource": "store",
+    "resumeApiMs": 35.9,
+    "resumeReadyMs": 39.8
+  },
+  "snapshot": {
+    "memBytes": 1073741824,
+    "stateBytes": 30302
+  },
+  "correctness": {
+    "beforeSuspend": {
+      "assignCount": 1,
+      "assignedAt": 1783246146800,
+      "bootID": "2507be41187cc762",
+      "counter": 18,
+      "pid": 1,
+      "projectId": "e2e-lifecycle-proj",
+      "quiesceCount": 0,
+      "quiesced": false,
+      "rehydrateCount": 0,
+      "status": "ok",
+      "uptimeMs": 1899
+    },
+    "afterRestore": {
+      "assignCount": 1,
+      "assignedAt": 1783246146800,
+      "bootID": "2507be41187cc762",
+      "counter": 19,
+      "pid": 1,
+      "projectId": "e2e-lifecycle-proj",
+      "quiesceCount": 1,
+      "quiesced": false,
+      "rehydrateCount": 1,
+      "status": "ok",
+      "uptimeMs": 1909
+    },
+    "durableMeta": {
+      "projectId": "e2e-lifecycle-proj",
+      "net": {
+        "tap": "fctap0",
+        "hostIp": "172.16.0.1",
+        "guestIp": "172.16.0.2",
+        "netmask": "255.255.255.252",
+        "guestMac": "06:00:AC:10:00:02",
+        "bootIpArg": "ip=172.16.0.2::172.16.0.1:255.255.255.252::eth0:off"
+      },
+      "vcpus": 2,
+      "memoryMB": 1024,
+      "bytesMem": 1073741824,
+      "bytesState": 30302,
+      "createdAt": 1783246149224,
+      "rootfsPath": "/opt/fc-spike/run/fcvm-0-mr7mpnyz.rootfs.ext4",
+      "rootfsIdentity": "sz314572800-mt1783246144015",
+      "v": 1
+    },
+    "checks": {
+      "durablePushed": true,
+      "resumedFromStore": true,
+      "sameBootId": true,
+      "counterAdvanced": true,
+      "projectSurvived": true,
+      "quiesceHookFiredAndFrozen": true,
+      "rehydrateHookFired": true,
+      "rehydrateClearedQuiesced": true,
+      "staleSnapshotRejected": true,
+      "freshSnapshotAccepted": true
+    }
+  },
+  "pass": true,
+  "slo": {
+    "target_ready_p95_ms": 2000,
+    "actual_ready_ms": 39.8
+  }
+}
