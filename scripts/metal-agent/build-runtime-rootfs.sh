@@ -25,7 +25,7 @@ OUT="${OUT:-/opt/fc-spike/img/runtime.ext4}"
 DOCKER_CONFIG="${DOCKER_CONFIG:-/root/.docker}"
 export DOCKER_CONFIG
 # PULL=false uses an image already present in the local docker store (e.g. one
-# built on-host by build-runtime-image-amd64.sh) instead of pulling from OCIR.
+# built on-host with `docker buildx`) instead of pulling from OCIR.
 PULL="${PULL:-true}"
 WORKDIR="${WORKDIR:-/opt/fc-spike/build}"
 POOL_ENV_EXTRA="${POOL_ENV_EXTRA:-}"   # optional extra KEY=VAL lines for fc-init

@@ -63,19 +63,13 @@ variable "ssh_public_key_file" {
 variable "enable_first_boot_bootstrap" {
   description = <<-EOT
     When true, cloud-init runs scripts/metal-agent/host-bootstrap.sh on first
-    boot (firecracker + kernel + bun + ip_forward + wireguard + a stopped
+    boot (firecracker + kernel + bun + ip_forward + a stopped
     metal-agent.service). Leave FALSE for the already-provisioned pilot host so
     its user_data hash is unchanged (changing user_data triggers a destructive
     reinstall via allowed_reinstall_triggers). Set TRUE for fresh fleet nodes.
   EOT
   type        = bool
   default     = false
-}
-
-variable "wg_listen_port" {
-  description = "UDP port the host's WireGuard mesh interface (wg0) listens on. Coordinated with the OCI-side peer; see scripts/metal-agent/wg-mesh.sh."
-  type        = number
-  default     = 51820
 }
 
 resource "latitudesh_project" "fc" {
@@ -148,14 +142,4 @@ output "server_ips" {
 
 output "benchmark_hint" {
   value = length(latitudesh_server.fc) > 0 ? "SSH_TARGET=root@${latitudesh_server.fc[0].primary_ipv4} bash scripts/firecracker-spike/run-spike-ssh.sh" : "no servers"
-}
-
-output "wg_peers" {
-  description = "WireGuard mesh coordination: each host's public IP + the wg0 UDP port. Feed the public IP as the peer Endpoint (<ip>:<port>) on the OCI side; see scripts/metal-agent/wg-mesh.sh."
-  value = [
-    for s in latitudesh_server.fc : {
-      hostname = s.hostname
-      endpoint = "${s.primary_ipv4}:${var.wg_listen_port}"
-    }
-  ]
 }
