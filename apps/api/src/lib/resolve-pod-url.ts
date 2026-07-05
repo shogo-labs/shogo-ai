@@ -34,7 +34,11 @@
  */
 
 import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
-import { isMetalEnabled as metalEnabled, isMetalEligibleProject as metalEligible } from './metal-eligibility'
+import {
+  isMetalEnabled as metalEnabled,
+  isMetalEligibleProject as metalEligible,
+  isMetalAllProjects as metalAllProjects,
+} from './metal-eligibility'
 
 export type PodMode = 'k8s' | 'vm' | 'host' | 'metal'
 
@@ -110,7 +114,25 @@ export interface ResolvePodUrlOpts {
    */
   _isMetalEnabled?: () => boolean
   _isMetalEligible?: (projectId: string) => boolean
+  _isMetalOnly?: () => boolean
   _metalResolver?: (projectId: string) => Promise<string>
+}
+
+/**
+ * Thrown when metal-only mode is active and the metal substrate could not place
+ * the project. Message intentionally contains "starting" so the chat/runtime
+ * routes map it to a retryable `pod_starting` 503 (client backs off while the
+ * VM resumes/boots) rather than a hard failure — and, critically, we do NOT
+ * fall through to Knative in this mode.
+ */
+export class MetalOnlyUnavailableError extends Error {
+  constructor(projectId: string, cause?: unknown) {
+    super(
+      `metal runtime for ${projectId} is starting (metal-only mode; no Knative fallback): ` +
+        `${(cause as any)?.message ?? cause ?? 'no host available'}`,
+    )
+    this.name = 'MetalOnlyUnavailableError'
+  }
 }
 
 /**
@@ -157,11 +179,17 @@ export async function resolveProjectPodUrl(
   const isVMIsolation = opts._isVMIsolation ?? defaultIsVMIsolation
 
   // Metal microVM substrate (cloud-agnostic bare-metal, reached over the mesh).
-  // Gated per-project and BEST-EFFORT: any miss/host failure falls through to
-  // the existing Knative/VM/host cascade below, so it's safe to roll out behind
-  // the flag without risking a project becoming unreachable if a host is down.
+  //
+  //   - Rollout mode (SHOGO_METAL_ENABLED + allowlist/percentage): BEST-EFFORT.
+  //     A miss/host failure falls through to the Knative/VM/host cascade below,
+  //     so canarying is safe — a project is never unreachable if a host is down.
+  //   - Metal-only mode (SHOGO_METAL_ALL_PROJECTS): EVERY project runs on metal
+  //     and Knative is NOT used. A miss throws MetalOnlyUnavailableError (→
+  //     retryable 503) instead of falling through, so traffic never silently
+  //     lands on Knative.
   const isMetalEnabled = opts._isMetalEnabled ?? defaultIsMetalEnabled
   const isMetalEligible = opts._isMetalEligible ?? defaultIsMetalEligible
+  const isMetalOnly = opts._isMetalOnly ?? metalAllProjects
   if (isMetalEnabled() && isMetalEligible(projectId)) {
     try {
       const resolve = opts._metalResolver
@@ -169,6 +197,11 @@ export async function resolveProjectPodUrl(
       const url = await resolve(projectId)
       return { mode: 'metal', url }
     } catch (err: any) {
+      if (isMetalOnly()) {
+        // Authoritative: do not fall through to Knative in metal-only mode.
+        console.warn(`[${tag}] metal resolve failed for ${projectId} (metal-only, no fallback): ${err?.message ?? err}`)
+        throw new MetalOnlyUnavailableError(projectId, err)
+      }
       console.warn(
         `[${tag}] metal resolve failed for ${projectId}; falling back to k8s/vm/host: ${err?.message ?? err}`,
       )
