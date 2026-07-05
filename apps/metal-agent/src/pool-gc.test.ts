@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
@@ -143,11 +143,16 @@ describe('pool GC', () => {
     const { pool, cfg } = makePool(dir, new FakeStore('test-id'))
     const live = seed(cfg, 'live', 100)
     pool.rehydrate()
-    // Orphans: files no cache entry / running VM references.
+    // Orphans: files no cache entry / running VM references. Backdate them past
+    // the in-flight grace window so they qualify as genuine orphans.
     const orphanState = join(cfg.snapDir, 'fcvm-99.vmstate')
     const orphanMem = join(cfg.snapDir, 'fcvm-99.mem')
     const orphanRoot = join(cfg.runDir, 'fcvm-99.rootfs.ext4')
-    for (const p of [orphanState, orphanMem, orphanRoot]) writeFileSync(p, 'x')
+    const old = new Date(Date.now() - 10 * 60_000)
+    for (const p of [orphanState, orphanMem, orphanRoot]) {
+      writeFileSync(p, 'x')
+      utimesSync(p, old, old)
+    }
 
     const removed = pool.reclaimOrphans()
     expect(removed).toBe(3)
@@ -156,6 +161,26 @@ describe('pool GC', () => {
     // Rehydrated snapshot's artifacts are protected.
     expect(existsSync(live.snapshotPath)).toBe(true)
     expect(existsSync(live.rootfs)).toBe(true)
+  })
+
+  test('reclaimOrphans spares young in-flight artifacts (cold-boot/assign window)', () => {
+    // Regression: a VM's rootfs/mem/vmstate exist on disk before the project is
+    // recorded in `assigned`/`suspended` (mid cold-boot or mid-snapshot). A
+    // map-only guard deleted them, torpedoing the subsequent durable push
+    // ("artifact missing/empty"). Fresh (just-written) orphan-looking files
+    // must be left alone until they age past the grace window.
+    const { pool, cfg } = makePool(dir, new FakeStore('test-id'))
+    pool.rehydrate()
+    const youngState = join(cfg.snapDir, 'fcvm-inflight.vmstate')
+    const youngMem = join(cfg.snapDir, 'fcvm-inflight.mem')
+    const youngRoot = join(cfg.runDir, 'fcvm-inflight.rootfs.ext4')
+    for (const p of [youngState, youngMem, youngRoot]) writeFileSync(p, 'x') // mtime = now
+
+    const removed = pool.reclaimOrphans()
+    expect(removed).toBe(0)
+    expect(existsSync(youngState)).toBe(true)
+    expect(existsSync(youngMem)).toBe(true)
+    expect(existsSync(youngRoot)).toBe(true)
   })
 
   test('evictForGc refuses when the durable copy is absent (only local copy)', async () => {
