@@ -175,6 +175,59 @@ describe('resolveProjectPodUrl', () => {
     })
   })
 
+  describe('metal wait-and-retry (metalWaitMs)', () => {
+    it('does a SINGLE attempt by default (metalWaitMs unset) then falls back', async () => {
+      let metalCalls = 0
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isMetalEnabled: () => true,
+        _isMetalEligible: () => true,
+        _metalResolver: async () => { metalCalls++; throw new Error('not ready') },
+        _isKubernetes: () => true,
+        _k8sResolver: async () => 'http://pod.cluster/v1',
+      })
+      expect(metalCalls).toBe(1)
+      expect(res.mode).toBe('k8s')
+    })
+
+    it('rejoins the in-flight wake: retries within the budget and succeeds on a later attempt', async () => {
+      let calls = 0
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isMetalEnabled: () => true,
+        _isMetalEligible: () => true,
+        _metalResolver: async () => {
+          calls++
+          if (calls < 3) throw new Error('metal /assign timed out')
+          return 'http://10.8.0.2:8080'
+        },
+        _isKubernetes: () => true,
+        _k8sResolver: async () => 'http://pod.cluster/v1',
+        metalWaitMs: 5000,
+        metalRetryDelayMs: 1,
+      })
+      expect(calls).toBe(3)
+      expect(res).toEqual({ mode: 'metal', url: 'http://10.8.0.2:8080' })
+    })
+
+    it('metal-only: retries within budget, then throws a retryable "starting" error (no k8s fallback)', async () => {
+      let calls = 0
+      let k8sCalls = 0
+      await expect(
+        resolveProjectPodUrl('any-proj', {
+          _isMetalEnabled: () => true,
+          _isMetalEligible: () => true,
+          _isMetalOnly: () => true,
+          _metalResolver: async () => { calls++; throw new Error('no live metal host available') },
+          _isKubernetes: () => true,
+          _k8sResolver: async () => { k8sCalls++; return 'http://pod.cluster/v1' },
+          metalWaitMs: 20,
+          metalRetryDelayMs: 1,
+        }),
+      ).rejects.toThrow(/metal-only/)
+      expect(calls).toBeGreaterThan(1) // retried at least once before giving up
+      expect(k8sCalls).toBe(0)
+    })
+  })
+
   describe('VM transient failure handling', () => {
     it('throws the transient error by default (maxVMRetries=1)', async () => {
       await expect(
