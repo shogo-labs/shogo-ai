@@ -114,6 +114,35 @@ export const config = {
   rehydrateTimeoutMs: parseInt(env('METAL_REHYDRATE_TIMEOUT_MS', '5000'), 10),
 
   /**
+   * Balloon-reclaim before snapshot. Firecracker's CreateSnapshot writes the
+   * whole guest RAM region; freed-but-stale pages don't gzip, so a mostly-idle
+   * 4 GiB guest still yields a ~400 MiB mem.gz. Inflating the balloon just
+   * before the snapshot makes FC `madvise(MADV_DONTNEED)` the reclaimed pages
+   * (they snapshot as zeros and compress away). Measured on staging: mem.gz
+   * 408 → 134 MiB (~3x) with a healthy restore. The guest comes back with the
+   * balloon still inflated, so restoreVM() deflates it to hand RAM back.
+   *
+   * Reclaim is stats-guided: we read the balloon's available/free estimate and
+   * target leaving `balloonFloorMiB` headroom, so we reclaim what's actually
+   * free (fast) instead of forcing cache eviction / the driver's "out of puff"
+   * retry spin. Requires balloon statistics, which must be enabled pre-boot
+   * (see fc-api.machineConfig) — they cannot be turned on after InstanceStart.
+   */
+  balloonReclaim: env('METAL_SNAP_BALLOON', '1') !== '0',
+  /** Guest headroom (MiB) to leave un-reclaimed during pre-snapshot inflate. */
+  balloonFloorMiB: parseInt(env('METAL_SNAP_BALLOON_FLOOR_MB', '256'), 10),
+  /**
+   * Cap on how long to wait for inflation to settle before snapshotting. The
+   * driver reclaims GiBs over several seconds; the stats-guided poll breaks
+   * early on convergence/plateau so this is an upper bound, mostly hit only by
+   * the no-stats blind-inflate path (older snapshots). Suspend is a background
+   * op, so this latency isn't user-facing.
+   */
+  balloonMaxWaitMs: parseInt(env('METAL_SNAP_BALLOON_MAX_WAIT_MS', '10000'), 10),
+  /** Poll interval while waiting for the balloon `actual` size to converge. */
+  balloonPollMs: parseInt(env('METAL_SNAP_BALLOON_POLL_MS', '250'), 10),
+
+  /**
    * Durable snapshot store. Local NVMe always holds the hot snapshot for
    * sub-second same-host resume; the store adds durability + cross-host
    * mobility (survives node-agent restart / lets another host wake a project).
