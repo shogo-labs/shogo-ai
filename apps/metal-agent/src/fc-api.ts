@@ -7,6 +7,38 @@
  * need curl or a socket shim.
  */
 
+/** Subset of Firecracker's BalloonStats we act on (sizes in MiB / bytes). */
+export interface BalloonStats {
+  /** Balloon target size (MiB) — how much RAM is currently reclaimed. */
+  targetMib: number
+  /** Balloon actual size (MiB) — how much the driver has really handed back. */
+  actualMib: number
+  /** Guest estimate of memory available for new work without swapping (MiB). */
+  availableMib: number
+  /** Guest truly-free memory (MiB). */
+  freeMib: number
+}
+
+/**
+ * Pick how many MiB to reclaim via the balloon before a snapshot.
+ *
+ * We reclaim what the guest reports as *available* (free + easily-reclaimable
+ * cache) while leaving `floorMiB` of headroom, and never target more than the
+ * guest could give back (`configuredMiB - floorMiB`). Targeting only reclaimable
+ * memory keeps inflation fast and avoids the driver's "out of puff" retry spin
+ * that happens when the target is unreachable. Pure + unit-tested.
+ */
+export function computeReclaimMiB(args: {
+  configuredMiB: number
+  availableMiB: number
+  floorMiB: number
+}): number {
+  const { configuredMiB, availableMiB, floorMiB } = args
+  const ceiling = Math.max(0, configuredMiB - Math.max(0, floorMiB))
+  const reclaimable = Math.max(0, availableMiB - Math.max(0, floorMiB))
+  return Math.max(0, Math.min(ceiling, reclaimable))
+}
+
 export class FcApiError extends Error {
   constructor(
     public method: string,
@@ -42,6 +74,17 @@ export class FcApi {
     return this.req('PATCH', path, body)
   }
 
+  private async get<T>(path: string): Promise<T> {
+    const res = await fetch(`http://localhost${path}`, {
+      // @ts-expect-error - Bun-specific: route this fetch over a Unix socket.
+      unix: this.socketPath,
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    })
+    if (!res.ok) throw new FcApiError('GET', path, res.status, await res.text().catch(() => ''))
+    return (await res.json()) as T
+  }
+
   // --- Typed convenience wrappers over the FC API surface we use. ---
 
   bootSource(kernelImagePath: string, bootArgs: string) {
@@ -57,7 +100,14 @@ export class FcApi {
     })
   }
 
-  machineConfig(vcpus: number, memMiB: number, ballooning = true) {
+  /**
+   * Configure vCPUs + RAM and (optionally) install the balloon device.
+   * `statsIntervalS > 0` enables balloon statistics so pre-snapshot reclaim can
+   * poll the guest's available/actual sizes — this MUST be set pre-boot, FC
+   * refuses to enable stats after InstanceStart. `ballooning=false` skips the
+   * device entirely.
+   */
+  machineConfig(vcpus: number, memMiB: number, ballooning = true, statsIntervalS = 0) {
     return this.put('/machine-config', {
       vcpu_count: vcpus,
       mem_size_mib: memMiB,
@@ -65,7 +115,11 @@ export class FcApi {
       track_dirty_pages: false,
     }).then(() =>
       ballooning
-        ? this.put('/balloon', { amount_mib: 0, deflate_on_oom: true, stats_polling_interval_s: 0 })
+        ? this.put('/balloon', {
+            amount_mib: 0,
+            deflate_on_oom: true,
+            stats_polling_interval_s: Math.max(0, Math.floor(statsIntervalS)),
+          })
         : undefined,
     )
   }
@@ -114,5 +168,39 @@ export class FcApi {
     // configured - target. Clamp to [0, configured].
     const amount = Math.max(0, Math.min(configuredMiB, configuredMiB - targetMiB))
     return this.patch('/balloon', { amount_mib: amount })
+  }
+
+  /** Set the balloon target directly (MiB to reclaim from the guest). */
+  balloonInflate(amountMiB: number) {
+    return this.patch('/balloon', { amount_mib: Math.max(0, Math.floor(amountMiB)) })
+  }
+
+  /** Return all reclaimed RAM to the guest (balloon target → 0). */
+  balloonDeflate() {
+    return this.patch('/balloon', { amount_mib: 0 })
+  }
+
+  /**
+   * Read balloon statistics (requires stats enabled pre-boot). Returns null if
+   * stats are disabled or the device is absent, so callers can skip reclaim
+   * rather than fail a snapshot. `free_memory`/`available_memory` are bytes.
+   */
+  async balloonStats(): Promise<BalloonStats | null> {
+    try {
+      const s = await this.get<{
+        target_mib?: number
+        actual_mib?: number
+        available_memory?: number
+        free_memory?: number
+      }>('/balloon/statistics')
+      return {
+        targetMib: s.target_mib ?? 0,
+        actualMib: s.actual_mib ?? 0,
+        availableMib: Math.floor((s.available_memory ?? 0) / (1024 * 1024)),
+        freeMib: Math.floor((s.free_memory ?? 0) / (1024 * 1024)),
+      }
+    } catch {
+      return null
+    }
   }
 }
