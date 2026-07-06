@@ -45,6 +45,13 @@ export const config = {
   /** Warm pool target size. */
   poolSize: parseInt(env('METAL_POOL_SIZE', '1'), 10),
 
+  /**
+   * Max VMs the warm pool boots in parallel while filling to target. Bounds the
+   * startup thundering herd (40 simultaneous FC spawns saturate TAP setup + CPU
+   * and time out on the API socket); the remainder fill in subsequent batches.
+   */
+  poolBootConcurrency: parseInt(env('METAL_POOL_BOOT_CONCURRENCY', '8'), 10),
+
   /** Node-agent HTTP listen. */
   listenHost: env('METAL_LISTEN_HOST', '0.0.0.0'),
   listenPort: parseInt(env('METAL_LISTEN_PORT', '9900'), 10),
