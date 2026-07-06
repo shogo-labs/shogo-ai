@@ -60,6 +60,7 @@ const HOST_KEY = 'metal:host:'
 const HOST_SET = 'metal:hosts'
 const PLACE_KEY = 'metal:place:'
 const LEASE_KEY = 'metal:lease:'
+const CORDON_SET = 'metal:cordoned'
 
 // Compare-and-delete / compare-and-expire so only the lease holder can
 // renew or release it (a stale holder must not free a re-acquired lease).
@@ -72,6 +73,7 @@ export class MetalPlacementRegistry {
   private memHosts = new Map<string, HostScalars>()
   private memPlace = new Map<string, Placement>()
   private memLease = new Map<string, { holder: string; expiresAt: number }>()
+  private memCordoned = new Set<string>()
 
   constructor(private redisGetter: () => Redis | null = getSharedRedis) {}
 
@@ -128,6 +130,35 @@ export class MetalPlacementRegistry {
     } catch {
       const cutoff = Date.now() - HOST_TTL_MS
       return [...this.memHosts.values()].filter((h) => h.lastSeenAt >= cutoff)
+    }
+  }
+
+  // --- cordon (admin drain) ------------------------------------------------
+  // A cordoned host keeps heartbeating and serving its live projects but is
+  // removed from NEW-placement candidates, so it drains as projects idle →
+  // suspend → resume elsewhere. Shared so every API replica honors it. No TTL:
+  // a cordon persists until an admin uncordons (or the host set is cleaned up).
+
+  async setCordon(hostId: string, cordoned: boolean): Promise<void> {
+    const r = this.redis()
+    if (!r) {
+      cordoned ? this.memCordoned.add(hostId) : this.memCordoned.delete(hostId)
+      return
+    }
+    try {
+      cordoned ? await r.sadd(CORDON_SET, hostId) : await r.srem(CORDON_SET, hostId)
+    } catch {
+      cordoned ? this.memCordoned.add(hostId) : this.memCordoned.delete(hostId)
+    }
+  }
+
+  async listCordoned(): Promise<string[]> {
+    const r = this.redis()
+    if (!r) return [...this.memCordoned]
+    try {
+      return await r.smembers(CORDON_SET)
+    } catch {
+      return [...this.memCordoned]
     }
   }
 

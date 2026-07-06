@@ -32,9 +32,61 @@ apt-get update -qq
 apt-get install -y -qq \
   curl ca-certificates unzip jq \
   iproute2 iptables \
-  e2fsprogs \
+  e2fsprogs mdadm \
   dmsetup lvm2 xfsprogs zstd pigz >/dev/null
 log "base packages ok"
+
+# --- Data disk: put $WORK on the big local NVMe, not the OS drive ------------
+# The 512 GB hosts (s3-large-x86) boot on a small ~480 GB drive with the two
+# large NVMes unformatted. The rootfs cache + snapshots + CoW + swap need the
+# big, fast storage. Idempotent and SAFE: only acts when $WORK is not already a
+# mountpoint and only ever touches whole NVMe disks that are unpartitioned and
+# unmounted (never the root disk or anything holding data). Two big disks →
+# RAID0 (throughput + capacity); one → used directly. XFS (reflink=1 default)
+# so reflink CoW works too.
+setup_data_disk() {
+  local mnt="$1"
+  mountpoint -q "$mnt" && { log "data-disk: $mnt already mounted ($(findmnt -no SOURCE "$mnt")); skipping"; return; }
+  local root_src root_disk
+  root_src="$(findmnt -no SOURCE / 2>/dev/null || true)"
+  root_disk="$(lsblk -no PKNAME "$root_src" 2>/dev/null | head -1 || true)"
+  local cands=()
+  local d sz mnts
+  for d in $(lsblk -dn -o NAME,TYPE 2>/dev/null | awk '$2=="disk"{print $1}'); do
+    case "$d" in nvme*) ;; *) continue ;; esac
+    [ "$d" = "$root_disk" ] && continue
+    mnts="$(lsblk -rno MOUNTPOINT "/dev/$d" 2>/dev/null | tr -d ' ')"
+    [ -n "$mnts" ] && continue            # something on this disk is mounted → skip
+    sz="$(blockdev --getsize64 "/dev/$d" 2>/dev/null || echo 0)"
+    [ "$sz" -ge 1000000000000 ] && cands+=("/dev/$d")   # >= ~1 TB
+  done
+  if [ "${#cands[@]}" -eq 0 ]; then
+    log "data-disk: no spare NVMe found; leaving $WORK on the OS drive"
+    mkdir -p "$mnt"
+    return
+  fi
+  local dev
+  if [ "${#cands[@]}" -ge 2 ]; then
+    log "data-disk: RAID0 over ${cands[*]} -> /dev/md0"
+    mdadm --create --verbose /dev/md0 --level=0 --raid-devices="${#cands[@]}" "${cands[@]}" --run
+    dev=/dev/md0
+    mkdir -p /etc/mdadm
+    grep -q '/dev/md0' /etc/mdadm/mdadm.conf 2>/dev/null || \
+      mdadm --detail --scan >> /etc/mdadm/mdadm.conf
+    update-initramfs -u >/dev/null 2>&1 || true
+  else
+    dev="${cands[0]}"
+    log "data-disk: using single $dev"
+  fi
+  log "data-disk: mkfs.xfs $dev"
+  mkfs.xfs -f "$dev" >/dev/null
+  mkdir -p "$mnt"
+  mount "$dev" "$mnt"
+  local uuid; uuid="$(blkid -s UUID -o value "$dev")"
+  grep -q "$uuid" /etc/fstab 2>/dev/null || echo "UUID=$uuid $mnt xfs defaults,noatime 0 0" >> /etc/fstab
+  log "data-disk: mounted $dev at $mnt ($(df -h "$mnt" | awk 'NR==2{print $2}'))"
+}
+setup_data_disk "$WORK"
 
 # --- Persistent IP forwarding (guest DNAT routing depends on it) ------------
 log "enabling net.ipv4.ip_forward (persistent)..."
@@ -47,7 +99,42 @@ sysctl -p /etc/sysctl.d/99-metal-agent.conf >/dev/null
 # --- Firecracker + guest kernel ---------------------------------------------
 mkdir -p "$WORK/bin" "$WORK/img" "$WORK/run" "$WORK/snapshots" \
          "$WORK/cow" "$WORK/base-cache" "$WORK/durable-snapshots"
-ARCH="$(uname -m)"  # x86_64 on Latitude c3-large-x86
+
+# --- Swap on NVMe (OOM safety net for dense VM packing) ---------------------
+# Firecracker only keeps *resident* guest pages, but a burst of concurrently
+# active projects can push total RSS past physical RAM. With no swap the OOM
+# killer takes a Firecracker process — i.e. a live project dies. A large NVMe
+# swapfile is cheap insurance: swappiness=10 keeps it idle until real pressure,
+# turning a hard kill into graceful slowdown. Sized for the 512 GB hosts so the
+# worst-case guest-RAM ceiling (many 4 GiB VMs) always has somewhere to spill.
+SWAP_GB="${SWAP_GB:-256}"
+SWAPFILE="$WORK/swapfile"
+if ! swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$SWAPFILE"; then
+  log "provisioning ${SWAP_GB}G swap at $SWAPFILE..."
+  rm -f "$SWAPFILE" 2>/dev/null || true
+  fallocate -l "${SWAP_GB}G" "$SWAPFILE" 2>/dev/null || \
+    dd if=/dev/zero of="$SWAPFILE" bs=1M count=$((SWAP_GB * 1024)) status=none
+  chmod 600 "$SWAPFILE"
+  mkswap "$SWAPFILE" >/dev/null 2>&1 || true
+  if ! swapon "$SWAPFILE" 2>/dev/null; then
+    # A fallocate'd file can carry holes on some filesystems (XFS/Btrfs) which
+    # swapon rejects ("swapfile has holes"); rewrite it fully with dd.
+    log "swapon rejected sparse file; rewriting ${SWAP_GB}G with dd..."
+    rm -f "$SWAPFILE"
+    dd if=/dev/zero of="$SWAPFILE" bs=1M count=$((SWAP_GB * 1024)) status=none
+    chmod 600 "$SWAPFILE"
+    mkswap "$SWAPFILE" >/dev/null 2>&1 || true
+    swapon "$SWAPFILE" 2>/dev/null || log "WARN: swapon failed; continuing without swap"
+  fi
+  log "swap active: $(free -h | awk '/Swap/{print $2}') total"
+fi
+# Persist across reboots + keep swappiness low (swap is a safety net, not a
+# first resort — never page out hot guest RAM proactively).
+grep -qF "$SWAPFILE" /etc/fstab || echo "$SWAPFILE none swap sw 0 0" >> /etc/fstab
+printf 'vm.swappiness=10\n' > /etc/sysctl.d/99-metal-swap.conf
+sysctl -w vm.swappiness=10 >/dev/null
+
+ARCH="$(uname -m)"  # x86_64 on Latitude s3-large-x86 / c3-large-x86
 if [ ! -x "$WORK/bin/firecracker" ]; then
   log "installing firecracker v${FC_VERSION} ($ARCH)..."
   curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/v${FC_VERSION}/firecracker-v${FC_VERSION}-${ARCH}.tgz" \

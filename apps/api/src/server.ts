@@ -5042,6 +5042,8 @@ app.use('/api/admin/warm-pool/*', authMiddleware, requireAuth, requireSuperAdmin
 app.use('/api/admin/settings/*', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/regions', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/regions/*', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/metal', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/metal/*', authMiddleware, requireAuth, requireSuperAdmin)
 
 // GET /api/admin/pods - List all project pods
 app.get('/api/admin/pods', async (c) => {
@@ -5114,6 +5116,92 @@ app.all('/api/admin/regions/:regionId/*', async (c) => {
   return proxyToPeer(c, targetRegionId, {
     stripPrefix: `/api/admin/regions/${targetRegionId}`,
   })
+})
+
+// =============================================================================
+// Metal Fleet Admin (bare-metal Firecracker hosts) — mirrors the Knative
+// warm-pool admin surface: view live hosts + control (cordon/drain). The
+// desired baseline comes from the committed config (config/metal-fleet.ts); the
+// live view comes from the registry (node-agent heartbeats). Super-admin only.
+// =============================================================================
+
+// GET /api/admin/metal/fleet — desired baseline vs live registry + drift.
+app.get('/api/admin/metal/fleet', async (c) => {
+  try {
+    const { getMetalFleetStatus } = await import('./lib/metal-warm-pool-controller')
+    const { getFleetEnv, fleetEnvKey, METAL_FLEET } = await import('./config/metal-fleet')
+
+    const status = await getMetalFleetStatus()
+    const envKey = fleetEnvKey()
+    const env = getFleetEnv(envKey)
+
+    const liveById = new Map(status.hosts.map((h) => [h.hostId, h]))
+    const desiredIds = new Set(env.baseline.map((h) => h.hostId))
+
+    // Merge desired baseline with what is actually live; flag drift both ways.
+    const baseline = env.baseline.map((d) => {
+      const live = liveById.get(d.hostId)
+      return {
+        ...d,
+        kind: 'baseline' as const,
+        present: !!live,
+        provisioned: !!d.serverId,
+        live: live ?? null,
+      }
+    })
+    // Live hosts not declared in baseline = burst/unmanaged (informational).
+    const extra = status.hosts
+      .filter((h) => !desiredIds.has(h.hostId))
+      .map((h) => ({ hostId: h.hostId, region: h.region, kind: 'burst' as const, present: true, provisioned: true, live: h }))
+
+    // Region rollups (utilization for burst decisions).
+    const byRegion: Record<string, { hosts: number; live: number; assigned: number; poolSize: number; utilPct: number }> = {}
+    for (const h of status.hosts) {
+      const r = (byRegion[h.region] ||= { hosts: 0, live: 0, assigned: 0, poolSize: 0, utilPct: 0 })
+      r.hosts++
+      r.live++
+      r.assigned += h.load?.assigned ?? 0
+      r.poolSize += h.capacity?.poolSize ?? 0
+    }
+    for (const r of Object.values(byRegion)) r.utilPct = r.poolSize > 0 ? Math.round((r.assigned / r.poolSize) * 100) : 0
+
+    return c.json({
+      ok: true,
+      data: {
+        env: envKey,
+        provider: METAL_FLEET.provider,
+        defaults: METAL_FLEET.defaults,
+        burst: env.burst,
+        hosts: [...baseline, ...extra],
+        regions: byRegion,
+        stats: status.stats,
+        config: status.config,
+        drift: {
+          missing: baseline.filter((h) => !h.present).map((h) => h.hostId),
+          unmanaged: extra.map((h) => h.hostId),
+        },
+      },
+    })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'metal fleet unavailable' }, 500)
+  }
+})
+
+// POST /api/admin/metal/hosts/:hostId/cordon — drain (no new placements).
+// POST /api/admin/metal/hosts/:hostId/uncordon — resume placements.
+app.post('/api/admin/metal/hosts/:hostId/:action', async (c) => {
+  const hostId = c.req.param('hostId')
+  const action = c.req.param('action')
+  if (action !== 'cordon' && action !== 'uncordon') {
+    return c.json({ ok: false, error: 'unknown_action' }, 400)
+  }
+  try {
+    const { setMetalHostCordon } = await import('./lib/metal-warm-pool-controller')
+    await setMetalHostCordon(hostId, action === 'cordon')
+    return c.json({ ok: true, hostId, cordoned: action === 'cordon' })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'cordon failed' }, 500)
+  }
 })
 
 // GET /api/admin/warm-pool - Extended warm pool status with promoted pods and GC stats
