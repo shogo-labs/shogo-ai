@@ -87,6 +87,40 @@ describe('MetalWarmPoolController', () => {
     expect(seen[0]).toBe(seen[1])
   })
 
+  it('cordon drains: a cordoned host takes no new placements', async () => {
+    const seen: string[] = []
+    const fetchImpl = (async (url: string) => {
+      seen.push(new URL(url).hostname)
+      return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+    c.registerHost({ ...REG, hostId: 'ash-1', meshIp: '10.8.0.2' })
+    c.registerHost({ ...REG, hostId: 'ash-2', meshIp: '10.8.0.3' })
+
+    await c.setHostCordon('ash-1', true)
+    // Every new placement must avoid the cordoned host.
+    await c.getMetalProjectUrl('p1')
+    await c.getMetalProjectUrl('p2')
+    await c.getMetalProjectUrl('p3')
+    expect(seen.every((h) => h === '10.8.0.3')).toBe(true)
+
+    const fleet = await c.getFleetStatus()
+    expect(fleet.hosts.find((h) => h.hostId === 'ash-1')?.cordoned).toBe(true)
+    expect(fleet.hosts.find((h) => h.hostId === 'ash-2')?.cordoned).toBe(false)
+
+    // Uncordon restores eligibility.
+    await c.setHostCordon('ash-1', false)
+    const fleet2 = await c.getFleetStatus()
+    expect(fleet2.hosts.find((h) => h.hostId === 'ash-1')?.cordoned).toBe(false)
+  })
+
+  it('cordoning the only host yields NoMetalHostError', async () => {
+    const c = new MetalWarmPoolController(fakeEnv(), (async () => new Response()) as any)
+    c.registerHost(REG)
+    await c.setHostCordon('ash-1', true)
+    await expect(c.getMetalProjectUrl('p1')).rejects.toBeInstanceOf(NoMetalHostError)
+  })
+
   it('fails over to another host when the first errors, dropping stickiness', async () => {
     let calls = 0
     const fetchImpl = (async (url: string) => {

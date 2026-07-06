@@ -99,6 +99,9 @@ export class MetalWarmPoolController {
   private projectHost = new Map<string, string>()
   private pending = new Map<string, Promise<string>>()
   private stats = { assigned: 0, resumed: 0, coldMiss: 0, hostErrors: 0, noHost: 0 }
+  /** Cordoned hostIds (admin drain) — excluded from NEW placements. Synced from
+   * the shared registry on each resolve so every API replica honors a cordon. */
+  private cordoned = new Set<string>()
 
   /** Stable per-process lease holder token (distinct per API replica). */
   private holderId = `metal-cp-${process.env.HOSTNAME || crypto.randomUUID()}`
@@ -165,6 +168,13 @@ export class MetalWarmPoolController {
     }
     // Local view overrides (fresher load/disk from this pod's own heartbeats).
     for (const h of local) byId.set(h.hostId, h)
+    // Refresh the cordon set (best-effort) so candidate selection below and any
+    // sibling replica's admin cordon are honored without a restart.
+    try {
+      this.cordoned = new Set(await this.registry.listCordoned())
+    } catch {
+      /* keep last-known cordon set on a registry blip */
+    }
     return [...byId.values()]
   }
 
@@ -183,9 +193,12 @@ export class MetalWarmPoolController {
    *      placing a new cold project there just fights the sweep).
    */
   private candidates(projectId: string, placedHostId: string | undefined, live: HostEntry[]): HostEntry[] {
+    // Cordoned hosts drain: they keep serving live projects but take no NEW
+    // placements, so a project on a cordoned host re-places elsewhere on wake.
+    const eligible = live.filter((h) => !this.cordoned.has(h.hostId))
     const preferId = placedHostId ?? this.projectHost.get(projectId)
-    const preferred = preferId ? live.find((h) => h.hostId === preferId) : undefined
-    const rest = live
+    const preferred = preferId ? eligible.find((h) => h.hostId === preferId) : undefined
+    const rest = eligible
       .filter((h) => h.hostId !== preferred?.hostId)
       .sort((a, b) => {
         // Under-watermark hosts always sort ahead of over-watermark ones.
@@ -368,6 +381,7 @@ export class MetalWarmPoolController {
           disk: h.disk,
           live: h.lastSeenAt >= this.now() - HOST_TTL_MS,
           overWatermark: overWatermark(h),
+          cordoned: this.cordoned.has(h.hostId),
           lastSeenMsAgo: this.now() - h.lastSeenAt,
         })),
       },
@@ -381,6 +395,47 @@ export class MetalWarmPoolController {
       config: { hostTtlMs: HOST_TTL_MS, assignTimeoutMs: ASSIGN_TIMEOUT_MS },
     }
   }
+
+  /**
+   * Fleet status merged across all API replicas (registry-aware) for the
+   * super-admin panel. Unlike getStatus() (this replica's in-memory view only),
+   * this reflects every live host any replica has heard from, plus cordon state.
+   */
+  async getFleetStatus() {
+    const live = await this.liveHostsShared() // also refreshes this.cordoned
+    const cordoned = this.cordoned
+    const resumedPlusCold = this.stats.resumed + this.stats.coldMiss
+    return {
+      hosts: live
+        .map((h) => ({
+          hostId: h.hostId,
+          region: h.region,
+          arch: h.arch,
+          meshIp: h.meshIp,
+          agentPort: h.agentPort,
+          capacity: h.capacity,
+          load: h.load,
+          disk: h.disk,
+          live: true,
+          overWatermark: overWatermark(h),
+          cordoned: cordoned.has(h.hostId),
+          utilPct: utilizationPct(h),
+        }))
+        .sort((a, b) => a.region.localeCompare(b.region) || a.hostId.localeCompare(b.hostId)),
+      stats: {
+        ...this.stats,
+        snapshotHitRate: resumedPlusCold > 0 ? +(this.stats.resumed / resumedPlusCold).toFixed(3) : null,
+      },
+      config: { hostTtlMs: HOST_TTL_MS, assignTimeoutMs: ASSIGN_TIMEOUT_MS, diskHighPct: DISK_HIGH_PCT },
+    }
+  }
+
+  /** Cordon (drain) or uncordon a host. Shared so all replicas honor it. */
+  async setHostCordon(hostId: string, cordoned: boolean): Promise<void> {
+    if (cordoned) this.cordoned.add(hostId)
+    else this.cordoned.delete(hostId)
+    await this.registry.setCordon(hostId, cordoned).catch(() => {})
+  }
 }
 
 /** assigned/poolSize load ratio; unknown capacity sorts last. */
@@ -393,6 +448,13 @@ function loadRatio(h: HostEntry): number {
 /** True if the host is at/over the disk high-watermark (GC is shedding). */
 function overWatermark(h: HostEntry): boolean {
   return typeof h.disk?.usedPct === 'number' && h.disk.usedPct >= DISK_HIGH_PCT
+}
+
+/** assigned/poolSize as a whole-number percent (0 when capacity unknown). */
+function utilizationPct(h: HostEntry): number {
+  const cap = h.capacity?.poolSize || 0
+  if (cap <= 0) return 0
+  return Math.round(((h.load?.assigned ?? 0) / cap) * 100)
 }
 
 // --- singleton ---------------------------------------------------------------
@@ -415,6 +477,16 @@ export function registerMetalHost(reg: MetalHostRegistration): void {
 
 export async function getMetalProjectUrl(projectId: string): Promise<string> {
   return getMetalWarmPoolController().getMetalProjectUrl(projectId)
+}
+
+/** Registry-aware fleet status for the super-admin panel (all replicas). */
+export async function getMetalFleetStatus() {
+  return getMetalWarmPoolController().getFleetStatus()
+}
+
+/** Cordon (drain) or uncordon a metal host from the super-admin panel. */
+export async function setMetalHostCordon(hostId: string, cordoned: boolean): Promise<void> {
+  return getMetalWarmPoolController().setHostCordon(hostId, cordoned)
 }
 
 // Eligibility gating lives in the dependency-free metal-eligibility module so
