@@ -2291,6 +2291,64 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
   const previewMode = c.req.query('mode') || 'subdomain' // Default to subdomain mode
   
   if (isKubernetes()) {
+    // Metal microVM substrate: when this project is served by the bare-metal
+    // warm pool (SHOGO_METAL_ALL_PROJECTS or per-project rollout), readiness is
+    // owned by the metal controller — NOT Knative. Polling Knative here always
+    // sees replicas:0 for a metal project, so `?wait=true` (the studio's open /
+    // "is it online?" gate) waits the full 60s and returns 202 even though the
+    // BM already has the project resumed and serving. Resolve via metal instead:
+    // a successful assign/resume means the runtime is up; a miss is a fast
+    // retryable 202. No Knative fallback here in metal-only mode.
+    const { isMetalEnabled, isMetalEligibleProject } = await import('./lib/metal-eligibility')
+    if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
+      const { generatePreviewToken } = await import('./lib/preview-token')
+      const { getPreviewUrl } = await import('./lib/knative-project-manager')
+      const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
+      const protocol = 'https'
+      const previewToken = await generatePreviewToken(projectId)
+      // In metal mode the browser reaches the runtime same-origin through this
+      // API's agent-proxy (the BM is mesh-only, not publicly routable).
+      const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
+      let previewUrl: string
+      let legacyProxyUrl: string
+      if (previewMode === 'subdomain') {
+        previewUrl = `${getPreviewUrl(projectId)}/?__preview_token=${previewToken}`
+        legacyProxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+      } else {
+        previewUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+        legacyProxyUrl = previewUrl
+      }
+      const canvasBaseUrl = previewMode === 'subdomain' ? getPreviewUrl(projectId) : agentUrl
+      const metalBody = (ready: boolean) => ({
+        url: previewUrl,
+        proxyUrl: legacyProxyUrl,
+        directUrl: agentUrl,
+        agentUrl,
+        canvasBaseUrl,
+        sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
+        status: ready ? 'running' : 'starting',
+        ready,
+        mode: previewMode,
+        ...(ready ? {} : { message: 'Runtime is still starting. Please retry this request.' }),
+      })
+      // wait=false is a non-blocking status poll — don't trigger a resume here;
+      // report not-ready so the client polls again with wait=true (the open gate).
+      if (!shouldWait) {
+        return c.json(metalBody(false), 202)
+      }
+      try {
+        const { getMetalProjectUrl } = await import('./lib/metal-warm-pool-controller')
+        // Resolves once the microVM is resumed/booted and the guest agent is
+        // reachable; throws (NoMetalHostError / assign failure) while starting.
+        await getMetalProjectUrl(projectId)
+        console.log(`[sandbox/url] ${projectId.slice(0, 8)} ready via metal`)
+        return c.json(metalBody(true), 200)
+      } catch (err: any) {
+        console.log(`[sandbox/url] ${projectId.slice(0, 8)} metal still starting: ${err?.message ?? err}`)
+        return c.json(metalBody(false), 202)
+      }
+    }
+
     // In Kubernetes: Return preview URL based on mode
     const { getProjectPodUrl, getKnativeProjectManager, getPreviewUrl } = await import('./lib/knative-project-manager')
     const { generatePreviewToken } = await import('./lib/preview-token')
