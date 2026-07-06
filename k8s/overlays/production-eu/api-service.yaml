@@ -576,23 +576,11 @@ spec:
                   name: api-secrets
                   key: SMTP_PASSWORD
                   optional: true
-            - name: CUSTOMERIO_SITE_ID
+            - name: LOOPS_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: api-secrets
-                  key: CUSTOMERIO_SITE_ID
-                  optional: true
-            - name: CUSTOMERIO_TRACKING_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: api-secrets
-                  key: CUSTOMERIO_TRACKING_API_KEY
-                  optional: true
-            - name: CUSTOMERIO_APP_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: api-secrets
-                  key: CUSTOMERIO_APP_API_KEY
+                  key: LOOPS_API_KEY
                   optional: true
             - name: EMAIL_FROM
               value: "noreply@updates.shogo.ai"

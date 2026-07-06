@@ -30,7 +30,7 @@ import {
   sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail,
   sendMemberJoinedEmail, sendMemberRemovedEmail, sendAccountDeletedEmail,
 } from './services/email.service'
-import { identifyUser, suppressUser } from './services/customerio.service'
+import { identifyUser, unsubscribeUser } from './services/loops.service'
 import { getUnreadNotificationCount } from './services/notification.service'
 import { notifyPaymentReceipt, notifyPaymentFailed } from './services/billing-alerts.service'
 import { STRIPE_API_VERSION, resolveInvoiceSubscriptionId } from './lib/stripe-helpers'
@@ -7167,14 +7167,14 @@ app.post('/api/webhooks/stripe', async (c) => {
                   dashboardUrl: `${baseUrl}/billing`,
                 }).catch((err) => console.error('[Webhook] plan-upgraded email failed:', err))
 
-                // FIRE-AND-FORGET: update Customer.io profile with new plan
-                // and suppress from free-user drip/conversion sequences
+                // FIRE-AND-FORGET: update Loops contact with new plan
+                // and unsubscribe from free-user drip/conversion sequences
                 const ownerId = workspace?.members?.[0]?.user?.id
                 if (ownerId) {
                   identifyUser(ownerId, { email: ownerEmail, plan: planId })
-                    .catch((err) => console.error('[Webhook] CustomerIO identify failed:', err))
-                  suppressUser(ownerId)
-                    .catch((err) => console.error('[Webhook] CustomerIO suppress failed:', err))
+                    .catch((err) => console.error('[Loops] identify failed:', err))
+                  unsubscribeUser(ownerId)
+                    .catch((err) => console.error('[Loops] unsubscribe failed:', err))
                 }
               }
             } catch (emailErr: any) {

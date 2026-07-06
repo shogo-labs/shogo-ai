@@ -13,41 +13,52 @@ export const conversionUsageLimitTemplate: EmailTemplate<{
   proWindow: string
 }> = {
   name: 'conversion-usage-limit',
-  subject: 'You\'ve used up your {{appName}} session — here\'s what happens next',
+  subject: 'You maxed out your free {{appName}} window — Pro is 10× bigger',
   html: wrapInLayout(`
-    <h1 class="email-h1">You hit your usage window</h1>
+    <span class="email-badge">Time to upgrade</span>
+    <h1 class="email-h1" style="margin-top:16px;">You're outgrowing the free plan</h1>
     <p class="email-text">Hi {{name}},</p>
     <p class="email-text">
-      Your free session window is full. This resets automatically, but it means
-      you're actually using {{appName}} — which is the point.
+      You just hit your free usage window — which means your agents are doing
+      real work for you. The free tier is capped low on purpose. Pro takes the
+      brakes off.
     </p>
     <p class="email-text">
-      Here's the difference between free and Pro:
+      Here's what changes the moment you upgrade:
     </p>
     <div style="background:#f8f8f8;border-radius:8px;padding:16px 20px;margin:0 0 16px;">
       <div class="email-detail-row">
-        <span class="email-detail-label">Free window (5h)</span>
-        <span class="email-detail-value">{{freeWindow}}</span>
+        <span class="email-detail-label">Usage window (5h)</span>
+        <span class="email-detail-value">{{freeWindow}} → {{proWindow}} (10×)</span>
       </div>
       <div class="email-detail-row">
-        <span class="email-detail-label">Pro window (5h)</span>
-        <span class="email-detail-value">{{proWindow}}</span>
+        <span class="email-detail-label">Advanced AI models</span>
+        <span class="email-detail-value">Claude Sonnet, GPT-4o &amp; more</span>
+      </div>
+      <div class="email-detail-row">
+        <span class="email-detail-label">Always-on apps</span>
+        <span class="email-detail-value">1 per seat</span>
       </div>
       <div class="email-detail-row" style="border-bottom:none;">
-        <span class="email-detail-label">Advanced AI models</span>
-        <span class="email-detail-value">Pro only</span>
+        <span class="email-detail-label">Waiting on window resets</span>
+        <span class="email-detail-value">Rarely — 10× more headroom</span>
       </div>
     </div>
     <p class="email-text">
-      Pro is $20/seat/month. If your agents are saving you more than an hour a
-      week, that math works.
+      Pro is <strong>$20/seat/month</strong>. If your agents save you more than
+      an hour a week, it's already paid for itself — and you stop losing momentum
+      every time the free window fills up.
     </p>
     <a href="{{appUrl}}/billing?plan=pro" class="email-btn" style="color:#ffffff;text-decoration:none;">
       Upgrade to Pro →
     </a>
+    <p class="email-muted">
+      Prefer to save 2 months? <a href="{{appUrl}}/billing?plan=pro&amp;interval=annual" style="color:#e8853d;text-decoration:none;font-weight:600;">Get Pro annual for $200/yr →</a>
+    </p>
     <hr class="email-divider">
     <p class="email-muted">
-      Questions about what's included? Reply to this email.
+      Not ready yet? Your free window resets automatically — no action needed.
+      Questions about what's included? Just reply to this email.
     </p>
   `),
   defaults: {
