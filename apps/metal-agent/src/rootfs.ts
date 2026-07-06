@@ -105,6 +105,18 @@ export class RootfsProvisioner {
     return rootfsPath
   }
 
+  /**
+   * dm mode: true if this VM's mapper device is currently live. A CoW store file
+   * is a genuine orphan ONLY when its device is gone — while the device is
+   * mapped the VM is live (running, suspended-in-place, or claimed mid-assign)
+   * and the CoW backing file must never be reclaimed. This is the airtight
+   * invariant the GC uses instead of relying solely on in-memory map bookkeeping
+   * (which has a gap during the claim -> /pool/assign window).
+   */
+  deviceMapped(vmId: string): boolean {
+    return this.mode === 'dm' && this.dmExists(vmId)
+  }
+
   /** Tear down per-VM rootfs resources (device/loop/cow or the copy). */
   release(rootfsPath: string): void {
     if (this.isDmPath(rootfsPath)) {
@@ -189,17 +201,35 @@ export class RootfsProvisioner {
     return this.dmPath(vmId)
   }
 
-  /** (Re)create the dm-snapshot device for a VM from base + its CoW store. */
+  /**
+   * (Re)create the dm-snapshot device for a VM from base + its CoW store.
+   *
+   * Idempotent on restore: if the device is already mapped (the common case —
+   * suspendVM leaves the rootfs in place, so the device persists across a
+   * suspend), REUSE it. It already maps base + this exact CoW store, which holds
+   * all of the VM's divergence. The previous "always dmsetup remove + recreate"
+   * was doubly harmful:
+   *   1. right after the FC process is SIGKILL'd on suspend the device can still
+   *      be held briefly → `dmsetup remove` fails "Device or resource busy",
+   *      which surfaced as a failed second resume; and
+   *   2. every resume ran `losetup --find --show` for a NEW loop without
+   *      detaching the old one, leaking a loop device per suspend/resume cycle
+   *      until the host runs out of /dev/loop* on a long-lived node.
+   */
   private attachDm(vmId: string, fresh = false): void {
     const base = this.ensureBaseLoop()
     const cow = this.cowFile(vmId)
     if (!existsSync(cow)) throw new Error(`dm CoW store missing for ${vmId}: ${cow}`)
+    // Already mapped → reuse (no remove/recreate, no new loop). See above.
+    if (this.dmExists(vmId)) return
+    // Fresh mapping: clear any stale loop still bound to this CoW first so we
+    // never accumulate orphaned loop devices across restore cycles.
+    this.detachCowLoops(cow)
     const cowLoop = sh('losetup', ['--find', '--show', cow])
     const sectors = this.baseSectors()
     // snapshot target: <origin> <cow> <persistent> <chunksize(sectors)>
     // 'P' = persistent (survives device removal so the diff is restorable); 8 = 4KiB chunks.
     const table = `0 ${sectors} snapshot ${base} ${cowLoop} P 8`
-    if (this.dmExists(vmId)) execFileSync('dmsetup', ['remove', this.dmName(vmId)])
     execFileSync('dmsetup', ['create', this.dmName(vmId), '--table', table])
     void fresh
   }
@@ -210,9 +240,13 @@ export class RootfsProvisioner {
     } catch {
       /* best-effort */
     }
-    // Detach any loop devices backing this VM's CoW file.
+    this.detachCowLoops(this.cowFile(vmId))
+  }
+
+  /** Detach any loop devices still bound to a CoW store file (best-effort). */
+  private detachCowLoops(cow: string): void {
     try {
-      const out = sh('losetup', ['-j', this.cowFile(vmId)])
+      const out = sh('losetup', ['-j', cow])
       for (const line of out.split('\n')) {
         const dev = line.split(':')[0]?.trim()
         if (dev) execFileSync('losetup', ['-d', dev])

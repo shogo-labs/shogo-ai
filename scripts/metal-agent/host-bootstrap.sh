@@ -33,7 +33,7 @@ apt-get install -y -qq \
   curl ca-certificates unzip jq \
   iproute2 iptables \
   e2fsprogs \
-  dmsetup lvm2 xfsprogs zstd >/dev/null
+  dmsetup lvm2 xfsprogs zstd pigz >/dev/null
 log "base packages ok"
 
 # --- Persistent IP forwarding (guest DNAT routing depends on it) ------------

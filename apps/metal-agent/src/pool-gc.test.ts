@@ -64,7 +64,12 @@ class FakeStore implements SnapshotStore {
   }
 }
 
-function makePool(dir: string, store: SnapshotStore, over: Partial<typeof config> = {}) {
+function makePool(
+  dir: string,
+  store: SnapshotStore,
+  over: Partial<typeof config> = {},
+  mgrOver: Partial<FirecrackerVMManager> = {},
+) {
   const cfg = {
     ...config,
     work: dir,
@@ -80,6 +85,9 @@ function makePool(dir: string, store: SnapshotStore, over: Partial<typeof config
   mkdirSync(cfg.runDir, { recursive: true })
   const fakeMgr = {
     releaseRootfs: (p: string) => rmSync(p, { force: true }),
+    // Default: no dm devices are mapped (so dm-mode orphan cow files reclaim).
+    rootfsDeviceMapped: () => false,
+    ...mgrOver,
   } as unknown as FirecrackerVMManager
   return { pool: new MetalWarmPool(fakeMgr, cfg, store), cfg }
 }
@@ -181,6 +189,37 @@ describe('pool GC', () => {
     expect(existsSync(youngState)).toBe(true)
     expect(existsSync(youngMem)).toBe(true)
     expect(existsSync(youngRoot)).toBe(true)
+  })
+
+  test('reclaimOrphans (dm) never reclaims a CoW whose mapper device is still live', () => {
+    // Regression for the staging cold-start: a pooled VM claimed mid-assign is
+    // briefly in neither `available` nor `assigned`, and its CoW mtime is
+    // already past the age gate. The map+age guards alone unlinked that live
+    // CoW, breaking the durable push ("rootfs missing/empty") and the local
+    // resume ("dm CoW store missing") → forced cold boot. The live-device check
+    // must spare it while a genuinely-detached CoW is still reclaimed.
+    const liveVm = 'fcvm-102-live'
+    const orphanVm = 'fcvm-77-orphan'
+    const { pool, cfg } = makePool(
+      dir,
+      new FakeStore('test-id'),
+      { rootfsCow: 'dm' as const },
+      { rootfsDeviceMapped: (vmId: string) => vmId === liveVm },
+    )
+    mkdirSync(cfg.dmCowDir, { recursive: true })
+    const liveCow = join(cfg.dmCowDir, `${liveVm}.cow`)
+    const orphanCow = join(cfg.dmCowDir, `${orphanVm}.cow`)
+    // Both aged well past the in-flight grace window (mtime cannot save them).
+    const old = new Date(Date.now() - 10 * 60_000)
+    for (const p of [liveCow, orphanCow]) {
+      writeFileSync(p, 'x')
+      utimesSync(p, old, old)
+    }
+
+    const removed = pool.reclaimOrphans()
+    expect(removed).toBe(1)
+    expect(existsSync(liveCow)).toBe(true) // device mapped → spared
+    expect(existsSync(orphanCow)).toBe(false) // device gone → reclaimed
   })
 
   test('evictForGc refuses when the durable copy is absent (only local copy)', async () => {

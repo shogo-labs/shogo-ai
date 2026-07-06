@@ -237,14 +237,26 @@ export class MetalWarmPool {
         return { handle: live.handle, mode: 'assigned' as const }
       }
       if (await this.canResume(projectId)) {
-        const res = await this.resume(projectId)
-        if (res)
-          return {
-            handle: res.assigned.handle,
-            mode: 'resumed' as const,
-            source: res.source,
-            readyMs: res.readyMs,
-          }
+        try {
+          const res = await this.resume(projectId)
+          if (res)
+            return {
+              handle: res.assigned.handle,
+              mode: 'resumed' as const,
+              source: res.source,
+              readyMs: res.readyMs,
+            }
+        } catch (err: any) {
+          // A resume can throw on an unrestorable snapshot (e.g. the dm CoW
+          // store went missing). Never surface that as a hard open failure —
+          // drop the unusable LOCAL entry and fall through to a cold boot so the
+          // project still opens. The durable copy (if any) is left intact.
+          console.error(
+            `[pool] resume failed for ${projectId}, falling back to cold boot:`,
+            err?.message ?? err,
+          )
+          this.evictLocal(projectId)
+        }
       }
       const a = await this.assign(projectId, env)
       return { handle: a.handle, mode: 'assigned' as const }
@@ -669,12 +681,18 @@ export class MetalWarmPool {
         if (!match(name)) continue
         const full = join(dir, name)
         if (protectedPaths.has(full)) continue
-        // dm mode: cow files map to /dev/mapper paths in protectedPaths, so
-        // guard those by vmId derived from the filename.
+        // dm mode: a CoW store file is a genuine orphan ONLY when its mapper
+        // device is gone. While the device is mapped the VM is live — running,
+        // suspended-in-place, OR claimed mid-assign (in neither `available` nor
+        // `assigned` during the /pool/assign await, with a CoW mtime already
+        // past the age gate). Relying on the in-memory maps alone unlinked that
+        // live CoW, which then broke both the durable push ("rootfs
+        // missing/empty") and the local resume ("dm CoW store missing") and
+        // forced a cold boot. The device check closes that gap definitively.
         if (isRootfs && this.cfg.rootfsCow === 'dm') {
           const vmId = name.replace(/\.cow$/, '')
-          const dmPath = `/dev/mapper/mvm-${vmId}`
-          if (protectedPaths.has(dmPath)) continue
+          if (protectedPaths.has(`/dev/mapper/mvm-${vmId}`)) continue
+          if (this.mgr.rootfsDeviceMapped(vmId)) continue
         }
         // Age gate: skip artifacts still within the in-flight grace window.
         try {
