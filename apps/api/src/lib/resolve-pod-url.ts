@@ -83,6 +83,23 @@ export interface ResolvePodUrlOpts {
   vmRetryDelayMs?: number
 
   /**
+   * Metal substrate only: total time to keep WAITING for the project to become
+   * ready before giving up. On a slow wake the first `/assign` can outrun its
+   * 30s host-side timeout; because the host dedupes concurrent opens
+   * (singleflight) and the placement registry keeps retries sticky, simply
+   * re-calling REJOINS the in-flight wake and returns as soon as it's ready.
+   * This turns a wake that outran one assign into a slower SUCCESS instead of a
+   * retryable `pod_starting` 503.
+   *
+   * Default 0 = single attempt (unchanged for callers like `/sandbox/url` that
+   * drive their own client-side polling). `project-chat` sets this so a user's
+   * chat blocks through the wake rather than flashing an error.
+   */
+  metalWaitMs?: number
+  /** Delay between metal wait-retries while within `metalWaitMs` (default 1000ms). */
+  metalRetryDelayMs?: number
+
+  /**
    * RuntimeManager instance for host mode. Production callers pass
    * their existing `runtimeManager` here (so tests, /sandbox/url and
    * `/runtime/start` all share the same manager instance). Pass
@@ -191,21 +208,37 @@ export async function resolveProjectPodUrl(
   const isMetalEligible = opts._isMetalEligible ?? defaultIsMetalEligible
   const isMetalOnly = opts._isMetalOnly ?? metalAllProjects
   if (isMetalEnabled() && isMetalEligible(projectId)) {
-    try {
-      const resolve = opts._metalResolver
-        ?? (await import('./metal-warm-pool-controller')).getMetalProjectUrl
-      const url = await resolve(projectId)
-      return { mode: 'metal', url }
-    } catch (err: any) {
-      if (isMetalOnly()) {
-        // Authoritative: do not fall through to Knative in metal-only mode.
-        console.warn(`[${tag}] metal resolve failed for ${projectId} (metal-only, no fallback): ${err?.message ?? err}`)
-        throw new MetalOnlyUnavailableError(projectId, err)
+    const resolve = opts._metalResolver
+      ?? (await import('./metal-warm-pool-controller')).getMetalProjectUrl
+    const waitMs = Math.max(0, opts.metalWaitMs ?? 0)
+    const retryDelayMs = Math.max(0, opts.metalRetryDelayMs ?? 1000)
+    const deadline = Date.now() + waitMs
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const url = await resolve(projectId)
+        return { mode: 'metal', url }
+      } catch (err: any) {
+        // Wait-and-retry within the budget: re-calling rejoins the host's
+        // in-flight wake (singleflight) and returns as soon as it's ready, so a
+        // wake slower than one assign timeout degrades to a slower success.
+        if (Date.now() + retryDelayMs < deadline) {
+          if (attempt === 1) {
+            console.log(`[${tag}] metal ${projectId} not ready yet; waiting up to ${waitMs}ms for wake...`)
+          }
+          if (retryDelayMs > 0) await new Promise((r) => setTimeout(r, retryDelayMs))
+          continue
+        }
+        // Budget exhausted (or none configured) — terminal handling.
+        if (isMetalOnly()) {
+          // Authoritative: do not fall through to Knative in metal-only mode.
+          console.warn(`[${tag}] metal resolve failed for ${projectId} (metal-only, no fallback): ${err?.message ?? err}`)
+          throw new MetalOnlyUnavailableError(projectId, err)
+        }
+        console.warn(
+          `[${tag}] metal resolve failed for ${projectId}; falling back to k8s/vm/host: ${err?.message ?? err}`,
+        )
+        break // fall through to the standard cascade
       }
-      console.warn(
-        `[${tag}] metal resolve failed for ${projectId}; falling back to k8s/vm/host: ${err?.message ?? err}`,
-      )
-      // fall through to the standard cascade
     }
   }
 

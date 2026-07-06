@@ -35,6 +35,12 @@ const chatTracer = trace.getTracer("shogo-api-chat")
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 const isVMIsolation = () => process.env.SHOGO_VM_ISOLATION === 'true'
 
+// How long a chat request will BLOCK waiting for a metal project's runtime to
+// wake (rejoining the host's in-flight resume/boot) before degrading to a
+// retryable `pod_starting` 503. Covers essentially all real wakes (warm resume
+// is 2-4s) and most cold boots; a genuinely dead host still 503s after this.
+const METAL_CHAT_WAIT_MS = parseInt(process.env.METAL_CHAT_WAIT_MS || '90000', 10)
+
 // =============================================================================
 // Configuration
 // =============================================================================
@@ -848,6 +854,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // warm-pool boot failures.
       maxVMRetries: 5,
       vmRetryDelayMs: 3000,
+      // Metal: block the chat through a slow wake (rejoining the host's
+      // in-flight resume/boot) instead of flashing a retryable 503 the moment a
+      // cold boot outruns the 30s assign timeout. Bounded so a genuinely dead
+      // host still degrades to a retryable 503 rather than hanging forever.
+      metalWaitMs: METAL_CHAT_WAIT_MS,
+      metalRetryDelayMs: 1000,
       runtimeManager: runtimeManager ?? undefined,
     })
     return res.url
@@ -898,6 +910,15 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           404
         )
       }
+
+      // Read + parse the body ONCE, up front: c.req.text() can only be consumed
+      // once, and downstream branches (usage-limit tracking, model-tier
+      // enforcement, billing context, references) all need it. Parsing lazily
+      // later left the 402 usage-limit path referencing `parsedBody` before its
+      // declaration (a TDZ crash → 500 instead of a clean 402).
+      let body = await c.req.text()
+      let parsedBody: any = {}
+      try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
 
       if (!await billingService.hasBalance(project.workspaceId)) {
         chatSpan.setAttribute("error.type", "usage_limit_reached")
@@ -959,11 +980,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const chatEndpoint = '/agent/chat'
 
       console.log(`[ProjectChat] Proxying to: ${podUrl}${chatEndpoint}`)
-
-      // Get the request body and parse for billing context
-      let body = await c.req.text()
-      let parsedBody: any = {}
-      try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
 
       // Enforce model tier for free/basic-plan workspaces (server-side guard)
       if (parsedBody.agentMode) {
