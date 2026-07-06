@@ -22,7 +22,7 @@
  */
 
 import { statSync } from 'fs'
-import { mkdir, copyFile, readFile, writeFile, rm, stat } from 'fs/promises'
+import { mkdir, copyFile, readFile, writeFile, rm, stat, open } from 'fs/promises'
 import { existsSync } from 'fs'
 import { dirname, join } from 'path'
 import type { MetalConfig } from './config'
@@ -176,6 +176,56 @@ async function gunzipFile(srcGzPath: string, destPath: string): Promise<void> {
 }
 
 /**
+ * Fetch bytes `[start, end)` of an object (end EXCLUSIVE, Blob.slice semantics).
+ * The returned array MUST be exactly `end - start` bytes.
+ */
+export type RangeFetcher = (start: number, end: number) => Promise<Uint8Array>
+
+/**
+ * Download an object of known `size` into `dest` using parallel ranged GETs.
+ *
+ * Splits the object into `partBytes` chunks fetched up to `concurrency`-wide and
+ * pwrites each chunk at its offset, so the wall-clock cost is bounded by the
+ * link's aggregate throughput rather than a single stream. Kept storage-agnostic
+ * (it takes a `RangeFetcher`, not an S3 client) so the offset math, coverage,
+ * concurrency cap and reassembly are unit-testable without S3.
+ */
+export async function downloadRanged(
+  dest: string,
+  size: number,
+  fetchRange: RangeFetcher,
+  opts: { partBytes: number; concurrency: number },
+): Promise<void> {
+  await mkdir(dirname(dest), { recursive: true })
+  const partBytes = Math.max(1, Math.floor(opts.partBytes))
+  const parts: Array<[number, number]> = []
+  for (let start = 0; start < size; start += partBytes) {
+    parts.push([start, Math.min(start + partBytes, size)])
+  }
+  const fh = await open(dest, 'w')
+  try {
+    // Preallocate so concurrent pwrites never race to extend the file.
+    await fh.truncate(size)
+    if (parts.length === 0) return // zero-byte object
+    let nextPart = 0
+    const worker = async (): Promise<void> => {
+      for (let i = nextPart++; i < parts.length; i = nextPart++) {
+        const [start, end] = parts[i]
+        const buf = await fetchRange(start, end)
+        if (buf.length !== end - start) {
+          throw new Error(`ranged GET short read at [${start},${end}): got ${buf.length} bytes`)
+        }
+        await fh.write(buf, 0, buf.length, start)
+      }
+    }
+    const lanes = Math.max(1, Math.min(opts.concurrency, parts.length))
+    await Promise.all(Array.from({ length: lanes }, worker))
+  } finally {
+    await fh.close()
+  }
+}
+
+/**
  * Filesystem-backed durable store. Copies artifacts to `dir/{prefix}{pid}/`.
  * In production this points at a separate durable mount; in the lifecycle e2e
  * it lives on a distinct path to prove the pull-on-miss / eviction round-trip.
@@ -294,7 +344,7 @@ class S3Store implements SnapshotStore {
   constructor(
     bucket: string,
     private prefix: string,
-    cfg: MetalConfig,
+    private cfg: MetalConfig,
     readonly slim: boolean,
     private basePrefix: string,
   ) {
@@ -385,6 +435,28 @@ class S3Store implements SnapshotStore {
 
   private async download(key: string, dest: string): Promise<void> {
     await mkdir(dirname(dest), { recursive: true })
+    const partBytes = this.cfg.s3GetPartBytes
+    const concurrency = this.cfg.s3GetConcurrency
+    // Large objects: parallel ranged GET to saturate the link. Small objects
+    // (vmstate, or anything <= one part) go single-stream — the overhead of a
+    // stat + range split isn't worth it.
+    if (concurrency > 1 && partBytes > 0) {
+      let size = 0
+      try {
+        size = (await this.client.file(key).stat()).size
+      } catch {
+        size = 0
+      }
+      if (size > partBytes) {
+        await downloadRanged(
+          dest,
+          size,
+          async (start, end) => new Uint8Array(await this.client.file(key).slice(start, end).arrayBuffer()),
+          { partBytes, concurrency },
+        )
+        return
+      }
+    }
     // S3 → disk via the client's file handle (Bun buffers/streams internally).
     await Bun.write(dest, this.client.file(key))
   }
@@ -400,7 +472,9 @@ class S3Store implements SnapshotStore {
   private async downloadGunzip(key: string, dest: string): Promise<void> {
     await mkdir(dirname(dest), { recursive: true })
     const tmp = `${dest}.gz.tmp`
-    await Bun.write(tmp, this.client.file(key))
+    // Fetch the compressed blob via the (ranged) download path — this is the
+    // ~400 MiB mem.gz that dominates hydration — then inflate.
+    await this.download(key, tmp)
     await gunzipFile(tmp, dest)
     await rm(tmp, { force: true }).catch(() => {})
   }

@@ -131,6 +131,17 @@ export const config = {
   s3Region: env('S3_REGION', 'us-east-1'),
 
   /**
+   * Parallel ranged GET for large durable artifacts (the ~400 MiB compressed
+   * mem image dominates an S3 hydration). A single stream to OCI's S3-compat
+   * endpoint caps at ~27 MB/s (~15s for the mem); splitting the object into
+   * `s3GetPartBytes` chunks fetched `s3GetConcurrency`-wide saturates the link.
+   * Objects at/under one part are fetched in a single request. Set concurrency
+   * to 1 (or part to 0) to disable and fall back to the single-stream GET.
+   */
+  s3GetPartBytes: parseInt(env('METAL_S3_GET_PART_MB', '16'), 10) * 1024 * 1024,
+  s3GetConcurrency: parseInt(env('METAL_S3_GET_CONCURRENCY', '8'), 10),
+
+  /**
    * Slim durable snapshots. The naive push is ~10 GB/project (full rootfs +
    * uncompressed guest RAM); at 10k projects that is ~100 TB in S3 and a
    * multi-GB download per cache miss. Slim mode shrinks that to ~1-2 GB:
