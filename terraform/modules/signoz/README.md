@@ -34,8 +34,24 @@ they're managed separately as YAML/JSON files under this directory:
   the terraform-declared `system_pool_min`.
 - `alerts/warm-pool-starvation.yaml` — pages when warm-pool depth
   stays below 3 for 10+ minutes (every new project hitting cold start).
+- `alerts/metal-fc-process-leak.yaml` — pages when a metal host carries
+  20+ firecracker processes beyond its tracked warm+assigned VMs for
+  10+ minutes (the churn process-leak fingerprint; 2026-07 incident).
+- `alerts/metal-wake-latency-high.yaml` — warns when metal wake p95
+  exceeds 15s for 10+ minutes (sleep/wake degraded to cold-start feel).
+- `alerts/metal-host-disk-pressure.yaml` — warns when a metal host's
+  NVMe cache stays above 85% for 10+ minutes (GC not keeping up; wakes
+  degrade to slower S3 pulls).
+- `alerts/metal-no-host-fallback.yaml` — pages when metal routing finds
+  no live host (5+ fallbacks in 5m: fleet down, mesh broken, or all
+  cordoned; slow Knative fallback, or 503s in metal-only).
 - `dashboards/publish-funnel.json` — per-step counters for the publish
   pipeline so we can spot exactly where publishes are dying.
+- `dashboards/metal-fleet.json` — live fleet state + health: per-host
+  warm/assigned/suspended, FC-process leak guard, utilization, NVMe
+  used%, wake-latency quantiles, assignment source mix, hit-rate, and
+  host-error/no-host rates. Feeds off the `metal.*` OTel series from the
+  API plus the per-host gauges folded from each agent heartbeat.
 
 To apply, either import via the SigNoz UI (`Alert Rules` /
 `Dashboards` → `Import`) or POST the file body to

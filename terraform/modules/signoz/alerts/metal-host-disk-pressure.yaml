@@ -1,0 +1,54 @@
+# SigNoz alert: metal host NVMe disk pressure
+#
+# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
+# SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a `data` field).
+#
+# Why: the NVMe is the sleep/wake cache — suspended project snapshots live there
+# for sub-second local resumes. GC evicts LRU snapshots to S3 as the disk fills,
+# but if fill outpaces GC (a create/churn burst, or GC wedged) the host crosses
+# the high-watermark, stops taking new cold placements, and every wake there
+# degrades to an S3 pull. Sustained >85% means the cache is thrashing and the
+# host is effectively shedding.
+#
+# Metric: metal.host.disk_used_pct -> metal_host_disk_used_pct. Aggregate with
+# `max by (host_id)` (heartbeats round-robin across API replicas).
+
+alert: MetalHostDiskPressure
+ruleType: threshold_rule
+condition:
+  compositeQuery:
+    queryType: promql
+    promQueries:
+      A:
+        query: |
+          max by (host_id) (metal_host_disk_used_pct)
+        legend: "{{host_id}} disk_used_pct"
+        disabled: false
+  op: ">"
+  target: 85
+  matchType: "2" # on-average-during
+  selectedQuery: A
+evalWindow: "10m0s"
+frequency: "1m0s"
+labels:
+  severity: warning
+  team: platform
+  incident_class: metal
+annotations:
+  summary: "Metal host NVMe cache above 85% for 10+ minutes (GC not keeping up)"
+  description: |
+    A metal host's NVMe cache has been above 85% for 10+ minutes. GC should be
+    evicting LRU snapshots to S3; if usage stays high, fill is outpacing the
+    sweep and wakes on this host are degrading to slower S3 pulls.
+
+    Triage:
+    1. Fleet dashboard: metal_host_disk_used_pct + metal_host_cache_local_count
+       for the host. Rising count with rising pct = churn burst.
+    2. Check agent GC logs for `gc error` / reclaim lines; confirm the GC timer
+       is running and durable (S3) pushes are succeeding (S3 creds/endpoint).
+    3. If a single host is hot, cordon it (drains new placements) and let burst
+       or a sibling host absorb; the disk recovers as idle projects suspend/evict.
+    4. If fleet-wide, we're under-provisioned for the working set — add a baseline
+       host (edit config/metal-fleet.ts) or raise burst maxPerRegion.
+
+    Runbook: docs/runbooks/deploy-prod.md (metal section).

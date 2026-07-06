@@ -1,0 +1,129 @@
+{
+  "title": "Metal Fleet",
+  "description": "Live state + health of the bare-metal Firecracker fleet (apps/metal-agent hosts routed by apps/api metal-warm-pool-controller). Router counters/histogram (metal.assignments, metal.cold_miss, metal.host_errors, metal.no_host, metal.wake_latency_ms) come from the API; per-host gauges (metal.host.*) are folded from each host's heartbeat. OTel dots become underscores in PromQL. Heartbeats round-robin across API replicas, so per-host gauges use `max by (host_id)` to dedupe. Imported via SigNoz UI -> Dashboards -> Import JSON, or POST /api/v1/dashboards.",
+  "tags": ["metal", "firecracker", "platform"],
+  "layout": [
+    { "i": "live_hosts",     "x": 0, "y": 0,  "w": 3, "h": 3 },
+    { "i": "hit_rate",       "x": 3, "y": 0,  "w": 3, "h": 3 },
+    { "i": "wake_p95",       "x": 6, "y": 0,  "w": 3, "h": 3 },
+    { "i": "no_host",        "x": 9, "y": 0,  "w": 3, "h": 3 },
+    { "i": "fc_leak",        "x": 0, "y": 3,  "w": 6, "h": 5 },
+    { "i": "vm_state",       "x": 6, "y": 3,  "w": 6, "h": 5 },
+    { "i": "util",           "x": 0, "y": 8,  "w": 6, "h": 5 },
+    { "i": "disk_used",      "x": 6, "y": 8,  "w": 6, "h": 5 },
+    { "i": "cache_count",    "x": 0, "y": 13, "w": 6, "h": 5 },
+    { "i": "wake_quantiles", "x": 6, "y": 13, "w": 6, "h": 5 },
+    { "i": "assign_mix",     "x": 0, "y": 18, "w": 6, "h": 5 },
+    { "i": "host_errors",    "x": 6, "y": 18, "w": 6, "h": 5 }
+  ],
+  "widgets": [
+    {
+      "id": "live_hosts",
+      "title": "Live hosts (by region)",
+      "panelTypes": "value",
+      "description": "metal_host_up summed per region. Compare against desired baseline in config/metal-fleet.ts (drift = missing/dead host).",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "sum by (region) (metal_host_up)", "legend": "{{region}}" }
+      ] }
+    },
+    {
+      "id": "hit_rate",
+      "title": "Snapshot hit-rate (5m)",
+      "panelTypes": "value",
+      "description": "Fraction of resolutions served by a warm/cold resume vs a fresh cold claim. The headline sleep/wake effectiveness number.",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "sum(rate(metal_assignments{mode=\"resumed\"}[5m])) / clamp_min(sum(rate(metal_assignments{mode=\"resumed\"}[5m])) + sum(rate(metal_cold_miss[5m])), 1)", "legend": "hit_rate" }
+      ] }
+    },
+    {
+      "id": "wake_p95",
+      "title": "Wake p95 (ms, 5m)",
+      "panelTypes": "value",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "histogram_quantile(0.95, sum by (le) (rate(metal_wake_latency_ms_bucket[5m])))", "legend": "p95" }
+      ] }
+    },
+    {
+      "id": "no_host",
+      "title": "No-host fallbacks (5m)",
+      "panelTypes": "value",
+      "description": "getMetalProjectUrl found no live host (fell back to Knative, or 503 in metal-only). Should be 0.",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "sum(increase(metal_no_host[5m]))", "legend": "no_host" }
+      ] }
+    },
+    {
+      "id": "fc_leak",
+      "title": "FC processes vs tracked VMs (leak guard)",
+      "panelTypes": "graph",
+      "description": "metal_host_fc_procs should equal available+assigned. A persistent gap is the churn process-leak fingerprint (see MetalFcProcessLeak alert).",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "max by (host_id) (metal_host_fc_procs)", "legend": "{{host_id}} fc_procs" },
+        { "query": "max by (host_id) (metal_host_available + metal_host_assigned)", "legend": "{{host_id}} tracked" }
+      ] }
+    },
+    {
+      "id": "vm_state",
+      "title": "Warm / assigned / suspended (by host)",
+      "panelTypes": "graph",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "max by (host_id) (metal_host_available)", "legend": "{{host_id}} available" },
+        { "query": "max by (host_id) (metal_host_assigned)", "legend": "{{host_id}} assigned" },
+        { "query": "max by (host_id) (metal_host_suspended)", "legend": "{{host_id}} suspended" }
+      ] }
+    },
+    {
+      "id": "util",
+      "title": "Utilization % (assigned/poolSize) — burst trigger basis",
+      "panelTypes": "graph",
+      "description": "Burst policy scales up above 70%, down below 40% (config/metal-fleet.ts).",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "max by (host_id) (metal_host_util_pct)", "legend": "{{host_id}}" }
+      ] }
+    },
+    {
+      "id": "disk_used",
+      "title": "NVMe used % (by host)",
+      "panelTypes": "graph",
+      "description": "GC high-watermark shedding kicks in near the top; sustained >85% -> MetalHostDiskPressure alert.",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "max by (host_id) (metal_host_disk_used_pct)", "legend": "{{host_id}}" }
+      ] }
+    },
+    {
+      "id": "cache_count",
+      "title": "Locally cached snapshots (by host)",
+      "panelTypes": "graph",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "max by (host_id) (metal_host_cache_local_count)", "legend": "{{host_id}}" }
+      ] }
+    },
+    {
+      "id": "wake_quantiles",
+      "title": "Wake latency p50 / p90 / p99 (ms)",
+      "panelTypes": "graph",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "histogram_quantile(0.50, sum by (le) (rate(metal_wake_latency_ms_bucket[5m])))", "legend": "p50" },
+        { "query": "histogram_quantile(0.90, sum by (le) (rate(metal_wake_latency_ms_bucket[5m])))", "legend": "p90" },
+        { "query": "histogram_quantile(0.99, sum by (le) (rate(metal_wake_latency_ms_bucket[5m])))", "legend": "p99" }
+      ] }
+    },
+    {
+      "id": "assign_mix",
+      "title": "Assignments by source (local / store / none)",
+      "panelTypes": "graph",
+      "description": "local = sub-second NVMe resume; store = S3 pull; none = fresh cold claim. A shift toward store/none means the local cache is cold.",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "sum by (source) (rate(metal_assignments[5m]))", "legend": "{{source}}" }
+      ] }
+    },
+    {
+      "id": "host_errors",
+      "title": "Host /assign errors (rate, by reason)",
+      "panelTypes": "graph",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "sum by (reason) (rate(metal_host_errors[5m]))", "legend": "{{reason}}" }
+      ] }
+    }
+  ]
+}

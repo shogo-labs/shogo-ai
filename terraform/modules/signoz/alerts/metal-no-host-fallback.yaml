@@ -1,0 +1,53 @@
+# SigNoz alert: metal no-live-host fallback
+#
+# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
+# SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a `data` field).
+#
+# Why: getMetalProjectUrl increments metal.no_host every time it finds NO live
+# metal host for a metal-eligible project. In fallback mode this silently routes
+# to Knative (slow cold start); in metal-only mode it becomes a user-facing 503.
+# Either way sustained no_host means the fleet is (partly) down: agents crashed,
+# heartbeats not landing, the mesh is broken, or every host is cordoned. This is
+# the earliest fleet-health signal that doesn't need per-host inspection.
+#
+# Metric: counter metal.no_host -> metal_no_host in SigNoz PromQL.
+
+alert: MetalNoHostFallback
+ruleType: threshold_rule
+condition:
+  compositeQuery:
+    queryType: promql
+    promQueries:
+      A:
+        query: |
+          sum(increase(metal_no_host[5m]))
+        legend: no_host_fallbacks
+        disabled: false
+  op: ">"
+  target: 5
+  matchType: "1" # at-least-once-during
+  selectedQuery: A
+evalWindow: "5m0s"
+frequency: "1m0s"
+labels:
+  severity: critical
+  team: platform
+  incident_class: metal
+annotations:
+  summary: "Metal routing found no live host (5+ fallbacks in 5m)"
+  description: |
+    getMetalProjectUrl is failing to find a live metal host for metal-eligible
+    projects. In fallback mode these projects are silently taking the slow
+    Knative cold-start path; in metal-only mode users are getting 503s.
+
+    Triage:
+    1. Super-admin fleet panel: how many hosts are live vs desired? Any drift?
+       Cross-check `metal_host_up` count per region on the dashboard.
+    2. If hosts are up but not registering: the heartbeat POST
+       /api/internal/metal/register is failing (token mismatch, mesh down, API
+       unreachable). Check agent logs for `register` warnings and the WireGuard
+       mesh (`wg show`).
+    3. If every host is cordoned (e.g. a botched drain), uncordon at least one.
+    4. If agents genuinely crashed, `systemctl status metal-agent` on the hosts.
+
+    Runbook: docs/runbooks/deploy-prod.md (metal section).

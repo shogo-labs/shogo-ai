@@ -1,0 +1,58 @@
+# SigNoz alert: metal wake latency high
+#
+# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
+# SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a `data` field).
+#
+# Why: the entire reason for the metal substrate is instant sleep/wake — a warm
+# resume from a local NVMe snapshot is sub-second, an S3 pull a few seconds. If
+# p95 wake latency climbs, users are back to cold-start-feeling loads: either
+# local snapshots are missing (everything pulling from S3), S3 hydration is slow,
+# or the host is saturated. `metal.wake_latency_ms` is the host-reported
+# restore->ready time (the user-facing wake cost).
+#
+# Metric: OTel histogram metal.wake_latency_ms -> metal_wake_latency_ms_bucket in
+# SigNoz PromQL. If SigNoz surfaces the aggregate under a different suffix on
+# import, adjust the bucket metric name in the query.
+
+alert: MetalWakeLatencyHigh
+ruleType: threshold_rule
+condition:
+  compositeQuery:
+    queryType: promql
+    promQueries:
+      A:
+        query: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(metal_wake_latency_ms_bucket[5m]))
+          )
+        legend: wake_p95_ms
+        disabled: false
+  op: ">"
+  target: 15000
+  matchType: "2" # on-average-during (sustained, not a single blip)
+  selectedQuery: A
+evalWindow: "10m0s"
+frequency: "1m0s"
+labels:
+  severity: warning
+  team: platform
+  incident_class: metal
+annotations:
+  summary: "Metal wake p95 above 15s for 10+ minutes"
+  description: |
+    p95 project wake latency on metal has been above 15s for 10+ minutes. The
+    sleep/wake promise is broken — users feel cold starts.
+
+    Triage:
+    1. Metal fleet dashboard: is this one host or fleet-wide? Check
+       metal_host_disk_used_pct (GC evicting local snapshots -> everything
+       falls back to slower S3 pulls) and metal_host_util_pct (host saturated).
+    2. Check the assignment mix: `sum by (source) (rate(metal_assignments[5m]))`
+       — a spike in `store`/`none` vs `local` means local cache is cold.
+    3. Look at metal.cold_miss rate — brand-new projects (no snapshot yet) pay a
+       full cold boot; a burst of new projects inflates p95 legitimately.
+    4. If a single host is saturated, cordon it to shed new placements and let
+       burst capacity (or a sibling host) absorb the load.
+
+    Runbook: docs/runbooks/deploy-prod.md (metal section).
