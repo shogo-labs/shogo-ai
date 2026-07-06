@@ -589,6 +589,19 @@ spec:
             #       SHOGO_METAL_ALL_PROJECTS false
             - name: SHOGO_METAL_ALL_PROJECTS
               value: "true"
+            # --- Metal fleet reconciler (auto burst scale + baseline drift) --
+            # ENABLED runs the loop; ACTUATE (deliberately unset = false) keeps
+            # it OBSERVE-only: it logs the plan it WOULD run and emits
+            # metal.fleet.* metrics, but makes no Latitude calls. Actuation also
+            # requires LATITUDESH_AUTH_TOKEN (a secret, intentionally NOT wired
+            # here) so staging cannot spend money even if ACTUATE were flipped.
+            # Project/SSH ids are non-secret and staged for when we enable it.
+            - name: METAL_FLEET_RECONCILER_ENABLED
+              value: "true"
+            - name: LATITUDESH_PROJECT_ID
+              value: "proj_LqG158bE40BOg"
+            - name: LATITUDESH_SSH_KEY_ID
+              value: "ssh_XDO7NYqJvNPgw"
             - name: PROMOTED_POD_GC_ENABLED
               value: "true"
             # 30 min: needs to be longer than typical user-think-time
