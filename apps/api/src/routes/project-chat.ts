@@ -27,7 +27,7 @@ import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
 import { enrichWorkspaceReferences, enrichProjectReferences } from "../lib/chat-references"
-import { trackEvent } from "../services/customerio.service"
+import { trackEvent } from "../services/loops.service"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 

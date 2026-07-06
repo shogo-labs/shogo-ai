@@ -20,7 +20,7 @@ import {
 } from '../services/checkpoint.service'
 import { prisma } from '../lib/prisma'
 import { hydrateRepo } from '../services/git-repo-store'
-import { trackEvent } from '../services/customerio.service'
+import { trackEvent } from '../services/loops.service'
 
 const app = new Hono()
 

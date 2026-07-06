@@ -14,7 +14,7 @@ import {
   extractSnapshotToProject,
 } from './marketplace-snapshot-storage.service'
 import { createS3SyncForProject } from '@shogo/shared-runtime'
-import { trackEvent } from './customerio.service'
+import { trackEvent } from './loops.service'
 
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
@@ -351,7 +351,7 @@ function _trackProjectCreated(userId: string, projectId: string, templateName: s
     project_id: projectId,
     source: 'template',
     template_name: templateName,
-  }).catch((err) => console.warn('[CustomerIO] project_created event failed:', err?.message ?? err))
+  }).catch((err) => console.warn('[Loops] project_created event failed:', err?.message ?? err))
 }
 
 export interface CheckForUpdatesResult {
