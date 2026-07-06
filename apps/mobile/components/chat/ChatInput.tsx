@@ -63,13 +63,13 @@ import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
 import {
   analyzeContent,
-  extractLongPaste,
   kindLabel,
   LONG_PASTE_MIN_CHARS,
   MAX_PASTED_TEXTS,
   buildPastedAttachments,
   type PastedTextEntry,
 } from "./long-text-utils"
+import { resolveChatInputTextChange } from "./chat-input-text-change"
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
@@ -614,6 +614,7 @@ function ChatInputImpl({
   // The active "@" token's range in the input, so selecting an item can strip
   // exactly that token regardless of where the caret is.
   const mentionTokenRef = useRef<{ start: number; end: number } | null>(null)
+  const activeMentionStateRef = useRef<{ start: number; end: number; query: string } | null>(null)
   // One-shot caret override: after inserting an inline "@mention" we move the
   // caret to just past it, then release control so normal typing isn't pinned.
   const [selectionOverride, setSelectionOverride] = useState<
@@ -628,6 +629,7 @@ function ChatInputImpl({
     setMentionQuery("")
     setMentionIndex(0)
     mentionTokenRef.current = null
+    activeMentionStateRef.current = null
   }, [])
 
   // Re-evaluate the active "@" token whenever the text or caret changes.
@@ -637,12 +639,26 @@ function ChatInputImpl({
       if (!token) {
         if (mentionTokenRef.current) {
           mentionTokenRef.current = null
+          activeMentionStateRef.current = null
           setShowMentionMenu(false)
           setMentionQuery("")
           setMentionIndex(0)
         }
         return
       }
+
+      const nextState = { start: token.start, end: caret, query: token.query }
+      const currentState = activeMentionStateRef.current
+      if (
+        currentState &&
+        currentState.start === nextState.start &&
+        currentState.end === nextState.end &&
+        currentState.query === nextState.query
+      ) {
+        return
+      }
+
+      activeMentionStateRef.current = nextState
       mentionTokenRef.current = { start: token.start, end: caret }
       setShowMentionMenu(true)
       setMentionIndex(0)
@@ -1094,46 +1110,41 @@ function ChatInputImpl({
 
   const handleChangeText = useCallback(
     (text: string) => {
-      // If the DOM paste listener already handled this event, skip the
-      // fallback detection to avoid creating duplicate chips.
-      if (pasteHandledRef.current) {
-        pasteHandledRef.current = false
+      const change = resolveChatInputTextChange(
+        inputValueRef.current,
+        text,
+        pasteHandledRef.current,
+      )
+      pasteHandledRef.current = false
+
+      if (change.type === "paste-handled" || change.type === "unchanged") {
         return
       }
 
-      // Fallback paste detection for platforms where we can't intercept
-      // the clipboard event (native, and any web path that bypasses the
-      // DOM paste listener). If a large chunk was just inserted, pull it
-      // out into a chip instead of keeping it in the TextInput.
-      const paste = extractLongPaste(inputValueRef.current, text)
-      if (paste) {
-        addPastedText(paste.inserted)
-        inputValueRef.current = paste.restored
-        setInputValue(paste.restored)
+      if (change.type === "long-paste") {
+        addPastedText(change.inserted)
+        inputValueRef.current = change.restored
+        setInputValue(change.restored)
         setShowSkillPicker(false)
         closeMentionMenu()
         return
       }
 
-      // Keep the ref in sync synchronously so onSelectionChange (which fires
-      // right after with the authoritative caret) sees the latest text.
-      inputValueRef.current = text
-      setInputValue(text)
-      if (text.length === 0) {
+      inputValueRef.current = change.text
+      setInputValue(change.text)
+      if (change.resetHeight) {
         setInputHeight(MIN_INPUT_HEIGHT)
       }
 
-      if (text.startsWith("/") && !text.includes(" ")) {
+      if (change.skillPicker.open) {
         setShowSkillPicker(true)
-        setFilterText(text.slice(1).toLowerCase())
+        setFilterText(change.skillPicker.filterText ?? "")
         setSelectedIndex(0)
       } else {
         setShowSkillPicker(false)
       }
 
-      // Provisional mention detection using the end of the text as the caret;
-      // onSelectionChange refines this with the real caret position.
-      updateMentionState(text, text.length)
+      updateMentionState(change.text, change.mentionCaret)
     },
     [addPastedText, closeMentionMenu, updateMentionState]
   )
