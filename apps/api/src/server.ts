@@ -8475,6 +8475,17 @@ if (isKubernetes()) {
     } catch (err: any) {
       console.error('[AnalyticsDigest] Failed to start (non-fatal):', err.message)
     }
+
+    // Metal fleet reconciler — keeps the live bare-metal fleet in line with the
+    // desired state (config/metal-fleet.ts): surfaces baseline drift and, when
+    // actuation is enabled, adds/removes hourly burst hosts on load. No-op unless
+    // METAL_FLEET_RECONCILER_ENABLED=true; observe-only until METAL_FLEET_ACTUATE=true.
+    try {
+      const { startMetalFleetReconciler } = await import('./lib/metal-fleet-reconciler')
+      startMetalFleetReconciler()
+    } catch (err: any) {
+      console.error('[metal-fleet] Failed to start reconciler (non-fatal):', err.message)
+    }
   }, 2000)
 }
 

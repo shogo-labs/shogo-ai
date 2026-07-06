@@ -52,6 +52,22 @@ export interface Placement {
   lastAccessAt: number
 }
 
+/**
+ * A burst host the fleet reconciler provisioned (hourly, above baseline). We
+ * track these separately from baseline hosts so scale-down only ever destroys
+ * reconciler-created capacity — never a monthly baseline host — and so it can
+ * pick the NEWEST burst host to remove (shortest-lived = least sticky cache).
+ */
+export interface BurstHostRecord {
+  hostId: string
+  serverId: string
+  region: string
+  site: string
+  createdAt: number
+  /** Reconciler cordoned it and is waiting for it to drain before destroy. */
+  drainingSince?: number
+}
+
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const PLACEMENT_TTL_S = parseInt(process.env.METAL_PLACEMENT_TTL_S || '86400', 10) // 24h
 const LEASE_TTL_MS = parseInt(process.env.METAL_LEASE_TTL_MS || '60000', 10)
@@ -61,6 +77,9 @@ const HOST_SET = 'metal:hosts'
 const PLACE_KEY = 'metal:place:'
 const LEASE_KEY = 'metal:lease:'
 const CORDON_SET = 'metal:cordoned'
+const BURST_HASH = 'metal:burst' // hostId → BurstHostRecord JSON
+const RECONCILE_LEASE_KEY = 'metal:reconcile:leader'
+const SCALE_COOLDOWN_KEY = 'metal:burst:cooldown:' // + region → epoch ms of last scale action
 
 // Compare-and-delete / compare-and-expire so only the lease holder can
 // renew or release it (a stale holder must not free a re-acquired lease).
@@ -74,6 +93,9 @@ export class MetalPlacementRegistry {
   private memPlace = new Map<string, Placement>()
   private memLease = new Map<string, { holder: string; expiresAt: number }>()
   private memCordoned = new Set<string>()
+  private memBurst = new Map<string, BurstHostRecord>()
+  private memReconcileLease: { holder: string; expiresAt: number } | null = null
+  private memCooldown = new Map<string, number>()
 
   constructor(private redisGetter: () => Redis | null = getSharedRedis) {}
 
@@ -272,6 +294,108 @@ export class MetalPlacementRegistry {
       return await r.get(`${LEASE_KEY}${projectId}`)
     } catch {
       return null
+    }
+  }
+
+  // --- burst hosts (reconciler-provisioned, hourly) ------------------------
+
+  async recordBurstHost(rec: BurstHostRecord): Promise<void> {
+    const r = this.redis()
+    if (!r) {
+      this.memBurst.set(rec.hostId, rec)
+      return
+    }
+    try {
+      await r.hset(BURST_HASH, rec.hostId, JSON.stringify(rec))
+    } catch {
+      this.memBurst.set(rec.hostId, rec)
+    }
+  }
+
+  async listBurstHosts(): Promise<BurstHostRecord[]> {
+    const r = this.redis()
+    if (!r) return [...this.memBurst.values()]
+    try {
+      const all = await r.hgetall(BURST_HASH)
+      const out: BurstHostRecord[] = []
+      for (const v of Object.values(all)) {
+        try {
+          out.push(JSON.parse(v) as BurstHostRecord)
+        } catch {
+          /* skip corrupt */
+        }
+      }
+      return out
+    } catch {
+      return [...this.memBurst.values()]
+    }
+  }
+
+  async removeBurstHost(hostId: string): Promise<void> {
+    const r = this.redis()
+    if (!r) {
+      this.memBurst.delete(hostId)
+      return
+    }
+    try {
+      await r.hdel(BURST_HASH, hostId)
+    } catch {
+      this.memBurst.delete(hostId)
+    }
+  }
+
+  // --- reconciler leader election ------------------------------------------
+  // Only ONE API replica should actuate the fleet per tick (else N replicas
+  // each provision a burst host). A short-TTL SET-NX lease elects a leader;
+  // it lapses if the holder dies, so leadership fails over automatically.
+
+  async acquireReconcileLease(holder: string, ttlMs: number): Promise<boolean> {
+    const r = this.redis()
+    if (!r) {
+      const now = Date.now()
+      const cur = this.memReconcileLease
+      if (cur && cur.expiresAt > now && cur.holder !== holder) return false
+      this.memReconcileLease = { holder, expiresAt: now + ttlMs }
+      return true
+    }
+    try {
+      const ok = await r.set(RECONCILE_LEASE_KEY, holder, 'PX', ttlMs, 'NX')
+      if (ok === 'OK') return true
+      const cur = await r.get(RECONCILE_LEASE_KEY)
+      if (cur === holder) {
+        await r.pexpire(RECONCILE_LEASE_KEY, ttlMs)
+        return true
+      }
+      return false
+    } catch {
+      // Fail CLOSED: a Redis blip must not let every replica actuate at once.
+      return false
+    }
+  }
+
+  // --- per-region scale cooldown (anti-flap) -------------------------------
+
+  async getLastScaleAt(region: string): Promise<number> {
+    const r = this.redis()
+    if (!r) return this.memCooldown.get(region) ?? 0
+    try {
+      const v = await r.get(`${SCALE_COOLDOWN_KEY}${region}`)
+      return v ? parseInt(v, 10) : 0
+    } catch {
+      return this.memCooldown.get(region) ?? 0
+    }
+  }
+
+  async setLastScaleAt(region: string, ts: number): Promise<void> {
+    const r = this.redis()
+    if (!r) {
+      this.memCooldown.set(region, ts)
+      return
+    }
+    try {
+      await r.set(`${SCALE_COOLDOWN_KEY}${region}`, String(ts))
+    } catch {
+      this.memCooldown.set(region, ts)
     }
   }
 }
