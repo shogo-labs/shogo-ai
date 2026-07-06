@@ -43,6 +43,7 @@ import { getPendingLicenseCode, clearPendingLicenseCode } from '../../lib/pendin
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 import { TechStackPicker } from '../../components/chat/TechStackPicker'
+import { startProjectNameRefinement } from '../../lib/home-project-rename'
 
 /**
  * Default tech stack for blank projects created from the home composer.
@@ -585,11 +586,6 @@ const HomeScreen = observer(function HomeScreen() {
         }
       }
 
-      // Update the draft project's name from the heuristic now that we
-      // actually have prompt text. Fire-and-forget — the AI rename below
-      // may overwrite this shortly.
-      actions.updateProject(draft.projectId, { name: projectName }).catch(() => {})
-
       trackEvent(posthog, EVENTS.PROJECT_CREATED, { source: 'prompt' })
 
       if (files && files.length > 0) {
@@ -611,23 +607,15 @@ const HomeScreen = observer(function HomeScreen() {
         },
       } as any)
 
-      // Fire-and-forget: replace heuristic name with AI-generated name
-      const pid = consumed.projectId
-      const sid = consumed.chatSessionId
-      const sidScope = consumed.chatScope
-      api.generateProjectName(http, text, currentWorkspace.id).then(({ name, description }) => {
-        if (name && name !== projectName) {
-          actions.updateProject(pid, { name, description: description || undefined })
-          // Only project-scoped sessions live in the local MST collection.
-          // Workspace sessions are created server-side (api.createWorkspaceSession)
-          // and aren't in `chatSessionCollection`, so updateChatSession would
-          // throw "Item not found" — skip the local rename for them.
-          if (sidScope === 'project') {
-            actions.updateChatSession(sid, { inferredName: name })
-          }
-        }
-      }).catch((err) => {
-        console.warn('[Home] AI project name generation failed, keeping heuristic name:', err)
+      startProjectNameRefinement({
+        actions,
+        projectId: consumed.projectId,
+        chatSessionId: consumed.chatSessionId,
+        chatScope: consumed.chatScope,
+        text,
+        heuristicName: projectName,
+        generateProjectName: (prompt) => api.generateProjectName(http, prompt, currentWorkspace.id),
+        onError: (message, error) => console.warn(message, error),
       })
     } finally {
       setIsCreating(false)
