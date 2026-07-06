@@ -87,6 +87,8 @@ function makePool(
     releaseRootfs: (p: string) => rmSync(p, { force: true }),
     // Default: no dm devices are mapped (so dm-mode orphan cow files reclaim).
     rootfsDeviceMapped: () => false,
+    procCount: () => 0,
+    reapOrphans: () => 0,
     ...mgrOver,
   } as unknown as FirecrackerVMManager
   return { pool: new MetalWarmPool(fakeMgr, cfg, store), cfg }

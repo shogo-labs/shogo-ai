@@ -69,8 +69,19 @@ export interface FcSnapshot {
 
 let VM_SEQ = 0
 
+/**
+ * Grace before the orphan reaper will SIGKILL a firecracker process that is not
+ * referenced by any pool map. Must exceed the longest legitimate window in which
+ * a freshly-spawned FC is untracked (boot/restore under the heavy semaphore +
+ * health polling + the /pool/assign round-trip). Anything untracked longer than
+ * this is a genuine leak from a failure/race path.
+ */
+const ORPHAN_PROC_GRACE_MS = parseInt(process.env.METAL_ORPHAN_PROC_GRACE_MS || '120000', 10)
+
 export class FirecrackerVMManager {
   private procs = new Map<string, Subprocess>()
+  /** id → spawn timestamp, for the age-gated orphan reaper. */
+  private spawnedAt = new Map<string, number>()
   private uplink = defaultUplink()
   private rootfs: RootfsProvisioner
 
@@ -109,7 +120,22 @@ export class FirecrackerVMManager {
       stdin: 'ignore',
     })
     this.procs.set(id, proc)
+    this.spawnedAt.set(id, Date.now())
     return proc
+  }
+
+  /** SIGKILL a tracked FC process and forget it. Safe to call repeatedly. */
+  private killProc(id: string): void {
+    const proc = this.procs.get(id)
+    if (proc) {
+      try {
+        proc.kill('SIGKILL')
+      } catch {
+        /* already gone */
+      }
+      this.procs.delete(id)
+    }
+    this.spawnedAt.delete(id)
   }
 
   private async waitForSocket(socketPath: string, timeoutMs = 3000): Promise<void> {
@@ -136,50 +162,82 @@ export class FirecrackerVMManager {
     // Per-VM writable rootfs off the golden image (full copy / reflink CoW /
     // dm-snapshot depending on METAL_ROOTFS_COW).
     const rootfs = this.rootfs.provision(id)
-    setupTap(net, this.uplink)
+    // From here on any throw must NOT leak the FC process / tap / rootfs: a
+    // partial boot (socket never appears, an FC API call fails, guest never
+    // starts) otherwise leaves a live `firecracker` child untracked by the pool
+    // — the churn leak that piled up ~700 processes and thrashed the host.
+    try {
+      setupTap(net, this.uplink)
 
-    this.spawnFc(id, socketPath, serialLog)
-    await this.waitForSocket(socketPath)
-    const api = new FcApi(socketPath)
+      this.spawnFc(id, socketPath, serialLog)
+      await this.waitForSocket(socketPath)
+      const api = new FcApi(socketPath)
 
-    await api.bootSource(this.cfg.kernel, this.baseBootArgs(net, cfg.extraBootArgs))
-    await api.rootDrive(rootfs, false)
-    // Enable balloon statistics pre-boot when reclaim is on — they can't be
-    // turned on after InstanceStart, and snapshotVM() polls them to size the
-    // pre-snapshot reclaim.
-    await api.machineConfig(vcpus, memoryMB, true, this.cfg.balloonReclaim ? 1 : 0)
-    await api.networkInterface('eth0', net.tap, net.guestMac)
-    await api.instanceStart()
+      await api.bootSource(this.cfg.kernel, this.baseBootArgs(net, cfg.extraBootArgs))
+      await api.rootDrive(rootfs, false)
+      // Enable balloon statistics pre-boot when reclaim is on — they can't be
+      // turned on after InstanceStart, and snapshotVM() polls them to size the
+      // pre-snapshot reclaim.
+      await api.machineConfig(vcpus, memoryMB, true, this.cfg.balloonReclaim ? 1 : 0)
+      await api.networkInterface('eth0', net.tap, net.guestMac)
+      await api.instanceStart()
 
-    const proc = this.procs.get(id)!
-    return {
-      id,
-      agentUrl: `http://${net.guestIp}:${this.cfg.guestPort}`,
-      guestIp: net.guestIp,
-      pid: proc.pid,
-      platform: 'linux',
-      net,
-      rootfs,
-      socketPath,
-      serialLog,
-      vcpus,
-      memoryMB,
+      const proc = this.procs.get(id)!
+      return {
+        id,
+        agentUrl: `http://${net.guestIp}:${this.cfg.guestPort}`,
+        guestIp: net.guestIp,
+        pid: proc.pid,
+        platform: 'linux',
+        net,
+        rootfs,
+        socketPath,
+        serialLog,
+        vcpus,
+        memoryMB,
+      }
+    } catch (err) {
+      this.killProc(id)
+      try { teardownTap(net) } catch { /* ignore */ }
+      try { rmSync(socketPath, { force: true }) } catch { /* ignore */ }
+      try { this.rootfs.release(rootfs) } catch { /* ignore */ }
+      throw err
     }
   }
 
   async stopVM(handle: FcVmHandle): Promise<void> {
-    const proc = this.procs.get(handle.id)
-    if (proc) {
-      try {
-        proc.kill('SIGKILL')
-      } catch {
-        /* already gone */
-      }
-      this.procs.delete(handle.id)
-    }
+    this.killProc(handle.id)
     teardownTap(handle.net)
     rmSync(handle.socketPath, { force: true })
     this.rootfs.release(handle.rootfs)
+  }
+
+  /**
+   * SIGKILL any tracked firecracker process that no live VM references — a
+   * safety net for FC processes orphaned by a failure/race path (the churn
+   * leak). `liveIds` is the set of ids the pool still tracks (warm + assigned);
+   * suspended VMs have no process (killed at snapshot). Age-gated so a VM still
+   * booting/restoring/assigning (legitimately untracked for a few seconds) is
+   * never killed. Returns the number reaped.
+   */
+  reapOrphans(liveIds: Set<string>, graceMs = ORPHAN_PROC_GRACE_MS): number {
+    const now = Date.now()
+    let killed = 0
+    for (const id of [...this.procs.keys()]) {
+      if (liveIds.has(id)) continue
+      const born = this.spawnedAt.get(id) ?? now
+      if (now - born < graceMs) continue // within the boot/restore/assign window
+      this.killProc(id)
+      try { rmSync(join(this.cfg.runDir, `${id}.sock`), { force: true }) } catch { /* ignore */ }
+      killed++
+    }
+    if (killed) console.warn(`[fc] reaped ${killed} orphaned firecracker process(es)`)
+    return killed
+  }
+
+  /** Count of live firecracker processes this manager is tracking. */
+  procCount(): number {
+    return this.procs.size
   }
 
   isRunning(handle: FcVmHandle): boolean {
@@ -294,15 +352,7 @@ export class FirecrackerVMManager {
     await api.createSnapshot(snapshotPath, memFilePath)
 
     // Free RAM: the suspended VM no longer occupies the host.
-    const proc = this.procs.get(handle.id)
-    if (proc) {
-      try {
-        proc.kill('SIGKILL')
-      } catch {
-        /* ignore */
-      }
-      this.procs.delete(handle.id)
-    }
+    this.killProc(handle.id)
     rmSync(handle.socketPath, { force: true })
 
     const memStat = await Bun.file(memFilePath).stat().catch(() => ({ size: 0 }) as any)
@@ -343,34 +393,45 @@ export class FirecrackerVMManager {
     // (dm-snapshot: rebuild the device from the persisted CoW store).
     this.rootfs.prepareRestore(snap.rootfs)
 
-    this.spawnFc(id, socketPath, serialLog)
-    await this.waitForSocket(socketPath)
-    const api = new FcApi(socketPath)
-    await api.loadSnapshot(snap.snapshotPath, snap.memFilePath, true)
+    // A partial restore (bad socket / LoadSnapshot failure) must not leak the
+    // FC child. Kill it + drop the fresh socket + tap, but LEAVE snap.rootfs
+    // (the suspended project's persistent CoW/image) so the caller can retry or
+    // cold-boot without losing the workspace.
+    try {
+      this.spawnFc(id, socketPath, serialLog)
+      await this.waitForSocket(socketPath)
+      const api = new FcApi(socketPath)
+      await api.loadSnapshot(snap.snapshotPath, snap.memFilePath, true)
 
-    // The snapshot was taken with the balloon inflated (reclaimed RAM); deflate
-    // now so the woken guest gets its full memory back. Best-effort: a failure
-    // here just leaves the guest at the smaller footprint (deflate_on_oom still
-    // hands pages back under pressure).
-    if (this.cfg.balloonReclaim) {
-      api.balloonDeflate().catch((err: any) =>
-        console.error('[fc] balloon deflate after restore failed:', err?.message ?? err),
-      )
-    }
+      // The snapshot was taken with the balloon inflated (reclaimed RAM); deflate
+      // now so the woken guest gets its full memory back. Best-effort: a failure
+      // here just leaves the guest at the smaller footprint (deflate_on_oom still
+      // hands pages back under pressure).
+      if (this.cfg.balloonReclaim) {
+        api.balloonDeflate().catch((err: any) =>
+          console.error('[fc] balloon deflate after restore failed:', err?.message ?? err),
+        )
+      }
 
-    const proc = this.procs.get(id)!
-    return {
-      id,
-      agentUrl: `http://${snap.net.guestIp}:${this.cfg.guestPort}`,
-      guestIp: snap.net.guestIp,
-      pid: proc.pid,
-      platform: 'linux',
-      net: snap.net,
-      rootfs: snap.rootfs,
-      socketPath,
-      serialLog,
-      vcpus: snap.vcpus,
-      memoryMB: snap.memoryMB,
+      const proc = this.procs.get(id)!
+      return {
+        id,
+        agentUrl: `http://${snap.net.guestIp}:${this.cfg.guestPort}`,
+        guestIp: snap.net.guestIp,
+        pid: proc.pid,
+        platform: 'linux',
+        net: snap.net,
+        rootfs: snap.rootfs,
+        socketPath,
+        serialLog,
+        vcpus: snap.vcpus,
+        memoryMB: snap.memoryMB,
+      }
+    } catch (err) {
+      this.killProc(id)
+      try { teardownTap(snap.net) } catch { /* ignore */ }
+      try { rmSync(socketPath, { force: true }) } catch { /* ignore */ }
+      throw err
     }
   }
 }

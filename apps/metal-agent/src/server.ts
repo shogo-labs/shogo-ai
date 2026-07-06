@@ -155,6 +155,14 @@ if (config.gcIntervalMs > 0) {
       `cacheMax=${config.cacheMaxBytes || 'off'} rootfsCow=${config.rootfsCow}`,
   )
   gc = setInterval(() => {
+    // Safety net: SIGKILL any firecracker process orphaned by a failure/race
+    // path (the churn leak). Normally 0 — every failure path now stops its own
+    // VM — but this guarantees the host can't accumulate untracked FC processes.
+    try {
+      pool.reapOrphanProcs()
+    } catch (err: any) {
+      console.error('[metal-agent] orphan-proc reap error:', err?.message ?? err)
+    }
     pool.gcSweep().then(
       (report) => {
         for (const id of report.evicted) reportPlacement(report.durableRemoved.includes(id) ? 'cold' : 'evicted', id)

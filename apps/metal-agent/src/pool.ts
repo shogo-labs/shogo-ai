@@ -96,12 +96,17 @@ export class MetalWarmPool {
   private store: SnapshotStore
   private rootfsId: string
   private index: CacheIndex
+  /** Handle ids in a boot/restore/assign window: off the pool + not yet in a
+   * map, but legitimately live. Kept out of the orphan reaper's sights. */
+  private inFlight = new Set<string>()
   /** Collapses concurrent open (assign|resume) calls for the same project. */
   private openFlight = new Singleflight<OpenResult | null>()
   /** Collapses concurrent suspend calls for the same project. */
   private suspendFlight = new Singleflight<SuspendedVm>()
   /** Caps concurrent heavy NVMe ops (snapshot / restore / store pull|push). */
   private heavy: Semaphore
+  /** Single-flight guard for pool fills (see reconcile). */
+  private reconciling: Promise<void> | null = null
 
   constructor(
     private mgr = new FirecrackerVMManager(),
@@ -148,22 +153,62 @@ export class MetalWarmPool {
       memoryMB: this.cfg.memMiB,
       cpus: this.cfg.vcpus,
     })
-    await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
+    // startVM self-cleans a partial boot; a VM that boots but never becomes
+    // healthy is our responsibility to stop, or its FC process leaks (never
+    // enters `available`/`assigned`, so nothing else would ever kill it).
+    this.inFlight.add(handle.id)
+    try {
+      await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
+    } catch (err) {
+      await this.mgr.stopVM(handle).catch(() => {})
+      throw err
+    } finally {
+      this.inFlight.delete(handle.id)
+    }
     return { handle, ready: true, createdAt: Date.now() }
   }
 
-  /** Fill the pool to target size. */
+  /**
+   * Fill the pool to target size. SINGLE-FLIGHTED: `claim()` schedules a
+   * reconcile after every claim, so under load dozens overlap — each computing a
+   * large deficit and spawning its own fill batch. That is a boot storm that
+   * saturates TAP setup + CPU, trips the FC API-socket timeout, and never
+   * converges (the leak that piled up ~900 processes). Coalescing to one active
+   * fill at a time bounds the spawn rate; a fill left short is topped up by the
+   * next trigger.
+   */
   async reconcile(): Promise<void> {
-    const need = this.cfg.poolSize - this.available.length
-    const boots: Promise<void>[] = []
-    for (let i = 0; i < need; i++) {
-      boots.push(
-        this.bootOne().then((vm) => {
+    if (this.reconciling) return this.reconciling
+    this.reconciling = this.fillPool().finally(() => {
+      this.reconciling = null
+    })
+    return this.reconciling
+  }
+
+  /**
+   * One bounded-parallelism fill pass. Runs `poolBootConcurrency` workers that
+   * each boot until the target is met, swallowing individual failures (a single
+   * bad boot must not abort warm-up; the deficit is retried on the next
+   * reconcile). Only ever invoked via the single-flight guard in reconcile().
+   */
+  private async fillPool(): Promise<void> {
+    let remaining = this.cfg.poolSize - this.available.length
+    if (remaining <= 0) return
+    const workers = Math.min(remaining, Math.max(1, this.cfg.poolBootConcurrency))
+    const worker = async (): Promise<void> => {
+      // `remaining--` is atomic between awaits on the single JS event loop, so
+      // workers never over- or under-boot the deficit.
+      while (remaining > 0) {
+        remaining--
+        try {
+          const vm = await this.bootOne()
           this.available.push(vm)
-        }),
-      )
+        } catch (err: any) {
+          console.error('[pool] warm boot failed (retry on demand):', err?.message ?? err)
+        }
+      }
     }
-    await Promise.all(boots)
+    await Promise.all(Array.from({ length: workers }, () => worker()))
   }
 
   async start(): Promise<void> {
@@ -271,13 +316,24 @@ export class MetalWarmPool {
     let vm = this.claim()
     if (!vm) vm = await this.heavy.run(() => this.bootOne(false))
 
-    const res = await fetch(`${vm.handle.agentUrl}/pool/assign`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId, env }),
-      signal: AbortSignal.timeout(30000),
-    })
-    if (!res.ok) throw new Error(`/pool/assign failed (${res.status}): ${await res.text()}`)
+    // The claimed/booted VM is now off the pool and not yet in `assigned`. If
+    // the guest /pool/assign call fails or times out we must stop it, or its FC
+    // process leaks (tracked by no map). Guard the whole in-flight window.
+    this.inFlight.add(vm.handle.id)
+    try {
+      const res = await fetch(`${vm.handle.agentUrl}/pool/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, env }),
+        signal: AbortSignal.timeout(30000),
+      })
+      if (!res.ok) throw new Error(`/pool/assign failed (${res.status}): ${await res.text()}`)
+    } catch (err) {
+      await this.mgr.stopVM(vm.handle).catch(() => {})
+      throw err
+    } finally {
+      this.inFlight.delete(vm.handle.id)
+    }
 
     const now = Date.now()
     const a: AssignedVm = { projectId, handle: vm.handle, assignedAt: now, lastTouchedAt: now }
@@ -416,9 +472,20 @@ export class MetalWarmPool {
     const t0 = performance.now()
     const handle = await this.heavy.run(() => this.mgr.restoreVM(s!.snapshot))
     const apiMs = performance.now() - t0
-    const readyMs = await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
-
-    await this.callGuestHook(handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs)
+    // restoreVM self-cleans a partial restore; but a VM that restores yet never
+    // becomes healthy (or fails rehydrate) is untracked here — stop it so the FC
+    // process doesn't leak before open() falls back to a cold boot.
+    this.inFlight.add(handle.id)
+    let readyMs: number
+    try {
+      readyMs = await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
+      await this.callGuestHook(handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs)
+    } catch (err) {
+      await this.mgr.stopVM(handle).catch(() => {})
+      throw err
+    } finally {
+      this.inFlight.delete(handle.id)
+    }
 
     // Now live (assigned), not a cache entry: drop the suspended entry + index.
     this.suspended.delete(projectId)
@@ -716,6 +783,24 @@ export class MetalWarmPool {
     return removed
   }
 
+  /** Handle ids the pool still tracks a live FC process for (warm + assigned +
+   * in-flight). Suspended VMs have no process (killed at snapshot). */
+  private liveHandleIds(): Set<string> {
+    const ids = new Set<string>(this.inFlight)
+    for (const vm of this.available) ids.add(vm.handle.id)
+    for (const a of this.assigned.values()) ids.add(a.handle.id)
+    return ids
+  }
+
+  /**
+   * Kill firecracker processes not referenced by any live VM — the safety net
+   * for the churn leak. Driven by the reaper timer in server.ts. Returns the
+   * number reaped (normally 0 now that every failure path stops its own VM).
+   */
+  reapOrphanProcs(): number {
+    return this.mgr.reapOrphans(this.liveHandleIds())
+  }
+
   private publishGauges(): void {
     const disk = this.disk()
     metrics.gauge(M.diskUsedPct, +disk.usedPct.toFixed(2))
@@ -761,6 +846,8 @@ export class MetalWarmPool {
       disk: this.disk(),
       cache: { localCount: this.suspended.size, localBytes: this.cacheBytes() },
       available: this.available.length,
+      // Live FC processes vs tracked VMs — a growing gap flags a process leak.
+      fcProcs: this.mgr.procCount(),
       assigned: [...this.assigned.values()].map((a) => ({
         projectId: a.projectId,
         url: a.handle.agentUrl,
