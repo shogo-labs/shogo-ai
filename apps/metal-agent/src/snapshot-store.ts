@@ -148,24 +148,30 @@ async function writeGzip(srcPath: string, destPath: string): Promise<void> {
   await Bun.write(destPath, new Response(gz))
 }
 /**
- * Inflate a local .gz file to a local dest path via the system `gunzip`.
+ * Inflate a local .gz file to a local dest path.
+ *
+ * Prefers `pigz` (parallel gzip) which inflates on all cores — the single
+ * biggest component of an S3 hydration is decompressing the ~4 GiB mem image,
+ * and single-threaded `gunzip` caps that at ~200 MiB/s (~19s). `pigz -dc` uses
+ * the whole box (~2-3s on a 48-thread host). Falls back to `gunzip -c` where
+ * pigz isn't installed (host-bootstrap installs it; older hosts still work).
  *
  * We do NOT use Bun's DecompressionStream here: piping a large (~300 MiB →
- * ~2 GiB) gzip through `Bun.write(dest, new Response(stream.pipeThrough(
+ * ~4 GiB) gzip through `Bun.write(dest, new Response(stream.pipeThrough(
  * DecompressionStream)))` silently aborts the process mid-inflate on the
  * bare-metal host (the .gz itself is valid — system `zcat` inflates it fully).
- * `gunzip -c src > dest` streams reliably with bounded memory.
+ * A spawned decompressor streams reliably with bounded memory.
  */
 async function gunzipFile(srcGzPath: string, destPath: string): Promise<void> {
   await mkdir(dirname(destPath), { recursive: true })
-  const proc = Bun.spawn(['sh', '-c', 'exec gunzip -c "$0" > "$1"', srcGzPath, destPath], {
-    stdout: 'inherit',
-    stderr: 'pipe',
-  })
+  const proc = Bun.spawn(
+    ['sh', '-c', 'if command -v pigz >/dev/null 2>&1; then exec pigz -dc "$0" > "$1"; else exec gunzip -c "$0" > "$1"; fi', srcGzPath, destPath],
+    { stdout: 'inherit', stderr: 'pipe' },
+  )
   const code = await proc.exited
   if (code !== 0) {
     const err = await new Response(proc.stderr).text().catch(() => '')
-    throw new Error(`gunzip ${srcGzPath} → ${destPath} failed (exit ${code}): ${err.slice(0, 200)}`)
+    throw new Error(`inflate ${srcGzPath} → ${destPath} failed (exit ${code}): ${err.slice(0, 200)}`)
   }
 }
 
@@ -243,18 +249,17 @@ class FsStore implements SnapshotStore {
       mem: join(destDir, `${projectId}.mem`),
       rootfs: rootfsDest,
     }
-    await copyFile(join(dir, 'vmstate'), files.vmstate)
-    if (meta.memCodec === 'gzip') {
-      await gunzipFile(join(dir, 'mem.gz'), files.mem)
-    } else {
-      await copyFile(join(dir, 'mem'), files.mem)
-    }
     const baseName = meta.rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
-    if (meta.rootfsCodec === 'gzip') {
-      await gunzipFile(join(dir, `${baseName}.gz`), files.rootfs)
-    } else {
-      await copyFile(join(dir, baseName), files.rootfs)
-    }
+    // Materialize the three artifacts concurrently (see S3Store.pull).
+    await Promise.all([
+      copyFile(join(dir, 'vmstate'), files.vmstate),
+      meta.memCodec === 'gzip'
+        ? gunzipFile(join(dir, 'mem.gz'), files.mem)
+        : copyFile(join(dir, 'mem'), files.mem),
+      meta.rootfsCodec === 'gzip'
+        ? gunzipFile(join(dir, `${baseName}.gz`), files.rootfs)
+        : copyFile(join(dir, baseName), files.rootfs),
+    ])
     return { files, meta }
   }
 
@@ -360,18 +365,21 @@ class S3Store implements SnapshotStore {
       mem: join(destDir, `${projectId}.mem`),
       rootfs: rootfsDest,
     }
-    await this.download(this.key(projectId, 'vmstate'), files.vmstate)
-    if (meta.memCodec === 'gzip') {
-      await this.downloadGunzip(this.key(projectId, 'mem.gz'), files.mem)
-    } else {
-      await this.download(this.key(projectId, 'mem'), files.mem)
-    }
     const baseName = meta.rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4'
-    if (meta.rootfsCodec === 'gzip') {
-      await this.downloadGunzip(this.key(projectId, `${baseName}.gz`), files.rootfs)
-    } else {
-      await this.download(this.key(projectId, baseName), files.rootfs)
-    }
+    // Hydrate the three artifacts CONCURRENTLY. They are independent objects and
+    // the wake can't proceed until all are on disk, so serial downloads just
+    // stack their latencies (vmstate + mem + rootfs). In parallel the wall-clock
+    // cost collapses to the slowest single artifact (the mem image). Each
+    // download/inflate is self-contained (distinct dest + tmp paths).
+    await Promise.all([
+      this.download(this.key(projectId, 'vmstate'), files.vmstate),
+      meta.memCodec === 'gzip'
+        ? this.downloadGunzip(this.key(projectId, 'mem.gz'), files.mem)
+        : this.download(this.key(projectId, 'mem'), files.mem),
+      meta.rootfsCodec === 'gzip'
+        ? this.downloadGunzip(this.key(projectId, `${baseName}.gz`), files.rootfs)
+        : this.download(this.key(projectId, baseName), files.rootfs),
+    ])
     return { files, meta }
   }
 

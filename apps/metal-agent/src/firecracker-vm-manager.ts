@@ -203,6 +203,15 @@ export class FirecrackerVMManager {
     return this.rootfs.restoreArtifactPath(rootfsPath)
   }
 
+  /**
+   * dm mode: is this VM's mapper device still live? The GC uses this as the
+   * definitive orphan test for CoW store files — a CoW whose device is mapped
+   * backs a live/suspended/claimed VM and must never be reclaimed.
+   */
+  rootfsDeviceMapped(vmId: string): boolean {
+    return this.rootfs.deviceMapped(vmId)
+  }
+
   // TAP networking → guest reachable directly; no host-port forwarding needed.
   async forwardPort(): Promise<void> {}
   async removeForward(): Promise<void> {}
@@ -252,7 +261,11 @@ export class FirecrackerVMManager {
       createdAt: Date.now(),
       bytesMem: memStat.size ?? 0,
       bytesState: stStat.size ?? 0,
-      bytesRootfs: allocatedBytes(handle.rootfs),
+      // In dm mode handle.rootfs is the mapper DEVICE (allocatedBytes → 0); the
+      // real per-VM footprint is the CoW store file, which durableArtifact()
+      // resolves to. full/reflink resolve to the image file itself, so this is
+      // correct for every mode and keeps GC cache accounting honest.
+      bytesRootfs: allocatedBytes(this.rootfs.durableArtifact(handle.rootfs).path),
     }
   }
 
