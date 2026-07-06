@@ -31,7 +31,15 @@ function payload(pool: MetalWarmPool) {
     region: config.region,
     arch: process.arch, // 'x64' | 'arm64' — control plane matches to image arch
     capacity: { poolSize: config.poolSize, memMiB: config.memMiB, vcpus: config.vcpus },
-    load: { available: s.available, assigned: s.assigned.length, suspended: s.suspended.length },
+    load: {
+      available: s.available,
+      assigned: s.assigned.length,
+      suspended: s.suspended.length,
+      // Live firecracker processes. Should equal available+assigned; a growing
+      // gap is the churn process-leak fingerprint (the control plane turns this
+      // into a fleet-wide alarm so a recurrence is caught without SSH).
+      fcProcs: s.fcProcs,
+    },
     // NVMe cache scalars so the control plane can route disk- and cache-aware
     // (Phase 2) without shipping per-project cache manifests in the heartbeat.
     disk: {

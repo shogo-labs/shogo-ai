@@ -1,0 +1,61 @@
+# SigNoz alert: metal firecracker process leak (recurrence guard)
+#
+# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
+# SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a `data` field).
+#
+# Why: under heavy churn, partial boot/restore/assign failures used to orphan
+# live `firecracker` children the pool no longer tracked. They accumulated until
+# the host thrashed (load 500+, agent unresponsive) — the 2026-07 staging
+# incident. The fix (kill-on-failure + age-gated orphan reaper) is in, but the
+# whole point of shipping `metal.host.fc_procs` in the heartbeat is to catch a
+# RECURRENCE fleet-wide instead of by SSH. A healthy host keeps
+# fc_procs == available + assigned (suspended VMs have no process). A sustained
+# gap means processes are leaking again.
+#
+# Metric names: OTel dots become underscores in SigNoz PromQL
+# (metal.host.fc_procs -> metal_host_fc_procs). Heartbeats round-robin across
+# API replicas, so aggregate with `max by (host_id)` to dedupe the same host
+# reported by multiple pods.
+
+alert: MetalFcProcessLeak
+ruleType: threshold_rule
+condition:
+  compositeQuery:
+    queryType: promql
+    promQueries:
+      A:
+        query: |
+          max by (host_id) (metal_host_fc_procs)
+          - max by (host_id) (metal_host_available + metal_host_assigned)
+        legend: "{{host_id}} orphan_procs"
+        disabled: false
+  op: ">"
+  target: 20
+  matchType: "1" # at-least-once-during
+  selectedQuery: A
+evalWindow: "10m0s"
+frequency: "1m0s"
+labels:
+  severity: critical
+  team: platform
+  incident_class: metal
+annotations:
+  summary: "Metal host has 20+ untracked firecracker processes for 10+ minutes (process leak)"
+  description: |
+    A metal host is carrying firecracker processes beyond its tracked
+    warm+assigned VMs for 10+ minutes — the churn process-leak fingerprint
+    (2026-07 staging incident). Left unchecked this ends in load 500+, an
+    unresponsive agent, and chat 503s.
+
+    Triage:
+    1. Confirm on the host: `curl -s localhost:${METAL_AGENT_PORT}/vms | jq '.fcProcs, (.assigned|length), .available'`
+       and `pgrep -c firecracker`.
+    2. The orphan reaper should be clearing these on the GC timer; check the
+       agent log for `orphan-proc reap` lines. If it isn't firing, or the gap
+       keeps growing, RECOVER by restarting the agent (systemd kills the whole
+       cgroup, clearing every orphan): `systemctl restart metal-agent`.
+    3. Cordon the host first from the super-admin fleet panel so it drains while
+       you work: it keeps serving live projects but takes no new placements.
+    4. Capture `/vms` + a `ps` snapshot before the restart for root-cause.
+
+    Runbook: docs/runbooks/deploy-prod.md (metal section).

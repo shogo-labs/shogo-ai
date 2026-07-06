@@ -49,6 +49,93 @@ const wakeLatency = meter.createHistogram('metal.wake_latency_ms', {
   unit: 'ms',
 })
 
+// --- Per-host fleet gauges (SigNoz) ------------------------------------------
+// The counters above cover the ROUTER path (assign/wake/errors). These observable
+// gauges surface the live STATE of each metal host from its heartbeat — warm-pool
+// depth, in-use VMs, disk pressure, and (critically) the live firecracker-process
+// count so a recurrence of the churn leak is caught fleet-wide instead of by SSH.
+// Every gauge is labelled by {host_id, region, arch}. Heartbeats round-robin
+// across API replicas, so a host may be observed by more than one replica within
+// its TTL — dashboards/alerts should aggregate with `max by (host_id)`.
+const hostUpGauge = meter.createObservableGauge('metal.host.up', {
+  description: '1 while a metal host has heartbeat within TTL (absent series = host gone)',
+})
+const hostAvailableGauge = meter.createObservableGauge('metal.host.available', {
+  description: 'Warm (idle, ready) microVMs on a metal host',
+})
+const hostAssignedGauge = meter.createObservableGauge('metal.host.assigned', {
+  description: 'Assigned (in-use) microVMs on a metal host',
+})
+const hostSuspendedGauge = meter.createObservableGauge('metal.host.suspended', {
+  description: 'Suspended (snapshotted) projects cached on a metal host',
+})
+const hostFcProcsGauge = meter.createObservableGauge('metal.host.fc_procs', {
+  description: 'Live firecracker processes on a metal host — should track available+assigned; a growing gap is the churn process-leak fingerprint',
+})
+const hostPoolSizeGauge = meter.createObservableGauge('metal.host.pool_size', {
+  description: 'Configured warm-pool target (capacity) on a metal host',
+})
+const hostUtilGauge = meter.createObservableGauge('metal.host.util_pct', {
+  description: 'assigned/poolSize utilization percent on a metal host (burst scale-up trigger basis)',
+})
+const hostDiskUsedGauge = meter.createObservableGauge('metal.host.disk_used_pct', {
+  description: 'NVMe cache disk used percent on a metal host',
+})
+const hostDiskFreeGauge = meter.createObservableGauge('metal.host.disk_free_bytes', {
+  description: 'NVMe free bytes on a metal host',
+  unit: 'By',
+})
+const hostCacheCountGauge = meter.createObservableGauge('metal.host.cache_local_count', {
+  description: 'Locally cached suspended-project snapshots on a metal host',
+})
+
+let fleetGaugesRegistered = false
+
+/**
+ * Register the batch callback that feeds the per-host fleet gauges from the
+ * live heartbeat view. Idempotent (guarded) and lazy — called from
+ * registerMetalHost so it only wires up in a process that actually receives
+ * heartbeats (never during unit tests that new-up their own controller). The
+ * callback reads the CURRENT singleton each collection, so it tracks whatever
+ * controller is live.
+ */
+function ensureFleetGauges(): void {
+  if (fleetGaugesRegistered) return
+  fleetGaugesRegistered = true
+  meter.addBatchObservableCallback(
+    (obs) => {
+      const c = getMetalWarmPoolController()
+      for (const h of c.liveHosts()) {
+        const attrs = { host_id: h.hostId, region: h.region, arch: h.arch }
+        obs.observe(hostUpGauge, 1, attrs)
+        obs.observe(hostAvailableGauge, h.load?.available ?? 0, attrs)
+        obs.observe(hostAssignedGauge, h.load?.assigned ?? 0, attrs)
+        obs.observe(hostSuspendedGauge, h.load?.suspended ?? 0, attrs)
+        if (typeof h.load?.fcProcs === 'number') obs.observe(hostFcProcsGauge, h.load.fcProcs, attrs)
+        obs.observe(hostPoolSizeGauge, h.capacity?.poolSize ?? 0, attrs)
+        obs.observe(hostUtilGauge, utilizationPct(h), attrs)
+        if (h.disk) {
+          obs.observe(hostDiskUsedGauge, h.disk.usedPct, attrs)
+          obs.observe(hostDiskFreeGauge, h.disk.freeBytes, attrs)
+          obs.observe(hostCacheCountGauge, h.disk.localCount, attrs)
+        }
+      }
+    },
+    [
+      hostUpGauge,
+      hostAvailableGauge,
+      hostAssignedGauge,
+      hostSuspendedGauge,
+      hostFcProcsGauge,
+      hostPoolSizeGauge,
+      hostUtilGauge,
+      hostDiskUsedGauge,
+      hostDiskFreeGauge,
+      hostCacheCountGauge,
+    ],
+  )
+}
+
 /** Registration payload a node-agent POSTs on its heartbeat (see register.ts). */
 export interface MetalHostRegistration {
   hostId: string
@@ -57,7 +144,14 @@ export interface MetalHostRegistration {
   region: string
   arch: string
   capacity: { poolSize: number; memMiB: number; vcpus: number }
-  load: { available: number; assigned: number; suspended: number }
+  load: {
+    available: number
+    assigned: number
+    suspended: number
+    /** Live firecracker processes on the host. Absent on older agents. A gap
+     * above available+assigned is the churn process-leak fingerprint. */
+    fcProcs?: number
+  }
   /** NVMe cache scalars (Phase 5). Absent on older agents → treated as headroom. */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
   /** Compact node-agent counters (gc/resume) for fleet observability. */
@@ -472,6 +566,7 @@ export function _setMetalWarmPoolController(c: MetalWarmPoolController | null): 
 }
 
 export function registerMetalHost(reg: MetalHostRegistration): void {
+  ensureFleetGauges()
   getMetalWarmPoolController().registerHost(reg)
 }
 

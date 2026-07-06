@@ -40,7 +40,7 @@ export interface HostScalars {
   region: string
   arch: string
   capacity: { poolSize: number; memMiB: number; vcpus: number }
-  load: { available: number; assigned: number; suspended: number }
+  load: { available: number; assigned: number; suspended: number; fcProcs?: number }
   /** NVMe cache scalars from the heartbeat (Phase 5). */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
   lastSeenAt: number
