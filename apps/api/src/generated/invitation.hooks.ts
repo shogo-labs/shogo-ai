@@ -362,17 +362,27 @@ export const invitationHooks: InvitationHooks = {
     // Invitees can accept or decline
     const userEmail = await getUserEmail(ctx.prisma, userId)
     if (userEmail && userEmail === invitation.email.toLowerCase()) {
-      const actionableStatuses = ['pending', 'accepted']
-      if (!actionableStatuses.includes(invitation.status)) {
+      if (input.status === 'declined') {
+        if (invitation.status === 'accepted') {
+          return { ok: false, error: { code: "bad_request", message: "Accepted invitations cannot be declined" } }
+        }
+        if (['pending', 'expired', 'declined'].includes(invitation.status)) {
+          return { ok: true, data: { status: 'declined' } }
+        }
         return { ok: false, error: { code: "bad_request", message: "Invitation can no longer be modified" } }
       }
-      if (invitation.expiresAt && new Date(invitation.expiresAt) < new Date()) {
-        return { ok: false, error: { code: "expired", message: "Invitation has expired" } }
+
+      if (input.status === 'accepted') {
+        if (invitation.status !== 'pending') {
+          return { ok: false, error: { code: "bad_request", message: "Invitation can no longer be accepted" } }
+        }
+        if (invitation.expiresAt && new Date(invitation.expiresAt) < new Date()) {
+          return { ok: false, error: { code: "expired", message: "Invitation has expired" } }
+        }
+        return { ok: true, data: { status: 'accepted' } }
       }
-      const allowedStatuses = ['accepted', 'declined']
-      if (input.status && allowedStatuses.includes(input.status)) {
-        return { ok: true, data: { status: input.status } }
-      }
+
+      return { ok: false, error: { code: "bad_request", message: "Unsupported invitation update" } }
     }
 
     // Admin/owner operations

@@ -1,0 +1,138 @@
+{
+  "projects": 24,
+  "levels": [
+    1,
+    4,
+    8,
+    16,
+    24
+  ],
+  "config": {
+    "memMiB": 512,
+    "vcpus": 2,
+    "store": "none"
+  },
+  "host": {
+    "memAvailableStartMB": 251982,
+    "memAvailableAllAssignedMB": 250330,
+    "memAvailableAllSuspendedMB": 251381,
+    "memAvailableLevel1RestoredMB": 251184,
+    "memAvailableLevel4RestoredMB": 251165,
+    "memAvailableLevel8RestoredMB": 251286,
+    "memAvailableLevel16RestoredMB": 251221,
+    "memAvailableLevel24RestoredMB": 251258
+  },
+  "setup": {
+    "assignAllMs": 7507,
+    "suspendAllMs": 15742
+  },
+  "runs": [
+    {
+      "concurrency": 1,
+      "restored": 24,
+      "coldMiss": 0,
+      "continuityFailures": 0,
+      "wallMs": 917,
+      "throughputPerSec": 26.2,
+      "peakWorkingSetMB": 512,
+      "readyMs": {
+        "p50": 38.3,
+        "p95": 43.2,
+        "p99": 44.7,
+        "max": 44.7
+      },
+      "apiMs": {
+        "p50": 34.5,
+        "p95": 38.7,
+        "p99": 40.7
+      }
+    },
+    {
+      "concurrency": 4,
+      "restored": 24,
+      "coldMiss": 0,
+      "continuityFailures": 0,
+      "wallMs": 766,
+      "throughputPerSec": 31.3,
+      "peakWorkingSetMB": 2048,
+      "readyMs": {
+        "p50": 115,
+        "p95": 142.6,
+        "p99": 162.6,
+        "max": 162.6
+      },
+      "apiMs": {
+        "p50": 89.5,
+        "p95": 133,
+        "p99": 140.3
+      }
+    },
+    {
+      "concurrency": 8,
+      "restored": 24,
+      "coldMiss": 0,
+      "continuityFailures": 0,
+      "wallMs": 712,
+      "throughputPerSec": 33.7,
+      "peakWorkingSetMB": 4096,
+      "readyMs": {
+        "p50": 165.5,
+        "p95": 228.9,
+        "p99": 252.1,
+        "max": 252.1
+      },
+      "apiMs": {
+        "p50": 142.6,
+        "p95": 224.8,
+        "p99": 248.4
+      }
+    },
+    {
+      "concurrency": 16,
+      "restored": 24,
+      "coldMiss": 0,
+      "continuityFailures": 0,
+      "wallMs": 750,
+      "throughputPerSec": 32,
+      "peakWorkingSetMB": 8192,
+      "readyMs": {
+        "p50": 235,
+        "p95": 470.5,
+        "p99": 475.6,
+        "max": 475.6
+      },
+      "apiMs": {
+        "p50": 203.3,
+        "p95": 433.5,
+        "p99": 466.8
+      }
+    },
+    {
+      "concurrency": 24,
+      "restored": 24,
+      "coldMiss": 0,
+      "continuityFailures": 0,
+      "wallMs": 685,
+      "throughputPerSec": 35,
+      "peakWorkingSetMB": 12288,
+      "readyMs": {
+        "p50": 361.9,
+        "p95": 645.3,
+        "p99": 679.5,
+        "max": 679.5
+      },
+      "apiMs": {
+        "p50": 357.6,
+        "p95": 641.7,
+        "p99": 675.3
+      }
+    }
+  ],
+  "gate": {
+    "worstReadyP95Ms": 645.3,
+    "sloReadyP95Ms": 2000,
+    "totalColdMiss": 0,
+    "totalContinuityFailures": 0
+  },
+  "pass": true
+}

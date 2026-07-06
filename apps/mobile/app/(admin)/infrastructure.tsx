@@ -228,6 +228,73 @@ async function saveInfraSettings(apiBase: string, patch: Partial<InfraSettings>)
 }
 
 // =============================================================================
+// Metal fleet (bare-metal Firecracker hosts)
+// =============================================================================
+
+interface MetalHostLive {
+  hostId: string
+  region: string
+  arch: string
+  meshIp: string
+  agentPort: number
+  capacity: { poolSize: number; memMiB: number; vcpus: number }
+  load: { available: number; assigned: number; suspended: number }
+  disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
+  live: boolean
+  overWatermark: boolean
+  cordoned: boolean
+  utilPct: number
+}
+
+interface MetalFleetHostRow {
+  hostId: string
+  region: string
+  site?: string
+  serverId?: string
+  billing?: string
+  role?: string
+  kind: 'baseline' | 'burst'
+  present: boolean
+  provisioned: boolean
+  live: MetalHostLive | null
+}
+
+interface MetalFleetData {
+  env: string
+  provider: string
+  defaults: { plan: string; os: string; billing: string; swapGiB: number }
+  burst: { enabled: boolean; plan: string; maxPerRegion: number; scaleUpUtilPct: number; scaleDownUtilPct: number; cooldownSec: number }
+  hosts: MetalFleetHostRow[]
+  regions: Record<string, { hosts: number; live: number; assigned: number; poolSize: number; utilPct: number }>
+  stats: { assigned: number; resumed: number; coldMiss: number; hostErrors: number; noHost: number; snapshotHitRate: number | null }
+  config: { hostTtlMs: number; assignTimeoutMs: number; diskHighPct: number }
+  drift: { missing: string[]; unmanaged: string[] }
+}
+
+async function fetchMetalFleet(apiBase: string): Promise<MetalFleetData | null> {
+  try {
+    const res = await fetch(`${apiBase}/metal/fleet`, { credentials: 'include' })
+    if (!res.ok) return null
+    const json = await res.json()
+    return json.data ?? null
+  } catch {
+    return null
+  }
+}
+
+async function setHostCordon(apiBase: string, hostId: string, cordon: boolean): Promise<boolean> {
+  try {
+    const res = await fetch(`${apiBase}/metal/hosts/${encodeURIComponent(hostId)}/${cordon ? 'cordon' : 'uncordon'}`, {
+      method: 'POST',
+      credentials: 'include',
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
@@ -500,6 +567,137 @@ function GcEventLog({ gcLog }: { gcLog: Array<{ time: number; orphans: number; i
           </Text>
         </View>
       ))}
+    </View>
+  )
+}
+
+function tb(bytes: number | undefined): string {
+  if (!bytes) return '—'
+  return `${(bytes / 1e12).toFixed(1)}TB`
+}
+
+function MetalFleetPanel({
+  fleet,
+  cordoning,
+  onCordon,
+}: {
+  fleet: MetalFleetData
+  cordoning: string | null
+  onCordon: (hostId: string, cordon: boolean) => void
+}) {
+  const liveCount = fleet.hosts.filter((h) => h.live).length
+  return (
+    <View className="bg-card border border-border rounded-xl overflow-hidden mb-4">
+      <View className="flex-row items-center justify-between px-4 py-3 border-b border-border">
+        <View className="flex-row items-center gap-2">
+          <Cpu size={14} className="text-primary" />
+          <Text className="text-sm font-medium text-foreground">Metal Fleet</Text>
+          <Text className="text-[10px] text-muted-foreground">
+            {fleet.provider} · {fleet.env} · {liveCount}/{fleet.hosts.length} live
+          </Text>
+        </View>
+        {fleet.stats.snapshotHitRate != null && (
+          <Text className="text-[10px] text-muted-foreground">
+            wake hit-rate {Math.round(fleet.stats.snapshotHitRate * 100)}%
+          </Text>
+        )}
+      </View>
+
+      {/* Region rollups + burst policy */}
+      <View className="flex-row flex-wrap gap-x-6 gap-y-1 px-4 py-2 border-b border-border/50">
+        {Object.entries(fleet.regions).map(([region, r]) => (
+          <View key={region} className="flex-row items-center gap-1.5">
+            <Globe size={11} className="text-blue-400" />
+            <Text className="text-[11px] text-muted-foreground">
+              {region.toUpperCase()}: {r.live} hosts · {r.utilPct}% util
+            </Text>
+          </View>
+        ))}
+        <Text className="text-[11px] text-muted-foreground">
+          burst {fleet.burst.enabled ? `on (>${fleet.burst.scaleUpUtilPct}%, max ${fleet.burst.maxPerRegion}/region)` : 'off'}
+        </Text>
+      </View>
+
+      {fleet.drift.missing.length > 0 && (
+        <View className="flex-row items-center gap-1.5 px-4 py-2 bg-amber-500/10 border-b border-border/50">
+          <AlertTriangle size={12} className="text-amber-400" />
+          <Text className="text-[11px] text-amber-400">
+            Desired baseline not live: {fleet.drift.missing.join(', ')}
+          </Text>
+        </View>
+      )}
+
+      {fleet.hosts.length === 0 ? (
+        <View className="p-4 items-center">
+          <Text className="text-xs text-muted-foreground">No metal hosts registered</Text>
+        </View>
+      ) : (
+        fleet.hosts.map((h) => {
+          const live = h.live
+          const dotColor = !h.present ? 'bg-muted-foreground' : h.cordoned ? 'bg-amber-400' : live?.overWatermark ? 'bg-red-400' : 'bg-green-400'
+          return (
+            <View key={h.hostId} className="px-4 py-3 border-b border-border/50">
+              <View className="flex-row items-center justify-between mb-1.5">
+                <View className="flex-row items-center gap-2 flex-1 mr-2">
+                  <View className={cn('h-2 w-2 rounded-full', dotColor)} />
+                  <View className="flex-1">
+                    <View className="flex-row items-center gap-1.5">
+                      <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{h.hostId}</Text>
+                      <Text className="text-[9px] text-muted-foreground px-1 py-0.5 rounded bg-muted/50 uppercase">{h.kind}</Text>
+                      {h.cordoned && <Text className="text-[9px] text-amber-400 px-1 py-0.5 rounded bg-amber-500/10">cordoned</Text>}
+                    </View>
+                    <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+                      {h.region.toUpperCase()}{h.site ? `·${h.site}` : ''} · {live?.meshIp ?? h.serverId ?? 'not provisioned'} · {live?.arch ?? ''}
+                    </Text>
+                  </View>
+                </View>
+                {h.present ? (
+                  <Pressable
+                    onPress={() => onCordon(h.hostId, !h.cordoned)}
+                    disabled={cordoning === h.hostId}
+                    className={cn(
+                      'px-2.5 py-1 rounded-md border',
+                      h.cordoned ? 'bg-green-500/10 border-green-500/20' : 'bg-amber-500/10 border-amber-500/20'
+                    )}
+                  >
+                    {cordoning === h.hostId ? (
+                      <ActivityIndicator size="small" />
+                    ) : (
+                      <Text className={cn('text-[10px] font-medium', h.cordoned ? 'text-green-400' : 'text-amber-400')}>
+                        {h.cordoned ? 'Uncordon' : 'Drain'}
+                      </Text>
+                    )}
+                  </Pressable>
+                ) : (
+                  <Text className="text-[10px] text-muted-foreground">{h.provisioned ? 'offline' : 'pending'}</Text>
+                )}
+              </View>
+              {live && (
+                <View className="flex-row items-center gap-4">
+                  <View className="flex-row items-center gap-1">
+                    <Box size={10} className="text-blue-400" />
+                    <Text className="text-[10px] text-muted-foreground">
+                      {live.load.assigned}/{live.capacity.poolSize} assigned ({live.utilPct}%)
+                    </Text>
+                  </View>
+                  <View className="flex-row items-center gap-1">
+                    <Activity size={10} className="text-green-400" />
+                    <Text className="text-[10px] text-muted-foreground">{live.load.available} warm · {live.load.suspended} susp</Text>
+                  </View>
+                  {live.disk && (
+                    <View className="flex-row items-center gap-1">
+                      <HardDrive size={10} className={live.overWatermark ? 'text-red-400' : 'text-muted-foreground'} />
+                      <Text className={cn('text-[10px]', live.overWatermark ? 'text-red-400' : 'text-muted-foreground')}>
+                        {live.disk.usedPct}% of {tb(live.disk.totalBytes)} · cache {tb(live.disk.cacheBytes)}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
+            </View>
+          )
+        })
+      )}
     </View>
   )
 }
@@ -809,6 +1007,8 @@ export default function InfrastructurePage() {
   const [historyData, setHistoryData] = useState<InfraHistoryPoint[] | null>(null)
   const [historyLoading, setHistoryLoading] = useState(true)
   const [infraSettings, setInfraSettings] = useState<InfraSettings | null>(null)
+  const [fleet, setFleet] = useState<MetalFleetData | null>(null)
+  const [cordoning, setCordoning] = useState<string | null>(null)
 
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -817,8 +1017,9 @@ export default function InfrastructurePage() {
 
   const loadLiveData = useCallback(async () => {
     const base = regionApiBase(selectedRegionId, regions?.current.id ?? null)
-    const result = await fetchWarmPool(base)
+    const [result, fleetResult] = await Promise.all([fetchWarmPool(base), fetchMetalFleet(base)])
     if (result) setData(result)
+    setFleet(fleetResult)
     return result
   }, [selectedRegionId, regions])
 
@@ -849,6 +1050,7 @@ export default function InfrastructurePage() {
     if (!regions) return
     setLoading(true)
     setData(null)
+    setFleet(null)
     setInfraSettings(null)
     setHistoryData(null)
     setGcLog([])
@@ -886,6 +1088,27 @@ export default function InfrastructurePage() {
 
   const onRegionChange = (regionId: string) => {
     setSelectedRegionId(regionId)
+  }
+
+  const onCordon = (hostId: string, cordon: boolean) => {
+    const doIt = async () => {
+      setCordoning(hostId)
+      await setHostCordon(apiBase, hostId, cordon)
+      await loadLiveData()
+      setCordoning(null)
+    }
+    if (cordon) {
+      Alert.alert(
+        'Drain host',
+        `Cordon ${hostId}? It keeps serving current projects but takes no new placements, so it drains as projects idle and resume elsewhere.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Drain', style: 'destructive', onPress: doIt },
+        ]
+      )
+    } else {
+      doIt()
+    }
   }
 
   const onEvict = (projectId: string, projectName: string | null) => {
@@ -1058,6 +1281,11 @@ export default function InfrastructurePage() {
           </View>
         )}
       </View>
+
+      {/* Metal Fleet (bare-metal Firecracker hosts) */}
+      {fleet && (
+        <MetalFleetPanel fleet={fleet} cordoning={cordoning} onCordon={onCordon} />
+      )}
 
       {/* Infrastructure Settings */}
       {infraSettings && (

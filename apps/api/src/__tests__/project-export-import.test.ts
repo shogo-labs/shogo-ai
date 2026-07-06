@@ -30,7 +30,7 @@
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { Hono } from 'hono'
-import { zipSync, strToU8 } from 'fflate'
+import { zipSync, unzipSync, strToU8 } from 'fflate'
 import { encryptZipCrypto } from '../lib/zip-encryption'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -513,6 +513,54 @@ describe('projectExportImportRoutes', () => {
     expect(res.headers.get('Content-Type')).toBe('application/zip')
     const body = await res.arrayBuffer()
     expect(body.byteLength).toBeGreaterThan(0)
+  })
+
+  test('POST /:projectId/export sourceOnly returns a flat source zip without metadata and excludes build dirs', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    projects.set('p-src', {
+      id: 'p-src', name: 'Src Proj', description: null, workspaceId: 'w-1',
+      createdBy: 'u-1', tier: 'starter', status: 'draft', accessLevel: 'anyone',
+      schemas: [], category: null, siteTitle: null, siteDescription: null,
+      settings: JSON.stringify({}),
+    })
+    agentConfigs.push({
+      projectId: 'p-src', heartbeatInterval: 1800, heartbeatEnabled: false,
+      modelProvider: 'anthropic', modelName: 'claude-haiku-4-5', channels: [],
+    })
+
+    // Seed a local workspace with source + a build artifact directory.
+    const wsDir = join(tmpRoot, 'p-src')
+    mkdirSync(join(wsDir, 'src'), { recursive: true })
+    writeFileSync(join(wsDir, 'src', 'main.ts'), 'export const x = 1\n')
+    writeFileSync(join(wsDir, 'package.json'), '{"name":"src-proj"}\n')
+    mkdirSync(join(wsDir, 'dist'), { recursive: true })
+    writeFileSync(join(wsDir, 'dist', 'bundle.js'), 'console.log(1)\n')
+
+    const app = new Hono()
+    app.route('/api/projects', projectExportImportRoutes())
+    const res = await app.fetch(
+      new Request('http://x/api/projects/p-src/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceOnly: true }),
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('application/zip')
+    const disposition = res.headers.get('Content-Disposition') || ''
+    expect(disposition).toContain('.zip')
+    expect(disposition).not.toContain('.shogo')
+
+    const entries = unzipSync(new Uint8Array(await res.arrayBuffer()))
+    const names = Object.keys(entries)
+    // Flat workspace paths (no `workspace/` prefix), no bundle metadata.
+    expect(names).toContain('src/main.ts')
+    expect(names).toContain('package.json')
+    expect(names).not.toContain('project.json')
+    expect(names).not.toContain('manifest.json')
+    // Build artifacts excluded from the source ZIP.
+    expect(names.some((n) => n.startsWith('dist/'))).toBe(false)
   })
 
   test('POST /import rejects non-multipart content', async () => {

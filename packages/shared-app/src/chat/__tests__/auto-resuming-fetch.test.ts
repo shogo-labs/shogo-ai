@@ -309,6 +309,104 @@ describe('createAutoResumingFetch', () => {
     expect(text).toContain('data-turn-complete')
   })
 
+  // ---------------------------------------------------------------------------
+  // Regression: resume endpoint returns 404 (route fell through to the wildcard
+  // `/api/projects/:projectId/*`, or a region that doesn't own the session).
+  //
+  // SigNoz signature this covers:
+  //   GET /api/projects/:id/chat/:id/stream?fromSeq=N → 404, previously
+  //   repeating 50-75x/min for the same session.
+  //
+  // Before the fix the wrapper only treated status===204 (or a missing body)
+  // as terminal. A 404 carries a non-empty body ("Not Found"), so pumpBody
+  // drained it → bytes > 0 → resumeAttempts reset to 0 → the client hammered
+  // the 404 endpoint forever. Now any non-200 is terminal: exactly one resume
+  // attempt, then stop and let the UI surface a Retry.
+  test('stops after a single attempt on a 404 resume (no runaway loop)', async () => {
+    const initialBody = streamFrom([
+      sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),
+      sseFrame({ type: 'data-turn-seq', data: { turnId: TURN_ID, seq: 120 } }),
+    ])
+    let resumeCalls = 0
+    const RUNAWAY_CAP = 25
+    const baseFetch: any = async (_url: string, init?: any) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') return makePostResponse(initialBody)
+      resumeCalls++
+      // Safety valve so a regressed (runaway) implementation terminates the
+      // test instead of hanging CI forever.
+      if (resumeCalls >= RUNAWAY_CAP) return new Response(null, { status: 204 })
+      // Hono's default 404 for an unmatched route: a text body, no turn headers.
+      return new Response('404 Not Found', { status: 404 })
+    }
+    const fetcher = createAutoResumingFetch(baseFetch, {
+      logger: SILENT_LOGGER,
+      initialBackoffMs: 0,
+      maxBackoffMs: 0,
+      maxResumeAttempts: 8,
+    })
+    const r = await fetcher(POST_URL, { method: 'POST' })
+    await readAll(r.body!)
+
+    // A hard 404 is terminal → exactly one resume attempt, then stop.
+    expect(resumeCalls).toBe(1)
+  })
+
+  test('stops on other non-200 resume statuses (401/403/503)', async () => {
+    for (const status of [401, 403, 503]) {
+      const initialBody = streamFrom([
+        sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),
+        sseFrame({ type: 'data-turn-seq', data: { turnId: TURN_ID, seq: 3 } }),
+      ])
+      let resumeCalls = 0
+      const baseFetch: any = async (_url: string, init?: any) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'POST') return makePostResponse(initialBody)
+        resumeCalls++
+        if (resumeCalls >= 25) return new Response(null, { status: 204 })
+        return new Response('error', { status })
+      }
+      const fetcher = createAutoResumingFetch(baseFetch, {
+        logger: SILENT_LOGGER,
+        initialBackoffMs: 0,
+        maxBackoffMs: 0,
+        maxResumeAttempts: 8,
+      })
+      const r = await fetcher(POST_URL, { method: 'POST' })
+      await readAll(r.body!)
+      expect(resumeCalls).toBe(1)
+    }
+  })
+
+  test('forwards the request credentials mode onto the internal resume GET', async () => {
+    const initialBody = streamFrom([
+      sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),
+      sseFrame({ type: 'data-turn-seq', data: { turnId: TURN_ID, seq: 7 } }),
+    ])
+    const resumeBody = streamFrom([
+      sseFrame({ type: 'text-delta', delta: 'more' }),
+      sseFrame({ type: 'data-turn-complete', data: { turnId: TURN_ID, status: 'completed', lastSeq: 9 } }),
+    ])
+    const resumeInits: Array<RequestInit | undefined> = []
+    let calls = 0
+    const baseFetch: any = async (_url: string, init?: any) => {
+      calls++
+      if (calls === 1) return makePostResponse(initialBody)
+      resumeInits.push(init)
+      return new Response(resumeBody, { status: 200, headers: { 'X-Turn-Id': TURN_ID } })
+    }
+    const fetcher = createAutoResumingFetch(baseFetch, {
+      logger: SILENT_LOGGER,
+      initialBackoffMs: 0,
+      maxBackoffMs: 0,
+    })
+    const r = await fetcher(POST_URL, { method: 'POST', credentials: 'include' })
+    await readAll(r.body!)
+
+    expect(resumeInits.length).toBeGreaterThanOrEqual(1)
+    expect(resumeInits[0]?.credentials).toBe('include')
+  })
+
   test('respects maxResumeAttempts', async () => {
     let calls = 0
     const baseFetch: any = async () => {

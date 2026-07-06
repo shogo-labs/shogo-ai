@@ -16,9 +16,16 @@ rules:
   - apiGroups: ["serving.knative.dev"]
     resources: ["domainmappings"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # `revisions` is REQUIRED for warm-pool hot/cold detection: the controller
+  # reads each pool Service's latest Revision status (actualReplicas) to tell a
+  # HOT pod (>=1 running replica, instant claim) from a scaled-to-zero one (~20s
+  # activator cold start). Without `list revisions` the controller gets a 403,
+  # treats every pool pod as cold, and every "warm" claim silently eats a
+  # scale-from-zero — i.e. the pool is only nominally warm. `configurations`/
+  # `routes` + `watch` round out read access and match the production overlay.
   - apiGroups: ["serving.knative.dev"]
-    resources: ["services"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
+    resources: ["services", "revisions", "configurations", "routes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["list"]
@@ -81,8 +88,18 @@ spec:
   template:
     metadata:
       annotations:
-        autoscaling.knative.dev/min-scale: "1"
+        # min-scale=2 keeps a warm second replica so the first burst of
+        # CPU-bound sign-ups (Better Auth password hashing is synchronous and
+        # blocks the event loop) doesn't all pile onto a single pod.
+        autoscaling.knative.dev/min-scale: "2"
         autoscaling.knative.dev/max-scale: "5"
+        # target=25 concurrent requests/pod. The default (100) let a single pod
+        # absorb heavy concurrency before scaling, so CPU-bound sign-up hashing
+        # starved reads on that pod (get-session p99 hit ~6s at 150 users).
+        # Lowering it scales out sooner and spreads the event-loop blocking:
+        # at 150 users this cut get-session p99 ~6.3s -> ~0.9s and sign-up p95
+        # ~29s -> ~16s with 0 failures. Validated via load-tests/staging_mix.
+        autoscaling.knative.dev/target: "25"
         # ─── Long-lived chat stream + WebSocket support ────────────────────
         # The desktop tunnel WebSocket bypasses Knative entirely via
         # api-tunnel-ingress.yaml (label-selector Service direct to the
@@ -286,11 +303,37 @@ spec:
               value: "wss://tunnel.staging.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-staging-system:6379"
+            # Conventional pooler split (durable fix for advisory-lock pool
+            # exhaustion, validated HERE before any prod region): DATABASE_URL
+            # points at the transaction-mode PgBouncer (platform-pg-pooler-rw,
+            # see k8s/cnpg/staging-oci/platform-pooler.yaml). Session-scoped work
+            # that must pin a backend — advisory locks (withAdvisoryLock /
+            # withGlobalJobLock) and Prisma migrate — uses DATABASE_DIRECT_URL
+            # -> platform-pg-rw. Ops MUST add the `DATABASE_DIRECT_URL` key to
+            # the postgres-credentials secret and repoint `DATABASE_URL` at the
+            # pooler BEFORE applying this manifest — see
+            # k8s/cnpg/logical-replication/RUNBOOK.md.
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: postgres-credentials
                   key: DATABASE_URL
+            - name: DATABASE_DIRECT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_DIRECT_URL
+            - name: PRISMA_POOL_SIZE
+              value: "25"
+            # Better Auth opens its OWN pg pool (apps/api/src/auth.ts), separate
+            # from Prisma. Left unset it defaults to 60 conns/pod, so per-pod
+            # client conns to PgBouncer are 25 (Prisma) + 60 = 85, not 25. Cap it
+            # so pods x (PRISMA_POOL_SIZE + AUTH_POOL_SIZE) stays well under the
+            # pooler's max_client_conn.
+            - name: AUTH_POOL_SIZE
+              value: "10"
+            - name: ADVISORY_LOCK_POOL_SIZE
+              value: "4"
             - name: BETTER_AUTH_SECRET
               valueFrom:
                 secretKeyRef:
@@ -497,20 +540,55 @@ spec:
                   optional: true
             - name: WARM_POOL_MIN_PODS
               value: "5"
+            # Warm-pool memory is intentionally OVERCOMMITTED (request << limit):
+            # most pool pods idle near ~768Mi and only a few actively bundle at
+            # multi-GB at any instant, so a low request lets us bin-pack ~25
+            # pods/node instead of ~6 — that density is the whole point of the
+            # pool. We keep the overcommit here (defaults 768Mi req / 8Gi limit)
+            # and instead make it SAFE at the node level: kubelet eviction sheds
+            # the lowest-priority (shogo-workspace-low) pods early under memory
+            # pressure, and the CNPG PriorityClass (shogo-db-critical) guarantees
+            # the DB is never the victim. WARM_POOL_POD_MEM_REQUEST is left at its
+            # default but exposed as an operational knob: bumping the request
+            # floor caps worst-case per-node pod density during an incident
+            # without a code deploy.
             - name: REGION_ID
               value: "staging"
             - name: REGION_LABEL
               value: "Staging (OCI)"
             # Home-region write routing. Staging is single-region (no
-            # REGION_PEERS), so "shadow" only exercises the resolver + emits
-            # "[home-region-router] would-proxy" logs — it can never actually
-            # proxy (no peer) and every write resolves local, so this is safe.
-            # Use it to validate resolution/logging on real traffic before the
-            # production enforce rollout. "off" disables it entirely.
+            # REGION_PEERS), so "enforce" exercises the resolver + fail-closed
+            # decision paths but every write still resolves local (no peer to
+            # proxy to) — behaviourally safe, and validates the enforce code
+            # path on real traffic ahead of the per-region production rollout.
+            # "shadow" logs only; "off" disables it entirely.
             - name: HOME_REGION_ROUTING
-              value: "shadow"
+              value: "enforce"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
+            # --- Metal microVM substrate (bare-metal Firecracker) -----------
+            # SHOGO_METAL_ALL_PROJECTS is the metal-only switch: when "true",
+            # EVERY project is served by the metal warm-pool controller
+            # (node-agent /assign over the mesh) instead of Knative — there is
+            # no per-project choice and NO silent fallback. A metal miss returns
+            # a retryable 503 (pod_starting) so the client backs off while the
+            # microVM resumes/boots; traffic never quietly lands on Knative.
+            # Staging runs metal-only ("true") as the validation ground for the
+            # cloud-agnostic substrate ahead of the per-region prod rollout.
+            #
+            # Depends on (all satisfied in staging):
+            #   1. >=1 node-agent registered & live:
+            #        GET /api/internal/metal/status -> hosts.live > 0
+            #   2. REDIS_URL set (above) — required so every api replica sees the
+            #      fleet (host discovery is registry-backed, not per-pod).
+            #   3. The node-agent authenticates register+assign with
+            #      SHOGO_INTERNAL_SECRET (used as its METAL_REGISTER_TOKEN);
+            #      no dedicated METAL_REGISTER_TOKEN secret exists.
+            # To roll back to Knative (incident switch):
+            #   .github/scripts/sync-api-env.sh shogo-staging-system \
+            #       SHOGO_METAL_ALL_PROJECTS false
+            - name: SHOGO_METAL_ALL_PROJECTS
+              value: "true"
             - name: PROMOTED_POD_GC_ENABLED
               value: "true"
             # 30 min: needs to be longer than typical user-think-time
@@ -593,6 +671,14 @@ spec:
             requests:
               memory: "256Mi"
               cpu: "100m"
+            # Limit raised 2Gi -> 4Gi (2026-07-02). Under a 40-user cold-start burst
+            # the API buffers many concurrent proxied chat streams + per-request
+            # cold-start resolution state; at 2Gi peak pods OOMKilled (Kourier then
+            # 502'd mid-stream). The connection-retry cap (364a77d0) shrank the
+            # pileup but didn't fully clear the ceiling, so give the burst real
+            # headroom. Request stays 256Mi on purpose: the API tier is deliberately
+            # overcommitted (statistical multiplexing) and the node-level kubelet
+            # eviction + PriorityClasses make that overcommit safe.
             limits:
-              memory: "2Gi"
+              memory: "4Gi"
               cpu: "1"

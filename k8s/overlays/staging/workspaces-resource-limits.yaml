@@ -1,0 +1,51 @@
+# =============================================================================
+# Workspace-tier sprawl guardrails (staging)
+# =============================================================================
+# Coarse backstop for the 2026-07-01 incident. This is NOT the primary defense
+# (that's node-level kubelet eviction + the PriorityClass hierarchy, which make
+# the warm pool's intentional memory OVERCOMMIT safe by shedding low-priority
+# pods before a node dies). This quota just bounds total workspace-tier sprawl
+# so a runaway controller/load-test can't create an unbounded number of pods
+# across the cluster — once the cap is hit, new pod creates are rejected (403)
+# and the controller backs off.
+#
+# IMPORTANT: the quota deliberately caps REQUESTS and pod COUNT, not
+# limits.memory. Warm-pool pods are overcommitted on purpose (768Mi request /
+# 8Gi limit); a limits.memory quota would force near-Guaranteed packing and
+# destroy the pool density we rely on. The scheduler already refuses to place
+# pods whose *requests* exceed a node's allocatable, so bounding requests +
+# count is the right lever here.
+#
+# Sizing (staging pool: 4 OCPU / 24Gi nodes, ~20Gi allocatable, autoscaler
+# 1–6 nodes). Generous enough for normal operation (5 warm pods + assigned /
+# promoted project pods) but far below a runaway:
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: workspaces-tier-quota
+  namespace: shogo-staging-workspaces
+spec:
+  hard:
+    pods: "40"
+    requests.cpu: "16"
+    requests.memory: 40Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: workspaces-tier-defaults
+  namespace: shogo-staging-workspaces
+spec:
+  limits:
+    # Safety net only: default request/limit injected into any pod that omits
+    # them. Warm-pool and project pods set their own explicit resources (and
+    # keep the intended request<<limit overcommit); this just ensures a stray
+    # pod can't run unbounded or escape the requests quota above.
+    - type: Container
+      default:
+        memory: 2Gi
+        cpu: "1"
+      defaultRequest:
+        memory: 768Mi
+        cpu: 200m

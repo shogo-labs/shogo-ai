@@ -156,10 +156,14 @@ export default function App() {
 
 **For a single-feature project**, you can write a simpler App.tsx without tabs. Once the user asks for a second feature, refactor into the tabbed shell and move the first feature into its own component file.
 
-### Validation Workflow
-After writing or editing files under \`src/\`, **always** call \`read_lints\` with no arguments to check for TypeScript errors. It auto-scopes to the files you just touched — you do not need to pass a path:
-- If \`read_lints\` returns \`ok: true\` — the code is clean, proceed normally.
-- If \`read_lints\` returns errors — fix them immediately with \`edit_file\`, then run \`read_lints\` again to verify.
+### Validation Workflow — compiling is NOT rendering
+A green \`built in N ms\` in \`.shogo/logs/build.log\` only means the code **transpiled**. Vite/esbuild does **not** type-check, so a missing import (\`Tabs is not defined\`), a boolean or value used as a component (\`Element type is invalid … got: boolean\`), or a wrong prop type compiles clean and then **throws a white-screen error in the browser**. "The build succeeded" is never sufficient proof for a UI change.
+
+After writing or editing files under \`src/\`, before you tell the user it works:
+- **Always** call \`read_lints\` with no arguments (it auto-scopes to the files you just touched). If it returns \`ok: true\`, proceed; if it returns errors, fix them all in one pass with \`edit_file\`, then run \`read_lints\` again to confirm clean. Missing imports and undefined references are the #1 cause of runtime crashes — a clean \`read_lints\` catches them.
+- The runtime also runs \`tsc --noEmit\` after every build and writes the result to \`.shogo/logs/build.log\`. A \`[typecheck] ✗ … N type error(s)\` line there means the app WILL crash at runtime even though \`built in N ms\` also appears — treat it as a hard failure and fix it before declaring done.
+- Confirm the page actually **renders**: there must be no canvas runtime errors reported (they surface in \`read_lints\` and on your next edit result). Do not say "done" / "it works" off a green build log alone.
+- Fix the whole class at once: if one component import is missing, check that every component/icon/chart you referenced is imported.
 
 ### Backend API
 
@@ -279,7 +283,7 @@ const [loading, setLoading] = useState(true)
 useEffect(() => {
   fetch('/api/leads')
     .then(r => r.json())
-    .then(res => { setLeads(res.items); setLoading(false) })
+    .then(res => { setLeads(res.items ?? []); setLoading(false) })
     .catch(() => setLoading(false))
 }, [])
 \`\`\`
@@ -338,7 +342,10 @@ useEffect(() => {
       if (!r.ok) throw new Error('Failed to load')
       return r.json()
     })
-    .then(res => { setItems(res.items); setLoading(false) })
+    // Always unwrap the list envelope with a fallback — the response body is
+    // { ok, items, total }, never a raw array. res.items ?? [] keeps
+    // .map()/.filter() from throwing on error bodies or empty results.
+    .then(res => { setItems(res.items ?? []); setLoading(false) })
     .catch(err => { setError(err.message); setLoading(false) })
 }, [])
 

@@ -92,7 +92,9 @@ export type GlobalJobLockResult<T> =
 export interface WithGlobalJobLockOptions {
   /**
    * Optional override of the Postgres connection string. Defaults to
-   * `process.env.DATABASE_URL`. Exposed for tests.
+   * `DATABASE_DIRECT_URL ?? DATABASE_URL` — the DIRECT url is preferred so
+   * session-scoped advisory locks bypass transaction-mode PgBouncer. Exposed
+   * for tests.
    */
   connectionString?: string
   /**
@@ -116,7 +118,11 @@ export async function withGlobalJobLock<T>(
   body: () => Promise<T>,
   opts: WithGlobalJobLockOptions = {},
 ): Promise<GlobalJobLockResult<T>> {
-  const connectionString = opts.connectionString ?? process.env.DATABASE_URL
+  // Prefer the DIRECT url: session-scoped advisory locks must not run over a
+  // transaction-mode PgBouncer (acquire/release can land on different backend
+  // sessions). Falls back to DATABASE_URL when no pooler is deployed.
+  const connectionString =
+    opts.connectionString ?? process.env.DATABASE_DIRECT_URL ?? process.env.DATABASE_URL
 
   // Local SQLite mode and missing DB — no replication, no peers to
   // race against; run the body unconditionally so dev/test paths still

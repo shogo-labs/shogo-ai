@@ -111,6 +111,7 @@ import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
 import { pushCanvasRuntimeError, getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
+import { recordCanvasRuntimeErrorEscaped } from './canvas-slo'
 import {
   recordCanvasErrorEntry,
   recordConsoleEntry,
@@ -4163,6 +4164,14 @@ app.all('/api/*', async (c) => {
   // 100 ms, total budget 3 s) and short-circuits the moment the port
   // becomes available.
   let port = pm.apiServerPort
+  // Self-heal: if the sidecar crashed beyond its restart cap, an incoming API
+  // request is the trigger to revive it — reset the crash budget and re-attempt
+  // a single start — instead of returning 503 forever until a manual
+  // /preview/restart. This flips the phase to `restarting`, so the grace-window
+  // poll below can pick up the freshly bound port within this same request.
+  if (port == null && pm.apiServerPhase === 'crashed') {
+    pm.maybeRecoverApiServer()
+  }
   if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
     const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
     while (port == null && Date.now() < deadline) {
@@ -4270,6 +4279,10 @@ if (IS_WORKSPACE_RUNTIME) {
     if (!pm) return projectNotAttached(c, projectId)
 
     let port = pm.apiServerPort
+    // Self-heal a crashed-beyond-recovery sidecar on demand (see root `/api/*`).
+    if (port == null && pm.apiServerPhase === 'crashed') {
+      pm.maybeRecoverApiServer()
+    }
     if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
       const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
       while (port == null && Date.now() < deadline) {
@@ -4320,7 +4333,7 @@ if (IS_WORKSPACE_RUNTIME) {
     if (!pm) return projectNotAttached(c, parsed.projectId)
     const distDir = join(WORKSPACE_DIR, parsed.projectId, 'dist')
     const inFlight = BUILDING_PHASES.has(pm.phase)
-    return serveDistResponse(distDir, parsed.rest, inFlight) ?? c.notFound()
+    return serveDistResponse(distDir, parsed.rest, inFlight) ?? markedNotFound()
   })
 }
 
@@ -4425,6 +4438,16 @@ app.post('/agent/canvas/error', async (c) => {
       timestamp: Date.now(),
       route,
       recentActions,
+    })
+
+    // SLO signal: a runtime/compile error reached the rendered canvas (the
+    // numerator for "Debug: runtime error sessions per 100 canvas projects").
+    // See canvas-slo.ts; paired with `canvas_typecheck_blocked` from the
+    // post-build type-check gate, which counts the escapes we prevented.
+    recordCanvasRuntimeErrorEscaped({
+      phase: body.phase || 'unknown',
+      error: body.error,
+      route,
     })
 
     // Mirror into the typed runtime-log dispatcher so the Output tab
@@ -4787,6 +4810,16 @@ function isBuildLikelyInFlight(): boolean {
   return BUILDING_PHASES.has(phase)
 }
 
+// Marker header stamped on every response the agent-runtime itself
+// produces for a preview document. The Cloudflare preview-router Worker
+// uses its presence to distinguish an *infra* error (Kourier "no healthy
+// upstream" 404, activator/pod 503 — no marker) from the *app's own*
+// response (404 page, building placeholder — marked). Infra errors get
+// swapped for the "waking up" interstitial; marked responses pass through
+// untouched so a genuine app 404 never gets masked or reload-looped.
+const RUNTIME_MARKER_HEADER = 'x-shogo-runtime'
+const RUNTIME_MARKER_VALUE = '1'
+
 function renderBuildingPlaceholder(): Response {
   const html = `<!doctype html>
 <html lang="en">
@@ -4826,6 +4859,7 @@ function renderBuildingPlaceholder(): Response {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-cache, no-store, must-revalidate',
       'Retry-After': '2',
+      [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
     },
   })
 }
@@ -4861,13 +4895,18 @@ function serveDistResponse(
     if (ext === '.html') {
       const html = injectCanvasBridge(readFileSync(filePath, 'utf-8'))
       return new Response(html, {
-        headers: { 'Content-Type': mime, 'Cache-Control': 'no-cache' },
+        headers: {
+          'Content-Type': mime,
+          'Cache-Control': 'no-cache',
+          [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
+        },
       })
     }
     return new Response(readFileSync(filePath), {
       headers: {
         'Content-Type': mime,
         'Cache-Control': 'public, max-age=31536000, immutable',
+        [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
       },
     })
   }
@@ -4877,7 +4916,11 @@ function serveDistResponse(
   if (existsSync(indexPath)) {
     const html = injectCanvasBridge(readFileSync(indexPath, 'utf-8'))
     return new Response(html, {
-      headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
+      headers: {
+        'Content-Type': 'text/html',
+        'Cache-Control': 'no-cache',
+        [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
+      },
     })
   }
 
@@ -4893,6 +4936,19 @@ function serveDistResponse(
   return null
 }
 
+// A 404 the agent-runtime itself produced. Carries the runtime marker so
+// the preview-router Worker treats it as an app response (pass through),
+// not an infra "no upstream" 404 (which it would swap for the interstitial).
+function markedNotFound(): Response {
+  return new Response('Not Found', {
+    status: 404,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
+    },
+  })
+}
+
 app.get('*', (c) => {
   const urlPath = new URL(c.req.url).pathname
 
@@ -4901,10 +4957,10 @@ app.get('*', (c) => {
       urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
       urlPath.startsWith('/api') || urlPath.startsWith('/templates') ||
       urlPath.startsWith('/diagnostics')) {
-    return c.notFound()
+    return markedNotFound()
   }
 
-  return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? c.notFound()
+  return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? markedNotFound()
 })
 
 // =============================================================================

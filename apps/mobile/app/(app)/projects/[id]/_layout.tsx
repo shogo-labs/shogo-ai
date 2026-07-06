@@ -2772,6 +2772,7 @@ export default observer(function ProjectLayout() {
             if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
           }
         : undefined,
+    onOpenCodeWorkbench: handleOpenCodeWorkbench,
     ideEmbed: isIdeChatEmbed,
   }
 
@@ -3302,7 +3303,6 @@ export default observer(function ProjectLayout() {
                 agentUrl={agentUrl}
                 isExternalProject={isExternalProject}
                 folderPath={primaryFolderPath ?? undefined}
-                onOpenCodeWorkbench={handleOpenCodeWorkbench}
               />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Files">
@@ -4065,6 +4065,9 @@ function CanvasPanel({
             <Text className="text-muted-foreground text-xs text-center">
               This usually takes 20-40 seconds
             </Text>
+            <Text className="text-muted-foreground/70 text-[11px] text-center mt-2 max-w-xs">
+              This is a live builder preview that sleeps when idle. Publish to get a permanent, shareable link.
+            </Text>
           </>
         )}
       </View>
@@ -4257,6 +4260,9 @@ function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; 
             </Text>
             <Text className="text-muted-foreground text-xs">
               This usually takes 20-40 seconds
+            </Text>
+            <Text className="text-muted-foreground/70 text-[11px] text-center mt-2 max-w-xs">
+              This is a live builder preview that sleeps when idle. Publish to get a permanent, shareable link.
             </Text>
           </View>
         )}

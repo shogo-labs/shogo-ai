@@ -39,6 +39,7 @@ beforeAll(() => {
 afterAll(async () => {
   try {
     const usPool = pool(env, 'us')
+    await usPool.query(`DELETE FROM projects WHERE name LIKE $1`, [`%${TEST_MARKER}%`])
     await usPool.query(`DELETE FROM members WHERE id LIKE $1`, [`%${TEST_MARKER}%`])
     await usPool.query(`DELETE FROM workspaces WHERE name LIKE $1`, [`%${TEST_MARKER}%`])
     await usPool.query(`DELETE FROM workspaces WHERE slug LIKE $1`, [`%${TEST_MARKER}%`])
@@ -229,6 +230,77 @@ describe('platform-global write routing', () => {
       // Table/shape is deployment-specific; don't hard-fail the suite on it.
       console.log('Note: platform_settings convergence not asserted (table/shape unknown)')
     })
+  })
+})
+
+describe('chat session region pinning', () => {
+  // Regression guard for the cross-region resume 404 storm (RCA: a resume GET
+  // re-steered to a non-home region hit the wildcard `/api/projects/:id/*`
+  // 404 — or requireProjectAccess's "Project not found" 404 — and the client
+  // looped on it). With affine-read pinning (chat-region-pin) + enforce, a
+  // resume for an unknown/idle session must return the TERMINAL 204 ("nothing
+  // buffered"), never a 404, even from a region that is not the session home.
+  //
+  // Full end-to-end resume of an ACTIVE buffered turn requires a live runtime
+  // pod and is out of scope for this DB/API harness; this asserts the pod-
+  // independent contract that killed the loop.
+  test('a resume GET from a non-home region returns 204 (not a 404 storm)', async () => {
+    const usApi = env.us.apiUrl
+    const euApi = env.eu.apiUrl
+    if (!usApi || !euApi) {
+      console.log('Skipping: API_URL_US and API_URL_EU required')
+      return
+    }
+    if (process.env.HOME_REGION_ROUTING_E2E !== 'enforce') {
+      console.log('Skipping: set HOME_REGION_ROUTING_E2E=enforce (EU API must run with HOME_REGION_ROUTING=enforce)')
+      return
+    }
+
+    const email = `chat_pin_${TEST_MARKER}@test.shogo.dev`
+    const password = `TestPass${Date.now()}!`
+
+    // Sign up in US → personal workspace homeRegion = US.
+    const signupRes = await signup(usApi, email, password, `Chat Pin ${TEST_MARKER}`)
+    expect(signupRes.ok).toBe(true)
+    const cookie = sessionCookieFrom(signupRes)
+    expect(cookie).toBeDefined()
+    await sleep(3000)
+
+    const listRes = await fetch(`${usApi}/api/workspaces`, { headers: { Cookie: cookie! } })
+    const list = (await listRes.json()) as Array<{ id: string }>
+    const wsId = list[0]?.id
+    expect(wsId).toBeDefined()
+
+    // Seed a project row directly at the US primary (avoids spinning a real
+    // runtime pod). Self-skip on schema drift so this never false-fails.
+    const projectId = `proj_${TEST_MARKER}`
+    try {
+      const userRow = await pool(env, 'us').query(
+        `SELECT id FROM users WHERE lower(email) = lower($1)`,
+        [email],
+      )
+      const userId = userRow.rows[0]?.id
+      await pool(env, 'us').query(
+        `INSERT INTO projects (id, name, "workspaceId", "createdBy", "updatedAt")
+         VALUES ($1, $2, $3, $4, now())`,
+        [projectId, `Chat Pin ${TEST_MARKER}`, wsId, userId ?? null],
+      )
+    } catch (err) {
+      console.log('Skipping: could not seed project row (schema drift?):', err instanceof Error ? err.message : String(err))
+      return
+    }
+
+    // Let the project replicate so the EU router can resolve its home region.
+    await sleep(3000)
+
+    // Resume an unknown session via the EU API (NON-home region). Pinned home
+    // to US, where the project row exists → 204 (no buffer), never 404.
+    const resumeRes = await fetch(
+      `${euApi}/api/projects/${projectId}/chat/nonexistent-session/stream?fromSeq=0`,
+      { headers: { Cookie: cookie! } },
+    )
+    expect(resumeRes.status).not.toBe(404)
+    expect(resumeRes.status).toBe(204)
   })
 })
 

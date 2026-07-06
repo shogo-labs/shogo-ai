@@ -1370,16 +1370,32 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         } catch (fetchError: any) {
           lastError = fetchError
 
-          // Retry on connection errors (ECONNREFUSED, ECONNRESET, etc.)
-          const isTransientError =
-            fetchError.code === 'ECONNREFUSED' ||
-            fetchError.code === 'ECONNRESET' ||
-            fetchError.code === 'ETIMEDOUT' ||
-            fetchError.cause?.code === 'ECONNREFUSED' ||
-            fetchError.cause?.code === 'ECONNRESET' ||
-            fetchError.cause?.code === 'ETIMEDOUT' ||
-            fetchError.message?.includes('connection refused') ||
-            fetchError.message?.includes('ECONNREFUSED')
+          // Detect connection-level failures (pod not reachable). Bun reports
+          // these with Bun-specific codes ("ConnectionRefused",
+          // "ConnectionClosed", "FailedToOpenSocket") and hint-style messages
+          // ("Unable to connect…", "Was there a typo in the url or port?"),
+          // often on `.cause` rather than `.message`, so match the whole error.
+          const fetchErrText = [
+            fetchError?.message,
+            fetchError?.cause?.message,
+            fetchError?.code,
+            fetchError?.cause?.code,
+            fetchError?.name,
+            String(fetchError),
+          ].filter(Boolean).join(' ')
+          const isConnectionError =
+            /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|connection refused|connection closed|connection reset|unable to connect|typo in the url|failed to (open|connect)|FailedToOpenSocket|ConnectionRefused|ConnectionClosed|socket/i.test(fetchErrText)
+
+          // IMPORTANT (2026-07-02): do NOT fold connection errors into the long
+          // in-loop retry. Retrying an unreachable pod up to MAX_RETRIES (~45s)
+          // AND re-resolving the URL each attempt holds an API request slot +
+          // buffers for the whole window; under concurrent cold-start misses
+          // that pileup OOM-killed the 2Gi API pods and Kourier 502'd. Instead
+          // do only a FEW quick retries to ride out a pod that's seconds from
+          // ready, then bail to the retryable-503 path below so the slot frees
+          // immediately and the CLIENT drives the (cheap) backoff+retry.
+          const CONNECTION_RETRY_LIMIT = 3
+          const isTransientError = isConnectionError && attempt <= CONNECTION_RETRY_LIMIT
 
           const isClientAbort = fetchError.name === 'AbortError' && clientSignal?.aborted
           if (isClientAbort) {
@@ -1429,7 +1445,26 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             continue
           }
 
-          // Non-transient error or max retries reached
+          // Connection failure that we're no longer retrying (either the quick
+          // connection-retry budget is spent, or it's an abort/timeout). The
+          // pod is unreachable because it's still cold-starting, was evicted, or
+          // the node is momentarily at capacity — NOT because the server is
+          // broken. Bail to a retryable 503 immediately so the API request slot
+          // frees up (avoids the OOM pileup a long in-loop retry caused) and let
+          // the CLIENT drive the backoff+retry. This is the "it shouldn't fail
+          // if the warm pool runs out" contract: exhaustion degrades to a
+          // slower, retryable path, never a hard error.
+          if (isConnectionError || isAbortError) {
+            console.warn(`[ProjectChat] Pod unreachable for ${projectId} (${podUrl}) after ${attempt} attempt(s) — returning retryable 503`)
+            chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "pod_unreachable" })
+            chatSpan.end()
+            return c.json(
+              { error: { code: "pod_starting", message: "Project runtime is starting up and not reachable yet. Please retry in a few seconds.", retryable: true } },
+              503
+            )
+          }
+
+          // Genuinely unexpected error — surface to the outer handler.
           throw fetchError
         }
       }
@@ -1458,6 +1493,36 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: error.message })
       chatSpan.recordException(error)
       chatSpan.end()
+      // A warm-pool miss / cold start / node-at-capacity surfaces here as a
+      // connection or timeout error (ECONNREFUSED/RESET/TIMEDOUT, fetch abort,
+      // or a "not ready / did not become ready / unavailable" from resolution).
+      // These are transient and retryable — the runtime is (re)starting, not
+      // broken — so we MUST NOT return a hard 500 the client treats as
+      // permanent. Only genuinely unexpected errors fall through to 500.
+      // Match against the whole error (message + cause + code + name), because
+      // Bun connection failures keep their hint text on `.cause`/rendered form
+      // rather than `.message` (see the retry loop above). Covers pod/runtime
+      // connection transients AND Prisma connection-pool backpressure ("Timed
+      // out fetching a new connection from the connection pool", "Can't reach
+      // database server", "too many connections") — all load-shed conditions
+      // the client should retry, not hard 500s.
+      const errHaystack = [
+        error?.message,
+        error?.cause?.message,
+        error?.code,
+        error?.cause?.code,
+        error?.name,
+        String(error),
+      ].filter(Boolean).join(" ")
+      const isTransient =
+        error?.name === "TimeoutError" || error?.name === "AbortError" ||
+        /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|connection refused|connection closed|connection reset|unable to connect|typo in the url|failed to (open|connect)|FailedToOpenSocket|ConnectionRefused|ConnectionClosed|socket|fetch failed|timeout|timed out|not ready|starting|did not become ready|unavailable|connection pool|reach database|too many connections/i.test(errHaystack)
+      if (isTransient) {
+        return c.json(
+          { error: { code: "pod_starting", message: "Project runtime is starting up. Please retry in a few seconds.", retryable: true } },
+          503
+        )
+      }
       return c.json(
         { error: { code: "proxy_error", message: error.message || "Proxy failed" } },
         500
@@ -1683,6 +1748,22 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           { error: { code: "project_not_found", message: "Project not found" } },
           404
         )
+      }
+
+      // Metal-only mode: the project runs on the metal microVM substrate, not
+      // Knative. Report readiness off the live host fleet — the actual resume
+      // happens on the chat call (fast), same contract as the warm pool.
+      const { isMetalAllProjects } = await import("../lib/metal-eligibility")
+      if (isMetalAllProjects()) {
+        const { getMetalWarmPoolController } = await import("../lib/metal-warm-pool-controller")
+        const liveHosts = await getMetalWarmPoolController().liveHostCount()
+        return c.json({
+          mode: "metal",
+          exists: true,
+          ready: liveHosts > 0,
+          url: null,
+          hosts: liveHosts,
+        })
       }
 
       if (isKubernetes()) {

@@ -1,0 +1,80 @@
+# =============================================================================
+# Public API Ingress (OpenAI-compatible) — Production US (Ashburn)
+# =============================================================================
+# Serves the public, OpenAI-compatible API on the dedicated `api.shogo.ai`
+# host advertised in the docs/blog (base URL `https://api.shogo.ai/v1`).
+#
+# Why a dedicated host route (not a CNAME to studio.shogo.ai):
+#   The api server mounts the public router at BOTH `/v1` and `/api/v1`
+#   (see apps/api/src/server.ts — "Kept so the public URL can move to /v1
+#   without an app change"). But `studio.shogo.ai` is fronted by the `studio`
+#   web container, which proxies only `/api/*` to the api ksvc and serves the
+#   SPA (text/html, 200) for every other path — including a bare `/v1`. So a
+#   CNAME `api → studio` would hand OpenAI clients HTML instead of JSON.
+#   Routing `api.shogo.ai` straight at the `api` ksvc makes the root `/v1/*`
+#   paths reach the real handler.
+#
+# Why an Ingress (not a Knative DomainMapping):
+#   A DomainMapping wraps its KIngress in a `rewriteHost` + ExternalName
+#   loopback that drops HTTP/1.1 WebSocket Upgrade (503 UC). This mirrors the
+#   api-tunnel / studio-web direct-Ingress pattern already in this overlay:
+#   a plain ClusterIP Service selecting the api revision pods on the
+#   queue-proxy port (8012), so Kourier emits a normal Envoy upstream cluster.
+#
+# Routing chain:
+#   Cloudflare (TLS, shogo.ai cert; api.shogo.ai LB → shared 3-region pools)
+#     -> OCI LoadBalancer (kourier:80/443)
+#     -> Kourier external listener
+#     -> Knative Ingress `api-public`   (no DomainMapping, no rewriteHost)
+#     -> Service `api-public-direct`    (selector: serving.knative.dev/service=api)
+#     -> api revision Pod  port 8012    (queue-proxy, then user container)
+#
+# NOTE: `api.shogo.ai` is already in the shogo-ai-tls cert SAN list
+# (k8s/base/cert-manager/issuer.yaml). Cloudflare terminates TLS at the edge.
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-public-direct
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: public-api
+    environment: production
+    region: us-ashburn-1
+spec:
+  type: ClusterIP
+  selector:
+    serving.knative.dev/service: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8012
+      protocol: TCP
+---
+apiVersion: networking.internal.knative.dev/v1alpha1
+kind: Ingress
+metadata:
+  name: api-public
+  namespace: shogo-production-system
+  annotations:
+    networking.knative.dev/ingress.class: kourier.ingress.networking.knative.dev
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: public-api
+    environment: production
+    region: us-ashburn-1
+spec:
+  httpOption: Enabled
+  rules:
+    - hosts:
+        - api.shogo.ai
+      visibility: ExternalIP
+      http:
+        paths:
+          - splits:
+              - serviceName: api-public-direct
+                serviceNamespace: shogo-production-system
+                servicePort: 80
+                percent: 100

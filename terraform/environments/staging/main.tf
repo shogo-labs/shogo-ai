@@ -169,6 +169,24 @@ module "oke" {
   main_node_pool_max_pods      = 93
   enable_workload_pool         = false
 
+  # Node memory-pressure protection (2026-07-01 incident fix). The warm pool
+  # intentionally overcommits memory (low request / high limit — statistical
+  # multiplexing); these kubelet flags make that overcommit SAFE by
+  #   (a) reserving real headroom for the kubelet + OS daemons, and
+  #   (b) evicting the lowest-priority (shogo-workspace-low) pods EARLY under
+  #       memory pressure — soft eviction at 2Gi free (1m grace), hard backstop
+  #       at 1Gi — instead of the OKE default memory.available<100Mi, which let
+  #       the kubelet lose the reclaim race, starve, and take the node (and the
+  #       co-tenant CNPG Postgres) down.
+  # Disk thresholds mirror the current OKE defaults so DiskPressure protection
+  # is preserved (a --eviction-hard flag REPLACES the whole map).
+  # ROLLOUT (STAGING ONLY): node_metadata is in the pool's ignore_changes, so
+  # applying this to the already-provisioned pool requires a one-time removal of
+  # `node_metadata` from ignore_changes, then a canary-first node recycle —
+  # verify one new node registers Ready + `configz` shows the new evictionHard
+  # before recycling the rest. See the incident runbook.
+  kubelet_extra_args = "--kube-reserved=cpu=100m,memory=3Gi --system-reserved=cpu=100m,memory=512Mi --eviction-hard=memory.available<1Gi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<15%,imagefs.inodesFree<5% --eviction-soft=memory.available<2Gi --eviction-soft-grace-period=memory.available=1m --eviction-max-pod-grace-period=60"
+
   tags = local.tags
 }
 

@@ -34,8 +34,10 @@ import {
   FolderPlus,
   FilePlus,
   Settings,
+  FolderArchive,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { api } from '../../../lib/api'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -274,6 +276,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   const [error, setError] = useState<string | null>(null)
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
   const [isExporting, setIsExporting] = useState(false)
+  const [isDownloadingZip, setIsDownloadingZip] = useState(false)
   const [workspaceExpanded, setWorkspaceExpanded] = useState(true)
 
   // Search state
@@ -603,6 +606,64 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     }
   }, [client])
 
+  // Download the whole project as a plain source ZIP (no `.shogo` metadata).
+  // Routes through the source-only export, which is Kubernetes-safe.
+  const handleDownloadProjectZip = useCallback(async () => {
+    if (isDownloadingZip) return
+    setIsDownloadingZip(true)
+    try {
+      const { blob, filename } = await api.exportProjectBlob(projectId, {
+        sourceOnly: true,
+      })
+
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      } else if (Platform.OS !== 'web') {
+        const { documentDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
+        const Sharing = await import('expo-sharing')
+        const dir = documentDirectory
+        if (!dir) throw new Error('Could not access app storage to save ZIP')
+        const fileUri = `${dir}${filename}`
+        const arrayBuf = await blob.arrayBuffer()
+        const bytes = new Uint8Array(arrayBuf)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+        const base64 = btoa(binary)
+        await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
+
+        await new Promise<void>((resolve) => {
+          InteractionManager.runAfterInteractions(() => resolve())
+        })
+
+        try {
+          await Sharing.shareAsync(fileUri, {
+            mimeType: 'application/zip',
+            UTI: 'public.zip-archive' as any,
+            dialogTitle: 'Download Project',
+          })
+        } catch (shareErr: unknown) {
+          if (Platform.OS === 'ios') {
+            await Share.share({ url: fileUri, title: 'Download Project' })
+          } else {
+            throw shareErr
+          }
+        }
+      }
+      setError(null)
+    } catch (err: any) {
+      setError(err.message ?? 'Download failed')
+    } finally {
+      setIsDownloadingZip(false)
+    }
+  }, [projectId, isDownloadingZip])
+
   const handleImport = useCallback(() => {
     if (!client) return
 
@@ -826,6 +887,16 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
             <Text className="text-xs text-muted-foreground">Upload Files</Text>
           </Pressable>
           <View className="border-t border-border mt-1 pt-1 gap-1">
+            <Pressable
+              onPress={handleDownloadProjectZip}
+              disabled={isDownloadingZip}
+              className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
+            >
+              <FolderArchive size={12} className="text-muted-foreground" />
+              <Text className="text-xs text-muted-foreground">
+                {isDownloadingZip ? 'Preparing ZIP...' : 'Download project (ZIP)'}
+              </Text>
+            </Pressable>
             <Pressable
               onPress={handleExport}
               disabled={isExporting}

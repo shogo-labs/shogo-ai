@@ -45,8 +45,12 @@ mock.module('@opentelemetry/api', () => ({
 
 let sdkStartShouldThrow = false
 let sdkShutdownShouldThrow = false
+let sdkShutdownHangs = false
 const sdkStartMock = mock(() => { if (sdkStartShouldThrow) throw new Error('start boom') })
-const sdkShutdownMock = mock(async () => { if (sdkShutdownShouldThrow) throw new Error('shutdown boom') })
+const sdkShutdownMock = mock(async () => {
+  if (sdkShutdownShouldThrow) throw new Error('shutdown boom')
+  if (sdkShutdownHangs) await new Promise(() => {}) // never resolves
+})
 let lastSdkConfig: any = null
 class FakeNodeSDK {
   constructor(public config: any) { lastSdkConfig = config }
@@ -67,11 +71,38 @@ mock.module('@opentelemetry/exporter-trace-otlp-http', () => ({
   OTLPTraceExporter: FakeOTLPTraceExporter,
 }))
 
-class FakeBatchSpanProcessor { constructor(public exp: any) {} }
+class FakeBatchSpanProcessor { constructor(public exp: any, public opts?: any) {} }
 class FakeSimpleSpanProcessor { constructor(public exp: any) {} }
 mock.module('@opentelemetry/sdk-trace-base', () => ({
   BatchSpanProcessor: FakeBatchSpanProcessor,
   SimpleSpanProcessor: FakeSimpleSpanProcessor,
+}))
+
+// ---- Logs SDK mocks ----
+const emitMock = mock((_record: any) => {})
+const getLoggerMock = mock((_name: string) => ({ emit: emitMock }))
+mock.module('@opentelemetry/api-logs', () => ({
+  logs: { getLogger: getLoggerMock },
+  SeverityNumber: { DEBUG: 5, INFO: 9, WARN: 13, ERROR: 17 },
+}))
+
+let logExporterShouldThrow = false
+let lastLogExporterConfig: any = null
+class FakeOTLPLogExporter {
+  constructor(public config: any) {
+    lastLogExporterConfig = config
+    if (logExporterShouldThrow) throw new Error('log exporter ctor boom')
+  }
+}
+mock.module('@opentelemetry/exporter-logs-otlp-http', () => ({
+  OTLPLogExporter: FakeOTLPLogExporter,
+}))
+
+class FakeBatchLogRecordProcessor { constructor(public exp: any, public opts?: any) {} }
+class FakeSimpleLogRecordProcessor { constructor(public exp: any) {} }
+mock.module('@opentelemetry/sdk-logs', () => ({
+  BatchLogRecordProcessor: FakeBatchLogRecordProcessor,
+  SimpleLogRecordProcessor: FakeSimpleLogRecordProcessor,
 }))
 
 mock.module('@opentelemetry/resources', () => ({
@@ -88,11 +119,12 @@ import {
   shutdownInstrumentation,
   traceOperation,
 } from '../instrumentation.js'
+import { createLogger } from '../logger.js'
 
 // ---- Env + console helpers ----
 const ENV_KEYS = [
   'OTEL_EXPORTER_OTLP_ENDPOINT', 'OTEL_LOG_LEVEL', 'SIGNOZ_INGESTION_KEY',
-  'OTEL_SERVICE_NAME', 'NODE_ENV',
+  'OTEL_SERVICE_NAME', 'NODE_ENV', 'OTEL_EXPORTER_TIMEOUT_MS', 'OTEL_SHUTDOWN_TIMEOUT_MS',
 ]
 let savedEnv: Record<string, string | undefined>
 let savedConsoleLog: any
@@ -109,6 +141,7 @@ beforeEach(() => {
   console.error = (...a: any[]) => { errs.push(a.join(' ')) }
   sdkStartShouldThrow = false
   sdkShutdownShouldThrow = false
+  sdkShutdownHangs = false
   exporterShouldThrow = false
   sdkStartMock.mockClear()
   sdkShutdownMock.mockClear()
@@ -119,6 +152,10 @@ beforeEach(() => {
   lastSdkConfig = null
   lastExporterConfig = null
   diagLevelSet = null
+  logExporterShouldThrow = false
+  lastLogExporterConfig = null
+  emitMock.mockClear()
+  getLoggerMock.mockClear()
 })
 afterEach(async () => {
   // Reset the module-level `sdk` variable by calling shutdown.
@@ -192,6 +229,29 @@ describe('initInstrumentation', () => {
     expect(lastExporterConfig.headers['signoz-ingestion-key']).toBeUndefined()
   })
 
+  it('bounds the exporter timeout so ingest never blocks (default 3000ms)', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    initInstrumentation({ serviceName: 'svc' })
+    expect(lastExporterConfig.timeoutMillis).toBe(3000)
+  })
+
+  it('honors OTEL_EXPORTER_TIMEOUT_MS override for the exporter timeout', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    process.env.OTEL_EXPORTER_TIMEOUT_MS = '750'
+    initInstrumentation({ serviceName: 'svc' })
+    expect(lastExporterConfig.timeoutMillis).toBe(750)
+  })
+
+  it('configures the prod BatchSpanProcessor with a bounded, background-friendly queue', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    process.env.NODE_ENV = 'production'
+    initInstrumentation({ serviceName: 'svc' })
+    const proc = lastSdkConfig.spanProcessors[0]
+    expect(proc).toBeInstanceOf(FakeBatchSpanProcessor)
+    expect(proc.opts.maxQueueSize).toBe(2048)
+    expect(proc.opts.exportTimeoutMillis).toBe(3000)
+  })
+
   it('OTEL_SERVICE_NAME env overrides config.serviceName', () => {
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
     process.env.OTEL_SERVICE_NAME = 'env-svc'
@@ -245,6 +305,60 @@ describe('initInstrumentation', () => {
   })
 })
 
+describe('initInstrumentation — logs pipeline', () => {
+  it('configures the OTLP log exporter at /v1/logs with the ingestion header', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://otel.example.com'
+    process.env.SIGNOZ_INGESTION_KEY = 'sk-123'
+    initInstrumentation({ serviceName: 'svc' })
+    expect(lastLogExporterConfig.url).toBe('https://otel.example.com/v1/logs')
+    expect(lastLogExporterConfig.headers['signoz-ingestion-key']).toBe('sk-123')
+    expect(lastSdkConfig.logRecordProcessors).toHaveLength(1)
+    expect(logs.some(l => l.includes('Logs exporter enabled for svc'))).toBe(true)
+  })
+
+  it('uses BatchLogRecordProcessor in production, SimpleLogRecordProcessor otherwise', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    process.env.NODE_ENV = 'production'
+    initInstrumentation({ serviceName: 'svc' })
+    expect(lastSdkConfig.logRecordProcessors[0]).toBeInstanceOf(FakeBatchLogRecordProcessor)
+  })
+
+  it('routes createLogger output through the OTEL logger with mapped severity', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    initInstrumentation({ serviceName: 'svc' })
+    const log = createLogger('unit', { requestId: 'r-1' })
+    log.warn('slow query', { ms: 4200 })
+    expect(emitMock).toHaveBeenCalledTimes(1)
+    const record = emitMock.mock.calls[0][0]
+    expect(record.severityText).toBe('WARN')
+    expect(record.severityNumber).toBe(13)
+    expect(record.body).toBe('slow query')
+    expect(record.attributes.service).toBe('unit')
+    expect(record.attributes.requestId).toBe('r-1')
+    expect(record.attributes.ms).toBe(4200)
+  })
+
+  it('stops forwarding logs after shutdown clears the sink', async () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    initInstrumentation({ serviceName: 'svc' })
+    await shutdownInstrumentation()
+    emitMock.mockClear()
+    createLogger('unit').info('after shutdown')
+    expect(emitMock).not.toHaveBeenCalled()
+  })
+
+  it('skips the log sink when the log exporter ctor throws (tracing still works)', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    logExporterShouldThrow = true
+    initInstrumentation({ serviceName: 'svc' })
+    // Tracing must still come up even if the log exporter failed to build.
+    expect(sdkStartMock).toHaveBeenCalledTimes(1)
+    expect(lastSdkConfig.logRecordProcessors).toHaveLength(0)
+    createLogger('unit').info('no sink')
+    expect(emitMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('shutdownInstrumentation', () => {
   it('calls sdk.shutdown() and logs success', async () => {
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
@@ -260,6 +374,25 @@ describe('shutdownInstrumentation', () => {
     sdkShutdownShouldThrow = true
     await shutdownInstrumentation()
     expect(errs.some(e => e.includes('Error shutting down'))).toBe(true)
+  })
+
+  it('is non-blocking: resolves within the deadline even if sdk.shutdown() hangs', async () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    process.env.OTEL_SHUTDOWN_TIMEOUT_MS = '20'
+    initInstrumentation({ serviceName: 'svc' })
+    sdkShutdownHangs = true
+    const start = Date.now()
+    await shutdownInstrumentation() // must NOT hang forever on a stuck flush
+    expect(Date.now() - start).toBeLessThan(1000)
+  })
+
+  it('is idempotent — a second shutdown is a no-op once sdk is cleared', async () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    initInstrumentation({ serviceName: 'svc' })
+    await shutdownInstrumentation()
+    sdkShutdownMock.mockClear()
+    await shutdownInstrumentation()
+    expect(sdkShutdownMock).not.toHaveBeenCalled()
   })
 })
 

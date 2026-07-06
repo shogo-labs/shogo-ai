@@ -1,0 +1,86 @@
+{
+  "project": "e2e-proj-abc123",
+  "iters": 10,
+  "config": {
+    "memMiB": 1024,
+    "vcpus": 2
+  },
+  "steps": {
+    "poolBootMs": 1281,
+    "assignMs": 235,
+    "suspendMs": 1291,
+    "vmGoneAfterSuspend": true
+  },
+  "snapshot": {
+    "memBytes": 1073741824,
+    "stateBytes": 30302
+  },
+  "correctness": {
+    "beforeSuspend": {
+      "assignCount": 1,
+      "assignedAt": 1783240089256,
+      "bootID": "35ec3fee28c0f895",
+      "counter": 19,
+      "pid": 1,
+      "projectId": "e2e-proj-abc123",
+      "status": "ok",
+      "uptimeMs": 1934
+    },
+    "afterRestore": {
+      "assignCount": 1,
+      "assignedAt": 1783240089256,
+      "bootID": "35ec3fee28c0f895",
+      "counter": 19,
+      "pid": 1,
+      "projectId": "e2e-proj-abc123",
+      "status": "ok",
+      "uptimeMs": 1943
+    },
+    "checks": {
+      "sameBootId": true,
+      "counterAdvanced": true,
+      "projectSurvived": true
+    }
+  },
+  "restore": {
+    "apiMs": {
+      "p50": 51.7,
+      "p95": 56.9,
+      "p99": 56.9,
+      "samples": [
+        37.1,
+        55.5,
+        34.9,
+        53.9,
+        43.9,
+        37.5,
+        55.5,
+        51.7,
+        56.9,
+        33
+      ]
+    },
+    "readyMs": {
+      "p50": 55,
+      "p95": 60.7,
+      "p99": 60.7,
+      "samples": [
+        42.4,
+        59.5,
+        39.1,
+        57.7,
+        47.6,
+        41.1,
+        59.1,
+        55,
+        60.7,
+        37
+      ]
+    }
+  },
+  "pass": true,
+  "slo": {
+    "target_ready_p95_ms": 2000,
+    "actual_ready_p95_ms": 60.7
+  }
+}

@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl bash git git-lfs tar gzip zstd ca-certificates gnupg unzip \
     chromium nss-plugin-pem fonts-freefont-ttf \
     ffmpeg imagemagick ripgrep \
+    lsof psmisc \
     build-essential && \
     # Node 24 via nodesource
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
@@ -121,4 +122,30 @@ USER appuser
 RUN cd /tmp/expo-prewarm && \
     bun install --no-save --no-progress && \
     rm -rf /tmp/expo-prewarm
+USER root
+
+# Pre-warm Bun's cache with the react-app runtime-template dependency tree
+# (Vite 7 + React 19 + Tailwind v4 + Prisma 7 + radix/shadcn/recharts). This is
+# the stack EVERY warm-pool pod pre-seeds at boot via `ensureWorkspaceDeps`,
+# and the runtime image ships `templates/runtime-template` WITHOUT node_modules
+# (workspace-deps strips it), so the copy fast-path is dead and the pre-seed
+# falls through to a cold `bun install`. That install fetched ~all tarballs
+# cold and measured ~98s on a fresh staging pod (2026-07-01 cold-start harvest)
+# — the dominant term in warm-pool scale-up latency (~127s to a ready pod).
+# With the cache warmed here the pre-seed re-resolves against the same
+# package.json but reuses cached tarballs, completing in ~10s — the identical
+# win the expo prewarm above documents.
+#
+# The `@shogo-ai/sdk: workspace:*` sentinel can't resolve outside the monorepo
+# (it's a tiny local package, not part of the heavy tree), so strip it before
+# the standalone install. `--ignore-scripts` skips postinstall (prisma generate
+# needs a schema/db that isn't present here) — we only need the tarballs cached.
+COPY --chown=appuser:appgroup templates/runtime-template/package.json \
+     /tmp/react-prewarm/package.json
+USER appuser
+RUN cd /tmp/react-prewarm && \
+    grep -v '"@shogo-ai/sdk"' package.json > package.trimmed.json && \
+    mv package.trimmed.json package.json && \
+    bun install --no-save --no-progress --ignore-scripts && \
+    rm -rf /tmp/react-prewarm
 USER root

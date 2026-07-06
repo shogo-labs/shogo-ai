@@ -13,9 +13,26 @@ metadata:
     app.kubernetes.io/part-of: shogo
     environment: staging
 spec:
-  instances: 1
+  # 2 instances = primary + 1 hot standby, spread across nodes (CNPG soft
+  # pod anti-affinity + the staging pool's per-node eviction protection) so a
+  # single node loss never takes the database down. This MUST stay >=2: the
+  # live staging cluster runs 2 and a `kubectl apply` with instances:1 would
+  # scale down and delete the standby. NOTE: these staging CNPG manifests are
+  # applied MANUALLY (they are not wired into .github/workflows/deploy.yml,
+  # which only applies the production platform-publication.yaml).
+  instances: 2
 
   enablePDB: false
+
+  # Highest scheduling priority in the cluster. Under node memory pressure the
+  # kubelet evicts by QoS then Pod priority; before this the DB ran at the
+  # default priority (0) and shared nodes with burstable warm-pool runtime pods,
+  # so a runtime memory burst could (and did, 2026-07-01) take the node — and
+  # this database — down. shogo-db-critical (value 1e6) guarantees Postgres is
+  # the last thing evicted and can preempt runtime pods for a slot if needed.
+  # PriorityClass is defined in k8s/overlays/staging/priority-classes.yaml and
+  # MUST exist in the cluster before this Cluster is (re)applied.
+  priorityClassName: shogo-db-critical
 
   postgresql:
     parameters:

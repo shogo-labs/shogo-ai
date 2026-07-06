@@ -58,6 +58,13 @@ export function createHttpClient(baseUrl?: string): HttpClient {
   })
 }
 
+export function isInvitationExpired(invitation: { status?: string; expiresAt?: string | number | Date | null }): boolean {
+  if (invitation.status === 'expired') return true
+  if (!invitation.expiresAt) return false
+  const expiresAt = new Date(invitation.expiresAt).getTime()
+  return Number.isFinite(expiresAt) && expiresAt <= Date.now()
+}
+
 // ─── Backend API helpers ────────────────────────────────────
 // For domain CRUD (projects, chat sessions, etc.) use `useDomainActions()`.
 // This `api` object is for non-domain endpoints (billing, analytics, etc.)
@@ -1091,7 +1098,7 @@ export const api = {
       `/api/invitations?email=${encodeURIComponent(email)}`,
     )
     const items = res.data?.items
-    return (Array.isArray(items) ? items : []).filter((i: any) => i.status === 'pending')
+    return (Array.isArray(items) ? items : []).filter((i: any) => i.status === 'pending' || i.status === 'expired')
   },
 
   // ─── Account ──────────────────────────────────────────
@@ -1748,6 +1755,12 @@ export const api = {
       /** When set, the archive is ZipCrypto-encrypted with this password. */
       password?: string
       authCookie?: string | null
+      /**
+       * When true, returns a plain source-code `.zip` (just the workspace
+       * files, no `.shogo` metadata/manifest/chat-history) — what users mean
+       * by "Download project (ZIP)". Ignores `password`/`includeChats`.
+       */
+      sourceOnly?: boolean
     },
   ): Promise<{ blob: Blob; filename: string }> {
     const url = api.getProjectExportUrl(projectId)
@@ -1761,10 +1774,14 @@ export const api = {
       method: 'POST',
       credentials: Platform.OS === 'web' ? 'include' : 'omit',
       headers,
-      body: JSON.stringify({
-        includeChats: opts?.includeChats !== false,
-        ...(opts?.password ? { password: opts.password } : {}),
-      }),
+      body: JSON.stringify(
+        opts?.sourceOnly
+          ? { sourceOnly: true }
+          : {
+              includeChats: opts?.includeChats !== false,
+              ...(opts?.password ? { password: opts.password } : {}),
+            },
+      ),
     })
     if (!res.ok) {
       const text = await res.text()
@@ -1773,7 +1790,7 @@ export const api = {
 
     const disposition = res.headers.get('content-disposition') || ''
     const match = disposition.match(/filename="?([^"]+)"?/)
-    const filename = match?.[1] || 'project.shogo'
+    const filename = match?.[1] || (opts?.sourceOnly ? 'project.zip' : 'project.shogo')
 
     const blob = await res.blob()
     return { blob, filename }

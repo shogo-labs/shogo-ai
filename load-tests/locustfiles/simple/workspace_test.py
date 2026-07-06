@@ -26,10 +26,10 @@ class WorkspaceLoadTestUser(FastHttpUser):
     def on_start(self):
         """Authenticate user and prepare for workspace operations."""
         self.auth = AuthManager(self.host)
-        self._origin = self.host.rstrip("/")
-        self._headers = {"Origin": self._origin}
-        if config.LOAD_TEST_SECRET:
-            self._headers["X-Load-Test-Key"] = config.LOAD_TEST_SECRET
+        # Use the same (server-trusted) origin the AuthManager uses so CSRF
+        # validation passes even when the routing host differs from the origin.
+        self._origin = self.auth._origin
+        self._headers = {**self.auth._base_headers(), "Origin": self._origin}
         self.user_id = random.randint(100000, 999999)
         
         # Sign up and login - this sets session cookie automatically

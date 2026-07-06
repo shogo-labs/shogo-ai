@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Unit tests for the cross-replica workspace spawn lease. Driven entirely
- * through injection seams — no Postgres required.
+ * through the injectable lock runner — no Postgres required.
  *
  *   bun test apps/api/src/lib/runtime/__tests__/workspace-spawn-lease.test.ts
  */
@@ -12,6 +12,7 @@ import {
   hashWorkspaceIdToLockKey,
   withWorkspaceSpawnLease,
 } from '../workspace-spawn-lease'
+import { fnv1a64, type WithAdvisoryLockResult } from '../../advisory-lock'
 
 describe('hashWorkspaceIdToLockKey', () => {
   it('is deterministic', () => {
@@ -22,32 +23,56 @@ describe('hashWorkspaceIdToLockKey', () => {
     expect(hashWorkspaceIdToLockKey('ws-1')).not.toBe(hashWorkspaceIdToLockKey('ws-2'))
   })
 
-  it('returns a 32-bit signed integer', () => {
+  it('returns a signed 64-bit BIGINT', () => {
     const k = hashWorkspaceIdToLockKey('00000000-0000-0000-0000-000000000000')
-    expect(Number.isInteger(k)).toBe(true)
-    expect(k).toBeGreaterThanOrEqual(-(2 ** 31))
-    expect(k).toBeLessThan(2 ** 31)
+    expect(typeof k).toBe('bigint')
+    expect(k >= -(2n ** 63n) && k <= 2n ** 63n - 1n).toBe(true)
   })
 
   it('is namespaced away from the raw-id keyspace (project locks hash the raw id)', () => {
     // The project path hashes the raw id; ours folds in a namespace prefix,
-    // so the same id must map to a different key than a raw FNV-1a hash.
-    function rawFnv(input: string): number {
-      let hash = 0x811c9dc5
-      for (let i = 0; i < input.length; i++) {
-        hash ^= input.charCodeAt(i)
-        hash = (hash * 0x01000193) | 0
-      }
-      return hash
-    }
+    // so the same id must map to a different key than a raw fnv1a64 hash.
     const id = 'shared-uuid'
-    expect(hashWorkspaceIdToLockKey(id)).not.toBe(rawFnv(id))
+    expect(hashWorkspaceIdToLockKey(id)).not.toBe(fnv1a64(id))
   })
 })
 
+/**
+ * A fake `withAdvisoryLock` backed by a single in-memory mutex per key, so
+ * overlapping leases contend exactly as they would against a real lock.
+ */
+function makeFakeLockRunner(opts: { budgetMs?: number } = {}) {
+  const heldKeys = new Set<string>()
+  const budgetMs = opts.budgetMs ?? 2_000
+
+  async function run<T>(
+    key: bigint,
+    fn: () => Promise<T>,
+    o: { budgetMs?: number } = {},
+  ): Promise<WithAdvisoryLockResult<T>> {
+    const k = key.toString()
+    const deadline = Date.now() + (o.budgetMs ?? budgetMs)
+    // Poll (non-blocking) for the mutex.
+    while (heldKeys.has(k)) {
+      if (Date.now() >= deadline) return { held: false }
+      await new Promise((r) => setTimeout(r, 1))
+    }
+    heldKeys.add(k)
+    try {
+      const result = await fn()
+      return { held: true, result }
+    } finally {
+      heldKeys.delete(k)
+    }
+  }
+
+  return { run, heldKeys }
+}
+
 describe('withWorkspaceSpawnLease', () => {
-  it('runs fn while holding the lock and releases after (uncontended path)', async () => {
+  it('runs fn while holding the lock (uncontended path)', async () => {
     const order: string[] = []
+    const runner = makeFakeLockRunner()
     const result = await withWorkspaceSpawnLease(
       'ws-1',
       async () => {
@@ -55,107 +80,67 @@ describe('withWorkspaceSpawnLease', () => {
         return 42
       },
       {
-        _tryLock: async () => {
-          order.push('tryLock')
-          return true
-        },
-        _lock: async () => {
-          order.push('lock(blocking)')
-        },
-        _unlock: async () => {
-          order.push('unlock')
+        _withAdvisoryLock: async (key, fn, o) => {
+          order.push('lock')
+          return runner.run(key, fn, o)
         },
       },
     )
     expect(result).toBe(42)
-    expect(order).toEqual(['tryLock', 'fn', 'unlock'])
+    expect(order).toEqual(['lock', 'fn'])
+    // Lock released after fn.
+    expect(runner.heldKeys.size).toBe(0)
   })
 
-  it('blocks on the lock when the non-blocking try is contended', async () => {
-    const order: string[] = []
-    await withWorkspaceSpawnLease('ws-1', async () => { order.push('fn') }, {
-      _tryLock: async () => {
-        order.push('tryLock(false)')
-        return false
+  it('proceeds WITHOUT the lease when the lock cannot be acquired (fn self-guards)', async () => {
+    let ran = false
+    const result = await withWorkspaceSpawnLease(
+      'ws-1',
+      async () => {
+        ran = true
+        return 'ran-unserialized'
       },
-      _lock: async () => {
-        order.push('lock(blocking)')
+      {
+        // Simulate budget exhaustion: never held, fn NOT run by the runner.
+        _withAdvisoryLock: async () => ({ held: false }),
       },
-      _unlock: async () => {
-        order.push('unlock')
-      },
-    })
-    expect(order).toEqual(['tryLock(false)', 'lock(blocking)', 'fn', 'unlock'])
+    )
+    expect(ran).toBe(true)
+    expect(result).toBe('ran-unserialized')
   })
 
-  it('releases the lock even when fn throws', async () => {
-    let unlocked = false
+  it('does not run fn twice when held', async () => {
+    let runs = 0
+    const runner = makeFakeLockRunner()
+    await withWorkspaceSpawnLease(
+      'ws-1',
+      async () => {
+        runs++
+      },
+      { _withAdvisoryLock: runner.run },
+    )
+    expect(runs).toBe(1)
+  })
+
+  it('propagates fn errors (lock runner released the lock)', async () => {
+    const runner = makeFakeLockRunner()
     await expect(
-      withWorkspaceSpawnLease('ws-1', async () => {
-        throw new Error('spawn boom')
-      }, {
-        _tryLock: async () => true,
-        _unlock: async () => {
-          unlocked = true
+      withWorkspaceSpawnLease(
+        'ws-1',
+        async () => {
+          throw new Error('spawn boom')
         },
-      }),
+        { _withAdvisoryLock: runner.run },
+      ),
     ).rejects.toThrow('spawn boom')
-    expect(unlocked).toBe(true)
-  })
-
-  it('does not unlock if the lock was never acquired (lock throws)', async () => {
-    let unlockCalls = 0
-    await expect(
-      withWorkspaceSpawnLease('ws-1', async () => 'never', {
-        _tryLock: async () => false,
-        _lock: async () => {
-          throw new Error('db down')
-        },
-        _unlock: async () => {
-          unlockCalls++
-        },
-      }),
-    ).rejects.toThrow('db down')
-    expect(unlockCalls).toBe(0)
-  })
-
-  it('swallows a failed unlock (advisory locks auto-release on session end)', async () => {
-    const result = await withWorkspaceSpawnLease('ws-1', async () => 'ok', {
-      _tryLock: async () => true,
-      _unlock: async () => {
-        throw new Error('unlock failed')
-      },
-    })
-    expect(result).toBe('ok')
+    expect(runner.heldKeys.size).toBe(0)
   })
 
   it('serializes two overlapping leases on the same workspace', async () => {
-    // Model a single advisory lock with a tiny in-memory mutex: tryLock
-    // succeeds only when free; lock() waits for release.
-    let locked = false
-    const waiters: Array<() => void> = []
-    const seams = {
-      _tryLock: async (_k: number) => {
-        if (locked) return false
-        locked = true
-        return true
-      },
-      _lock: async (_k: number) => {
-        if (!locked) {
-          locked = true
-          return
-        }
-        await new Promise<void>((resolve) => waiters.push(resolve))
-        locked = true
-      },
-      _unlock: async (_k: number) => {
-        locked = false
-        const next = waiters.shift()
-        if (next) next()
-      },
-    }
-
+    const runner = makeFakeLockRunner({ budgetMs: 5_000 })
     const events: string[] = []
+    const seams = { _withAdvisoryLock: runner.run }
+
     const a = withWorkspaceSpawnLease('ws-1', async () => {
       events.push('A:start')
       await new Promise((r) => setTimeout(r, 20))
@@ -171,5 +156,26 @@ describe('withWorkspaceSpawnLease', () => {
     await Promise.all([a, b])
     // B must not start until A has finished and released.
     expect(events).toEqual(['A:start', 'A:end', 'B:start', 'B:end'])
+  })
+
+  it('leases on different workspaces do not block each other', async () => {
+    const runner = makeFakeLockRunner()
+    const events: string[] = []
+    const seams = { _withAdvisoryLock: runner.run }
+
+    const a = withWorkspaceSpawnLease('ws-A', async () => {
+      events.push('A:start')
+      await new Promise((r) => setTimeout(r, 20))
+      events.push('A:end')
+    }, seams)
+    await new Promise((r) => setTimeout(r, 5))
+    const b = withWorkspaceSpawnLease('ws-B', async () => {
+      events.push('B:start')
+      events.push('B:end')
+    }, seams)
+
+    await Promise.all([a, b])
+    // Different keys → B runs while A is still holding its own key.
+    expect(events).toEqual(['A:start', 'B:start', 'B:end', 'A:end'])
   })
 })

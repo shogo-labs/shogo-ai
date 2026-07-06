@@ -43,6 +43,7 @@ const PEERS: Record<string, { id: string; label: string; url: string }> = {
 mock.module('../../lib/region', () => ({
   RAW_REGION_ID: 'eu-frankfurt-1',
   PRIMARY_REGION: 'us-ashburn-1',
+  REGION_PEERS: Object.values(PEERS),
   getPeer: (id: string) => PEERS[id],
 }))
 
@@ -318,6 +319,71 @@ describe('homeRegionWriteProxy', () => {
     resolved = 'ws_unknown_home'
     const { next, wasCalled } = makeNext()
     await homeRegionWriteProxy(makeCtx({ path: '/api/billing/charge' }), next)
+    expect(wasCalled()).toBe(true)
+    expect(proxyCalls).toHaveLength(0)
+  })
+
+  // --- region-affine chat writes -------------------------------------------
+  test('enforce mode proxies a chat write to the home region', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolved = 'ws_us'
+    const { next, wasCalled } = makeNext()
+    const res = await homeRegionWriteProxy(
+      makeCtx({ method: 'POST', path: '/api/projects/p1/chat' }),
+      next,
+    )
+    expect(wasCalled()).toBe(false)
+    expect(proxyCalls).toEqual([{ region: 'us-ashburn-1' }])
+    expect(res).toBe(PROXY_RESPONSE)
+  })
+
+  test('proxies a chat/stop write to the home region', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolved = 'ws_us'
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(
+      makeCtx({ method: 'POST', path: '/api/projects/p1/chat/stop' }),
+      next,
+    )
+    expect(wasCalled()).toBe(false)
+    expect(proxyCalls).toEqual([{ region: 'us-ashburn-1' }])
+  })
+
+  test('fails closed (503) for a chat write when the home peer is unreachable', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    workspaces.ws_unknown_home = { homeRegion: 'unknown-region-9' }
+    resolved = 'ws_unknown_home'
+    const { next, wasCalled } = makeNext()
+    const res = (await homeRegionWriteProxy(
+      makeCtx({ method: 'POST', path: '/api/projects/p1/chat' }),
+      next,
+    )) as any
+    expect(wasCalled()).toBe(false)
+    expect(proxyCalls).toHaveLength(0)
+    expect(res.status).toBe(503)
+  })
+
+  test('does NOT proxy a chat GET read (left to chat-region-pin)', async () => {
+    process.env.HOME_REGION_ROUTING = 'enforce'
+    resolved = 'ws_us'
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(
+      makeCtx({ method: 'GET', path: '/api/projects/p1/chat/s1/stream' }),
+      next,
+    )
+    expect(wasCalled()).toBe(true)
+    expect(proxyCalls).toHaveLength(0)
+  })
+
+  test('shadow mode does not fail closed for a chat write with no peer', async () => {
+    process.env.HOME_REGION_ROUTING = 'shadow'
+    workspaces.ws_unknown_home = { homeRegion: 'unknown-region-9' }
+    resolved = 'ws_unknown_home'
+    const { next, wasCalled } = makeNext()
+    await homeRegionWriteProxy(
+      makeCtx({ method: 'POST', path: '/api/projects/p1/chat' }),
+      next,
+    )
     expect(wasCalled()).toBe(true)
     expect(proxyCalls).toHaveLength(0)
   })

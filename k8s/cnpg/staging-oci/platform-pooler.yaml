@@ -1,0 +1,63 @@
+# =============================================================================
+# PgBouncer connection Pooler (Staging - OCI / OKE)
+# =============================================================================
+# Fronts platform-pg with a transaction-mode PgBouncer so many short app
+# connections multiplex onto a small, bounded set of Postgres backends. The
+# app's DATABASE_URL points at this Pooler's service
+# (platform-pg-pooler-rw.<ns>.svc:5432); session-scoped work that must pin a
+# backend (advisory locks, migrations) uses DATABASE_DIRECT_URL -> platform-pg-rw.
+#
+# Connection budget (platform-pg max_connections = 400 in staging):
+#   pooler server conns  = instances(2) x default_pool_size(50)  = 100
+#   dedicated lock conns  (direct, ADVISORY_LOCK_POOL_SIZE)      ~ pods x 4
+#   migrations / CNPG / monitoring / replica                     ~ 40
+#   ---------------------------------------------------------------------
+#   comfortably < 400
+#
+# Client side (app -> pooler): per pod = PRISMA_POOL_SIZE(25) + AUTH_POOL_SIZE(10)
+# = 35. At max-scale (5 pods) that is 175 client conns, well under
+# max_client_conn(1000). AUTH_POOL_SIZE MUST be set on the api overlay — Better
+# Auth's pg pool otherwise defaults to 60/pod.
+#
+# NOTE: transaction pooling + prepared statements. PgBouncer >= 1.21 tracks
+# protocol-level prepared statements when max_prepared_statements > 0, which is
+# required for node-postgres / Prisma under transaction mode. This is the #1
+# thing to validate in staging (SHOW POOLS, no "prepared statement does not
+# exist" errors) before any prod region.
+#
+# CNPG auto-configures the pooler auth_query (dedicated cnpg_pooler_pgbouncer
+# role) for clusters it manages, so no authQuerySecret is required here.
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: platform-pg-pooler-rw
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: staging
+spec:
+  cluster:
+    name: platform-pg
+  instances: 2
+  type: rw
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      max_client_conn: "1000"
+      default_pool_size: "50"
+      min_pool_size: "5"
+      reserve_pool_size: "5"
+      reserve_pool_timeout: "3"
+      max_prepared_statements: "200"
+      server_idle_timeout: "120"
+  monitoring:
+    enablePodMonitor: true
+  template:
+    spec:
+      # DB data-path: same top priority as the Postgres cluster so PgBouncer is
+      # never evicted for a runtime-pod burst (see priority-classes.yaml).
+      priorityClassName: shogo-db-critical
+      nodeSelector:
+        node.kubernetes.io/purpose: system
+      containers: []

@@ -42,6 +42,7 @@ import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
+import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -91,6 +92,7 @@ import { remoteAuditRoutes } from './routes/remote-audit'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
+import { metalRoutes } from './routes/metal'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { localProjectsRoutes } from './routes/local-projects'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
@@ -2289,6 +2291,64 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
   const previewMode = c.req.query('mode') || 'subdomain' // Default to subdomain mode
   
   if (isKubernetes()) {
+    // Metal microVM substrate: when this project is served by the bare-metal
+    // warm pool (SHOGO_METAL_ALL_PROJECTS or per-project rollout), readiness is
+    // owned by the metal controller — NOT Knative. Polling Knative here always
+    // sees replicas:0 for a metal project, so `?wait=true` (the studio's open /
+    // "is it online?" gate) waits the full 60s and returns 202 even though the
+    // BM already has the project resumed and serving. Resolve via metal instead:
+    // a successful assign/resume means the runtime is up; a miss is a fast
+    // retryable 202. No Knative fallback here in metal-only mode.
+    const { isMetalEnabled, isMetalEligibleProject } = await import('./lib/metal-eligibility')
+    if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
+      const { generatePreviewToken } = await import('./lib/preview-token')
+      const { getPreviewUrl } = await import('./lib/knative-project-manager')
+      const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
+      const protocol = 'https'
+      const previewToken = await generatePreviewToken(projectId)
+      // In metal mode the browser reaches the runtime same-origin through this
+      // API's agent-proxy (the BM is mesh-only, not publicly routable).
+      const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
+      let previewUrl: string
+      let legacyProxyUrl: string
+      if (previewMode === 'subdomain') {
+        previewUrl = `${getPreviewUrl(projectId)}/?__preview_token=${previewToken}`
+        legacyProxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+      } else {
+        previewUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+        legacyProxyUrl = previewUrl
+      }
+      const canvasBaseUrl = previewMode === 'subdomain' ? getPreviewUrl(projectId) : agentUrl
+      const metalBody = (ready: boolean) => ({
+        url: previewUrl,
+        proxyUrl: legacyProxyUrl,
+        directUrl: agentUrl,
+        agentUrl,
+        canvasBaseUrl,
+        sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
+        status: ready ? 'running' : 'starting',
+        ready,
+        mode: previewMode,
+        ...(ready ? {} : { message: 'Runtime is still starting. Please retry this request.' }),
+      })
+      // wait=false is a non-blocking status poll — don't trigger a resume here;
+      // report not-ready so the client polls again with wait=true (the open gate).
+      if (!shouldWait) {
+        return c.json(metalBody(false), 202)
+      }
+      try {
+        const { getMetalProjectUrl } = await import('./lib/metal-warm-pool-controller')
+        // Resolves once the microVM is resumed/booted and the guest agent is
+        // reachable; throws (NoMetalHostError / assign failure) while starting.
+        await getMetalProjectUrl(projectId)
+        console.log(`[sandbox/url] ${projectId.slice(0, 8)} ready via metal`)
+        return c.json(metalBody(true), 200)
+      } catch (err: any) {
+        console.log(`[sandbox/url] ${projectId.slice(0, 8)} metal still starting: ${err?.message ?? err}`)
+        return c.json(metalBody(false), 202)
+      }
+    }
+
     // In Kubernetes: Return preview URL based on mode
     const { getProjectPodUrl, getKnativeProjectManager, getPreviewUrl } = await import('./lib/knative-project-manager')
     const { generatePreviewToken } = await import('./lib/preview-token')
@@ -2594,7 +2654,7 @@ app.all('/api/projects/:projectId/preview', async (c) => {
 // Includes retry logic for cold-start scenarios where the pod may be scaling up.
 app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   if (isShuttingDown) {
-    return c.json({ error: { code: 'shutting_down', message: 'Server is shutting down, please retry' } }, 503)
+    return c.json({ error: { code: 'shutting_down', message: 'Server is shutting down, please retry', retryable: true } }, 503)
   }
 
   const projectId = c.req.param('projectId')
@@ -3199,92 +3259,32 @@ app.put('/api/projects/:projectId/files/*', async (c) => {
   return router.fetch(newReq)
 })
 
-// Download project source code as tar.gz archive
+// Download project source code as a ZIP archive.
+//
+// Historically this returned a tar.gz: locally via `tar`, and in Kubernetes by
+// proxying to a pod `GET /download` handler. That pod handler does not exist,
+// so the k8s path always 404'd. We now delegate to the source-only export
+// (`POST /api/projects/:id/export` with `sourceOnly: true`), which is k8s-safe
+// (it pulls files via the agent pod's `/agent/workspace/bundle`) and returns a
+// plain project ZIP. The original request headers (cookies/session) are
+// forwarded so `requireProjectAccess` re-validates on the internal dispatch.
 app.get('/api/projects/:projectId/download', async (c) => {
   const projectId = c.req.param('projectId')
-  
-  if (isKubernetes()) {
-    // In Kubernetes: Proxy to runtime pod
-    try {
-      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      const podUrl = await getProjectPodUrl(projectId)
-      const targetUrl = `${podUrl}/download`
-      
-      console.log(`[FilesProxy] Proxying download to ${targetUrl}`)
-      
-      const response = await fetch(targetUrl)
-      const responseHeaders = new Headers()
-      response.headers.forEach((value, key) => {
-        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-          responseHeaders.set(key, value)
-        }
-      })
-      
-      return new Response(response.body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error: any) {
-      console.error('[FilesProxy] Download error:', error)
-      return c.json({
-        error: { code: 'proxy_error', message: error.message || 'Failed to download project' }
-      }, 502)
-    }
-  }
-  
-  // Local development: Create tar.gz from workspace directory
-  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const projectDir = resolve(workspacesDir, projectId)
-  
-  if (!existsSync(projectDir)) {
-    return c.json({
-      error: { code: 'not_found', message: 'Project directory not found' }
-    }, 404)
-  }
-  
-  try {
-    const excludes = [
-      'node_modules', '.git', '.next', 'dist', 'build', '.cache',
-      '.output', '.nuxt', '.bun', '.vite',
-      // macOS detritus — AppleDouble sidecars (`._*`) are binary resource-fork
-      // blobs that crash Metro's Babel parser if they survive into the imported
-      // workspace. The rest are Finder/Spotlight noise.
-      '._*', '.DS_Store', '__MACOSX', '.AppleDouble',
-    ]
-    const excludeArgs = excludes.flatMap((dir: string) => ['--exclude', dir])
 
-    const result = Bun.spawnSync(
-      ['tar', '-czf', '-', ...excludeArgs, '-C', projectDir, '.'],
-      {
-        stdout: 'pipe',
-        stderr: 'pipe',
-        // Prevent BSD `tar` on macOS from re-injecting AppleDouble entries
-        // synthesized from extended attributes at archive time.
-        env: { ...process.env, COPYFILE_DISABLE: '1' },
-      }
-    )
-    
-    if (result.exitCode !== 0) {
-      return c.json({
-        error: { code: 'archive_error', message: 'Failed to create archive' }
-      }, 500)
-    }
-    
-    const archiveBuffer = result.stdout
-    return new Response(new Uint8Array(archiveBuffer) as any, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/gzip',
-        'Content-Disposition': `attachment; filename="${projectId}.tar.gz"`,
-        'Content-Length': String(archiveBuffer.byteLength),
-      },
-    })
-  } catch (error: any) {
-    console.error('[FilesProxy] Download archive error:', error)
-    return c.json({
-      error: { code: 'download_error', message: error.message || 'Failed to create download' }
-    }, 500)
-  }
+  const url = new URL(c.req.url)
+  url.pathname = `/api/projects/${projectId}/export`
+  url.search = ''
+
+  const headers = new Headers(c.req.raw.headers)
+  headers.set('content-type', 'application/json')
+
+  const exportReq = new Request(url.toString(), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ sourceOnly: true }),
+  })
+
+  return app.fetch(exportReq)
 })
 
 // =============================================================================
@@ -4773,11 +4773,16 @@ app.put('/api/projects/:projectId/heartbeat/sync', async (c) => {
 // POST /api/projects/:projectId/chat - Proxy chat to project pod
 app.post('/api/projects/:projectId/chat', async (c) => {
   if (isShuttingDown) {
-    return c.json({ error: { code: 'shutting_down', message: 'Server is shutting down, please retry' } }, 503)
+    return c.json({ error: { code: 'shutting_down', message: 'Server is shutting down, please retry', retryable: true } }, 503)
   }
 
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
+
+  // Region-pin: if this session's workspace lives in a peer region, proxy the
+  // whole turn there so the runtime that owns the stream buffer serves it.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
 
   activeProxyConnections++
   const manager = getRuntimeManager()
@@ -4930,6 +4935,10 @@ app.get('/api/projects/:projectId/chat/:chatSessionId/turn', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
 
+  // Region-pin: the turn snapshot lives in the region that owns the buffer.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
+
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
@@ -4943,6 +4952,12 @@ app.get('/api/projects/:projectId/chat/:chatSessionId/turn', async (c) => {
 app.get('/api/projects/:projectId/chat/:chatSessionId/stream', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
+
+  // Region-pin: resume must hit the region that holds the in-memory stream
+  // buffer. Serving it locally in the wrong region 204s (no buffer) or 404s
+  // (project row not yet replicated) — the resume-storm root cause.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
 
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
@@ -4967,6 +4982,10 @@ app.get('/api/projects/:projectId/chat/:chatSessionId/stream', async (c) => {
 app.post('/api/projects/:projectId/chat/stop', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
+
+  // Region-pin: stop must reach the region running the turn's agent loop.
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
 
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
@@ -5023,6 +5042,8 @@ app.use('/api/admin/warm-pool/*', authMiddleware, requireAuth, requireSuperAdmin
 app.use('/api/admin/settings/*', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/regions', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/regions/*', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/metal', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/metal/*', authMiddleware, requireAuth, requireSuperAdmin)
 
 // GET /api/admin/pods - List all project pods
 app.get('/api/admin/pods', async (c) => {
@@ -5095,6 +5116,92 @@ app.all('/api/admin/regions/:regionId/*', async (c) => {
   return proxyToPeer(c, targetRegionId, {
     stripPrefix: `/api/admin/regions/${targetRegionId}`,
   })
+})
+
+// =============================================================================
+// Metal Fleet Admin (bare-metal Firecracker hosts) — mirrors the Knative
+// warm-pool admin surface: view live hosts + control (cordon/drain). The
+// desired baseline comes from the committed config (config/metal-fleet.ts); the
+// live view comes from the registry (node-agent heartbeats). Super-admin only.
+// =============================================================================
+
+// GET /api/admin/metal/fleet — desired baseline vs live registry + drift.
+app.get('/api/admin/metal/fleet', async (c) => {
+  try {
+    const { getMetalFleetStatus } = await import('./lib/metal-warm-pool-controller')
+    const { getFleetEnv, fleetEnvKey, METAL_FLEET } = await import('./config/metal-fleet')
+
+    const status = await getMetalFleetStatus()
+    const envKey = fleetEnvKey()
+    const env = getFleetEnv(envKey)
+
+    const liveById = new Map(status.hosts.map((h) => [h.hostId, h]))
+    const desiredIds = new Set(env.baseline.map((h) => h.hostId))
+
+    // Merge desired baseline with what is actually live; flag drift both ways.
+    const baseline = env.baseline.map((d) => {
+      const live = liveById.get(d.hostId)
+      return {
+        ...d,
+        kind: 'baseline' as const,
+        present: !!live,
+        provisioned: !!d.serverId,
+        live: live ?? null,
+      }
+    })
+    // Live hosts not declared in baseline = burst/unmanaged (informational).
+    const extra = status.hosts
+      .filter((h) => !desiredIds.has(h.hostId))
+      .map((h) => ({ hostId: h.hostId, region: h.region, kind: 'burst' as const, present: true, provisioned: true, live: h }))
+
+    // Region rollups (utilization for burst decisions).
+    const byRegion: Record<string, { hosts: number; live: number; assigned: number; poolSize: number; utilPct: number }> = {}
+    for (const h of status.hosts) {
+      const r = (byRegion[h.region] ||= { hosts: 0, live: 0, assigned: 0, poolSize: 0, utilPct: 0 })
+      r.hosts++
+      r.live++
+      r.assigned += h.load?.assigned ?? 0
+      r.poolSize += h.capacity?.poolSize ?? 0
+    }
+    for (const r of Object.values(byRegion)) r.utilPct = r.poolSize > 0 ? Math.round((r.assigned / r.poolSize) * 100) : 0
+
+    return c.json({
+      ok: true,
+      data: {
+        env: envKey,
+        provider: METAL_FLEET.provider,
+        defaults: METAL_FLEET.defaults,
+        burst: env.burst,
+        hosts: [...baseline, ...extra],
+        regions: byRegion,
+        stats: status.stats,
+        config: status.config,
+        drift: {
+          missing: baseline.filter((h) => !h.present).map((h) => h.hostId),
+          unmanaged: extra.map((h) => h.hostId),
+        },
+      },
+    })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'metal fleet unavailable' }, 500)
+  }
+})
+
+// POST /api/admin/metal/hosts/:hostId/cordon — drain (no new placements).
+// POST /api/admin/metal/hosts/:hostId/uncordon — resume placements.
+app.post('/api/admin/metal/hosts/:hostId/:action', async (c) => {
+  const hostId = c.req.param('hostId')
+  const action = c.req.param('action')
+  if (action !== 'cordon' && action !== 'uncordon') {
+    return c.json({ ok: false, error: 'unknown_action' }, 400)
+  }
+  try {
+    const { setMetalHostCordon } = await import('./lib/metal-warm-pool-controller')
+    await setMetalHostCordon(hostId, action === 'cordon')
+    return c.json({ ok: true, hostId, cordoned: action === 'cordon' })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'cordon failed' }, 500)
+  }
 })
 
 // GET /api/admin/warm-pool - Extended warm pool status with promoted pods and GC stats
@@ -7406,6 +7513,13 @@ app.route('/api/internal', internalRoutes)
 // /api/internal/e2e so it inherits the existing auth-skip for
 // /api/internal/* (handlers enforce their own secret-based auth).
 app.route('/api/internal/e2e', internalE2eRoutes)
+
+// Metal substrate routes — bare-metal Firecracker node-agents heartbeat here
+// over the WireGuard mesh (register/status). Mounted under /api/internal/metal
+// so it inherits the /api/internal/* auth-skip; the handlers enforce their own
+// bearer-token auth (METAL_REGISTER_TOKEN / SHOGO_INTERNAL_SECRET). See
+// apps/api/src/routes/metal.ts and lib/metal-warm-pool-controller.ts.
+app.route('/api/internal/metal', metalRoutes())
 
 // =============================================================================
 // Current User Route (/api/me) - Returns user profile with role

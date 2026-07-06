@@ -2,6 +2,26 @@
 
 This module deploys the SigNoz K8s Infra Helm chart for comprehensive Kubernetes cluster observability.
 
+## Logs: two complementary paths
+
+Logs reach SigNoz through two independent mechanisms:
+
+1. **App-level OTLP logs (primary, trace-correlated).** The API and runtime
+   services export log records directly to `<OTEL_EXPORTER_OTLP_ENDPOINT>/v1/logs`
+   via the OpenTelemetry Logs SDK, alongside the traces and metrics they already
+   emit. Because records are emitted within the active span, they carry
+   `trace_id`/`span_id` and line up with request traces in SigNoz. The API mirrors
+   its `console.*` output through a bridge (`apps/api/src/lib/otel-console-bridge.ts`),
+   and runtime services emit structured records through `createLogger`
+   (`@shogo-ai/core/logger`). Toggle the API bridge with `OTEL_LOGS_CONSOLE_BRIDGE`.
+2. **Container-log scraping (fallback, stdout).** The `k8s-infra` chart's
+   `otelAgent` DaemonSet (`enableLogs = true`) tails pod stdout/stderr. This keeps
+   working even when the app-level pipeline is off, and continues to feed the
+   `[Publish]` string-based alerts/dashboards below. It has no trace correlation.
+
+Both paths point at the same SigNoz endpoint, so a given line may appear once from
+each source; the app-level record is the one with populated trace context.
+
 ## Alerts and dashboards (manual sync)
 
 The Terraform module deploys the **collector** only — alert rules and

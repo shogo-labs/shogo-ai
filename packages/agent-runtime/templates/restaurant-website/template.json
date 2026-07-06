@@ -1,0 +1,49 @@
+{
+  "id": "restaurant-website",
+  "name": "Restaurant & Local Business Site",
+  "description": "A polished, ready-to-publish website for restaurants, cafes, bakeries, and local businesses — menu, hours, gallery, table booking, and contact, all driven by YOUR real details. Starts empty and walks you through a 'paste your real details' intake so nothing is ever made up.",
+  "category": "business",
+  "icon": "UtensilsCrossed",
+  "database": "sqlite",
+  "tags": [
+    "website",
+    "restaurant",
+    "cafe",
+    "bakery",
+    "local-business",
+    "menu",
+    "hours",
+    "booking",
+    "reservations",
+    "gallery",
+    "contact",
+    "small-business"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": false,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "integrations": [
+    {
+      "categoryId": "communication",
+      "description": "Ping Slack or Discord the moment a new table booking or contact message comes in"
+    },
+    {
+      "categoryId": "email",
+      "description": "Send booking confirmations and reply to contact-form enquiries from the owner's inbox"
+    },
+    {
+      "categoryId": "calendar",
+      "description": "Drop confirmed reservations straight onto the business's Google Calendar"
+    }
+  ],
+  "techStack": "react-app"
+}

@@ -166,6 +166,17 @@ Two-step check:
 
 If the endpoint requires auth or integration setup that hasn't happened yet (e.g. a Jira route called before the user connected), surface that in the response with a clear \`error\` string and a useful status code (\`401\`, \`412\`) — not a green \`200 {}\` that silently looks like success.
 
+### Verify the client RENDERS — a green build only means it compiled
+
+For Vite/React (and other esbuild-bundled) frontends, the bundler **transpiles without type-checking**. A missing import (\`Tabs is not defined\`), a value used as a component (\`Element type is invalid … got: boolean\`), a typo'd variable, or a wrong prop type all compile clean and produce a green \`built in N ms\` — then throw a white-screen error the moment the browser renders. This is the #1 source of "it built successfully" followed by a crashed preview. A green \`.shogo/logs/build.log\` proves compilation, NOT that the UI renders.
+
+Before declaring a UI change done:
+
+1. **Type-check / lint**: run \`read_lints\` (auto-scopes to the files you edited) or \`exec({ command: 'bun x tsc --noEmit' })\` and clear every error. Missing imports and undefined references only surface here, never in the Vite build.
+2. **Read the type-check line in the build log**: the runtime runs \`tsc --noEmit\` after each build. A \`[typecheck] ✗ … N type error(s)\` line in \`.shogo/logs/build.log\` means the app crashes at runtime even though \`built in N ms\` is also present — fix it, don't ship it.
+3. **Confirm it renders**: load the public preview URL (\`browser\` tool) or confirm no canvas runtime errors are reported before saying "done". Never report "built successfully" as if it means "works".
+4. **Fix the whole class**: if one import/reference is missing, verify every component, icon, and helper you referenced is imported/defined — don't fix one and re-run.
+
 ### Definition of Done = verified, not "should work"
 
 "Done" means you ran something that PROVES it works and saw the result — not that you edited the code and it looks right.
@@ -331,6 +342,16 @@ async function onSend() {
 - Build dashboards in \`custom-routes.ts\` + \`getServerToolsClient()\`, not in components with \`useTools()\`.
 - NEVER throw \`new Error('Failed to load X')\` from a client \`fetch()\` handler. Read the JSON body's \`error\` field (or fall back to \`HTTP <status>\`) and surface that to the UI. Generic messages strand the user and yourself with no debugging path.
 - Routes that wrap integration tools count as "endpoints that do dynamic work" — verify per the **Verify the endpoints you build** section below. The first request often surfaces auth-shape mismatches the build can't catch.
+
+### Handling user-provided secrets
+
+Users routinely paste live credentials straight into chat — Stripe \`sk_live_…\` / \`whsec_…\`, Anthropic \`sk-ant-…\`, Twilio SID/token, OAuth tokens, DB passwords. Treat every such value as sensitive:
+
+- **Never echo a secret back.** Do NOT reprint the raw value in your reply, in a fenced \`.env\` block, or anywhere the user (or a screen-share) can read it. Refer to it by its variable name (e.g. \`STRIPE_SECRET_KEY\`), not its value.
+- **Store it, don't inline it.** Put the value in the environment / secret store and reference it via \`process.env.NAME\` (server) or \`import.meta.env.VITE_NAME\` (only for values that are genuinely public). NEVER write a real secret literal into source (\`.ts/.tsx/.js/.jsx\`) or any file the client bundle ships.
+- **Warn once, briefly.** The first time a user pastes a live secret, tell them it's now exposed (it's in the chat transcript) and they should rotate/revoke it once setup is done. Don't nag on every turn.
+- **Don't hardcode auth into the frontend.** For "owner-only" / admin logins, never embed the password (or an owner email+password pair) in client code — anyone can read the bundle. Do the check server-side against a hashed value in env.
+- **Remember what you were given.** If the user already provided a key/secret earlier in the conversation, USE it (via its env var) — do not ask them to paste it again. Re-asking for already-provided credentials is a top user frustration.
 
 ### Runtime Facts
 - **Vite** runs in \`build --watch\` mode. File changes trigger automatic rebuilds in 1-2 seconds.

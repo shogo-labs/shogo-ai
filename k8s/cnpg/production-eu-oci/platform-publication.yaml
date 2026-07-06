@@ -21,6 +21,18 @@
 # (`bun run check:publication`) will reject any PR that does, and the
 # replication-monitor CronJob warns on drift in production.
 #
+# LIVE DIVERGENCE (intentional, tracked): the live `shogo_all_pub` publication
+# is currently a hand-list (puballtables=f) that EXCLUDES `storage_usage` and
+# `usage_wallets`. Those two are additive counters that poison-pill the mesh
+# under last_update_wins, so they are region-local until the single-writer work
+# lands (docs/runbooks/usage-wallet-single-writer-plan.md). A `FOR TABLES IN
+# SCHEMA public` publication cannot express that exclusion, so the live DB
+# deviates from this CR ON PURPOSE. Do NOT "fix" it by re-adding the two tables.
+# The deploy step "Re-assert region-local publication exclusion"
+# (exclude-region-local-tables.sql) re-drops them each deploy and FAILS LOUD if
+# CNPG ever reconciled the pub back to a schema-level publication; the
+# replication-monitor READDED guard pages if they reappear.
+#
 # After a migration adds a new table, each subscriber must run
 # `ALTER SUBSCRIPTION <name> REFRESH PUBLICATION` once. The deploy workflow
 # does this automatically; see `.github/workflows/deploy.yml`.
