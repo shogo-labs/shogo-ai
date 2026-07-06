@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
+import { Platform } from 'react-native'
+
 export type ChatSessionChange = {
   /** Project (context) the change belongs to. */
   projectId: string
@@ -48,7 +50,11 @@ function nextEventId(): string {
 
 function getBroadcastChannel(): BroadcastChannel | null {
   if (broadcastChannel !== undefined) return broadcastChannel
-  if (typeof window === 'undefined' || typeof globalThis.BroadcastChannel !== 'function') {
+  if (
+    Platform.OS !== 'web' ||
+    typeof window === 'undefined' ||
+    typeof globalThis.BroadcastChannel !== 'function'
+  ) {
     broadcastChannel = null
     return broadcastChannel
   }
@@ -97,7 +103,7 @@ function receiveCrossWindowChange(value: unknown): void {
 }
 
 function installCrossWindowListener(): void {
-  if (crossWindowListenerInstalled || typeof window === 'undefined') return
+  if (crossWindowListenerInstalled || Platform.OS !== 'web' || typeof window === 'undefined') return
   crossWindowListenerInstalled = true
 
   const channel = getBroadcastChannel()
@@ -117,6 +123,8 @@ function installCrossWindowListener(): void {
 }
 
 function publishCrossWindowChange(event: ChatSessionChange): void {
+  if (Platform.OS !== 'web') return
+
   const outbound: CrossWindowChatSessionChange = {
     ...event,
     eventId: nextEventId(),
