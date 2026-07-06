@@ -35,6 +35,7 @@ import { getFleetEnv, type MetalFleetEnv } from '../config/metal-fleet'
 import { getMetalWarmPoolController, type MetalWarmPoolController } from './metal-warm-pool-controller'
 import { getMetalPlacementRegistry, type BurstHostRecord, type MetalPlacementRegistry } from './metal-placement-registry'
 import { getLatitudeClient, type LatitudeClient } from './latitude-client'
+import { buildBurstUserData } from './metal-cloud-init'
 
 const meter = metrics.getMeter('shogo-metal-fleet')
 const scaleActionsCounter = meter.createCounter('metal.fleet.scale_actions', {
@@ -52,6 +53,58 @@ const ACTUATE = process.env.METAL_FLEET_ACTUATE === 'true'
 /** Latitude provisioning inputs pulled from env (same account as staging). */
 const LAT_PROJECT = process.env.LATITUDESH_PROJECT_ID || ''
 const LAT_SSH_KEY = process.env.LATITUDESH_SSH_KEY_ID || ''
+
+/**
+ * Read an env value with an optional per-region override. EU hosts must use the
+ * EU S3 bucket/endpoint for data residency, so callers can set e.g.
+ * METAL_FLEET_S3_ENDPOINT_EU alongside the default METAL_FLEET_S3_ENDPOINT.
+ */
+function regionEnv(base: string, region: string, fallback = ''): string {
+  const suffixed = process.env[`${base}_${region.toUpperCase()}`]
+  return (suffixed ?? process.env[base] ?? fallback) as string
+}
+
+/**
+ * Assemble the cloud-init user_data for a new burst host from env-sourced
+ * provisioning inputs. Throws (with a clear message) if a required secret/ref is
+ * missing so we never create a server we can't actually bootstrap.
+ */
+function burstUserDataFor(hostId: string, region: string): string {
+  const required = {
+    controlPlaneUrl: process.env.METAL_FLEET_CONTROL_PLANE_URL || process.env.METAL_CONTROL_PLANE_URL || '',
+    registerToken: process.env.METAL_REGISTER_TOKEN || process.env.SHOGO_INTERNAL_SECRET || '',
+    fwdAllowCidr: process.env.METAL_FLEET_FWD_ALLOW_CIDR || '',
+    s3Endpoint: regionEnv('METAL_FLEET_S3_ENDPOINT', region, process.env.S3_ENDPOINT || ''),
+    s3Bucket: regionEnv('METAL_FLEET_S3_BUCKET', region, process.env.METAL_SNAP_BUCKET || ''),
+    s3AccessKeyId: regionEnv('METAL_FLEET_S3_ACCESS_KEY_ID', region, process.env.AWS_ACCESS_KEY_ID || ''),
+    s3SecretAccessKey: regionEnv('METAL_FLEET_S3_SECRET_ACCESS_KEY', region, process.env.AWS_SECRET_ACCESS_KEY || ''),
+    ocirDockerConfigB64: process.env.METAL_FLEET_OCIR_CONFIG_B64 || '',
+    runtimeImage: process.env.METAL_FLEET_RUNTIME_IMAGE || '',
+    bundleUrl: process.env.METAL_FLEET_BUNDLE_URL || '',
+  }
+  const missing = Object.entries(required)
+    .filter(([, v]) => !v)
+    .map(([k]) => k)
+  if (missing.length) {
+    throw new Error(`burst provisioning env incomplete: missing ${missing.join(', ')}`)
+  }
+  return buildBurstUserData({
+    hostId,
+    region,
+    controlPlaneUrl: required.controlPlaneUrl,
+    registerToken: required.registerToken,
+    fwdAllowCidr: required.fwdAllowCidr,
+    s3Endpoint: required.s3Endpoint,
+    s3Region: regionEnv('METAL_FLEET_S3_REGION', region, process.env.S3_REGION || 'us-ashburn-1'),
+    s3Bucket: required.s3Bucket,
+    s3Prefix: process.env.METAL_FLEET_S3_PREFIX || 'metal-snapshots/',
+    s3AccessKeyId: required.s3AccessKeyId,
+    s3SecretAccessKey: required.s3SecretAccessKey,
+    ocirDockerConfigB64: required.ocirDockerConfigB64,
+    runtimeImage: required.runtimeImage,
+    bundleUrl: required.bundleUrl,
+  })
+}
 
 // A live host as seen by the controller's registry-aware fleet status.
 export interface LiveHost {
@@ -289,6 +342,9 @@ export class MetalFleetReconciler {
         }
         const stamp = new Date(snap.now).toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
         const hostname = `shogo-fc-burst-${a.region}-${stamp}`
+        // Generate cloud-init BEFORE creating the server: if provisioning env is
+        // incomplete this throws and we never create an un-bootstrappable box.
+        const userData = burstUserDataFor(hostname, a.region)
         const server = await this.latitude.createServer({
           project: LAT_PROJECT,
           plan: snap.desired.burst.plan,
@@ -297,6 +353,7 @@ export class MetalFleetReconciler {
           hostname,
           sshKeys: [LAT_SSH_KEY],
           billing: 'hourly',
+          userData,
         })
         await this.registry.recordBurstHost({
           hostId: hostname,

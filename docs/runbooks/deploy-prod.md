@@ -153,3 +153,18 @@ pod is unresponsive — the API will fire a `build_timeout` error
 within 60s of the next publish attempt. A row stuck on `configuring`
 means Knative service / DomainMapping creation failed; check
 `kubectl get events -n shogo-production-workspaces --sort-by='.lastTimestamp'`.
+
+## Metal fleet (bare-metal Firecracker substrate)
+
+The metal substrate (Latitude hosts running `apps/metal-agent`) has its own
+runbook — auto-scaling behaviour, enabling burst actuation, provisioning a
+baseline host, and triage for the `metal-*` SigNoz alerts
+(`MetalFcProcessLeak`, `MetalWakeLatencyHigh`, `MetalHostDiskPressure`,
+`MetalNoHostFallback`):
+
+→ [docs/runbooks/metal-fleet.md](./metal-fleet.md)
+
+Quick recovery: cordon a bad host from the super-admin Infrastructure → Metal
+Fleet panel (it drains, keeps serving live projects), and
+`systemctl restart metal-agent` on the host clears any orphaned firecracker
+processes (systemd kills the cgroup; the NVMe snapshot cache survives).
