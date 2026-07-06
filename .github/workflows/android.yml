@@ -492,11 +492,12 @@ jobs:
           # AAB. Must match the release we upload sourcemaps for below.
           EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
 
       - name: Upload JS sourcemaps to Sentry (optional, non-fatal)
-        # The Sentry-injected Gradle bundle task is replaced with a no-op
-        # stub above ("Ensure Sentry CLI binary"), so the AAB ships without
-        # debug-id-stamped JS. We re-run Metro post-build to regenerate the
+        # The Sentry-injected Gradle bundle task is disabled during Build AAB,
+        # so the AAB ships without debug-id-stamped JS. We re-run Metro
+        # post-build to regenerate the
         # bundle + packager map, compose with the Hermes bytecode map (which
         # `bundleRelease` already produced), and upload to Sentry.
         #

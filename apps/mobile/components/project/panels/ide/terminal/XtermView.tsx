@@ -24,6 +24,7 @@ import { XtermSession } from './xterm-session'
 import { isDesktopRuntime, type PtyClientLike } from './pty-factory'
 import type { PtyClientState } from './pty-client'
 import { useEditorFont } from '../useEditorFont'
+import { loadDesktopTerminal } from './desktop-terminal-loader'
 
 interface XtermViewProps {
   client: PtyClientLike
@@ -97,7 +98,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     if (Platform.OS !== 'web') return
     if (!isDesktopRuntime()) return
     let cancelled = false
-    void import('@shogo/desktop-terminal').then((m) => {
+    void loadDesktopTerminal().then((m) => {
       if (!cancelled) setDesktopSurface(() => m.ShogoTerminalSurface as React.ComponentType<any>)
     })
     return () => { cancelled = true }
