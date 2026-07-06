@@ -103,6 +103,7 @@ import { AlwaysOnSection } from '../../../../components/project/AlwaysOnSection'
 import { CheckpointGraphNative } from '../../../../components/project/panels/ide/graph/CheckpointGraphNative'
 import { TrustPrompt, type TrustDecision } from '../../../../components/project/TrustPrompt'
 import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
+import { loadDesktopTerminal } from '../../../../components/project/panels/ide/terminal/desktop-terminal-loader'
 import {
   RefreshCw,
   MessageSquare,
@@ -2506,7 +2507,7 @@ export default observer(function ProjectLayout() {
   const enrichMessage = useCallback(async (text: string): Promise<string> => {
     try {
       if (Platform.OS !== 'web') return text
-      const { terminalContextStore } = await import('@shogo/desktop-terminal')
+      const { terminalContextStore } = await loadDesktopTerminal()
       if (!terminalContextStore.isReady()) return text
 
       const git = {
