@@ -2772,7 +2772,10 @@ export default observer(function ProjectLayout() {
             if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
           }
         : undefined,
-    onOpenCodeWorkbench: handleOpenCodeWorkbench,
+    onOpenCodeWorkbench:
+      Platform.OS === 'web' && typeof window !== 'undefined' && !!(window as any).shogoDesktop?.isDesktop
+        ? handleOpenCodeWorkbench
+        : undefined,
     ideEmbed: isIdeChatEmbed,
   }
 
