@@ -16,13 +16,16 @@
  *
  * Env var required (gracefully disabled if absent):
  *   LOOPS_API_KEY — API key from loops.so → Settings → API
+ *
+ * Only fires in production (NODE_ENV === 'production'). Staging and local
+ * environments are silently no-ops even when the key is present.
  */
 
 const API_KEY = process.env.LOOPS_API_KEY
 const BASE = 'https://app.loops.so/api/v1'
 
 function isConfigured(): boolean {
-  return !!API_KEY
+  return !!API_KEY && process.env.NODE_ENV === 'production'
 }
 
 function authHeader(): Record<string, string> {
