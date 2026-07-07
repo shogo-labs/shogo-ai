@@ -131,6 +131,14 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.METAL_S3_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.METAL_S3_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ vars.METAL_S3_REGION }}
+          # OCI Object Storage's S3-compat endpoint does NOT support the aws-chunked
+          # streaming body that aws-cli v2.23+ emits by default (its new flexible
+          # checksums) — PutObject fails with "NotImplemented: AWS chunked encoding
+          # not supported". Force the SDK to only checksum when the API requires it.
+          # (Needs aws-cli >= 2.23.5 for `s3` to honor it; we use the low-level
+          # `s3api put-object` below, which honors it on every 2.23.x.)
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
           ENDPOINT: ${{ vars.METAL_S3_ENDPOINT }}
           BUCKET: ${{ vars.METAL_RELEASE_BUCKET }}
           PREFIX: ${{ vars.METAL_RELEASE_PREFIX }}
@@ -143,7 +151,14 @@ jobs:
           if aws s3api head-object --endpoint-url "$ENDPOINT" --bucket "$BUCKET" --key "$KEY" >/dev/null 2>&1; then
             echo "Bundle already published at s3://$BUCKET/$KEY (immutable) — reusing."
           else
-            aws s3 cp "$FILE" "s3://$BUCKET/$KEY" --endpoint-url "$ENDPOINT" --only-show-errors
+            # Low-level put-object (not `s3 cp`): the high-level transfer manager
+            # still forced a CRC checksum → aws-chunked on some CLI builds even with
+            # WHEN_REQUIRED; put-object reliably honors it against OCI.
+            aws s3api put-object \
+              --endpoint-url "$ENDPOINT" \
+              --bucket "$BUCKET" --key "$KEY" \
+              --body "$FILE" \
+              --content-type application/gzip >/dev/null
           fi
           echo "bundle_url=s3://$BUCKET/$KEY" >> "$GITHUB_OUTPUT"
           echo "Published bundle: s3://$BUCKET/$KEY"
