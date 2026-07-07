@@ -125,6 +125,23 @@ RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
     fi
 
 # =============================================================================
+# Asset export stage (CDN upload source)
+# =============================================================================
+# CI builds this stage with `--target web-assets --output type=local` to pull
+# ONLY the immutable, content-hashed Expo output (dist/_expo) out of the build
+# without dragging the whole builder filesystem. These files are uploaded to a
+# shared, append-only object store and served same-origin by a Cloudflare
+# Worker at `/_expo/*`, so a browser can always fetch a given build's hashed
+# assets regardless of which Knative studio revision served the HTML. This is
+# what makes the multi-revision asset-404 class of bug impossible.
+#
+# MUST stay BEFORE the nginx stage so nginx remains the final (default) target
+# and the normal image build is unaffected. Runs after the Sentry `.map` strip
+# above, so no source maps are exported.
+FROM scratch AS web-assets
+COPY --from=builder /app/apps/mobile/dist/_expo /_expo
+
+# =============================================================================
 # Production image with Nginx
 # =============================================================================
 FROM nginx:alpine
