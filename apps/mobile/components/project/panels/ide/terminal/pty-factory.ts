@@ -19,6 +19,7 @@
  */
 
 import { PtyClient } from './pty-client'
+import { loadDesktopTerminal } from './desktop-terminal-loader'
 
 export type PtyClientStateLike =
   | 'idle' | 'connecting' | 'open' | 'closed' | 'disposed'
@@ -116,15 +117,13 @@ let desktopFactoryPromise: Promise<DesktopFactory> | null = null
 
 function loadDesktopFactory(): Promise<DesktopFactory> {
   if (!desktopFactoryPromise) {
-    desktopFactoryPromise = import('@shogo/desktop-terminal').then(
-      (m) => ({
-        attach: (sessionId: string) => m.createDesktopPtyClient(sessionId) as unknown as PtyClientLike,
-        spawn: async (opts) => {
-          const { client, session } = await m.spawnDesktopPtyClient(opts)
-          return { client: client as unknown as PtyClientLike, session }
-        },
-      }),
-    )
+    desktopFactoryPromise = loadDesktopTerminal().then((m) => ({
+      attach: (sessionId: string) => m.createDesktopPtyClient(sessionId) as unknown as PtyClientLike,
+      spawn: async (opts) => {
+        const { client, session } = await m.spawnDesktopPtyClient(opts)
+        return { client: client as unknown as PtyClientLike, session }
+      },
+    }))
   }
   return desktopFactoryPromise
 }
