@@ -97,6 +97,37 @@ const server = Bun.serve({
         return Response.json({ ok: true })
       }
 
+      if (path === '/status' && req.method === 'POST') {
+        const { projectId } = await json(req)
+        if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
+        return Response.json(pool.getProjectStatus(projectId))
+      }
+
+      if (path === '/stop' && req.method === 'POST') {
+        // "stop" == suspend-to-snapshot: free host RAM but keep the project
+        // resumable (parity with Knative scale-to-zero). Idempotent — a project
+        // that isn't currently assigned is already stopped.
+        const { projectId } = await json(req)
+        if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
+        if (!pool.getAssigned(projectId)) return Response.json({ ok: true, alreadyStopped: true })
+        const s = await pool.suspend(projectId)
+        fwd.remove(projectId)
+        reportPlacement('suspended', projectId)
+        return Response.json({ ok: true, memBytes: s.snapshot.bytesMem })
+      }
+
+      if (path === '/destroy' && req.method === 'POST') {
+        // Permanent teardown on project delete: stop VM + drop local snapshot +
+        // durable copy so nothing leaks. Tell the control plane the project is
+        // gone from this host so cache-aware routing stops preferring it.
+        const { projectId } = await json(req)
+        if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
+        const r = await pool.destroy(projectId)
+        fwd.remove(projectId)
+        reportPlacement('cold', projectId)
+        return Response.json({ ok: true, ...r })
+      }
+
       return new Response('not found', { status: 404 })
     } catch (err: any) {
       return Response.json({ error: err?.message ?? String(err) }, { status: 500 })

@@ -967,6 +967,82 @@ export class MetalWarmPool {
     return true
   }
 
+  /**
+   * Permanently remove a project from this host — the metal analog of Knative's
+   * `deleteProject` (ksvc + DomainMapping teardown). Called by the control-plane
+   * substrate on project DELETE so metal doesn't leak snapshot bytes the way the
+   * GC-only path did (a deleted project's durable S3 copy + local NVMe snapshot
+   * previously lingered until an LRU sweep, or forever if never re-pressured).
+   *
+   * Stops any live VM, deletes the local snapshot artifacts + cache-index entry,
+   * drops the durable-store copy, and clears the live/adopt registry entry.
+   * Idempotent: a project that isn't present here returns an all-false report.
+   */
+  async destroy(projectId: string): Promise<{ stoppedVm: boolean; removedLocal: boolean; removedDurable: boolean }> {
+    let stoppedVm = false
+    let removedLocal = false
+    let removedDurable = false
+
+    const a = this.assigned.get(projectId)
+    if (a) {
+      await this.mgr.stopVM(a.handle).catch(() => {})
+      // Also unlink any snapshot files this VM was restored from — they're no
+      // longer referenced once the project is gone.
+      if (a.restoredFrom) {
+        for (const p of [a.restoredFrom.vmstate, a.restoredFrom.mem]) {
+          try {
+            rmSync(p, { force: true })
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      this.assigned.delete(projectId)
+      this.live.remove(projectId)
+      stoppedVm = true
+    }
+
+    const s = this.suspended.get(projectId)
+    if (s) {
+      this.deleteLocalArtifacts(s.snapshot)
+      this.suspended.delete(projectId)
+      this.index.remove(projectId)
+      removedLocal = true
+    }
+
+    if (this.store.kind !== 'none') {
+      try {
+        await this.store.remove(projectId)
+        removedDurable = true
+      } catch {
+        removedDurable = false
+      }
+    }
+
+    this.publishGauges()
+    return { stoppedVm, removedLocal, removedDurable }
+  }
+
+  /**
+   * Project-scoped status for the control-plane substrate `getStatus()` — the
+   * metal analog of KnativeProjectManager.getStatus (exists/ready/replicas).
+   *   assigned  → running (replicas 1)
+   *   suspended → exists but scaled-to-zero (replicas 0, resumable)
+   *   neither   → does not exist here
+   */
+  getProjectStatus(projectId: string): {
+    exists: boolean
+    ready: boolean
+    replicas: number
+    url?: string
+    state: 'assigned' | 'suspended' | 'none'
+  } {
+    const a = this.assigned.get(projectId)
+    if (a) return { exists: true, ready: true, replicas: 1, url: a.handle.agentUrl, state: 'assigned' }
+    if (this.suspended.has(projectId)) return { exists: true, ready: false, replicas: 0, state: 'suspended' }
+    return { exists: false, ready: false, replicas: 0, state: 'none' }
+  }
+
   /** Capacity + cache summary for the registration heartbeat (scalars only). */
   capacity() {
     const disk = this.disk()
