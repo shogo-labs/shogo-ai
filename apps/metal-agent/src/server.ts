@@ -25,6 +25,7 @@ import { metrics } from './metrics'
 import { MetalWarmPool } from './pool'
 import { PortForward } from './port-forward'
 import { reportPlacement, startRegistration } from './register'
+import { fetchManifest, maybeSelfUpdate } from './self-update'
 
 const pool = new MetalWarmPool()
 // Pre-mesh data path: DNAT a public host port to each assigned guest and hand
@@ -134,7 +135,26 @@ pool.start().then(
 )
 
 // Announce this host to the control plane over the mesh (no-op if unconfigured).
+// The heartbeat response also carries the desired agent version (pull-based
+// self-update) — see register.ts.
 const stopRegistration = startRegistration(pool)
+
+// Alternative desired-version carrier: poll a manifest URL directly. Used when
+// the control-plane heartbeat path isn't available yet (or for standalone hosts).
+console.log(
+  `[metal-agent] self-update: ${config.selfUpdate ? 'on' : 'off'} version=${config.agentVersion}` +
+    (config.selfUpdateManifest ? ` manifest=${config.selfUpdateManifest} poll=${config.selfUpdatePollMs}ms` : ''),
+)
+let updatePoller: ReturnType<typeof setInterval> | null = null
+if (config.selfUpdate && config.selfUpdateManifest) {
+  const checkManifest = async () => {
+    const desired = await fetchManifest(config.selfUpdateManifest)
+    if (desired) await maybeSelfUpdate(desired)
+  }
+  // First poll after one interval (not immediately): combined with the settle
+  // window, a fresh instance finishes adopting live microVMs before it may update.
+  updatePoller = setInterval(() => void checkManifest(), config.selfUpdatePollMs)
+}
 
 // Idle reaper: fold real guest traffic into idleness (activity poll), then
 // quiesce + snapshot assigned VMs that have gone quiet (free host RAM).
@@ -196,6 +216,7 @@ process.on('SIGTERM', async () => {
   stopRegistration()
   if (reaper) clearInterval(reaper)
   if (gc) clearInterval(gc)
+  if (updatePoller) clearInterval(updatePoller)
   await pool.prepareForRestart().catch(() => {})
   process.exit(0)
 })

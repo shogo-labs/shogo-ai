@@ -1,29 +1,35 @@
 # =============================================================================
-# Metal node-agent rolling deploy (bare-metal Firecracker fleet)
+# Metal node-agent release (pull-based deploy for the bare-metal Firecracker fleet)
 # =============================================================================
-# deploy.yml deploys the OKE (Kubernetes) fleet; it has NO path to the x86 bare-
-# metal hosts that run the Firecracker substrate (terraform/latitude-metal +
-# apps/metal-agent). Those were updated by hand. This workflow closes that gap:
-# it ships the current node-agent source to each metal host and performs a
-# GRACEFUL ROLLING restart (systemd KillMode=process) so live microVMs survive
-# the deploy and are re-adopted by the new agent — see
-# scripts/metal-agent/deploy-fleet.sh.
+# The fleet deploys by PULL, not push. This workflow does NOT SSH to hosts. It:
+#   1. builds an immutable, versioned agent bundle (src + manifests),
+#   2. uploads it to object storage (OCI S3-compat), and
+#   3. flips a region/channel pointer via POST /api/internal/metal/release.
 #
-#   push to main (metal-agent/** changes) → staging fleet (auto)
-#   workflow_dispatch                     → staging or production, with knobs
+# Each host learns its desired version from its heartbeat response
+# (apps/api routes/metal.ts → metal-agent-release.ts) and self-updates with a
+# graceful restart that keeps live microVMs running (apps/metal-agent
+# self-update.ts + pool.adopt). Brand-new / burst hosts converge on their own —
+# no host inventory, no inbound SSH, no CI fan-out. Roll out with `canary`, then
+# promote to `stable`; roll back by re-pointing the channel at an older version.
+#
+#   push to main (metal-agent/** changes) → staging `canary` (auto)
+#   workflow_dispatch                     → choose environment / channel / region
 #
 # CONFIG (per GitHub Environment: `staging` / `production-us`):
 #   Variables:
-#     METAL_FLEET_SSH_TARGETS  newline- or comma-separated `user@host` list of
-#                              the fleet's public IPs (the same hosts stored in
-#                              the platform_settings `metal.fleet.hosts` record).
+#     METAL_RELEASE_BUCKET     object-storage bucket for agent bundles
+#     METAL_RELEASE_PREFIX     key prefix (optional; default `metal-agent-releases/`)
+#     METAL_S3_ENDPOINT        OCI S3-compat endpoint (https://<ns>.compat.objectstorage.<region>.oraclecloud.com)
+#     METAL_S3_REGION          object-storage region (e.g. us-ashburn-1)
+#     METAL_CONTROL_PLANE_URL  control-plane base URL (reaches /api/internal/metal/release)
+#     METAL_RELEASE_REGION     fleet region this pointer targets (e.g. us); '*' for all
 #   Secrets:
-#     METAL_SSH_PRIVATE_KEY    private key authorized on those hosts (root).
-#     OCI_AUTH_TOKEN / OCI_USERNAME + vars.OCI_REGION / OCI_TENANCY_NAMESPACE
-#                              only needed when rebuild_rootfs=true (OCIR pull).
+#     METAL_S3_ACCESS_KEY_ID / METAL_S3_SECRET_ACCESS_KEY   OCI customer S3 keys
+#     METAL_REGISTER_TOKEN     bearer for /api/internal/metal/* (same token hosts use)
 # =============================================================================
 
-name: Metal node-agent deploy
+name: Metal node-agent release
 
 permissions:
   contents: read
@@ -33,144 +39,129 @@ on:
     branches: [main]
     paths:
       - 'apps/metal-agent/**'
-      - 'scripts/metal-agent/deploy-fleet.sh'
-      - 'scripts/metal-agent/host-bootstrap.sh'
       - '.github/workflows/metal-agent-deploy.yml'
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Fleet to deploy to'
+        description: 'Fleet/control-plane to publish to'
         required: true
         default: 'staging'
         type: choice
         options:
           - staging
           - production
-      idle_suspend_ms:
-        description: 'If set, patch METAL_IDLE_SUSPEND_MS on each host (ms). Leave blank to keep the current value.'
+      channel:
+        description: 'Release channel to point at this build (canary rolls out first; promote to stable).'
+        required: true
+        default: 'canary'
+        type: choice
+        options:
+          - canary
+          - stable
+      region:
+        description: "Fleet region to target (blank = env's METAL_RELEASE_REGION; '*' = all regions)."
         required: false
         default: ''
         type: string
       rebuild_rootfs:
-        description: 'Rebuild the runtime rootfs from RUNTIME_IMAGE (heavy; invalidates snapshots so those projects cold-boot).'
+        description: 'Mark this release as requiring a runtime-rootfs rebuild on the host (the runtime image must already be published).'
         required: false
         default: false
         type: boolean
-      runtime_image:
-        description: 'Runtime image ref for rebuild_rootfs (defaults to the env multiarch-latest tag).'
-        required: false
-        default: ''
-        type: string
 
 concurrency:
-  # One rolling deploy per fleet at a time; never cancel a mid-flight deploy.
-  group: metal-agent-deploy-${{ inputs.environment || 'staging' }}
+  # One release per environment+channel at a time; never cancel a mid-flight publish.
+  group: metal-agent-release-${{ inputs.environment || 'staging' }}-${{ inputs.channel || 'canary' }}
   cancel-in-progress: false
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Resolve the target host list (from the environment variable) into a matrix.
-  # ---------------------------------------------------------------------------
-  resolve-fleet:
-    name: Resolve fleet
+  publish:
+    name: Publish ${{ inputs.channel || 'canary' }} → ${{ inputs.environment || 'staging' }}
     runs-on: ubuntu-latest
     environment: ${{ (inputs.environment || 'staging') == 'production' && 'production-us' || 'staging' }}
-    outputs:
-      matrix: ${{ steps.hosts.outputs.matrix }}
-      count: ${{ steps.hosts.outputs.count }}
-    steps:
-      - name: Parse METAL_FLEET_SSH_TARGETS
-        id: hosts
-        env:
-          TARGETS: ${{ vars.METAL_FLEET_SSH_TARGETS }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${TARGETS// }" ]]; then
-            echo "::error::METAL_FLEET_SSH_TARGETS is not set for this environment. Add it (newline/comma-separated user@host) in the environment's Variables."
-            exit 1
-          fi
-          # Split on commas/newlines/spaces, drop blanks + comments, JSON-encode.
-          mapfile -t HOSTS < <(printf '%s' "$TARGETS" | tr ',' '\n' | sed 's/#.*//' | awk 'NF{$1=$1;print $1}')
-          if [[ ${#HOSTS[@]} -eq 0 ]]; then
-            echo "::error::No usable hosts parsed from METAL_FLEET_SSH_TARGETS."
-            exit 1
-          fi
-          MATRIX=$(printf '%s\n' "${HOSTS[@]}" | jq -R . | jq -cs '{target: .}')
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "count=${#HOSTS[@]}" >> "$GITHUB_OUTPUT"
-          echo "Resolved ${#HOSTS[@]} host(s): ${HOSTS[*]}"
-
-  # ---------------------------------------------------------------------------
-  # Roll the deploy across the fleet, one host at a time (max-parallel: 1) so a
-  # bad build can't take the whole fleet down simultaneously.
-  # ---------------------------------------------------------------------------
-  deploy:
-    name: Deploy ${{ matrix.target }}
-    needs: resolve-fleet
-    runs-on: ubuntu-latest
-    environment: ${{ (inputs.environment || 'staging') == 'production' && 'production-us' || 'staging' }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.resolve-fleet.outputs.matrix) }}
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0 # deploy-fleet.sh stamps the deployed short SHA
 
-      - name: Install SSH key
+      - name: Preflight config
         env:
-          SSH_KEY: ${{ secrets.METAL_SSH_PRIVATE_KEY }}
+          BUCKET: ${{ vars.METAL_RELEASE_BUCKET }}
+          ENDPOINT: ${{ vars.METAL_S3_ENDPOINT }}
+          CP_URL: ${{ vars.METAL_CONTROL_PLANE_URL }}
+          AK: ${{ secrets.METAL_S3_ACCESS_KEY_ID }}
+          SK: ${{ secrets.METAL_S3_SECRET_ACCESS_KEY }}
+          TOKEN: ${{ secrets.METAL_REGISTER_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ -z "${SSH_KEY:-}" ]]; then
-            echo "::error::METAL_SSH_PRIVATE_KEY secret is not set for this environment."
-            exit 1
+          miss=0
+          for k in BUCKET ENDPOINT CP_URL AK SK TOKEN; do
+            if [[ -z "${!k:-}" ]]; then echo "::error::missing config: $k"; miss=1; fi
+          done
+          [[ $miss -eq 0 ]] || { echo "::error::Set the METAL_RELEASE_* variables/secrets on the '${{ inputs.environment || 'staging' }}' environment."; exit 1; }
+
+      - name: Build immutable agent bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          VERSION="$(git rev-parse --short HEAD)"
+          # Content of a bundle == exactly what the agent swaps in (self-update.ts / deploy-fleet.sh).
+          OUT="agent-${VERSION}.tgz"
+          tar -czf "$OUT" -C apps/metal-agent src package.json tsconfig.json
+          SHA="$(sha256sum "$OUT" | awk '{print $1}')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "file=$OUT" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Built $OUT version=$VERSION sha256=$SHA ($(stat -c%s "$OUT") bytes)"
+
+      - name: Upload bundle to object storage
+        id: upload
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.METAL_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.METAL_S3_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.METAL_S3_REGION }}
+          ENDPOINT: ${{ vars.METAL_S3_ENDPOINT }}
+          BUCKET: ${{ vars.METAL_RELEASE_BUCKET }}
+          PREFIX: ${{ vars.METAL_RELEASE_PREFIX }}
+          FILE: ${{ steps.bundle.outputs.file }}
+        run: |
+          set -euo pipefail
+          PFX="${PREFIX:-metal-agent-releases/}"
+          KEY="${PFX}${FILE}"
+          # Immutable: never overwrite an existing version's bundle.
+          if aws s3api head-object --endpoint-url "$ENDPOINT" --bucket "$BUCKET" --key "$KEY" >/dev/null 2>&1; then
+            echo "Bundle already published at s3://$BUCKET/$KEY (immutable) — reusing."
+          else
+            aws s3 cp "$FILE" "s3://$BUCKET/$KEY" --endpoint-url "$ENDPOINT" --only-show-errors
           fi
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/metal_deploy
-          chmod 600 ~/.ssh/metal_deploy
+          echo "bundle_url=s3://$BUCKET/$KEY" >> "$GITHUB_OUTPUT"
+          echo "Published bundle: s3://$BUCKET/$KEY"
 
-      - name: Compute default runtime image
-        id: img
+      - name: Flip channel pointer (POST /release)
         env:
-          REBUILD: ${{ inputs.rebuild_rootfs }}
-          RUNTIME_IMAGE_INPUT: ${{ inputs.runtime_image }}
-          REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
-          PREFIX: ${{ inputs.environment || 'staging' }}
+          CP_URL: ${{ vars.METAL_CONTROL_PLANE_URL }}
+          TOKEN: ${{ secrets.METAL_REGISTER_TOKEN }}
+          REGION_INPUT: ${{ inputs.region }}
+          REGION_DEFAULT: ${{ vars.METAL_RELEASE_REGION }}
+          CHANNEL: ${{ inputs.channel || 'canary' }}
+          VERSION: ${{ steps.bundle.outputs.version }}
+          SHA256: ${{ steps.bundle.outputs.sha256 }}
+          BUNDLE_URL: ${{ steps.upload.outputs.bundle_url }}
+          REBUILD: ${{ inputs.rebuild_rootfs && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          IMG="$RUNTIME_IMAGE_INPUT"
-          if [[ "${REBUILD:-false}" == "true" && -z "$IMG" ]]; then
-            IMG="${REGISTRY}/shogo/shogo-runtime:${PREFIX}-multiarch-latest"
-          fi
-          echo "runtime_image=$IMG" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare OCIR docker config (rebuild only)
-        id: ocir
-        if: ${{ inputs.rebuild_rootfs == true }}
-        env:
-          OCI_REGION: ${{ vars.OCI_REGION }}
-          OCI_TENANCY_NAMESPACE: ${{ vars.OCI_TENANCY_NAMESPACE }}
-          OCI_USERNAME: ${{ secrets.OCI_USERNAME }}
-          OCI_AUTH_TOKEN: ${{ secrets.OCI_AUTH_TOKEN }}
-        run: |
-          set -euo pipefail
-          AUTH=$(printf '%s' "${OCI_TENANCY_NAMESPACE}/${OCI_USERNAME}:${OCI_AUTH_TOKEN}" | base64 -w0)
-          CFG=$(printf '{"auths":{"%s.ocir.io":{"auth":"%s"}}}' "$OCI_REGION" "$AUTH")
-          echo "config_b64=$(printf '%s' "$CFG" | base64 -w0)" >> "$GITHUB_OUTPUT"
-
-      - name: Rolling deploy to ${{ matrix.target }}
-        env:
-          SSH_TARGET: ${{ matrix.target }}
-          IDLE_SUSPEND_MS: ${{ inputs.idle_suspend_ms }}
-          REBUILD_ROOTFS: ${{ inputs.rebuild_rootfs && 'true' || 'false' }}
-          RUNTIME_IMAGE: ${{ steps.img.outputs.runtime_image }}
-          DOCKER_CONFIG_B64: ${{ steps.ocir.outputs.config_b64 }}
-          HEALTH_TIMEOUT_S: '120'
-        run: |
-          set -euo pipefail
-          export SSH_KEY="$HOME/.ssh/metal_deploy"
-          bash scripts/metal-agent/deploy-fleet.sh
+          REGION="${REGION_INPUT:-$REGION_DEFAULT}"
+          [[ -n "$REGION" ]] || { echo "::error::no region (set inputs.region or vars.METAL_RELEASE_REGION)"; exit 1; }
+          BODY=$(jq -cn \
+            --arg region "$REGION" --arg channel "$CHANNEL" \
+            --arg version "$VERSION" --arg url "$BUNDLE_URL" --arg sha "$SHA256" \
+            --argjson rebuild "$REBUILD" \
+            '{region:$region, channel:$channel, release:{version:$version, bundleUrl:$url, sha256:$sha} + (if $rebuild then {rebuildRootfs:true} else {} end)}')
+          echo "Publishing release: $BODY"
+          code=$(curl -sS -o /tmp/release_resp.json -w '%{http_code}' \
+            -X POST "${CP_URL%/}/api/internal/metal/release" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            --data "$BODY")
+          echo "HTTP $code"; cat /tmp/release_resp.json; echo
+          [[ "$code" == "200" ]] || { echo "::error::/release returned $code"; exit 1; }
+          echo "::notice::Published $CHANNEL=$VERSION for region=$REGION → ${{ inputs.environment || 'staging' }}. Hosts converge on their next heartbeat."

@@ -20,6 +20,7 @@
 import { config } from './config'
 import { metrics } from './metrics'
 import type { MetalWarmPool } from './pool'
+import { maybeSelfUpdate, type DesiredAgent } from './self-update'
 
 function payload(pool: MetalWarmPool) {
   const s = pool.status()
@@ -30,6 +31,9 @@ function payload(pool: MetalWarmPool) {
     agentPort: config.listenPort,
     region: config.region,
     arch: process.arch, // 'x64' | 'arm64' — control plane matches to image arch
+    // Running version, so the control plane sees fleet skew and resolves the
+    // desired version to send back for a pull-based self-update.
+    agentVersion: config.agentVersion,
     capacity: { poolSize: config.poolSize, memMiB: config.memMiB, vcpus: config.vcpus },
     load: {
       available: s.available,
@@ -54,7 +58,13 @@ function payload(pool: MetalWarmPool) {
   }
 }
 
-async function announce(pool: MetalWarmPool): Promise<boolean> {
+interface RegisterResponse {
+  ok?: boolean
+  /** Version this host should be running (pull-based deploy). */
+  desired?: DesiredAgent | null
+}
+
+async function announce(pool: MetalWarmPool): Promise<RegisterResponse | null> {
   const url = `${config.controlPlaneUrl.replace(/\/$/, '')}/api/internal/metal/register`
   try {
     const res = await fetch(url, {
@@ -68,12 +78,12 @@ async function announce(pool: MetalWarmPool): Promise<boolean> {
     })
     if (!res.ok) {
       console.warn(`[metal-agent] register ${res.status}: ${await res.text().catch(() => '')}`)
-      return false
+      return null
     }
-    return true
+    return (await res.json().catch(() => ({}))) as RegisterResponse
   } catch (err: any) {
     console.warn(`[metal-agent] register failed: ${err?.message ?? err}`)
-    return false
+    return null
   }
 }
 
@@ -112,8 +122,11 @@ export function startRegistration(pool: MetalWarmPool): () => void {
   let stopped = false
   const tick = async () => {
     if (stopped) return
-    const ok = await announce(pool)
-    if (ok) console.log(`[metal-agent] registered (heartbeat every ${config.registerIntervalMs}ms)`)
+    const res = await announce(pool)
+    if (res) console.log(`[metal-agent] registered (heartbeat every ${config.registerIntervalMs}ms)`)
+    // Pull-based deploy: converge to the version the control plane wants. Applies
+    // only on a real change; a graceful restart follows (live microVMs survive).
+    if (res?.desired) await maybeSelfUpdate(res.desired)
   }
   void tick()
   const timer = setInterval(tick, config.registerIntervalMs)

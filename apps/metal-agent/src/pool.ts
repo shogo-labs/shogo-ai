@@ -246,17 +246,23 @@ export class MetalWarmPool {
         this.live.remove(e.projectId)
         continue
       }
-      // The guest must actually answer. Retry briefly to ride out any transient
-      // blip during the restart window; a truly hung guest is not worth adopting
-      // (it's reaped below and cold-resumes from its last snapshot on next open).
+      // A live firecracker process with its API socket present IS a real microVM
+      // holding (possibly unsaved) user state — so we ADOPT it unconditionally and
+      // never let it be reaped. The health probe is advisory only: a transient
+      // unresponsiveness during the restart window (host load, overlapping
+      // restarts) must not cause us to SIGKILL a running VM. A guest that is truly
+      // wedged stays adopted and is handled by the normal idle reaper / next
+      // suspend — it is never killed here. (Only pid-dead / socket-gone entries,
+      // handled above, are dropped so their leftover procs, if any, get reaped.)
       let healthy = false
       for (let i = 0; i < 3 && !healthy; i++) {
         healthy = await probeHealth(e.agentUrl, 2000)
         if (!healthy) await Bun.sleep(250)
       }
       if (!healthy) {
-        this.live.remove(e.projectId)
-        continue
+        console.warn(
+          `[pool] adopting ${e.projectId} (pid ${e.pid}) despite failed health probe — live FC proc, keeping it rather than reaping`,
+        )
       }
       const handle: FcVmHandle = {
         id: e.vmId,
