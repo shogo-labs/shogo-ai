@@ -20,11 +20,39 @@ export function isMetalAllProjects(): boolean {
 }
 
 /**
+ * Sticky-drain cutover mode: EVERY project is metal-eligible, but a project that
+ * already has a LIVE Knative pod keeps being served from Knative until that pod
+ * turns off (idle scale-to-zero) — see resolveProjectPodUrl. New opens (and any
+ * project whose Knative pod is gone) go to metal with NO Knative fallback, so
+ * the old fleet drains without ever spinning back up. This is the production
+ * cutover switch; metal-only mode (SHOGO_METAL_ALL_PROJECTS) is the harder
+ * variant with no Knative yielding at all.
+ *
+ * Like metal-only it implies `isMetalEnabled()` and makes every project
+ * eligible, and it is authoritative on a metal miss (no fall-through to Knative
+ * for a project that has no live pod).
+ */
+export function isMetalDrainMode(): boolean {
+  return process.env.SHOGO_METAL_DRAIN_MODE === 'true'
+}
+
+/**
  * Global kill-switch. Off → resolveProjectPodUrl never touches metal.
- * Metal-only mode (SHOGO_METAL_ALL_PROJECTS) implies enabled.
+ * Metal-only mode (SHOGO_METAL_ALL_PROJECTS) and drain mode
+ * (SHOGO_METAL_DRAIN_MODE) both imply enabled.
  */
 export function isMetalEnabled(): boolean {
-  return process.env.SHOGO_METAL_ENABLED === 'true' || isMetalAllProjects()
+  return process.env.SHOGO_METAL_ENABLED === 'true' || isMetalAllProjects() || isMetalDrainMode()
+}
+
+/**
+ * Authoritative modes never silently fall through to Knative on a metal miss:
+ * metal-only always, and drain mode for a project with no live Knative pod (the
+ * live-pod short-circuit happens before the metal resolve, so by the time a
+ * drain-mode metal miss surfaces, Knative is not an option we want to recreate).
+ */
+export function isMetalAuthoritative(): boolean {
+  return isMetalAllProjects() || isMetalDrainMode()
 }
 
 let allowlistCache: { raw: string; set: Set<string> } | null = null
@@ -53,8 +81,9 @@ export function rolloutBucket(projectId: string): number {
  */
 export function isMetalEligibleProject(projectId: string): boolean {
   if (!projectId) return false
-  // Metal-only mode: every project is eligible, no allowlist/percentage.
-  if (isMetalAllProjects()) return true
+  // Metal-only and drain cutover modes: every project is eligible, no
+  // allowlist/percentage (drain still yields to a live Knative pod at resolve).
+  if (isMetalAllProjects() || isMetalDrainMode()) return true
   if (allowlist().has(projectId)) return true
   const pct = parseInt(process.env.METAL_ROLLOUT_PERCENT || '0', 10)
   if (pct <= 0) return false
