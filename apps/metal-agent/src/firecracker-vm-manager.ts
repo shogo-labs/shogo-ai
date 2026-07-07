@@ -68,8 +68,6 @@ export interface FcSnapshot {
   bytesRootfs: number
 }
 
-let VM_SEQ = 0
-
 /**
  * Grace before the orphan reaper will SIGKILL a firecracker process that is not
  * referenced by any pool map. Must exceed the longest legitimate window in which
@@ -91,6 +89,18 @@ export class FirecrackerVMManager {
   private adopted = new Map<string, number>()
   /** id → spawn timestamp, for the age-gated orphan reaper. */
   private spawnedAt = new Map<string, number>()
+  /**
+   * Monotonic VM/tap index. `fctap<vmSeq>` + a /30 are derived from it, and
+   * `setupTap` deletes-then-recreates that device — so an index handed out while
+   * another VM still holds it destroys that VM's tap fd. A single agent lifetime
+   * never reuses an index (this only ever increments), but it USED to be a
+   * module global reset to 0 on every restart, so after a rolling deploy the
+   * warm-pool spawner reused indices still held by ADOPTED VMs and broke their
+   * networking ("Failed to write to tap: File descriptor in bad state"). It is
+   * now an instance field seeded past every persisted (adopted + suspended) tap
+   * index at startup via `seedVmSeq`, restoring cross-restart non-reuse.
+   */
+  private vmSeq = 0
   private uplink = defaultUplink()
   private rootfs: RootfsProvisioner
 
@@ -242,8 +252,17 @@ export class FirecrackerVMManager {
 
   // --- VMManager interface -------------------------------------------------
 
+  /**
+   * Ensure the next warm-VM/tap index is at least `nextAtLeast`. Called at
+   * startup (pool.adopt) with `max(tap index of every adopted + suspended VM)+1`
+   * so a freshly-spawned VM never collides with a live or persisted tap.
+   */
+  seedVmSeq(nextAtLeast: number): void {
+    if (Number.isFinite(nextAtLeast) && nextAtLeast > this.vmSeq) this.vmSeq = nextAtLeast
+  }
+
   async startVM(cfg: FcVmConfig = {}): Promise<FcVmHandle> {
-    const n = VM_SEQ++
+    const n = this.vmSeq++
     const id = `fcvm-${n}-${Date.now().toString(36)}`
     const net = deriveNet(n, this.cfg.tapCidrBase)
     const vcpus = cfg.cpus ?? this.cfg.vcpus
@@ -480,7 +499,7 @@ export class FirecrackerVMManager {
   async restoreVM(snap: FcSnapshot): Promise<FcVmHandle> {
     // Bounded, short id — FC's --id is capped at 64 chars, so we must NOT
     // chain the prior id across repeated restores.
-    const id = `fcr-${(VM_SEQ++).toString(36)}-${Date.now().toString(36).slice(-5)}`
+    const id = `fcr-${(this.vmSeq++).toString(36)}-${Date.now().toString(36).slice(-5)}`
     const socketPath = join(this.cfg.runDir, `${id}.sock`)
     const serialLog = join(this.cfg.runDir, `${id}.serial`)
 

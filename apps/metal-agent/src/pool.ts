@@ -31,6 +31,7 @@ import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecr
 import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { LiveRegistry, pidAlive } from './live-registry'
 import { M, metrics } from './metrics'
+import { tapIndex } from './net'
 import {
   assertArtifacts,
   computeRootfsIdentity,
@@ -221,8 +222,32 @@ export class MetalWarmPool {
     // spawns new FCs; adopt must first claim survivors + reap non-adopted ones
     // so the host-scan reaper can't race a freshly-booted warm VM).
     const adoption = await this.adopt()
+    // Seed the tap-index allocator past every persisted (adopted + suspended)
+    // tap BEFORE reconcile() fills the warm pool — otherwise a fresh warm VM
+    // would reuse a device name still held by an adopted VM (or reclaimed on a
+    // suspended project's resume) and setupTap would tear down that live tap.
+    this.seedVmIndexAllocator()
     await this.reconcile()
     return adoption
+  }
+
+  /**
+   * Advance the FC manager's tap-index counter past the highest `fctap<n>` index
+   * recorded in the durable registries — live (adopted, still running) and cache
+   * (suspended, whose exact device is recreated on resume). Without this the
+   * counter reset to 0 on every restart and warm VMs collided with survivors.
+   */
+  private seedVmIndexAllocator(): void {
+    let maxIdx = -1
+    for (const e of this.live.all()) {
+      const n = tapIndex(e.net)
+      if (n != null && n > maxIdx) maxIdx = n
+    }
+    for (const e of this.index.all()) {
+      const n = tapIndex(e.net)
+      if (n != null && n > maxIdx) maxIdx = n
+    }
+    if (maxIdx >= 0) this.mgr.seedVmSeq(maxIdx + 1)
   }
 
   /**

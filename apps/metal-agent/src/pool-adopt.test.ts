@@ -19,6 +19,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { CacheIndex, type CacheEntry } from './cache-index'
 import { config } from './config'
 import { LiveRegistry, type LiveVmEntry } from './live-registry'
 import { MetalWarmPool } from './pool'
@@ -149,5 +150,52 @@ describe('MetalWarmPool.adopt', () => {
     expect(reapKeep && [...reapKeep]).toEqual(['fcvm-wedged-proj'])
     // Its registry entry survives so a subsequent restart re-adopts it too.
     expect(reg.get('wedged-proj')?.pid).toBe(liveChild.pid)
+  })
+
+  // Regression: VM_SEQ used to be a module global reset to 0 on every restart,
+  // so after a rolling deploy the warm-pool spawner reused a `fctap<n>` index
+  // still held by an adopted (live) or suspended (resume-on-demand) VM. setupTap
+  // deletes-then-recreates that device, corrupting the live VM's tap fd
+  // ("Failed to write to tap: File descriptor in bad state") and blackholing its
+  // preview. The pool must now seed the FC manager's index PAST every persisted
+  // tap so a fresh warm VM can never collide.
+  test('seedVmIndexAllocator advances the FC index past adopted + suspended taps', () => {
+    const cfg = makeCfg()
+
+    // A live (adopted) VM on fctap7 and a suspended (cache) VM on fctap9.
+    const reg = new LiveRegistry(cfg.runDir)
+    reg.put({
+      ...entry(cfg, 'live-proj', 111, 'http://127.0.0.1:1'),
+      net: { tap: 'fctap7', guestIp: '127.0.0.1' } as any,
+    })
+    const idx = new CacheIndex(cfg.snapDir)
+    idx.put({
+      projectId: 'susp-proj',
+      vmId: 'fcvm-susp',
+      snapshotPath: '',
+      memFilePath: '',
+      rootfs: '',
+      net: { tap: 'fctap9', guestIp: '172.16.0.38' } as any,
+      vcpus: 2,
+      memoryMB: 4096,
+      bytesMem: 0,
+      bytesState: 0,
+      bytesRootfs: 0,
+      createdAt: 1,
+      suspendedAt: 1,
+      lastAccessAt: 1,
+      rootfsIdentity: 'x',
+      v: 1,
+    } as CacheEntry)
+
+    let seeded = -1
+    const fakeMgr = { seedVmSeq: (n: number) => { seeded = n } }
+    const pool = new MetalWarmPool(fakeMgr as any, cfg as any)
+
+    // Exercise the seeding step directly (start() would also run adopt/reconcile).
+    ;(pool as any).seedVmIndexAllocator()
+
+    // max(7, 9) + 1 — the next warm VM lands on fctap10, clear of both.
+    expect(seeded).toBe(10)
   })
 })
