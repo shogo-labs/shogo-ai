@@ -408,6 +408,11 @@ export function ProjectTopBar({
 
   const isCanvasActive = activeTab === 'canvas'
   const isIdeActive = activeTab === 'ide'
+  const canOpenCodeWorkbench =
+    Platform.OS === 'web' &&
+    typeof window !== 'undefined' &&
+    !!(window as unknown as { shogoDesktop?: { isDesktop?: boolean } }).shogoDesktop?.isDesktop &&
+    !!onOpenCodeWorkbench
 
   // Workspace Trust badge: external (folder-linked) projects only, and
   // only when the parent wired up a toggle handler + a known trust level.
@@ -927,7 +932,7 @@ export function ProjectTopBar({
               busy={trustBusy}
             />
           )}
-          {isIdeActive && onOpenCodeWorkbench && (
+          {isIdeActive && canOpenCodeWorkbench && (
             <Pressable
               onPress={onOpenCodeWorkbench}
               className="h-8 flex-row items-center gap-1.5 rounded-lg border border-orange-500/40 bg-orange-500/10 px-3 active:bg-orange-500/15"
