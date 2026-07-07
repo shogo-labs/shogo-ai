@@ -183,7 +183,7 @@ jobs:
             --arg region "$REGION" --arg channel "$CHANNEL" \
             --arg version "$VERSION" --arg url "$BUNDLE_URL" --arg sha "$SHA256" \
             --argjson rebuild "$REBUILD" \
-            '{region:$region, channel:$channel, release:{version:$version, bundleUrl:$url, sha256:$sha} + (if $rebuild then {rebuildRootfs:true} else {} end)}')
+            '{region:$region, channel:$channel, release:({version:$version, bundleUrl:$url, sha256:$sha} + (if $rebuild then {rebuildRootfs:true} else {} end))}')
           echo "Publishing release: $BODY"
           # Regional control planes with no publicly-trusted cert (eu sslip origin)
           # opt into -k; the fleet itself runs NODE_TLS_REJECT_UNAUTHORIZED=0 and the
