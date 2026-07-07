@@ -1934,6 +1934,23 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
 
   if (isKubernetes()) {
     try {
+      const { isMetalEnabled, isMetalEligibleProject } = await import('./lib/metal-eligibility')
+      if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
+        // Metal substrate (incl. the drain cutover): never eagerly create a
+        // Knative ksvc here — that would orphan a Service behind metal. Delegate
+        // to the shared resolver, which in drain mode yields to a live Knative
+        // pod and otherwise serves via metal (authoritative on a miss; rollout
+        // mode still falls back to Knative if configured).
+        const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+        const resolved = await resolveProjectPodUrl(projectId, { logTag: 'Runtime' })
+        return c.json({
+          success: true,
+          projectId,
+          status: 'running',
+          url: resolved.url,
+          mode: resolved.mode,
+        })
+      }
       const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
       const knativeManager = getKnativeProjectManager()
       await knativeManager.createProject(projectId)
@@ -2331,6 +2348,21 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         mode: previewMode,
         ...(ready ? {} : { message: 'Runtime is still starting. Please retry this request.' }),
       })
+      // Sticky-drain cutover: if this project still has a LIVE Knative pod,
+      // yield to it (fall through to the Knative status path below) so the old
+      // fleet drains without interruption. Only projects whose pod is gone (or
+      // brand-new ones) are served via metal. Non-mutating probe (won't wake a
+      // scaled-to-zero pod). On an unknown probe state, do NOT resume on metal
+      // (would dual-run) — report retryable so the studio polls again.
+      let drainYieldToKnative = false
+      try {
+        const { drainLiveKnativeUrl } = await import('./lib/metal-drain')
+        drainYieldToKnative = (await drainLiveKnativeUrl(projectId)) != null
+      } catch (err: any) {
+        console.log(`[sandbox/url] ${projectId.slice(0, 8)} drain probe failed; retryable (no dual-run): ${err?.message ?? err}`)
+        return c.json(metalBody(false), 202)
+      }
+      if (!drainYieldToKnative) {
       // wait=false is a non-blocking status poll — don't trigger a resume here;
       // report not-ready so the client polls again with wait=true (the open gate).
       if (!shouldWait) {
@@ -2347,6 +2379,9 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         console.log(`[sandbox/url] ${projectId.slice(0, 8)} metal still starting: ${err?.message ?? err}`)
         return c.json(metalBody(false), 202)
       }
+      }
+      // drain mode with a live Knative pod: fall through to the Knative path
+      // below, which reports the running pod as ready.
     }
 
     // In Kubernetes: Return preview URL based on mode

@@ -37,8 +37,10 @@ import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
 import {
   isMetalEnabled as metalEnabled,
   isMetalEligibleProject as metalEligible,
-  isMetalAllProjects as metalAllProjects,
+  isMetalAuthoritative as metalAuthoritative,
+  isMetalDrainMode as metalDrainMode,
 } from './metal-eligibility'
+import type { KnativeStatusProbe } from './metal-drain'
 
 export type PodMode = 'k8s' | 'vm' | 'host' | 'metal'
 
@@ -133,6 +135,15 @@ export interface ResolvePodUrlOpts {
   _isMetalEligible?: (projectId: string) => boolean
   _isMetalOnly?: () => boolean
   _metalResolver?: (projectId: string) => Promise<string>
+
+  /**
+   * Sticky-drain cutover (SHOGO_METAL_DRAIN_MODE). When on and running in
+   * Kubernetes, a project that still has a LIVE Knative pod is served from
+   * Knative (the old fleet drains as pods idle out); everything else routes to
+   * metal. `_knativeStatus` is the (non-mutating) liveness probe used to decide.
+   */
+  _isMetalDrainMode?: () => boolean
+  _knativeStatus?: KnativeStatusProbe
 }
 
 /**
@@ -204,10 +215,35 @@ export async function resolveProjectPodUrl(
   //     and Knative is NOT used. A miss throws MetalOnlyUnavailableError (→
   //     retryable 503) instead of falling through, so traffic never silently
   //     lands on Knative.
+  //   - Drain cutover mode (SHOGO_METAL_DRAIN_MODE): EVERY project is metal-
+  //     eligible, but one that still has a LIVE Knative pod keeps being served
+  //     from Knative until that pod idles out; new opens (and projects whose pod
+  //     is gone) go to metal, authoritatively (no fallback). This drains the old
+  //     fleet with no interruption and no cross-substrate dual-run.
   const isMetalEnabled = opts._isMetalEnabled ?? defaultIsMetalEnabled
   const isMetalEligible = opts._isMetalEligible ?? defaultIsMetalEligible
-  const isMetalOnly = opts._isMetalOnly ?? metalAllProjects
+  const isMetalOnly = opts._isMetalOnly ?? metalAuthoritative
+  const isMetalDrain = opts._isMetalDrainMode ?? metalDrainMode
   if (isMetalEnabled() && isMetalEligible(projectId)) {
+    // Sticky-drain cutover: if this project still has a LIVE Knative pod, keep
+    // serving it (the old fleet drains as pods idle out). Only once its pod is
+    // gone — or for a brand-new project — does the open route to metal. The
+    // probe is non-mutating (does not wake a scaled-to-zero pod).
+    if (isMetalDrain() && isKubernetes()) {
+      const probe = opts._knativeStatus ?? (await import('./metal-drain')).defaultKnativeStatus
+      try {
+        const s = await probe(projectId)
+        if (s.exists && s.ready && s.replicas > 0 && s.url) {
+          return { mode: 'k8s', url: s.url }
+        }
+      } catch (err: any) {
+        // Unknown Knative state: do NOT route to metal or start a Knative pod
+        // (either could dual-run the project across substrates). Surface a
+        // retryable "starting" so the caller backs off and retries.
+        console.warn(`[${tag}] drain-mode knative probe failed for ${projectId}; retryable (no dual-run): ${err?.message ?? err}`)
+        throw new MetalOnlyUnavailableError(projectId, err)
+      }
+    }
     const resolve = opts._metalResolver
       ?? (await import('./metal-warm-pool-controller')).getMetalProjectUrl
     const waitMs = Math.max(0, opts.metalWaitMs ?? 0)

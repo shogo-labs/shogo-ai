@@ -175,6 +175,73 @@ describe('resolveProjectPodUrl', () => {
     })
   })
 
+  describe('drain cutover mode (SHOGO_METAL_DRAIN_MODE)', () => {
+    const drainOpts = (extra: Partial<ResolvePodUrlOpts> = {}): ResolvePodUrlOpts => ({
+      _isMetalEnabled: () => true,
+      _isMetalEligible: () => true,
+      _isMetalOnly: () => true, // drain is authoritative on a metal miss
+      _isMetalDrainMode: () => true,
+      _isKubernetes: () => true,
+      _metalResolver: async () => 'http://10.8.0.2:8080',
+      ...extra,
+    })
+
+    it('yields to a LIVE Knative pod (exists+ready+replicas>0) — does not touch metal', async () => {
+      let metalCalls = 0
+      const res = await resolveProjectPodUrl('proj-1', drainOpts({
+        _metalResolver: async () => { metalCalls++; return 'http://metal' },
+        _knativeStatus: async () => ({ exists: true, ready: true, replicas: 1, url: 'http://project-proj-1.ns.svc/v1' }),
+      }))
+      expect(res).toEqual({ mode: 'k8s', url: 'http://project-proj-1.ns.svc/v1' })
+      expect(metalCalls).toBe(0)
+    })
+
+    it('routes to metal when the Knative pod is scaled to zero (replicas=0)', async () => {
+      const res = await resolveProjectPodUrl('proj-1', drainOpts({
+        _knativeStatus: async () => ({ exists: true, ready: true, replicas: 0, url: 'http://project-proj-1.ns.svc/v1' }),
+      }))
+      expect(res).toEqual({ mode: 'metal', url: 'http://10.8.0.2:8080' })
+    })
+
+    it('routes a brand-new project (no ksvc) to metal', async () => {
+      const res = await resolveProjectPodUrl('brand-new', drainOpts({
+        _knativeStatus: async () => ({ exists: false, ready: false, replicas: 0, url: null }),
+      }))
+      expect(res).toEqual({ mode: 'metal', url: 'http://10.8.0.2:8080' })
+    })
+
+    it('does NOT yield to a Knative service that exists but is not ready', async () => {
+      const res = await resolveProjectPodUrl('proj-1', drainOpts({
+        _knativeStatus: async () => ({ exists: true, ready: false, replicas: 0, url: 'http://x' }),
+      }))
+      expect(res.mode).toBe('metal')
+    })
+
+    it('on a probe FAILURE, throws retryable (no metal resume, no Knative start — avoids dual-run)', async () => {
+      let metalCalls = 0
+      let k8sCalls = 0
+      await expect(
+        resolveProjectPodUrl('proj-1', drainOpts({
+          _metalResolver: async () => { metalCalls++; return 'http://metal' },
+          _k8sResolver: async () => { k8sCalls++; return 'http://pod.cluster/v1' },
+          _knativeStatus: async () => { throw new Error('k8s api server unavailable') },
+        })),
+      ).rejects.toThrow(/starting/)
+      expect(metalCalls).toBe(0)
+      expect(k8sCalls).toBe(0)
+    })
+
+    it('skips the drain probe when not in Kubernetes', async () => {
+      let probeCalls = 0
+      const res = await resolveProjectPodUrl('proj-1', drainOpts({
+        _isKubernetes: () => false,
+        _knativeStatus: async () => { probeCalls++; return { exists: true, ready: true, replicas: 1, url: 'http://x' } },
+      }))
+      expect(probeCalls).toBe(0)
+      expect(res.mode).toBe('metal')
+    })
+  })
+
   describe('metal wait-and-retry (metalWaitMs)', () => {
     it('does a SINGLE attempt by default (metalWaitMs unset) then falls back', async () => {
       let metalCalls = 0

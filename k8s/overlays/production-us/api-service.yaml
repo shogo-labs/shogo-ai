@@ -545,6 +545,35 @@ spec:
               value: "enforce"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
+            # --- Metal microVM substrate (bare-metal Firecracker) -----------
+            # Production cutover to metal is a "sticky-drain": when
+            # SHOGO_METAL_DRAIN_MODE is flipped on (live, via
+            # .github/scripts/sync-api-env.sh — NOT baked here until the region
+            # is proven stable) every NEW open routes to the metal warm pool,
+            # while a project that still has a live Knative pod keeps being
+            # served from Knative until that pod idles out. A metal miss for a
+            # project with no live pod is authoritative (retryable 503 /
+            # chat-wait; no silent Knative fallback), so the old fleet drains.
+            # Depends on (already present in this overlay): REDIS_URL (fleet
+            # discovery shared across api replicas) and SHOGO_INTERNAL_SECRET
+            # (the node-agent register+assign token).
+            # To roll back the cutover (incident switch):
+            #   .github/scripts/sync-api-env.sh shogo-production-system \
+            #       SHOGO_METAL_DRAIN_MODE false
+            #
+            # Metal fleet reconciler: ENABLED runs the loop; ACTUATE
+            # (deliberately unset = false) keeps it OBSERVE-only — it logs the
+            # plan it WOULD run and emits metal.fleet.* metrics but makes NO
+            # Latitude calls. Actuation also requires LATITUDESH_AUTH_TOKEN (a
+            # secret, intentionally NOT wired here) so prod cannot auto-provision
+            # burst hosts until we deliberately enable it. Project/SSH ids are
+            # non-secret and staged for that.
+            - name: METAL_FLEET_RECONCILER_ENABLED
+              value: "true"
+            - name: LATITUDESH_PROJECT_ID
+              value: "proj_LqG158bE40BOg"
+            - name: LATITUDESH_SSH_KEY_ID
+              value: "ssh_XDO7NYqJvNPgw"
             - name: PROMOTED_POD_GC_ENABLED
               value: "true"
             # 30 min: needs to be longer than typical user-think-time
