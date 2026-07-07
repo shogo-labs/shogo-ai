@@ -12,9 +12,18 @@ rules:
   - apiGroups: ["serving.knative.dev"]
     resources: ["domainmappings"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # `revisions` is REQUIRED for warm-pool hot/cold detection AND the metal
+  # drain-cutover liveness probe: the controller reads each Service's ready
+  # Revision status (actualReplicas) to tell a HOT pod (>=1 running replica,
+  # instant claim / still-live project) from a scaled-to-zero one. Without
+  # `list revisions` the API gets a 403 (566k/24h in prod-india), treats every
+  # pod as cold — so (a) every "warm" claim silently eats a scale-from-zero and
+  # (b) SHOGO_METAL_DRAIN_MODE can't see live Knative projects and drains them
+  # onto metal mid-session. `configurations`/`routes` + `watch` round out read
+  # access and match the staging overlay.
   - apiGroups: ["serving.knative.dev"]
-    resources: ["services"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
+    resources: ["services", "revisions", "configurations", "routes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["list"]

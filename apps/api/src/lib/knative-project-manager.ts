@@ -382,12 +382,27 @@ export class KnativeProjectManager {
       const status = service.status || {}
       const conditions = status.conditions || []
       const readyCondition = conditions.find((c: any) => c.type === "Ready")
+      const ready = readyCondition?.status === "True"
+
+      // A Knative Service's status carries NO replica count — `actualReplicas`
+      // lives on the backing Revision. Reading it off `service.status` always
+      // yielded `undefined → 0` (see warm-pool-controller.getRevisionReplicaMap,
+      // prod incident 2026-06-08), which silently broke the metal drain probe:
+      // `replicas` was permanently 0, so a genuinely-live project looked
+      // scaled-to-zero and SHOGO_METAL_DRAIN_MODE drained it onto metal
+      // mid-session. Resolve the live count from the ready Revision so
+      // `replicas` is actually meaningful for `drainLiveKnativeUrl`.
+      const readyRevName = status.latestReadyRevisionName
+      const replicas =
+        ready && readyRevName
+          ? await this.getRevisionReplicas(readyRevName)
+          : status.actualReplicas || 0
 
       return {
         exists: true,
-        ready: readyCondition?.status === "True",
+        ready,
         url: status.url || `http://${serviceName}.${this.namespace}.svc.cluster.local`,
-        replicas: status.actualReplicas || 0,
+        replicas,
         message: readyCondition?.message,
         createdAt: metadata.creationTimestamp,
         updatedAt: status.observedGeneration ? metadata.generation?.toString() : undefined,
@@ -397,6 +412,37 @@ export class KnativeProjectManager {
         return { exists: false, ready: false, url: null, replicas: 0 }
       }
       throw error
+    }
+  }
+
+  /**
+   * Live replica count for a single Knative Revision (`status.actualReplicas`).
+   * The number lives on the Revision, not the Service — see getServiceStatus.
+   *
+   * Failure is deliberately non-fatal and returns 0 ("treat as not-live"):
+   *  - a 403 (the `revisions` RBAC gap that hit prod-india) or any transient
+   *    error must NOT throw here, or it would take down every getStatus caller;
+   *  - for the drain probe, 0 is the SAFE default — an unknown/limited-RBAC
+   *    state routes the open to metal rather than risk dual-running, and the
+   *    warm-pool path already treats "cold" as the claimable default.
+   */
+  private async getRevisionReplicas(revisionName: string): Promise<number> {
+    try {
+      const api = getCustomApi()
+      const resp = await api.getNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: "revisions",
+        name: revisionName,
+      })
+      return (resp as any).status?.actualReplicas ?? 0
+    } catch (err: any) {
+      console.warn(
+        `[KnativeProjectManager] Failed to read revision ${revisionName} replicas (treating as not-live):`,
+        err?.message,
+      )
+      return 0
     }
   }
 
