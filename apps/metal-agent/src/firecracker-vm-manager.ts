@@ -261,6 +261,18 @@ export class FirecrackerVMManager {
     if (Number.isFinite(nextAtLeast) && nextAtLeast > this.vmSeq) this.vmSeq = nextAtLeast
   }
 
+  /**
+   * The index + `fctap<n>` name the NEXT spawned VM will use, WITHOUT consuming
+   * it. This is the observable end of the restart collision-safety invariant: a
+   * freshly-started agent must never hand a new warm VM a tap still owned by an
+   * adopted (live) or suspended (resume-on-demand) VM, since `setupTap`
+   * deletes-then-recreates the device. Used in restart diagnostics and asserted
+   * by the pool seeding tests.
+   */
+  peekNextTap(): { index: number; tap: string } {
+    return { index: this.vmSeq, tap: deriveNet(this.vmSeq, this.cfg.tapCidrBase).tap }
+  }
+
   async startVM(cfg: FcVmConfig = {}): Promise<FcVmHandle> {
     const n = this.vmSeq++
     const id = `fcvm-${n}-${Date.now().toString(36)}`
