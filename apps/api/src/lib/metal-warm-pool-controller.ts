@@ -417,14 +417,132 @@ export class MetalWarmPoolController {
     }
   }
 
+  /** Bearer-over-mesh headers for node-agent control calls. */
+  private agentHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      ...(process.env.METAL_REGISTER_TOKEN ? { Authorization: `Bearer ${process.env.METAL_REGISTER_TOKEN}` } : {}),
+    }
+  }
+
+  /**
+   * The live host currently holding a project — its sticky placement. Prefers
+   * this replica's in-memory stickiness, then the shared placement registry (the
+   * project may be placed on a host this replica hasn't personally heard from).
+   * Returns undefined when the project isn't placed anywhere live.
+   */
+  private async hostForProject(projectId: string): Promise<HostEntry | undefined> {
+    const localId = this.projectHost.get(projectId)
+    if (localId) {
+      const h = this.hosts.get(localId)
+      if (h && h.lastSeenAt >= this.now() - HOST_TTL_MS) return h
+    }
+    const placed = await this.registry.getPlacement(projectId).catch(() => null)
+    if (placed?.hostId) {
+      const live = await this.liveHostsShared()
+      return live.find((h) => h.hostId === placed.hostId)
+    }
+    return undefined
+  }
+
+  /**
+   * Project-scoped runtime status (exists/ready/replicas) — the metal analog of
+   * KnativeProjectManager.getStatus, powering the substrate `getStatus()`. Reads
+   * the host holding the project; a project placed nowhere live reports absent.
+   */
+  async getProjectStatus(projectId: string): Promise<{ exists: boolean; ready: boolean; replicas: number; url?: string }> {
+    const host = await this.hostForProject(projectId)
+    if (!host) return { exists: false, ready: false, replicas: 0 }
+    try {
+      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/status`, {
+        method: 'POST',
+        headers: this.agentHeaders(),
+        body: JSON.stringify({ projectId }),
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) return { exists: false, ready: false, replicas: 0 }
+      const b = (await res.json()) as { exists?: boolean; ready?: boolean; replicas?: number; url?: string }
+      return { exists: !!b.exists, ready: !!b.ready, replicas: b.replicas ?? 0, url: b.url }
+    } catch {
+      return { exists: false, ready: false, replicas: 0 }
+    }
+  }
+
+  /**
+   * Stop a project (suspend-to-snapshot, freeing host RAM) — the metal analog of
+   * scaling a Knative service to zero. Best-effort and idempotent: no live
+   * placement, a down host, or an already-stopped project are all no-ops.
+   */
+  async stopProject(projectId: string): Promise<void> {
+    const host = await this.hostForProject(projectId)
+    if (!host) return
+    await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/stop`, {
+      method: 'POST',
+      headers: this.agentHeaders(),
+      body: JSON.stringify({ projectId }),
+      signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+    }).catch((err) => console.warn(`[MetalPool] stop ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}`))
+  }
+
+  /**
+   * Permanently destroy a project's runtime everywhere on the fleet — the metal
+   * analog of KnativeProjectManager.deleteProject. Fans out to EVERY live host
+   * (not just the current placement): after a failover a stale local/durable
+   * snapshot can linger on another host, and a project delete must leak nothing.
+   * Also clears this project's routing/placement/lease state. Best-effort.
+   */
+  async destroyProject(projectId: string): Promise<void> {
+    const hosts = await this.liveHostsShared()
+    await Promise.all(
+      hosts.map((h) =>
+        this.fetchImpl(`http://${h.meshIp}:${h.agentPort}/destroy`, {
+          method: 'POST',
+          headers: this.agentHeaders(),
+          body: JSON.stringify({ projectId }),
+          signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+        }).catch((err) => console.warn(`[MetalPool] destroy ${projectId} on ${h.hostId} failed: ${(err as any)?.message ?? err}`)),
+      ),
+    )
+    this.projectHost.delete(projectId)
+    await this.registry.clearPlacement(projectId).catch(() => {})
+    await this.registry.releaseLease(projectId, this.holderId).catch(() => {})
+  }
+
+  /**
+   * Every project running or cached on the fleet — the metal analog of
+   * KnativeProjectManager.listAllServices, for the admin panel + infra metrics.
+   * Queries each live host's /vms; a down host is skipped rather than failing.
+   */
+  async listProjects(): Promise<Array<{ projectId: string; ready: boolean; url?: string; host?: string; region?: string }>> {
+    const hosts = await this.liveHostsShared()
+    const out: Array<{ projectId: string; ready: boolean; url?: string; host?: string; region?: string }> = []
+    await Promise.all(
+      hosts.map(async (h) => {
+        try {
+          const res = await this.fetchImpl(`http://${h.meshIp}:${h.agentPort}/vms`, {
+            headers: this.agentHeaders(),
+            signal: AbortSignal.timeout(5000),
+          })
+          if (!res.ok) return
+          const b = (await res.json()) as {
+            assigned?: Array<{ projectId: string; url?: string }>
+            suspended?: Array<{ projectId: string }>
+          }
+          for (const a of b.assigned ?? []) out.push({ projectId: a.projectId, ready: true, url: a.url, host: h.hostId, region: h.region })
+          for (const s of b.suspended ?? []) out.push({ projectId: s.projectId, ready: false, host: h.hostId, region: h.region })
+        } catch {
+          /* skip a host that didn't answer */
+        }
+      }),
+    )
+    return out
+  }
+
   private async assignOnHost(host: HostEntry, projectId: string, env: Record<string, string>): Promise<AssignResult> {
     const base = `http://${host.meshIp}:${host.agentPort}`
     const res = await this.fetchImpl(`${base}/assign`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(process.env.METAL_REGISTER_TOKEN ? { Authorization: `Bearer ${process.env.METAL_REGISTER_TOKEN}` } : {}),
-      },
+      headers: this.agentHeaders(),
       body: JSON.stringify({ projectId, env }),
       signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
     })
@@ -572,6 +690,26 @@ export function registerMetalHost(reg: MetalHostRegistration): void {
 
 export async function getMetalProjectUrl(projectId: string): Promise<string> {
   return getMetalWarmPoolController().getMetalProjectUrl(projectId)
+}
+
+/** Project-scoped runtime status on metal (substrate.getStatus). */
+export async function getMetalProjectStatus(projectId: string) {
+  return getMetalWarmPoolController().getProjectStatus(projectId)
+}
+
+/** Suspend a project on metal, freeing host RAM (substrate.stop). */
+export async function stopMetalProject(projectId: string): Promise<void> {
+  return getMetalWarmPoolController().stopProject(projectId)
+}
+
+/** Permanently destroy a project's metal runtime fleet-wide (substrate.destroy). */
+export async function destroyMetalProject(projectId: string): Promise<void> {
+  return getMetalWarmPoolController().destroyProject(projectId)
+}
+
+/** Every project running/cached on the metal fleet (substrate.listAll). */
+export async function listMetalProjects() {
+  return getMetalWarmPoolController().listProjects()
 }
 
 /** Registry-aware fleet status for the super-admin panel (all replicas). */

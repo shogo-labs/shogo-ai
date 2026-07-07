@@ -436,5 +436,15 @@ export const projectHooks: ProjectHooks = {
     } catch {
       // Module not available in this build.
     }
+    // Cloud (Kubernetes) teardown: previously a user delete left the project's
+    // runtime infra behind — the Knative ksvc + DomainMapping, and any metal
+    // snapshot on NVMe/S3 — until an admin/GC sweep. Destroy both substrates so
+    // nothing leaks (covers the drain window where a project has both).
+    try {
+      const { destroyProjectRuntime } = await import('../lib/substrate')
+      await destroyProjectRuntime(id)
+    } catch (err: any) {
+      console.warn(`[project.afterDelete] substrate teardown for ${id} failed:`, err?.message ?? err)
+    }
   },
 }
