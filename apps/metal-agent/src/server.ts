@@ -106,8 +106,21 @@ const server = Bun.serve({
 console.log(`[metal-agent] listening on http://${config.listenHost}:${server.port}`)
 console.log('[metal-agent] warming pool...')
 pool.start().then(
-  () => {
+  (adoption) => {
     console.log('[metal-agent] pool ready')
+    // Rolling deploy: adopt() re-attached live VMs that survived this restart.
+    // Re-assert their (persisted) DNAT rules and tear down forwards for any VM
+    // that was NOT re-adopted, so the public data path matches reality.
+    try {
+      const kept = fwd.retainAndReassert(new Set(adoption.adopted))
+      if (adoption.adopted.length || adoption.reaped) {
+        console.log(
+          `[metal-agent] adopted ${adoption.adopted.length} live VM(s); ${kept} forward(s) retained; reaped ${adoption.reaped} non-adopted FC proc(s)`,
+        )
+      }
+    } catch (err: any) {
+      console.error('[metal-agent] forward reassert failed:', err?.message ?? err)
+    }
     // Reclaim files left over from a prior run once the suspended index is
     // rehydrated (start() calls rehydrate()), so a deploy doesn't leak disk.
     try {
@@ -172,11 +185,17 @@ if (config.gcIntervalMs > 0) {
   }, config.gcIntervalMs)
 }
 
+// Graceful shutdown for rolling deploys. systemd is configured `KillMode=process`
+// so it signals ONLY this agent; the firecracker children keep running. We must
+// therefore NOT tear down the live data path: leave assigned VMs and their DNAT
+// rules in place (the next instance re-adopts them via pool.adopt()), and only
+// release warm/idle pool VMs. A kill of the assigned VMs here would defeat the
+// whole point — the user would see a cold resume on every deploy.
 process.on('SIGTERM', async () => {
+  console.log('[metal-agent] SIGTERM: graceful restart — keeping assigned microVMs + forwards alive')
   stopRegistration()
   if (reaper) clearInterval(reaper)
   if (gc) clearInterval(gc)
-  fwd.removeAll()
-  await pool.stop().catch(() => {})
+  await pool.prepareForRestart().catch(() => {})
   process.exit(0)
 })

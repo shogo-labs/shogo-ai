@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, it } from 'bun:test'
-import { buildBurstUserData, type BurstUserDataOpts } from '../metal-cloud-init'
+import { buildBurstUserData, DEFAULT_IDLE_SUSPEND_MS, type BurstUserDataOpts } from '../metal-cloud-init'
 
 const BASE: BurstUserDataOpts = {
   hostId: 'shogo-fc-burst-eu-20260706',
@@ -65,5 +65,16 @@ describe('buildBurstUserData', () => {
     expect(s).toContain("METAL_POOL_SIZE='12'")
     expect(s).toContain("METAL_MEM_MIB='8192'")
     expect(s).toContain("METAL_ROOTFS_COW='reflink'")
+  })
+
+  it('defaults the idle-suspend window to 30 minutes (avoids suspend/resume churn)', () => {
+    expect(DEFAULT_IDLE_SUSPEND_MS).toBe(30 * 60 * 1000)
+    const s = buildBurstUserData(BASE)
+    expect(s).toContain("METAL_IDLE_SUSPEND_MS='1800000'")
+  })
+
+  it('honours an explicit idleSuspendMs override', () => {
+    const s = buildBurstUserData({ ...BASE, idleSuspendMs: 60_000 })
+    expect(s).toContain("METAL_IDLE_SUSPEND_MS='60000'")
   })
 })

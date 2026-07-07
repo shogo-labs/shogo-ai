@@ -241,6 +241,15 @@ WorkingDirectory=/opt/metal-agent
 ExecStart=/usr/local/bin/bun run src/server.ts
 Restart=always
 RestartSec=2
+# ROLLING DEPLOY: kill ONLY the agent process on stop/restart, never its
+# cgroup. The firecracker microVM children are reparented to init and keep
+# running; the next agent instance re-adopts them (pool.adopt) so a code deploy
+# never cold-restarts live projects. Without this, systemd's default
+# KillMode=control-group would SIGTERM the whole cgroup and take the VMs down.
+KillMode=process
+# On SIGTERM the agent releases only warm VMs and exits fast; give it room but
+# don't let a hang wedge the deploy.
+TimeoutStopSec=30
 # microVMs + KVM need broad privileges; this host is single-tenant.
 User=root
 LimitNOFILE=1048576

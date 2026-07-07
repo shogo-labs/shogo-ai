@@ -31,6 +31,17 @@
  * log the rendered script.
  */
 
+/**
+ * Default idle-suspend window baked into a host's env when the caller doesn't
+ * override it. 30 minutes: long enough that a project a user is actively
+ * iterating on (edit → look → edit, with think time) stays hot on its microVM
+ * across the whole session, so opens are instant same-host resumes instead of
+ * the constant suspend/resume churn a short (e.g. 45s) window caused. The GC's
+ * LRU eviction still reclaims genuinely-idle projects under disk pressure, so a
+ * longer window trades a little idle RAM for far fewer cold wakes.
+ */
+export const DEFAULT_IDLE_SUSPEND_MS = 30 * 60 * 1000
+
 export interface BurstUserDataOpts {
   /** METAL_HOST_ID the agent registers with (matches the reconciler's record). */
   hostId: string
@@ -88,7 +99,7 @@ export function buildBurstUserData(o: BurstUserDataOpts): string {
   const poolSize = o.poolSize ?? 24
   const memMiB = o.memMiB ?? 4096
   const vcpus = o.vcpus ?? 2
-  const idleSuspendMs = o.idleSuspendMs ?? 45000
+  const idleSuspendMs = o.idleSuspendMs ?? DEFAULT_IDLE_SUSPEND_MS
   const heavy = o.heavyConcurrency ?? 8
   const cow = o.rootfsCow ?? 'dm'
 

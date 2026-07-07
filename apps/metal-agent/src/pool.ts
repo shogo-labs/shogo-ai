@@ -29,6 +29,7 @@ import { config } from './config'
 import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
+import { LiveRegistry, pidAlive } from './live-registry'
 import { M, metrics } from './metrics'
 import {
   assertArtifacts,
@@ -96,6 +97,8 @@ export class MetalWarmPool {
   private store: SnapshotStore
   private rootfsId: string
   private index: CacheIndex
+  /** Durable registry of assigned/live VMs, for adopt-on-restart (rolling deploy). */
+  private live: LiveRegistry
   /** Handle ids in a boot/restore/assign window: off the pool + not yet in a
    * map, but legitimately live. Kept out of the orphan reaper's sights. */
   private inFlight = new Set<string>()
@@ -116,6 +119,7 @@ export class MetalWarmPool {
     this.store = store ?? createSnapshotStore(cfg)
     this.rootfsId = computeRootfsIdentity(cfg)
     this.index = new CacheIndex(cfg.snapDir)
+    this.live = new LiveRegistry(cfg.runDir)
     this.heavy = new Semaphore(parseInt(process.env.METAL_HEAVY_CONCURRENCY ?? '2', 10))
   }
 
@@ -211,9 +215,114 @@ export class MetalWarmPool {
     await Promise.all(Array.from({ length: workers }, () => worker()))
   }
 
-  async start(): Promise<void> {
+  async start(): Promise<{ adopted: string[]; reaped: number }> {
     this.rehydrate()
+    // Adopt live VMs that survived the restart BEFORE filling the pool (fillPool
+    // spawns new FCs; adopt must first claim survivors + reap non-adopted ones
+    // so the host-scan reaper can't race a freshly-booted warm VM).
+    const adoption = await this.adopt()
     await this.reconcile()
+    return adoption
+  }
+
+  /**
+   * Re-adopt microVMs that survived a node-agent restart (rolling deploy). For
+   * each entry in the durable live registry, verify the firecracker pid is still
+   * alive, its API socket still exists, and the guest still answers /health; if
+   * so, re-attach (mgr.adoptVM) and restore it to `assigned`. Entries that fail
+   * any check are dropped from the registry. Finally SIGKILL every firecracker
+   * on the host we did NOT adopt — old warm-pool VMs (no state) and assigned VMs
+   * whose guest was unhealthy — so the fresh warm pool starts from a clean slate.
+   *
+   * MUST run before reconcile()/fillPool(), which spawn new firecracker
+   * processes the host-orphan reaper would otherwise kill.
+   */
+  async adopt(): Promise<{ adopted: string[]; reaped: number }> {
+    const adoptedIds = new Set<string>()
+    const adoptedProjects: string[] = []
+    for (const e of this.live.all()) {
+      if (this.assigned.has(e.projectId)) continue // already tracked (defensive)
+      if (!pidAlive(e.pid) || !existsSync(e.socketPath)) {
+        this.live.remove(e.projectId)
+        continue
+      }
+      // The guest must actually answer. Retry briefly to ride out any transient
+      // blip during the restart window; a truly hung guest is not worth adopting
+      // (it's reaped below and cold-resumes from its last snapshot on next open).
+      let healthy = false
+      for (let i = 0; i < 3 && !healthy; i++) {
+        healthy = await probeHealth(e.agentUrl, 2000)
+        if (!healthy) await Bun.sleep(250)
+      }
+      if (!healthy) {
+        this.live.remove(e.projectId)
+        continue
+      }
+      const handle: FcVmHandle = {
+        id: e.vmId,
+        agentUrl: e.agentUrl,
+        guestIp: e.guestIp,
+        pid: e.pid,
+        platform: 'linux',
+        net: e.net,
+        rootfs: e.rootfs,
+        socketPath: e.socketPath,
+        serialLog: e.serialLog,
+        vcpus: e.vcpus,
+        memoryMB: e.memoryMB,
+      }
+      this.mgr.adoptVM(handle)
+      this.assigned.set(e.projectId, {
+        projectId: e.projectId,
+        handle,
+        assignedAt: e.assignedAt,
+        lastTouchedAt: Date.now(),
+        restoredFrom: e.restoredFrom,
+      })
+      adoptedIds.add(e.vmId)
+      adoptedProjects.push(e.projectId)
+    }
+    const reaped = this.mgr.reapHostOrphans(adoptedIds)
+    if (adoptedProjects.length) {
+      console.log(`[pool] adopted ${adoptedProjects.length} live microVM(s) across restart: ${adoptedProjects.join(', ')}`)
+    }
+    return { adopted: adoptedProjects, reaped }
+  }
+
+  /**
+   * Graceful pre-restart hook for a rolling deploy. Kills ONLY warm/available
+   * VMs (they hold no user state; leaving them would just orphan them for the
+   * next instance to reap and refill). Assigned VMs are LEFT RUNNING: with
+   * systemd `KillMode=process` their firecracker processes survive the agent
+   * exit, their registry entries persist, and the next instance re-adopts them
+   * via adopt(). Deliberately does NOT snapshot or kill assigned VMs.
+   */
+  async prepareForRestart(): Promise<{ releasedWarm: number; keptAssigned: number }> {
+    const releasedWarm = this.available.length
+    for (const vm of this.available) await this.mgr.stopVM(vm.handle).catch(() => {})
+    this.available = []
+    return { releasedWarm, keptAssigned: this.assigned.size }
+  }
+
+  /** Persist an assigned VM's connection info so the next instance can adopt it. */
+  private writeLive(a: AssignedVm): void {
+    this.live.put({
+      projectId: a.projectId,
+      vmId: a.handle.id,
+      pid: a.handle.pid,
+      guestIp: a.handle.guestIp,
+      agentUrl: a.handle.agentUrl,
+      socketPath: a.handle.socketPath,
+      serialLog: a.handle.serialLog,
+      net: a.handle.net,
+      rootfs: a.handle.rootfs,
+      vcpus: a.handle.vcpus,
+      memoryMB: a.handle.memoryMB,
+      assignedAt: a.assignedAt,
+      lastTouchedAt: a.lastTouchedAt,
+      restoredFrom: a.restoredFrom,
+      v: 1,
+    })
   }
 
   /**
@@ -338,6 +447,7 @@ export class MetalWarmPool {
     const now = Date.now()
     const a: AssignedVm = { projectId, handle: vm.handle, assignedAt: now, lastTouchedAt: now }
     this.assigned.set(projectId, a)
+    this.writeLive(a)
     return a
   }
 
@@ -356,6 +466,7 @@ export class MetalWarmPool {
       await this.callGuestHook(a.handle.agentUrl, 'quiesce', this.cfg.quiesceTimeoutMs)
       const snapshot = await this.heavy.run(() => this.mgr.snapshotVM(a.handle))
       this.assigned.delete(projectId)
+      this.live.remove(projectId) // no longer a live process — snapshot is the source of truth
       const now = Date.now()
       const lastAccessAt = Math.max(a.lastTouchedAt, now)
       const s: SuspendedVm = { projectId, snapshot, suspendedAt: now, lastAccessAt }
@@ -499,6 +610,7 @@ export class MetalWarmPool {
       restoredFrom: { vmstate: s.snapshot.snapshotPath, mem: s.snapshot.memFilePath },
     }
     this.assigned.set(projectId, a)
+    this.writeLive(a)
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
     return { assigned: a, apiMs, readyMs: apiMs + readyMs, source }
   }

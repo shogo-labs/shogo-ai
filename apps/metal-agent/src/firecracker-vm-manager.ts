@@ -19,11 +19,12 @@
  */
 
 import { spawn, type Subprocess } from 'bun'
-import { existsSync, mkdirSync, openSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { config } from './config'
 import { allocatedBytes } from './disk'
 import { FcApi, computeReclaimMiB } from './fc-api'
+import { pidAlive } from './live-registry'
 import { deriveNet, setupTap, teardownTap, defaultUplink, type VmNet } from './net'
 import { RootfsProvisioner } from './rootfs'
 
@@ -80,6 +81,14 @@ const ORPHAN_PROC_GRACE_MS = parseInt(process.env.METAL_ORPHAN_PROC_GRACE_MS || 
 
 export class FirecrackerVMManager {
   private procs = new Map<string, Subprocess>()
+  /**
+   * id → pid for firecracker processes ADOPTED across a node-agent restart. We
+   * don't own a Bun.Subprocess for them (the child was spawned by the previous
+   * agent process and reparented to init when systemd `KillMode=process` let the
+   * agent exit without its cgroup). Liveness and kill therefore go through the
+   * pid; everything else (API socket, tap, rootfs) is unchanged.
+   */
+  private adopted = new Map<string, number>()
   /** id → spawn timestamp, for the age-gated orphan reaper. */
   private spawnedAt = new Map<string, number>()
   private uplink = defaultUplink()
@@ -135,7 +144,91 @@ export class FirecrackerVMManager {
       }
       this.procs.delete(id)
     }
+    const adoptedPid = this.adopted.get(id)
+    if (adoptedPid !== undefined) {
+      try {
+        process.kill(adoptedPid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+      this.adopted.delete(id)
+    }
     this.spawnedAt.delete(id)
+  }
+
+  /**
+   * Re-attach to a firecracker process that survived a node-agent restart. The
+   * caller (pool.adopt) has already verified the pid is alive, the API socket
+   * exists, and the guest is healthy. From here the VM is a first-class member of
+   * the manager: isRunning()/killProc()/snapshotVM() all work through the pid and
+   * the persisted socket path exactly as for a VM we spawned ourselves.
+   */
+  adoptVM(handle: FcVmHandle): void {
+    this.adopted.set(handle.id, handle.pid)
+    // Treat as long-established so the age-gated orphan reaper never touches it.
+    this.spawnedAt.set(handle.id, Date.now())
+  }
+
+  /**
+   * Every firecracker process currently running on the host, with the `--id`
+   * it was launched with (our handle id) parsed from /proc/<pid>/cmdline. Used
+   * at startup to find VMs the previous agent left behind.
+   */
+  scanHostFcProcs(): Array<{ pid: number; id: string | null }> {
+    const out: Array<{ pid: number; id: string | null }> = []
+    let entries: string[] = []
+    try {
+      entries = readdirSync('/proc')
+    } catch {
+      return out
+    }
+    const fcName = this.cfg.fcBin.split('/').pop() || 'firecracker'
+    for (const name of entries) {
+      if (!/^\d+$/.test(name)) continue
+      let argv: string[]
+      try {
+        argv = readFileSync(`/proc/${name}/cmdline`, 'utf8').split('\0').filter(Boolean)
+      } catch {
+        continue // process vanished or not ours to read
+      }
+      if (argv.length === 0) continue
+      const exe = argv[0]
+      const isFc = exe === this.cfg.fcBin || exe.endsWith('/firecracker') || exe === fcName || exe === 'firecracker'
+      if (!isFc) continue
+      const idIdx = argv.indexOf('--id')
+      const id = idIdx >= 0 && idIdx + 1 < argv.length ? argv[idIdx + 1] : null
+      out.push({ pid: parseInt(name, 10), id })
+    }
+    return out
+  }
+
+  /**
+   * SIGKILL every firecracker process on the host whose `--id` is NOT in
+   * `keepIds`. Run ONCE at startup, AFTER adoption, to clear VMs the previous
+   * agent left behind that we did not re-adopt: old warm-pool VMs (no state to
+   * lose) and assigned VMs whose guest failed health. `keepIds` must be the set
+   * of adopted handle ids. Returns the number reaped.
+   */
+  reapHostOrphans(keepIds: Set<string>): number {
+    let killed = 0
+    for (const { pid, id } of this.scanHostFcProcs()) {
+      if (id && keepIds.has(id)) continue
+      try {
+        process.kill(pid, 'SIGKILL')
+        killed++
+      } catch {
+        continue // already gone
+      }
+      if (id) {
+        try {
+          rmSync(join(this.cfg.runDir, `${id}.sock`), { force: true })
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    if (killed) console.warn(`[fc] reaped ${killed} non-adopted firecracker process(es) at startup`)
+    return killed
   }
 
   private async waitForSocket(socketPath: string, timeoutMs = 3000): Promise<void> {
@@ -237,12 +330,15 @@ export class FirecrackerVMManager {
 
   /** Count of live firecracker processes this manager is tracking. */
   procCount(): number {
-    return this.procs.size
+    return this.procs.size + this.adopted.size
   }
 
   isRunning(handle: FcVmHandle): boolean {
     const proc = this.procs.get(handle.id)
-    return !!proc && proc.exitCode === null && !proc.killed
+    if (proc) return proc.exitCode === null && !proc.killed
+    const adoptedPid = this.adopted.get(handle.id)
+    if (adoptedPid !== undefined) return pidAlive(adoptedPid)
+    return false
   }
 
   /**
