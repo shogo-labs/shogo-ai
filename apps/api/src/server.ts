@@ -1946,6 +1946,84 @@ app.get('/api/preview/:projectId/wake', async (c) => {
   }
 })
 
+// -----------------------------------------------------------------------------
+// Preview render proxy — serves a project's preview subdomain via the API.
+// -----------------------------------------------------------------------------
+// The preview-router Worker proxies `{id}.preview.<base>/<path>` here rather than
+// straight to the runtime, because a metal project's runtime is reached over the
+// box's PUBLIC DNAT port and Cloudflare Workers cannot fetch() a raw IP:port
+// (error 1003 "Direct IP Access Not Allowed") — only a hostname. Routing through
+// the API (a real hostname) sidesteps that AND keeps the box's data ports locked
+// to the OKE egress IP instead of the whole internet.
+//
+// resolveProjectPodUrl() picks the right substrate (metal / knative / drain), and
+// we proxy to `${url}${path}` at the ROOT — the runtime serves the built SPA
+// there, exactly as Kourier→ksvc did for the Knative subdomain. Anonymous by
+// design (previews are public, keyed only by a UUID); mirrors the wake endpoints.
+const previewRenderHandler = async (c: any) => {
+  const projectId = c.req.param('projectId')
+  try {
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } })
+    if (!project) return c.json({ error: { code: 'not_found' } }, 404)
+    if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
+
+    const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+    let target: string
+    try {
+      const resolved = await resolveProjectPodUrl(projectId, {
+        logTag: 'preview/render',
+        metalWaitMs: 8000,
+        metalRetryDelayMs: 1000,
+      })
+      target = resolved.url
+    } catch (err: any) {
+      // Backend still resuming/booting — retryable 503 so the Worker keeps its
+      // loading interstitial polling rather than surfacing a hard error.
+      console.warn(`[preview/render] ${projectId} not ready:`, err?.message || err)
+      return c.json({ error: { code: 'pod_starting', message: 'preview backend starting' } }, 503, {
+        'Cache-Control': 'no-store',
+      })
+    }
+
+    const prefix = `/api/preview/${projectId}/render`
+    const rawPath = c.req.path.startsWith(prefix) ? c.req.path.slice(prefix.length) : ''
+    const path = rawPath || '/'
+    const search = new URL(c.req.url).search
+    const targetUrl = `${target.replace(/\/+$/, '')}${path}${search}`
+
+    // Forward a conservative header allowlist (Host is derived from targetUrl).
+    const headers = new Headers()
+    for (const h of [
+      'content-type', 'accept', 'accept-encoding', 'accept-language',
+      'user-agent', 'range', 'if-none-match', 'if-modified-since', 'cache-control',
+    ]) {
+      const v = c.req.header(h)
+      if (v) headers.set(h, v)
+    }
+    const init: RequestInit = { method: c.req.method, headers, redirect: 'manual' }
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') init.body = await c.req.arrayBuffer()
+
+    const resp = await fetch(targetUrl, init)
+
+    // Strip hop-by-hop + set-cookie (same-origin cookie stomp guard, see the
+    // Studio preview proxy) and pass the runtime marker header through untouched
+    // so the Worker can tell an app response from an ingress error.
+    const outHeaders = new Headers()
+    resp.headers.forEach((value, key) => {
+      const k = key.toLowerCase()
+      if (k === 'transfer-encoding' || k === 'connection' || k === 'set-cookie') return
+      outHeaders.set(key, value)
+    })
+    outHeaders.set('access-control-allow-origin', '*')
+    return new Response(resp.body, { status: resp.status, headers: outHeaders })
+  } catch (err: any) {
+    console.error('[preview/render]', err?.message || err)
+    return c.json({ error: { code: 'proxy_error', message: 'preview proxy failed' } }, 502)
+  }
+}
+app.all('/api/preview/:projectId/render', previewRenderHandler)
+app.all('/api/preview/:projectId/render/*', previewRenderHandler)
+
 // =============================================================================
 // Thumbnail routes
 // =============================================================================
