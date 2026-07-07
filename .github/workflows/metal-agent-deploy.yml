@@ -14,7 +14,10 @@
 # promote to `stable`; roll back by re-pointing the channel at an older version.
 #
 #   push to main (metal-agent/** changes) → staging `canary` (auto)
-#   workflow_dispatch                     → choose environment / channel / region
+#   workflow_dispatch                     → choose environment (staging / production-us /
+#                                           production-eu) / channel / region. Each
+#                                           production region has its own control plane
+#                                           (separate DB), so eu is a distinct target.
 #
 # CONFIG (per GitHub Environment: `staging` / `production-us`):
 #   Variables:
@@ -23,7 +26,14 @@
 #     METAL_S3_ENDPOINT        OCI S3-compat endpoint (https://<ns>.compat.objectstorage.<region>.oraclecloud.com)
 #     METAL_S3_REGION          object-storage region (e.g. us-ashburn-1)
 #     METAL_CONTROL_PLANE_URL  control-plane base URL (reaches /api/internal/metal/release)
-#     METAL_RELEASE_REGION     fleet region this pointer targets (e.g. us); '*' for all
+#     METAL_RELEASE_REGION     fleet region this pointer targets (e.g. us / eu); '*' for all
+#     METAL_RELEASE_INSECURE_TLS  'true' to skip TLS verify on the /release POST.
+#                              Set ONLY for a control plane with no publicly-trusted
+#                              cert (e.g. the EU CP's sslip.io origin behind a
+#                              Cloudflare Origin cert) — matches the fleet's own
+#                              NODE_TLS_REJECT_UNAUTHORIZED=0 posture; the bearer
+#                              token is the security boundary. Leave unset for the
+#                              Cloudflare-fronted us/staging domains.
 #   Secrets:
 #     METAL_S3_ACCESS_KEY_ID / METAL_S3_SECRET_ACCESS_KEY   OCI customer S3 keys
 #     METAL_REGISTER_TOKEN     bearer for /api/internal/metal/* (same token hosts use)
@@ -43,13 +53,14 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Fleet/control-plane to publish to'
+        description: 'Fleet/control-plane to publish to (each is a distinct regional control plane).'
         required: true
         default: 'staging'
         type: choice
         options:
           - staging
-          - production
+          - production-us
+          - production-eu
       channel:
         description: 'Release channel to point at this build (canary rolls out first; promote to stable).'
         required: true
@@ -78,7 +89,7 @@ jobs:
   publish:
     name: Publish ${{ inputs.channel || 'canary' }} → ${{ inputs.environment || 'staging' }}
     runs-on: ubuntu-latest
-    environment: ${{ (inputs.environment || 'staging') == 'production' && 'production-us' || 'staging' }}
+    environment: ${{ inputs.environment || 'staging' }}
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -148,6 +159,7 @@ jobs:
           SHA256: ${{ steps.bundle.outputs.sha256 }}
           BUNDLE_URL: ${{ steps.upload.outputs.bundle_url }}
           REBUILD: ${{ inputs.rebuild_rootfs && 'true' || 'false' }}
+          INSECURE_TLS: ${{ vars.METAL_RELEASE_INSECURE_TLS }}
         run: |
           set -euo pipefail
           REGION="${REGION_INPUT:-$REGION_DEFAULT}"
@@ -158,7 +170,15 @@ jobs:
             --argjson rebuild "$REBUILD" \
             '{region:$region, channel:$channel, release:{version:$version, bundleUrl:$url, sha256:$sha} + (if $rebuild then {rebuildRootfs:true} else {} end)}')
           echo "Publishing release: $BODY"
-          code=$(curl -sS -o /tmp/release_resp.json -w '%{http_code}' \
+          # Regional control planes with no publicly-trusted cert (eu sslip origin)
+          # opt into -k; the fleet itself runs NODE_TLS_REJECT_UNAUTHORIZED=0 and the
+          # bearer token is the security boundary. us/staging keep verified TLS.
+          CURL_OPTS=(-sS -m 20)
+          if [[ "${INSECURE_TLS:-}" == "true" ]]; then
+            echo "::warning::METAL_RELEASE_INSECURE_TLS=true — skipping TLS verify for this control plane"
+            CURL_OPTS+=(-k)
+          fi
+          code=$(curl "${CURL_OPTS[@]}" -o /tmp/release_resp.json -w '%{http_code}' \
             -X POST "${CP_URL%/}/api/internal/metal/release" \
             -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
             --data "$BODY")
