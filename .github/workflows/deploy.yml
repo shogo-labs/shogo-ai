@@ -541,6 +541,73 @@ jobs:
           cache-from: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:${{ matrix.image }}
           cache-to: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:${{ matrix.image }},mode=max,image-manifest=true,oci-mediatypes=true
 
+      # Upload the studio web app's immutable, content-hashed Expo assets
+      # (dist/_expo) to a shared, append-only object-storage bucket. A
+      # Cloudflare Worker serves studio.<env>.shogo.ai/_expo/* from this
+      # bucket same-origin, so a browser can always fetch a build's hashed
+      # assets no matter which Knative studio revision served the HTML. This
+      # is what makes the multi-revision asset-404 class of bug impossible.
+      #
+      # Runs in build-and-push (before any deploy job patches the ksvc), so
+      # the assets exist in the bucket before the new HTML references them.
+      # Content-hashed filenames make `aws s3 sync` append-only: new builds
+      # add files, older builds' files are preserved (rollback-safe).
+      #
+      # Staging-only for now — the bucket + Worker are wired for staging in
+      # terraform/environments/staging. Production rollout wires the same
+      # module per region and drops this environment gate.
+      - name: Upload web static assets to CDN bucket
+        if: matrix.image == 'web' && needs.resolve-config.outputs.environment == 'staging'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+          OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
+          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+          # AWS CLI v2 (>= 2.23) adds default integrity checksums that upload via
+          # `Content-Encoding: aws-chunked` with a trailing checksum. OCI's
+          # S3-compatible endpoint rejects that with `NotImplemented: AWS chunked
+          # encoding not supported`. Force checksums to WHEN_REQUIRED so PutObject
+          # uses a plain, pre-signed payload the OCI endpoint accepts.
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+        run: |
+          set -euo pipefail
+          # Materialize ONLY dist/_expo via the `web-assets` stage (FROM
+          # scratch). Build args + cache ref match the image build above, so
+          # every builder layer is a cache hit and this just exports the
+          # already-produced, byte-identical _expo tree (source maps already
+          # stripped in the builder stage).
+          docker buildx build \
+            --target web-assets \
+            --file apps/mobile/Dockerfile \
+            --platform linux/arm64 \
+            --build-arg WORKSPACE_DEPS="${OCIR_REGISTRY}/shogo/shogo-workspace-deps:${{ github.sha }}" \
+            --build-arg EXPO_PUBLIC_API_URL="${{ vars.EXPO_PUBLIC_API_URL }}" \
+            --build-arg EXPO_PUBLIC_BUILD_HASH="${{ github.sha }}" \
+            --build-arg EXPO_PUBLIC_APP_ENV="${{ needs.resolve-config.outputs.environment }}_web" \
+            --build-arg EXPO_PUBLIC_SENTRY_DSN_WEB="${{ secrets.EXPO_PUBLIC_SENTRY_DSN_WEB }}" \
+            --build-arg SENTRY_AUTH_TOKEN="${{ secrets.SENTRY_AUTH_TOKEN }}" \
+            --build-arg SENTRY_ORG=shogo-ai \
+            --build-arg SENTRY_PROJECT=javascript-react \
+            --cache-from type=registry,ref="${OCIR_REGISTRY}/shogo/buildcache:web" \
+            --output type=local,dest=./web-assets \
+            .
+          test -d ./web-assets/_expo || { echo "ERROR: ./web-assets/_expo missing after export"; exit 1; }
+          # Re-PUT the FULL current asset set every deploy (cp --recursive, not
+          # sync). Content-hashed names mean this is still append-only for new
+          # builds, but re-uploading refreshes the object creation time of every
+          # asset THIS build references. The bucket's 30-day DELETE lifecycle
+          # (terraform/modules/studio-web-assets) then only reaps assets that no
+          # deploy has referenced for 30 days. A plain `sync` would skip an
+          # unchanged-but-still-referenced chunk, let it age out, and reintroduce
+          # the 404 - so this MUST stay `cp --recursive`.
+          aws s3 cp ./web-assets/_expo "s3://shogo-web-assets-staging/_expo/" \
+            --recursive \
+            --endpoint-url "$OCI_S3_ENDPOINT" \
+            --no-progress \
+            --exclude "*.map" \
+            --cache-control "public, max-age=31536000, immutable"
+
   # ===========================================================================
   # Stage 2.5: Replicate Images to Secondary Regions (production only)
   # Uses skopeo to copy images from US OCIR to EU and India OCIR.
@@ -1016,6 +1083,38 @@ jobs:
           patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
+
+      # Retire stale studio revisions. The `studio-direct` Service (see
+      # k8s/overlays/*/studio-ws-ingress.yaml) selects EVERY studio revision by
+      # `serving.knative.dev/service=studio`, and each revision keeps a warm pod
+      # (min-scale + studio-direct feeding its queue-proxy keeps the autoscaler
+      # from scaling it to zero). So without this, old revisions keep serving —
+      # historically 404ing hashed assets ~half the time, and even with the
+      # shared-asset CDN they still serve stale HTML. Once the new revision is
+      # Ready, delete every other studio revision so studio-direct converges to
+      # a single serving build. Guarded so a bad rollout (latest not Ready)
+      # never deletes the only working revision.
+      - name: Retire stale studio revisions
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        run: |
+          set -euo pipefail
+          NS="${{ env.NS_SYSTEM }}"
+          echo "Waiting for studio ksvc to be Ready..."
+          kubectl wait --for=condition=Ready ksvc/studio -n "$NS" --timeout=300s
+          LATEST=$(kubectl get ksvc studio -n "$NS" -o jsonpath='{.status.latestReadyRevisionName}')
+          if [ -z "$LATEST" ]; then
+            echo "ERROR: studio has no latestReadyRevisionName; refusing to GC revisions." >&2
+            exit 1
+          fi
+          echo "Keeping latest-ready studio revision: $LATEST"
+          STALE=$(kubectl get revisions -n "$NS" -l serving.knative.dev/service=studio \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -v "^${LATEST}$" || true)
+          if [ -z "$STALE" ]; then
+            echo "No stale studio revisions to delete."
+          else
+            echo "Deleting stale studio revisions:"; echo "$STALE"
+            echo "$STALE" | xargs -r -n1 kubectl delete revision -n "$NS"
+          fi
 
       - name: Sync API environment variables
         env:

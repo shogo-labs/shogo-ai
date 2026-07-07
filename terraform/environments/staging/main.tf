@@ -388,6 +388,31 @@ module "publish_hosting" {
 }
 
 # =============================================================================
+# Studio Web Assets (shared immutable /_expo origin)
+# =============================================================================
+# Serves studio.staging.shogo.ai/_expo/* from a shared, append-only bucket via
+# a Cloudflare Worker, so a browser can always fetch a build's content-hashed
+# assets no matter which Knative studio revision served the HTML. This makes the
+# multi-revision asset-404 class of bug impossible. CI uploads dist/_expo to the
+# bucket before patching the ksvc (see .github/workflows/deploy.yml).
+module "studio_web_assets" {
+  source = "../../modules/studio-web-assets"
+
+  compartment_id        = var.compartment_id
+  environment           = local.environment
+  oci_region            = var.region
+  cloudflare_zone_id    = var.cloudflare_zone_id
+  cloudflare_account_id = var.cloudflare_account_id
+  studio_host           = "studio.${local.domain}" # studio.staging.shogo.ai
+  tags                  = local.tags
+
+  # The lifecycle policy on the assets bucket relies on the tenancy-scoped
+  # object-storage service-principal IAM policy created by module.object_storage
+  # (lifecycle_service_policy_*). Order after it so that policy exists first.
+  depends_on = [module.object_storage]
+}
+
+# =============================================================================
 # Preview Router — preview routing without per-preview DNS records
 # =============================================================================
 # Staging mirror of the production-global preview-router so the Worker + KV +

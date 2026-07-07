@@ -23,6 +23,13 @@
 #       — node disk exhaustion (the 2026-06-02 EU incident class): boot
 #         volume fills with stacked runtime images, kubelet evicts pods and
 #         GCs images, and the warm pool churns. Earliest clear signal.
+#   * more than one studio revision has Ready pods
+#       — the `studio-direct` Service selects ALL studio revisions, so >1
+#         Ready revision means the WS-capable ingress round-robins across
+#         mismatched web builds. With content-hashed assets served per-pod
+#         this 404s ~half of loads; assets now come from a shared bucket, but
+#         a second live revision still means stale HTML is served, so this is
+#         the hard invariant the deploy-time revision GC must maintain.
 #
 # Modeled after k8s/cnpg/logical-replication/replication-monitor.yaml
 # (deliberately the same structure/operator-experience).
@@ -194,6 +201,34 @@ spec:
                   ')
                   if [ -n "$PRESSURED" ]; then
                     echo "CRITICAL: node(s) under DiskPressure: $PRESSURED"
+                    EXIT_RC=1
+                  fi
+
+                  # 5) Studio single-revision invariant.
+                  # The `studio-direct` Service (see
+                  # k8s/overlays/*/studio-ws-ingress.yaml) selects EVERY studio
+                  # revision by `serving.knative.dev/service=studio`, bypassing
+                  # Knative's route which pins 100% to the latest revision. If
+                  # more than one revision has Ready pods, the ingress
+                  # round-robins across mismatched web builds and serves stale
+                  # HTML (and, before the shared-asset CDN, 404'd hashed assets
+                  # ~half the time). The deploy-time revision GC in
+                  # .github/workflows/deploy.yml is supposed to leave exactly one
+                  # revision; this alerts if that invariant ever breaks (e.g. an
+                  # out-of-band `kubectl patch ksvc studio`).
+                  echo "--- studio single-revision invariant ---"
+                  STUDIO_PODS=$(kubectl get pods -n "$API_NS" -l serving.knative.dev/service=studio -o json)
+                  STUDIO_REVS=$(echo "$STUDIO_PODS" | jq -c '
+                    [.items[]
+                      | select((.status.conditions // [])[]? | select(.type == "Ready" and .status == "True"))
+                      | .metadata.labels["serving.knative.dev/revision"] // empty
+                    ] | unique
+                  ')
+                  STUDIO_REV_COUNT=$(echo "$STUDIO_REVS" | jq 'length')
+                  STUDIO_REV_LIST=$(echo "$STUDIO_REVS" | jq -r 'join(", ")')
+                  echo "  ready studio revisions: count=$STUDIO_REV_COUNT [$STUDIO_REV_LIST]"
+                  if [ "$STUDIO_REV_COUNT" -gt 1 ]; then
+                    echo "CRITICAL: studio-direct spans $STUDIO_REV_COUNT revisions ($STUDIO_REV_LIST) — mixed builds serving; deploy-time revision GC did not converge."
                     EXIT_RC=1
                   fi
 
