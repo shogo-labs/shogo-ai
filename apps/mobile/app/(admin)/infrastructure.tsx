@@ -250,7 +250,12 @@ interface MetalFleetHostRow {
   hostId: string
   region: string
   site?: string
-  serverId?: string
+  // Identity/ops metadata (serverId, publicIp, enabled, notes) is DB-backed and
+  // super-admin editable — never committed to source.
+  serverId?: string | null
+  publicIp?: string | null
+  enabled?: boolean
+  notes?: string | null
   billing?: string
   role?: string
   kind: 'baseline' | 'burst'
@@ -287,6 +292,29 @@ async function setHostCordon(apiBase: string, hostId: string, cordon: boolean): 
     const res = await fetch(`${apiBase}/metal/hosts/${encodeURIComponent(hostId)}/${cordon ? 'cordon' : 'uncordon'}`, {
       method: 'POST',
       credentials: 'include',
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+// Editable identity/ops fields a super-admin can set on a host (DB-backed).
+interface MetalHostConfigPatch {
+  serverId?: string | null
+  publicIp?: string | null
+  enabled?: boolean
+  notes?: string | null
+  role?: string
+}
+
+async function saveHostConfig(apiBase: string, hostId: string, patch: MetalHostConfigPatch): Promise<boolean> {
+  try {
+    const res = await fetch(`${apiBase}/metal/hosts/${encodeURIComponent(hostId)}/config`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
     })
     return res.ok
   } catch {
@@ -580,12 +608,38 @@ function MetalFleetPanel({
   fleet,
   cordoning,
   onCordon,
+  onSaveConfig,
+  savingConfig,
 }: {
   fleet: MetalFleetData
   cordoning: string | null
   onCordon: (hostId: string, cordon: boolean) => void
+  onSaveConfig: (hostId: string, patch: MetalHostConfigPatch) => void
+  savingConfig: string | null
 }) {
   const liveCount = fleet.hosts.filter((h) => h.live).length
+  const [editing, setEditing] = useState<string | null>(null)
+  const [form, setForm] = useState<{ serverId: string; publicIp: string; notes: string; enabled: boolean }>({
+    serverId: '', publicIp: '', notes: '', enabled: true,
+  })
+  const beginEdit = (h: MetalFleetHostRow) => {
+    setEditing(h.hostId)
+    setForm({
+      serverId: h.serverId ?? '',
+      publicIp: h.publicIp ?? '',
+      notes: h.notes ?? '',
+      enabled: h.enabled !== false,
+    })
+  }
+  const submitEdit = (hostId: string) => {
+    onSaveConfig(hostId, {
+      serverId: form.serverId.trim() || null,
+      publicIp: form.publicIp.trim() || null,
+      notes: form.notes.trim() || null,
+      enabled: form.enabled,
+    })
+    setEditing(null)
+  }
   return (
     <View className="bg-card border border-border rounded-xl overflow-hidden mb-4">
       <View className="flex-row items-center justify-between px-4 py-3 border-b border-border">
@@ -647,31 +701,93 @@ function MetalFleetPanel({
                       {h.cordoned && <Text className="text-[9px] text-amber-400 px-1 py-0.5 rounded bg-amber-500/10">cordoned</Text>}
                     </View>
                     <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
-                      {h.region.toUpperCase()}{h.site ? `·${h.site}` : ''} · {live?.meshIp ?? h.serverId ?? 'not provisioned'} · {live?.arch ?? ''}
+                      {h.region.toUpperCase()}{h.site ? `·${h.site}` : ''} · {live?.meshIp ?? h.publicIp ?? 'no ip'} · {h.serverId ?? 'not provisioned'} · {live?.arch ?? ''}
                     </Text>
+                    {h.enabled === false && (
+                      <Text className="text-[9px] text-red-400">disabled (excluded from drift)</Text>
+                    )}
                   </View>
                 </View>
-                {h.present ? (
-                  <Pressable
-                    onPress={() => onCordon(h.hostId, !h.cordoned)}
-                    disabled={cordoning === h.hostId}
-                    className={cn(
-                      'px-2.5 py-1 rounded-md border',
-                      h.cordoned ? 'bg-green-500/10 border-green-500/20' : 'bg-amber-500/10 border-amber-500/20'
-                    )}
-                  >
-                    {cordoning === h.hostId ? (
-                      <ActivityIndicator size="small" />
-                    ) : (
-                      <Text className={cn('text-[10px] font-medium', h.cordoned ? 'text-green-400' : 'text-amber-400')}>
-                        {h.cordoned ? 'Uncordon' : 'Drain'}
-                      </Text>
-                    )}
-                  </Pressable>
-                ) : (
-                  <Text className="text-[10px] text-muted-foreground">{h.provisioned ? 'offline' : 'pending'}</Text>
-                )}
+                <View className="flex-row items-center gap-1.5">
+                  {h.kind === 'baseline' && (
+                    <Pressable
+                      onPress={() => (editing === h.hostId ? setEditing(null) : beginEdit(h))}
+                      className="px-2 py-1 rounded-md border border-border bg-muted/30"
+                    >
+                      <Settings size={12} className="text-muted-foreground" />
+                    </Pressable>
+                  )}
+                  {h.present ? (
+                    <Pressable
+                      onPress={() => onCordon(h.hostId, !h.cordoned)}
+                      disabled={cordoning === h.hostId}
+                      className={cn(
+                        'px-2.5 py-1 rounded-md border',
+                        h.cordoned ? 'bg-green-500/10 border-green-500/20' : 'bg-amber-500/10 border-amber-500/20'
+                      )}
+                    >
+                      {cordoning === h.hostId ? (
+                        <ActivityIndicator size="small" />
+                      ) : (
+                        <Text className={cn('text-[10px] font-medium', h.cordoned ? 'text-green-400' : 'text-amber-400')}>
+                          {h.cordoned ? 'Uncordon' : 'Drain'}
+                        </Text>
+                      )}
+                    </Pressable>
+                  ) : (
+                    <Text className="text-[10px] text-muted-foreground">{h.provisioned ? 'offline' : 'pending'}</Text>
+                  )}
+                </View>
               </View>
+
+              {editing === h.hostId && (
+                <View className="mt-2 mb-1 p-3 rounded-lg bg-muted/30 border border-border gap-2">
+                  <Text className="text-[10px] text-muted-foreground">Provider ID (Latitude sv_…)</Text>
+                  <TextInput
+                    value={form.serverId}
+                    onChangeText={(t) => setForm((f) => ({ ...f, serverId: t }))}
+                    placeholder="sv_…"
+                    autoCapitalize="none"
+                    className="text-xs text-foreground border border-border rounded-md px-2 py-1.5 bg-background"
+                  />
+                  <Text className="text-[10px] text-muted-foreground">Public IP</Text>
+                  <TextInput
+                    value={form.publicIp}
+                    onChangeText={(t) => setForm((f) => ({ ...f, publicIp: t }))}
+                    placeholder="e.g. 203.0.113.10"
+                    autoCapitalize="none"
+                    keyboardType="numbers-and-punctuation"
+                    className="text-xs text-foreground border border-border rounded-md px-2 py-1.5 bg-background"
+                  />
+                  <Text className="text-[10px] text-muted-foreground">Notes</Text>
+                  <TextInput
+                    value={form.notes}
+                    onChangeText={(t) => setForm((f) => ({ ...f, notes: t }))}
+                    placeholder="optional"
+                    className="text-xs text-foreground border border-border rounded-md px-2 py-1.5 bg-background"
+                  />
+                  <View className="flex-row items-center justify-between">
+                    <View className="flex-row items-center gap-2">
+                      <Switch value={form.enabled} onValueChange={(v) => setForm((f) => ({ ...f, enabled: v }))} />
+                      <Text className="text-[11px] text-muted-foreground">Enabled (expected baseline)</Text>
+                    </View>
+                    <Pressable
+                      onPress={() => submitEdit(h.hostId)}
+                      disabled={savingConfig === h.hostId}
+                      className="flex-row items-center gap-1 px-3 py-1.5 rounded-md bg-primary/10 border border-primary/20"
+                    >
+                      {savingConfig === h.hostId ? (
+                        <ActivityIndicator size="small" />
+                      ) : (
+                        <>
+                          <Save size={12} className="text-primary" />
+                          <Text className="text-[11px] font-medium text-primary">Save</Text>
+                        </>
+                      )}
+                    </Pressable>
+                  </View>
+                </View>
+              )}
               {live && (
                 <View className="flex-row items-center gap-4">
                   <View className="flex-row items-center gap-1">
@@ -1009,6 +1125,7 @@ export default function InfrastructurePage() {
   const [infraSettings, setInfraSettings] = useState<InfraSettings | null>(null)
   const [fleet, setFleet] = useState<MetalFleetData | null>(null)
   const [cordoning, setCordoning] = useState<string | null>(null)
+  const [savingConfig, setSavingConfig] = useState<string | null>(null)
 
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -1088,6 +1205,15 @@ export default function InfrastructurePage() {
 
   const onRegionChange = (regionId: string) => {
     setSelectedRegionId(regionId)
+  }
+
+  const onSaveConfig = (hostId: string, patch: MetalHostConfigPatch) => {
+    void (async () => {
+      setSavingConfig(hostId)
+      await saveHostConfig(apiBase, hostId, patch)
+      await loadLiveData()
+      setSavingConfig(null)
+    })()
   }
 
   const onCordon = (hostId: string, cordon: boolean) => {
@@ -1284,7 +1410,7 @@ export default function InfrastructurePage() {
 
       {/* Metal Fleet (bare-metal Firecracker hosts) */}
       {fleet && (
-        <MetalFleetPanel fleet={fleet} cordoning={cordoning} onCordon={onCordon} />
+        <MetalFleetPanel fleet={fleet} cordoning={cordoning} onCordon={onCordon} onSaveConfig={onSaveConfig} savingConfig={savingConfig} />
       )}
 
       {/* Infrastructure Settings */}
