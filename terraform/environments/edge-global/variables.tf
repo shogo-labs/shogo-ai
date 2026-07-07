@@ -42,9 +42,3 @@ variable "eu_lb_ip" {
   type        = string
   default     = "79.76.126.115"
 }
-
-variable "india_lb_ip" {
-  description = "India (ap-mumbai-1) Kourier LoadBalancer IP"
-  type        = string
-  default     = "161.118.170.159"
-}

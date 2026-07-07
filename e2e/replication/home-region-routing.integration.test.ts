@@ -10,7 +10,7 @@
  *   2. Signing up the same email twice (sequentially, across regions) yields a
  *      single user identity rather than two split-brain rows.
  *
- * Requires the standard replication env (DB_URL_US/EU/INDIA). The proxying
+ * Requires the standard replication env (DB_URL_US/EU). The proxying
  * assertions additionally require API_URL_US + API_URL_EU AND the EU API to run
  * with HOME_REGION_ROUTING=enforce; they self-skip otherwise so the suite is
  * still useful in DB-only environments.
@@ -121,7 +121,7 @@ describe('home-region write routing', () => {
     expect(euRow.name).toBe(newName)
 
     // Exactly one workspace row for this id across every region (no split-brain).
-    for (const region of ['us', 'eu', 'india']) {
+    for (const region of ['us', 'eu']) {
       const count = await pool(env, region).query(
         `SELECT COUNT(*)::int AS c FROM workspaces WHERE id = $1`,
         [ws.id],
@@ -184,7 +184,7 @@ describe('identity write routing', () => {
     expect(euRow.onboardingCompleted).toBe(true)
 
     // Exactly one user row for this identity across every region.
-    for (const region of ['us', 'eu', 'india']) {
+    for (const region of ['us', 'eu']) {
       const count = await pool(env, region).query(
         `SELECT COUNT(*)::int AS c FROM users WHERE lower(email) = lower($1)`,
         [email],
@@ -381,7 +381,7 @@ describe('idempotent signup', () => {
     expect(second.status).toBeLessThan(500)
 
     // Exactly one user row everywhere.
-    for (const region of ['us', 'eu', 'india']) {
+    for (const region of ['us', 'eu']) {
       const count = await pool(env, region).query(
         `SELECT COUNT(*)::int AS c FROM users WHERE lower(email) = lower($1)`,
         [email],

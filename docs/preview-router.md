@@ -76,7 +76,7 @@ failure.
 
 | Piece | Location |
 |---|---|
-| Worker + KV + wildcard + cert + anchors + route | `terraform/modules/preview-router` (takes a `region_anchors` map + `default_region` + `preview_base_domain`); instantiated in `terraform/environments/edge-global` (production: us/eu/in) and `terraform/environments/staging` (single `staging` region) |
+| Worker + KV + wildcard + cert + anchors + route | `terraform/modules/preview-router` (takes a `region_anchors` map + `default_region` + `preview_base_domain`); instantiated in `terraform/environments/edge-global` (production: us/eu) and `terraform/environments/staging` (single `staging` region) |
 | Preview host construction | `getPreviewSubdomain()` in `apps/api/src/lib/knative-project-manager.ts` (`{projectId}.preview.{env?}.{base}`) |
 | KV write/delete (per region) | `apps/api/src/lib/cloudflare-preview-region-kv.ts` |
 | Wiring | `KnativeProjectManager.createPreviewDomainMapping` → `setPreviewRegion(projectId)`; `deletePreviewDomainMapping` → `clearPreviewRegion(projectId)` |
@@ -89,7 +89,7 @@ zone with distinct wildcards, certs, anchors, routes, KV namespaces, and Worker
 names.
 
 The API derives its region code from `REGION_ID` (`us-ashburn-1`→`us`,
-`eu-frankfurt-1`→`eu`, `ap-mumbai-1`→`in`, `staging`→`staging`). Writes are
+`eu-frankfurt-1`→`eu`, `staging`→`staging`). Writes are
 best-effort: a CF failure never blocks a DomainMapping create/delete.
 
 ## Test in staging first (recommended)

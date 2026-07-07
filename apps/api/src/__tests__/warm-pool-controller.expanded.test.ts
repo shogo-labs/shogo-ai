@@ -758,10 +758,10 @@ describe('region-scoped infra settings', () => {
   })
 
   test("a region's own infra.<region>.<key> override wins over the shared global key", async () => {
-    process.env.REGION_ID = 'ap-mumbai-1'
+    process.env.REGION_ID = 'eu-frankfurt-1'
     platformSettingsRows = [
       { key: 'infra.warmPoolMinPods', value: '10' }, // shared default (US bumped it)
-      { key: 'infra.ap-mumbai-1.warmPoolMinPods', value: '3' }, // India's override
+      { key: 'infra.eu-frankfurt-1.warmPoolMinPods', value: '3' }, // EU's override
     ]
     const controller = await startWarmPool()
     expect(controller.getConfig().warmPoolMinPods).toBe(3)
@@ -772,10 +772,10 @@ describe('region-scoped infra settings', () => {
     process.env.REGION_ID = 'us-ashburn-1'
     platformSettingsRows = [
       { key: 'infra.warmPoolMinPods', value: '10' }, // shared default
-      { key: 'infra.ap-mumbai-1.warmPoolMinPods', value: '3' }, // India-only override
+      { key: 'infra.eu-frankfurt-1.warmPoolMinPods', value: '3' }, // EU-only override
     ]
     const controller = await startWarmPool()
-    // US has no scoped row, so it keeps the shared global value — India's 3 is ignored.
+    // US has no scoped row, so it keeps the shared global value — EU's 3 is ignored.
     expect(controller.getConfig().warmPoolMinPods).toBe(10)
     await controller.stop()
   })

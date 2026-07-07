@@ -208,13 +208,13 @@ jobs:
 
           echo "Auto-include works: drift_canary was published without an ALTER PUBLICATION call."
 
-      - name: Assert all 3 regional manifests behave identically
+      - name: Assert all regional manifests behave identically
         # Quick paranoia check: the CI guard already enforces that the EU
-        # and India YAMLs are byte-identical to US (modulo the leading
-        # comment), but apply each one in turn here too so we know CNPG
-        # accepts all three. Cheap because they reconcile to the same CR.
+        # YAML is byte-identical to US (modulo the leading comment), but
+        # apply it here too so we know CNPG accepts it. Cheap because it
+        # reconciles to the same CR.
         run: |
-          for region in eu india; do
+          for region in eu; do
             echo "::group::Apply ${region} manifest"
             kubectl apply -f "k8s/cnpg/production-${region}-oci/platform-publication.yaml"
             for i in $(seq 1 10); do
@@ -230,7 +230,7 @@ jobs:
             fi
             echo "::endgroup::"
           done
-          echo "All three regional manifests reconcile cleanly."
+          echo "All regional manifests reconcile cleanly."
 
       # ----------------------------------------------------------------------
       # GRANT contract regression tests

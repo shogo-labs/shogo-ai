@@ -287,7 +287,7 @@ spec:
             - name: SHOGO_PUBLIC_API_URL
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
-              value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai"
+              value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai"
             # Public hostname the desktop should use for the on-demand
             # tunnel WebSocket. Routed by api-tunnel-ingress.yaml directly
             # to the api revision pod (no DomainMapping → no broken WS
@@ -534,7 +534,7 @@ spec:
             - name: REGION_LABEL
               value: "US (Ashburn)"
             - name: REGION_PEERS
-              value: '[{"id":"eu-frankfurt-1","label":"EU (Frankfurt)","url":"https://79.76.126.115"},{"id":"ap-mumbai-1","label":"India (Mumbai)","url":"https://161.118.170.159"}]'
+              value: '[{"id":"eu-frankfurt-1","label":"EU (Frankfurt)","url":"https://79.76.126.115"}]'
             # Home-region write routing. "enforce" proxies non-home workspace
             # writes to the owning region so tenant data has a single writer;
             # chat sessions are additionally pinned via chat-region-pin so the

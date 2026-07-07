@@ -80,7 +80,6 @@ module "preview_router" {
   region_anchors = {
     us = var.us_lb_ip
     eu = var.eu_lb_ip
-    in = var.india_lb_ip
   }
   default_region = "us"
 
@@ -150,7 +149,7 @@ resource "cloudflare_ruleset" "worker_m2m_bot_skip" {
   rules {
     ref         = "skip_bot_mitigation_m2m_api"
     description = "Skip SBFM + managed WAF + BIC/UA/security-level challenges for shogo_sk_-authenticated API paths"
-    expression  = "(http.host in {\"studio.shogo.ai\" \"api.shogo.ai\" \"tunnel.shogo.ai\" \"eu.tunnel.shogo.ai\" \"india.tunnel.shogo.ai\"}) and (starts_with(http.request.uri.path, \"/api/instances/\") or http.request.uri.path eq \"/api/api-keys/validate\" or http.request.uri.path eq \"/api/api-keys/heartbeat\" or starts_with(http.request.uri.path, \"/api/cli/login/\") or starts_with(http.request.uri.path, \"/api/ai/\") or starts_with(http.request.uri.path, \"/api/v1/\") or starts_with(http.request.uri.path, \"/v1/\") or starts_with(http.request.uri.path, \"/api/tools/\"))"
+    expression  = "(http.host in {\"studio.shogo.ai\" \"api.shogo.ai\" \"tunnel.shogo.ai\" \"eu.tunnel.shogo.ai\"}) and (starts_with(http.request.uri.path, \"/api/instances/\") or http.request.uri.path eq \"/api/api-keys/validate\" or http.request.uri.path eq \"/api/api-keys/heartbeat\" or starts_with(http.request.uri.path, \"/api/cli/login/\") or starts_with(http.request.uri.path, \"/api/ai/\") or starts_with(http.request.uri.path, \"/api/v1/\") or starts_with(http.request.uri.path, \"/v1/\") or starts_with(http.request.uri.path, \"/api/tools/\"))"
     action      = "skip"
     enabled     = true
 

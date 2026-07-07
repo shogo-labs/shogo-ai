@@ -70,8 +70,6 @@ describe('getPreviewRegionCode', () => {
     expect(getPreviewRegionCode()).toBe('us')
     process.env.REGION_ID = 'eu-frankfurt-1'
     expect(getPreviewRegionCode()).toBe('eu')
-    process.env.REGION_ID = 'ap-mumbai-1'
-    expect(getPreviewRegionCode()).toBe('in')
     process.env.REGION_ID = 'staging'
     expect(getPreviewRegionCode()).toBe('staging')
   })

@@ -9,18 +9,18 @@
  * The schema change (ADD COLUMN) is DDL, which logical replication does NOT
  * carry, so it runs in every region's `migrate deploy`. The *data* backfill is
  * DML (UPDATE), which IS replicated. If we backfilled inside the migration it
- * would run in all three regions and update the same rows three times — the
+ * would run in all regions and update the same rows multiple times — the
  * exact cross-region write conflict this whole feature exists to prevent.
  *
  * So: run this ONCE against the US primary. The `homeRegion` values then
- * replicate out to EU/India like any other user column.
+ * replicate out to EU like any other user column.
  *
  * Assignment
  * ----------
  * Co-locate each user with their identity's "natural" region by reusing the
  * `homeRegion` of their earliest workspace (typically the personal workspace
  * created at signup). Users with no workspace (or whose workspaces are all
- * still NULL) fall back to a deterministic, even 3-way split keyed on the user
+ * still NULL) fall back to a deterministic, even split keyed on the user
  * id, and finally to the primary, `us-ashburn-1`.
  *
  * Idempotent: only touches rows where `homeRegion IS NULL`, so re-runs are
@@ -36,19 +36,18 @@
 import { prisma } from '../apps/api/src/lib/prisma'
 
 const PRIMARY_REGION = 'us-ashburn-1'
-const REGIONS = [PRIMARY_REGION, 'eu-frankfurt-1', 'ap-mumbai-1'] as const
+const REGIONS = [PRIMARY_REGION, 'eu-frankfurt-1'] as const
 
 const args = new Set(process.argv.slice(2))
 const APPLY = args.has('--apply')
 const FORCE = args.has('--force')
 
-// Deterministic, even 3-way split keyed on the user id (fallback only).
-// `bit(32)::bigint` is unsigned (0..2^32-1) so the modulo is always 0/1/2.
-const BUCKET_SQL = `(('x' || substr(md5(id), 1, 8))::bit(32)::bigint % 3)`
+// Deterministic, even 2-way split keyed on the user id (fallback only).
+// `bit(32)::bigint` is unsigned (0..2^32-1) so the modulo is always 0/1.
+const BUCKET_SQL = `(('x' || substr(md5(id), 1, 8))::bit(32)::bigint % 2)`
 const HASH_ASSIGN_SQL = `CASE ${BUCKET_SQL}
     WHEN 0 THEN '${REGIONS[0]}'
     WHEN 1 THEN '${REGIONS[1]}'
-    WHEN 2 THEN '${REGIONS[2]}'
     ELSE '${PRIMARY_REGION}'
   END`
 
@@ -78,7 +77,7 @@ async function main() {
   if (APPLY && region && region !== PRIMARY_REGION && !FORCE) {
     console.error(
       `[user-home-region-backfill] Refusing to apply: REGION_ID=${region} is not the primary ${PRIMARY_REGION}.\n` +
-        `Run this once against the US primary (its writes replicate to EU/India), or pass --force if you really mean to.`,
+        `Run this once against the US primary (its writes replicate to EU), or pass --force if you really mean to.`,
     )
     process.exit(1)
   }

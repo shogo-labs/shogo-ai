@@ -408,7 +408,7 @@ export const auth = betterAuth({
     const baseURL = getBaseURL()
     const origins = [
       ...getAllowedOrigins(), baseURL,
-      'https://eu.studio.shogo.ai', 'https://india.studio.shogo.ai',
+      'https://eu.studio.shogo.ai',
       'shogo://', 'exp://',
     ]
     if (process.env.NODE_ENV !== 'production') {

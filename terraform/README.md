@@ -34,8 +34,11 @@ This directory contains Terraform modules for deploying Shogo AI platform on OCI
 | us-ashburn-1 | shogo-staging | `staging/` | Reconciled (no-op plan) |
 | us-ashburn-1 | shogo-production | `production-us/` | Reconciled (no-op plan) |
 | eu-frankfurt-1 | shogo-production-eu | `production-eu/` | Pending reconciliation |
-| ap-mumbai-1 | shogo-production-india | `production-india/` | Pending reconciliation |
 | (global) | — | `production-global/` | Pending reconciliation |
+
+> `ap-mumbai-1` (`shogo-production-india`) was permanently decommissioned on
+> 2026-07-07 — all traffic and data ownership migrated to `eu-frankfurt-1`.
+> See `docs/runbooks/india-to-eu-migration.md`.
 
 ## Prerequisites
 
@@ -66,7 +69,6 @@ terraform/
 │   ├── staging/          # Staging (us-ashburn-1)
 │   ├── production-us/    # US production (us-ashburn-1, primary)
 │   ├── production-eu/    # EU production (eu-frankfurt-1)
-│   ├── production-india/ # India production (ap-mumbai-1, Tier 2)
 │   └── production-global/# Cross-region Cloudflare LB + global DNS
 │
 └── README.md
@@ -154,14 +156,14 @@ infrastructure isn't force-replaced:
   `object_storage_*_compartment_id`, `publish_zone`, `ocir_repositories`,
   etc. Defaults match greenfield behavior; adopted envs set them.
 
-The same pattern can be reused when adopting `production-eu`,
-`production-india`, and `production-global` — follow the iteration loop
-of plan → diff → set per-env override → repeat until plan is clean.
+The same pattern can be reused when adopting `production-eu` and
+`production-global` — follow the iteration loop of plan → diff → set
+per-env override → repeat until plan is clean.
 
 ## Boot volume remediation
 
 `system_node_boot_volume_gb` must be **200 GB and identical across all
-production regions**. EU/India were bootstrapped at 100 GB, which caused the
+production regions**. EU was bootstrapped at 100 GB, which caused the
 2026-06-02 EU DiskPressure incident: ~30 GB of stacked 8 GB runtime images
 pushed the busiest 100 GB nodes past the kubelet DiskPressure threshold,
 triggering pod eviction + image GC, warm-pool churn, and a stuck `api`

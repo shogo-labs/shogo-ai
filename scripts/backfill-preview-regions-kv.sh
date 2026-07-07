@@ -8,16 +8,16 @@
 # namespace. Newly-created previews get their KV entry written by the API
 # (apps/api/src/lib/cloudflare-preview-region-kv.ts), but previews that already
 # exist at cutover time have NO entry yet. Until this backfill runs, the Worker
-# falls back to the US anchor for those — which silently breaks live EU/India
+# falls back to the US anchor for those — which silently breaks live EU
 # previews.
 #
 # Run this ONCE, right after `terraform apply` creates the KV namespace and
 # BEFORE (or immediately as) the Worker route goes live, to seed the region of
-# every currently-live preview across all three clusters.
+# every currently-live preview across all clusters.
 #
 # It is idempotent (KV PUT is last-writer-wins) and safe to re-run.
 #
-# Requires: kubectl (with contexts for all 3 regions), curl, jq, awk.
+# Requires: kubectl (with contexts for all regions), curl, jq, awk.
 #
 # Usage:
 #   CF_API_TOKEN=<kv-capable-token> \
@@ -26,7 +26,7 @@
 #   scripts/backfill-preview-regions-kv.sh [--dry-run]
 #
 # The kube context for each region is configurable via env (defaults match the
-# current cluster set); region codes map us|eu|in.
+# current cluster set); region codes map us|eu.
 
 set -uo pipefail
 
@@ -41,7 +41,6 @@ CF_TOKEN="${CF_API_TOKEN:-${CF_CUSTOM_HOSTNAMES_TOKEN:-}}"
 # region_code => kube context. Override via env to match your kubeconfig.
 US_CONTEXT="${US_CONTEXT:-context-cp7l2tcj76q}"
 EU_CONTEXT="${EU_CONTEXT:-context-cbbetkypxva}"
-IN_CONTEXT="${IN_CONTEXT:-context-c4w44igvdfa}"
 
 CF_API="https://api.cloudflare.com/client/v4"
 KV_BASE="$CF_API/accounts/$CF_ACCOUNT_ID/storage/kv/namespaces/$CF_PREVIEW_REGIONS_KV_NAMESPACE_ID/values"
@@ -79,6 +78,5 @@ echo "Backfilling PREVIEW_REGIONS KV (namespace $CF_PREVIEW_REGIONS_KV_NAMESPACE
 echo
 backfill_region us "$US_CONTEXT"
 backfill_region eu "$EU_CONTEXT"
-backfill_region in "$IN_CONTEXT"
 echo
 echo "Done."

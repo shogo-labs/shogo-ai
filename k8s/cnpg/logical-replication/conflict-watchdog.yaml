@@ -20,7 +20,7 @@
 #   * Every skip prints a `WATCHDOG_SKIP` line (subname / relation / lsn) for
 #     the skip-review alert. Skips must be reviewed, not fire-and-forget.
 #
-# Deploy once per region (US/EU/India). It only ever touches LOCAL subscriptions
+# Deploy once per region (US/EU). It only ever touches LOCAL subscriptions
 # on the local primary — no cross-region access.
 #
 # Runs every 5 min, interleaved with replication-monitor (which detects; this

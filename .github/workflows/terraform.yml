@@ -1,8 +1,8 @@
 # =============================================================================
 # Shogo AI — Terraform (OCI)
 # =============================================================================
-# Plan and apply Terraform for the four OCI environments:
-#   staging | production-us | production-eu | production-india
+# Plan and apply Terraform for the OCI environments:
+#   staging | production-us | production-eu
 #
 # Triggers:
 #   - pull_request (paths under terraform/) → terraform fmt + validate +
@@ -39,7 +39,6 @@ on:
           - staging
           - production-us
           - production-eu
-          - production-india
           - edge-global
       action:
         description: 'Terraform action to run'
@@ -111,7 +110,7 @@ jobs:
         run: terraform validate -no-color
 
       # Cross-region node-pool boot-volume parity guard (2026-06-02 EU
-      # incident): EU/India bootstrapped at 100 GB while US ran 200 GB, and
+      # incident): EU bootstrapped at 100 GB while US ran 200 GB, and
       # the oke module ignores in-place boot-volume changes, so the drift was
       # invisible to `terraform plan`. This asserts parity against the LIVE
       # OCI pools so the gap can never silently re-open.
@@ -127,7 +126,7 @@ jobs:
           OCI_CLI_REGION: us-ashburn-1
           COMPARTMENT_ID: ${{ vars.COMPARTMENT_ID }}
           EXPECTED_GB: "200"
-          REGIONS: "us-ashburn-1 eu-frankfurt-1 ap-mumbai-1"
+          REGIONS: "us-ashburn-1 eu-frankfurt-1"
         run: "$GITHUB_WORKSPACE/.github/scripts/check-node-disk-parity.sh"
 
       - name: terraform plan

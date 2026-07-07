@@ -5,7 +5,7 @@
  *
  * Background
  * ----------
- * Shogo runs three OCI regions (US/EU/India) against a single logical-
+ * Shogo runs two OCI regions (US/EU) against a single logical-
  * replicated Postgres database (CNPG, PG 18, `INSERT_EXISTS_ACTION =
  * last_update_wins`). `last_update_wins` only resolves PRIMARY-KEY
  * collisions on apply; a conflict on any other UNIQUE INDEX halts the
@@ -34,7 +34,7 @@
  *
  * `analytics_digests` is INTENTIONALLY NOT wrapped — it's the one cron
  * we want to evolve into a genuine per-region aggregation (separate
- * funnel numbers for US/EU/India). The CI guard at
+ * funnel numbers for US/EU). The CI guard at
  * `scripts/check-multiregion-cron-locks.ts` knows about this exemption
  * via an explicit `INTENTIONALLY_REGIONAL` allowlist entry.
  *

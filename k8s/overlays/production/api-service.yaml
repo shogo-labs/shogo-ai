@@ -169,7 +169,7 @@ spec:
             - name: SHOGO_PUBLIC_API_URL
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
-              value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai"
+              value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-system:6379"
             - name: DATABASE_URL
@@ -312,7 +312,7 @@ spec:
             - name: REGION_LABEL
               value: "US (Ashburn)"
             - name: REGION_PEERS
-              value: '[{"id":"eu-frankfurt-1","label":"EU (Frankfurt)","url":"https://79.76.126.115"},{"id":"ap-mumbai-1","label":"India (Mumbai)","url":"https://161.118.170.159"}]'
+              value: '[{"id":"eu-frankfurt-1","label":"EU (Frankfurt)","url":"https://79.76.126.115"}]'
             # Home-region write routing. Start in "shadow" (logs would-proxy
             # decisions, no behavior change); flip to "enforce" once staging
             # logs look right. "off" disables it entirely.

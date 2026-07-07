@@ -87,34 +87,16 @@ resource "cloudflare_load_balancer_pool" "eu" {
   }
 }
 
-resource "cloudflare_load_balancer_pool" "india" {
-  account_id    = var.cloudflare_account_id
-  name          = "shogo-in"
-  enabled       = true
-  monitor       = cloudflare_load_balancer_monitor.health.id
-  latitude      = 19.1
-  longitude     = 72.9
-  check_regions = ["IN", "SEAS"]
-
-  # India→EU migration: the origin is disabled (health-drained) when
-  # var.india_serving_enabled = false so no new traffic lands on ap-mumbai-1.
-  origins {
-    name    = "kourier-in"
-    address = var.india_lb_ip
-    weight  = 1
-    enabled = var.india_serving_enabled
-  }
-}
+# NOTE: the `shogo-in` (ap-mumbai-1) pool was removed 2026-07-07 when
+# production-india was decommissioned (India→EU migration). The mesh is now
+# two-region (US/EU).
 
 locals {
-  # `compact` drops the empty string so the India pool leaves the steering set
-  # entirely when var.india_serving_enabled = false (Phase 2 edge drain). US +
-  # EU remain; US stays the fallback pool below.
-  pool_ids = compact([
+  # US + EU latency-steering set; US stays the fallback pool below.
+  pool_ids = [
     cloudflare_load_balancer_pool.us.id,
     cloudflare_load_balancer_pool.eu.id,
-    var.india_serving_enabled ? cloudflare_load_balancer_pool.india.id : "",
-  ])
+  ]
 }
 
 # =============================================================================
@@ -138,7 +120,7 @@ resource "cloudflare_load_balancer" "studio" {
 # Load Balancer — api.shogo.ai (public OpenAI-compatible API)
 # =============================================================================
 # The docs/blog advertise `https://api.shogo.ai/v1` as the OpenAI-compatible
-# base URL for the Hoshi models. Serve it from the same three regional Kourier
+# base URL for the Hoshi models. Serve it from the same regional Kourier
 # origins as studio/docs with latency steering.
 #
 # History: `api.shogo.ai` was previously a STALE Cloudflare CNAME (from the
@@ -147,12 +129,12 @@ resource "cloudflare_load_balancer" "studio" {
 # NXDOMAIN'd, so clients hit `Could not resolve host: api.shogo.ai`. That record
 # has since been deleted. `api.shogo.ai` now falls through the proxied
 # `*.shogo.ai` wildcard to the US Kourier LB, and the k8s `api-public` Ingress
-# (k8s/overlays/production-*/api-public-ingress.yaml, applied in all three
+# (k8s/overlays/production-*/api-public-ingress.yaml, applied in all
 # regions) routes the host straight to the api ksvc — so the endpoint is
 # already live, US-origin only.
 #
 # This Load Balancer is the resilience upgrade: it overrides the wildcard for
-# this exact host with geo latency-steering + health failover across all three
+# this exact host with geo latency-steering + health failover across the
 # regional Kourier LBs (matching studio/docs). Requires an account-scoped token
 # with Load Balancing:Edit. Applying it is non-disruptive — the more-specific LB
 # hostname simply supersedes the wildcard fallback.
@@ -196,14 +178,6 @@ resource "cloudflare_record" "eu_studio" {
   proxied = true
 }
 
-resource "cloudflare_record" "india_studio" {
-  zone_id = var.cloudflare_zone_id
-  name    = "india.studio"
-  content = var.india_lb_ip
-  type    = "A"
-  proxied = true
-}
-
 # =============================================================================
 # Desktop Tunnel WebSocket — regional A records (NOT load-balanced)
 # =============================================================================
@@ -230,14 +204,6 @@ resource "cloudflare_record" "eu_tunnel" {
   proxied = true
 }
 
-resource "cloudflare_record" "india_tunnel" {
-  zone_id = var.cloudflare_zone_id
-  name    = "india.tunnel"
-  content = var.india_lb_ip
-  type    = "A"
-  proxied = true
-}
-
 # =============================================================================
 # Preview Router
 # =============================================================================
@@ -256,15 +222,12 @@ output "studio_lb_id" { value = cloudflare_load_balancer.studio.id }
 output "api_lb_id" { value = cloudflare_load_balancer.api.id }
 output "docs_lb_id" { value = cloudflare_load_balancer.docs.id }
 output "eu_studio_record" { value = cloudflare_record.eu_studio.hostname }
-output "india_studio_record" { value = cloudflare_record.india_studio.hostname }
 output "us_tunnel_record" { value = cloudflare_record.us_tunnel.hostname }
 output "eu_tunnel_record" { value = cloudflare_record.eu_tunnel.hostname }
-output "india_tunnel_record" { value = cloudflare_record.india_tunnel.hostname }
 output "pool_ids" {
   value = {
     us = cloudflare_load_balancer_pool.us.id
     eu = cloudflare_load_balancer_pool.eu.id
-    in = cloudflare_load_balancer_pool.india.id
   }
 }
 

@@ -4,10 +4,8 @@
  * Environment variables:
  *   DB_URL_US     — PostgreSQL connection string for the US region (required)
  *   DB_URL_EU     — PostgreSQL connection string for the EU region (required)
- *   DB_URL_INDIA  — PostgreSQL connection string for the India region (required)
  *   API_URL_US    — Base URL of the US API (for session roaming tests)
  *   API_URL_EU    — Base URL of the EU API (for session roaming tests)
- *   API_URL_INDIA — Base URL of the India API (for session roaming tests)
  */
 import { Pool, type PoolClient } from "pg"
 
@@ -20,18 +18,16 @@ export interface RegionConfig {
 export interface TestEnv {
   us: RegionConfig
   eu: RegionConfig
-  india: RegionConfig
   pools: Map<string, Pool>
 }
 
 export function getTestEnv(): TestEnv {
   const usDb = process.env.DB_URL_US
   const euDb = process.env.DB_URL_EU
-  const indiaDb = process.env.DB_URL_INDIA
 
-  if (!usDb || !euDb || !indiaDb) {
+  if (!usDb || !euDb) {
     throw new Error(
-      "DB_URL_US, DB_URL_EU, and DB_URL_INDIA are all required.\n" +
+      "DB_URL_US and DB_URL_EU are both required.\n" +
         "Set them to the PostgreSQL connection strings for each region."
     )
   }
@@ -39,16 +35,10 @@ export function getTestEnv(): TestEnv {
   const pools = new Map<string, Pool>()
   pools.set("us", new Pool({ connectionString: usDb, max: 3 }))
   pools.set("eu", new Pool({ connectionString: euDb, max: 3 }))
-  pools.set("india", new Pool({ connectionString: indiaDb, max: 3 }))
 
   return {
     us: { name: "us", dbUrl: usDb, apiUrl: process.env.API_URL_US },
     eu: { name: "eu", dbUrl: euDb, apiUrl: process.env.API_URL_EU },
-    india: {
-      name: "india",
-      dbUrl: indiaDb,
-      apiUrl: process.env.API_URL_INDIA,
-    },
     pools,
   }
 }
@@ -170,7 +160,7 @@ export async function getEnabledSubCount(
 /** Sum of apply+sync errors across every region — the mesh-wide conflict total. */
 export async function totalConflicts(env: TestEnv): Promise<number> {
   let sum = 0
-  for (const region of ["us", "eu", "india"]) {
+  for (const region of ["us", "eu"]) {
     const stats = await getConflictStats(pool(env, region))
     for (const s of stats) sum += Number(s.conflict_count)
   }
@@ -183,7 +173,7 @@ export async function meshSubHealth(
 ): Promise<{ enabled: number; total: number }> {
   let enabled = 0
   let total = 0
-  for (const region of ["us", "eu", "india"]) {
+  for (const region of ["us", "eu"]) {
     const s = await getEnabledSubCount(pool(env, region))
     enabled += s.enabled
     total += s.total

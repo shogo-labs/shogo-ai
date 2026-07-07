@@ -283,4 +283,106 @@ describe('VMWarmPoolController', () => {
     expect(cap).toBeGreaterThanOrEqual(1)
     expect(cap).toBeLessThanOrEqual(hardCap)
   })
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Production RCA parity (Knative → metal)
+  //
+  // Prod India (Knative) produced, in 24h: 3,665 failed `warm_pool.assign`
+  // traces and 3,404 "Already assigned" errors — a warm pod secretly claimed
+  // by another project handed to a second one — plus 566k 403s because the
+  // service account lacked `list revisions` and every pod therefore looked
+  // cold. These tests prove the metal warm pool cannot reproduce either.
+  // ─────────────────────────────────────────────────────────────────────
+
+  test('Issue B: node-agent "Already assigned" → reject, quarantine, never re-serve', async () => {
+    // Warm VM vm-1 boots at start(); the node-agent then reports it is already
+    // bound to another project (controller/agent state divergence, e.g. after
+    // an API restart dropped the in-memory `assigned` map).
+    globalThis.fetch = mock((url: string) => {
+      if (typeof url === 'string' && url.includes('/pool/assign')) {
+        return Promise.resolve({
+          ok: false,
+          status: 400,
+          text: () => Promise.resolve(JSON.stringify({ error: 'Already assigned', projectId: 'other-proj' })),
+        })
+      }
+      if (typeof url === 'string' && url.includes('/health')) {
+        return Promise.resolve({ ok: true })
+      }
+      return Promise.resolve({ ok: false, text: () => Promise.resolve('nf') })
+    }) as any
+
+    const factory: VMManagerFactory = () => createMockVMManager()
+    pool = new VMWarmPoolController(factory, {}, 1, 3)
+    await pool.start()
+    expect(pool.getStatus().available).toBe(1)
+
+    // The claim+assign must surface the agent's error, not silently succeed.
+    await expect(pool.getProjectUrl('new-proj')).rejects.toThrow(/Already assigned/)
+
+    // The dirty VM (vm-1) is quarantined: stopped, not assigned, and gone from
+    // the pool — so it can never be handed to any project (the exact Knative
+    // failure mode this guards against).
+    expect(stoppedVMs).toContain('vm-1')
+    expect(pool.getStatus().assigned).toBe(0)
+    expect(pool.getAssignedPod('new-proj')).toBeUndefined()
+    const vmIds = pool.getStatus().vms.map((v: any) => v.vmId)
+    expect(vmIds).not.toContain('vm-1')
+  })
+
+  test('Issue B: a quarantined dirty VM is not handed to the next project', async () => {
+    // Fail the FIRST assign only; subsequent assigns succeed.
+    let failNext = true
+    globalThis.fetch = mock((url: string, options?: any) => {
+      if (typeof url === 'string' && url.includes('/pool/assign')) {
+        if (failNext) {
+          failNext = false
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            text: () => Promise.resolve(JSON.stringify({ error: 'Already assigned', projectId: 'other-proj' })),
+          })
+        }
+        let body: any = {}
+        try { body = JSON.parse(options?.body || '{}') } catch {}
+        assignCalls.push({ url, projectId: body.projectId })
+        return Promise.resolve({ ok: true, text: () => Promise.resolve('OK') })
+      }
+      if (typeof url === 'string' && url.includes('/health')) {
+        return Promise.resolve({ ok: true })
+      }
+      return Promise.resolve({ ok: false, text: () => Promise.resolve('nf') })
+    }) as any
+
+    const factory: VMManagerFactory = () => createMockVMManager()
+    pool = new VMWarmPoolController(factory, {}, 1, 3)
+    await pool.start()
+
+    await expect(pool.getProjectUrl('p1')).rejects.toThrow(/Already assigned/)
+    // Let reconcile() (fired by claim()) boot a clean replacement.
+    await new Promise((r) => setTimeout(r, 150))
+
+    const url2 = await pool.getProjectUrl('p2')
+    const pod2 = pool.getAssignedPod('p2')
+    expect(pod2).toBeDefined()
+    // p2 must be served by a DIFFERENT, healthy VM — never the quarantined vm-1.
+    expect(pod2!.vmId).not.toBe('vm-1')
+    expect(url2).toBe(pod2!.url)
+  })
+
+  test('Issue A: hot/cold readiness is RBAC-free (no Knative revisions dependency)', async () => {
+    // The Knative pool needs `list revisions` RBAC to tell a hot pod from a
+    // scaled-to-zero one; the prod 403 made every pod look cold. The metal pool
+    // derives readiness from pod.ready / the node-agent /health probe entirely
+    // in-process — no cluster API, no RBAC — so no permission gap can degrade
+    // it. This whole suite already runs with zero Kubernetes access; assert the
+    // pool still reports warm VMs as available and claims one.
+    const factory: VMManagerFactory = () => createMockVMManager()
+    pool = new VMWarmPoolController(factory, {}, 2, 3)
+    await pool.start()
+    expect(pool.getStatus().available).toBe(2)
+    const url = await pool.getProjectUrl('proj-rbacfree')
+    expect(url).toMatch(/^http:\/\/localhost:/)
+    expect(pool.getStatus().assigned).toBe(1)
+  })
 })

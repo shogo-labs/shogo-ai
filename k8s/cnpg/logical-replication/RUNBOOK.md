@@ -1,5 +1,12 @@
 # Multi-Region Bidirectional Logical Replication — Rollout Runbook
 
+> **Historical / setup reference.** This runbook documents the original rollout
+> of the replication mesh, which at the time spanned three regions
+> (US / EU / India). As of **2026-07-07** the mesh is **two regions (US ↔ EU)**:
+> `ap-mumbai-1` (India) was permanently decommissioned and removed from the
+> publications, subscriptions, and CI guards. Treat every `india` / `oke-india`
+> step below as obsolete. See `docs/runbooks/india-to-eu-migration.md`.
+
 ## Prerequisites
 
 - `kubectl` configured for all 3 OKE clusters (US, EU, India)

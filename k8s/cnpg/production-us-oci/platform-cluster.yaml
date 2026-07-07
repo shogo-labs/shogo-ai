@@ -37,11 +37,9 @@ spec:
       log_min_duration_statement: "1000"
       log_checkpoints: "on"
       # Bumped from CNPG's default 5s to give cross-region (Ashburn
-      # <-> Mumbai ~250ms, Ashburn <-> Frankfurt ~85ms) wal_sender /
-      # wal_receiver pairs enough headroom that a transient WAN hiccup
-      # doesn't flap the streams. See India's matching k8s/cnpg/
-      # production-india-oci/platform-cluster.yaml for the 2026-05-21
-      # incident context.
+      # <-> Frankfurt ~85ms) wal_sender / wal_receiver pairs enough
+      # headroom that a transient WAN hiccup doesn't flap the streams
+      # (2026-05-21 incident context).
       wal_sender_timeout: "30s"
       wal_receiver_timeout: "30s"
     pg_hba:
@@ -71,17 +69,6 @@ spec:
     - name: eu-primary
       connectionParameters:
         host: "141.147.21.125"
-        port: "5432"
-        dbname: shogo
-        user: logical_replicator
-        sslmode: require
-      password:
-        name: logical-replicator-credentials
-        key: password
-
-    - name: india-primary
-      connectionParameters:
-        host: "144.24.113.254"
         port: "5432"
         dbname: shogo
         user: logical_replicator

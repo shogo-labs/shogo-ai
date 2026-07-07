@@ -3,7 +3,7 @@
 # =============================================================================
 # Multi-region deployment to Oracle Cloud Infrastructure:
 #   - push to main     → staging (auto-deploy)
-#   - push tag v*      → production (US → EU → India)
+#   - push tag v*      → production (US → EU)
 #   - workflow_dispatch → manual deploy to staging or production
 #
 # Pipeline stages:
@@ -11,9 +11,9 @@
 #   2. Detect Changes - Skip image builds when code hasn't changed
 #   3. Build Runtime Base - Rebuild base image when templates/deps change
 #   4. Build & Push - Build Docker images and push to US OCIR
-#   5. Replicate Images - Copy changed images to EU and India OCIR (production)
+#   5. Replicate Images - Copy changed images to EU OCIR (production)
 #   6. Deploy US - Primary region (runs migrations)
-#   7. Deploy EU + India - Secondary regions (parallel, skip migrations)
+#   7. Deploy EU - Secondary region (skip migrations)
 # =============================================================================
 
 name: Build, Test, and Deploy
@@ -610,7 +610,7 @@ jobs:
 
   # ===========================================================================
   # Stage 2.5: Replicate Images to Secondary Regions (production only)
-  # Uses skopeo to copy images from US OCIR to EU and India OCIR.
+  # Uses skopeo to copy images from US OCIR to EU OCIR.
   # ===========================================================================
   replicate-images:
     name: Replicate to ${{ matrix.target_region }}
@@ -630,8 +630,6 @@ jobs:
         target_region:
           - region: eu-frankfurt-1
             environment: production-eu
-          - region: ap-mumbai-1
-            environment: production-india
 
     environment: ${{ matrix.target_region.environment }}
 
@@ -690,7 +688,7 @@ jobs:
 
   # ===========================================================================
   # Stage 3: Deploy to OKE
-  # For production: deploys to US first (with migrations), then EU + India.
+  # For production: deploys to US first (with migrations), then EU.
   # For staging: single deploy.
   # ===========================================================================
 
@@ -1677,7 +1675,7 @@ jobs:
       # — no YAML edits needed when the schema grows. We still re-apply the
       # CR every deploy (idempotent) so a manual edit on the cluster can't
       # silently survive, and we issue `REFRESH PUBLICATION` on each local
-      # subscription so any new tables added on EU/India become visible to
+      # subscription so any new tables added on EU become visible to
       # US within minutes instead of waiting for the hourly monitor.
       #
       # Background: incident #501 — 26 tables (incl. api_keys) were silently
@@ -1847,7 +1845,7 @@ jobs:
 
       - name: Refresh logical replication subscriptions
         run: |
-          for SUB in sub_from_eu sub_from_india; do
+          for SUB in sub_from_eu; do
             echo "Refreshing $SUB on US..."
             kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
               psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
@@ -1862,7 +1860,7 @@ jobs:
           echo "- Web: ${{ needs.detect-changes.outputs.web_changed }}" >> $GITHUB_STEP_SUMMARY
           echo "- Runtime: ${{ needs.detect-changes.outputs.runtime_changed }}" >> $GITHUB_STEP_SUMMARY
 
-  # --- Production: Deploy EU (active-active node, parallel with India) ---
+  # --- Production: Deploy EU (active-active node) ---
   deploy-eu:
     name: Deploy to EU (active-active)
     runs-on: ubuntu-latest
@@ -2196,9 +2194,8 @@ jobs:
       # ----------------------------------------------------------------------
       # Logical replication: keep the cross-region publication in sync.
       # See the matching block in the deploy-us job for full rationale (#501).
-      # On EU we refresh sub_from_us and sub_from_india so any new tables
-      # added by this migration on US (or in parallel on India) become
-      # visible here without waiting for the hourly monitor.
+      # On EU we refresh sub_from_us so any new tables added by this migration
+      # on US become visible here without waiting for the hourly monitor.
       # ----------------------------------------------------------------------
       - name: Reconcile logical replication publication
         run: |
@@ -2284,7 +2281,7 @@ jobs:
 
       - name: Refresh logical replication subscriptions
         run: |
-          for SUB in sub_from_us sub_from_india; do
+          for SUB in sub_from_us; do
             echo "Refreshing $SUB on EU..."
             kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
               psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
@@ -2470,597 +2467,4 @@ jobs:
       - name: Summary
         run: |
           echo "## EU Production Deploy" >> $GITHUB_STEP_SUMMARY
-          echo "- Role: active-active" >> $GITHUB_STEP_SUMMARY
-
-  # --- Production: Deploy India (active-active node, parallel with EU) ---
-  deploy-india:
-    name: Deploy to India (active-active)
-
-    runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes, build-base-image, build-and-push, replicate-images, deploy-us]
-    if: |
-      always() &&
-      needs.resolve-config.outputs.is_production == 'true' &&
-      needs.deploy-us.result == 'success' &&
-      (needs.replicate-images.result == 'success' || needs.replicate-images.result == 'skipped')
-    environment: production-india
-
-    env:
-      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-      ENVIRONMENT: production-india
-      NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
-      NS_WORKSPACES: ${{ vars.NAMESPACE_WORKSPACES }}
-      DOMAIN: ${{ vars.DOMAIN }}
-      DOCS_DOMAIN: ${{ vars.DOCS_DOMAIN }}
-      IMAGE_TAG: production-${{ github.sha }}
-      REGION_KEY: india
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install OCI CLI
-        run: pip install oci-cli --quiet
-
-      - name: Configure kubectl for OKE
-        run: |
-          mkdir -p ~/.kube
-          oci ce cluster create-kubeconfig \
-            --cluster-id ${{ vars.OKE_CLUSTER_OCID }} \
-            --region ${{ vars.OCI_REGION }} \
-            --token-version 2.0.0 \
-            --kube-endpoint PUBLIC_ENDPOINT
-          kubectl get nodes > /dev/null
-
-      - name: Create namespaces
-        run: |
-          kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Create or update secrets
-        run: |
-          SECRET_ARGS=(
-            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
-          )
-          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
-          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
-          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_CONNECT_WEBHOOK_SECRET="${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
-          if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
-          if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi
-          if [ -n "${{ secrets.GH_APP_PRIVATE_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_PRIVATE_KEY="${{ secrets.GH_APP_PRIVATE_KEY }}"); fi
-          if [ -n "${{ secrets.GH_APP_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_WEBHOOK_SECRET="${{ secrets.GH_APP_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.GH_APP_SLUG }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}"); fi
-          if [ -n "${{ secrets.GOOGLE_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}"); fi
-          if [ -n "${{ secrets.GOOGLE_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"); fi
-          if [ -n "${{ secrets.SERPER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SERPER_API_KEY="${{ secrets.SERPER_API_KEY }}"); fi
-          if [ -n "${{ secrets.COMPOSIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_API_KEY="${{ secrets.COMPOSIO_API_KEY }}"); fi
-          if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
-          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
-          if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
-          if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
-          if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
-          if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
-          if [ -n "${{ secrets.LOOPS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LOOPS_API_KEY="${{ secrets.LOOPS_API_KEY }}"); fi
-          if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
-          if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
-          if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
-          if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
-          # Shared secret with shogo-website/functions/r/[code].ts for
-          # the affiliate click-tracking internal call. See
-          # docs/affiliate-mlm-rollout.md.
-          if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
-          # AES-256-GCM master key for encrypting model-provider API keys at
-          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
-          # all regions that share the primary DB so encrypted ModelProvider
-          # rows decrypt everywhere. See docs/github-environments-setup.md.
-          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
-
-          kubectl create secret generic api-secrets \
-            --namespace=${{ env.NS_SYSTEM }} \
-            "${SECRET_ARGS[@]}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          kubectl create secret generic anthropic-credentials \
-            --namespace=${{ env.NS_WORKSPACES }} \
-            --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
-            kubectl create secret generic preview-secrets \
-              --namespace=${{ env.NS_WORKSPACES }} \
-              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-          fi
-
-          if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
-            kubectl create secret generic signoz-credentials \
-              --namespace=${{ env.NS_SYSTEM }} \
-              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-            kubectl create secret generic signoz-credentials \
-              --namespace=${{ env.NS_WORKSPACES }} \
-              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-          fi
-
-          # Kourier TLS secret for Knative HTTPS termination (Cloudflare origin cert)
-          if [ -n "${{ secrets.KOURIER_TLS_CERT }}" ] && [ -n "${{ secrets.KOURIER_TLS_KEY }}" ]; then
-            kubectl create namespace kourier-system 2>/dev/null || true
-            kubectl create secret tls kourier-tls \
-              --namespace=kourier-system \
-              --cert=<(echo "${{ secrets.KOURIER_TLS_CERT }}") \
-              --key=<(echo "${{ secrets.KOURIER_TLS_KEY }}") \
-              --dry-run=client -o yaml | kubectl apply -f -
-          fi
-
-      - name: Save current images
-        id: save-images
-        run: |
-          get_image() { kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""; }
-          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-          echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-
-      # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
-      # manifests / patch ksvcs into a disk-starved cluster. A node above the
-      # disk threshold (or already under DiskPressure) cannot bring up a new
-      # revision — the kubelet evicts/GCs instead — so the rollout would only
-      # fail 10 minutes later with ProgressDeadlineExceeded. Fail fast with an
-      # actionable message instead.
-      - name: Check node disk headroom (pre-rollout gate)
-        run: .github/scripts/check-node-disk-headroom.sh 80
-
-      - name: Apply Kubernetes manifests
-        run: |
-          # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
-          # image-prepuller's RUNTIME_IMAGE_PLACEHOLDER substitution. The
-          # overlay ships the placeholder token, never a real (or
-          # `:<env>-bootstrap`) value, so `kubectl apply` itself can never stamp
-          # a non-existent runtime image onto the api ksvc and then rely on a
-          # later imperative patch to undo it. That undo-gap bricked India on
-          # 2026-05-27 when a mid-deploy abort left the placeholder live. We
-          # resolve the immutable :<env>-<sha> tag here with the same logic as
-          # the later "Resolve runtime image" step; sync-api-env.sh re-verifies
-          # it downstream as defense-in-depth.
-          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
-          PREV_TAG=$(kubectl get configmap shogo-runtime-version -n "${{ env.NS_SYSTEM }}" -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
-          if [ "${{ needs.detect-changes.outputs.runtime_changed }}" = "true" ]; then
-            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
-          elif [ -n "$PREV_TAG" ]; then
-            RUNTIME_TAG="$PREV_TAG"
-          else
-            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
-          fi
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${RUNTIME_TAG}"
-          echo "Rendering manifests with RUNTIME_IMAGE=${RUNTIME_IMAGE}"
-          kubectl kustomize "k8s/overlays/${{ env.ENVIRONMENT }}/" \
-            | sed "s|RUNTIME_IMAGE_PLACEHOLDER|${RUNTIME_IMAGE}|g" \
-            | kubectl apply -f -
-          # Node-level inotify quota bump — DaemonSet lives in kube-system,
-          # outside the kustomize overlay (kustomize blocks reaching into
-          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
-          # for context.
-          kubectl apply -f k8s/base/inotify-tuner.yaml
-
-      - name: Ensure Kourier TLS configuration
-        run: |
-          kubectl set env deployment/net-kourier-controller -n knative-serving \
-            CERTS_SECRET_NAMESPACE=kourier-system \
-            CERTS_SECRET_NAME=kourier-tls || true
-
-      - name: Ensure Kourier connection draining and stream timeouts
-        run: |
-          kubectl patch configmap config-kourier -n knative-serving --type merge \
-            -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
-
-      - name: Ensure Knative max revision timeout for long-running agent turns
-        run: |
-          kubectl patch configmap config-defaults -n knative-serving --type merge \
-            -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
-
-      # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
-      # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
-      # with retain-since-create-time at the old 48h default, every superseded
-      # revision kept its image referenced (un-reclaimable by the kubelet) for
-      # two days. Stacked images pushed India's nodes past the kubelet
-      # DiskPressure threshold and aborted the deploy at the pre-rollout disk
-      # gate. Enforcing tightened GC on EVERY deploy (instead of the previous
-      # apply-once / manual k8s/knative/config-gc.yaml, which silently drifts)
-      # lets the kubelet reclaim unreferenced images within hours. Keep these
-      # values in sync with k8s/knative/config-gc.yaml.
-      - name: Ensure Knative revision GC bounds runtime-image accumulation
-        run: |
-          kubectl patch configmap config-gc -n knative-serving --type merge \
-            -p '{"data":{"max-non-active-revisions":"2","retain-since-create-time":"6h","retain-since-last-active-time":"30m","min-non-active-revisions":"1"}}' || true
-
-      # Knative docs: when raising max-revision-timeout-seconds, the
-      # activator's terminationGracePeriodSeconds should be at least as
-      # long, so in-flight requests aren't disrupted on activator drain.
-      - name: Ensure Knative activator drain window matches max revision timeout
-        run: |
-          kubectl patch deployment activator -n knative-serving --type merge \
-            -p '{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":3600}}}}' || true
-
-      - name: Ensure OCI LB idle timeout for SSE streaming
-        run: |
-          kubectl annotate svc kourier -n kourier-system \
-            service.beta.kubernetes.io/oci-load-balancer-connection-idle-timeout="1800" \
-            --overwrite || true
-
-      - name: Ensure docs DomainMapping
-        if: env.DOCS_DOMAIN != ''
-        run: |
-          kubectl apply -f - <<EOF || true
-          apiVersion: serving.knative.dev/v1beta1
-          kind: DomainMapping
-          metadata:
-            name: ${{ env.DOCS_DOMAIN }}
-            namespace: ${{ env.NS_SYSTEM }}
-          spec:
-            ref:
-              name: docs
-              kind: Service
-              apiVersion: serving.knative.dev/v1
-          EOF
-
-      # ----------------------------------------------------------------------
-      # Table-ownership contract — MUST run before migrations. See the matching
-      # block in deploy-eu for full rationale (2026-05-31 `must be owner` /
-      # P3009 incident). Sweeps drifted owners back to shogo and installs the
-      # enforce-owner event trigger before the migration gate.
-      # ----------------------------------------------------------------------
-      - name: Locate CNPG primary pod (pre-migration)
-        run: |
-          set -euo pipefail
-          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
-            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
-            -o jsonpath='{.items[0].metadata.name}')
-          if [ -z "$PRIMARY" ]; then
-            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
-            exit 1
-          fi
-          echo "Located primary on India: $PRIMARY"
-          echo "PG_PRIMARY=$PRIMARY" >> "$GITHUB_ENV"
-
-      - name: Reconcile table ownership
-        run: |
-          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-            psql -U postgres -d shogo < k8s/cnpg/logical-replication/enforce-table-ownership.sql \
-            || { echo "::error::table-ownership reconciliation failed on India"; exit 1; }
-
-      - name: Verify ownership contract
-        run: |
-          set -euo pipefail
-          DRIFTED=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-            psql -U postgres -d shogo -tAc "
-              SELECT count(*)
-              FROM pg_class c
-              JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
-                AND c.relowner <> 'shogo'::regrole;
-            ")
-          if [ "$DRIFTED" != "0" ]; then
-            echo "::error::$DRIFTED tables in public are not owned by shogo on India"
-            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-              psql -U postgres -d shogo -c "
-                SELECT n.nspname || '.' || c.relname AS drifted_table, c.relowner::regrole AS owner
-                FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
-                  AND c.relowner <> 'shogo'::regrole;
-              "
-            exit 1
-          fi
-          echo "✓ shogo owns every table in public on India"
-
-      - name: Run Prisma migrations
-        if: needs.detect-changes.outputs.api_changed == 'true'
-        run: |
-          # Failure here is fatal — see the matching note in deploy-eu.
-          .github/scripts/run-prisma-migrations.sh \
-            "${{ env.NS_SYSTEM }}" \
-            "${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}/shogo/shogo-api:${{ env.IMAGE_TAG }}"
-
-      - name: Verify configured node pool matches running nodes
-        run: |
-          NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
-          if [ -z "$NODE_POOL_OCID" ]; then echo "NODE_POOL_OCID not set, skipping"; exit 0; fi
-          POOL_HASH=$(echo "$NODE_POOL_OCID" | rev | cut -c1-11 | rev)
-          NODE_NAMES=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.labels.displayName}{"\n"}{end}' 2>/dev/null || true)
-          if [ -z "$NODE_NAMES" ]; then echo "::warning::Could not list nodes for pool verification"; exit 0; fi
-          if ! echo "$NODE_NAMES" | grep -q "$POOL_HASH"; then
-            echo "::error::Configured NODE_POOL_OCID (.../${POOL_HASH}) does not match any running node displayName."
-            echo "::error::Running nodes:"; echo "$NODE_NAMES" | sed 's/^/  /'
-            echo "::error::Update the GitHub Actions variable NODE_POOL_OCID for environment ${{ env.ENVIRONMENT }}."
-            exit 1
-          fi
-          echo "Node pool OCID matches running nodes (hash=$POOL_HASH)"
-
-      # ----------------------------------------------------------------------
-      # Logical replication: keep the cross-region publication in sync.
-      # See the matching block in the deploy-us job for full rationale (#501).
-      # ----------------------------------------------------------------------
-      - name: Reconcile logical replication publication
-        run: |
-          kubectl apply -f k8s/cnpg/production-india-oci/platform-publication.yaml
-
-      # Primary-pod selector + GRANT reconcile + assertion: see the matching
-      # block in the deploy-us job for the full rationale.
-      - name: Locate CNPG primary pod
-        run: |
-          set -euo pipefail
-          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
-            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
-            -o jsonpath='{.items[0].metadata.name}')
-          if [ -z "$PRIMARY" ]; then
-            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
-            exit 1
-          fi
-          echo "Located primary on India: $PRIMARY"
-          echo "PG_PRIMARY=$PRIMARY" >> "$GITHUB_ENV"
-
-      - name: Reconcile logical replication GRANTs
-        run: |
-          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-            psql -U postgres -d shogo < k8s/cnpg/logical-replication/grants.sql \
-            || echo "::warning::GRANT reconciliation failed on India (see logs above)"
-
-      - name: Verify GRANT contract
-        run: |
-          set -euo pipefail
-          MISSING=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-            psql -U postgres -d shogo -tAc "
-              SELECT count(*)
-              FROM pg_class c
-              JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'public' AND c.relkind = 'r'
-                AND NOT has_table_privilege('logical_replicator', c.oid, 'SELECT');
-            ")
-          if [ "$MISSING" != "0" ]; then
-            echo "::error::$MISSING tables in public still lack SELECT for logical_replicator on India"
-            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-              psql -U postgres -d shogo -c "
-                SELECT n.nspname || '.' || c.relname AS missing_table
-                FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = 'public' AND c.relkind = 'r'
-                  AND NOT has_table_privilege('logical_replicator', c.oid, 'SELECT');
-              "
-            exit 1
-          fi
-          echo "✓ logical_replicator has SELECT on every public table on India"
-
-      # See deploy-us for full rationale (2026-05-26 incident).
-      - name: Install _prisma_migrations REPLICA-trigger
-        run: |
-          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-            psql -U postgres -d shogo \
-            < k8s/cnpg/logical-replication/skip-replicated-migrations.sql \
-            || { echo "::error::skip-replicated-migrations.sql failed on India"; exit 1; }
-
-      - name: Verify _prisma_migrations REPLICA-trigger
-        run: |
-          set -euo pipefail
-          STATE=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-            psql -U postgres -d shogo -tAc "
-              SELECT tgenabled
-              FROM pg_trigger
-              WHERE tgrelid='_prisma_migrations'::regclass
-                AND tgname='skip_replicated_migrations_trg';
-            ")
-          if [ "$STATE" != "R" ]; then
-            echo "::error::skip_replicated_migrations_trg on India is in state '$STATE', expected 'R'"
-            exit 1
-          fi
-          echo "✓ skip_replicated_migrations_trg is REPLICA-mode on India"
-
-      # Re-assert the region-local exclusion (see the US job for full rationale).
-      - name: Re-assert region-local publication exclusion
-        run: |
-          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-            psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
-            < k8s/cnpg/logical-replication/exclude-region-local-tables.sql \
-            || { echo "::error::region-local publication exclusion failed on India"; exit 1; }
-
-      - name: Refresh logical replication subscriptions
-        run: |
-          for SUB in sub_from_us sub_from_eu; do
-            echo "Refreshing $SUB on India..."
-            kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-              psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
-                -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
-              || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on India (subscription may not exist yet)"
-          done
-
-      - name: Deploy Cluster Autoscaler
-        run: |
-          NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
-          if [ -z "$NODE_POOL_OCID" ]; then echo "Skipping autoscaler"; exit 0; fi
-          # Standing-headroom floor (run 26865807851, 2026-06-02): keep MIN
-          # warm (already-prepulled) nodes at idle so a rollout's `min-scale`
-          # api/warm-pool pods always land on a warm node instead of forcing
-          # the autoscaler to provision a COLD one mid-deploy. Defaults keep
-          # MIN>=2 so a missing var can never regress to the old scale-to-1
-          # behavior. Keep vars.NODE_POOL_MIN/MAX in sync with terraform
-          # system_pool_min/system_pool_max.
-          NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '2' }}"
-          NODE_POOL_MAX="${{ vars.NODE_POOL_MAX || '10' }}"
-          sed -e "s|NODE_POOL_MIN_PLACEHOLDER|$NODE_POOL_MIN|g" \
-              -e "s|NODE_POOL_MAX_PLACEHOLDER|$NODE_POOL_MAX|g" \
-              -e "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" \
-              k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
-          kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
-          kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
-
-      - name: Resolve runtime image to immutable tag
-        id: runtime-tag
-        env:
-          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
-          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
-        run: |
-          PREV=$(kubectl get configmap shogo-runtime-version -n ${{ env.NS_SYSTEM }} \
-                  -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
-          if [ "$RUNTIME_CHANGED" = "true" ]; then
-            NEW_TAG="${{ env.IMAGE_TAG }}"
-          elif [ -n "$PREV" ]; then
-            NEW_TAG="$PREV"
-          else
-            NEW_TAG="${{ env.IMAGE_TAG }}"
-          fi
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${NEW_TAG}"
-          kubectl create configmap shogo-runtime-version \
-            --namespace=${{ env.NS_SYSTEM }} \
-            --from-literal=image_tag="$NEW_TAG" \
-            --from-literal=image="$RUNTIME_IMAGE" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          echo "image=$RUNTIME_IMAGE" >> $GITHUB_OUTPUT
-          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
-
-      - name: Deploy Image Prepuller
-        env:
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-        run: |
-          sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
-              -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
-              k8s/base/image-prepuller.yaml | kubectl apply -f -
-
-      # Hard gate (run 26865807851, 2026-06-02): block until the
-      # image-prepuller DaemonSet has finished pulling the runtime image
-      # onto every node BEFORE patching the api/warm-pool revisions onto
-      # it. Without this the revisions race the pull and lose — India's
-      # api revision never achieved initial scale (ProgressDeadlineExceeded)
-      # and EU's warm pool never reached Ready. No-op when the runtime tag
-      # is unchanged. See .github/scripts/wait-runtime-prepulled.sh.
-      - name: Wait for runtime image prepull (gate)
-        run: |
-          .github/scripts/wait-runtime-prepulled.sh "${{ env.NS_SYSTEM }}"
-
-      # Continuous warm-pool health monitor: a 5-minute CronJob that fails
-      # the K8s job (and pages via the existing kube_job_status_failed
-      # alert) on any of the 2026-05-27 incident classes — placeholder env
-      # leak on api ksvc, ImagePullBackOff/CrashLoopBackOff on a warm-pool
-      # pod, or zero-Ready warm-pool ksvcs. See k8s/base/warm-pool-monitor.yaml.
-      - name: Deploy warm-pool monitor
-        run: |
-          sed -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
-              -e "s|value: shogo-staging-system|value: ${{ env.NS_SYSTEM }}|g" \
-              -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
-              k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
-
-      - name: Deploy Knative services
-        env:
-          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
-          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
-          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
-          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
-          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
-          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
-        run: |
-          patch_ksvc() {
-            local name=$1 ns=$2 image_name=$3 changed=$4 prev=$5
-            if [ "$changed" = "true" ]; then
-              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${OCIR_REGISTRY}/shogo/${image_name}:${{ env.IMAGE_TAG }}\"}
-              ]" || echo "$name not found"
-            elif [ -n "$prev" ]; then
-              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
-              ]" || true
-            fi
-          }
-          patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
-          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
-          patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
-
-      # The inline `python3 ... 2>/dev/null) || IDX="-1"` block that used
-      # to live at the bottom of `Deploy Knative services` silently
-      # skipped on every error path (the kubectl pipefail, the python
-      # parse, the patch itself), let the kustomize overlay placeholder
-      # `:production-bootstrap` survive the deploy on EU/India during
-      # v1.8.13, and triggered the 2026-05-27 502 incident once the
-      # warm-pool controller tried to mint pods with a non-existent
-      # image. The shared script `set -euo pipefail`s, ADDs missing env
-      # vars, and verifies the post-patch value via a fresh `kubectl get`.
-      - name: Sync API environment variables
-        env:
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-        run: |
-          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" RUNTIME_IMAGE "$RUNTIME_IMAGE"
-
-      - name: Wait for rollout and health check
-        run: |
-          # See the staging block for the rationale behind this gate.
-          # `kubectl wait --for=condition=ready ksvc/...` is NOT sufficient
-          # on its own: a Knative Service stays Ready=True while its latest
-          # revision crashloops because Knative keeps traffic on the prior
-          # Ready revision. We must additionally assert that the controller
-          # has seen our patch (observedGeneration == metadata.generation)
-          # and that the latest created revision IS the latest Ready one.
-          wait_ksvc_ready() {
-            local name=$1 ns=$2 timeout_sec=${3:-600}
-            local target_gen lcre lread obs ready elapsed=0
-            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
-            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
-            while [ "$elapsed" -lt "$timeout_sec" ]; do
-              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
-              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
-              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
-              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
-              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
-                echo "ksvc/$name rolled out to $lcre"
-                return 0
-              fi
-              sleep 10
-              elapsed=$((elapsed + 10))
-            done
-            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
-            echo "::group::revision describe"
-            kubectl describe revision "$lcre" -n "$ns" || true
-            echo "::endgroup::"
-            echo "::group::revision logs"
-            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
-            echo "::endgroup::"
-            return 1
-          }
-          for s in api studio; do
-            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
-          done
-
-          sleep 15
-          KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-          if [ -z "$KOURIER_IP" ]; then
-            echo "::error::Kourier LoadBalancer IP not assigned; cannot reach India ingress"
-            exit 1
-          fi
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
-          echo "India health: HTTP $STATUS"
-          if [ "$STATUS" != "200" ]; then
-            echo "::error::India /api/health returned HTTP $STATUS (expected 200) via Kourier ${KOURIER_IP}"
-            exit 1
-          fi
-
-      # See the staging block for context on these two gates. Tier 1 of
-      # the 2026-05-27 prevention: warm-pool sanity. Tier 4: prune
-      # obsolete api revisions to kill the multi-reconciler race that
-      # amplified the US half of the incident.
-      - name: Check warm-pool health
-        run: |
-          .github/scripts/check-warm-pool-health.sh "${{ env.NS_SYSTEM }}" "${{ env.NS_WORKSPACES }}"
-
-      - name: Garbage-collect old api revisions
-        run: |
-          .github/scripts/gc-old-api-revisions.sh "${{ env.NS_SYSTEM }}"
-
-      - name: Summary
-        run: |
-          echo "## India Production Deploy" >> $GITHUB_STEP_SUMMARY
           echo "- Role: active-active" >> $GITHUB_STEP_SUMMARY

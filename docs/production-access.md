@@ -32,8 +32,10 @@ Each cluster has a dedicated kubeconfig file to avoid context-switching mistakes
 |------|---------|--------|---------|
 | `~/.kube/config-oke-us` | OCI OKE US | us-ashburn-1 | **Primary** production |
 | `~/.kube/config-oke-eu` | OCI OKE EU | eu-frankfurt-1 | Tier 1 production |
-| `~/.kube/config-oke-india` | OCI OKE India | ap-mumbai-1 | Tier 2 production |
 | `~/.kube/config-oke-staging` | OCI OKE Staging | us-ashburn-1 | Staging |
+
+> The `ap-mumbai-1` (India) cluster was permanently decommissioned on
+> 2026-07-07 (India → EU migration).
 
 ### Generating Kubeconfigs
 
@@ -55,14 +57,6 @@ oci ce cluster create-kubeconfig \
   --region eu-frankfurt-1 \
   --token-version 2.0.0 \
   --kube-endpoint PUBLIC_ENDPOINT
-
-# India production
-oci ce cluster create-kubeconfig \
-  --cluster-id <cluster-ocid> \
-  --file ~/.kube/config-oke-india \
-  --region ap-mumbai-1 \
-  --token-version 2.0.0 \
-  --kube-endpoint PUBLIC_ENDPOINT
 ```
 
 ---
@@ -78,9 +72,6 @@ KUBECONFIG=~/.kube/config-oke-us kubectl get pods -n shogo-production-system
 # EU production
 KUBECONFIG=~/.kube/config-oke-eu kubectl get pods -n shogo-production-system
 
-# India production
-KUBECONFIG=~/.kube/config-oke-india kubectl get pods -n shogo-production-system
-
 # Staging
 KUBECONFIG=~/.kube/config-oke-staging kubectl get pods -n shogo-staging-system
 ```
@@ -92,7 +83,6 @@ Add to `~/.zshrc` for convenience:
 ```bash
 alias kus='KUBECONFIG=~/.kube/config-oke-us kubectl'
 alias keu='KUBECONFIG=~/.kube/config-oke-eu kubectl'
-alias kin='KUBECONFIG=~/.kube/config-oke-india kubectl'
 alias kst='KUBECONFIG=~/.kube/config-oke-staging kubectl'
 ```
 
@@ -125,7 +115,7 @@ KUBECONFIG=~/.kube/config-oke-us kubectl get ksvc -n shogo-production-system
 ### Check pod health across all regions
 
 ```bash
-for region in us eu india; do
+for region in us eu; do
   echo "=== $region ===" && \
   KUBECONFIG=~/.kube/config-oke-$region kubectl get pods -n shogo-production-system -l 'serving.knative.dev/service'
 done
@@ -176,13 +166,12 @@ KUBECONFIG=~/.kube/config-oke-us kubectl get secret api-secrets -n shogo-product
 
 ### Image replication (manual)
 
-If images need to be manually replicated to EU or India:
+If images need to be manually replicated to EU:
 
 ```bash
 # Login to all registries first
 skopeo login us-ashburn-1.ocir.io
 skopeo login eu-frankfurt-1.ocir.io
-skopeo login ap-mumbai-1.ocir.io
 # Username: idin4oltblww/info@shogo.ai
 # Password: <OCIR auth token>
 
@@ -202,14 +191,13 @@ skopeo copy \
 |--------|----------|
 | US | `us-ashburn-1.ocir.io/idin4oltblww/shogo/` |
 | EU | `eu-frankfurt-1.ocir.io/idin4oltblww/shogo/` |
-| India | `ap-mumbai-1.ocir.io/idin4oltblww/shogo/` |
 
 Images: `shogo-api`, `shogo-web`, `shogo-runtime`, `shogo-runtime-base`, `agent-runtime`
 
 ### DNS & Traffic Routing
 
 - **Domain**: `studio.shogo.ai` → Cloudflare Load Balancer
-- **Steering**: Dynamic latency-based routing across US, EU, India origin pools
+- **Steering**: Dynamic latency-based routing across US and EU origin pools
 - **SSL**: Cloudflare Full mode with Origin Certificate on OCI Load Balancers
 - **Health checks**: HTTPS to each region's OCI Load Balancer
 
@@ -221,9 +209,8 @@ Cross-region streaming replication from US primary:
 |--------|-----------|------|
 | US | 2 (primary + replica) | **Primary** write region |
 | EU | 1 | Streaming replica of US (read-only) |
-| India | 1 | Streaming replica of US (read-only) |
 
-The US primary is exposed externally via a LoadBalancer service (`platform-pg-external`) at `129.158.209.173:5432` for cross-region streaming replication. EU and India replicas connect via TLS using the US cluster's CA and replication certificates.
+The US primary is exposed externally via a LoadBalancer service (`platform-pg-external`) at `129.158.209.173:5432` for cross-region streaming replication. The EU replica connects via TLS using the US cluster's CA and replication certificates.
 
 ### Object Storage (OCI S3-compatible)
 
@@ -242,7 +229,7 @@ Deployments are triggered via GitHub Actions (`.github/workflows/deploy.yml`) on
 - `main` branch → staging
 - `production` branch → all production regions
 
-The workflow builds images in US OCIR, replicates to EU/India with `skopeo`, and deploys via `kubectl apply -k` to each region's kustomize overlay.
+The workflow builds images in US OCIR, replicates to EU with `skopeo`, and deploys via `kubectl apply -k` to each region's kustomize overlay.
 
 ---
 

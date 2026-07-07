@@ -35,9 +35,9 @@ const DIGEST_HOUR = parseInt(process.env.ANALYTICS_DIGEST_HOUR || '8', 10)
 // same numbers. We only want ONE authoritative scheduled run per day.
 //
 // Before the 2026-05-22 multi-region rollout this was effectively single
-// region. After the rollout all three API regions (US/EU/India) booted this
+// region. After the rollout both API regions (US/EU) booted this
 // scheduler, so each wrote its own `(date, '24h', REGION_ID)` row against the
-// same global data — producing ~3 near-identical "AI Insights/day" rows.
+// same global data — producing near-identical duplicate "AI Insights/day" rows.
 //
 // Pin the scheduled run to the main region (US, `us-ashburn-1`) — the same
 // primary region that owns DB migrations — so only one row is produced per
@@ -51,7 +51,7 @@ const MAIN_REGION_ID = 'us-ashburn-1'
  *
  * True for the main region in production, and true whenever `REGION_ID` is
  * unset (local/dev/test, where there is only one process) so the collector
- * keeps working off-cluster. EU/India production replicas return false.
+ * keeps working off-cluster. EU production replicas return false.
  */
 function shouldScheduleDigest(): boolean {
   const region = process.env.REGION_ID
