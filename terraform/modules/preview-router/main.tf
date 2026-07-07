@@ -218,6 +218,14 @@ resource "cloudflare_worker_script" "preview_router" {
   name       = "shogo-preview-router-${var.environment}"
   module     = true
 
+  # allow_custom_ports lets the Worker fetch() a grey-clouded origin on a
+  # non-standard port. Metal projects are served over the box's PUBLIC DNAT
+  # ports (20000-20999) — without this flag the port is silently dropped to
+  # 80/443 and the metal proxy fails. Only affects grey-clouded (non-Cloudflare)
+  # origins; orange-clouded hosts (the Kourier anchors) are unaffected.
+  compatibility_date  = "2024-11-01"
+  compatibility_flags = ["allow_custom_ports"]
+
   kv_namespace_binding {
     name         = "PREVIEW_REGIONS"
     namespace_id = cloudflare_workers_kv_namespace.preview_regions.id
@@ -273,13 +281,18 @@ resource "cloudflare_worker_script" "preview_router" {
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    // Ask the API to provision + wake this project's preview pod and report
-    // readiness. A preview that was never opened in Studio has no DomainMapping
-    // / pod yet, so the API creates it on demand (getProjectPodUrl). Returns
-    // false (degrade to transparent proxy / keep polling) when no API origin is
-    // configured or the call fails.
+    // Ask the API to provision + wake this project's preview backend and report
+    // readiness. Returns { ready, url }:
+    //   - url set   -> project runs on the METAL substrate; `url` is the box's
+    //                  PUBLIC runtime origin (http://host:PORT). Proxy straight
+    //                  there (needs allow_custom_ports for the high port). Metal
+    //                  projects have no Knative route, so this is the ONLY path.
+    //   - url null  -> Knative project (or nothing resolved yet); use the region
+    //                  anchor as before.
+    // Degrades to { ready:false, url:null } (keep polling / transparent proxy)
+    // when no API origin is configured or the call fails.
     async function previewWake(env, projectId, timeoutMs) {
-      if (!env.API_WAKE_ORIGIN || !projectId) return false;
+      if (!env.API_WAKE_ORIGIN || !projectId) return { ready: false, url: null };
       const base = env.API_WAKE_ORIGIN.replace(/\/+$/, '');
       const ctrl = new AbortController();
       const timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
@@ -288,14 +301,68 @@ resource "cloudflare_worker_script" "preview_router" {
           signal: ctrl.signal,
           headers: { 'User-Agent': 'Cloudflare-Worker-Wake' },
         });
-        if (!resp.ok) return false;
+        if (!resp.ok) return { ready: false, url: null };
         const data = await resp.json();
-        return !!(data && data.ready);
+        return { ready: !!(data && data.ready), url: (data && data.url) || null };
       } catch (e) {
-        return false;
+        return { ready: false, url: null };
       } finally {
         clearTimeout(timer);
       }
+    }
+
+    // --- Metal direct-proxy helpers ------------------------------------------
+    // A metal project's public runtime origin is dynamic (host + per-project
+    // DNAT port) and can move across a resume/reassign, so we cache the resolved
+    // url in KV with a short TTL keyed distinctly from the region map (which is
+    // keyed by bare projectId). On a proxy failure we invalidate and re-resolve.
+    function metalKey(projectId) { return 'murl:' + projectId; }
+
+    async function getCachedMetalUrl(env, projectId) {
+      if (!env.PREVIEW_REGIONS || !projectId) return null;
+      try { return await env.PREVIEW_REGIONS.get(metalKey(projectId)); } catch (e) { return null; }
+    }
+    async function setCachedMetalUrl(env, projectId, u) {
+      if (!env.PREVIEW_REGIONS || !projectId || !u) return;
+      try { await env.PREVIEW_REGIONS.put(metalKey(projectId), u, { expirationTtl: 120 }); } catch (e) {}
+    }
+    async function clearCachedMetalUrl(env, projectId) {
+      if (!env.PREVIEW_REGIONS || !projectId) return;
+      try { await env.PREVIEW_REGIONS.delete(metalKey(projectId)); } catch (e) {}
+    }
+
+    // Proxy the request straight to a metal box origin, preserving path + query.
+    // The metal box serves the built SPA at `/` (same as Kourier→ksvc did), so
+    // no path rewrite is needed. Host header is dropped so fetch derives it from
+    // the metal origin. Non-GET bodies are buffered (preview POSTs are small);
+    // GET/HEAD carry no body so a failed attempt can be safely re-resolved.
+    async function proxyToMetal(request, metalBase, url) {
+      const target = metalBase.replace(/\/+$/, '') + url.pathname + url.search;
+      const headers = new Headers(request.headers);
+      headers.delete('host');
+      const init = { method: request.method, headers: headers, redirect: 'manual' };
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        init.body = await request.arrayBuffer();
+      }
+      return fetch(target, init);
+    }
+
+    // GET fast-path against a cached metal url. Returns the response, or null if
+    // the cached url is stale/dead (connection error, or an infra 404/5xx that
+    // the runtime itself did not stamp) — the caller then re-resolves via wake.
+    async function proxyCachedMetalGet(request, env, projectId, metalBase, url) {
+      let resp;
+      try {
+        resp = await proxyToMetal(request, metalBase, url);
+      } catch (e) {
+        await clearCachedMetalUrl(env, projectId);
+        return null;
+      }
+      if (INFRA_ERROR_STATUSES[resp.status] && !isRuntimeResponse(resp)) {
+        await clearCachedMetalUrl(env, projectId);
+        return null;
+      }
+      return resp;
     }
 
     function wakeJsonResponse(ready) {
@@ -373,13 +440,54 @@ resource "cloudflare_worker_script" "preview_router" {
       async fetch(request, env) {
         const url = new URL(request.url);
         const projectId = projectIdFromHost(url.hostname);
+        const isDoc = isDocumentRequest(request, url);
 
-        // Wake control endpoint, polled by the loading page below. Always
+        // Wake control endpoint, polled by the loading page below. Also refreshes
+        // the metal-url cache so the reload lands on the fast path. Always
         // available (returns {ready:false} when no API origin is configured).
         if (url.pathname === '/__shogo/wake' || url.pathname === '/__shogo/ready') {
-          return wakeJsonResponse(await previewWake(env, projectId, 8000));
+          const w = await previewWake(env, projectId, 8000);
+          if (w.url) await setCachedMetalUrl(env, projectId, w.url);
+          return wakeJsonResponse(w.ready);
         }
 
+        // ---- Metal fast path -------------------------------------------------
+        // If we've already resolved this project to a metal box, proxy GETs
+        // straight there (its public DNAT origin). Only GETs use the cache: they
+        // carry no body, so a stale-url miss can be safely re-resolved below.
+        if (projectId && request.method === 'GET') {
+          const cached = await getCachedMetalUrl(env, projectId);
+          if (cached) {
+            const resp = await proxyCachedMetalGet(request, env, projectId, cached, url);
+            if (resp) return resp;
+            // stale/dead cache -> fall through to re-resolve via wake
+          }
+        }
+
+        // ---- Resolve the backend (metal url or Knative) via the API ----------
+        // A metal project has no Knative route; the API resolves its public url
+        // and we proxy directly. A Knative project returns {ready} with no url,
+        // and we use the region anchor path below (unchanged behavior).
+        if (env.API_WAKE_ORIGIN && projectId) {
+          const w = await previewWake(env, projectId, 8000);
+          if (w.url) {
+            await setCachedMetalUrl(env, projectId, w.url);
+            // Not up yet: for a top-level navigation show the loading page (it
+            // keeps polling /__shogo/wake, which re-runs the wake + reload).
+            if (!w.ready && isDoc) return shogoLoadingResponse(url.hostname);
+            const resp = await proxyToMetal(request, w.url, url);
+            if (isDoc && INFRA_ERROR_STATUSES[resp.status] && !isRuntimeResponse(resp)) {
+              await clearCachedMetalUrl(env, projectId);
+              return shogoLoadingResponse(url.hostname);
+            }
+            return resp;
+          }
+          // Knative project: gate document navigations on readiness so a cold /
+          // never-opened preview shows the loading page instead of a raw 404.
+          if (isDoc && !w.ready) return shogoLoadingResponse(url.hostname);
+        }
+
+        // ---- Knative region-anchor path (unchanged) --------------------------
         // Resolve the hosting region from KV. Any failure (unparseable host,
         // missing binding, KV miss, KV error) falls through to DEFAULT_REGION,
         // which is also where the wildcard points — so default-region previews
@@ -397,19 +505,6 @@ resource "cloudflare_worker_script" "preview_router" {
         // swapping it for an interstitial could duplicate or drop a mutation.
         if (request.method !== 'GET') {
           return proxyToAnchor(request, anchor);
-        }
-
-        const isDoc = isDocumentRequest(request, url);
-
-        // Top-level navigation: make sure the preview backend is up before
-        // proxying. A preview never opened in Studio has no DomainMapping/pod
-        // (Kourier would hard-fail); a cold one can exceed the edge timeout. If
-        // the API says it isn't ready, serve a loading page that provisions +
-        // wakes it and reloads. Only when an API origin is configured; otherwise
-        // proxy transparently (no behavior change).
-        if (env.API_WAKE_ORIGIN && projectId && isDoc) {
-          const ready = await previewWake(env, projectId, 8000);
-          if (!ready) return shogoLoadingResponse(url.hostname);
         }
 
         let resp = await proxyToAnchor(request, anchor);

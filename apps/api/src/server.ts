@@ -1819,6 +1819,31 @@ const WAKE_RESPONSE_HEADERS = {
   'Cache-Control': 'no-store',
 }
 
+// Probe a metal runtime's PUBLIC url to see whether its preview is serving.
+// `/preview/status` is the runtime control endpoint (running/phase/apiReady); a
+// running runtime serves the built SPA (or a self-refreshing "Building…" page —
+// both stamped x-shogo-runtime) at `/`. So `running` is the gate for "let the
+// preview-router Worker proxy straight to the box" instead of holding its own
+// loading interstitial. The api pod reaches this url the same way it does for
+// assign/agent-proxy (metal's public DNAT port), so the probe path is proven.
+async function probeMetalPreviewReady(baseUrl: string, timeoutMs: number): Promise<boolean> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const resp = await fetch(`${baseUrl.replace(/\/+$/, '')}/preview/status`, {
+      signal: ctrl.signal,
+      headers: { 'User-Agent': 'shogo-preview-wake' },
+    })
+    if (!resp.ok) return false
+    const s: any = await resp.json().catch(() => null)
+    return !!(s && s.running === true)
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // Wake a published, server-backed app ({subdomain}.shogo.one -> published-{id}).
 app.get('/api/published/:subdomain/wake', async (c) => {
   const subdomain = (c.req.param('subdomain') || '').toLowerCase()
@@ -1863,6 +1888,42 @@ app.get('/api/preview/:projectId/wake', async (c) => {
     if (!isKubernetes()) {
       return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
     }
+
+    // Metal substrate: a metal project has NO Knative service/route, so Kourier
+    // can't serve its `{id}.preview.<base>` subdomain (a raw 404). Resolve its
+    // PUBLIC runtime url — this resumes/claims the microVM — and hand it back so
+    // the preview-router Worker proxies the subdomain straight to the box (its
+    // public DNAT port). We must never fall through to Knative for a metal
+    // project (there is nothing there to route to).
+    const { isMetalEnabled, isMetalEligibleProject } = await import('./lib/metal-eligibility')
+    if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
+      try {
+        const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+        // Wait briefly so a warm resume reports ready within a single poll; a
+        // slower cold boot rejoins the in-flight wake (singleflight) on the next
+        // poll rather than stacking assigns.
+        const resolved = await resolveProjectPodUrl(projectId, {
+          logTag: 'preview/wake',
+          metalWaitMs: 6000,
+          metalRetryDelayMs: 1000,
+        })
+        if (resolved.mode === 'metal') {
+          const ready = await probeMetalPreviewReady(resolved.url, 4000)
+          return c.json({ ready, url: resolved.url }, 200, WAKE_RESPONSE_HEADERS)
+        }
+        // Drain cutover yielded a LIVE Knative pod — Kourier can serve it, so
+        // report ready the Knative way (no url; Worker uses the region anchor).
+        if (resolved.mode === 'k8s') {
+          return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
+        }
+      } catch (err: any) {
+        // Still starting (or an authoritative metal miss) — keep the loading
+        // page polling; the next poll rejoins the in-flight wake.
+        console.warn(`[preview/wake] metal resolve ${projectId} not ready:`, err?.message || err)
+        return c.json({ ready: false }, 200, WAKE_RESPONSE_HEADERS)
+      }
+    }
+
     const { getProjectPodUrl, getKnativeProjectManager } = await import('./lib/knative-project-manager')
     const manager = getKnativeProjectManager()
     const status = await manager.getStatus(projectId)
