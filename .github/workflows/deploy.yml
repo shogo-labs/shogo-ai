@@ -563,6 +563,13 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
           OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
           OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+          # AWS CLI v2 (>= 2.23) adds default integrity checksums that upload via
+          # `Content-Encoding: aws-chunked` with a trailing checksum. OCI's
+          # S3-compatible endpoint rejects that with `NotImplemented: AWS chunked
+          # encoding not supported`. Force checksums to WHEN_REQUIRED so PutObject
+          # uses a plain, pre-signed payload the OCI endpoint accepts.
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
         run: |
           set -euo pipefail
           # Materialize ONLY dist/_expo via the `web-assets` stage (FROM
