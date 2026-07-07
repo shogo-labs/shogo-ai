@@ -5130,22 +5130,36 @@ app.get('/api/admin/metal/fleet', async (c) => {
   try {
     const { getMetalFleetStatus } = await import('./lib/metal-warm-pool-controller')
     const { getFleetEnv, fleetEnvKey, METAL_FLEET } = await import('./config/metal-fleet')
+    const { getMetalHostRecordMap } = await import('./lib/metal-fleet-hosts')
 
     const status = await getMetalFleetStatus()
     const envKey = fleetEnvKey()
     const env = getFleetEnv(envKey)
+    // Provider/ops identity (serverId, publicIp, enable flag, notes) is stored in
+    // the DB (super-admin managed), NOT in the committed config — keeps server
+    // IPs out of source control on this public repo.
+    const dbRecords = await getMetalHostRecordMap()
 
     const liveById = new Map(status.hosts.map((h) => [h.hostId, h]))
     const desiredIds = new Set(env.baseline.map((h) => h.hostId))
 
-    // Merge desired baseline with what is actually live; flag drift both ways.
+    // Merge desired baseline (config) + DB identity + live heartbeat; flag drift.
     const baseline = env.baseline.map((d) => {
       const live = liveById.get(d.hostId)
+      const rec = dbRecords.get(d.hostId)
+      const enabled = rec?.enabled !== false
       return {
         ...d,
+        // DB overlays: sensitive/mutable fields never come from config.
+        serverId: rec?.serverId ?? null,
+        publicIp: rec?.publicIp ?? null,
+        role: rec?.role ?? d.role,
+        site: rec?.site ?? d.site,
+        notes: rec?.notes ?? null,
+        enabled,
         kind: 'baseline' as const,
         present: !!live,
-        provisioned: !!d.serverId,
+        provisioned: !!rec?.serverId,
         live: live ?? null,
       }
     })
@@ -5177,7 +5191,8 @@ app.get('/api/admin/metal/fleet', async (c) => {
         stats: status.stats,
         config: status.config,
         drift: {
-          missing: baseline.filter((h) => !h.present).map((h) => h.hostId),
+          // Disabled hosts (super-admin toggled off) are not expected to be live.
+          missing: baseline.filter((h) => h.enabled && !h.present).map((h) => h.hostId),
           unmanaged: extra.map((h) => h.hostId),
         },
       },
@@ -5201,6 +5216,64 @@ app.post('/api/admin/metal/hosts/:hostId/:action', async (c) => {
     return c.json({ ok: true, hostId, cordoned: action === 'cordon' })
   } catch (err: any) {
     return c.json({ ok: false, error: err?.message ?? 'cordon failed' }, 500)
+  }
+})
+
+// -----------------------------------------------------------------------------
+// Metal host identity/ops metadata (serverId, publicIp, enabled, notes) — stored
+// in the DB (super-admin managed), never committed. These let an operator record
+// provider identity + control a host without editing source. Live IP still comes
+// from the heartbeat; publicIp here is the recorded/informational value.
+// -----------------------------------------------------------------------------
+
+// GET /api/admin/metal/hosts-config — raw DB identity records (all hosts).
+app.get('/api/admin/metal/hosts-config', async (c) => {
+  try {
+    const { getMetalHostRecords } = await import('./lib/metal-fleet-hosts')
+    return c.json({ ok: true, data: await getMetalHostRecords() })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'unavailable' }, 500)
+  }
+})
+
+// PUT /api/admin/metal/hosts/:hostId/config — upsert identity/ops metadata.
+app.put('/api/admin/metal/hosts/:hostId/config', async (c) => {
+  const hostId = c.req.param('hostId')
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
+    const { upsertMetalHostRecord } = await import('./lib/metal-fleet-hosts')
+    const userId = await getAuthUserId(c)
+    const records = await upsertMetalHostRecord(
+      {
+        hostId,
+        region: body.region as string | undefined,
+        site: body.site as string | undefined,
+        serverId: (body.serverId as string | null | undefined) ?? undefined,
+        publicIp: (body.publicIp as string | null | undefined) ?? undefined,
+        billing: body.billing as 'monthly' | 'hourly' | undefined,
+        role: body.role as string | undefined,
+        enabled: body.enabled as boolean | undefined,
+        provider: body.provider as string | undefined,
+        notes: body.notes as string | undefined,
+      },
+      userId ?? null,
+    )
+    return c.json({ ok: true, data: records })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'update failed' }, 500)
+  }
+})
+
+// DELETE /api/admin/metal/hosts/:hostId/config — remove identity metadata.
+app.delete('/api/admin/metal/hosts/:hostId/config', async (c) => {
+  const hostId = c.req.param('hostId')
+  try {
+    const { deleteMetalHostRecord } = await import('./lib/metal-fleet-hosts')
+    const userId = await getAuthUserId(c)
+    const records = await deleteMetalHostRecord(hostId, userId ?? null)
+    return c.json({ ok: true, data: records })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'delete failed' }, 500)
   }
 })
 

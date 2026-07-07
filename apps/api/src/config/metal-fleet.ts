@@ -13,9 +13,14 @@
  * the live registry (heartbeats) to surface drift and, later, to provision the
  * missing baseline hosts and scale burst capacity up/down automatically.
  *
- * Editing this file is the sanctioned way to change the baseline fleet. Each
- * `baseline` entry with a `serverId` is already provisioned; entries without one
- * are desired-but-not-yet-provisioned (the reconciler's to-do list).
+ * Editing this file is the sanctioned way to change the baseline fleet SHAPE.
+ *
+ * NOTE: This file is committed to a PUBLIC repo, so it holds only non-sensitive
+ * desired-state (hostId, region, site, billing, role). Provider identity and
+ * operational details — the Latitude `serverId`, the box `publicIp`, an
+ * enable/disable flag, notes — are stored in the DATABASE (super-admin managed,
+ * see lib/metal-fleet-hosts.ts) and merged into the fleet view at runtime. The
+ * live IP a host serves on always comes from its heartbeat.
  */
 
 export interface MetalFleetHost {
@@ -25,10 +30,6 @@ export interface MetalFleetHost {
   region: string
   /** Provider site/facility code (Latitude: DAL, FRA, ...). */
   site: string
-  /** Provider server id once provisioned (Latitude sv_...); absent = desired. */
-  serverId?: string
-  /** Public IP once provisioned (informational; live IP comes from heartbeat). */
-  publicIp?: string
   /** Billing term for this host. */
   billing: 'monthly' | 'hourly'
   /** Free-form role note (e.g. "staging", "primary"). */
@@ -79,8 +80,6 @@ export const METAL_FLEET: MetalFleetConfig = {
           hostId: 'latitude-dal-1',
           region: 'us',
           site: 'DAL',
-          serverId: 'sv_YGwn0V7yDN63J',
-          publicIp: '72.46.85.83',
           billing: 'monthly',
           role: 'staging',
         },
@@ -96,8 +95,9 @@ export const METAL_FLEET: MetalFleetConfig = {
       },
     },
     // Production target: 2 regions (US=Dallas, EU=Frankfurt), 2 monthly hosts
-    // each. Entries without a serverId are desired-but-not-yet-provisioned — the
-    // reconciler's provisioning to-do list (drift shows as "missing" until then).
+    // each. Provider identity (serverId/publicIp) for each host is recorded in
+    // the DB (super-admin fleet panel); a host shows as drift "missing" until it
+    // registers a heartbeat.
     production: {
       baseline: [
         { hostId: 'latitude-dal-1', region: 'us', site: 'DAL', billing: 'monthly', role: 'primary' },
