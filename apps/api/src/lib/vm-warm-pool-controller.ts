@@ -436,11 +436,21 @@ export class VMWarmPoolController {
       if (!pod) {
         const freshPod = await this.bootVM('assign')
         if (!freshPod) throw new Error('Failed to boot VM for project')
-        await this.assign(freshPod, projectId)
+        try {
+          await this.assign(freshPod, projectId)
+        } catch (err: any) {
+          this.quarantineVM(freshPod, err?.message || String(err))
+          throw err
+        }
         return freshPod.url
       }
 
-      await this.assign(pod, projectId)
+      try {
+        await this.assign(pod, projectId)
+      } catch (err: any) {
+        this.quarantineVM(pod, err?.message || String(err))
+        throw err
+      }
       return pod.url
     } finally {
       this.pendingAssigns--
@@ -503,6 +513,38 @@ export class VMWarmPoolController {
     this.vmHandles.delete(pod.vmId)
     this.vmManagers.delete(pod.vmId)
     console.log(`[VMWarmPool] Evicted VM ${pod.vmId} for project ${projectId}`)
+  }
+
+  /**
+   * Destroy a VM whose /pool/assign failed instead of leaving it orphaned or,
+   * worse, ever handing it to another project.
+   *
+   * This is the metal analog of the Knative warm-pool controller's "quarantine
+   * the dirty pod, never return it to the available pool" behaviour (prod RCA
+   * Issue B: the node-agent can answer `Already assigned` when its runtime
+   * state diverged from the controller's — e.g. after an API restart dropped
+   * the in-memory `assigned` map while the agent still holds the binding).
+   *
+   * `claim()` already removed this VM from `available`, so within one
+   * controller it can never be re-served (unlike Knative's label-based shared
+   * pods, which is why that substrate needed an explicit quarantine + never
+   * re-added it to the pool). Here we additionally stop the process and drop
+   * its handles so a failed assign can't leak host RAM. The replacement is
+   * booted by `reconcile()`, which `claim()` already fired.
+   */
+  private quarantineVM(pod: VMPodInfo, reason: string): void {
+    this.available.delete(pod.id)
+    const handle = this.vmHandles.get(pod.vmId)
+    const mgr = this.vmManagers.get(pod.vmId)
+    if (handle && mgr) {
+      mgr.stopVM(handle).catch((err) => {
+        console.error(`[VMWarmPool] Error stopping quarantined VM ${pod.vmId}:`, err.message)
+      })
+    }
+    this.cleanupOverlay(pod.vmId)
+    this.vmHandles.delete(pod.vmId)
+    this.vmManagers.delete(pod.vmId)
+    console.warn(`[VMWarmPool] Quarantined VM ${pod.vmId} after failed /pool/assign (${reason})`)
   }
 
   private async reconcile(): Promise<void> {

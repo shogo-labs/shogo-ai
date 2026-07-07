@@ -7,7 +7,7 @@ Status: **implemented**, ready to roll out per region.
 Preview hostnames look like `preview--<projectId>.shogo.ai`. A single flat
 `*.shogo.ai` A record in Cloudflare can only point at one origin IP, which
 is fine while all preview pods live in `production-us`. Once we start
-placing pods in `production-eu` or `production-india`, a hostname whose pod
+placing pods in `production-eu`, a hostname whose pod
 runs in Frankfurt must still resolve to Frankfurt's Kourier LB — the US
 wildcard would terminate TLS correctly but route traffic to the wrong
 cluster where no DomainMapping exists for that hostname.
@@ -54,7 +54,6 @@ each cluster's `kourier-system/kourier` Service.
 | --- | --- |
 | `production-us` (us-ashburn-1) | `152.70.192.220` |
 | `production-eu` (eu-frankfurt-1) | `79.76.126.115` |
-| `production-india` (ap-mumbai-1) | `161.118.170.159` |
 
 ## Rollout
 
@@ -75,7 +74,7 @@ Copy the token value — it's shown once.
 
 ### 2. Create the `cloudflare-dns` Secret in each cluster
 
-Run against each of the three production clusters:
+Run against each production cluster:
 
 ```bash
 # Switch to the target cluster context first.
@@ -84,7 +83,7 @@ kubectl create secret generic cloudflare-dns \
   --from-literal=CF_API_TOKEN='<token from step 1>'
 ```
 
-Repeat for `production-us`, `production-eu`, `production-india`.
+Repeat for `production-us` and `production-eu`.
 
 ### 3. Deploy the new API image
 
@@ -117,7 +116,7 @@ curl -sI https://preview--<id>.shogo.ai
 
 ### 5. (Optional) Back-fill existing previews
 
-If any preview DomainMappings already exist in EU or India before the
+If any preview DomainMappings already exist in EU before the
 token is deployed, they won't have explicit DNS records yet. After the
 API comes up with the new config, the next project interaction will
 trigger `createPreviewDomainMapping` which is idempotent and will

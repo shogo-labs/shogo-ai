@@ -3,12 +3,11 @@
 #
 # Cross-region node-pool boot-volume parity guard.
 #
-# The EU 2026-06-02 incident root cause was a silent capacity drift: EU (and
-# India) node pools were bootstrapped at 100 GB boot volumes while US ran
-# 200 GB. The drift was invisible because the oke module ignores in-place
-# boot-volume changes (a deliberate anti-replacement safety), so neither a
-# `terraform plan` nor day-to-day ops surfaced it. EU tipped into DiskPressure
-# under load; India is the same latent exposure.
+# The EU 2026-06-02 incident root cause was a silent capacity drift: the EU
+# node pool was bootstrapped at 100 GB boot volumes while US ran 200 GB. The
+# drift was invisible because the oke module ignores in-place boot-volume
+# changes (a deliberate anti-replacement safety), so neither a `terraform plan`
+# nor day-to-day ops surfaced it. EU tipped into DiskPressure under load.
 #
 # This check queries the LIVE OCI node pools across all production regions and
 # fails if any region's system-pool boot volume is below EXPECTED_GB. Run it in
@@ -17,7 +16,7 @@
 # Usage:
 #   COMPARTMENT_ID=ocid1.compartment... \
 #   EXPECTED_GB=200 \
-#   REGIONS="us-ashburn-1 eu-frankfurt-1 ap-mumbai-1" \
+#   REGIONS="us-ashburn-1 eu-frankfurt-1" \
 #   .github/scripts/check-node-disk-parity.sh
 #
 # Requires: oci CLI configured, jq.
@@ -26,7 +25,7 @@ set -euo pipefail
 
 COMPARTMENT_ID="${COMPARTMENT_ID:?COMPARTMENT_ID required}"
 EXPECTED_GB="${EXPECTED_GB:-200}"
-REGIONS="${REGIONS:-us-ashburn-1 eu-frankfurt-1 ap-mumbai-1}"
+REGIONS="${REGIONS:-us-ashburn-1 eu-frankfurt-1}"
 
 rc=0
 echo "Asserting system node-pool boot volume == ${EXPECTED_GB} GB across: ${REGIONS}"

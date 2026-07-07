@@ -479,9 +479,6 @@ describe('start/stopAnalyticsDigestCollector', () => {
       process.env.REGION_ID = 'eu-frankfurt-1'
       startAnalyticsDigestCollector(fakePrisma)
       expect(scheduled).toBe(false)
-      process.env.REGION_ID = 'ap-mumbai-1'
-      startAnalyticsDigestCollector(fakePrisma)
-      expect(scheduled).toBe(false)
     } finally {
       ;(globalThis as any).setTimeout = realSetTimeout
       if (originalRegion === undefined) delete process.env.REGION_ID

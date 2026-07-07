@@ -41,7 +41,6 @@ mock.module('../prisma', () => ({
 
 const PEERS: Record<string, { id: string; label: string; url: string }> = {
   'us-ashburn-1': { id: 'us-ashburn-1', label: 'US', url: 'https://us.studio.shogo.ai' },
-  'ap-mumbai-1': { id: 'ap-mumbai-1', label: 'India', url: 'https://india.studio.shogo.ai' },
 }
 
 mock.module('../region', () => ({

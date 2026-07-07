@@ -123,7 +123,7 @@ audit_context() {
 
 CONTEXTS=()
 if [ "$ALL" = "true" ]; then
-  CONTEXTS=(oke-staging oke-production-us oke-production-eu oke-production-india)
+  CONTEXTS=(oke-staging oke-production-us oke-production-eu)
 elif [ -n "${KUBECONTEXT:-}" ]; then
   CONTEXTS=("$KUBECONTEXT")
 else

@@ -1,7 +1,7 @@
 # GitHub Actions Environment Variables
 
 The deploy workflow uses **GitHub environment-scoped variables**. Create
-`staging`, `production-us`, `production-eu`, and `production-india` environments
+`staging`, `production-us`, and `production-eu` environments
 in your repo settings and set the following variables on each.
 
 ## Per-Environment Variables

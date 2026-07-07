@@ -19,17 +19,17 @@
 #     ...
 #   }
 #
-#   module "india" {
+#   module "eu" {
 #     source     = "../../modules/oci-region"
-#     tier       = "light"
-#     region     = "ap-mumbai-1"
-#     region_key = "in"
-#     vcn_cidr   = "10.2.0.0/16"
-#     database_primary_endpoint = module.us.database_endpoint
-#     s3_primary_endpoint       = module.us.s3_endpoint
-#     s3_primary_region         = "us-ashburn-1"
+#     tier       = "full"
+#     region     = "eu-frankfurt-1"
+#     region_key = "eu"
+#     vcn_cidr   = "10.1.0.0/16"
 #     ...
 #   }
+#
+# (A `tier = "light"` region instead consumes the US primary via
+#  database_primary_endpoint / s3_primary_endpoint / s3_primary_region.)
 # =============================================================================
 
 terraform {

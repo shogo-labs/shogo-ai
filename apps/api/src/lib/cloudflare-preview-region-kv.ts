@@ -41,7 +41,6 @@ const CF_API_BASE = 'https://api.cloudflare.com/client/v4'
 const REGION_CODE_BY_ID: Record<string, string> = {
   'us-ashburn-1': 'us',
   'eu-frankfurt-1': 'eu',
-  'ap-mumbai-1': 'in',
   // Staging is single-region but sets REGION_ID=staging; its preview-router
   // instance uses a matching `staging` anchor (see terraform/environments/
   // staging). This lets the KV write path be exercised in staging.

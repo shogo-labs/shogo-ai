@@ -108,9 +108,9 @@ spec:
     metadata:
       annotations:
         autoscaling.knative.dev/min-scale: "2"
-        # 2026-07-06 India→EU migration: raised 10 → 20 (matches production-us)
-        # so EU can absorb India's peak api load once production-india is
-        # decommissioned. See docs/runbooks/india-to-eu-migration.md §1.
+        # 2026-07 India→EU migration: raised 10 → 20 (matches production-us) so
+        # EU absorbs the load from the decommissioned production-india region.
+        # See docs/runbooks/india-to-eu-migration.md §1.
         autoscaling.knative.dev/max-scale: "20"
     spec:
       serviceAccountName: api-service-account
@@ -294,7 +294,7 @@ spec:
             - name: SHOGO_PUBLIC_API_URL
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
-              value: "https://studio.shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai"
+              value: "https://studio.shogo.ai,https://eu.studio.shogo.ai"
             # Public hostname the desktop should use for the on-demand
             # tunnel WebSocket. Points at the regional EU api ksvc via
             # api-tunnel-ingress.yaml so the WS Upgrade bypasses the
@@ -540,7 +540,7 @@ spec:
             - name: REGION_LABEL
               value: "EU (Frankfurt)"
             - name: REGION_PEERS
-              value: '[{"id":"us-ashburn-1","label":"US (Ashburn)","url":"https://152.70.192.220"},{"id":"ap-mumbai-1","label":"India (Mumbai)","url":"https://161.118.170.159"}]'
+              value: '[{"id":"us-ashburn-1","label":"US (Ashburn)","url":"https://152.70.192.220"}]'
             # Home-region write routing. "enforce" proxies non-home workspace
             # writes to the owning region so tenant data has a single writer;
             # chat sessions are additionally pinned via chat-region-pin so the

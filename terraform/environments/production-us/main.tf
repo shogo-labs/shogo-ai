@@ -288,13 +288,13 @@ module "us" {
 
 # =============================================================================
 # Cross-Region Peering (DRG)
-# US is the requestor — EU and India accept using this RPC ID
+# US is the requestor — EU accepts using this RPC ID
 # =============================================================================
 
 # =============================================================================
 # Cross-region peering and replication
 #
-# DEFERRED to the EU / India reconciliation follow-up sessions. The DRG
+# DEFERRED to the EU reconciliation follow-up sessions. The DRG
 # resources are regionally local and could be created standalone, but
 # `object-storage-replication` needs destination buckets in
 # eu-frankfurt-1 to exist first, and there's no value in creating the
@@ -305,12 +305,6 @@ module "us" {
 
 variable "enable_drg_peering_to_eu" {
   description = "Create the DRG + VCN attachment + RPC for peering to production-eu. Defaults to false until production-eu is brought up."
-  type        = bool
-  default     = false
-}
-
-variable "enable_drg_peering_to_india" {
-  description = "Create the DRG + VCN attachment + RPC for peering to production-india. Defaults to false until production-india is brought up."
   type        = bool
   default     = false
 }
@@ -329,16 +323,6 @@ module "drg_to_eu" {
   compartment_id = var.compartment_id
   vcn_id         = module.us.vcn_id
   peer_region    = "eu-frankfurt-1"
-}
-
-module "drg_to_india" {
-  count  = var.enable_drg_peering_to_india ? 1 : 0
-  source = "../../modules/drg-peering"
-
-  name           = "shogo-production-us"
-  compartment_id = var.compartment_id
-  vcn_id         = module.us.vcn_id
-  peer_region    = "ap-mumbai-1"
 }
 
 module "replication_to_eu" {
@@ -376,9 +360,6 @@ output "kourier_origin" {
 }
 output "rpc_eu_id" {
   value = var.enable_drg_peering_to_eu ? module.drg_to_eu[0].rpc_id : null
-}
-output "rpc_india_id" {
-  value = var.enable_drg_peering_to_india ? module.drg_to_india[0].rpc_id : null
 }
 
 # Custom domains (null unless enable_custom_domains=true). Feed these into the

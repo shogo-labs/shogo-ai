@@ -11,9 +11,9 @@ spec:
     metadata:
       annotations:
         autoscaling.knative.dev/min-scale: "2"
-        # 2026-07-06 India→EU migration: raised 10 → 20 (matches production-us)
-        # so EU studio can absorb India's peak load post-decommission.
-        # See docs/runbooks/india-to-eu-migration.md §1.
+        # 2026-07 India→EU migration: raised 10 → 20 (matches production-us) so
+        # EU studio absorbs the load from the decommissioned production-india
+        # region. See docs/runbooks/india-to-eu-migration.md §1.
         autoscaling.knative.dev/max-scale: "20"
     spec:
       containers:

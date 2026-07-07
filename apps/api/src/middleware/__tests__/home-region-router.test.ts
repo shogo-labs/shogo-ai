@@ -13,7 +13,6 @@ const workspaces: Record<string, { homeRegion: string | null } | null> = {
   ws_eu: { homeRegion: 'eu-frankfurt-1' },
   ws_us: { homeRegion: 'us-ashburn-1' },
   ws_legacy: { homeRegion: null },
-  ws_india: { homeRegion: 'ap-mumbai-1' },
 }
 
 const users: Record<string, { homeRegion: string | null } | null> = {
@@ -37,7 +36,6 @@ mock.module('../../lib/prisma', () => ({
 
 const PEERS: Record<string, { id: string; label: string; url: string }> = {
   'us-ashburn-1': { id: 'us-ashburn-1', label: 'US', url: 'https://us.studio.shogo.ai' },
-  'ap-mumbai-1': { id: 'ap-mumbai-1', label: 'India', url: 'https://india.studio.shogo.ai' },
 }
 
 mock.module('../../lib/region', () => ({
@@ -199,7 +197,6 @@ describe('homeRegionWriteProxy', () => {
 
   test('fails open (local) when no peer is configured for the home region', async () => {
     process.env.HOME_REGION_ROUTING = 'enforce'
-    resolved = 'ws_india' // ap-mumbai-1 — present in PEERS, so use an unknown one instead
     workspaces.ws_unknown_home = { homeRegion: 'unknown-region-9' }
     resolved = 'ws_unknown_home'
     const { next, wasCalled } = makeNext()
@@ -269,12 +266,12 @@ describe('homeRegionWriteProxy', () => {
 
   test('workspace ownership wins over identity when both could resolve', async () => {
     process.env.HOME_REGION_ROUTING = 'enforce'
-    resolved = 'ws_india'
-    resolvedUser = 'user_us'
+    resolved = 'ws_us' // workspace homed to the US peer → proxy
+    resolvedUser = 'user_eu' // identity homed locally (EU) → would stay local if it won
     const { next, wasCalled } = makeNext()
-    await homeRegionWriteProxy(makeCtx({ path: '/api/users/user_us' }), next)
+    await homeRegionWriteProxy(makeCtx({ path: '/api/users/user_eu' }), next)
     expect(wasCalled()).toBe(false)
-    expect(proxyCalls).toEqual([{ region: 'ap-mumbai-1' }])
+    expect(proxyCalls).toEqual([{ region: 'us-ashburn-1' }])
   })
 
   // --- fail-closed for money-sensitive writes ------------------------------

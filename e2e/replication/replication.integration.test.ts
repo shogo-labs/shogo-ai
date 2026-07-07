@@ -65,39 +65,10 @@ describe("write propagation", () => {
 
     expect(row.key).toBe(key)
   })
-
-  test("three-way mesh: India -> US + EU", async () => {
-    const key = `test_india_mesh_${TEST_MARKER}`
-
-    await pool(env, "india").query(
-      'INSERT INTO platform_settings (key, value, "updatedAt") VALUES ($1, $2, NOW())',
-      [key, JSON.stringify({ source: "india" })]
-    )
-
-    const [usRow, euRow] = await Promise.all([
-      waitForReplication<{ key: string }>({
-        sourcePool: pool(env, "india"),
-        targetPool: pool(env, "us"),
-        query: "SELECT key FROM platform_settings WHERE key = $1",
-        params: [key],
-        timeoutMs: 10_000,
-      }),
-      waitForReplication<{ key: string }>({
-        sourcePool: pool(env, "india"),
-        targetPool: pool(env, "eu"),
-        query: "SELECT key FROM platform_settings WHERE key = $1",
-        params: [key],
-        timeoutMs: 10_000,
-      }),
-    ])
-
-    expect(usRow.key).toBe(key)
-    expect(euRow.key).toBe(key)
-  })
 })
 
 describe("auth table replication", () => {
-  test("user created in US replicates to EU and India", async () => {
+  test("user created in US replicates to EU", async () => {
     const id = generateCuid()
     const email = `user_us_${TEST_MARKER}@test.shogo.dev`
 
@@ -107,28 +78,18 @@ describe("auth table replication", () => {
       [id, email, "Test User US"]
     )
 
-    const [euRow, indiaRow] = await Promise.all([
-      waitForReplication<{ id: string; email: string }>({
-        sourcePool: pool(env, "us"),
-        targetPool: pool(env, "eu"),
-        query: "SELECT id, email FROM users WHERE id = $1",
-        params: [id],
-        timeoutMs: 10_000,
-      }),
-      waitForReplication<{ id: string; email: string }>({
-        sourcePool: pool(env, "us"),
-        targetPool: pool(env, "india"),
-        query: "SELECT id, email FROM users WHERE id = $1",
-        params: [id],
-        timeoutMs: 10_000,
-      }),
-    ])
+    const euRow = await waitForReplication<{ id: string; email: string }>({
+      sourcePool: pool(env, "us"),
+      targetPool: pool(env, "eu"),
+      query: "SELECT id, email FROM users WHERE id = $1",
+      params: [id],
+      timeoutMs: 10_000,
+    })
 
     expect(euRow.email).toBe(email)
-    expect(indiaRow.email).toBe(email)
   })
 
-  test("session created in EU replicates to US and India", async () => {
+  test("session created in EU replicates to US", async () => {
     const userId = generateCuid()
     const sessionId = generateCuid()
     const email = `user_eu_sess_${TEST_MARKER}@test.shogo.dev`
@@ -148,25 +109,15 @@ describe("auth table replication", () => {
       [sessionId, token, userId]
     )
 
-    const [usRow, indiaRow] = await Promise.all([
-      waitForReplication<{ id: string; token: string }>({
-        sourcePool: pool(env, "eu"),
-        targetPool: pool(env, "us"),
-        query: "SELECT id, token FROM sessions WHERE id = $1",
-        params: [sessionId],
-        timeoutMs: 10_000,
-      }),
-      waitForReplication<{ id: string; token: string }>({
-        sourcePool: pool(env, "eu"),
-        targetPool: pool(env, "india"),
-        query: "SELECT id, token FROM sessions WHERE id = $1",
-        params: [sessionId],
-        timeoutMs: 10_000,
-      }),
-    ])
+    const usRow = await waitForReplication<{ id: string; token: string }>({
+      sourcePool: pool(env, "eu"),
+      targetPool: pool(env, "us"),
+      query: "SELECT id, token FROM sessions WHERE id = $1",
+      params: [sessionId],
+      timeoutMs: 10_000,
+    })
 
     expect(usRow.token).toBe(token)
-    expect(indiaRow.token).toBe(token)
   })
 })
 
@@ -234,33 +185,23 @@ describe("replication lag", () => {
       [key, JSON.stringify({ ts: start })]
     )
 
-    await Promise.all([
-      waitForReplication({
-        sourcePool: pool(env, "us"),
-        targetPool: pool(env, "eu"),
-        query: "SELECT key FROM platform_settings WHERE key = $1",
-        params: [key],
-        timeoutMs: 5_000,
-        pollIntervalMs: 100,
-      }),
-      waitForReplication({
-        sourcePool: pool(env, "us"),
-        targetPool: pool(env, "india"),
-        query: "SELECT key FROM platform_settings WHERE key = $1",
-        params: [key],
-        timeoutMs: 5_000,
-        pollIntervalMs: 100,
-      }),
-    ])
+    await waitForReplication({
+      sourcePool: pool(env, "us"),
+      targetPool: pool(env, "eu"),
+      query: "SELECT key FROM platform_settings WHERE key = $1",
+      params: [key],
+      timeoutMs: 5_000,
+      pollIntervalMs: 100,
+    })
 
     const elapsed = Date.now() - start
-    console.log(`Replication lag (US -> EU + India): ${elapsed}ms`)
+    console.log(`Replication lag (US -> EU): ${elapsed}ms`)
     expect(elapsed).toBeLessThan(5_000)
   })
 })
 
 describe("api_keys replication", () => {
-  test("API key created in US replicates to EU and India", async () => {
+  test("API key created in US replicates to EU", async () => {
     const id = generateCuid()
     const userId = generateCuid()
     const workspaceId = generateCuid()
@@ -280,31 +221,21 @@ describe("api_keys replication", () => {
       [id, "Test Key", keyHash, keyPrefix, workspaceId, userId]
     )
 
-    const [euRow, indiaRow] = await Promise.all([
-      waitForReplication<{ id: string; keyHash: string }>({
-        sourcePool: pool(env, "us"),
-        targetPool: pool(env, "eu"),
-        query: 'SELECT id, "keyHash" FROM api_keys WHERE id = $1',
-        params: [id],
-        timeoutMs: 10_000,
-      }),
-      waitForReplication<{ id: string; keyHash: string }>({
-        sourcePool: pool(env, "us"),
-        targetPool: pool(env, "india"),
-        query: 'SELECT id, "keyHash" FROM api_keys WHERE id = $1',
-        params: [id],
-        timeoutMs: 10_000,
-      }),
-    ])
+    const euRow = await waitForReplication<{ id: string; keyHash: string }>({
+      sourcePool: pool(env, "us"),
+      targetPool: pool(env, "eu"),
+      query: 'SELECT id, "keyHash" FROM api_keys WHERE id = $1',
+      params: [id],
+      timeoutMs: 10_000,
+    })
 
     expect(euRow.keyHash).toBe(keyHash)
-    expect(indiaRow.keyHash).toBe(keyHash)
   })
 })
 
 describe("publication completeness", () => {
   test("all application tables are published in every region", async () => {
-    const regions = ["us", "eu", "india"] as const
+    const regions = ["us", "eu"] as const
 
     for (const region of regions) {
       const pubResult = await pool(env, region).query(`
@@ -335,22 +266,23 @@ describe("publication completeness", () => {
 
 describe("subscription health", () => {
   test("all subscriptions are active and streaming on all regions", async () => {
-    const regions = ["us", "eu", "india"] as const
+    const regions = ["us", "eu"] as const
 
     for (const region of regions) {
       const subs = await getSubscriptionStatus(pool(env, region))
 
-      expect(subs.length).toBe(2)
+      // Two-region mesh: each region has exactly one inbound subscription.
+      expect(subs.length).toBe(1)
 
       for (const sub of subs) {
         expect(sub.pid).not.toBeNull()
-        expect(sub.subname).toMatch(/^sub_from_(us|eu|india)$/)
+        expect(sub.subname).toMatch(/^sub_from_(us|eu)$/)
       }
     }
   })
 
   test("all replication slots are active", async () => {
-    const regions = ["us", "eu", "india"] as const
+    const regions = ["us", "eu"] as const
 
     for (const region of regions) {
       const result = await pool(env, region).query(`

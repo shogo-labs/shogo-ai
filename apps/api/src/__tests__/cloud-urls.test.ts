@@ -229,7 +229,7 @@ describe('getFrontendUrl — defensive edges', () => {
   test('production overlay config resolves to studio.shogo.ai (never localhost)', () => {
     process.env.APP_URL = 'https://studio.shogo.ai'
     process.env.ALLOWED_ORIGINS =
-      'https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai'
+      'https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai'
     const url = getFrontendUrl()
     expect(url).toBe('https://studio.shogo.ai')
     expect(url).not.toContain('localhost')
@@ -241,7 +241,7 @@ describe('getFrontendUrl — defensive edges', () => {
   test('falls back to first ALLOWED_ORIGINS entry (not localhost) when APP_URL is dropped in prod', () => {
     delete process.env.APP_URL
     process.env.ALLOWED_ORIGINS =
-      'https://studio.shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai'
+      'https://studio.shogo.ai,https://eu.studio.shogo.ai'
     const url = getFrontendUrl()
     expect(url).toBe('https://studio.shogo.ai')
     expect(url).not.toContain('localhost')

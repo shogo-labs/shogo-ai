@@ -26,7 +26,6 @@ on:
           - staging
           - production-us
           - production-eu
-          - production-india
       execute:
         description: 'Actually delete (off = dry-run)'
         type: boolean

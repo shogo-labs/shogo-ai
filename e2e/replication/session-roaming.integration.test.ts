@@ -114,15 +114,5 @@ describe("project visibility across regions", () => {
 
     expect(euRow.id).toBe(projectId)
     expect(euRow.name).toContain(TEST_MARKER)
-
-    const indiaRow = await waitForReplication<{ id: string }>({
-      sourcePool: pool(env, "us"),
-      targetPool: pool(env, "india"),
-      query: "SELECT id FROM projects WHERE id = $1",
-      params: [projectId],
-      timeoutMs: 10_000,
-    })
-
-    expect(indiaRow.id).toBe(projectId)
   })
 })

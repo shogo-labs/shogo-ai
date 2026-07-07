@@ -57,7 +57,7 @@ lock paths and migrations bypass PgBouncer via the direct URL.
 before the direct key exists and the pooler is Ready:
 
 ```bash
-CTX=oke-staging   # then oke-india, oke-eu, oke-us
+CTX=oke-staging   # then oke-eu, oke-us
 NS=shogo-staging-system   # shogo-production-system for prod
 
 # 1. Add the DIRECT url key (= the CURRENT direct platform-pg-rw url, i.e. the

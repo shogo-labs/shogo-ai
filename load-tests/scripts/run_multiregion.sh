@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# Multi-Region Load Test — Parallel dry-run simulation across US, EU, India
+# Multi-Region Load Test — Parallel dry-run simulation across US, EU
 # =============================================================================
-# Launches 3 locust instances in parallel, one per production OCI region,
+# Launches 2 locust instances in parallel, one per production OCI region,
 # targeting each region's Kourier LB IP directly with Host: studio.shogo.ai.
 #
 # Each region gets a non-overlapping user ID range to avoid signup collisions.
@@ -13,7 +13,6 @@
 # Required env vars (set in .env or export before running):
 #   US_HOST       - US region Kourier LB endpoint   (e.g. https://129.x.x.x)
 #   EU_HOST       - EU region Kourier LB endpoint   (e.g. https://141.x.x.x)
-#   INDIA_HOST    - India region Kourier LB endpoint (e.g. https://152.x.x.x)
 #   LOAD_TEST_SECRET - Rate-limit bypass key (must match server env)
 #   ADMIN_EMAIL   - Super admin email for post-test cleanup
 #   ADMIN_PASSWORD - Super admin password for post-test cleanup
@@ -60,7 +59,6 @@ done
 missing=()
 [ -z "$US_HOST" ]    && missing+=("US_HOST")
 [ -z "$EU_HOST" ]    && missing+=("EU_HOST")
-[ -z "$INDIA_HOST" ] && missing+=("INDIA_HOST")
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo "ERROR: Missing required env vars: ${missing[*]}"
@@ -68,7 +66,6 @@ if [ ${#missing[@]} -gt 0 ]; then
   echo "Set them in .env or export before running. Example:"
   echo "  export US_HOST=https://129.x.x.x"
   echo "  export EU_HOST=https://141.x.x.x"
-  echo "  export INDIA_HOST=https://152.x.x.x"
   exit 1
 fi
 
@@ -91,7 +88,6 @@ echo "  Host header:   $HOST_HEADER"
 echo ""
 echo "  US host:       $US_HOST"
 echo "  EU host:       $EU_HOST"
-echo "  India host:    $INDIA_HOST"
 echo ""
 echo "  Reports:       $REPORT_DIR/"
 echo "  Cleanup:       $([ "$SKIP_CLEANUP" = true ] && echo 'SKIPPED' || echo 'after test')"
@@ -145,29 +141,8 @@ locust \
   2>&1 | sed 's/^/[EU] /' &
 pids+=($!)
 
-echo "[IN] Starting locust (user_ids 300000-399999)..."
-REGION_LABEL=india \
-USER_ID_MIN=300000 USER_ID_MAX=399999 \
-HOST_HEADER="$HOST_HEADER" \
-LOAD_TEST_SECRET="${LOAD_TEST_SECRET:-}" \
-TEST_USER_PREFIX="${TEST_USER_PREFIX:-loadtest-user}" \
-TEST_USER_PASSWORD="${TEST_USER_PASSWORD:-LoadTest123!}" \
-locust \
-  -f locustfiles/complex/dry_run_simulation.py \
-  --host "$INDIA_HOST" \
-  --users "$USERS_PER_REGION" \
-  --spawn-rate "$SPAWN_RATE" \
-  --run-time "$RUN_TIME" \
-  --headless \
-  --html "${REPORT_DIR}/india.html" \
-  --csv "${REPORT_DIR}/india" \
-  --print-stats \
-  --only-summary \
-  2>&1 | sed 's/^/[IN] /' &
-pids+=($!)
-
 echo ""
-echo "Waiting for all 3 regions to finish (PIDs: ${pids[*]})..."
+echo "Waiting for all regions to finish (PIDs: ${pids[*]})..."
 echo ""
 
 # ---- Wait for all and track failures ----
@@ -180,7 +155,7 @@ done
 
 echo ""
 echo "============================================================"
-echo "  All regions finished. Failures: $failed/3"
+echo "  All regions finished. Failures: $failed/2"
 echo "  Reports: $REPORT_DIR/"
 echo "============================================================"
 
@@ -193,11 +168,10 @@ else
   echo ""
   echo "Running post-test cleanup (each region for K8s pod cleanup)..."
 
-  for region_name in US EU India; do
+  for region_name in US EU; do
     case $region_name in
       US)    region_host="$US_HOST" ;;
       EU)    region_host="$EU_HOST" ;;
-      India) region_host="$INDIA_HOST" ;;
     esac
     echo ""
     echo "--- Cleaning up $region_name ($region_host) ---"

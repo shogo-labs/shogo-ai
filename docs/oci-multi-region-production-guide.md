@@ -2,6 +2,14 @@
 
 > Shogo production on Oracle Cloud Infrastructure — tiered multi-region with 2–N regions.
 
+> **Note (2026-07-07):** This is a design/template guide for running 2–N regions;
+> `ap-mumbai-1` (India) appears throughout as the illustrative **Tier 2** example.
+> India was **permanently decommissioned** on 2026-07-07 (all traffic + data
+> ownership migrated to `eu-frankfurt-1`), so production now runs **US + EU
+> only**. India references below are retained as an instructional example for
+> adding a region — they no longer describe live infrastructure. See
+> `docs/runbooks/india-to-eu-migration.md`.
+
 ---
 
 ## Table of Contents

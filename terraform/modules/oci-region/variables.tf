@@ -12,7 +12,7 @@
 # -----------------------------------------------------------------------------
 
 variable "region" {
-  description = "OCI region identifier (e.g. us-ashburn-1, eu-frankfurt-1, ap-mumbai-1)"
+  description = "OCI region identifier (e.g. us-ashburn-1, eu-frankfurt-1)"
   type        = string
 }
 

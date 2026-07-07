@@ -201,7 +201,7 @@ module "oke" {
 # whatever bootstrap created the tenancy and intentionally not managed from
 # any env-specific terraform.
 #
-# The active production environments (production-us, -eu, -india) already
+# The active production environments (production-us, -eu) already
 # don't declare an ocir module for the same reason. Staging previously did,
 # which produced a 4-resource "to be created" entry in every plan that would
 # have failed at apply time (the registries already exist by display name).

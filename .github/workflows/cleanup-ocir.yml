@@ -56,7 +56,6 @@ jobs:
         environment:
           - production-us
           - production-eu
-          - production-india
           - staging
 
     environment: ${{ matrix.environment }}

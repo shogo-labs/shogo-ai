@@ -8,7 +8,7 @@
  *
  * Failure mode
  * ------------
- * Shogo runs three OCI regions (US/EU/India) against a single logical-
+ * Shogo runs two OCI regions (US/EU) against a single logical-
  * replicated Postgres database (CNPG, PG 18,
  * `INSERT_EXISTS_ACTION=last_update_wins`). `last_update_wins` only
  * resolves PRIMARY-KEY collisions on apply; a conflict on any other

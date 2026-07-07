@@ -9,15 +9,15 @@
  * failures are persisted as `status='complete'` with an error payload in
  * `result`, so the raw status column under-reports by ~50x.
  *
- * Why one region (not all three): the platform DB is a single logical-
- * replicated CNPG cluster (US/EU/India all converge to identical rows — see
+ * Why one region (not all): the platform DB is a single logical-
+ * replicated CNPG cluster (US/EU all converge to identical rows — see
  * scripts/check-multiregion-cron-locks.ts). Summing across regions would
- * triple-count. We query ONE region and fail over only if it's unreachable.
+ * double-count. We query ONE region and fail over only if it's unreachable.
  *
  * All access is read-only (SELECT via `kubectl exec … psql`). No mutation.
  *
  * Usage:
- *   bun run scripts/mine-prod-failures.ts                # india, last 7d, summary
+ *   bun run scripts/mine-prod-failures.ts                # us, last 7d, summary
  *   bun run scripts/mine-prod-failures.ts --region us --since 2026-06-01
  *   bun run scripts/mine-prod-failures.ts --provider     # per-provider breakdown
  *   bun run scripts/mine-prod-failures.ts --export       # write redacted fixtures
@@ -30,10 +30,9 @@ import { join } from 'node:path'
 // --- Region -> kube context (mirrors AGENTS.md; re-derive if clusters drift) -
 const REGIONS: Record<string, { context: string; endpoint: string }> = {
   us: { context: 'context-cp7l2tcj76q', endpoint: '141.148.74.224' },
-  india: { context: 'context-c4w44igvdfa', endpoint: '80.225.223.127' },
   eu: { context: 'context-cbbetkypxva', endpoint: '132.226.198.27' },
 }
-const FAILOVER_ORDER = ['india', 'us', 'eu']
+const FAILOVER_ORDER = ['us', 'eu']
 const SYSTEM_NS = 'shogo-production-system'
 
 // --- Token-shaped secret redaction (kept in sync with apps/api crypto-util) -

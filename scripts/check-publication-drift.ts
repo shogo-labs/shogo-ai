@@ -3,11 +3,11 @@
 /**
  * Guard the cross-region logical replication publication YAMLs against the
  * "stale hand-list" failure mode that caused #501 (api_keys + 25 other
- * tables silently absent from EU/India for weeks).
+ * tables silently absent from EU for weeks).
  *
  * Background
  * ----------
- * Each region has a `k8s/cnpg/production-{us,eu,india}-oci/platform-publication.yaml`
+ * Each region has a `k8s/cnpg/production-{us,eu}-oci/platform-publication.yaml`
  * that defines a CNPG `Publication` CR mapping to a Postgres publication. The
  * old version of these files hand-listed every table:
  *
@@ -20,7 +20,7 @@
  * That list has to be updated by hand every time `prisma migrate deploy`
  * adds a new model. For 26 tables in a row, nobody did. Cross-region
  * replication silently dropped the new tables, and any row written in US
- * never reached EU/India — including the API keys that desktop heartbeats
+ * never reached EU — including the API keys that desktop heartbeats
  * authenticate against.
  *
  * Fix
@@ -38,8 +38,8 @@
  *   1. Each `platform-publication.yaml` exists.
  *   2. The `target.objects` list contains exactly one entry, and that entry
  *      is `tablesInSchema: public` (no `table:` entries).
- *   3. All three regional YAMLs are byte-identical except for the leading
- *      "EU/US/India" comment — the only legitimate variation. Any other
+ *   3. All regional YAMLs are byte-identical except for the leading
+ *      "EU/US" comment — the only legitimate variation. Any other
  *      difference (different cluster name, namespace, publication name,
  *      reclaim policy, …) is almost certainly a bug.
  *
@@ -53,7 +53,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const REGIONS = ['us', 'eu', 'india'] as const
+const REGIONS = ['us', 'eu'] as const
 const REPO_ROOT = resolve(import.meta.dir, '..')
 
 /**
@@ -149,13 +149,13 @@ function checkRegionsIdentical(
     stripped[region] = stripLeadingComments(src)
   }
   const reference = stripped['us']
-  for (const region of ['eu', 'india']) {
+  for (const region of ['eu']) {
     if (stripped[region] !== reference) {
       violations.push({
         file: pubPath(region as (typeof REGIONS)[number]),
         message:
           `Manifest body differs from US (excluding the leading region-name ` +
-          `comment). All three regional Publication CRs must be structurally ` +
+          `comment). All regional Publication CRs must be structurally ` +
           `identical — they're the same publication name, same cluster name, ` +
           `same target. Diff against ${pubPath('us')}.`,
       })
