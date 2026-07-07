@@ -37,12 +37,18 @@ export interface MetalHostRecord {
   enabled?: boolean
   provider?: string
   notes?: string
+  /**
+   * Node-agent release channel this host follows (see metal-agent-release.ts).
+   * Default 'stable'; pin a host to 'canary' to have it self-update to a new
+   * build first. Governs the desired version returned on the host's heartbeat.
+   */
+  channel?: string
   updatedAt?: string
 }
 
 /** Editable fields a super-admin may set on a host record. */
 const EDITABLE: (keyof MetalHostRecord)[] = [
-  'region', 'site', 'serverId', 'publicIp', 'billing', 'role', 'enabled', 'provider', 'notes',
+  'region', 'site', 'serverId', 'publicIp', 'billing', 'role', 'enabled', 'provider', 'notes', 'channel',
 ]
 
 export async function getMetalHostRecords(): Promise<MetalHostRecord[]> {

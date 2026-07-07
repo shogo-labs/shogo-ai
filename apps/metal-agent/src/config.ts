@@ -8,12 +8,33 @@
  * against the exact artifacts the Phase 1 spike already validated.
  */
 
+import { readFileSync } from 'fs'
 import { homedir } from 'os'
+import { join } from 'path'
 
 const env = (k: string, d: string) => process.env[k] ?? d
 
 /** Where host-install.sh drops firecracker + kernel + rootfs. */
 export const WORK = env('METAL_WORK', '/opt/fc-spike')
+
+/** Directory the node-agent code is installed in (holds src/ + DEPLOYED_SHA). */
+const AGENT_DIR = env('METAL_AGENT_DIR', '/opt/metal-agent')
+
+/**
+ * Running agent version. METAL_AGENT_VERSION wins; otherwise the DEPLOYED_SHA
+ * file the deployer stamps. Used both as the self-update comparison key and as a
+ * heartbeat field so the control plane can see fleet version skew. 'unknown' on
+ * a dev checkout (never equals a published version → never mis-triggers).
+ */
+function readAgentVersion(): string {
+  const explicit = process.env.METAL_AGENT_VERSION
+  if (explicit) return explicit
+  try {
+    return readFileSync(join(AGENT_DIR, 'DEPLOYED_SHA'), 'utf8').trim() || 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
 
 export const config = {
   work: WORK,
@@ -259,6 +280,35 @@ export const config = {
    */
   activityPoll: env('METAL_ACTIVITY_POLL', '1') !== '0',
   activityTimeoutMs: parseInt(env('METAL_ACTIVITY_TIMEOUT_MS', '1000'), 10),
+
+  // --- Pull-based self-update -----------------------------------------------
+
+  /** Install dir for the agent code (staged/swapped on self-update). */
+  agentDir: AGENT_DIR,
+  /** Currently-running version (DEPLOYED_SHA / METAL_AGENT_VERSION). */
+  agentVersion: readAgentVersion(),
+  /**
+   * When on, the agent self-updates to the desired version advertised by the
+   * control plane (heartbeat response) or a manifest URL: download → verify
+   * sha256 → atomic swap → graceful restart (KillMode=process keeps microVMs;
+   * the new instance re-adopts them). Off disables all self-update.
+   */
+  selfUpdate: env('METAL_SELF_UPDATE', '1') !== '0',
+  /**
+   * Optional alternative desired-version carrier: an https:// or s3://bucket/key
+   * URL to a JSON { version, bundleUrl, sha256, rebuildRootfs? }. Polled on an
+   * interval. Lets a host self-update without the control-plane heartbeat path
+   * (e.g. before the API carrying `desired` is deployed). Empty = disabled.
+   */
+  selfUpdateManifest: env('METAL_SELF_UPDATE_MANIFEST', ''),
+  selfUpdatePollMs: parseInt(env('METAL_SELF_UPDATE_POLL_MS', '60000'), 10),
+  /**
+   * Grace period after process start before any self-update is applied. Lets a
+   * fresh instance finish adopting live microVMs and stabilize first, and — if a
+   * bad version is ever published — guarantees the agent comes up and serves
+   * before it would restart again (no boot-time restart storm).
+   */
+  selfUpdateSettleMs: parseInt(env('METAL_SELF_UPDATE_SETTLE_MS', '20000'), 10),
 } as const
 
 export type MetalConfig = typeof config

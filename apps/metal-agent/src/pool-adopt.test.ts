@@ -5,9 +5,10 @@
  * Unit test for MetalWarmPool.adopt() — the rolling-deploy path. A fresh pool
  * over the same runDir must re-adopt the microVMs the previous agent left
  * running: for each live-registry entry with an alive pid, an existing API
- * socket, and a healthy guest, re-attach it to `assigned` (mgr.adoptVM) and keep
- * its handle id out of the host-orphan reap set. Entries whose pid is dead are
- * dropped and NOT adopted.
+ * socket, re-attach it to `assigned` (mgr.adoptVM) and keep its handle id out of
+ * the host-orphan reap set. Entries whose pid is dead are dropped and NOT
+ * adopted. A live proc whose guest fails the (advisory) health probe is still
+ * adopted — never reaped — because it holds unsaved user state.
  *
  * We stub the VM manager (adoptVM/reapHostOrphans) and stand up a tiny HTTP
  * server as the "guest" so probeHealth passes. A live pid is provided by a real
@@ -115,5 +116,38 @@ describe('MetalWarmPool.adopt', () => {
     // The dead entry is pruned from the durable registry.
     expect(reg.get('dead-proj')).toBeNull()
     expect(reg.get('live-proj')?.pid).toBe(liveChild.pid)
+  })
+
+  test('adopts a live proc whose guest is unhealthy (never reaps a running VM)', async () => {
+    const cfg = makeCfg()
+
+    // A live child, but point the agentUrl at a closed port so probeHealth fails.
+    const liveChild = Bun.spawn(['sleep', '30'])
+    cleanups.push(() => liveChild.kill('SIGKILL'))
+    const deadUrl = 'http://127.0.0.1:1' // nothing listening → health probe fails
+
+    const reg = new LiveRegistry(cfg.runDir)
+    reg.put(entry(cfg, 'wedged-proj', liveChild.pid, deadUrl))
+
+    const adoptedHandles: string[] = []
+    let reapKeep: Set<string> | null = null
+    const fakeMgr = {
+      adoptVM: (h: any) => adoptedHandles.push(h.id),
+      reapHostOrphans: (keep: Set<string>) => {
+        reapKeep = keep
+        return 0
+      },
+      procCount: () => 0,
+    }
+
+    const pool = new MetalWarmPool(fakeMgr as any, cfg as any)
+    const res = await pool.adopt()
+
+    // The live-but-unhealthy VM is adopted (kept), NOT dropped/reaped.
+    expect(res.adopted).toEqual(['wedged-proj'])
+    expect(adoptedHandles).toEqual(['fcvm-wedged-proj'])
+    expect(reapKeep && [...reapKeep]).toEqual(['fcvm-wedged-proj'])
+    // Its registry entry survives so a subsequent restart re-adopts it too.
+    expect(reg.get('wedged-proj')?.pid).toBe(liveChild.pid)
   })
 })

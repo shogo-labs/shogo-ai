@@ -16,12 +16,13 @@
  */
 
 import { Hono } from 'hono'
+import { resolveDesiredForHost, setFleetChannelRelease, type AgentRelease } from '../lib/metal-agent-release'
+import { getMetalPlacementRegistry } from '../lib/metal-placement-registry'
 import {
   registerMetalHost,
   getMetalWarmPoolController,
   type MetalHostRegistration,
 } from '../lib/metal-warm-pool-controller'
-import { getMetalPlacementRegistry } from '../lib/metal-placement-registry'
 
 function expectedToken(): string | undefined {
   return process.env.METAL_REGISTER_TOKEN || process.env.SHOGO_INTERNAL_SECRET
@@ -81,7 +82,42 @@ export function metalRoutes(): Hono {
       metrics: body.metrics && typeof body.metrics === 'object' ? body.metrics : undefined,
     })
 
-    return c.json({ ok: true })
+    // Pull-based deploy: tell the host which agent version it should be running.
+    // Best-effort — a DB blip must never break the liveness heartbeat, so the
+    // host just keeps its current version until the next successful resolve.
+    let desired = null
+    try {
+      desired = await resolveDesiredForHost(String(body.hostId), String(body.region ?? 'unknown'))
+    } catch (err) {
+      console.warn(`[metal] resolveDesiredForHost failed for ${body.hostId}:`, (err as any)?.message ?? err)
+    }
+
+    return c.json({ ok: true, desired })
+  })
+
+  // POST /api/internal/metal/release — publish a node-agent release to a
+  // region/channel pointer. Called by the metal-agent-deploy CI after it has
+  // built + uploaded the immutable bundle; hosts converge on their next
+  // heartbeat. Body: { region, channel, release: { version, bundleUrl, sha256, rebuildRootfs? } }.
+  app.post('/release', async (c) => {
+    if (!authOk(c.req.header('authorization'))) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    let body: { region?: string; channel?: string; release?: AgentRelease }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ ok: false, error: 'invalid_json' }, 400)
+    }
+    if (!body?.region || !body?.channel || !body?.release) {
+      return c.json({ ok: false, error: 'region, channel and release are required' }, 400)
+    }
+    try {
+      const channels = await setFleetChannelRelease(String(body.region), String(body.channel), body.release, 'metal-agent-deploy')
+      return c.json({ ok: true, channels })
+    } catch (err) {
+      return c.json({ ok: false, error: (err as any)?.message ?? 'failed' }, 400)
+    }
   })
 
   // POST /api/internal/metal/placement — node-agent placement events, so the
