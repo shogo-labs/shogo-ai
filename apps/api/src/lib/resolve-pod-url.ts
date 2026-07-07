@@ -279,8 +279,12 @@ export async function resolveProjectPodUrl(
   }
 
   if (isKubernetes()) {
+    // Use the KNATIVE-ONLY resolver here, never the substrate-agnostic
+    // `getProjectPodUrl` (which delegates back to THIS function) — otherwise the
+    // knative branch would recurse. `getProjectPodUrl` is the public entrypoint;
+    // `resolveKnativePodUrl` is its knative arm.
     const resolver = opts._k8sResolver
-      ?? (await import('./knative-project-manager')).getProjectPodUrl
+      ?? (await import('./knative-project-manager')).resolveKnativePodUrl
     const url = await resolver(projectId)
     return { mode: 'k8s', url }
   }

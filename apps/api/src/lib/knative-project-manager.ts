@@ -2059,8 +2059,14 @@ const PENDING_REQUEST_CLEANUP_MS = 5 * 60 * 1000
  * 2. The warm pod URL is returned immediately
  * 3. The real Knative Service is created in the background (for future cold starts)
  * If no warm pod is available, falls back to cold start.
+ *
+ * NOTE: this is the KNATIVE-ONLY resolver. Do NOT call it directly from request
+ * paths — call the substrate-agnostic `getProjectPodUrl()` (below) instead, which
+ * routes through `resolveProjectPodUrl` so metal/drain-mode is honoured uniformly
+ * and a project never dual-runs across substrates. This function is the Knative
+ * branch that `resolveProjectPodUrl` delegates to.
  */
-export async function getProjectPodUrl(projectId: string): Promise<string> {
+export async function resolveKnativePodUrl(projectId: string): Promise<string> {
   if (!isKubernetes()) {
     // Local development fallback
     const basePort = parseInt(process.env.RUNTIME_BASE_PORT || "5200", 10)
@@ -2222,6 +2228,35 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
   }, PENDING_REQUEST_CLEANUP_MS)
 
   return workPromise
+}
+
+/**
+ * Substrate-agnostic project runtime URL resolver — the ONE entrypoint every
+ * request path (preview, /files, publish, export/import, heartbeat agent
+ * trigger, prewarm, chat, sandbox) must use.
+ *
+ * It delegates to `resolveProjectPodUrl`, the single source of truth for the
+ * metal / knative / vm / host hierarchy, and returns just the URL so it is a
+ * drop-in replacement for the historical Knative-only helper. This is what makes
+ * the metal drain cutover safe: with `SHOGO_METAL_DRAIN_MODE` on, a project that
+ * still has a LIVE Knative pod keeps being served from Knative while everything
+ * else routes to metal — and because ALL paths funnel through here, the same
+ * project can never be served by both substrates at once (the split-brain the
+ * earlier drain attempt exposed, where this legacy resolver kept minting Knative
+ * pods for projects metal was already serving).
+ *
+ * When metal/drain is OFF (the default), `resolveProjectPodUrl` skips the metal
+ * branch and resolves via `resolveKnativePodUrl`, so behaviour is byte-for-byte
+ * identical to before this indirection existed.
+ */
+export async function getProjectPodUrl(projectId: string): Promise<string> {
+  // Preserve the historical non-k8s local-dev fallback exactly.
+  if (!isKubernetes()) {
+    return resolveKnativePodUrl(projectId)
+  }
+  const { resolveProjectPodUrl } = await import('./resolve-pod-url')
+  const resolved = await resolveProjectPodUrl(projectId, { logTag: 'KnativePodUrl' })
+  return resolved.url
 }
 
 /**
