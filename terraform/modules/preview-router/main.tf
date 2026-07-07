@@ -218,13 +218,14 @@ resource "cloudflare_worker_script" "preview_router" {
   name       = "shogo-preview-router-${var.environment}"
   module     = true
 
-  # allow_custom_ports lets the Worker fetch() a grey-clouded origin on a
-  # non-standard port. Metal projects are served over the box's PUBLIC DNAT
-  # ports (20000-20999) — without this flag the port is silently dropped to
-  # 80/443 and the metal proxy fails. Only affects grey-clouded (non-Cloudflare)
-  # origins; orange-clouded hosts (the Kourier anchors) are unaffected.
-  compatibility_date  = "2024-11-01"
-  compatibility_flags = ["allow_custom_ports"]
+  # A compatibility_date >= 2024-09-02 makes `allow_custom_ports` the default,
+  # letting the Worker fetch() a grey-clouded origin on a non-standard port —
+  # required because metal projects are served over the box's PUBLIC DNAT ports
+  # (20000-20999). Without a recent date the port is silently dropped to 80/443
+  # and the metal proxy fails. The flag must NOT be listed explicitly (the
+  # Cloudflare API rejects a now-default flag). Only affects grey-clouded
+  # (non-Cloudflare) origins; the orange-clouded Kourier anchors are unaffected.
+  compatibility_date = "2024-11-01"
 
   kv_namespace_binding {
     name         = "PREVIEW_REGIONS"
