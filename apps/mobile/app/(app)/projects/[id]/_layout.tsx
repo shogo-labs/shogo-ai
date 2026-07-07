@@ -3842,74 +3842,56 @@ function ChatPanelResizeHandle({
 // Canvas Panel — renders the v2 canvas iframe (Vite-built workspace SPA)
 // ---------------------------------------------------------------------------
 
-/** Polls the preview root URL until it stops returning 404.
- *  Covers both DomainMapping propagation (cloud: ingress 404 / CORS error)
- *  and Bun event-loop saturation on cold-boot (desktop: TCP accepts but
- *  the first HTTP request can sit there for many seconds while Bun is
- *  still JIT-compiling the runtime TS dep graph and spawning LSP-TS /
- *  pyright).
+/** Gates the canvas iframe on the *same-origin* preview status signal rather
+ *  than a cross-origin probe of the preview host.
  *
- *  Per-request timeout is intentionally large (15s) because the cold-
- *  boot first request on Windows + Defender + NTFS routinely takes
- *  10s+ before the runtime can pipe back its first byte. The previous
- *  4s ceiling treated every slow first response as a hard failure and
- *  surfaced as the "Connection timed out — The agent runtime could
- *  not be reached" toast even though the runtime was about to respond.
+ *  This previously polled `${baseUrl}/` directly until it stopped returning a
+ *  404. In cloud/subdomain mode the canvas base URL is a *different origin*
+ *  (`{id}.preview.staging.shogo.ai`) than Studio (`studio.staging.shogo.ai`),
+ *  so every not-yet-ready probe surfaced in the console as a CORS error: the
+ *  infra 404 that Kourier returns before the DomainMapping/pod is serving
+ *  carries no `Access-Control-Allow-Origin` header, and the browser blocks the
+ *  cross-origin read. Functionally harmless (the failures were caught and the
+ *  poll retried) but noisy and alarming in DevTools.
  *
- *  Override knob: window.__shogoPreviewReadinessTimeoutMs (for tests
- *  / future tuning without redeploying).
+ *  Readiness now derives from `usePreviewPhase`'s `running` flag, which is
+ *  polled *same-origin* through the agent-proxy (`${agentUrl}/preview/status`).
+ *  No cross-origin request is ever issued from here, so there is no CORS noise.
+ *  Correctness of the iframe navigation itself is unaffected: the iframe load
+ *  is a document navigation, so if the DomainMapping hasn't propagated yet the
+ *  Cloudflare preview-router Worker serves its self-reloading interstitial
+ *  instead of a bare 404.
  */
 // Warm switch-back cache: base URLs we've already confirmed serve a live
 // preview. Switching away and back remounts CanvasPanel, which would otherwise
-// reset `ready=false` and re-run the 404 poll — flashing the loading screen for
-// a runtime that never went down. Seeding `ready=true` for a known-good base
-// URL renders the warm iframe immediately; the poll still revalidates and a
-// genuine 404 drops the cache + reverts to the loading gate.
+// reset `ready=false` and wait for the next `/preview/status` poll — flashing
+// the loading screen for a runtime that never went down. Seeding `ready=true`
+// for a known-good base URL renders the warm iframe immediately.
 const warmPreviewReadyCache = new Set<string>()
 
-function usePreviewReadiness(baseUrl: string | null | undefined): string | null {
+function usePreviewReadiness(
+  baseUrl: string | null | undefined,
+  // Same-origin readiness signal from `usePreviewPhase` (polled via the
+  // agent-proxy). `true` once the preview is serveable.
+  running: boolean,
+): string | null {
   const [ready, setReady] = useState(() => (baseUrl ? warmPreviewReadyCache.has(baseUrl) : false))
 
+  // Seed from the warm cache on base-URL change so a switch-back shows the
+  // preview immediately; the `running` effect below latches it fresh otherwise.
   useEffect(() => {
-    if (!baseUrl) { setReady(false); return }
-
-    // Seed from the warm cache so a switch-back shows the preview immediately;
-    // the poll below revalidates and corrects if the runtime is actually down.
-    setReady(warmPreviewReadyCache.has(baseUrl))
-
-    let alive = true
-
-    const overrideMs =
-      typeof window !== 'undefined' &&
-      (window as { __shogoPreviewReadinessTimeoutMs?: number }).__shogoPreviewReadinessTimeoutMs
-    const perRequestTimeoutMs =
-      typeof overrideMs === 'number' && overrideMs > 0 ? overrideMs : 15_000
-    const interIterationDelayMs = 1_000
-    const maxIterations = 60
-
-    async function poll() {
-      for (let i = 0; i < maxIterations && alive; i++) {
-        try {
-          const res = await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(perRequestTimeoutMs) })
-          if (res.status !== 404) {
-            warmPreviewReadyCache.add(baseUrl)
-            if (alive) setReady(true)
-            return
-          }
-          // Definitive 404 — the preview is not (yet) being served. Drop any
-          // optimistic warm seed so switch-back can't keep showing a dead
-          // iframe, and keep polling.
-          warmPreviewReadyCache.delete(baseUrl)
-          if (alive) setReady(false)
-        } catch { /* CORS / network failure / per-request timeout — keep polling */ }
-        await new Promise(r => setTimeout(r, interIterationDelayMs))
-      }
-      if (alive) { warmPreviewReadyCache.add(baseUrl); setReady(true) }
-    }
-
-    poll()
-    return () => { alive = false }
+    setReady(baseUrl ? warmPreviewReadyCache.has(baseUrl) : false)
   }, [baseUrl])
+
+  // Latch ready once the same-origin status reports the preview is running.
+  // We only ever transition false→true here (never back) so a live preview
+  // doesn't flash the loading gate if the runtime momentarily restarts; the
+  // outer `baseTimedOut` gate still surfaces a genuine never-comes-up failure.
+  useEffect(() => {
+    if (!baseUrl || !running) return
+    warmPreviewReadyCache.add(baseUrl)
+    setReady(true)
+  }, [baseUrl, running])
 
   return ready ? baseUrl! : null
 }
@@ -3938,10 +3920,6 @@ function CanvasPanel({
     },
   ) => void
 }) {
-  // Poll the preview URL's /health endpoint until the DomainMapping propagates.
-  // Until ready, treat canvasBaseUrl as null so the loading screen stays visible.
-  const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl)
-
   // Phase-level visibility into what the runtime is doing while we wait
   // (installing deps, building, starting the API server, …). Drives the
   // user-facing "what's happening" label below in place of the previous
@@ -3949,13 +3927,25 @@ function CanvasPanel({
   // in the Chat tab to wake the agent" hint (the runtime already starts
   // via `runtime/prewarm`; chat sends are not what wakes it).
   //
+  // This poll is same-origin (via the agent-proxy), so it also serves as the
+  // canvas readiness signal below — avoiding a cross-origin probe of the
+  // preview host that would spam the console with CORS errors while booting.
+  //
   // In workspace-runtime mode `canvasBaseUrl` carries a `/p/<id>` suffix, so
   // the per-project preview status lives at `${canvasBaseUrl}/preview/status`
   // (the global manager stays idle there). Detect that and override the poll
   // base so the phase label reflects the project actually being previewed.
   const workspacePreviewBase =
     canvasBaseUrl && /\/p\/[^/]+$/.test(canvasBaseUrl) ? canvasBaseUrl : null
-  const { phase: previewPhase, apiReady } = usePreviewPhase(agentUrl, workspacePreviewBase)
+  const { phase: previewPhase, running: previewRunning, apiReady } = usePreviewPhase(
+    agentUrl,
+    workspacePreviewBase,
+  )
+
+  // Gate the canvas iframe on the same-origin `running` signal (no cross-origin
+  // probe of the preview host → no CORS console noise). Until ready, this is
+  // null so the loading screen stays visible.
+  const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl, previewRunning)
 
   // Don't load the app UI until the project's API sidecar is responding —
   // otherwise the SPA renders and fires `/api/*` calls into a server that
