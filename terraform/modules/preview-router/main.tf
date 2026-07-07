@@ -218,14 +218,19 @@ resource "cloudflare_worker_script" "preview_router" {
   name       = "shogo-preview-router-${var.environment}"
   module     = true
 
-  # A compatibility_date >= 2024-09-02 makes `allow_custom_ports` the default,
-  # letting the Worker fetch() a grey-clouded origin on a non-standard port —
-  # required because metal projects are served over the box's PUBLIC DNAT ports
-  # (20000-20999). Without a recent date the port is silently dropped to 80/443
-  # and the metal proxy fails. The flag must NOT be listed explicitly (the
-  # Cloudflare API rejects a now-default flag). Only affects grey-clouded
-  # (non-Cloudflare) origins; the orange-clouded Kourier anchors are unaffected.
-  compatibility_date = "2024-11-01"
+  # Enable `allow_custom_ports` so the Worker can fetch() a grey-clouded origin
+  # on a non-standard port — required because metal projects are served over the
+  # box's PUBLIC DNAT ports (20000-20999); otherwise the port is silently dropped
+  # to 80/443 and the metal proxy fails. Only affects grey-clouded (non-CF)
+  # origins; the orange-clouded Kourier anchors are unaffected.
+  #
+  # We pin the date to 2024-09-01 (the day BEFORE the flag became default) and
+  # list the flag explicitly: at a >= 2024-09-02 date the Cloudflare API rejects
+  # the now-default flag, and the v4 provider still sends it, so a recent date +
+  # explicit flag is an unappliable combination. A date just before the default
+  # date keeps the explicit flag valid and the plan stable.
+  compatibility_date  = "2024-09-01"
+  compatibility_flags = ["allow_custom_ports"]
 
   kv_namespace_binding {
     name         = "PREVIEW_REGIONS"
