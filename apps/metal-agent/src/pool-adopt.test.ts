@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+/**
+ * Unit test for MetalWarmPool.adopt() — the rolling-deploy path. A fresh pool
+ * over the same runDir must re-adopt the microVMs the previous agent left
+ * running: for each live-registry entry with an alive pid, an existing API
+ * socket, and a healthy guest, re-attach it to `assigned` (mgr.adoptVM) and keep
+ * its handle id out of the host-orphan reap set. Entries whose pid is dead are
+ * dropped and NOT adopted.
+ *
+ * We stub the VM manager (adoptVM/reapHostOrphans) and stand up a tiny HTTP
+ * server as the "guest" so probeHealth passes. A live pid is provided by a real
+ * child process; a dead pid by a killed one.
+ */
+
+import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { config } from './config'
+import { LiveRegistry, type LiveVmEntry } from './live-registry'
+import { MetalWarmPool } from './pool'
+
+const dirs: string[] = []
+const cleanups: Array<() => void | Promise<void>> = []
+
+function makeCfg() {
+  const dir = mkdtempSync(join(tmpdir(), 'pooladopt-'))
+  dirs.push(dir)
+  return {
+    ...config,
+    work: dir,
+    snapDir: join(dir, 'snap'),
+    runDir: join(dir, 'run'),
+    dmCowDir: join(dir, 'cow'),
+    rootfsCow: 'full' as const,
+    snapStore: 'none' as const,
+    poolSize: 0, // don't try to boot warm VMs in adopt()'s reconcile
+  }
+}
+
+function entry(cfg: any, projectId: string, pid: number, agentUrl: string): LiveVmEntry {
+  const sock = join(cfg.runDir, `${projectId}.sock`)
+  writeFileSync(sock, '') // socket file must exist for adoption
+  return {
+    projectId,
+    vmId: `fcvm-${projectId}`,
+    pid,
+    guestIp: '127.0.0.1',
+    agentUrl,
+    socketPath: sock,
+    serialLog: join(cfg.runDir, `${projectId}.serial`),
+    net: { tap: 'fctap0', guestIp: '127.0.0.1' } as any,
+    rootfs: join(cfg.runDir, `${projectId}.rootfs.ext4`),
+    vcpus: 2,
+    memoryMB: 4096,
+    assignedAt: 1000,
+    lastTouchedAt: 2000,
+    v: 1,
+  }
+}
+
+afterEach(async () => {
+  for (const c of cleanups.splice(0)) await c()
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+})
+
+describe('MetalWarmPool.adopt', () => {
+  test('adopts a healthy live VM and reaps everything else; drops dead entries', async () => {
+    const cfg = makeCfg()
+
+    // Stand up a "guest" that answers /health so probeHealth passes.
+    const guest = Bun.serve({ port: 0, fetch: () => new Response('ok') })
+    cleanups.push(() => guest.stop(true))
+    const agentUrl = `http://localhost:${guest.port}`
+
+    // A live child = an adoptable VM; a killed child = a dead entry to drop.
+    const liveChild = Bun.spawn(['sleep', '30'])
+    cleanups.push(() => liveChild.kill('SIGKILL'))
+    const deadChild = Bun.spawn(['sleep', '30'])
+    deadChild.kill('SIGKILL')
+    await deadChild.exited
+    await Bun.sleep(50)
+
+    // Seed the registry BEFORE constructing the pool (pool opens the same dir).
+    const reg = new LiveRegistry(cfg.runDir)
+    reg.put(entry(cfg, 'live-proj', liveChild.pid, agentUrl))
+    reg.put(entry(cfg, 'dead-proj', deadChild.pid, agentUrl))
+
+    const adoptedHandles: string[] = []
+    let reapKeep: Set<string> | null = null
+    const fakeMgr = {
+      adoptVM: (h: any) => adoptedHandles.push(h.id),
+      reapHostOrphans: (keep: Set<string>) => {
+        reapKeep = keep
+        return 3
+      },
+      procCount: () => 0,
+    }
+
+    const pool = new MetalWarmPool(fakeMgr as any, cfg as any)
+    const res = await pool.adopt()
+
+    // Only the live, healthy VM is adopted.
+    expect(res.adopted).toEqual(['live-proj'])
+    expect(res.reaped).toBe(3)
+    expect(adoptedHandles).toEqual(['fcvm-live-proj'])
+    expect(pool.getAssigned('live-proj')?.handle.pid).toBe(liveChild.pid)
+    expect(pool.getAssigned('dead-proj')).toBeUndefined()
+
+    // The reap set keeps exactly the adopted handle id (so the reaper spares it).
+    expect(reapKeep && [...reapKeep]).toEqual(['fcvm-live-proj'])
+
+    // The dead entry is pruned from the durable registry.
+    expect(reg.get('dead-proj')).toBeNull()
+    expect(reg.get('live-proj')?.pid).toBe(liveChild.pid)
+  })
+})
