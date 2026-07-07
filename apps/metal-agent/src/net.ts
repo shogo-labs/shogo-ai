@@ -96,6 +96,18 @@ export function teardownTap(net: VmNet): void {
   tryIp(['link', 'del', net.tap])
 }
 
+/**
+ * The integer index `n` behind a `fctap<n>` device name (the same `n` passed to
+ * `deriveNet`). Returns null for an unrecognised name. Used to seed the VM index
+ * allocator across an agent restart so a freshly-spawned VM never reuses the tap
+ * of an adopted / suspended VM (setupTap deletes-then-recreates fctap<n>, which
+ * would corrupt a live VM's tap fd).
+ */
+export function tapIndex(net: VmNet): number | null {
+  const m = /^fctap(\d+)$/.exec(net.tap)
+  return m ? parseInt(m[1], 10) : null
+}
+
 /** Best-effort default-route interface, used as the NAT uplink. */
 export function defaultUplink(): string | undefined {
   try {
