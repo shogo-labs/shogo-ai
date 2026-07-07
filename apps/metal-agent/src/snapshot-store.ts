@@ -480,9 +480,20 @@ class S3Store implements SnapshotStore {
   }
 
   async remove(projectId: string): Promise<void> {
-    for (const name of ['meta.json', 'vmstate', 'mem', 'mem.gz', 'rootfs.ext4', 'rootfs.diff', 'rootfs.diff.gz']) {
-      await this.client.delete(this.key(projectId, name)).catch(() => {})
-    }
+    // Delete every possible snapshot artifact IN PARALLEL. Seven sequential OCI
+    // round-trips (~1-2s each under load) can stretch a /destroy past the agent
+    // HTTP server's connection idle window, so the caller's request is dropped
+    // (empty reply) even though the teardown itself succeeds and the agent keeps
+    // heartbeating. Fanning out keeps the whole delete to ~one round-trip, and a
+    // per-object timeout means one stuck object can't stall the rest.
+    const names = ['meta.json', 'vmstate', 'mem', 'mem.gz', 'rootfs.ext4', 'rootfs.diff', 'rootfs.diff.gz']
+    await Promise.all(
+      names.map((name) => {
+        const del = this.client.delete(this.key(projectId, name)).catch(() => {})
+        const timeout = new Promise<void>((resolve) => setTimeout(resolve, 8000))
+        return Promise.race([del, timeout])
+      }),
+    )
   }
 
   async ensureBase(identity: string, baseRootfsPath: string): Promise<void> {
