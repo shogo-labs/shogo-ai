@@ -96,20 +96,25 @@ resource "cloudflare_load_balancer_pool" "india" {
   longitude     = 72.9
   check_regions = ["IN", "SEAS"]
 
+  # India→EU migration: the origin is disabled (health-drained) when
+  # var.india_serving_enabled = false so no new traffic lands on ap-mumbai-1.
   origins {
     name    = "kourier-in"
     address = var.india_lb_ip
     weight  = 1
-    enabled = true
+    enabled = var.india_serving_enabled
   }
 }
 
 locals {
-  pool_ids = [
+  # `compact` drops the empty string so the India pool leaves the steering set
+  # entirely when var.india_serving_enabled = false (Phase 2 edge drain). US +
+  # EU remain; US stays the fallback pool below.
+  pool_ids = compact([
     cloudflare_load_balancer_pool.us.id,
     cloudflare_load_balancer_pool.eu.id,
-    cloudflare_load_balancer_pool.india.id,
-  ]
+    var.india_serving_enabled ? cloudflare_load_balancer_pool.india.id : "",
+  ])
 }
 
 # =============================================================================

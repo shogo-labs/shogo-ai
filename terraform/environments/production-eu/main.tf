@@ -106,11 +106,23 @@ module "eu" {
   oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
   nfs_allowed_cidr      = var.nfs_allowed_cidr
 
-  # ARM64 custom OKE image (A2 Flex) — EU region
-  image_id           = "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaiufb7tfc5olbaeerhukwj72ppir3yzigxp26cp2hqqzjtugf2sbq"
-  placement_ad_names = ["XYpk:EU-FRANKFURT-1-AD-1"]
+  # ARM64 custom OKE image (Ampere Flex) — EU region. Boots on both A1 and A2.
+  image_id = "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaiufb7tfc5olbaeerhukwj72ppir3yzigxp26cp2hqqzjtugf2sbq"
 
-  # EU uses A2.Flex (A4 not available in this region)
+  # 2026-07-06 India→EU migration: spread across all three AD placements. The
+  # worker subnet is regional, so this is safe, and it lets node launches land
+  # in whichever AD has host capacity (AD-1 A2.Flex was out of host capacity
+  # during the scale-up to 12).
+  placement_ad_names = [
+    "XYpk:EU-FRANKFURT-1-AD-1",
+    "XYpk:EU-FRANKFURT-1-AD-2",
+    "XYpk:EU-FRANKFURT-1-AD-3",
+  ]
+
+  # EU uses A1.Flex (A4 not available in this region; A2.Flex hit "Out of host
+  # capacity" across all EU ADs during the 2026-07-06 India→EU scale-up to 12,
+  # so the pool was switched to A1.Flex which had ample capacity. Same ARM64
+  # Ampere arch + image; pre-existing A2 nodes remain until recycled).
   #
   # 2026-06-02 rollout-headroom bump (run 26865807851): `min`/`size` 2 -> 3
   # so there is always one warm, already-prepulled spare node beyond
@@ -119,12 +131,24 @@ module "eu" {
   # mid-rollout (EU's warm pool never reached Ready in that run). MUST match
   # the live floor: GitHub Actions variable NODE_POOL_MIN for environment
   # production-eu (consumed by deploy.yml "Deploy Cluster Autoscaler").
-  system_node_shape     = "VM.Standard.A2.Flex"
+  system_node_shape     = "VM.Standard.A1.Flex"
   system_node_ocpus     = 4
   system_node_memory_gb = 24
-  system_pool_size      = 3
-  system_pool_min       = 3
-  system_pool_max       = 10
+
+  # 2026-07-06 India→EU migration (permanent decommission of production-india).
+  # EU absorbs India's tenants, which are the LARGEST region — 3,989 workspaces
+  # / 3,910 users vs EU's own 2,800 / 2,728 (verified against the live mesh).
+  # India ran a steady 7 api pods on 10 nodes; EU ran 6 api pods on 5 nodes.
+  # Combined steady-state is ~13 api + 2 studio + system/knative/cnpg, so the
+  # warm floor is raised to 12 (was 3) BEFORE any traffic is shifted so India
+  # requests never hit a cold node, and the ceiling to 24 (was 10) to cover the
+  # combined peak (api max-scale 20 + studio max-scale 20 in the EU overlay).
+  # MUST be kept in sync with GitHub Actions variables NODE_POOL_MIN=12 /
+  # NODE_POOL_MAX=24 for environment production-eu (deploy.yml renders the
+  # cluster-autoscaler from those). See docs/runbooks/india-to-eu-migration.md §1.
+  system_pool_size = 12
+  system_pool_min  = 12
+  system_pool_max  = 24
 
   # 200 GB to match production-us. EU was bootstrapped at 100 GB, which
   # caused the 2026-06-02 DiskPressure incident (stacked 8 GB runtime images
