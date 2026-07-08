@@ -16,7 +16,7 @@
  */
 
 import { Hono } from "hono"
-import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3"
+import { S3Client, PutObjectCommand, CopyObjectCommand, DeleteObjectsCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
 import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
 import { recordCheckpointForCommit } from "../services/checkpoint.service"
@@ -631,34 +631,209 @@ async function seedPublishedData(subdomain: string, projectId: string): Promise<
     // Not found → seed below.
   }
   try {
-    const { getProjectPodUrl } = await import("../lib/knative-project-manager")
-    const podUrl = await getProjectPodUrl(projectId)
-    const response = await fetch(`${podUrl}/agent/published-data-archive`, {
-      headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
-      signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
-    })
-    if (response.status === 404) {
+    const buf = await fetchDevWritableArchive(projectId)
+    if (!buf) {
       console.log(`[Publish] No writable state to seed for ${projectId} (fresh DB on first boot)`)
       return
     }
-    if (!response.ok) {
-      console.warn(`[Publish] published-data-archive returned ${response.status} for ${projectId}`)
-      return
-    }
-    const { archive } = (await response.json()) as { archive?: string }
-    if (!archive) return
-    const buf = Buffer.from(archive, 'base64')
-    await s3Client.send(new PutObjectCommand({
-      Bucket: PUBLISH_DATA_BUCKET,
-      Key: key,
-      Body: buf,
-      ContentType: 'application/gzip',
-      CacheControl: 'no-store',
-    }))
+    await putPublishedArchive(subdomain, buf)
     console.log(`[Publish] Seeded published-data ${key} (${buf.length} bytes)`)
   } catch (err: any) {
     console.warn(`[Publish] seedPublishedData failed for ${projectId} (non-fatal):`, err?.message ?? err)
   }
+}
+
+/**
+ * Snapshot the dev pod's CURRENT writable state (prisma/dev.db + WAL/SHM +
+ * upload dirs) as a gzipped tar. Returns null when the pod reports no writable
+ * state yet (fresh/empty DB). Shared by the first-publish seed and the
+ * manual dev->live data push.
+ */
+async function fetchDevWritableArchive(projectId: string): Promise<Buffer | null> {
+  const { getProjectPodUrl } = await import("../lib/knative-project-manager")
+  const podUrl = await getProjectPodUrl(projectId)
+  const response = await fetch(`${podUrl}/agent/published-data-archive`, {
+    headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
+    signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
+  })
+  if (response.status === 404) return null
+  if (!response.ok) {
+    throw new Error(`published-data-archive returned ${response.status}`)
+  }
+  const { archive } = (await response.json()) as { archive?: string }
+  if (!archive) return null
+  return Buffer.from(archive, 'base64')
+}
+
+/** Upload a writable-state archive to the published-data bucket for `subdomain`. */
+async function putPublishedArchive(subdomain: string, buf: Buffer): Promise<void> {
+  await s3Client.send(new PutObjectCommand({
+    Bucket: PUBLISH_DATA_BUCKET,
+    Key: `${subdomain}/data.tar.gz`,
+    Body: buf,
+    ContentType: 'application/gzip',
+    CacheControl: 'no-store',
+  }))
+}
+
+/**
+ * Copy the current live archive to a timestamped backup key so a dev->live
+ * push is reversible. Returns the backup key, or null when there's no live
+ * archive to back up yet.
+ */
+async function backupPublishedArchive(subdomain: string): Promise<string | null> {
+  const srcKey = `${subdomain}/data.tar.gz`
+  try {
+    await s3Client.send(new HeadObjectCommand({ Bucket: PUBLISH_DATA_BUCKET, Key: srcKey }))
+  } catch {
+    return null
+  }
+  const ts = new Date().toISOString().replace(/[:.]/g, '-')
+  const destKey = `${subdomain}/backups/data-${ts}.tar.gz`
+  await s3Client.send(new CopyObjectCommand({
+    Bucket: PUBLISH_DATA_BUCKET,
+    CopySource: encodeURI(`${PUBLISH_DATA_BUCKET}/${srcKey}`),
+    Key: destKey,
+  }))
+  return destKey
+}
+
+/** Best-effort read of a pod's normalized `prisma/schema.prisma` fingerprint. */
+async function fetchSchemaFingerprint(podUrl: string, projectId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${podUrl}/agent/schema-fingerprint`, {
+      headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) return null
+    const { hash } = (await res.json()) as { hash?: string | null }
+    return hash ?? null
+  } catch {
+    return null
+  }
+}
+
+interface PushDataResult {
+  ok: boolean
+  status?: number
+  code?: string
+  message?: string
+  bytes?: number
+  backupKey?: string | null
+  schemaMismatch?: boolean
+}
+
+/**
+ * Push the builder's current dev database (+ upload dirs) up to the live,
+ * server-backed published app — the manual "sync dev data to the published
+ * version" workflow. Full snapshot REPLACE (not a merge): the live writable
+ * state is backed up, then overwritten with the dev snapshot.
+ *
+ * Safety:
+ *   - Backs up the current live archive to `{subdomain}/backups/data-{ts}.tar.gz`
+ *     so the replace is reversible.
+ *   - Disarms a running published writer first (suspend) so its interval /
+ *     shutdown flush can't clobber the fresh push. Only when warm — a
+ *     scaled-to-zero app has no writer, and we must not wake it through the
+ *     activator just to suspend it.
+ *   - Guards against schema drift: if the published pod is warm and its schema
+ *     fingerprint differs from dev's, refuse unless `force` (the caller surfaces
+ *     a "republish first, or push anyway" choice).
+ *
+ * Rolls a new published revision at the end so the pod re-hydrates from the
+ * pushed archive.
+ */
+async function pushPublishedData(
+  projectId: string,
+  subdomain: string,
+  opts: { force?: boolean } = {},
+): Promise<PushDataResult> {
+  if (!PUBLISH_DATA_BUCKET) {
+    return { ok: false, status: 503, code: "data_bucket_unset", message: "Published-data storage is not configured." }
+  }
+
+  // 1. Snapshot the dev database. Bail early if there's nothing to push.
+  let devArchive: Buffer | null
+  try {
+    devArchive = await fetchDevWritableArchive(projectId)
+  } catch (err: any) {
+    return { ok: false, status: 502, code: "dev_snapshot_failed", message: `Could not read the dev database: ${err?.message ?? err}` }
+  }
+  if (!devArchive) {
+    return { ok: false, status: 400, code: "no_dev_data", message: "The dev project has no database to push yet." }
+  }
+
+  const { getKnativeProjectManager, getProjectPodUrl } = await import("../lib/knative-project-manager")
+  const manager = getKnativeProjectManager()
+
+  // Only touch the published pod (schema check / suspend) when it's actually
+  // running — reaching it while scaled to zero would cold-start it through the
+  // activator for no reason and spawn an un-suspended writer.
+  let publishedWarm = false
+  try {
+    const status = await manager.getServiceStatus(`published-${projectId}`, projectId)
+    publishedWarm = status.exists && status.ready && status.replicas > 0
+  } catch (err: any) {
+    console.warn(`[Publish] Could not read published service status for ${projectId}:`, err?.message ?? err)
+  }
+
+  // 2. Schema-drift guard (best-effort, warm pod only).
+  let schemaMismatch = false
+  if (publishedWarm) {
+    try {
+      const [devHash, pubHash] = await Promise.all([
+        fetchSchemaFingerprint(await getProjectPodUrl(projectId), projectId),
+        fetchSchemaFingerprint(manager.publishedServiceUrl(projectId), projectId),
+      ])
+      schemaMismatch = !!(devHash && pubHash && devHash !== pubHash)
+    } catch (err: any) {
+      console.warn(`[Publish] Schema fingerprint check failed for ${projectId} (continuing):`, err?.message ?? err)
+    }
+    if (schemaMismatch && !opts.force) {
+      return {
+        ok: false,
+        status: 409,
+        code: "schema_mismatch",
+        message: "Your dev database schema differs from the published app. Publish your latest changes first, or push anyway.",
+        schemaMismatch: true,
+      }
+    }
+  }
+
+  // 3. Disarm the running writer so it can't overwrite the fresh push.
+  if (publishedWarm) {
+    try {
+      const res = await fetch(`${manager.publishedServiceUrl(projectId)}/agent/published-data/suspend`, {
+        method: "POST",
+        headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (!res.ok) console.warn(`[Publish] suspend published writer returned ${res.status} for ${projectId}`)
+    } catch (err: any) {
+      console.warn(`[Publish] Failed to suspend published writer for ${projectId} (continuing):`, err?.message ?? err)
+    }
+  }
+
+  // 4. Back up the current live archive (reversible replace).
+  let backupKey: string | null = null
+  try {
+    backupKey = await backupPublishedArchive(subdomain)
+  } catch (err: any) {
+    console.warn(`[Publish] Failed to back up live archive for ${subdomain} (continuing):`, err?.message ?? err)
+  }
+
+  // 5. Overwrite the live archive with the dev snapshot.
+  await putPublishedArchive(subdomain, devArchive)
+  console.log(`[Publish] Pushed dev data to ${subdomain}/data.tar.gz (${devArchive.length} bytes, backup=${backupKey ?? "none"})`)
+
+  // 6. Roll a new revision so the pod re-hydrates from the pushed archive.
+  try {
+    await manager.forcePublishedRevision(projectId)
+  } catch (err: any) {
+    console.warn(`[Publish] Failed to force published revision for ${projectId} (data pushed, reload pending):`, err?.message ?? err)
+  }
+
+  return { ok: true, bytes: devArchive.length, backupKey, schemaMismatch }
 }
 
 /**
@@ -1518,6 +1693,59 @@ export function publishRoutes() {
         await setPublishStatus(c.req.param("projectId"), 'failed', 'republish_failed')
       } catch {}
       return c.json({ error: { code: "republish_failed", message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/publish/push-data - Push the current dev database
+   * up to the live, server-backed published app (full snapshot replace). The
+   * builder authors data in dev and clicks this to make it appear on
+   * {subdomain}.shogo.one. Pass `{ force: true }` to override the schema-drift
+   * guard. Returns the backup key so the replace is reversible.
+   */
+  router.post("/projects/:projectId/publish/push-data", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      let body: { force?: boolean } = {}
+      try {
+        body = await c.req.json<{ force?: boolean }>()
+      } catch {
+        // Empty/invalid body is fine — defaults to a non-forced push.
+      }
+
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { publishedSubdomain: true },
+      })
+      if (!project) {
+        return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
+      }
+      if (!project.publishedSubdomain) {
+        return c.json({ error: { code: "not_published", message: "Project is not published" } }, 400)
+      }
+      if (!isKubernetes()) {
+        return c.json({ error: { code: "unsupported", message: "Pushing dev data is only available for cloud-published apps." } }, 400)
+      }
+
+      const subdomain = project.publishedSubdomain
+
+      // Static apps serve from the edge with no runtime DB — nothing to sync.
+      const serverBacked = await detectServerBacked(projectId)
+      if (!serverBacked) {
+        return c.json({ error: { code: "not_server_backed", message: "This published app is static and has no database to sync." } }, 400)
+      }
+
+      const result = await pushPublishedData(projectId, subdomain, { force: body.force === true })
+      if (!result.ok) {
+        return c.json(
+          { error: { code: result.code, message: result.message }, schemaMismatch: result.schemaMismatch },
+          (result.status ?? 500) as any,
+        )
+      }
+      return c.json({ success: true, bytes: result.bytes, backupKey: result.backupKey, schemaMismatch: result.schemaMismatch }, 200)
+    } catch (error: any) {
+      console.error("[Publish] Push data error:", error)
+      return c.json({ error: { code: "push_data_failed", message: error.message } }, 500)
     }
   })
 

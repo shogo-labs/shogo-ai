@@ -874,6 +874,21 @@ export const api = {
     return res.data
   },
 
+  // Push the current dev database up to the live server-backed published app
+  // (full snapshot replace). The previous live data is backed up first, so the
+  // returned `backupKey` makes the replace reversible. A 409 `schema_mismatch`
+  // means dev's schema drifted from the published app — retry with
+  // `force: true` after warning the user (or tell them to republish first).
+  async pushDevData(http: HttpClient, projectId: string, opts?: { force?: boolean }) {
+    const res = await http.post<{
+      success: boolean
+      bytes?: number
+      backupKey?: string | null
+      schemaMismatch?: boolean
+    }>(`/api/projects/${projectId}/publish/push-data`, { force: opts?.force === true })
+    return res.data
+  },
+
   // ─── Custom domains (Cloudflare for SaaS) ────────────────
 
   async getCustomDomains(http: HttpClient, projectId: string) {
