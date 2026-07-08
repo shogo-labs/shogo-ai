@@ -72,6 +72,14 @@
  *                                   reference an `INTENTIONALLY_REGIONAL`
  *                                   entry whose `regionKeyColumn` is
  *                                   part of this unique key
+ *      - `cron_home_partitioned` — written by an in-process cron that
+ *                                   runs lock-free in every region but
+ *                                   filters its writes to the current
+ *                                   region's home workspaces
+ *                                   (`homeRegionWorkspaceWhere()`), so
+ *                                   the per-region write sets are
+ *                                   disjoint; must reference a
+ *                                   `HOME_REGION_PARTITIONED` entry
  *
  * Usage
  * -----
@@ -132,6 +140,46 @@ const INTENTIONALLY_REGIONAL: IntentionallyRegional[] = [
   },
 ]
 
+interface HomeRegionPartitioned {
+  /** Exported function name that contains the cron body. */
+  fn: string
+  /** Source file relative to repo root, for error messages. */
+  file: string
+  /** Why this cron is allowed to run lock-free in every region. */
+  reason: string
+  /**
+   * `<table>.<column>` proving the partition key exists in the schema.
+   *
+   * Unlike `INTENTIONALLY_REGIONAL.regionKeyColumn`, this column need NOT be
+   * part of the *written* table's unique key. Safety here comes from the
+   * cron's runtime home-region filter (`homeRegionWorkspaceWhere()`) making
+   * each region's write set DISJOINT — no two regions ever touch the same
+   * row — rather than from a region column embedded in the unique key. The
+   * column must still exist so a schema rename can't silently orphan the
+   * partitioning contract; it is typically `Workspace.homeRegion`, the same
+   * ownership column the home-region write router keys on.
+   */
+  partitionKeyColumn: string
+}
+
+/**
+ * Crons that run in every region but are safe *without* a global lock because
+ * they filter their writes to the workspaces the current region is the single
+ * home-writer for. This is the wallet single-writer model: each region owns a
+ * disjoint slice of `usage_wallets` (the table is excluded from
+ * `shogo_all_pub`), so a lock-free per-region refill can never collide with a
+ * peer on the non-region-scoped `usage_wallets.workspaceId` unique.
+ */
+const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
+  {
+    fn: 'runGrantMonthlyRefill',
+    file: 'apps/api/src/jobs/grant-monthly-refill.ts',
+    reason:
+      'Each region refills only the workspaces it is the home-writer for (homeRegionWorkspaceWhere(): workspace.homeRegion === REGION_ID, plus null-homeRegion rows on the primary — the same ownership rule the home-region write router uses). usage_wallets is deliberately excluded from shogo_all_pub (see k8s/cnpg/logical-replication/exclude-region-local-tables.sql), so a wallet exists only in its home region; partitioning keeps every region\'s write set disjoint, which is exactly the guarantee the removed global lock used to provide. All request/webhook wallet writes are home-routed by the billing service (routeWalletProvision / consumeUsage), and the lazy first-call refill inside consumeUsage is home-routed too, so workspace.homeRegion is the sole writer-identity for usage_wallets.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+]
+
 interface UniqueKeyRule {
   /** `<model>.<col>` or `<model>.(col1,col2,…)` (composite). Sorted alpha for composites. */
   key: string
@@ -142,11 +190,13 @@ interface UniqueKeyRule {
     | 'single_tenant_upsert'
     | 'cron_locked'
     | 'cron_regional'
+    | 'cron_home_partitioned'
   /** One-line justification. */
   reason: string
   /**
    * For `cron_locked`: which `KNOWN_JOB_IDS` entry writes this row.
    * For `cron_regional`: which `INTENTIONALLY_REGIONAL.fn` writes it.
+   * For `cron_home_partitioned`: which `HOME_REGION_PARTITIONED.fn` writes it.
    * Unused for other categories.
    */
   writer?: string
@@ -235,10 +285,10 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
   },
   {
     key: 'UsageWallet.workspaceId',
-    category: 'cron_locked',
+    category: 'cron_home_partitioned',
     reason:
-      'Written by runGrantMonthlyRefill (cron) and billing service flows; the cron is the symmetric writer and is lock-wrapped. Request-time create-after-find race is a P1 idempotency follow-up.',
-    writer: 'grant-monthly-refill',
+      'Single-writer per workspace.homeRegion. The grant refill cron is home-partitioned (runGrantMonthlyRefill via homeRegionWorkspaceWhere) and every request/webhook wallet write is home-routed by the billing service (routeWalletProvision / consumeUsage), so each region only ever upserts its own home workspaces\' wallets — the workspaceId unique never collides across regions. usage_wallets is excluded from shogo_all_pub for exactly this reason (see k8s/cnpg/logical-replication/exclude-region-local-tables.sql).',
+    writer: 'runGrantMonthlyRefill',
   },
   {
     key: 'InstanceSubscription.workspaceId',
@@ -827,6 +877,8 @@ function checkCronWrappers(
   const violations: Violation[] = []
   const regionalIndex = new Map<string, IntentionallyRegional>()
   for (const r of INTENTIONALLY_REGIONAL) regionalIndex.set(r.fn, r)
+  const partitionedIndex = new Map<string, HomeRegionPartitioned>()
+  for (const r of HOME_REGION_PARTITIONED) partitionedIndex.set(r.fn, r)
 
   for (const entry of entries) {
     const exempt = regionalIndex.get(entry.fn)
@@ -835,6 +887,17 @@ function checkCronWrappers(
         violations.push({
           where: `${entry.file}:${entry.line}`,
           message: `INTENTIONALLY_REGIONAL entry for \`${entry.fn}\` claims file \`${exempt.file}\` but found in \`${entry.file}\`. Fix the allowlist or move the function.`,
+        })
+      }
+      continue
+    }
+
+    const partitioned = partitionedIndex.get(entry.fn)
+    if (partitioned) {
+      if (partitioned.file !== entry.file) {
+        violations.push({
+          where: `${entry.file}:${entry.line}`,
+          message: `HOME_REGION_PARTITIONED entry for \`${entry.fn}\` claims file \`${partitioned.file}\` but found in \`${entry.file}\`. Fix the allowlist or move the function.`,
         })
       }
       continue
@@ -868,6 +931,14 @@ function checkCronWrappers(
       violations.push({
         where: r.file,
         message: `INTENTIONALLY_REGIONAL entry \`${r.fn}\` does not match any discovered cron entry. Either remove the allowlist entry or restore the cron.`,
+      })
+    }
+  }
+  for (const r of HOME_REGION_PARTITIONED) {
+    if (!entryNames.has(r.fn)) {
+      violations.push({
+        where: r.file,
+        message: `HOME_REGION_PARTITIONED entry \`${r.fn}\` does not match any discovered cron entry. Either remove the allowlist entry or restore the cron.`,
       })
     }
   }
@@ -913,6 +984,50 @@ function checkIntentionallyRegionalSchema(
       violations.push({
         where: r.file,
         message: `INTENTIONALLY_REGIONAL.\`${r.fn}\`.regionKeyColumn=\`${r.regionKeyColumn}\`: column \`${col}\` is declared on \`${modelName}\` but is NOT part of any @unique / @@unique on that model. Without that, "intentionally regional" is a lie — every region's write will still collide on whatever unique IS on the model.`,
+      })
+    }
+  }
+  return violations
+}
+
+/**
+ * Assert each HOME_REGION_PARTITIONED entry's `partitionKeyColumn` names a
+ * real column in the schema. Unlike the INTENTIONALLY_REGIONAL check we do
+ * NOT require the column to be part of a @unique — safety comes from the
+ * cron's runtime home-region filter producing disjoint write sets, not from a
+ * region column in the key — but the column must exist so a schema rename
+ * can't silently orphan the partitioning contract.
+ */
+function checkHomeRegionPartitionedSchema(
+  models: Map<string, SchemaModel>,
+  modelToTable: Map<string, string>,
+): Violation[] {
+  const violations: Violation[] = []
+  const tableToModel = new Map<string, string>()
+  for (const [model, table] of modelToTable) tableToModel.set(table, model)
+
+  for (const r of HOME_REGION_PARTITIONED) {
+    const [table, col] = r.partitionKeyColumn.split('.')
+    if (!table || !col) {
+      violations.push({
+        where: r.file,
+        message: `HOME_REGION_PARTITIONED.\`${r.fn}\`.partitionKeyColumn=\`${r.partitionKeyColumn}\` must be in \`<table>.<column>\` form.`,
+      })
+      continue
+    }
+    const modelName = tableToModel.get(table) ?? table
+    const model = models.get(modelName)
+    if (!model) {
+      violations.push({
+        where: r.file,
+        message: `HOME_REGION_PARTITIONED.\`${r.fn}\`.partitionKeyColumn=\`${r.partitionKeyColumn}\` references unknown model/table.`,
+      })
+      continue
+    }
+    if (!model.fields.has(col)) {
+      violations.push({
+        where: r.file,
+        message: `HOME_REGION_PARTITIONED.\`${r.fn}\`.partitionKeyColumn=\`${r.partitionKeyColumn}\`: column \`${col}\` is not declared on \`${modelName}\`. Without the partition key the "home-region partitioned" claim is unverifiable.`,
       })
     }
   }
@@ -976,6 +1091,24 @@ function checkUniqueRegistry(
         }
       }
     }
+    if (rule.category === 'cron_home_partitioned') {
+      if (!rule.writer) {
+        violations.push({
+          where: 'scripts/check-multiregion-cron-locks.ts',
+          message: `ACCEPTED_UNIQUE_KEYS.\`${key}\` is category=cron_home_partitioned but missing a \`writer\` field referencing a HOME_REGION_PARTITIONED entry.`,
+        })
+      } else {
+        const partitioned = HOME_REGION_PARTITIONED.find(
+          (r) => r.fn === rule.writer,
+        )
+        if (!partitioned) {
+          violations.push({
+            where: 'scripts/check-multiregion-cron-locks.ts',
+            message: `ACCEPTED_UNIQUE_KEYS.\`${key}\`.writer=\`${rule.writer}\` does not match any HOME_REGION_PARTITIONED.fn entry.`,
+          })
+        }
+      }
+    }
   }
 
   // Direction 2: no stale allowlist entries (catches schema column
@@ -1021,6 +1154,7 @@ function main(argv: string[]): number {
 
   const violations: Violation[] = [
     ...checkIntentionallyRegionalSchema(models, modelToTable),
+    ...checkHomeRegionPartitionedSchema(models, modelToTable),
     ...checkCronWrappers(cronEntries, knownJobIds),
     ...checkUniqueRegistry(models, knownJobIds),
   ]
@@ -1030,6 +1164,7 @@ function main(argv: string[]): number {
       console.log(
         `[check-multiregion-cron-locks] OK — ${cronEntries.length} cron entries, ` +
           `${knownJobIds.size} wrapped, ${INTENTIONALLY_REGIONAL.length} intentionally regional, ` +
+          `${HOME_REGION_PARTITIONED.length} home-region partitioned, ` +
           `${ACCEPTED_UNIQUE_KEYS.length} classified unique constraints.`,
       )
     }
@@ -1062,6 +1197,7 @@ if (isMain) {
 export {
   ACCEPTED_UNIQUE_KEYS,
   INTENTIONALLY_REGIONAL,
+  HOME_REGION_PARTITIONED,
   parseSchema,
   buildModelToTable,
   enumerateCronEntries,
@@ -1069,6 +1205,7 @@ export {
   readKnownJobIds,
   checkCronWrappers,
   checkIntentionallyRegionalSchema,
+  checkHomeRegionPartitionedSchema,
   checkUniqueRegistry,
   main,
 }
