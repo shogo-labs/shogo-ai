@@ -104,6 +104,24 @@ describe('MetalWarmPoolController lifecycle', () => {
     expect(status.exists).toBe(false)
   })
 
+  it('destroyProject still reaches a transiently-stale owner (delete racing a missed heartbeat)', async () => {
+    // Regression for a staging leak: the owning box missed a heartbeat right as
+    // its project was deleted, so it fell out of the live TTL window and the
+    // teardown fanned out to zero hosts — the snapshot leaked. The owner must
+    // still be targeted from its last-known placement.
+    const { impl, calls } = recordingFetch()
+    let clock = 1_000_000
+    const c = new MetalWarmPoolController(fakeEnv(), impl, () => clock)
+    c.registerHost(REG)
+    await c.getMetalProjectUrl('p1') // places p1 on dal-1
+
+    clock += 120_000 // > HOST_TTL_MS (90s): dal-1 is now outside the live window
+
+    await c.destroyProject('p1')
+    const destroyCalls = calls.filter((x) => x.path === '/destroy' && x.body.projectId === 'p1')
+    expect(destroyCalls.length).toBe(1) // reached the stale owner, not zero hosts
+  })
+
   it('listProjects aggregates assigned + suspended across hosts', async () => {
     const { impl } = recordingFetch()
     const c = new MetalWarmPoolController(fakeEnv(), impl)

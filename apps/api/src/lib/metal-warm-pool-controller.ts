@@ -438,9 +438,17 @@ export class MetalWarmPoolController {
       if (h && h.lastSeenAt >= this.now() - HOST_TTL_MS) return h
     }
     const placed = await this.registry.getPlacement(projectId).catch(() => null)
-    if (placed?.hostId) {
+    const placedId = placed?.hostId ?? localId
+    if (placedId) {
       const live = await this.liveHostsShared()
-      return live.find((h) => h.hostId === placed.hostId)
+      const liveHit = live.find((h) => h.hostId === placedId)
+      if (liveHit) return liveHit
+      // Transiently-stale owner: the host is outside the live TTL window right now
+      // (a missed heartbeat under load) but we still know where it lives. Fall back
+      // to the last-known in-memory entry so a delete/stop/status racing that lapse
+      // still reaches the REAL owner instead of silently treating it as gone — the
+      // difference between a clean teardown and a leaked snapshot.
+      return this.hosts.get(placedId)
     }
     return undefined
   }
@@ -489,12 +497,23 @@ export class MetalWarmPoolController {
    * analog of KnativeProjectManager.deleteProject. Fans out to EVERY live host
    * (not just the current placement): after a failover a stale local/durable
    * snapshot can linger on another host, and a project delete must leak nothing.
-   * Also clears this project's routing/placement/lease state. Best-effort.
+   *
+   * Crucially it ALSO targets the project's own placement host even when that
+   * host has briefly dropped out of the live TTL window (via hostForProject's
+   * stale fallback). A delete very often races exactly such a lapse — a busy box
+   * missing a heartbeat right as its project is deleted — and destroying only the
+   * *live* set there silently leaves the snapshot behind forever (observed on
+   * staging: the delete ran, but only Knative teardown fired and the metal
+   * snapshot leaked until GC). Also clears routing/placement/lease. Best-effort.
    */
   async destroyProject(projectId: string): Promise<void> {
-    const hosts = await this.liveHostsShared()
+    const targets = new Map<string, HostEntry>()
+    for (const h of await this.liveHostsShared()) targets.set(h.hostId, h)
+    const owner = await this.hostForProject(projectId)
+    if (owner) targets.set(owner.hostId, owner)
+
     await Promise.all(
-      hosts.map((h) =>
+      [...targets.values()].map((h) =>
         this.fetchImpl(`http://${h.meshIp}:${h.agentPort}/destroy`, {
           method: 'POST',
           headers: this.agentHeaders(),
