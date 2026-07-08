@@ -46,12 +46,14 @@ import { resolve } from 'node:path'
 import {
   ACCEPTED_UNIQUE_KEYS,
   INTENTIONALLY_REGIONAL,
+  HOME_REGION_PARTITIONED,
   parseSchema,
   enumerateCronEntries,
   findOutermostLockCall,
   readKnownJobIds,
   checkCronWrappers,
   checkIntentionallyRegionalSchema,
+  checkHomeRegionPartitionedSchema,
   checkUniqueRegistry,
 } from '../check-multiregion-cron-locks'
 
@@ -94,20 +96,29 @@ describe('check-multiregion-cron-locks (e2e, current repo state)', () => {
   test('readKnownJobIds reads exactly the registered names from global-job-lock.ts', () => {
     const ids = readKnownJobIds()
     expect(ids.has('storage-recalculate-all')).toBe(true)
-    expect(ids.has('grant-monthly-refill')).toBe(true)
     expect(ids.has('voice-monthly-rebill')).toBe(true)
+    // `grant-monthly-refill` is INTENTIONALLY NOT here anymore — the cron is
+    // now home-region partitioned (lock-free), exempt via
+    // HOME_REGION_PARTITIONED rather than lock-wrapped.
+    expect(ids.has('grant-monthly-refill')).toBe(false)
     // `analytics-digest` is INTENTIONALLY NOT here — that cron is
     // exempt via INTENTIONALLY_REGIONAL.
     expect(ids.has('analytics-digest')).toBe(false)
     expect(ids.has('generateDigest')).toBe(false)
   })
 
+  test('runGrantMonthlyRefill is registered as home-region partitioned', () => {
+    const fns = new Set(HOME_REGION_PARTITIONED.map((r) => r.fn))
+    expect(fns.has('runGrantMonthlyRefill')).toBe(true)
+  })
+
   test('every wrapped cron resolves to a known job id (cross-registry)', () => {
     const ids = readKnownJobIds()
     const entries = enumerateCronEntries()
     const regional = new Set(INTENTIONALLY_REGIONAL.map((r) => r.fn))
+    const partitioned = new Set(HOME_REGION_PARTITIONED.map((r) => r.fn))
     for (const entry of entries) {
-      if (regional.has(entry.fn)) continue
+      if (regional.has(entry.fn) || partitioned.has(entry.fn)) continue
       const arg = findOutermostLockCall(entry.node)
       expect(arg).not.toBeNull()
       if (arg) expect(ids.has(arg)).toBe(true)
@@ -279,7 +290,14 @@ describe('checkCronWrappers', () => {
     )
     expect(live).toBeDefined()
     const v = checkCronWrappers([live!], new Set())
-    expect(v).toEqual([])
+    // The reverse-direction stale checks fire for the other allowlists
+    // (INTENTIONALLY_REGIONAL / HOME_REGION_PARTITIONED entries not present in
+    // this single-entry fixture). Filter those; assert the per-cron half — the
+    // generateDigest exemption — is clean.
+    const perCronViolations = v.filter(
+      (x) => !x.message.includes('does not match any discovered cron entry'),
+    )
+    expect(perCronViolations).toEqual([])
   })
 })
 
@@ -365,6 +383,57 @@ model AnalyticsDigest {
         x.message.includes('is not declared on'),
       )
       expect(missingCol).toBeDefined()
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+})
+
+// ===========================================================================
+// checkHomeRegionPartitionedSchema — fixtures
+// ===========================================================================
+
+describe('checkHomeRegionPartitionedSchema (live HOME_REGION_PARTITIONED)', () => {
+  test('passes against the real schema today', () => {
+    const models = parseSchema(`${REPO_ROOT}/prisma/schema.prisma`)
+    const modelToTable = new Map<string, string>()
+    const src = require('node:fs').readFileSync(
+      `${REPO_ROOT}/prisma/schema.prisma`,
+      'utf-8',
+    ) as string
+    const re = /^\s*model\s+(\w+)\s*\{([\s\S]*?)^\s*\}/gm
+    let m: RegExpExecArray | null
+    while ((m = re.exec(src))) {
+      const name = m[1]
+      const mapMatch = /@@map\(\s*"([^"]+)"\s*\)/.exec(m[2])
+      modelToTable.set(name, mapMatch ? mapMatch[1] : name)
+    }
+    const v = checkHomeRegionPartitionedSchema(models, modelToTable)
+    expect(v).toEqual([])
+  })
+
+  test('fixture: a partitioned entry whose partitionKeyColumn is missing fails', () => {
+    // Real HOME_REGION_PARTITIONED names `Workspace.homeRegion`. Build a
+    // synthetic Workspace model WITHOUT that column and confirm the check
+    // reports it as undeclared. (Unlike the regional check, no @@unique is
+    // required — safety is the runtime disjoint-partition property.)
+    const tmp = mkdtempSync(join(tmpdir(), 'check-mr-'))
+    try {
+      const schemaPath = join(tmp, 'schema.prisma')
+      writeFileSync(
+        schemaPath,
+        `
+model Workspace {
+  id   String @id @default(uuid())
+  slug String @unique
+}
+`,
+      )
+      const models = parseSchema(schemaPath)
+      const modelToTable = new Map<string, string>([['Workspace', 'Workspace']])
+      const v = checkHomeRegionPartitionedSchema(models, modelToTable)
+      const missing = v.find((x) => x.message.includes('is not declared on'))
+      expect(missing).toBeDefined()
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }

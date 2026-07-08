@@ -1,38 +1,42 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 //
-// Unit tests for src/jobs/grant-monthly-refill.ts — wave-1.
+// Unit tests for src/jobs/grant-monthly-refill.ts.
 // Covers: no candidates, wallet missing, watermark already current,
-// successful refill, applyGrantMonthlyAllocation throws, multiple
-// workspaces with mixed outcomes, dedup of duplicate grant rows, and
-// the cron scheduler (initial + interval invocation, error swallow).
+// successful refill, applyGrantMonthlyAllocationLocal throws, multiple
+// workspaces with mixed outcomes, dedup of duplicate grant rows, the
+// home-region partition filter, and the cron scheduler (initial +
+// interval invocation, error swallow).
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test'
 
 let grantFindManyImpl: (args: any) => Promise<any[]> = async () => []
 let walletFindUniqueImpl: (args: any) => Promise<any> = async () => null
 let applyGrantImpl: (workspaceId: string, now: Date) => Promise<any> = async () => {}
-let lockAcquiredImpl: boolean = true
+let homeFilterImpl: any = null
+let lastGrantFindManyArgs: any = null
 
 mock.module('../../lib/prisma', () => ({
   prisma: {
-    workspaceGrant: { findMany: (args: any) => grantFindManyImpl(args) },
+    workspaceGrant: {
+      findMany: (args: any) => {
+        lastGrantFindManyArgs = args
+        return grantFindManyImpl(args)
+      },
+    },
     usageWallet: { findUnique: (args: any) => walletFindUniqueImpl(args) },
   },
 }))
 
-mock.module('../../lib/global-job-lock', () => ({
-  withGlobalJobLock: async (_name: string, body: () => Promise<any>) => {
-    if (lockAcquiredImpl) {
-      const result = await body()
-      return { acquired: true, result }
-    }
-    return { acquired: false, skipped: true, reason: 'lock_not_acquired' }
-  },
+// The cron partitions by home region via homeRegionWorkspaceWhere(); mock it
+// so tests can drive both single-region (null → no filter) and multi-region
+// (a where-fragment spread into the workspace filter) behaviour.
+mock.module('../../lib/region', () => ({
+  homeRegionWorkspaceWhere: () => homeFilterImpl,
 }))
 
 mock.module('../../services/billing.service', () => ({
-  applyGrantMonthlyAllocation: (workspaceId: string, now: Date) =>
+  applyGrantMonthlyAllocationLocal: (workspaceId: string, now: Date) =>
     applyGrantImpl(workspaceId, now),
 }))
 
@@ -44,6 +48,8 @@ beforeEach(() => {
   grantFindManyImpl = async () => []
   walletFindUniqueImpl = async () => null
   applyGrantImpl = async () => {}
+  homeFilterImpl = null
+  lastGrantFindManyArgs = null
 })
 
 describe('runGrantMonthlyRefill', () => {
@@ -80,7 +86,7 @@ describe('runGrantMonthlyRefill', () => {
     expect(s).toMatchObject({ candidates: 1, refilled: 1, skipped: 0, failed: 0 })
   })
 
-  it('counts a failure when applyGrantMonthlyAllocation throws', async () => {
+  it('counts a failure when applyGrantMonthlyAllocationLocal throws', async () => {
     grantFindManyImpl = async () => [{ workspaceId: 'w1' }]
     walletFindUniqueImpl = async () => ({ lastMonthlyReset: new Date('2026-04-01T00:00:00Z') })
     applyGrantImpl = async () => {
@@ -122,6 +128,37 @@ describe('runGrantMonthlyRefill', () => {
     }
     const s = await runGrantMonthlyRefill({ now: new Date('2026-05-15T00:00:00Z') })
     expect(s).toMatchObject({ candidates: 3, refilled: 1, skipped: 2, failed: 0 })
+  })
+
+  it('does not add a home-region filter in single-region mode (null filter)', async () => {
+    homeFilterImpl = null
+    grantFindManyImpl = async () => []
+    await runGrantMonthlyRefill({ now: new Date('2026-05-15T00:00:00Z') })
+    expect(lastGrantFindManyArgs.where.workspace.homeRegion).toBeUndefined()
+    expect(lastGrantFindManyArgs.where.workspace.OR).toBeUndefined()
+    // The subscription exclusion is always present.
+    expect(lastGrantFindManyArgs.where.workspace.subscriptions).toBeDefined()
+  })
+
+  it('spreads the home-region partition filter into the workspace query', async () => {
+    homeFilterImpl = { homeRegion: 'eu-frankfurt-1' }
+    grantFindManyImpl = async () => []
+    await runGrantMonthlyRefill({ now: new Date('2026-05-15T00:00:00Z') })
+    expect(lastGrantFindManyArgs.where.workspace.homeRegion).toBe('eu-frankfurt-1')
+    // Still AND-ed with the subscription exclusion.
+    expect(lastGrantFindManyArgs.where.workspace.subscriptions).toBeDefined()
+  })
+
+  it('supports the primary-region OR filter (own id OR null homeRegion)', async () => {
+    homeFilterImpl = {
+      OR: [{ homeRegion: 'us-ashburn-1' }, { homeRegion: null }],
+    }
+    grantFindManyImpl = async () => []
+    await runGrantMonthlyRefill({ now: new Date('2026-05-15T00:00:00Z') })
+    expect(lastGrantFindManyArgs.where.workspace.OR).toEqual([
+      { homeRegion: 'us-ashburn-1' },
+      { homeRegion: null },
+    ])
   })
 
   it('uses Date.now() when options.now is not provided', async () => {
@@ -172,22 +209,5 @@ describe('startGrantMonthlyRefillCron', () => {
       ;(globalThis as any).setTimeout = origSetTimeout
       ;(globalThis as any).setInterval = origSetInterval
     }
-  })
-})
-
-describe('runGrantMonthlyRefill — lock skipped path (lines 125-132)', () => {
-  beforeEach(() => {
-    lockAcquiredImpl = false
-  })
-
-  it('returns lockSkipped:true when the global advisory lock is held by another region', async () => {
-    const { runGrantMonthlyRefill } = await import('../grant-monthly-refill')
-    const result = await runGrantMonthlyRefill()
-    expect(result.lockSkipped).toBe(true)
-    expect(result.candidates).toBe(0)
-    expect(result.refilled).toBe(0)
-    expect(result.skipped).toBe(0)
-    expect(result.failed).toBe(0)
-    expect(result.period).toBeTruthy() // period is a Date or string
   })
 })

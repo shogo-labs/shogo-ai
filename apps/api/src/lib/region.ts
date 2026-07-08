@@ -65,6 +65,45 @@ export function isKnownRegion(regionId: string): boolean {
 }
 
 /**
+ * True when this pod is one of several active regions replicating to each
+ * other (multi-writer mesh). False in single-region / local / desktop mode,
+ * where there is exactly one writer and no partitioning is required.
+ */
+export function isMultiRegionActive(): boolean {
+  return RAW_REGION_ID !== null && REGION_PEERS.length > 0
+}
+
+/**
+ * A Prisma `where` fragment on the `Workspace` relation, restricting to the
+ * workspaces this region is the *home writer* for.
+ */
+export type WorkspaceHomeWhere =
+  | { homeRegion: string }
+  | { OR: Array<{ homeRegion: string | null }> }
+
+/**
+ * Prisma `where` fragment selecting the workspaces this region is the single
+ * home-writer for, matching the router's ownership rule
+ * (`workspace.homeRegion || PRIMARY_REGION`):
+ *   - primary region → its own id OR null (legacy / unclassified rows),
+ *   - any other region → exactly its own id.
+ *
+ * Returns `null` in single-region / local mode (no peers, or `REGION_ID`
+ * unset), where this pod owns every workspace and no partition filter should
+ * be applied. Home-region-partitioned crons spread the result into their
+ * workspace filter so each region's write set stays disjoint — the property
+ * that lets them run lock-free in every region without colliding on a
+ * non-region-scoped unique key (see scripts/check-multiregion-cron-locks.ts).
+ */
+export function homeRegionWorkspaceWhere(): WorkspaceHomeWhere | null {
+  if (!isMultiRegionActive() || RAW_REGION_ID === null) return null
+  if (RAW_REGION_ID === PRIMARY_REGION) {
+    return { OR: [{ homeRegion: RAW_REGION_ID }, { homeRegion: null }] }
+  }
+  return { homeRegion: RAW_REGION_ID }
+}
+
+/**
  * The homeRegion value to stamp on a workspace created in this region. Null in
  * single-region/local mode, where the router treats null as "primary / local".
  */
