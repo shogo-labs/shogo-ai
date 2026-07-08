@@ -140,6 +140,13 @@ export const config = {
    */
   quiesceTimeoutMs: parseInt(env('METAL_QUIESCE_TIMEOUT_MS', '5000'), 10),
   rehydrateTimeoutMs: parseInt(env('METAL_REHYDRATE_TIMEOUT_MS', '5000'), 10),
+  /**
+   * Cold-start workspace hydration: how long the agent waits for the guest to
+   * extract + accept the durable source backup streamed to `/pool/hydrate`.
+   * Generous because the guest extracts the tar synchronously before responding
+   * (the subsequent rebuild is async and not covered by this timeout).
+   */
+  hydrateTimeoutMs: parseInt(env('METAL_HYDRATE_TIMEOUT_MS', '60000'), 10),
 
   /**
    * Balloon-reclaim before snapshot. Firecracker's CreateSnapshot writes the

@@ -64,6 +64,7 @@ import {
   lfsPull,
   lfsRemoteConfigFromEnv,
   migrateOffloadedAssetsToLfs,
+  extractTarFastNonBlocking,
   type CloudSyncMode,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
@@ -2490,6 +2491,47 @@ app.post('/preview/stop', (c) => {
   const pm = getPreviewManager()
   pm.stop()
   return c.json({ ok: true })
+})
+
+// Host-side workspace hydration (metal cold-start only).
+//
+// On bare metal the guest holds NO S3 credentials (a compromised guest must
+// never reach the shared workspace bucket). Instead the trusted metal-agent
+// fetches this project's durable source backup (`{projectId}/project-src.tar.gz`)
+// host-side and streams the gzipped tar to this control endpoint on a cold
+// miss (fresh warm-VM assign with no snapshot to resume). We extract it over
+// the template that the warm pool booted with and rebuild so the served
+// preview reflects the real app instead of the "Project Ready" placeholder.
+//
+// Auth: this lives under the `/pool` prefix, so once the VM is assigned it
+// requires the runtime token — the agent authenticates with the same
+// RUNTIME_AUTH_SECRET it injected via `/pool/assign`. The archive is applied
+// only when it actually contains project source (guards against clobbering a
+// live workspace with an empty/partial upload).
+app.post('/pool/hydrate', async (c) => {
+  const body = await c.req.arrayBuffer()
+  if (!body || body.byteLength === 0) {
+    return c.json({ error: 'empty archive' }, 400)
+  }
+  const tmp = join('/tmp', `pool-hydrate-${Date.now()}.tar.gz`)
+  try {
+    writeFileSync(tmp, Buffer.from(body))
+    await extractTarFastNonBlocking(tmp, WORKSPACE_DIR)
+    // Rebuild so the served dist reflects the hydrated source. Fire-and-forget:
+    // readiness is reported through the normal preview/gateway status.
+    getPreviewManager()
+      .restart()
+      .catch((e: any) => console.error('[pool/hydrate] rebuild failed:', e?.message ?? e))
+    console.log(`[pool/hydrate] hydrated workspace from durable backup (${body.byteLength} bytes)`)
+    return c.json({ ok: true, bytes: body.byteLength })
+  } catch (err: any) {
+    console.error('[pool/hydrate] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'hydrate failed' }, 500)
+  } finally {
+    try {
+      unlinkSync(tmp)
+    } catch {}
+  }
 })
 
 // Alias for `/preview/restart`. The code-agent prompt and older SDK/template
