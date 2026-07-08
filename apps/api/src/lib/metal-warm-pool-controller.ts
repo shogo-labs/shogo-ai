@@ -184,7 +184,10 @@ interface AssignResult {
   readyMs?: number
 }
 
-type EnvBuilder = (projectId: string) => Promise<Record<string, string>>
+type EnvBuilder = (
+  projectId: string,
+  opts?: { logPrefix?: string; forMetal?: boolean },
+) => Promise<Record<string, string>>
 type FetchImpl = typeof fetch
 
 export class MetalWarmPoolController {
@@ -345,7 +348,9 @@ export class MetalWarmPoolController {
           throw new NoMetalHostError()
         }
 
-        const env = await this.envBuilder(projectId)
+        // forMetal: the guest runs outside OKE and must reach the AI proxy /
+        // Shogo API over the PUBLIC URL (in-cluster DNS is unresolvable there).
+        const env = await this.envBuilder(projectId, { forMetal: true })
         let lastErr: unknown
 
         for (const host of cands) {

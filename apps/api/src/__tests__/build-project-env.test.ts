@@ -92,6 +92,8 @@ const { buildProjectEnv } = await import('../lib/runtime/build-project-env')
 const SAVED_ENV: Record<string, string | undefined> = {}
 const ENV_KEYS = [
   'SYSTEM_NAMESPACE',
+  'SHOGO_PUBLIC_API_URL',
+  'APP_URL',
   'API_PORT',
   'API_HOST',
   'S3_WORKSPACES_BUCKET',
@@ -192,6 +194,41 @@ describe('buildProjectEnv — proxy URLs', () => {
     process.env.API_HOST = 'should-be-ignored'
     process.env.API_PORT = '9999'
     const env = await buildProjectEnv('proj-6')
+    expect(env.AI_PROXY_URL).toBe('http://api.shogo-prod.svc.cluster.local/api/ai/v1')
+  })
+
+  // Metal microVMs run OUTSIDE the OKE cluster: the in-cluster service DNS is
+  // unresolvable from the guest, so LLM turns 502'd with "Provider error:
+  // Connection error". forMetal must pin the proxy + API URLs to the PUBLIC base.
+  test('forMetal uses the PUBLIC API URL, not the in-cluster DNS', async () => {
+    process.env.SYSTEM_NAMESPACE = 'shogo-prod'
+    process.env.SHOGO_PUBLIC_API_URL = 'https://studio.shogo.ai'
+    const env = await buildProjectEnv('proj-metal', { forMetal: true })
+    expect(env.AI_PROXY_URL).toBe('https://studio.shogo.ai/api/ai/v1')
+    expect(env.ANTHROPIC_PROXY_URL).toBe('https://studio.shogo.ai/api/ai/anthropic')
+    expect(env.OPENAI_PROXY_URL).toBe('https://studio.shogo.ai/api/ai/v1')
+    // trust-resolver reads SHOGO_API_URL — must also be the reachable public URL.
+    expect(env.SHOGO_API_URL).toBe('https://studio.shogo.ai')
+  })
+
+  test('forMetal falls back to APP_URL and strips a trailing slash', async () => {
+    process.env.SYSTEM_NAMESPACE = 'shogo-prod'
+    process.env.APP_URL = 'https://staging.shogo.ai/'
+    const env = await buildProjectEnv('proj-metal-2', { forMetal: true })
+    expect(env.AI_PROXY_URL).toBe('https://staging.shogo.ai/api/ai/v1')
+    expect(env.SHOGO_API_URL).toBe('https://staging.shogo.ai')
+  })
+
+  test('forMetal with no public URL configured falls back to in-cluster DNS (logs error)', async () => {
+    process.env.SYSTEM_NAMESPACE = 'shogo-prod'
+    const env = await buildProjectEnv('proj-metal-3', { forMetal: true })
+    expect(env.AI_PROXY_URL).toBe('http://api.shogo-prod.svc.cluster.local/api/ai/v1')
+  })
+
+  test('non-metal callers still use the in-cluster DNS even when a public URL is set', async () => {
+    process.env.SYSTEM_NAMESPACE = 'shogo-prod'
+    process.env.SHOGO_PUBLIC_API_URL = 'https://studio.shogo.ai'
+    const env = await buildProjectEnv('proj-knative')
     expect(env.AI_PROXY_URL).toBe('http://api.shogo-prod.svc.cluster.local/api/ai/v1')
   })
 })

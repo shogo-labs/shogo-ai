@@ -18,7 +18,7 @@ import { INSTANCE_SIZES } from '../../config/instance-sizes'
  */
 export async function buildProjectEnv(
   projectId: string,
-  opts?: { logPrefix?: string },
+  opts?: { logPrefix?: string; forMetal?: boolean },
 ): Promise<Record<string, string>> {
   const prefix = opts?.logPrefix ?? 'buildProjectEnv'
   const startTime = Date.now()
@@ -131,12 +131,29 @@ export async function buildProjectEnv(
   env.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
 
   // AI proxy URLs — the runtime needs to know where the proxy server is.
+  // Metal microVMs (Firecracker on bare metal) run OUTSIDE the OKE cluster, so
+  //   the in-cluster service DNS (api.<ns>.svc.cluster.local) is UNRESOLVABLE
+  //   from the guest — every LLM turn fails with "Provider error: Connection
+  //   error." Use the PUBLIC API URL instead (the guest egress-NATs to the
+  //   internet). TLS + the project-scoped AI_PROXY_TOKEN keep this safe over the
+  //   public path — same model desktop VMs already use.
   // In K8s (SYSTEM_NAMESPACE set): use the Knative service DNS on port 80.
   // Desktop VMs: API_HOST is auto-set to the host bridge IP.
   // Local dev: falls back to localhost:API_PORT.
   const ns = process.env.SYSTEM_NAMESPACE
+  const publicApiBase = (process.env.SHOGO_PUBLIC_API_URL || process.env.APP_URL || '').replace(/\/+$/, '')
   let apiBase: string
-  if (ns) {
+  if (opts?.forMetal && publicApiBase) {
+    apiBase = publicApiBase
+  } else if (ns) {
+    if (opts?.forMetal) {
+      // Metal but no public URL configured → the guest cannot reach the AI proxy.
+      // Surface loudly rather than silently baking an unreachable URL.
+      console.error(
+        `[${prefix}] metal env for ${projectId} but SHOGO_PUBLIC_API_URL/APP_URL unset — ` +
+          `AI proxy will be UNREACHABLE from the guest (falling back to in-cluster DNS)`,
+      )
+    }
     apiBase = `http://api.${ns}.svc.cluster.local`
   } else {
     const apiPort = process.env.API_PORT || '8002'
