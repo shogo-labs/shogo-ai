@@ -96,7 +96,7 @@ function envLine(key: string, value: string | number): string {
 export function buildBurstUserData(o: BurstUserDataOpts): string {
   const work = o.work ?? '/opt/fc-spike'
   const listenPort = o.listenPort ?? 9900
-  const poolSize = o.poolSize ?? 24
+  const poolSize = o.poolSize ?? 6
   const memMiB = o.memMiB ?? 4096
   const vcpus = o.vcpus ?? 2
   const idleSuspendMs = o.idleSuspendMs ?? DEFAULT_IDLE_SUSPEND_MS
