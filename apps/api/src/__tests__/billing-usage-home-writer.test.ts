@@ -213,3 +213,44 @@ describe('consumeUsage single-writer routing', () => {
     expect(res.success).toBe(true)
   })
 })
+
+describe('wallet provisioning single-writer routing', () => {
+  test('allocateMonthlyIncluded routes to the home region (no local upsert)', async () => {
+    await billing.allocateMonthlyIncluded('ws-eu-home', 'pro', 2)
+
+    expect(walletUpsertCalls).toBe(0)
+    expect(fetchCalls.length).toBe(1)
+    expect(fetchCalls[0].url).toContain('/api/internal/billing/provision')
+    expect(fetchCalls[0].body.op).toBe('allocateMonthlyIncluded')
+    expect(fetchCalls[0].body.planId).toBe('pro')
+    expect(fetchCalls[0].body.seats).toBe(2)
+    expect(fetchCalls[0].body.workspaceId).toBe('ws-eu-home')
+  })
+
+  test('setUsageBasedPricing routes to the home region', async () => {
+    await billing.setUsageBasedPricing('ws-eu-home', { overageEnabled: true, overageHardLimitUsd: 500 })
+
+    expect(walletUpsertCalls).toBe(0)
+    expect(fetchCalls.length).toBe(1)
+    expect(fetchCalls[0].url).toContain('/api/internal/billing/provision')
+    expect(fetchCalls[0].body.op).toBe('setUsageBasedPricing')
+    expect(fetchCalls[0].body.overageEnabled).toBe(true)
+    expect(fetchCalls[0].body.overageHardLimitUsd).toBe(500)
+  })
+
+  test('provisioning writes locally when the serving region IS the home region', async () => {
+    currentHomeRegion = SERVING_REGION
+    await billing.allocateMonthlyIncluded('ws-eu-home', 'pro', 1)
+
+    expect(fetchCalls.length).toBe(0)
+    expect(walletUpsertCalls).toBe(1)
+  })
+
+  test('off mode provisions locally even in a non-home region', async () => {
+    process.env.USAGE_WALLET_HOME_WRITER = 'off'
+    await billing.allocateMonthlyIncluded('ws-eu-home', 'pro', 1)
+
+    expect(fetchCalls.length).toBe(0)
+    expect(walletUpsertCalls).toBe(1)
+  })
+})

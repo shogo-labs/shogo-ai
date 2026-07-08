@@ -979,4 +979,62 @@ app.post('/billing/consume', async (c) => {
   }
 })
 
+/**
+ * POST /api/internal/billing/provision
+ *
+ * Single-writer wallet provisioning. Called by a sibling region's provisioning
+ * path (Stripe webhook, admin, grant redeem) when the serving region is NOT the
+ * workspace's `homeRegion`: the wallet write is routed here so subscription
+ * setup lands in the region the app reads. Dispatches to the local `*Local`
+ * provisioning functions. Authenticated by the shared `SHOGO_INTERNAL_SECRET`.
+ */
+app.post('/billing/provision', async (c) => {
+  const expected = process.env.SHOGO_INTERNAL_SECRET
+  const provided = c.req.header('x-shogo-internal-secret') || ''
+  if (!expected || provided !== expected) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  const body = (await c.req.json().catch(() => null)) as Record<string, any> | null
+  if (!body || typeof body.workspaceId !== 'string' || typeof body.op !== 'string') {
+    return c.json({ error: 'Invalid provision params' }, 400)
+  }
+
+  const svc = await import('../services/billing.service')
+  try {
+    let wallet: unknown
+    switch (body.op) {
+      case 'allocateFreeWallet':
+        wallet = await svc.allocateFreeWalletLocal(body.workspaceId)
+        break
+      case 'allocateMonthlyIncluded':
+        if (typeof body.planId !== 'string') return c.json({ error: 'planId required' }, 400)
+        wallet = await svc.allocateMonthlyIncludedLocal(
+          body.workspaceId,
+          body.planId,
+          typeof body.seats === 'number' ? body.seats : 1,
+        )
+        break
+      case 'applyGrantMonthlyAllocation':
+        wallet = await svc.applyGrantMonthlyAllocationLocal(body.workspaceId)
+        break
+      case 'setUsageBasedPricing':
+        if (typeof body.overageEnabled !== 'boolean') {
+          return c.json({ error: 'overageEnabled required' }, 400)
+        }
+        wallet = await svc.setUsageBasedPricingLocal(body.workspaceId, {
+          overageEnabled: body.overageEnabled,
+          overageHardLimitUsd: body.overageHardLimitUsd ?? null,
+        })
+        break
+      default:
+        return c.json({ error: `Unknown provision op: ${body.op}` }, 400)
+    }
+    return c.json(wallet)
+  } catch (err: any) {
+    console.error('[Internal] billing/provision failed:', err?.message ?? err)
+    return c.json({ error: 'provision failed' }, 500)
+  }
+})
+
 export default app
