@@ -13,7 +13,9 @@
 # no host inventory, no inbound SSH, no CI fan-out. Roll out with `canary`, then
 # promote to `stable`; roll back by re-pointing the channel at an older version.
 #
-#   push to main (metal-agent/** changes) → staging `canary` (auto)
+#   push to main (metal-agent/** changes) → staging `canary` (auto, agent code)
+#   after "Runtime Image (multi-arch)"    → staging `canary` + rebuildRootfs=true
+#     succeeds on a push to main            (auto, guest/runtime code changed)
 #   workflow_dispatch                     → choose environment (staging / production-us /
 #                                           production-eu) / channel / region. Each
 #                                           production region has its own control plane
@@ -50,6 +52,18 @@ on:
     paths:
       - 'apps/metal-agent/**'
       - '.github/workflows/metal-agent-deploy.yml'
+  # Guest-side (in-VM) code lives in the runtime image, NOT the agent bundle, so
+  # a change there needs the golden rootfs rebuilt on every host. The runtime
+  # image is (re)built by "Runtime Image (multi-arch)" — which itself only runs
+  # when the runtime chain (packages/agent-runtime, packages/shared-runtime, …)
+  # changes. Chain off its SUCCESSFUL completion so the rebuild release is only
+  # published AFTER the new image exists (no race) and only when guest code
+  # actually changed. Gated below to staging + push-triggered builds; production
+  # rootfs rebuilds stay a deliberate manual dispatch.
+  workflow_run:
+    workflows: ['Runtime Image (multi-arch)']
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       environment:
@@ -91,9 +105,22 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment || 'staging' }}
     timeout-minutes: 15
+    # push / workflow_dispatch always run. The workflow_run (runtime-image) path
+    # only fires the auto rootfs rebuild for a SUCCESSFUL, push-triggered staging
+    # image build on main — a production image build is a manual dispatch and its
+    # fleet rebuild must be too, so we never auto-rebuild prod off it.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.event == 'push')
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # For the workflow_run path, build the bundle from the exact commit
+          # whose runtime image was just published (not whatever HEAD is now).
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Preflight config
         env:
@@ -173,7 +200,10 @@ jobs:
           VERSION: ${{ steps.bundle.outputs.version }}
           SHA256: ${{ steps.bundle.outputs.sha256 }}
           BUNDLE_URL: ${{ steps.upload.outputs.bundle_url }}
-          REBUILD: ${{ inputs.rebuild_rootfs && 'true' || 'false' }}
+          # Rebuild the golden rootfs when the operator asked (dispatch) OR when
+          # this run was chained off a fresh runtime-image build (workflow_run) —
+          # that's exactly the "guest code changed" signal.
+          REBUILD: ${{ (inputs.rebuild_rootfs || github.event_name == 'workflow_run') && 'true' || 'false' }}
           INSECURE_TLS: ${{ vars.METAL_RELEASE_INSECURE_TLS }}
         run: |
           set -euo pipefail
