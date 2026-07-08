@@ -8,7 +8,9 @@
  *   2. per-file *allocated* size — for CoW/sparse rootfs images the logical
  *      size (`stat.size`) massively overstates disk use, so we account by
  *      allocated blocks (`stat.blocks * 512`) which is what actually consumes
- *      NVMe. mem/vmstate are dense, so blocks≈size for them anyway.
+ *      NVMe. Snapshot mem images are also sparse (see sparsify.ts: the freed,
+ *      balloon-zeroed pages are hole-punched after CreateSnapshot), so the same
+ *      allocated-blocks accounting is what keeps GC cache pressure honest.
  */
 
 import { statfsSync, statSync } from 'fs'
