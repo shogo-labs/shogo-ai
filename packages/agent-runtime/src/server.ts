@@ -4749,6 +4749,49 @@ app.get('/agent/published-data-archive', async (c) => {
 })
 
 /**
+ * Disarm this pod's published-data uploader (SHOGO_PUBLISHED_MODE only).
+ * Called by the publish flow (apps/api/src/routes/publish.ts) right before it
+ * overwrites the published-data archive with the builder's dev database: a
+ * running published pod otherwise flushes its stale DB on its 30s interval /
+ * on shutdown and would clobber the fresh push. After suspending, the API
+ * rolls a new revision that re-hydrates from the pushed archive.
+ *
+ * Returns `{ suspended: false }` (still 200) when there's no uploader to
+ * disarm (e.g. this app has no writable state) so the caller can proceed.
+ * Under the runtime-owned `/agent/*` namespace, so it's `x-runtime-token`
+ * gated like the other publish endpoints.
+ */
+app.post('/agent/published-data/suspend', (c) => {
+  if (!IS_PUBLISHED_MODE) {
+    return c.json({ error: 'not_published_mode', message: 'Only server-backed published pods can be suspended' }, 400)
+  }
+  if (publishedDataSyncInstance) {
+    publishedDataSyncInstance.suspend()
+    return c.json({ ok: true, suspended: true })
+  }
+  return c.json({ ok: true, suspended: false })
+})
+
+/**
+ * Whitespace-insensitive fingerprint of `prisma/schema.prisma`, used by the
+ * publish flow to detect dev<->published schema drift before pushing the dev
+ * database onto the live app (pushing a newer-schema DB onto older published
+ * code breaks the app). Returns `{ hash: null }` when the project has no
+ * schema (a purely-static app). Runtime-owned `/agent/*` route.
+ */
+app.get('/agent/schema-fingerprint', (c) => {
+  const schemaPath = join(WORKSPACE_DIR, 'prisma', 'schema.prisma')
+  if (!existsSync(schemaPath)) return c.json({ hash: null })
+  try {
+    const { createHash } = require('crypto') as typeof import('crypto')
+    const normalized = readFileSync(schemaPath, 'utf-8').replace(/\s+/g, ' ').trim()
+    return c.json({ hash: createHash('sha256').update(normalized).digest('hex') })
+  } catch (err: any) {
+    return c.json({ error: 'fingerprint_failed', message: err?.message ?? String(err) }, 500)
+  }
+})
+
+/**
  * Report whether this project needs a SERVER-BACKED publish — i.e. whether its
  * backend (`server.tsx`) does real work that a static export can't reproduce.
  * Consumed by the publish flow (apps/api/src/routes/publish.ts) to decide

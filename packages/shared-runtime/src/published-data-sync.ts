@@ -96,6 +96,7 @@ export class PublishedDataSync {
   private isFlushing = false
   private flushRequestedDuringFlush = false
   private stopped = false
+  private suspended = false
 
   constructor(config: PublishedDataSyncConfig) {
     this.bucket = config.bucket
@@ -179,6 +180,11 @@ export class PublishedDataSync {
    * an upload actually happened.
    */
   async flush(): Promise<boolean> {
+    // Disarmed by suspend() — the API is doing a controlled dev->live data
+    // push and will overwrite the archive itself. A flush here (interval,
+    // watcher, or shutdown) would race that overwrite and clobber the newly
+    // pushed DB with this pod's stale copy, so refuse to upload.
+    if (this.suspended) return false
     if (this.isFlushing) {
       this.flushRequestedDuringFlush = true
       return false
@@ -275,6 +281,21 @@ export class PublishedDataSync {
     } catch (err: any) {
       console.warn(`[PublishedDataSync] shutdown flush failed:`, err?.message ?? err)
     }
+  }
+
+  /**
+   * Permanently disarm the uploader for this pod: stop the timers/watcher AND
+   * make every subsequent flush() (including the shutdown flush) a no-op.
+   *
+   * Called (via a runtime endpoint) by the publish flow right before it
+   * overwrites `{prefix}/data.tar.gz` with the builder's dev database, so the
+   * outgoing pod can't re-upload its stale copy over the fresh push. The new
+   * revision that Knative rolls next restores the pushed archive on boot.
+   */
+  suspend(): void {
+    this.suspended = true
+    this.stop()
+    console.log(`[PublishedDataSync] Suspended — writer disarmed for ${this.archiveKey}`)
   }
 
   /** Stop all background activity without flushing. */

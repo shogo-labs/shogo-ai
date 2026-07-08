@@ -19,6 +19,7 @@ import {
   Pressable,
   ActivityIndicator,
   Linking,
+  Alert,
 } from 'react-native'
 import {
   Globe,
@@ -31,6 +32,7 @@ import {
   ChevronDown,
   History,
   UploadCloud,
+  Database,
 } from 'lucide-react-native'
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -104,6 +106,10 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const [isPublishing, setIsPublishing] = useState(false)
   const [isUnpublishing, setIsUnpublishing] = useState(false)
   const [isRepublishing, setIsRepublishing] = useState(false)
+  const [isPushingData, setIsPushingData] = useState(false)
+  // Only server-backed apps (a DB / API routes) have live data to sync; a
+  // static export served from the edge has nothing to push.
+  const [serverBacked, setServerBacked] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showAccessPicker, setShowAccessPicker] = useState(false)
 
@@ -140,6 +146,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
         setPublishedCommitSha(data.publishedCommitSha ?? null)
         if (data.accessLevel) setAccessLevel(data.accessLevel as AccessLevel)
         setHasPassword(data.hasPassword === true)
+        setServerBacked(data.serverBacked === true)
       }
       setPlanAllowsPublish(data.canPublish !== false)
     } catch {}
@@ -273,6 +280,51 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
     } finally {
       setIsRepublishing(false)
     }
+  }
+
+  // Replace the live app's database with the current dev database. Destructive
+  // (the live data is overwritten), so it's gated behind a confirm; the server
+  // backs up the previous live data first. `force` overrides the schema-drift
+  // guard after the user acknowledges the risk.
+  const doPushData = async (force: boolean) => {
+    setIsPushingData(true)
+    setError(null)
+    try {
+      const data = await api.pushDevData(http, projectId, { force })
+      Alert.alert(
+        'Dev data pushed',
+        `Your live site is now syncing to your dev database.${
+          data.backupKey ? '\n\nThe previous live data was backed up so you can restore it.' : ''
+        }`,
+      )
+    } catch (err: any) {
+      const code: string | undefined = err?.details?.error?.code ?? err?.details?.code
+      if (code === 'schema_mismatch') {
+        Alert.alert(
+          'Schema has changed',
+          'Your dev database schema differs from the published app. Publishing your latest changes first is recommended. Push anyway?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Push anyway', style: 'destructive', onPress: () => { void doPushData(true) } },
+          ],
+        )
+        return
+      }
+      setError(publishErrorMessage(err))
+    } finally {
+      setIsPushingData(false)
+    }
+  }
+
+  const handlePushData = () => {
+    Alert.alert(
+      'Push dev data to live?',
+      `This replaces the live database at ${publishedSubdomain}.${PUBLISH_DOMAIN} with your current dev data. The previous live data is backed up so you can restore it.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Push to live', style: 'destructive', onPress: () => { void doPushData(false) } },
+      ],
+    )
   }
 
   const handleViewPublished = () => {
@@ -516,6 +568,39 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
               SDKDomainProvider, so the section can't resolve useDomainHttp()
               on its own. */}
           {isPublished && <CustomDomainsSection projectId={projectId} http={http} />}
+
+          {/* Sync dev data to live — only for server-backed apps (a static
+              export has no database). Replaces the live database with the
+              current dev data; the previous live data is backed up first. */}
+          {isPublished && serverBacked && subdomain === publishedSubdomain && (
+            <View className="mb-4 rounded-lg border border-border p-3">
+              <View className="flex-row items-center gap-2 mb-1">
+                <Database size={14} className="text-muted-foreground" />
+                <Text className="text-xs font-medium text-foreground">Sync dev data to live</Text>
+              </View>
+              <Text className="text-[11px] text-muted-foreground mb-2.5 leading-4">
+                Copy your current dev database up to the live site. This replaces the live data
+                (backed up first so you can restore it).
+              </Text>
+              <Pressable
+                onPress={handlePushData}
+                disabled={isPushingData}
+                className={cn(
+                  'h-9 rounded-lg items-center justify-center flex-row gap-1.5 border',
+                  isPushingData ? 'bg-muted border-border' : 'border-border active:bg-muted',
+                )}
+              >
+                {isPushingData ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <UploadCloud size={13} className="text-foreground" />
+                )}
+                <Text className="text-xs font-medium text-foreground">
+                  {isPushingData ? 'Pushing...' : 'Push dev data to live'}
+                </Text>
+              </Pressable>
+            </View>
+          )}
 
           {/* Pro gate — publishing to a subdomain requires Pro+. Republishing
               an already-live site is still allowed, so only show this when the
