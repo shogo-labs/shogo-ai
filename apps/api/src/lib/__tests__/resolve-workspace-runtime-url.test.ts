@@ -251,4 +251,60 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       resolveWorkspaceRuntimeUrl('', { attachedProjectIds: [], _isEnabled: enabled }),
     ).rejects.toThrow(/workspaceId is required/)
   })
+
+  it('routes metal (over k8s) when metal is enabled and a resolver is injected', async () => {
+    let sawK8s = false
+    const res = await resolveWorkspaceRuntimeUrl('ws-1', {
+      attachedProjectIds: ['p1', 'p2'],
+      _isEnabled: enabled,
+      _isMetalEnabled: () => true,
+      _isKubernetes: () => true, // metal must take precedence, NOT build a ksvc
+      _spawnLease: passthroughLease,
+      _k8sResolver: async () => {
+        sawK8s = true
+        return 'http://should-not-be-used'
+      },
+      _metalResolver: async (wsId, ids) => `http://metal-ws/${wsId}/${ids.join('+')}`,
+    })
+    expect(res).toEqual({ mode: 'metal', url: 'http://metal-ws/ws-1/p1+p2' })
+    expect(sawK8s).toBe(false)
+  })
+
+  it('metal branch forwards anchor + readonly and leases on the anchor', async () => {
+    const leaseCalls: string[] = []
+    let seenAnchor: string | undefined
+    let seenReadonly: string[] | undefined
+    const res = await resolveWorkspaceRuntimeUrl('ws-1', {
+      attachedProjectIds: ['anchor', 'p2'],
+      anchorProjectId: 'anchor',
+      readonlyProjectIds: ['p2'],
+      _isEnabled: enabled,
+      _isMetalEnabled: () => true,
+      _isKubernetes: () => true,
+      _spawnLease: <T>(id: string, fn: () => Promise<T>) => {
+        leaseCalls.push(id)
+        return fn()
+      },
+      _metalResolver: async (wsId, _ids, o) => {
+        seenAnchor = o?.anchorProjectId
+        seenReadonly = o?.readonlyProjectIds
+        return `http://metal-ws/${wsId}`
+      },
+    })
+    expect(res.mode).toBe('metal')
+    expect(seenAnchor).toBe('anchor')
+    expect(seenReadonly).toEqual(['p2'])
+    expect(leaseCalls).toEqual(['proj:anchor'])
+  })
+
+  it('metal branch throws not-configured when no resolver injected (never silent Knative fallthrough)', async () => {
+    await expect(
+      resolveWorkspaceRuntimeUrl('ws-1', {
+        attachedProjectIds: ['p1'],
+        _isEnabled: enabled,
+        _isMetalEnabled: () => true,
+        _isKubernetes: () => true,
+      }),
+    ).rejects.toThrow(/metal workspace runtime driver not configured/)
+  })
 })

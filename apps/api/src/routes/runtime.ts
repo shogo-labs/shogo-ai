@@ -307,9 +307,9 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         })
       }
 
-      // K8s and VM modes both expose the runtime at `res.url`
+      // K8s, VM and metal modes all expose the runtime at `res.url`
       // directly — same URL serves preview, direct, and canvas.
-      const modeLabel = res.mode === 'vm' ? 'VM' : 'K8s'
+      const modeLabel = res.mode === 'vm' ? 'VM' : res.mode === 'metal' ? 'Metal' : 'K8s'
       log('done', { ready: true, mode: modeLabel })
       return c.json({
         url: res.url,

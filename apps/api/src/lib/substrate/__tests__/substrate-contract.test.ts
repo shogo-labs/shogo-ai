@@ -25,6 +25,7 @@ import { KnativeSubstrate, type KnativeBackend } from '../knative-substrate'
 interface Spies {
   stopped: string[]
   destroyed: string[]
+  resized: string[]
 }
 
 interface Case {
@@ -35,10 +36,11 @@ interface Case {
 
 const metalCase: Case = {
   name: 'metal',
-  supportsResize: false,
+  supportsResize: true,
   make() {
     const stopped: string[] = []
     const destroyed: string[] = []
+    const resized: string[] = []
     const backend: MetalBackend = {
       async getMetalProjectUrl(id) {
         if (id === 'fails') throw new Error('no live metal host')
@@ -54,11 +56,14 @@ const metalCase: Case = {
       async destroyProject(id) {
         destroyed.push(id)
       },
+      async resizeProject(id) {
+        resized.push(id)
+      },
       async listProjects() {
         return [{ projectId: 'p1', ready: true, url: 'http://metal/p1', host: 'dal-1', region: 'us' }]
       },
     }
-    return { substrate: new MetalSubstrate(backend), spies: { stopped, destroyed } }
+    return { substrate: new MetalSubstrate(backend), spies: { stopped, destroyed, resized } }
   },
 }
 
@@ -90,7 +95,7 @@ const knativeCase: Case = {
       if (id === 'fails') throw new Error('cold-start failed')
       return `http://knative/${id}`
     }
-    return { substrate: new KnativeSubstrate(backend, resolve), spies: { stopped, destroyed } }
+    return { substrate: new KnativeSubstrate(backend, resolve), spies: { stopped, destroyed, resized: [] } }
   },
 }
 

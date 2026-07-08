@@ -126,6 +126,17 @@ const server = Bun.serve({
         return Response.json({ ok: true, ...r })
       }
 
+      if (path === '/resize' && req.method === 'POST') {
+        // Instance-tier change. Firecracker can't hot-resize vCPU/RAM, so the
+        // size takes effect on the next cold boot/resume (the assign env is
+        // re-read then); what we apply LIVE is the always-on flag so a paid
+        // upgrade immediately stops the idle reaper (and a downgrade re-arms it).
+        const { projectId, alwaysOn } = await json(req)
+        if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
+        const applied = pool.applyResize(projectId, { alwaysOn })
+        return Response.json({ ok: true, applied })
+      }
+
       return new Response('not found', { status: 404 })
     } catch (err: any) {
       return Response.json({ error: err?.message ?? String(err) }, { status: 500 })

@@ -342,6 +342,36 @@ export async function bootstrapProSubscriptionViaApi(
   return body?.ok === true
 }
 
+/**
+ * Suspend a project's runtime via the API-side e2e backdoor
+ * (see apps/api/src/routes/internal-e2e.ts → POST /suspend-runtime). This
+ * scale-to-zeros (Knative) / snapshot-suspends (metal) the runtime so the next
+ * open exercises the real reopen/resume path — a plain reload re-attaches to
+ * the still-warm VM and would never catch a reopen/hydration regression.
+ *
+ * Returns `true` if the backdoor handled it, `false` when the secret isn't set
+ * or the endpoint is disabled/5xx — callers should `test.skip` in that case.
+ */
+export async function suspendRuntimeViaApi(page: Page, projectId: string): Promise<boolean> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return false
+
+  const base = bootstrapApiBase()
+  const res = await page.request
+    .post(`${base}/api/internal/e2e/suspend-runtime`, {
+      headers: {
+        "x-e2e-bootstrap-secret": secret,
+        "content-type": "application/json",
+      },
+      data: { projectId },
+    })
+    .catch(() => null)
+  if (!res) return false
+  if (!res.ok()) return false
+  const body = await res.json().catch(() => ({ ok: false }))
+  return body?.ok === true
+}
+
 export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<void> {
   await signUpAndOnboard(page, user)
 

@@ -325,6 +325,7 @@ describe('GET /admin/pod-stats', () => {
       ready: 2,
       running: 3,
       scaled_to_zero: 1,
+      bySubstrate: { knative: 4, metal: 0 },
     })
   })
 
@@ -332,7 +333,7 @@ describe('GET /admin/pod-stats', () => {
     managerSpies.listProjects.mockImplementation(async () => [])
     const res = await call(makeApp(), 'GET', '/admin/pod-stats')
     expect(res.status).toBe(200)
-    expect(res.body.data).toEqual({ total: 0, ready: 0, running: 0, scaled_to_zero: 0 })
+    expect(res.body.data).toEqual({ total: 0, ready: 0, running: 0, scaled_to_zero: 0, bySubstrate: { knative: 0, metal: 0 } })
   })
 
   test('stats_failed when listProjects throws', async () => {

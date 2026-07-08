@@ -89,6 +89,37 @@ describe('MetalWarmPoolController lifecycle', () => {
     expect(calls.some((x) => x.path === '/stop')).toBe(false)
   })
 
+  it('resizeProject POSTs /resize with alwaysOn=true for a paid (minScale≥1) tier', async () => {
+    const { impl, calls } = recordingFetch()
+    const c = new MetalWarmPoolController(fakeEnv(), impl)
+    c.registerHost(REG)
+    await c.getMetalProjectUrl('p1')
+
+    await c.resizeProject('p1', { minScale: 1 })
+    const resize = calls.find((x) => x.path === '/resize' && x.body.projectId === 'p1')
+    expect(resize).toBeDefined()
+    expect(resize!.body.alwaysOn).toBe(true)
+  })
+
+  it('resizeProject sends alwaysOn=false for a free (minScale 0) tier', async () => {
+    const { impl, calls } = recordingFetch()
+    const c = new MetalWarmPoolController(fakeEnv(), impl)
+    c.registerHost(REG)
+    await c.getMetalProjectUrl('p1')
+
+    await c.resizeProject('p1', { minScale: 0 })
+    const resize = calls.find((x) => x.path === '/resize' && x.body.projectId === 'p1')
+    expect(resize!.body.alwaysOn).toBe(false)
+  })
+
+  it('resizeProject is a no-op when the project is not placed', async () => {
+    const { impl, calls } = recordingFetch()
+    const c = new MetalWarmPoolController(fakeEnv(), impl)
+    c.registerHost(REG)
+    await c.resizeProject('never-opened', { minScale: 1 })
+    expect(calls.some((x) => x.path === '/resize')).toBe(false)
+  })
+
   it('destroyProject fans out /destroy to every live host and clears stickiness', async () => {
     const { impl, calls } = recordingFetch()
     const c = new MetalWarmPoolController(fakeEnv(), impl)

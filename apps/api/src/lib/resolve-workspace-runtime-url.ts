@@ -33,12 +33,14 @@
 
 import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
 import { withWorkspaceSpawnLease } from './runtime/workspace-spawn-lease'
+import { isMetalEnabled as defaultIsMetalEnabled } from './metal-eligibility'
 
-export type WorkspacePodMode = 'k8s' | 'vm' | 'host'
+export type WorkspacePodMode = 'k8s' | 'vm' | 'metal' | 'host'
 
 export type ResolvedWorkspacePod =
   | { mode: 'k8s'; url: string }
   | { mode: 'vm'; url: string }
+  | { mode: 'metal'; url: string }
   | { mode: 'host'; url: string; runtime: IProjectRuntime }
 
 /**
@@ -87,6 +89,8 @@ export interface ResolveWorkspaceRuntimeOpts {
   _isKubernetes?: () => boolean
   /** Test-only override for the VM-isolation mode probe. */
   _isVMIsolation?: () => boolean
+  /** Test-only override for the metal mode probe. */
+  _isMetalEnabled?: () => boolean
 
   /** Test-only branch resolvers (mirror resolve-pod-url's seams). */
   _k8sResolver?: (
@@ -95,6 +99,17 @@ export interface ResolveWorkspaceRuntimeOpts {
     opts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
   ) => Promise<string>
   _vmResolver?: (workspaceId: string, attachedProjectIds: string[]) => Promise<string>
+  /**
+   * Metal workspace (merged-root microVM) resolver. Injected because the
+   * merged-root metal driver is not built yet (same status as `_vmResolver`).
+   * Without it the metal branch throws a clear "not configured" error instead of
+   * silently falling through to the Knative workspace driver in metal regions.
+   */
+  _metalResolver?: (
+    workspaceId: string,
+    attachedProjectIds: string[],
+    opts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
+  ) => Promise<string>
   _hostStart?: (
     workspaceId: string,
     attachedProjectIds: string[],
@@ -194,6 +209,7 @@ export async function resolveWorkspaceRuntimeUrl(
   const isEnabled = opts._isEnabled ?? defaultIsEnabled
   const isKubernetes = opts._isKubernetes ?? defaultIsKubernetes
   const isVMIsolation = opts._isVMIsolation ?? defaultIsVMIsolation
+  const isMetalEnabled = opts._isMetalEnabled ?? defaultIsMetalEnabled
   const attachedProjectIds = opts.attachedProjectIds ?? []
   // Cloud branches serialize spawns across replicas with an advisory lease.
   const spawnLease =
@@ -214,6 +230,30 @@ export async function resolveWorkspaceRuntimeUrl(
       `[${tag}] project-anchored workspace runtime (anchor=${opts.anchorProjectId}) is not yet ` +
         `supported in VM-isolation mode. It is currently host/desktop + k8s only.`,
     )
+  }
+
+  // Metal takes precedence over the k8s (Knative) branch: in metal regions the
+  // API pod runs IN Kubernetes, so without this a workspace runtime would wrongly
+  // create a Knative `workspace-{id}` Service instead of a metal merged-root VM.
+  // The merged-root metal driver isn't built yet (same status as the VM driver),
+  // so we resolve via an injected `_metalResolver` and otherwise throw a clear
+  // not-configured error — never a silent Knative fallthrough.
+  if (isMetalEnabled()) {
+    if (!opts._metalResolver) {
+      throw new Error(
+        `[${tag}] metal workspace runtime driver not configured (merged-root metal microVM ` +
+          `not yet wired). Inject _metalResolver — see resolve-workspace-runtime-url.ts.`,
+      )
+    }
+    const resolver = opts._metalResolver
+    const leaseKey = opts.anchorProjectId ? `proj:${opts.anchorProjectId}` : workspaceId
+    const url = await spawnLease(leaseKey, () =>
+      resolver(workspaceId, attachedProjectIds, {
+        anchorProjectId: opts.anchorProjectId,
+        readonlyProjectIds: opts.readonlyProjectIds,
+      }),
+    )
+    return { mode: 'metal', url }
   }
 
   if (isKubernetes()) {

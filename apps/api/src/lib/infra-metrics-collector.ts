@@ -46,6 +46,27 @@ async function collectSnapshot(prisma: PrismaClient): Promise<void> {
       console.warn('[InfraCollector] Failed to list Knative services:', err.message)
     }
 
+    // Metal fleet: fold metal-served projects into the SAME project counters so
+    // the admin dashboard's totals reflect both substrates during/after the
+    // cutover. An assigned metal VM is ready+running; a suspended one is the
+    // metal analog of scaled-to-zero. (Metal host/VM-slot capacity would need new
+    // InfraSnapshot columns — a migration — so it's out of scope here.)
+    try {
+      const { isMetalEnabled } = await import('./metal-eligibility')
+      if (isMetalEnabled()) {
+        const { getMetalWarmPoolController } = await import('./metal-warm-pool-controller')
+        const metalProjects = await getMetalWarmPoolController().listProjects()
+        const running = metalProjects.filter((p) => p.ready).length
+        const suspended = metalProjects.length - running
+        projectStats.total += metalProjects.length
+        projectStats.ready += running
+        projectStats.running += running
+        projectStats.scaled_to_zero += suspended
+      }
+    } catch (err: any) {
+      console.warn('[InfraCollector] Failed to list metal projects:', err.message)
+    }
+
     const warmAvail =
       typeof extended.available === 'number'
         ? extended.available

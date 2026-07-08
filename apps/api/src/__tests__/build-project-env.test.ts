@@ -553,6 +553,58 @@ describe('buildProjectEnv — voice + capture overrides', () => {
   })
 })
 
+// ─── always-on (paid instance tier → metal reaper exemption) ──────────────
+//
+// The metal substrate has no per-service min-scale, so buildProjectEnv signals
+// SHOGO_ALWAYS_ON for paid tiers (minScale ≥ 1) and the metal-agent reaper
+// skips those VMs. Uses the RAW workspace tier (no mobile tech-stack floor).
+describe('buildProjectEnv — always-on (instance tier)', () => {
+  test('omits SHOGO_ALWAYS_ON for the free micro tier (minScale 0)', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'micro' },
+    }))
+    const env = await buildProjectEnv('proj-micro')
+    expect(env.SHOGO_ALWAYS_ON).toBeUndefined()
+  })
+
+  test('sets SHOGO_ALWAYS_ON=1 for a paid tier (small, minScale 1)', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'small' },
+    }))
+    const env = await buildProjectEnv('proj-small')
+    expect(env.SHOGO_ALWAYS_ON).toBe('1')
+  })
+
+  test('sets SHOGO_ALWAYS_ON=1 for xlarge', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'xlarge' },
+    }))
+    const env = await buildProjectEnv('proj-xl')
+    expect(env.SHOGO_ALWAYS_ON).toBe('1')
+  })
+
+  test('defaults to no always-on when the workspace/instanceSize is absent', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: null,
+    }))
+    const env = await buildProjectEnv('proj-no-ws')
+    expect(env.SHOGO_ALWAYS_ON).toBeUndefined()
+  })
+
+  test('ignores an unrecognized instanceSize value (no crash, no flag)', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'bogus-tier' },
+    }))
+    const env = await buildProjectEnv('proj-bogus')
+    expect(env.SHOGO_ALWAYS_ON).toBeUndefined()
+  })
+})
+
 // ─── return shape ─────────────────────────────────────────────────────────
 
 describe('buildProjectEnv — return shape', () => {

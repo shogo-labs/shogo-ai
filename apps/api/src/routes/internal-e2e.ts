@@ -227,6 +227,60 @@ app.post('/bootstrap-subscription', async (c) => {
 })
 
 /**
+ * POST /api/internal/e2e/suspend-runtime
+ *
+ * Body: { projectId: string }
+ *
+ * Suspends the project's runtime through the substrate router
+ * (metal → snapshot suspend, Knative → scale-to-zero). Non-destructive and
+ * fully resumable: the next open exercises the real reopen/resume path.
+ *
+ * Used by the reopen-existing-project e2e to force a *fresh* runtime
+ * deterministically — a plain page reload re-attaches to the still-warm VM
+ * and would never catch a hydration/reopen regression, and the natural
+ * idle-suspend reaper is 30 min away. Gated by the same three guardrails as
+ * the subscription backdoor.
+ */
+app.post('/suspend-runtime', async (c) => {
+  if (!bootstrapEnabled()) {
+    return c.json({ ok: false, error: 'e2e_bootstrap_disabled' }, 503)
+  }
+  if (!secretMatches(c.req.header('x-e2e-bootstrap-secret'))) {
+    return c.json({ ok: false, error: 'unauthorized' }, 401)
+  }
+
+  let body: { projectId?: string }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ ok: false, error: 'invalid_json' }, 400)
+  }
+  const projectId = body.projectId?.trim()
+  if (!projectId) {
+    return c.json({ ok: false, error: 'projectId_required' }, 400)
+  }
+
+  try {
+    const { getProjectSubstrate } = await import('../lib/substrate')
+    const substrate = await getProjectSubstrate(projectId)
+    await substrate.stop(projectId)
+    // eslint-disable-next-line no-console
+    console.info(
+      '[e2e-bootstrap] suspended runtime',
+      JSON.stringify({ projectId, substrate: substrate.kind }),
+    )
+    return c.json({ ok: true, projectId, substrate: substrate.kind })
+  } catch (err: any) {
+    // eslint-disable-next-line no-console
+    console.error('[e2e-bootstrap] suspend-runtime failed', err)
+    return c.json(
+      { ok: false, error: 'suspend_failed', message: err?.message ?? 'unknown' },
+      500,
+    )
+  }
+})
+
+/**
  * GET /api/internal/e2e/subscription-state
  *
  * Diagnostic endpoint — returns the current subscription + wallet for
