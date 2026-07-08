@@ -151,6 +151,7 @@ import { mark as csMark, markRuntimeReadyAndFlush } from '../../../../lib/cold-s
 csMark('project:layout:module-load')
 
 type ActiveTab = 'chat' | 'canvas'
+type IdePrimarySideBarPosition = 'left' | 'right'
 
 const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
@@ -370,6 +371,7 @@ export default observer(function ProjectLayout() {
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
+  const [idePrimarySideBarPosition, setIdePrimarySideBarPosition] = useState<IdePrimarySideBarPosition>('left')
 
   // Imperative request to focus a specific section inside SettingsPanel
   // (e.g. when a subagent stream starts and we want to show "Agents").
@@ -2777,6 +2779,8 @@ export default observer(function ProjectLayout() {
       Platform.OS === 'web' && typeof window !== 'undefined' && !!(window as any).shogoDesktop?.isDesktop
         ? handleOpenCodeWorkbench
         : undefined,
+    idePrimarySideBarPosition,
+    onIdePrimarySideBarPositionChange: setIdePrimarySideBarPosition,
     ideEmbed: isIdeChatEmbed,
   }
 
@@ -3307,6 +3311,7 @@ export default observer(function ProjectLayout() {
                 agentUrl={agentUrl}
                 isExternalProject={isExternalProject}
                 folderPath={primaryFolderPath ?? undefined}
+                primarySideBarPosition={idePrimarySideBarPosition}
               />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Files">
