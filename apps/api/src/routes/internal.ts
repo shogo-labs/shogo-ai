@@ -939,4 +939,44 @@ app.post('/chat-sessions/:chatSessionId/worktree', async (c) => {
   }
 })
 
+/**
+ * POST /api/internal/billing/consume
+ *
+ * Single-writer wallet debit. Called by a sibling region's `consumeUsage` when
+ * the serving region is NOT the workspace's `homeRegion`: the debit is routed
+ * here so the wallet has exactly one writer (this region owns the row) and the
+ * resulting `usage_events` replicate the ledger back to every region.
+ *
+ * Authenticated by the shared `SHOGO_INTERNAL_SECRET` (works cross-cluster,
+ * unlike a K8s ServiceAccount token). Body is `ConsumeUsageParams`; the reply
+ * is the `ConsumeUsageResult`.
+ */
+app.post('/billing/consume', async (c) => {
+  const expected = process.env.SHOGO_INTERNAL_SECRET
+  const provided = c.req.header('x-shogo-internal-secret') || ''
+  if (!expected || provided !== expected) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (
+    !body ||
+    typeof body.workspaceId !== 'string' ||
+    typeof body.memberId !== 'string' ||
+    typeof body.actionType !== 'string' ||
+    typeof body.billedUsd !== 'number'
+  ) {
+    return c.json({ error: 'Invalid consume params' }, 400)
+  }
+
+  const { consumeUsageLocal } = await import('../services/billing.service')
+  try {
+    const result = await consumeUsageLocal(body as any)
+    return c.json(result)
+  } catch (err: any) {
+    console.error('[Internal] billing/consume failed:', err?.message ?? err)
+    return c.json({ error: 'consume failed' }, 500)
+  }
+})
+
 export default app
