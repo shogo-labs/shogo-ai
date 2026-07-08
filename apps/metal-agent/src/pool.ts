@@ -31,7 +31,7 @@ import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecr
 import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { LiveRegistry, pidAlive } from './live-registry'
 import { M, metrics } from './metrics'
-import { tapIndex } from './net'
+import { tapIndex, existingTapIndices } from './net'
 import {
   assertArtifacts,
   computeRootfsIdentity,
@@ -260,7 +260,23 @@ export class MetalWarmPool {
       const n = tapIndex(e.net)
       if (n != null && n > maxIdx) maxIdx = n
     }
+    // Also seed past every tap device that PHYSICALLY exists on the host. The
+    // durable registries (live + cache) can be wiped out-of-band — a
+    // runtime.ext4 rebuild resets them — while the adopted Firecracker VMs keep
+    // their fctap<n> devices via systemd KillMode=process. Without this the
+    // counter resets to 0 and a fresh warm VM reuses a live survivor's device;
+    // setupTap deletes-then-recreates it and blackholes the running guest (the
+    // prod incident: duplicate 172.16.0.x mesh IPs, dead guests, 502s). `ip
+    // link` is the ground truth that survives the registry wipe.
+    for (const n of this.hostTapIndices()) {
+      if (n > maxIdx) maxIdx = n
+    }
     if (maxIdx >= 0) this.mgr.seedVmSeq(maxIdx + 1)
+  }
+
+  /** Live host tap indices (`ip link`). Overridable seam for tests. */
+  protected hostTapIndices(): Set<number> {
+    return existingTapIndices()
   }
 
   /**

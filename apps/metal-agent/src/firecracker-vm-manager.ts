@@ -25,7 +25,7 @@ import { config } from './config'
 import { allocatedBytes } from './disk'
 import { FcApi, computeReclaimMiB } from './fc-api'
 import { pidAlive } from './live-registry'
-import { deriveNet, setupTap, teardownTap, defaultUplink, type VmNet } from './net'
+import { deriveNet, setupTap, teardownTap, defaultUplink, existingTapIndices, type VmNet } from './net'
 import { RootfsProvisioner } from './rootfs'
 import { digHoles } from './sparsify'
 
@@ -99,7 +99,10 @@ export class FirecrackerVMManager {
    * warm-pool spawner reused indices still held by ADOPTED VMs and broke their
    * networking ("Failed to write to tap: File descriptor in bad state"). It is
    * now an instance field seeded past every persisted (adopted + suspended) tap
-   * index at startup via `seedVmSeq`, restoring cross-restart non-reuse.
+   * index at startup via `seedVmSeq`, AND every allocation (`nextVmIndex`) skips
+   * indices whose `fctap<n>` device physically exists on the host — so even a
+   * registry wipe (runtime.ext4 rebuild) or a resumed VM re-taking its persisted
+   * index can't cause a collision.
    */
   private vmSeq = 0
   private uplink = defaultUplink()
@@ -262,6 +265,30 @@ export class FirecrackerVMManager {
     if (Number.isFinite(nextAtLeast) && nextAtLeast > this.vmSeq) this.vmSeq = nextAtLeast
   }
 
+  /** Tap indices currently live on the host. Overridable seam for tests. */
+  protected hostTapIndices(): Set<number> {
+    return existingTapIndices()
+  }
+
+  /**
+   * Reserve the next VM/tap index for a fresh spawn. Advances the monotonic
+   * counter AND skips any `fctap<n>` device that physically exists on the host
+   * right now. The counter alone is not enough: a `runtime.ext4` rebuild wipes
+   * the durable registries so `seedVmSeq` can't learn the survivors' indices
+   * (the counter resets to 0), and a resumed VM re-takes its persisted index
+   * out-of-band. Cross-checking `ip link` closes both holes — we never hand a
+   * fresh VM a device a live guest is still using, so setupTap's
+   * delete-then-recreate can't blackhole a running guest. Fully synchronous (no
+   * await) so concurrent spawns each reserve a distinct index before yielding.
+   */
+  private nextVmIndex(): number {
+    const taken = this.hostTapIndices()
+    let n = this.vmSeq
+    while (taken.has(n)) n++
+    this.vmSeq = n + 1
+    return n
+  }
+
   /**
    * The index + `fctap<n>` name the NEXT spawned VM will use, WITHOUT consuming
    * it. This is the observable end of the restart collision-safety invariant: a
@@ -275,7 +302,7 @@ export class FirecrackerVMManager {
   }
 
   async startVM(cfg: FcVmConfig = {}): Promise<FcVmHandle> {
-    const n = this.vmSeq++
+    const n = this.nextVmIndex()
     const id = `fcvm-${n}-${Date.now().toString(36)}`
     const net = deriveNet(n, this.cfg.tapCidrBase)
     const vcpus = cfg.cpus ?? this.cfg.vcpus
