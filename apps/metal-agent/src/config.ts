@@ -289,19 +289,16 @@ export const config = {
   agentVersion: readAgentVersion(),
   /**
    * When on, the agent self-updates to the desired version advertised by the
-   * control plane (heartbeat response) or a manifest URL: download → verify
+   * control plane in the heartbeat response (register.ts): download → verify
    * sha256 → atomic swap → graceful restart (KillMode=process keeps microVMs;
    * the new instance re-adopts them). Off disables all self-update.
+   *
+   * The heartbeat `desired` is the SINGLE source of truth. A prior alternative
+   * carrier (polling an S3/https manifest, METAL_SELF_UPDATE_MANIFEST) was
+   * removed: it split-brained against the DB channel pointer and restart-looped
+   * the agent. The env var is now ignored.
    */
   selfUpdate: env('METAL_SELF_UPDATE', '1') !== '0',
-  /**
-   * Optional alternative desired-version carrier: an https:// or s3://bucket/key
-   * URL to a JSON { version, bundleUrl, sha256, rebuildRootfs? }. Polled on an
-   * interval. Lets a host self-update without the control-plane heartbeat path
-   * (e.g. before the API carrying `desired` is deployed). Empty = disabled.
-   */
-  selfUpdateManifest: env('METAL_SELF_UPDATE_MANIFEST', ''),
-  selfUpdatePollMs: parseInt(env('METAL_SELF_UPDATE_POLL_MS', '60000'), 10),
   /**
    * Grace period after process start before any self-update is applied. Lets a
    * fresh instance finish adopting live microVMs and stabilize first, and — if a
