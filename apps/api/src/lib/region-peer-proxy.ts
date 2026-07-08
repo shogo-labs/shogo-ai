@@ -137,3 +137,58 @@ export async function proxyToPeer(
 
   return new Response(resp.body, { status: resp.status, headers: respHeaders })
 }
+
+/** Result of a cross-region internal JSON RPC. */
+export interface PeerInternalResult<T> {
+  status: number
+  ok: boolean
+  data: T | null
+}
+
+/**
+ * Make a service-to-service JSON RPC to a peer region's `/api/internal/*`
+ * surface. Unlike `proxyToPeer` this is NOT a request pass-through: it POSTs a
+ * fresh JSON body authenticated by the shared `SHOGO_INTERNAL_SECRET` (the same
+ * token metal/affiliate internal hooks use), so it works across clusters where
+ * a K8s ServiceAccount token would not validate. Used by the usage-wallet
+ * single-writer path to route a wallet mutation to `workspace.homeRegion`.
+ *
+ * Throws only when no peer is configured for `regionId`; transport/HTTP errors
+ * are surfaced to the caller via `{ ok:false }` / a thrown fetch error so the
+ * caller can decide fail-open vs fail-closed.
+ */
+export async function callPeerInternal<T = unknown>(
+  regionId: string,
+  path: string,
+  body: unknown,
+): Promise<PeerInternalResult<T>> {
+  const peer = getPeer(regionId)
+  if (!peer) throw new Error(`No peer configured for region: ${regionId}`)
+
+  const url = new URL(path, peer.url).toString()
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    // Peers share one public hostname; spoof Host so ingress routes correctly.
+    Host: HOST_HEADER_FOR_PEERS,
+    // Loop guard: the receiving region must treat this as already-proxied.
+    [HOME_REGION_PROXY_HEADER]: '1',
+  }
+  const secret = process.env.SHOGO_INTERNAL_SECRET
+  if (secret) headers['x-shogo-internal-secret'] = secret
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    // Peers terminate TLS behind the same cert; tolerate self-signed in-mesh.
+    ...(typeof Bun !== 'undefined' ? { tls: { rejectUnauthorized: false } } : {}),
+  } as any)
+
+  let data: T | null = null
+  try {
+    data = (await resp.json()) as T
+  } catch {
+    data = null
+  }
+  return { status: resp.status, ok: resp.ok, data }
+}
