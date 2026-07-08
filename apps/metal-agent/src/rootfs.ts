@@ -121,11 +121,109 @@ export class RootfsProvisioner {
   release(rootfsPath: string): void {
     if (this.isDmPath(rootfsPath)) {
       const vmId = this.vmIdFromDmPath(rootfsPath)
-      this.detachDm(vmId)
-      rmSync(this.cowFile(vmId), { force: true })
+      const removed = this.detachDm(vmId)
+      // Only drop the CoW backing file once its device is ACTUALLY gone. Deleting
+      // it while the device is still mapped (a failed "busy" remove) is exactly
+      // what orphaned ~12k devices on staging AND defeated the GC's CoW sweep,
+      // which skips any file whose device is still mapped. If the remove failed,
+      // leave the file so reconcileOrphanDevices() can retry both later.
+      if (removed) rmSync(this.cowFile(vmId), { force: true })
       return
     }
     rmSync(rootfsPath, { force: true })
+  }
+
+  /**
+   * Reclaim dm-snapshot devices (+ their loops + CoW files) that belong to no VM
+   * the pool still tracks — the catch-up net for teardown races that leaked
+   * ~12k devices / ~13k loops on staging. Two failure modes converge here:
+   *   - detachDm used to delete the CoW while `dmsetup remove` failed "busy",
+   *     orphaning the device; and
+   *   - the GC's CoW-file sweep skips any file whose device is still mapped, so a
+   *     leaked device pinned its CoW forever.
+   * This enumerates MAPPED devices and drops the unowned ones. Guards keep it
+   * safe: dm mode only; never touch a kept vmId, an in-use device (Open count>0,
+   * i.e. a VM booting/restoring/live), or one whose CoW was written within
+   * `graceMs` (an in-flight boot). Bounded by `max` per call so a big backlog
+   * drains over several GC sweeps instead of stalling the timer.
+   */
+  reconcileOrphanDevices(keepVmIds: Set<string>, graceMs: number, max = 200): number {
+    if (this.mode !== 'dm') return 0
+    let names: string[] = []
+    try {
+      names = sh('dmsetup', ['ls'])
+        .split('\n')
+        .map((l) => l.split(/\s+/)[0])
+        .filter((n) => n.startsWith('mvm-'))
+    } catch {
+      return 0 // dmsetup unavailable / no devices
+    }
+    const cutoff = Date.now() - graceMs
+    let removed = 0
+    for (const name of names) {
+      if (removed >= max) break
+      const vmId = name.slice('mvm-'.length)
+      if (keepVmIds.has(vmId)) continue
+      if (this.deviceOpenCount(name) > 0) continue // a VM is using it right now
+      const cow = this.cowFile(vmId)
+      try {
+        // A present-but-fresh CoW means an in-flight boot; a missing CoW means a
+        // definitively dead orphan (unrestorable) — reap it.
+        if (existsSync(cow) && statSync(cow).mtimeMs > cutoff) continue
+      } catch {
+        /* stat failed → treat as reapable */
+      }
+      try {
+        execFileSync('dmsetup', ['remove', '--retry', name])
+      } catch {
+        continue // still busy — a later sweep retries
+      }
+      this.detachCowLoops(cow)
+      try {
+        rmSync(cow, { force: true })
+      } catch {
+        /* ignore */
+      }
+      removed++
+    }
+    // Belt-and-suspenders: detach loop devices still bound to already-deleted CoW
+    // files (the old buggy path deleted the file but leaked the loop).
+    this.detachDeletedCowLoops(max)
+    return removed
+  }
+
+  /** Open count of a mapper device (0 when nothing has it open, or on error). */
+  private deviceOpenCount(dmName: string): number {
+    try {
+      const m = /Open count:\s*(\d+)/.exec(sh('dmsetup', ['info', dmName]))
+      return m ? parseInt(m[1], 10) : 0
+    } catch {
+      return 0
+    }
+  }
+
+  /** Detach loop devices whose backing CoW file was already deleted (orphans). */
+  private detachDeletedCowLoops(max: number): number {
+    let detached = 0
+    let out = ''
+    try {
+      out = sh('losetup', ['-a'])
+    } catch {
+      return 0
+    }
+    for (const line of out.split('\n')) {
+      if (detached >= max) break
+      if (!line.includes(this.cfg.dmCowDir) || !line.includes('(deleted)')) continue
+      const dev = line.split(':')[0]?.trim()
+      if (!dev) continue
+      try {
+        execFileSync('losetup', ['-d', dev])
+        detached++
+      } catch {
+        /* still referenced by a live dm device — leave it */
+      }
+    }
+    return detached
   }
 
   // --- copy / reflink ------------------------------------------------------
@@ -234,13 +332,23 @@ export class RootfsProvisioner {
     void fresh
   }
 
-  private detachDm(vmId: string): void {
+  /**
+   * Remove a VM's mapper device. Returns whether it is actually gone afterwards.
+   * `--retry`: right after the VM's FC process is SIGKILL'd the device can be
+   * briefly held ("Device or resource busy"); retrying instead of giving up is
+   * what stops us orphaning the device (and then deleting its CoW), the leak that
+   * piled up ~12k devices on staging. The boolean lets release() keep the CoW
+   * when removal genuinely failed so a later sweep can retry both.
+   */
+  private detachDm(vmId: string): boolean {
+    let gone = true
     try {
-      if (this.dmExists(vmId)) execFileSync('dmsetup', ['remove', this.dmName(vmId)])
+      if (this.dmExists(vmId)) execFileSync('dmsetup', ['remove', '--retry', this.dmName(vmId)])
     } catch {
-      /* best-effort */
+      gone = !this.dmExists(vmId)
     }
     this.detachCowLoops(this.cowFile(vmId))
+    return gone
   }
 
   /** Detach any loop devices still bound to a CoW store file (best-effort). */

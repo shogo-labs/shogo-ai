@@ -227,6 +227,14 @@ if (config.gcIntervalMs > 0) {
     } catch (err: any) {
       console.error('[metal-agent] orphan-proc reap error:', err?.message ?? err)
     }
+    // Reclaim leaked dm devices / loops / CoW files from teardown races (bounded
+    // per sweep so a large backlog drains gradually without stalling the timer).
+    try {
+      const n = pool.reconcileOrphanDevices()
+      if (n) console.log(`[metal-agent] reconciled ${n} orphaned dm device(s)/CoW`)
+    } catch (err: any) {
+      console.error('[metal-agent] orphan-device reconcile error:', err?.message ?? err)
+    }
     pool.gcSweep().then(
       (report) => {
         for (const id of report.evicted) reportPlacement(report.durableRemoved.includes(id) ? 'cold' : 'evicted', id)
