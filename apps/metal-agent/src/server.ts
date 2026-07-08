@@ -172,6 +172,7 @@ pool.start().then(
 // also rewriting the manifest: each poller "corrected" the other and the agent
 // restart-looped every ~20s (dropping in-flight resumes). Removed — the DB-backed
 // desired-version resolver (apps/api metal-agent-release.ts) is the only pointer.
+const stopRegistration = startRegistration(pool)
 console.log(`[metal-agent] self-update: ${config.selfUpdate ? 'on (heartbeat desired)' : 'off'} version=${config.agentVersion}`)
 
 // Idle reaper: fold real guest traffic into idleness (activity poll), then
