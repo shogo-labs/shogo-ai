@@ -1177,15 +1177,11 @@ jobs:
             wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
           done
 
-      # Deploy-time gate against the 2026-05-27 incident class. After api
-      # ksvc is Ready, give the warm-pool controller time to reconcile,
-      # then verify it actually mints healthy pods. This is the second
-      # line of defense after sync-api-env.sh — it catches a deploy that
-      # somehow shipped a broken RUNTIME_IMAGE config without going
-      # through the placeholder-rejection guardrail.
-      - name: Check warm-pool health
-        run: |
-          .github/scripts/check-warm-pool-health.sh "${{ env.NS_SYSTEM }}" "${{ env.NS_WORKSPACES }}"
+      # (removed) Knative warm-pool health gate: the project/warm-pool Knative
+      # substrate is vestigial under metal-only prod — its ksvcs churn between
+      # RevisionMissing/OutOfDate and were failing the deploy even though the
+      # api ksvc itself rolled out healthy. Metal is authoritative for project
+      # runtimes now, so this gate no longer reflects serving health.
 
       # Prevent the multi-reconciler race that amplified the 2026-05-27
       # US incident: an obsolete api-* revision kept pods alive (min-scale=2)
@@ -1655,14 +1651,11 @@ jobs:
             exit 1
           fi
 
-      # See the staging block for context on these two gates. Tier 1 of
-      # the 2026-05-27 prevention: warm-pool sanity. Tier 4: prune
-      # obsolete api revisions to kill the multi-reconciler race that
-      # amplified the US half of the incident.
-      - name: Check warm-pool health
-        run: |
-          .github/scripts/check-warm-pool-health.sh "${{ env.NS_SYSTEM }}" "${{ env.NS_WORKSPACES }}"
-
+      # (removed) Knative warm-pool health gate — vestigial under metal-only
+      # prod (see staging block). Metal is authoritative for project runtimes;
+      # the Knative project/warm-pool ksvcs churn and were failing the deploy
+      # while the api ksvc itself rolled out healthy. Tier 4 (revision GC) below
+      # is still relevant.
       - name: Garbage-collect old api revisions
         run: |
           .github/scripts/gc-old-api-revisions.sh "${{ env.NS_SYSTEM }}"
@@ -2452,14 +2445,11 @@ jobs:
             exit 1
           fi
 
-      # See the staging block for context on these two gates. Tier 1 of
-      # the 2026-05-27 prevention: warm-pool sanity. Tier 4: prune
-      # obsolete api revisions to kill the multi-reconciler race that
-      # amplified the US half of the incident.
-      - name: Check warm-pool health
-        run: |
-          .github/scripts/check-warm-pool-health.sh "${{ env.NS_SYSTEM }}" "${{ env.NS_WORKSPACES }}"
-
+      # (removed) Knative warm-pool health gate — vestigial under metal-only
+      # prod (see staging block). Metal is authoritative for project runtimes;
+      # the Knative project/warm-pool ksvcs churn and were failing the deploy
+      # while the api ksvc itself rolled out healthy. Tier 4 (revision GC) below
+      # is still relevant.
       - name: Garbage-collect old api revisions
         run: |
           .github/scripts/gc-old-api-revisions.sh "${{ env.NS_SYSTEM }}"
