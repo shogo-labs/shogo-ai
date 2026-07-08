@@ -151,26 +151,60 @@ export async function applyInstanceToRuntime(workspaceId: string) {
   const size = workspace.instanceSize as InstanceSizeName
   const overrides = buildProjectResourceOverrides(workspaceId, size)
 
+  if (!process.env.KUBERNETES_SERVICE_HOST) return
+
   const projects = await prisma.project.findMany({
     where: { workspaceId, knativeServiceName: { not: null } },
     select: { id: true, knativeServiceName: true },
   })
 
-  if (projects.length === 0) return
+  if (projects.length > 0) {
+    const { getKnativeProjectManager } = await import('../lib/knative-project-manager')
+    const manager = getKnativeProjectManager()
 
-  if (!process.env.KUBERNETES_SERVICE_HOST) return
-
-  const { getKnativeProjectManager } = await import('../lib/knative-project-manager')
-  const manager = getKnativeProjectManager()
-
-  for (const project of projects) {
-    try {
-      await manager.patchProjectResources(project.id, overrides)
-    } catch (err: any) {
-      console.error(
-        `[Instance] Failed to patch resources for project ${project.id}:`,
-        err.message
-      )
+    for (const project of projects) {
+      try {
+        await manager.patchProjectResources(project.id, overrides)
+      } catch (err: any) {
+        console.error(
+          `[Instance] Failed to patch resources for project ${project.id}:`,
+          err.message
+        )
+      }
     }
+  }
+
+  // Metal-backed projects: the size takes effect on their next cold boot/resume
+  // (the assign env is derived from the tier), but push the always-on change LIVE
+  // so a paid upgrade stops the idle reaper immediately (and a downgrade re-arms
+  // it). Metal projects usually have no `knativeServiceName`, so they're missed
+  // by the query above — resolve them via the same eligibility gate the runtime
+  // router uses. No-op unless metal is enabled for this deployment.
+  try {
+    const { isMetalEnabled, isMetalEligibleProject } = await import('../lib/metal-eligibility')
+    if (isMetalEnabled()) {
+      const all = await prisma.project.findMany({ where: { workspaceId }, select: { id: true } })
+      const metalProjects = all.filter((p) => isMetalEligibleProject(p.id))
+      if (metalProjects.length > 0) {
+        const { getInstanceSizeSpec } = await import('../config/instance-sizes')
+        const minScale = getInstanceSizeSpec(size)?.minScale
+        const { getMetalWarmPoolController } = await import('../lib/metal-warm-pool-controller')
+        const controller = getMetalWarmPoolController()
+        for (const project of metalProjects) {
+          try {
+            await controller.resizeProject(project.id, {
+              cpu: overrides.limits?.cpu,
+              memory: overrides.limits?.memory,
+              disk: overrides.diskSizeLimit,
+              minScale,
+            })
+          } catch (err: any) {
+            console.error(`[Instance] Failed to resize metal project ${project.id}:`, err.message)
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('[Instance] Metal resize pass failed:', err?.message ?? err)
   }
 }

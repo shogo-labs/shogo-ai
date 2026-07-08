@@ -2534,6 +2534,44 @@ app.post('/pool/hydrate', async (c) => {
   }
 })
 
+// Metal write-side backup (host-driven). On stop/suspend the metal-agent calls
+// this to pull the project's LATEST source, then uploads it to the durable S3
+// backup ITSELF — the metal guest deliberately holds no S3 credentials. This is
+// the symmetric counterpart of `/pool/hydrate`: it keeps `project-src.tar.gz`
+// fresh so the project can cold-hydrate on a DIFFERENT metal machine even when
+// that host has no local snapshot. Returns 204 when there's nothing to back up.
+//
+// Auth: under the `/pool` prefix, so it requires the runtime token — the agent
+// presents the same RUNTIME_AUTH_SECRET it injected via `/pool/assign`.
+app.post('/pool/export', async (c) => {
+  const tmp = join('/tmp', `pool-export-${Date.now()}.tar.gz`)
+  try {
+    const sync =
+      s3SyncInstance ??
+      createS3SyncForProject(WORKSPACE_DIR, process.env.PROJECT_ID || '', {
+        watchEnabled: false,
+        syncInterval: 0,
+        suppressProjectArchive: true,
+      })
+    if (!sync) return c.json({ error: 's3 sync unavailable' }, 500)
+    const packed = await sync.packProjectArchive(tmp)
+    if (!packed) return c.body(null, 204) // empty/new workspace — nothing to back up
+    const bytes = readFileSync(tmp)
+    console.log(`[pool/export] packed workspace source for durable backup (${bytes.length} bytes)`)
+    return new Response(new Uint8Array(bytes), {
+      status: 200,
+      headers: { 'Content-Type': 'application/gzip' },
+    })
+  } catch (err: any) {
+    console.error('[pool/export] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'export failed' }, 500)
+  } finally {
+    try {
+      unlinkSync(tmp)
+    } catch {}
+  }
+})
+
 // Alias for `/preview/restart`. The code-agent prompt and older SDK/template
 // scripts call `/preview/rebuild`; without this they hit the SPA catch-all
 // and 404. Keep it a thin alias so existing callers just work.

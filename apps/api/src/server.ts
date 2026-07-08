@@ -2184,15 +2184,30 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Scale the project to 0 (or just return success since Knative auto-scales)
-    // Note: We don't actually stop the pod - Knative handles scaling to zero automatically
-    // This endpoint exists for compatibility with the frontend cleanup
     try {
-      // Just return success - Knative will scale to zero automatically after idle timeout
+      // Metal: explicit stop means suspend-to-snapshot (frees host RAM) — and
+      // the agent saves the workspace source to the durable S3 backup on the way
+      // down, so a later resume on a DIFFERENT metal host is safe. Knative has no
+      // per-service manual stop here: it scales to zero on its own idle timeout,
+      // so this stays a compatibility no-op for Knative-owned projects.
+      const { isMetalEnabled, isMetalEligibleProject } = await import('./lib/metal-eligibility')
+      if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
+        const { MetalSubstrate } = await import('./lib/substrate/metal-substrate')
+        await new MetalSubstrate().stop(projectId)
+        return c.json({
+          success: true,
+          projectId,
+          status: 'scaling_down',
+          substrate: 'metal',
+          message: 'Project suspended to snapshot',
+        })
+      }
+      // Knative: scales to zero automatically after idle timeout.
       return c.json({
         success: true,
         projectId,
         status: 'scaling_down',
+        substrate: 'knative',
         message: 'Project will scale to zero after idle timeout',
       })
     } catch (error: any) {
@@ -2375,6 +2390,27 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    // Metal: read status straight from the owning host's node-agent (exists /
+    // ready / replicas). Metal has no Knative Revision/health-check machinery, so
+    // it maps onto the same not_found / starting / running shape the frontend
+    // poller expects, then short-circuits before the Knative path below.
+    try {
+      const { isMetalEnabled, isMetalEligibleProject } = await import('./lib/metal-eligibility')
+      if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
+        const { MetalSubstrate } = await import('./lib/substrate/metal-substrate')
+        const s = await new MetalSubstrate().getStatus(projectId)
+        if (!s.exists) {
+          return c.json({ projectId, status: 'not_found', message: 'Project runtime not created yet', ready: false })
+        }
+        if (!s.ready) {
+          return c.json({ projectId, status: 'starting', message: 'Project runtime is starting...', ready: false, replicas: s.replicas })
+        }
+        return c.json({ projectId, status: 'running', message: 'Project runtime is ready', ready: true, replicas: s.replicas, url: s.url })
+      }
+    } catch (error: any) {
+      console.error('[Runtime] Metal status failed, falling back:', error?.message ?? error)
+      // fall through to the Knative path below
+    }
     // In Kubernetes: Get Knative service status AND verify with active health check
     try {
       const { getKnativeProjectManager } = await import('./lib/knative-project-manager')

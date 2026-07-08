@@ -494,6 +494,33 @@ describe('periodic + watcher lifecycle', () => {
 // suppressProjectArchive (git_only mode plumbing)
 // ---------------------------------------------------------------------------
 
+describe('packProjectArchive (metal host-side export)', () => {
+  test('packs source to a file and returns byte count WITHOUT uploading', async () => {
+    writeFileSync(join(TEST_DIR, 'a.ts'), 'export const a = 1\n')
+    const sync = mkSync({ suppressProjectArchive: true })
+    const dest = join(TEST_DIR, 'out-export.tar.gz')
+
+    const res = await sync.packProjectArchive(dest)
+
+    expect(res).not.toBeNull()
+    expect(res!.bytes).toBeGreaterThan(0)
+    const { existsSync, statSync } = await import('fs')
+    expect(existsSync(dest)).toBe(true)
+    expect(statSync(dest).size).toBe(res!.bytes)
+    // pack must NOT touch S3 (the metal agent uploads the bytes itself).
+    expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(false)
+  })
+
+  test('returns null for an empty workspace (nothing to back up)', async () => {
+    const emptyDir = join(TEST_DIR, 'empty-ws')
+    const { mkdirSync } = await import('fs')
+    mkdirSync(emptyDir, { recursive: true })
+    const sync = mkSync({ localDir: emptyDir })
+    const res = await sync.packProjectArchive(join(TEST_DIR, 'empty.tar.gz'))
+    expect(res).toBeNull()
+  })
+})
+
 describe('suppressProjectArchive', () => {
   test('uploadAll skips Layer 2 when constructed with suppress=true', async () => {
     writeFileSync(join(TEST_DIR, 'a.ts'), 'export const a = 1\n')

@@ -987,6 +987,41 @@ export class S3Sync {
    * snapshot always lands at evict, even when Layer 2 was disabled for
    * the duration of the session.
    */
+  /**
+   * Pack the project source — the SAME file set as the layered
+   * `project-src.tar.gz` (source + dist, excluding `node_modules` and the
+   * Metro/Expo caches) — into a gzipped tar at `destPath`. Does NOT upload and
+   * does NOT touch the suppress flag or the upload-dedupe hash.
+   *
+   * Used by the metal host-side "save on stop" flow: the metal-agent pulls these
+   * bytes over the guest control channel (`/pool/export`) and uploads them to S3
+   * itself, because the metal guest deliberately holds NO S3 credentials. Keeps
+   * a single canonical packing implementation shared with `uploadProjectArchive`.
+   *
+   * Returns the archive size in bytes, or `null` when the workspace has no
+   * includable files (a brand-new/empty project — nothing to back up).
+   */
+  async packProjectArchive(destPath: string): Promise<{ bytes: number } | null> {
+    const filesToInclude = await this.listLocalFiles(undefined, [
+      'node_modules',
+      '.expo',
+      '.metro-cache',
+      '.expo-shared',
+    ])
+    if (filesToInclude.length === 0) return null
+    await tar.create(
+      {
+        gzip: true,
+        file: destPath,
+        cwd: this.config.localDir,
+        portable: true,
+      },
+      filesToInclude.map((f) => relative(this.config.localDir, f)),
+    )
+    const bytes = (await readFile(destPath)).length
+    return { bytes }
+  }
+
   private async uploadProjectArchive(forceWriteWhenSuppressed: boolean = false): Promise<void> {
     if (this.suppressProjectArchive && !forceWriteWhenSuppressed) {
       // Honor the suppress flag: agent-runtime is in git_only mode and

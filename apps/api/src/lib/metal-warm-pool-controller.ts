@@ -493,6 +493,30 @@ export class MetalWarmPoolController {
   }
 
   /**
+   * Apply an instance-tier change to a project — the metal analog of
+   * KnativeProjectManager.patchProjectResources. Firecracker can't hot-resize
+   * vCPU/RAM, so those take effect on the project's next cold boot/resume (the
+   * assign env, derived from the tier, is re-read then). What we push LIVE to the
+   * owning host is the always-on flag (paid tier ⇄ free) so an upgrade stops the
+   * idle reaper immediately and a downgrade re-arms it. Best-effort + idempotent:
+   * a project placed nowhere live is a no-op (its next boot picks up the tier).
+   */
+  async resizeProject(
+    projectId: string,
+    resources: { cpu?: string; memory?: string; disk?: string; minScale?: number },
+  ): Promise<void> {
+    const host = await this.hostForProject(projectId)
+    if (!host) return
+    const alwaysOn = (resources.minScale ?? 0) >= 1
+    await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/resize`, {
+      method: 'POST',
+      headers: this.agentHeaders(),
+      body: JSON.stringify({ projectId, alwaysOn }),
+      signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+    }).catch((err) => console.warn(`[MetalPool] resize ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}`))
+  }
+
+  /**
    * Permanently destroy a project's runtime everywhere on the fleet — the metal
    * analog of KnativeProjectManager.deleteProject. Fans out to EVERY live host
    * (not just the current placement): after a failover a stale local/durable

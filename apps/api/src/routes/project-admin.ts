@@ -29,6 +29,35 @@ async function getKnativeProjectManager() {
   return mod.getKnativeProjectManager()
 }
 
+/**
+ * Metal-served projects, mapped onto the same ProjectPodInfo-ish shape the admin
+ * console renders for Knative, tagged with `substrate: "metal"`. An assigned
+ * metal VM is ready+running (replicas 1); a suspended one is the metal analog of
+ * scaled-to-zero (replicas 0). Empty (no throw) when metal is disabled or no
+ * hosts answer, so the unified list degrades to Knative-only cleanly.
+ */
+async function listMetalProjectsForAdmin(): Promise<
+  Array<{ projectId: string; name: string; substrate: "metal"; host?: string; region?: string; status: { ready: boolean; url: string | null; replicas: number } }>
+> {
+  try {
+    const { isMetalEnabled } = await import("../lib/metal-eligibility")
+    if (!isMetalEnabled()) return []
+    const { getMetalWarmPoolController } = await import("../lib/metal-warm-pool-controller")
+    const metalProjects = await getMetalWarmPoolController().listProjects()
+    return metalProjects.map((p) => ({
+      projectId: p.projectId,
+      name: p.projectId,
+      substrate: "metal" as const,
+      host: p.host,
+      region: p.region,
+      status: { ready: p.ready, url: p.url ?? null, replicas: p.ready ? 1 : 0 },
+    }))
+  } catch (err: any) {
+    console.warn("[ProjectAdmin] Failed to list metal projects:", err?.message ?? err)
+    return []
+  }
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -79,13 +108,21 @@ export function projectAdminRoutes() {
 
     try {
       const manager = await getKnativeProjectManager()
-      const projects = await manager.listProjects()
+      const knative = (await manager.listProjects()).map((p) => ({ ...p, substrate: "knative" as const }))
 
+      // Unify the fleet view: fold metal-served projects into the same list so
+      // operators see one project table across both substrates during/after the
+      // cutover. Metal has no ksvc/replica concept — map its assigned/suspended
+      // shape onto the ProjectPodInfo status the console already renders.
+      const metal = await listMetalProjectsForAdmin()
+
+      const projects = [...knative, ...metal]
       return c.json({
         success: true,
         data: {
           projects,
           count: projects.length,
+          bySubstrate: { knative: knative.length, metal: metal.length },
         },
       })
     } catch (error: any) {
@@ -316,12 +353,18 @@ export function projectAdminRoutes() {
     try {
       const manager = await getKnativeProjectManager()
       const projects = await manager.listProjects()
+      const metal = await listMetalProjectsForAdmin()
+      const all = [
+        ...projects.map((p) => p.status),
+        ...metal.map((p) => p.status),
+      ]
 
       const stats = {
-        total: projects.length,
-        ready: projects.filter((p) => p.status.ready).length,
-        running: projects.filter((p) => p.status.replicas > 0).length,
-        scaled_to_zero: projects.filter((p) => p.status.replicas === 0).length,
+        total: all.length,
+        ready: all.filter((s) => s.ready).length,
+        running: all.filter((s) => s.replicas > 0).length,
+        scaled_to_zero: all.filter((s) => s.replicas === 0).length,
+        bySubstrate: { knative: projects.length, metal: metal.length },
       }
 
       return c.json({

@@ -12,7 +12,7 @@
  * maps controller results onto the substrate contract.
  */
 
-import type { ProjectSubstrate, RuntimeStatus, RuntimeSummary } from './types'
+import type { ProjectSubstrate, Resources, RuntimeStatus, RuntimeSummary } from './types'
 import { getMetalWarmPoolController } from '../metal-warm-pool-controller'
 
 /** The slice of MetalWarmPoolController this substrate needs (DI seam for tests). */
@@ -21,6 +21,7 @@ export interface MetalBackend {
   getProjectStatus(projectId: string): Promise<{ exists: boolean; ready: boolean; replicas: number; url?: string }>
   stopProject(projectId: string): Promise<void>
   destroyProject(projectId: string): Promise<void>
+  resizeProject(projectId: string, resources: { cpu?: string; memory?: string; disk?: string; minScale?: number }): Promise<void>
   listProjects(): Promise<RuntimeSummary[]>
 }
 
@@ -60,7 +61,15 @@ export class MetalSubstrate implements ProjectSubstrate {
     return this.backend.listProjects()
   }
 
-  // `resize` intentionally omitted: metal warm-pool VMs are pool-uniform-sized,
-  // so per-project sizing isn't supported yet (the router raises
-  // SubstrateUnsupportedError). Tracked as a parity follow-up.
+  async resize(projectId: string, resources: Resources): Promise<void> {
+    // Firecracker can't hot-change vCPU/RAM: the controller pushes the always-on
+    // flag live to the owning host and the new size lands on the next cold
+    // boot/resume (the assign env, derived from the tier, is re-read then).
+    await this.backend.resizeProject(projectId, {
+      cpu: resources.cpu,
+      memory: resources.memory,
+      disk: resources.disk,
+      minScale: resources.minScale,
+    })
+  }
 }

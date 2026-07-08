@@ -39,7 +39,7 @@ import {
   type SnapshotMeta,
   type SnapshotStore,
 } from './snapshot-store'
-import { fetchWorkspaceArchive } from './workspace-archive'
+import { fetchWorkspaceArchive, uploadWorkspaceArchive } from './workspace-archive'
 
 export interface PooledVm {
   handle: FcVmHandle
@@ -56,6 +56,18 @@ export interface AssignedVm {
   restoredFrom?: { vmstate: string; mem: string }
   /** Last activity counter seen from the guest (for the activity poll). */
   lastActivityAt?: number
+  /**
+   * Always-on (paid instance tier): the idle-suspend reaper must never suspend
+   * this VM. Set from the control-plane's `SHOGO_ALWAYS_ON` assign env on every
+   * open and persisted so it survives adopt-on-restart.
+   */
+  alwaysOn?: boolean
+  /**
+   * The guest's `RUNTIME_AUTH_SECRET` (from the assign env). Needed to call the
+   * guest's authenticated `/pool/export` when saving the source backup on
+   * suspend. Persisted so it survives adopt-on-restart. Host-local only.
+   */
+  runtimeToken?: string
 }
 
 export interface SuspendedVm {
@@ -306,6 +318,8 @@ export class MetalWarmPool {
       this.mgr.adoptVM(handle)
       this.assigned.set(e.projectId, {
         projectId: e.projectId,
+        alwaysOn: e.alwaysOn,
+        runtimeToken: e.runtimeToken,
         handle,
         assignedAt: e.assignedAt,
         lastTouchedAt: Date.now(),
@@ -353,6 +367,8 @@ export class MetalWarmPool {
       assignedAt: a.assignedAt,
       lastTouchedAt: a.lastTouchedAt,
       restoredFrom: a.restoredFrom,
+      alwaysOn: a.alwaysOn,
+      runtimeToken: a.runtimeToken,
       v: 1,
     })
   }
@@ -447,6 +463,20 @@ export class MetalWarmPool {
       const a = await this.assign(projectId, env)
       return { handle: a.handle, mode: 'assigned' as const }
     })
+    // Always-on: paid tiers (control plane sets SHOGO_ALWAYS_ON) must never be
+    // idle-suspended by the reaper. Re-assert on EVERY open — this is the one
+    // path with `env`, so it also (re)applies the flag after a resume (which
+    // carries no env) and re-persists it for adopt-on-restart.
+    const alwaysOn = env.SHOGO_ALWAYS_ON === '1' || env.SHOGO_ALWAYS_ON === 'true'
+    const a = this.assigned.get(projectId)
+    if (a) {
+      const token = env.RUNTIME_AUTH_SECRET || a.runtimeToken
+      if (!!a.alwaysOn !== alwaysOn || a.runtimeToken !== token) {
+        a.alwaysOn = alwaysOn
+        a.runtimeToken = token
+        this.writeLive(a)
+      }
+    }
     // openFlight value is never null here (assign throws on failure), but keep
     // the type honest for canResume races.
     return r as OpenResult
@@ -501,12 +531,20 @@ export class MetalWarmPool {
    * into the guest via `/pool/assign`. No durable backup (a brand-new project)
    * is a no-op — the template is the correct initial state.
    */
+  /**
+   * Fetch the durable source backup for a project. A `protected` seam so tests
+   * can inject a canned archive (or `null`) without touching S3 or module mocks.
+   */
+  protected fetchArchive(projectId: string): Promise<Uint8Array | null> {
+    return fetchWorkspaceArchive(projectId, this.cfg)
+  }
+
   private async hydrateFromBackup(
     projectId: string,
     handle: FcVmHandle,
     env: Record<string, string>,
   ): Promise<void> {
-    const archive = await fetchWorkspaceArchive(projectId, this.cfg)
+    const archive = await this.fetchArchive(projectId)
     if (!archive) {
       console.log(`[pool] no durable backup for ${projectId} — cold start keeps template`)
       return
@@ -526,6 +564,52 @@ export class MetalWarmPool {
   }
 
   /**
+   * Pull the guest's packed source archive over the control channel. A
+   * `protected` seam so tests can inject bytes (or null) without a live guest.
+   * Returns null when the guest reports nothing to back up (204, empty project).
+   */
+  protected async fetchExport(handle: FcVmHandle, token?: string): Promise<Uint8Array | null> {
+    const res = await fetch(`${handle.agentUrl}/pool/export`, {
+      method: 'POST',
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (res.status === 204) return null
+    if (!res.ok) throw new Error(`/pool/export failed (${res.status}): ${await res.text()}`)
+    const buf = await res.arrayBuffer()
+    return buf.byteLength ? new Uint8Array(buf) : null
+  }
+
+  /**
+   * Write-side durability: before snapshotting on suspend, pull the LATEST
+   * project source from the (still-live) guest and upload it to the durable S3
+   * backup (`{projectId}/project-src.tar.gz`). This keeps the source fresh so
+   * the project can cold-hydrate on a DIFFERENT metal machine even when that
+   * host has no local snapshot. Host-side upload — the guest holds no S3 creds.
+   * Best-effort: the snapshot is the primary resume path, so a failed backup is
+   * logged and never blocks/faults the suspend.
+   */
+  /**
+   * Upload the packed source to the durable store. A `protected` seam mirroring
+   * `fetchArchive`/`fetchExport` so tests exercise the save wiring without S3.
+   */
+  protected uploadBackup(projectId: string, bytes: Uint8Array): Promise<boolean> {
+    return uploadWorkspaceArchive(projectId, bytes, this.cfg)
+  }
+
+  private async saveBackupToStore(a: AssignedVm): Promise<void> {
+    const bytes = await this.fetchExport(a.handle, a.runtimeToken)
+    if (!bytes) {
+      console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
+      return
+    }
+    const uploaded = await this.uploadBackup(a.projectId, bytes)
+    if (uploaded) {
+      console.log(`[pool] saved source backup for ${a.projectId} (${bytes.byteLength} bytes)`)
+    }
+  }
+
+  /**
    * Suspend an assigned project to a snapshot, freeing host RAM.
    * quiesce guest → snapshot (local NVMe) → push to durable store (if enabled).
    * The durable push is best-effort: a failure leaves the hot local snapshot
@@ -536,6 +620,14 @@ export class MetalWarmPool {
     return this.suspendFlight.run(projectId, async () => {
       const a = this.assigned.get(projectId)
       if (!a) throw new Error(`project ${projectId} not assigned`)
+
+      // Write-side durability FIRST, while the guest is still fully live: pull
+      // the latest source and push it to the durable S3 backup so a resume on a
+      // DIFFERENT metal machine (snapshot miss) still cold-hydrates real source.
+      // Best-effort — the snapshot below is the primary cross-host resume path.
+      await this.saveBackupToStore(a).catch((err) =>
+        console.error(`[pool] source backup for ${a.projectId} failed (snapshot still durable):`, err?.message ?? err),
+      )
 
       await this.callGuestHook(a.handle.agentUrl, 'quiesce', this.cfg.quiesceTimeoutMs)
       const snapshot = await this.heavy.run(() => this.mgr.snapshotVM(a.handle))
@@ -738,7 +830,12 @@ export class MetalWarmPool {
   async reapIdle(idleMs = this.cfg.idleSuspendMs): Promise<string[]> {
     if (idleMs <= 0) return []
     const now = Date.now()
-    const stale = [...this.assigned.values()].filter((a) => now - a.lastTouchedAt >= idleMs)
+    // Always-on projects (paid tiers) are never idle-suspended — the parity for
+    // Knative's min-scale=1. They still resume fine if the agent restarts, but
+    // during normal operation they stay resident.
+    const stale = [...this.assigned.values()].filter(
+      (a) => !a.alwaysOn && now - a.lastTouchedAt >= idleMs,
+    )
     const done: string[] = []
     for (const a of stale) {
       try {
@@ -753,6 +850,24 @@ export class MetalWarmPool {
 
   getAssigned(projectId: string): AssignedVm | undefined {
     return this.assigned.get(projectId)
+  }
+
+  /**
+   * Apply a live instance-tier change to an assigned project. Firecracker can't
+   * hot-change vCPU/RAM, so those take effect on the NEXT cold boot/resume (the
+   * assign env is re-read then). What we CAN apply immediately is the always-on
+   * flag: an upgrade (alwaysOn=true) makes the reaper skip this VM right away, a
+   * downgrade re-arms idle-suspend. No-op when the project isn't live on this
+   * host. Returns true when a live VM was updated.
+   */
+  applyResize(projectId: string, opts: { alwaysOn?: boolean }): boolean {
+    const a = this.assigned.get(projectId)
+    if (!a) return false
+    if (opts.alwaysOn !== undefined && !!a.alwaysOn !== opts.alwaysOn) {
+      a.alwaysOn = opts.alwaysOn
+      this.writeLive(a)
+    }
+    return true
   }
 
   // --- GC / cache management ------------------------------------------------

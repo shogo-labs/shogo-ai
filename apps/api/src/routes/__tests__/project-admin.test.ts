@@ -307,7 +307,7 @@ describe('GET /admin/pod-stats', () => {
     const res = await makeApp().request('/admin/pod-stats')
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.data).toEqual({ total: 4, ready: 2, running: 2, scaled_to_zero: 2 })
+    expect(body.data).toEqual({ total: 4, ready: 2, running: 2, scaled_to_zero: 2, bySubstrate: { knative: 4, metal: 0 } })
   })
   test('500 when listProjects throws', async () => {
     mgr.listProjects = mock(async () => { throw new Error('apiserver') })

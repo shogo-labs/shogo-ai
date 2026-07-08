@@ -10,6 +10,7 @@
 import { generateProxyToken } from '../ai-proxy-token'
 import { getAgentModeOverrides } from '@shogo/model-catalog'
 import { buildAutoTierMapEnv } from './auto-tier-env'
+import { INSTANCE_SIZES } from '../../config/instance-sizes'
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -35,14 +36,14 @@ export async function buildProjectEnv(
         name: true,
         settings: true,
         cloudSyncMode: true,
-        workspace: { select: { composioScope: true } },
+        workspace: { select: { composioScope: true, instanceSize: true } },
       } as any,
     }) as (Record<string, any> & {
       workspaceId?: string | null
       name?: string | null
       settings?: unknown
       cloudSyncMode?: string | null
-      workspace?: { composioScope?: string | null } | null
+      workspace?: { composioScope?: string | null; instanceSize?: string | null } | null
     }) | null
     if (project) {
       if (project.workspaceId) env.WORKSPACE_ID = project.workspaceId
@@ -66,6 +67,19 @@ export async function buildProjectEnv(
       // row is missing the column or the join didn't return a value.
       const scope = project.workspace?.composioScope
       env.COMPOSIO_USER_SCOPE = scope === 'project' || scope === 'workspace' ? scope : 'workspace'
+
+      // Always-on: paid instance tiers keep Knative min-scale ≥ 1 (no cold
+      // starts). The metal substrate has no per-service min-scale, so we signal
+      // the metal-agent's idle-suspend reaper to never suspend this project's
+      // microVM. Uses the RAW workspace tier (NOT the mobile tech-stack floor):
+      // the floor only lifts resource headroom for free-tier mobile stacks and
+      // must not grant them the paid always-on perk. Harmless on Knative (the
+      // ksvc min-scale annotation drives warmth there; this env is ignored).
+      const instanceSize = project.workspace?.instanceSize || 'micro'
+      const sizeSpec = (INSTANCE_SIZES as Record<string, { minScale: number }>)[instanceSize]
+      if (sizeSpec && sizeSpec.minScale >= 1) {
+        env.SHOGO_ALWAYS_ON = '1'
+      }
 
       const settings = project.settings as Record<string, unknown> | null
 
