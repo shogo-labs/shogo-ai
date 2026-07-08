@@ -6,8 +6,8 @@
  *
  * CI publishes an immutable, versioned bundle to object storage and records a
  * per-region/channel pointer (apps/api metal-agent-release.ts). Each host learns
- * its DESIRED version either from its heartbeat response (register.ts) or from a
- * manifest URL poll (server.ts), and applies it here:
+ * its DESIRED version from its heartbeat response (register.ts) — the single
+ * source of truth — and applies it here:
  *
  *   download bundle → verify sha256 → atomic swap into agentDir → graceful
  *   `systemctl restart metal-agent`.
@@ -86,19 +86,6 @@ export async function maybeSelfUpdate(desired?: DesiredAgent | null): Promise<bo
     return false
   } finally {
     updating = false
-  }
-}
-
-/** Fetch + parse a desired-version manifest (https:// or s3://). Null on any error. */
-export async function fetchManifest(url: string): Promise<DesiredAgent | null> {
-  try {
-    const buf = await download(url)
-    const j = JSON.parse(buf.toString('utf8'))
-    if (!j?.version || !j?.bundleUrl) return null
-    return j as DesiredAgent
-  } catch (err: any) {
-    console.warn('[self-update] manifest fetch failed:', err?.message ?? err)
-    return null
   }
 }
 
