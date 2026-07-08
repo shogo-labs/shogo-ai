@@ -400,6 +400,16 @@ export class FirecrackerVMManager {
     return this.rootfs.deviceMapped(vmId)
   }
 
+  /**
+   * Reclaim orphaned dm devices / loops / CoW files with no owning VM (see
+   * RootfsProvisioner.reconcileOrphanDevices). `keepVmIds` are the rootfs-device
+   * vmIds the pool still tracks; everything else that's unused + past the grace
+   * window is a leaked orphan. Returns the number of devices reclaimed.
+   */
+  reconcileOrphanRootfs(keepVmIds: Set<string>, graceMs: number, max = 200): number {
+    return this.rootfs.reconcileOrphanDevices(keepVmIds, graceMs, max)
+  }
+
   // TAP networking → guest reachable directly; no host-port forwarding needed.
   async forwardPort(): Promise<void> {}
   async removeForward(): Promise<void> {}

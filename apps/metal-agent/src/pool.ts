@@ -944,6 +944,34 @@ export class MetalWarmPool {
     return this.mgr.reapOrphans(this.liveHandleIds())
   }
 
+  /**
+   * dm-device vmIds the pool still owns — the rootfs device behind every warm,
+   * assigned, and suspended VM (plus any restored-from CoW). Keyed off the rootfs
+   * PATH, not the handle id: a restored VM's handle id (`fcr-…`) differs from the
+   * device it reuses (`mvm-fcvm-…`), so only the path identifies the real device.
+   */
+  private ownedRootfsVmIds(): Set<string> {
+    const ids = new Set<string>()
+    const add = (rootfs?: string): void => {
+      if (rootfs && rootfs.startsWith('/dev/mapper/mvm-')) ids.add(rootfs.slice('/dev/mapper/mvm-'.length))
+    }
+    for (const vm of this.available) add(vm.handle.rootfs)
+    for (const a of this.assigned.values()) add(a.handle.rootfs)
+    for (const s of this.suspended.values()) add(s.snapshot.rootfs)
+    return ids
+  }
+
+  /**
+   * Reclaim leaked dm devices / loops / CoW files that belong to no VM the pool
+   * tracks — the catch-up net for teardown races (a failed "busy" `dmsetup
+   * remove` orphaned the device, which then pinned its CoW past the GC's sweep).
+   * Bounded per call; driven by the GC timer. Returns the number reclaimed.
+   */
+  reconcileOrphanDevices(): number {
+    if (this.cfg.rootfsCow !== 'dm') return 0
+    return this.mgr.reconcileOrphanRootfs(this.ownedRootfsVmIds(), ORPHAN_GRACE_MS)
+  }
+
   private publishGauges(): void {
     const disk = this.disk()
     metrics.gauge(M.diskUsedPct, +disk.usedPct.toFixed(2))
