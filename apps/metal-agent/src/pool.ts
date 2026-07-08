@@ -39,6 +39,7 @@ import {
   type SnapshotMeta,
   type SnapshotStore,
 } from './snapshot-store'
+import { fetchWorkspaceArchive } from './workspace-archive'
 
 export interface PooledVm {
   handle: FcVmHandle
@@ -479,7 +480,49 @@ export class MetalWarmPool {
     const a: AssignedVm = { projectId, handle: vm.handle, assignedAt: now, lastTouchedAt: now }
     this.assigned.set(projectId, a)
     this.writeLive(a)
+
+    // Cold miss: this warm VM booted from the TEMPLATE, so its workspace is the
+    // "Project Ready" placeholder — the project's real source lives only in the
+    // durable S3 backup. (Resume-from-snapshot in open() already carries the
+    // real workspace and never lands here.) Hydrate host-side so the guest gets
+    // its source without ever holding S3 credentials. Best-effort: on failure we
+    // leave the template in place rather than fail the open.
+    await this.hydrateFromBackup(projectId, vm.handle, env).catch((err) =>
+      console.error(`[pool] hydrate-from-backup failed for ${projectId} (serving template):`, err?.message ?? err),
+    )
     return a
+  }
+
+  /**
+   * Cold-start hydration: pull the project's durable source backup from S3
+   * (host-side — the guest has no S3 creds) and stream it to the guest's
+   * `/pool/hydrate` control endpoint, which extracts it over the template and
+   * rebuilds. Authenticated with the same RUNTIME_AUTH_SECRET the API injected
+   * into the guest via `/pool/assign`. No durable backup (a brand-new project)
+   * is a no-op — the template is the correct initial state.
+   */
+  private async hydrateFromBackup(
+    projectId: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+  ): Promise<void> {
+    const archive = await fetchWorkspaceArchive(projectId, this.cfg)
+    if (!archive) {
+      console.log(`[pool] no durable backup for ${projectId} — cold start keeps template`)
+      return
+    }
+    const token = env.RUNTIME_AUTH_SECRET
+    const res = await fetch(`${handle.agentUrl}/pool/hydrate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/gzip',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: archive,
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (!res.ok) throw new Error(`/pool/hydrate failed (${res.status}): ${await res.text()}`)
+    console.log(`[pool] hydrated ${projectId} from durable backup (${archive.byteLength} bytes)`)
   }
 
   /**
