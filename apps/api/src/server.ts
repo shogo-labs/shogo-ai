@@ -460,6 +460,20 @@ app.use('/api/projects/:projectId/agent-proxy/canvas/*', async (c, next) => {
   c.res.headers.delete('Cross-Origin-Opener-Policy')
 })
 
+// The preview render proxy (below) serves a project's live preview, which the
+// Studio embeds in an iframe from a different origin than the *.preview.<base>
+// subdomain. secureHeaders() below adds `X-Frame-Options: SAMEORIGIN` to every
+// response; strip it (and COOP) on the way out for this route so the iframe is
+// allowed. Registered before secureHeaders so it wraps it. (The render handler
+// separately drops the RUNTIME's own framing headers.)
+const previewFrameStrip = async (c: any, next: any) => {
+  await next()
+  c.res.headers.delete('X-Frame-Options')
+  c.res.headers.delete('Cross-Origin-Opener-Policy')
+}
+app.use('/api/preview/:projectId/render', previewFrameStrip)
+app.use('/api/preview/:projectId/render/*', previewFrameStrip)
+
 // Security headers — X-Content-Type-Options, X-Frame-Options, etc.
 app.use('*', secureHeaders({
   xFrameOptions: 'SAMEORIGIN',
@@ -2008,10 +2022,18 @@ const previewRenderHandler = async (c: any) => {
     // Strip hop-by-hop + set-cookie (same-origin cookie stomp guard, see the
     // Studio preview proxy) and pass the runtime marker header through untouched
     // so the Worker can tell an app response from an ingress error.
+    //
+    // Also drop the runtime's own framing restrictions: a dev server (Vite/Next)
+    // commonly emits `X-Frame-Options: SAMEORIGIN` and/or a CSP `frame-ancestors`
+    // that would refuse the preview iframe embedded in the Studio (a DIFFERENT
+    // origin than the *.preview.<base> subdomain). Previews are meant to be
+    // embedded; the SAMEORIGIN that our own secureHeaders() re-adds is stripped
+    // again by the previewFrameStrip middleware on the way out.
     const outHeaders = new Headers()
     resp.headers.forEach((value, key) => {
       const k = key.toLowerCase()
       if (k === 'transfer-encoding' || k === 'connection' || k === 'set-cookie') return
+      if (k === 'x-frame-options' || k === 'content-security-policy') return
       outHeaders.set(key, value)
     })
     outHeaders.set('access-control-allow-origin', '*')
