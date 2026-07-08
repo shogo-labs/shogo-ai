@@ -108,6 +108,32 @@ export function tapIndex(net: VmNet): number | null {
   return m ? parseInt(m[1], 10) : null
 }
 
+/**
+ * The set of `fctap<n>` device indices that CURRENTLY exist on the host (from
+ * `ip link`). This is the ground truth for the VM-index allocator that survives
+ * a durable-registry wipe: a `runtime.ext4` rebuild (or any out-of-band reset of
+ * the live/cache registries) leaves the adopted Firecracker VMs — and their tap
+ * devices — running via systemd `KillMode=process`, but the registry no longer
+ * records them. Seeding/allocating past these guarantees a freshly-spawned VM
+ * never reuses a live device even when the registry can't tell us it exists.
+ *
+ * Prod incident this guards: after a restart+rootfs-rebuild the counter reset to
+ * 0, fresh warm VMs collided with survivor/resumed taps at low indices, and
+ * setupTap's delete-then-recreate blackholed the running guests (duplicate
+ * 172.16.0.x mesh IPs, dead guests, agent-proxy/preview 502s). Best-effort:
+ * returns an empty set if `ip` is unavailable or none are present.
+ */
+export function existingTapIndices(): Set<number> {
+  const out = new Set<number>()
+  try {
+    const txt = execFileSync('ip', ['-o', 'link', 'show'], { encoding: 'utf8' })
+    for (const m of txt.matchAll(/\bfctap(\d+)\b/g)) out.add(parseInt(m[1], 10))
+  } catch {
+    /* no `ip`, not Linux, or none present → empty (allocator falls back to counter) */
+  }
+  return out
+}
+
 /** Best-effort default-route interface, used as the NAT uplink. */
 export function defaultUplink(): string | undefined {
   try {

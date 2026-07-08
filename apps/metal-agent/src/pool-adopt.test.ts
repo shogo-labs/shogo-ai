@@ -267,10 +267,60 @@ describe('MetalWarmPool.adopt', () => {
 
       const mgr = new FirecrackerVMManager(cfg as any)
       const pool = new MetalWarmPool(mgr as any, cfg as any)
+      // No host taps either (dev/CI has none, but pin it so the test is hermetic).
+      ;(pool as any).hostTapIndices = () => new Set<number>()
       ;(pool as any).seedVmIndexAllocator()
 
       // Nothing parseable → counter stays at 0 (fresh allocation from fctap0).
       expect(mgr.peekNextTap().index).toBe(0)
+    })
+
+    // -------------------------------------------------------------------------
+    // Regression: the prod runtime.ext4-rebuild collision (Jul 2026).
+    //
+    // A rootfs rebuild wiped the durable registries, so the seed above saw an
+    // EMPTY fleet (maxIdx = -1) and the counter reset to 0 — even though ~18
+    // adopted Firecracker VMs were still running (KillMode=process) holding low
+    // fctap<n> devices. Fresh warm VMs then reused those indices; setupTap
+    // deleted-then-recreated the devices and blackholed the live guests
+    // (duplicate 172.16.0.x mesh IPs, dead guests, agent-proxy/preview 502s).
+    // The fix seeds/allocates past the tap devices that PHYSICALLY exist on the
+    // host (`ip link`), which survive the registry wipe.
+    // -------------------------------------------------------------------------
+    test('seeds past live host tap devices even when the registry was wiped', () => {
+      const cfg = makeCfg()
+      // Registries are EMPTY — a runtime.ext4 rebuild cleared them.
+      const mgr = new FirecrackerVMManager(cfg as any)
+      const pool = new MetalWarmPool(mgr as any, cfg as any)
+
+      // ...but three microVMs survived on the host with fctap2 / fctap4 / fctap6.
+      ;(pool as any).hostTapIndices = () => new Set<number>([2, 4, 6])
+      ;(pool as any).seedVmIndexAllocator()
+
+      // Next warm VM lands on fctap7 — clear of every survivor. Under the old
+      // registry-only seed this would have been fctap0 (the collision).
+      expect(mgr.peekNextTap().index).toBe(7)
+    })
+
+    // The manager's allocator is a second line of defense: even if the counter
+    // is somehow mis-seeded (or a resumed VM re-took its persisted index mid-run),
+    // a fresh spawn must skip any fctap<n> that physically exists right now.
+    test('nextVmIndex skips live host tap devices and stays monotonic', () => {
+      const cfg = makeCfg()
+      const mgr = new FirecrackerVMManager(cfg as any)
+
+      // Counter is at 0 but fctap0 and fctap1 are live on the host → skip to 2.
+      ;(mgr as any).hostTapIndices = () => new Set<number>([0, 1])
+      expect((mgr as any).nextVmIndex()).toBe(2)
+
+      // Host devices vanish, but the counter never goes backwards (no reuse of
+      // an index already handed out this lifetime).
+      ;(mgr as any).hostTapIndices = () => new Set<number>()
+      expect((mgr as any).nextVmIndex()).toBe(3)
+
+      // A survivor appears exactly at the counter value → jump past it.
+      ;(mgr as any).hostTapIndices = () => new Set<number>([4])
+      expect((mgr as any).nextVmIndex()).toBe(5)
     })
   })
 })
