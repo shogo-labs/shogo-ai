@@ -33,6 +33,8 @@ import {
   type WindowLimits,
 } from '../config/usage-plans';
 import { getOveragePriceConfig } from '../config/stripe-prices';
+import { RAW_REGION_ID, PRIMARY_REGION, getPeer } from '../lib/region';
+import { callPeerInternal } from '../lib/region-peer-proxy';
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 /**
@@ -683,11 +685,108 @@ export interface ConsumeUsageResult {
 }
 
 /**
- * Consume USD for an action.
+ * Rollout gate for routing wallet mutations to `workspace.homeRegion`.
+ *   - `off`     (default): always write the wallet in the serving region.
+ *   - `shadow`: log the would-route decision but still write locally.
+ *   - `enforce`: route the debit to the home region (single-writer).
+ */
+export type UsageWalletHomeWriterMode = 'off' | 'shadow' | 'enforce'
+
+export function getUsageWalletHomeWriterMode(): UsageWalletHomeWriterMode {
+  const v = (process.env.USAGE_WALLET_HOME_WRITER || 'off').toLowerCase()
+  return v === 'shadow' || v === 'enforce' ? v : 'off'
+}
+
+/**
+ * The region that owns (is the sole writer for) a billing workspace's wallet.
+ * A null `homeRegion` (legacy rows) is owned by the primary region, matching
+ * `home-region-router.ts`.
+ */
+async function resolveWorkspaceHomeRegion(billingWorkspaceId: string): Promise<string> {
+  const ws = await prisma.workspace.findUnique({
+    where: { id: billingWorkspaceId },
+    select: { homeRegion: true },
+  })
+  return ws?.homeRegion || PRIMARY_REGION
+}
+
+/**
+ * Consume USD for an action, writing the wallet in its home region.
+ *
+ * `usage_wallets` is a running counter that logical replication's
+ * last-update-wins cannot merge, so it must have exactly one writer per row.
+ * When `USAGE_WALLET_HOME_WRITER=enforce` and the serving region is not the
+ * workspace's `homeRegion`, the debit is routed to the home region via an
+ * internal RPC; the home region runs the transaction against its authoritative
+ * wallet and its `usage_events` row (which DOES replicate) carries the ledger
+ * back to every region. Otherwise the debit is applied locally.
+ *
+ * On any routing failure we fall back to a local write so delivered usage is
+ * never lost (a rare path; the reconcile/watchdog collapses divergence).
+ */
+export async function consumeUsage(
+  params: ConsumeUsageParams,
+): Promise<ConsumeUsageResult> {
+  if (isLocalMode) return consumeUsageLocal(params)
+
+  const mode = getUsageWalletHomeWriterMode()
+  if (mode !== 'off' && RAW_REGION_ID) {
+    const billingWorkspaceId =
+      params.billingWorkspaceId ?? (await resolveBillingWorkspaceId(params.workspaceId))
+    const homeRegion = await resolveWorkspaceHomeRegion(billingWorkspaceId)
+
+    if (homeRegion !== RAW_REGION_ID) {
+      const peer = getPeer(homeRegion)
+      if (!peer) {
+        console.warn('[billing] usage-wallet home region has no peer; writing locally', {
+          billingWorkspaceId,
+          homeRegion,
+          from: RAW_REGION_ID,
+        })
+      } else if (mode === 'shadow') {
+        console.log('[billing] usage-wallet would-route to home region', {
+          billingWorkspaceId,
+          homeRegion,
+          from: RAW_REGION_ID,
+        })
+      } else {
+        // enforce: the home region is the single writer for this wallet.
+        try {
+          const res = await callPeerInternal<ConsumeUsageResult>(
+            homeRegion,
+            '/api/internal/billing/consume',
+            { ...params, billingWorkspaceId },
+          )
+          if (res.ok && res.data) return res.data
+          console.error('[billing] home-region consume RPC non-ok; falling back to local', {
+            status: res.status,
+            homeRegion,
+          })
+        } catch (err) {
+          console.error('[billing] home-region consume RPC failed; falling back to local', {
+            homeRegion,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+    }
+
+    return consumeUsageLocal({ ...params, billingWorkspaceId })
+  }
+
+  return consumeUsageLocal(params)
+}
+
+/**
+ * Apply a usage debit against the LOCAL wallet in this region. Callers must
+ * ensure this runs in the wallet's home region (either directly in the home
+ * region, or via the `/api/internal/billing/consume` endpoint the home-region
+ * router forwards to) — see `consumeUsage`.
+ *
  * Deduction order: daily included -> monthly included -> overage (if enabled).
  * Retries on projectId FK constraint violations (race with project creation).
  */
-export async function consumeUsage(
+export async function consumeUsageLocal(
   params: ConsumeUsageParams,
 ): Promise<ConsumeUsageResult> {
   const { workspaceId, projectId, memberId, actionType, billedUsd, actionMetadata } = params
