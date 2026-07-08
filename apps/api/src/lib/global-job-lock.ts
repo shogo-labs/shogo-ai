@@ -73,9 +73,15 @@ import { createHash } from 'node:crypto'
  * can correlate `pg_locks` rows back to job names if they ever need to
  * debug a stuck lock.
  */
+// NOTE: `grant-monthly-refill` used to live here. It is now home-region
+// *partitioned* instead of globally locked — each region refills only the
+// workspaces it is the home-writer for, so the write sets are disjoint and no
+// global lock is needed. `usage_wallets` is excluded from `shogo_all_pub` for
+// the same reason. See the `HOME_REGION_PARTITIONED` allowlist in
+// `scripts/check-multiregion-cron-locks.ts` and the docstring on
+// `runGrantMonthlyRefill`.
 export const KNOWN_JOB_IDS: Record<string, bigint> = Object.freeze({
   'storage-recalculate-all': jobNameToLockId('storage-recalculate-all'),
-  'grant-monthly-refill': jobNameToLockId('grant-monthly-refill'),
   'voice-monthly-rebill': jobNameToLockId('voice-monthly-rebill'),
   'approve-commissions': jobNameToLockId('approve-commissions'),
   'affiliate-payouts': jobNameToLockId('affiliate-payouts'),
