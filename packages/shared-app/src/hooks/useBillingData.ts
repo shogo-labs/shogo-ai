@@ -45,6 +45,14 @@ export interface BillingDataState {
   usageWallet: any | undefined
   effectiveBalance: EffectiveBalance | undefined
   usageEvents: any[]
+  /** True while the *next* page of usage events is being fetched. */
+  isLoadingMoreUsageEvents: boolean
+  /** Whether the server reports more usage events beyond what's loaded. */
+  hasMoreUsageEvents: boolean
+  /** Server-reported total count of usage events for the workspace. */
+  usageEventsTotal: number
+  /** Fetch and append the next page of usage events (no-op if none left). */
+  loadMoreUsageEvents: () => void
   hasActiveSubscription: boolean
   hasAdvancedModelAccess: boolean
   daysRemaining: number | undefined
@@ -65,13 +73,32 @@ export interface BillingDataState {
   usageWindows: UsageWindows | undefined
 }
 
-export function useBillingData(workspaceId: string | undefined): BillingDataState {
+/** Usage events are fetched one page at a time via the collection's offset/limit. */
+const USAGE_EVENTS_PAGE_SIZE = 50
+
+export interface UseBillingDataOptions {
+  /**
+   * Whether to fetch the workspace's recent usage-event rows into
+   * `usageEvents`. Off by default: nothing in the app reads `usageEvents`
+   * today, and the fetch was firing on every screen that mounts this hook
+   * (including project open) for data that was never rendered. Opt in only
+   * from a screen that actually displays the raw event list.
+   */
+  loadUsageEvents?: boolean
+}
+
+export function useBillingData(
+  workspaceId: string | undefined,
+  options?: UseBillingDataOptions,
+): BillingDataState {
+  const loadUsageEvents = options?.loadUsageEvents ?? false
   const store = useSDKDomain() as IDomainStore
   const http = useSDKHttp()
 
   const [isLoadingSubscription, setIsLoadingSubscription] = useState(false)
   const [isLoadingUsageWallet, setIsLoadingUsageWallet] = useState(false)
   const [isLoadingUsageEvents, setIsLoadingUsageEvents] = useState(false)
+  const [isLoadingMoreUsageEvents, setIsLoadingMoreUsageEvents] = useState(false)
   const [error, setError] = useState<Error | null>(null)
 
   const [subscriptionRefetchCounter, setSubscriptionRefetchCounter] = useState(0)
@@ -134,19 +161,37 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     return () => { cancelled = true }
   }, [workspaceId, store, usageWalletRefetchCounter])
 
+  // First page (offset 0). `loadPage` clears the collection on the first page,
+  // so this also acts as the reset when the workspace changes or a refetch is
+  // requested. Subsequent pages are appended via `loadMoreUsageEvents`.
   useEffect(() => {
-    if (!workspaceId || !store?.usageEventCollection) { setIsLoadingUsageEvents(false); return }
+    if (!loadUsageEvents || !workspaceId || !store?.usageEventCollection) { setIsLoadingUsageEvents(false); return }
     let cancelled = false
     setIsLoadingUsageEvents(true)
-    store.usageEventCollection.loadAll({ workspaceId })
+    setIsLoadingMoreUsageEvents(false)
+    store.usageEventCollection.loadPage({ workspaceId, orderBy: "createdAt:desc" }, { limit: USAGE_EVENTS_PAGE_SIZE, offset: 0 })
       .catch((err: any) => { if (!cancelled) setError(err instanceof Error ? err : new Error("Failed to load usage events")) })
       .finally(() => { if (!cancelled) setIsLoadingUsageEvents(false) })
     return () => { cancelled = true }
-  }, [workspaceId, store, usageEventsRefetchCounter])
+  }, [loadUsageEvents, workspaceId, store, usageEventsRefetchCounter])
 
   const refetchSubscription = useCallback(() => setSubscriptionRefetchCounter((c) => c + 1), [])
   const refetchUsageWallet = useCallback(() => setUsageWalletRefetchCounter((c) => c + 1), [])
   const refetchUsageEvents = useCallback(() => setUsageEventsRefetchCounter((c) => c + 1), [])
+
+  // Fetch the next page and append it. Offset is the number of this-workspace
+  // rows already loaded (the server orders by createdAt desc and paginates on
+  // that same ordering, so this yields the next-oldest slice with no gaps).
+  const loadMoreUsageEvents = useCallback(() => {
+    const coll = store?.usageEventCollection as any
+    if (!workspaceId || !coll) return
+    if (coll.isLoading || coll.isLoadingMore || !coll.hasMore) return
+    const offset = coll.all.filter((e: any) => e.workspaceId === workspaceId).length
+    setIsLoadingMoreUsageEvents(true)
+    coll.loadPage({ workspaceId, orderBy: "createdAt:desc" }, { limit: USAGE_EVENTS_PAGE_SIZE, offset })
+      .catch((err: any) => setError(err instanceof Error ? err : new Error("Failed to load usage events")))
+      .finally(() => setIsLoadingMoreUsageEvents(false))
+  }, [workspaceId, store])
 
   const subsLength = store?.subscriptionCollection?.all?.length ?? 0
   const realSubscription = useMemo(() => {
@@ -263,9 +308,18 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
       return store.usageEventCollection.all
         .filter((e: any) => e.workspaceId === workspaceId)
         .sort((a: any, b: any) => b.createdAt - a.createdAt)
-        .slice(0, 50)
     } catch { return [] }
-  }, [workspaceId, store, isLoadingUsageEvents])
+  }, [workspaceId, store, isLoadingUsageEvents, isLoadingMoreUsageEvents])
+
+  const hasMoreUsageEvents = useMemo(() => {
+    try { return !!(store as any)?.usageEventCollection?.hasMore } catch { return false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, isLoadingUsageEvents, isLoadingMoreUsageEvents])
+
+  const usageEventsTotal = useMemo(() => {
+    try { return (store as any)?.usageEventCollection?.total ?? 0 } catch { return 0 }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, isLoadingUsageEvents, isLoadingMoreUsageEvents])
 
   // Resolve the effective plan + source once, with the synthetic
   // subscription (if any) and the server's effective resolver as fallbacks.
@@ -281,6 +335,10 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     usageWallet,
     effectiveBalance,
     usageEvents,
+    isLoadingMoreUsageEvents,
+    hasMoreUsageEvents,
+    usageEventsTotal,
+    loadMoreUsageEvents,
     hasActiveSubscription,
     hasAdvancedModelAccess,
     daysRemaining: subscription?.daysRemaining,
