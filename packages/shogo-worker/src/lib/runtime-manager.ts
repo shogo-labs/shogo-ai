@@ -38,6 +38,15 @@ import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
+import {
+  RssWatchdog,
+  applyHeapEnvCap,
+  attachDirectCgroup,
+  resolveResourceLimits,
+  tryAttachJobObject,
+  wrapSpawnForCgroup,
+  type RuntimeResourceLimits,
+} from './resource-limits.ts';
 import type { ResolveRejection, RuntimeResolver } from './tunnel.ts';
 import { CloudFileTransport } from '@shogo-ai/sdk/cloud-file-transport';
 import { CloudSyncWatcher } from './cloud-sync-watcher.ts';
@@ -389,6 +398,13 @@ interface InternalRuntime {
   graceTimer: ReturnType<typeof setTimeout> | null;
   restartTimer: ReturnType<typeof setTimeout> | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * RSS watchdog enforcing the per-project memory ceiling where no kernel-level
+   * cap is available (macOS always; Windows without the Job Object helper;
+   * Linux without cgroup access). Null when a cgroup/Job Object handles the cap
+   * or when no limit is configured. Stopped on exit/stop.
+   */
+  limitWatchdog: RssWatchdog | null;
   lastError?: string;
   spawnConfig: ProjectSpawnConfig;
   /**
@@ -512,6 +528,11 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   private readonly spawnCommand: SpawnCommandFactory;
   private resolved: ResolvedRuntime | null = null;
   private stopped = false;
+  /**
+   * Per-project resource limits (memory/CPU ceiling) read once from the
+   * environment. `undefined` = not yet resolved; `null` = no limit configured.
+   */
+  private resolvedLimits: RuntimeResourceLimits | null | undefined = undefined;
 
   /** Active watchers per projectId, keyed by projectId. Stopped in stopAll. */
   private readonly watchers = new Map<string, CloudSyncWatcher>();
@@ -1017,6 +1038,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     if (r.restartTimer) { clearTimeout(r.restartTimer); r.restartTimer = null; }
     if (r.idleTimer) { clearTimeout(r.idleTimer); r.idleTimer = null; }
     if (r.graceTimer) { clearTimeout(r.graceTimer); r.graceTimer = null; }
+    if (r.limitWatchdog) { r.limitWatchdog.stop(); r.limitWatchdog = null; }
     if (r.proc) {
       // Send the requested signal to the whole process group first so
       // children (vite, preview-manager's API server, LSPs) start their
@@ -1051,6 +1073,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     if (r.restartTimer) { clearTimeout(r.restartTimer); r.restartTimer = null; }
     if (r.idleTimer) { clearTimeout(r.idleTimer); r.idleTimer = null; }
     if (r.graceTimer) { clearTimeout(r.graceTimer); r.graceTimer = null; }
+    if (r.limitWatchdog) { r.limitWatchdog.stop(); r.limitWatchdog = null; }
     this.runtimes.delete(projectId);
     this.log.log(`[WorkerRuntimeManager] resetFailure: ${projectId} cleared, next ensureRunning will respawn`);
     return true;
@@ -1098,6 +1121,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       graceTimer: null,
       restartTimer: null,
       idleTimer: null,
+      limitWatchdog: null,
       spawnConfig: config,
       startPromise: null,
     };
@@ -1118,11 +1142,32 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
     const env = this.buildEnv(slot, resolved.path);
     const cwd = this.resolveCwd(slot);
-    const { command, args } = this.spawnCommand(resolved.path);
+    const baseSpawn = this.spawnCommand(resolved.path);
+
+    // Resource limits: on Linux, prefer wrapping the spawn in a rootless
+    // systemd cgroup scope (hard memory.max/cpu.max). The other platforms and
+    // the systemd-absent fallback are handled post-spawn in applyPostSpawnLimits.
+    const limits = this.resolveLimits();
+    let command = baseSpawn.command;
+    let args = baseSpawn.args;
+    let cgroupWrapped = false;
+    if (limits) {
+      const wrapped = wrapSpawnForCgroup({
+        command: baseSpawn.command,
+        args: baseSpawn.args,
+        limits,
+        scopeName: `shogo-rt-${slot.projectId.slice(0, 8)}-${Date.now().toString(36)}`,
+        logger: this.log,
+      });
+      command = wrapped.command;
+      args = wrapped.args;
+      cgroupWrapped = wrapped.wrapped;
+    }
 
     this.log.log(
       `[WorkerRuntimeManager] Spawning agent-runtime for ${slot.projectId} ` +
-        `via ${command} ${args.join(' ')} (port=${slot.agentPort}, source=${resolved.source})`,
+        `via ${command} ${args.join(' ')} (port=${slot.agentPort}, source=${resolved.source}` +
+        `${limits ? `, memCeil=${limits.memoryMB}M` : ''})`,
     );
 
     // Spawn the runtime as its own process group leader (posix only —
@@ -1156,6 +1201,19 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     slot.pid = proc.pid ?? null;
     slot.status = 'starting';
     slot.startedAt = Date.now();
+
+    // Enforce the per-project memory/CPU ceiling on the freshly-spawned group
+    // (cgroup direct-write / Windows Job Object / RSS watchdog fallback). No-op
+    // when the systemd scope above already caps it or no limit is configured.
+    if (limits) {
+      try {
+        this.applyPostSpawnLimits(slot, limits, cgroupWrapped);
+      } catch (err: any) {
+        this.log.warn(
+          `[WorkerRuntimeManager] failed to apply resource limits for ${slot.projectId}: ${err?.message ?? err}`,
+        );
+      }
+    }
     // Seed the progress timestamp at spawn so a child that emits its
     // first line within `STDOUT_PROGRESS_WINDOW_MS` is treated as
     // "making progress since spawn" without the readiness check having
@@ -1232,6 +1290,70 @@ export class WorkerRuntimeManager implements RuntimeResolver {
    * that wedge the next spawn's event loop). We use `taskkill /F /T`
    * to walk the process tree by parent PID instead.
    */
+  /** Memoized per-project resource limits from the environment. */
+  private resolveLimits(): RuntimeResourceLimits | null {
+    if (this.resolvedLimits === undefined) {
+      this.resolvedLimits = resolveResourceLimits(this.opts.env ?? process.env);
+    }
+    return this.resolvedLimits;
+  }
+
+  /**
+   * Apply the strongest available OS-level cap to a freshly-spawned runtime,
+   * or start the RSS watchdog as a fallback. Called right after spawn so most
+   * of the runtime's children inherit the cgroup/Job Object.
+   *
+   * @param cgroupWrapped true when the spawn was already wrapped in a
+   *   `systemd-run` scope (Linux), in which case the cap is already enforced.
+   */
+  private applyPostSpawnLimits(
+    slot: InternalRuntime,
+    limits: RuntimeResourceLimits,
+    cgroupWrapped: boolean,
+  ): void {
+    const pid = slot.pid;
+    if (!pid) return;
+
+    if (process.platform === 'linux') {
+      if (cgroupWrapped) return; // systemd scope already enforces the cap
+      if (attachDirectCgroup({ pid, limits, logger: this.log })) return;
+      // fall through to watchdog
+    } else if (process.platform === 'win32') {
+      if (tryAttachJobObject({ pid, limits, logger: this.log })) return;
+      // fall through to watchdog
+    }
+
+    // macOS always, or a fallback from the branches above: sample RSS and
+    // restart the group on sustained breach.
+    slot.limitWatchdog = new RssWatchdog({
+      pid,
+      ceilingMB: limits.memoryMB,
+      logger: this.log,
+      onBreach: (rssMB) => this.handleLimitBreach(slot, rssMB, limits.memoryMB),
+    });
+    slot.limitWatchdog.start();
+  }
+
+  /**
+   * React to a memory-ceiling breach reported by the RSS watchdog: tear the
+   * process group down gracefully. The existing `handleExit` path then treats
+   * this as a non-clean exit and restarts with backoff (a project that keeps
+   * ballooning will trip the circuit breaker, exactly as with an OOM loop).
+   */
+  private handleLimitBreach(slot: InternalRuntime, rssMB: number, ceilingMB: number): void {
+    this.log.warn(
+      `[WorkerRuntimeManager] runtime ${slot.projectId} exceeded memory ceiling ` +
+        `(${rssMB}MB > ${ceilingMB}MB) — restarting`,
+    );
+    slot.lastError = `memory ceiling exceeded (${rssMB}MB > ${ceilingMB}MB)`;
+    if (slot.limitWatchdog) { slot.limitWatchdog.stop(); slot.limitWatchdog = null; }
+    this.killProcessGroup(slot, 'SIGTERM');
+    try { slot.proc?.kill('SIGTERM'); } catch { /* already gone */ }
+    // Escalate to SIGKILL if the group ignores SIGTERM within the grace window.
+    const killTimer = setTimeout(() => this.killProcessGroup(slot, 'SIGKILL'), 5000);
+    try { killTimer.unref?.(); } catch { /* unref is best-effort */ }
+  }
+
   private killProcessGroup(slot: InternalRuntime, signal: NodeJS.Signals): void {
     if (!slot.pid) return;
     if (process.platform === 'win32') {
@@ -1348,6 +1470,13 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     }
 
     if (cfg.extraEnv) Object.assign(env, cfg.extraEnv);
+
+    // Secondary hint: cap the JS heap of Node children (tsserver, vite/esbuild)
+    // and Bun below the RSS ceiling so a JS OOM (recoverable) trips before the
+    // OS-level cap/watchdog kills the whole group. OS limits are the real cap.
+    const limits = this.resolveLimits();
+    if (limits) applyHeapEnvCap(env, limits.memoryMB);
+
     return env;
   }
 
@@ -1369,6 +1498,9 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       clearTimeout(slot.graceTimer);
       slot.graceTimer = null;
     }
+    // The process (and its group) is gone — stop sampling its RSS. A fresh
+    // watchdog is armed by the next doStart() if the runtime restarts.
+    if (slot.limitWatchdog) { slot.limitWatchdog.stop(); slot.limitWatchdog = null; }
 
     if (slot.status === 'stopping' || this.stopped) {
       // We initiated the stop; the orphan reap was already done by

@@ -8435,6 +8435,12 @@ async function gracefulShutdown(signal: string) {
       await stopVMWarmPool()
       console.log('[Server] VM warm pool stopped')
     } catch (_) { /* may not be initialized */ }
+
+    try {
+      const { stopHostWarmPool } = await import('./lib/host-warm-pool-controller')
+      await stopHostWarmPool()
+      console.log('[Server] Host warm pool stopped')
+    } catch (_) { /* may not be initialized */ }
   }
 
   // Drain active proxy connections (SSE streams, chat)
@@ -8899,6 +8905,22 @@ if (isVMIsolation() && !isKubernetes()) {
       console.log('[VMWarmPool] VM warm pool controller started')
     } catch (err: any) {
       console.error('[VMWarmPool] Failed to start VM warm pool controller (non-fatal):', err.message)
+    }
+  }, 2000)
+}
+
+// Start host warm pool controller (local host mode, opt-in via HOST_WARM_POOL_SIZE).
+// Pre-boots generic agent-runtimes so project opens skip the cold spawn. Kept
+// clear of VM isolation (which has its own pool) and Kubernetes.
+if (!isKubernetes() && !isVMIsolation()) {
+  setTimeout(async () => {
+    try {
+      const { initHostWarmPool, isHostWarmPoolEnabled } = await import('./lib/host-warm-pool-controller')
+      if (!isHostWarmPoolEnabled()) return
+      await initHostWarmPool()
+      console.log('[HostWarmPool] Host warm pool controller started')
+    } catch (err: any) {
+      console.error('[HostWarmPool] Failed to start host warm pool (non-fatal):', err?.message ?? err)
     }
   }, 2000)
 }

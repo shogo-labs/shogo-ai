@@ -128,6 +128,15 @@ export interface ResolvePodUrlOpts {
   _isVMIsolation?: () => boolean
 
   /**
+   * Host warm pool (opt-in via `HOST_WARM_POOL_SIZE`). When enabled, the host
+   * branch claims a pre-booted generic runtime and assigns the project via
+   * `/pool/assign` instead of cold-spawning through the RuntimeManager. A
+   * failure falls through to the direct host path. Test-only overrides.
+   */
+  _isHostWarmPoolEnabled?: () => boolean
+  _hostPoolResolver?: (projectId: string) => Promise<string>
+
+  /**
    * Test-only overrides for the `metal` substrate branch. In production these
    * are read from env / dynamically imported from metal-warm-pool-controller.
    */
@@ -176,6 +185,10 @@ function defaultIsKubernetes(): boolean {
 
 function defaultIsVMIsolation(): boolean {
   return process.env.SHOGO_VM_ISOLATION === 'true'
+}
+
+function defaultIsHostWarmPoolEnabled(): boolean {
+  return parseInt(process.env.HOST_WARM_POOL_SIZE || '0', 10) > 0
 }
 
 // Metal probes are pure env reads (metal-eligibility) — cheap to call on every
@@ -324,6 +337,35 @@ export async function resolveProjectPodUrl(
       }
     }
     // Fell through from the permanent-disabled branch; resolve via host.
+  }
+
+  // Host warm pool (opt-in via HOST_WARM_POOL_SIZE). Claims a pre-booted generic
+  // runtime and assigns the project via /pool/assign, skipping the cold spawn.
+  // Any failure falls through to the direct RuntimeManager host path below so a
+  // pool hiccup never leaves the project unreachable.
+  const isHostWarmPool = opts._isHostWarmPoolEnabled ?? defaultIsHostWarmPoolEnabled
+  if (isHostWarmPool()) {
+    try {
+      const resolve = opts._hostPoolResolver
+        ?? (await import('./host-warm-pool-controller')).getHostPoolProjectUrl
+      const url = await resolve(projectId)
+      let agentPort = 0
+      try { agentPort = parseInt(new URL(url).port, 10) || 0 } catch { /* leave 0 */ }
+      const runtime: IProjectRuntime = {
+        id: projectId,
+        port: agentPort,
+        agentPort,
+        status: 'running',
+        url,
+        startedAt: Date.now(),
+      }
+      return { mode: 'host', url, runtime }
+    } catch (err: any) {
+      console.warn(
+        `[${tag}] host warm pool resolve failed for ${projectId}; ` +
+          `falling back to direct host runtime: ${err?.message ?? err}`,
+      )
+    }
   }
 
   // Host mode.
