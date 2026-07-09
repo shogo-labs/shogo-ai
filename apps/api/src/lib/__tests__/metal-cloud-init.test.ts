@@ -60,6 +60,16 @@ describe('buildBurstUserData', () => {
     expect(s).toContain(`RUNTIME_IMAGE='${BASE.runtimeImage}'`)
   })
 
+  it('persists RUNTIME_IMAGE + DOCKER_CONFIG into the agent env so self-update can rebuild the rootfs', () => {
+    const s = buildBurstUserData(BASE)
+    // These live in the METAL_ENV_EOF heredoc that becomes /etc/metal-agent.env,
+    // which the metal-agent process (and thus self-update's rebuildRootfs child)
+    // inherits. Without them a rebuildRootfs release silently no-ops.
+    const envBlock = s.slice(s.indexOf('METAL_ENV_EOF'), s.lastIndexOf('METAL_ENV_EOF'))
+    expect(envBlock).toContain(`RUNTIME_IMAGE='${BASE.runtimeImage}'`)
+    expect(envBlock).toContain("DOCKER_CONFIG='/root/.docker-ocir'")
+  })
+
   it('honours tunable overrides', () => {
     const s = buildBurstUserData({ ...BASE, poolSize: 12, memMiB: 8192, rootfsCow: 'reflink' })
     expect(s).toContain("METAL_POOL_SIZE='12'")
