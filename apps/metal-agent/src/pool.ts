@@ -489,7 +489,9 @@ export class MetalWarmPool {
       const live = this.assigned.get(projectId)
       if (live) {
         live.lastTouchedAt = Date.now()
-        return { handle: live.handle, mode: 'assigned' as const }
+        // `reused`: re-attached an already-running VM (no boot, no resume). The
+        // control plane records this as a warm hit, not a cold miss.
+        return { handle: live.handle, mode: 'assigned' as const, reused: true }
       }
       if (await this.canResume(projectId)) {
         try {
@@ -1385,4 +1387,7 @@ export interface OpenResult {
   mode: 'assigned' | 'resumed'
   source?: 'local' | 'store'
   readyMs?: number
+  /** `mode:'assigned'` re-attached an already-running VM rather than a fresh
+   * cold claim. Reported to the control plane so it records a warm hit. */
+  reused?: boolean
 }

@@ -82,9 +82,68 @@ describe('MetalWarmPoolController', () => {
     c.registerHost({ ...REG, hostId: 'ash-2', meshIp: '10.8.0.3' })
 
     await c.getMetalProjectUrl('p1')
+    // Force a real re-resolve (the 2nd call would otherwise hit the URL cache).
+    c.invalidateUrlCache('p1')
     await c.getMetalProjectUrl('p1')
     // both calls hit whichever host was chosen first
     expect(seen[0]).toBe(seen[1])
+  })
+
+  it('serves a repeat resolve from the URL cache without re-hitting the host', async () => {
+    let calls = 0
+    const fetchImpl = (async () => {
+      calls++
+      return new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+    c.registerHost(REG)
+
+    const a = await c.getMetalProjectUrl('p1')
+    const b = await c.getMetalProjectUrl('p1') // cache hit — no /assign
+    expect(a).toBe(b)
+    expect(calls).toBe(1)
+    const s = c.getStatus()
+    expect(s.stats.cacheHit).toBe(1)
+    expect(s.stats.coldMiss).toBe(1) // only the first (real) resolve is a cold miss
+
+    // Invalidating forces the next resolve back to the host.
+    c.invalidateUrlCache('p1')
+    await c.getMetalProjectUrl('p1')
+    expect(calls).toBe(2)
+  })
+
+  it('records an already-running re-attach (reused) as a warm hit, not a cold miss', async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned', reused: true }), {
+        status: 200,
+      })) as any
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+    c.registerHost(REG)
+
+    await c.getMetalProjectUrl('p1')
+    const s = c.getStatus()
+    expect(s.stats.reused).toBe(1)
+    expect(s.stats.coldMiss).toBe(0)
+    expect(s.stats.assigned).toBe(0)
+    expect(s.stats.warmHitRate).toBe(1) // avoided a cold boot
+    expect(s.stats.snapshotHitRate).toBe(null) // not a snapshot resume either
+  })
+
+  it('a stop invalidates the cached URL so the next open re-resolves', async () => {
+    let calls = 0
+    const fetchImpl = (async (url: string) => {
+      calls++
+      const p = new URL(url).pathname
+      if (p === '/stop') return new Response(JSON.stringify({ suspended: true }), { status: 200 })
+      return new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+    c.registerHost(REG)
+
+    await c.getMetalProjectUrl('p1') // assign (calls=1)
+    await c.stopProject('p1') // stop (calls=2) — drops the cache
+    await c.getMetalProjectUrl('p1') // must re-assign (calls=3), not serve stale
+    expect(calls).toBe(3)
   })
 
   it('cordon drains: a cordoned host takes no new placements', async () => {
