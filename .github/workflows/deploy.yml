@@ -2458,3 +2458,46 @@ jobs:
         run: |
           echo "## EU Production Deploy" >> $GITHUB_STEP_SUMMARY
           echo "- Role: active-active" >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # Rebuild the production metal runtime image on every prod release.
+  #
+  # The bare-metal Firecracker fleet runs the guest (in-VM) code from a separate
+  # multi-arch runtime image (runtime-multiarch.yml), NOT from the arm64 image
+  # this pipeline ships to OKE. That workflow only auto-builds `staging` (on main
+  # pushes); its production image is a manual dispatch. So before this, cutting a
+  # prod tag deployed the API but left the metal guest code frozen at whatever
+  # runtime image someone last hand-built — which is exactly how prod served
+  # hours-stale guest code (2026-07 incident): fixes were tagged but the prod
+  # runtime image (and thus the fleet rootfs) was never rebuilt.
+  #
+  # Close the gap: a successful prod release dispatches the prod runtime image
+  # build from THIS ref. runtime-multiarch's `converge-fleet` job then fans the
+  # rebuildRootfs release out to every metal region, so the fleet converges on
+  # the released guest code automatically. Best-effort (never blocks the API
+  # release): a dispatch/build failure is a loud CI signal, not a rolled-back
+  # deploy.
+  # ---------------------------------------------------------------------------
+  dispatch-metal-runtime-image:
+    name: Dispatch prod metal runtime image build
+    runs-on: ubuntu-latest
+    needs: [resolve-config, deploy-us, deploy-eu]
+    if: |
+      always() &&
+      needs.resolve-config.outputs.is_production == 'true' &&
+      needs.deploy-us.result == 'success' &&
+      needs.deploy-eu.result == 'success'
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Dispatch runtime-multiarch (production) from this ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "::notice::Dispatching runtime-multiarch (environment=production) @ $REF"
+          gh workflow run runtime-multiarch.yml \
+            --ref "$REF" \
+            -f environment=production
