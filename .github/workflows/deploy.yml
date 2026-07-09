@@ -2499,5 +2499,6 @@ jobs:
           set -euo pipefail
           echo "::notice::Dispatching runtime-multiarch (environment=production) @ $REF"
           gh workflow run runtime-multiarch.yml \
+            -R "$GITHUB_REPOSITORY" \
             --ref "$REF" \
             -f environment=production
