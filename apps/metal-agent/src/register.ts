@@ -20,7 +20,7 @@
 import { config } from './config'
 import { metrics } from './metrics'
 import type { MetalWarmPool } from './pool'
-import { maybeSelfUpdate, type DesiredAgent } from './self-update'
+import { maybeRebuildRootfs, maybeSelfUpdate, type DesiredAgent } from './self-update'
 
 function payload(pool: MetalWarmPool) {
   const s = pool.status()
@@ -126,7 +126,13 @@ export function startRegistration(pool: MetalWarmPool): () => void {
     if (res) console.log(`[metal-agent] registered (heartbeat every ${config.registerIntervalMs}ms)`)
     // Pull-based deploy: converge to the version the control plane wants. Applies
     // only on a real change; a graceful restart follows (live microVMs survive).
-    if (res?.desired) await maybeSelfUpdate(res.desired)
+    if (res?.desired) {
+      const updated = await maybeSelfUpdate(res.desired)
+      // No code-version change, but the release may still ask for a rootfs rebuild
+      // (a same-version rebuild-flagged release — the runtime-image workflow_run
+      // path). Decoupled from the version gate so that signal isn't dropped.
+      if (!updated) await maybeRebuildRootfs(res.desired)
+    }
   }
   void tick()
   const timer = setInterval(tick, config.registerIntervalMs)
