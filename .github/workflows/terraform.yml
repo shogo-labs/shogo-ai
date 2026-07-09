@@ -141,6 +141,12 @@ jobs:
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+          # SigNoz Cloud ingestion key for the k8s-infra collector. Without it
+          # the signoz module skips its otelInsecure=false + signozApiKey set
+          # blocks, so the agent ships cleartext gRPC to the TLS-only :443 ingest
+          # ("http2: frame too large") and drops ALL infra metrics/logs. Env-
+          # scoped secret; resolves per the job's GH Environment.
+          TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
         run: |
           set +e
           terraform plan -no-color -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
@@ -279,6 +285,8 @@ jobs:
           # Networking
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+          # SigNoz Cloud ingestion key — see note in pr-plan. Env-scoped secret.
+          TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
           KUBE_CONFIG_PATH: /home/runner/.kube/config
         run: terraform plan -no-color ${{ inputs.extra_args }}
 
@@ -303,5 +311,7 @@ jobs:
           TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+          # SigNoz Cloud ingestion key — see note in pr-plan. Env-scoped secret.
+          TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
           KUBE_CONFIG_PATH: /home/runner/.kube/config
         run: terraform apply -no-color -auto-approve ${{ inputs.extra_args }}
