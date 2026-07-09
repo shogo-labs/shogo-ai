@@ -215,3 +215,49 @@ jobs:
           PREFIX: ${{ inputs.environment || 'staging' }}
         run: |
           docker buildx imagetools inspect "${REGISTRY}/shogo/shogo-runtime:${PREFIX}-multiarch-latest"
+
+  # ---------------------------------------------------------------------------
+  # Converge the metal fleet on the image we just published.
+  #
+  # The guest (in-VM) code lives in THIS runtime image, baked into each host's
+  # golden rootfs — NOT in the agent bundle. So a new runtime image is inert on
+  # the fleet until every host rebuilds its rootfs from it. Leaving that as a
+  # manual step is exactly how prod silently ran stale guest code for hours
+  # (2026-07 incident): the image was rebuilt but no one re-rolled the fleet.
+  #
+  # Close the loop automatically. STAGING push builds are handled by
+  # metal-agent-deploy.yml's own workflow_run trigger, so here we only fan out
+  # for a PRODUCTION build (a deliberate tag/dispatch) — dispatching a
+  # rebuildRootfs=true agent release to every production metal region. Combined
+  # with the host-side marker fix (self-update.ts shouldRebuildRootfs), the fleet
+  # then rebuilds its rootfs from this exact image on the next heartbeat, even
+  # when the agent code version is unchanged. Prod image builds stay deliberate;
+  # the fleet convergence that follows no longer requires anyone to remember.
+  # ---------------------------------------------------------------------------
+  converge-fleet:
+    name: Converge prod metal fleet on new image
+    needs: [merge]
+    if: ${{ (inputs.environment || 'staging') == 'production' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Dispatch rootfs rebuild to every production metal region
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # One agent release per production control plane (each region is its own
+          # control plane / DB), all flagged rebuildRootfs=true so the fleet picks
+          # up the freshly published runtime image. Built from the SAME ref as this
+          # image so agent + guest come from one commit.
+          for envn in production-us production-eu; do
+            echo "::notice::Dispatching metal-agent-deploy for $envn (rebuild_rootfs=true) @ $REF"
+            gh workflow run metal-agent-deploy.yml \
+              --ref "$REF" \
+              -f environment="$envn" \
+              -f channel=stable \
+              -f rebuild_rootfs=true
+          done
