@@ -13,14 +13,15 @@ import { authClient } from './auth-client'
  * `getCookie()` and passes it as a `Cookie` header (native `fetch` doesn't
  * send cookies automatically).
  */
+export function getNativeAgentAuthHeaders(): Record<string, string> {
+  if (Platform.OS === 'web') return {}
+  const cookie = (authClient as any).getCookie?.()
+  return cookie ? { Cookie: cookie } : {}
+}
+
 export function agentFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const isWeb = Platform.OS === 'web'
-  const extraHeaders: Record<string, string> = {}
-
-  if (!isWeb) {
-    const cookie = (authClient as any).getCookie?.()
-    if (cookie) extraHeaders['Cookie'] = cookie
-  }
+  const extraHeaders = getNativeAgentAuthHeaders()
 
   return fetch(input, {
     ...init,

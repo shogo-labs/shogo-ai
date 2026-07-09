@@ -25,6 +25,29 @@ function nativeApiUrlWithoutEnv(): string {
   return `http://localhost:${API_PORT}`
 }
 
+function filenameFromContentDisposition(disposition: string | null | undefined): string | undefined {
+  if (!disposition) return undefined
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded).replace(/[\\/]/g, '_')
+    } catch {
+      return encoded.replace(/[\\/]/g, '_')
+    }
+  }
+  const quoted = disposition.match(/filename="([^"]+)"/i)?.[1]
+  if (quoted) return quoted.replace(/[\\/]/g, '_')
+  const bare = disposition.match(/filename=([^;]+)/i)?.[1]?.trim()
+  return bare ? bare.replace(/[\\/]/g, '_') : undefined
+}
+
+function withTimestampSuffix(filename: string): string {
+  const dot = filename.lastIndexOf('.')
+  const suffix = `-${Date.now()}`
+  if (dot <= 0) return `${filename}${suffix}`
+  return `${filename.slice(0, dot)}${suffix}${filename.slice(dot)}`
+}
+
 export const API_URL = (() => {
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
     const origin = window.location.origin
@@ -1243,7 +1266,7 @@ export const api = {
     // HttpClient surfaces JSON for 2xx and the body for 4xx via res.error?
     // To keep the contract simple we return the raw body — callers
     // distinguish on shape (needsGitRootChoice / project / error).
-    return (res.data ?? res.error ?? {}) as any
+    return (res.data ?? (res as any).error ?? {}) as any
   },
 
   /**
@@ -1292,7 +1315,7 @@ export const api = {
     try {
       const res = await http.get<any>(`/api/local/projects/fs/browse${qs ? `?${qs}` : ''}`)
       if (res.data && typeof res.data.path === 'string') return res.data
-      const errBody = (res.error ?? res.data ?? {}) as { error?: string; code?: string }
+      const errBody = ((res as any).error ?? res.data ?? {}) as { error?: string; code?: string }
       return {
         error: typeof errBody.error === 'string' ? errBody.error : 'Browse failed',
         code: typeof errBody.code === 'string' ? errBody.code : undefined,
@@ -1425,7 +1448,7 @@ export const api = {
         { attachedProjectId, attachMode },
       )
       if (res.data?.attachment) return { attachment: res.data.attachment }
-      const errBody = (res.error ?? res.data ?? {}) as { error?: string; message?: string }
+      const errBody = ((res as any).error ?? res.data ?? {}) as { error?: string; message?: string }
       return { error: errBody.message ?? errBody.error ?? 'Failed to attach project' }
     } catch (err: any) {
       return { error: err?.message ?? 'Failed to attach project' }
@@ -1460,7 +1483,7 @@ export const api = {
         { path },
       )
       if (res.data?.folder) return { folder: res.data.folder }
-      const errBody = (res.error ?? res.data ?? {}) as { error?: string }
+      const errBody = ((res as any).error ?? res.data ?? {}) as { error?: string }
       return { error: errBody.error ?? 'Failed to add folder' }
     } catch (err: any) {
       return { error: err?.message ?? 'Failed to add folder' }
@@ -1503,7 +1526,7 @@ export const api = {
         opts,
       )
       if (res.data?.session) return { session: res.data.session }
-      const errBody = (res.error ?? res.data ?? {}) as { error?: string; message?: string }
+      const errBody = ((res as any).error ?? res.data ?? {}) as { error?: string; message?: string }
       return { error: errBody.message ?? errBody.error ?? 'Failed to create workspace session' }
     } catch (err: any) {
       return { error: err?.message ?? 'Failed to create workspace session' }
@@ -1520,7 +1543,7 @@ export const api = {
         {},
       )
       if (res.data?.session) return { session: res.data.session, attachments: res.data.attachments ?? [] }
-      const errBody = (res.error ?? res.data ?? {}) as { error?: string; message?: string }
+      const errBody = ((res as any).error ?? res.data ?? {}) as { error?: string; message?: string }
       return { error: errBody.message ?? errBody.error ?? 'Failed to open workspace session' }
     } catch (err: any) {
       return { error: err?.message ?? 'Failed to open workspace session' }
@@ -1746,6 +1769,98 @@ export const api = {
 
   getProjectExportUrl(projectId: string): string {
     return `${API_URL}/api/projects/${projectId}/export`
+  },
+
+  getProjectDownloadUrl(projectId: string): string {
+    return `${API_URL}/api/projects/${projectId}/download`
+  },
+
+  getProjectBundleDownloadUrl(projectId: string, opts?: { includeChats?: boolean }): string {
+    const url = new URL(`${API_URL}/api/projects/${projectId}/export-file`)
+    if (opts?.includeChats === false) url.searchParams.set('includeChats', 'false')
+    return url.toString()
+  },
+
+  async downloadProjectSourceZipFile(
+    projectId: string,
+    opts?: { authCookie?: string | null },
+  ): Promise<{ uri: string; filename: string }> {
+    if (Platform.OS === 'web') {
+      throw new Error('Native file download is not available on web')
+    }
+
+    const {
+      documentDirectory,
+      downloadAsync,
+      getInfoAsync,
+      moveAsync,
+    } = await import('expo-file-system/legacy')
+    const dir = documentDirectory
+    if (!dir) throw new Error('Could not access app storage to save ZIP')
+
+    const headers: Record<string, string> = {}
+    if (opts?.authCookie) headers['Cookie'] = opts.authCookie
+
+    const tempUri = `${dir}project-download-${projectId}-${Date.now()}.zip`
+    const result = await downloadAsync(api.getProjectDownloadUrl(projectId), tempUri, { headers })
+    if (result.status < 200 || result.status >= 300) {
+      throw new Error(`Download failed with status ${result.status}`)
+    }
+
+    const disposition = result.headers['content-disposition'] || result.headers['Content-Disposition']
+    const filename = filenameFromContentDisposition(disposition) || 'project.zip'
+    let fileUri = `${dir}${filename}`
+    if ((await getInfoAsync(fileUri)).exists) {
+      fileUri = `${dir}${withTimestampSuffix(filename)}`
+    }
+    if (fileUri !== tempUri) {
+      await moveAsync({ from: tempUri, to: fileUri })
+    }
+
+    return { uri: fileUri, filename }
+  },
+
+  async downloadProjectBundleFile(
+    projectId: string,
+    opts?: { includeChats?: boolean; authCookie?: string | null },
+  ): Promise<{ uri: string; filename: string }> {
+    if (Platform.OS === 'web') {
+      throw new Error('Native file download is not available on web')
+    }
+
+    const {
+      documentDirectory,
+      downloadAsync,
+      getInfoAsync,
+      moveAsync,
+    } = await import('expo-file-system/legacy')
+    const dir = documentDirectory
+    if (!dir) throw new Error('Could not access app storage to save export')
+
+    const headers: Record<string, string> = {}
+    if (opts?.authCookie) headers['Cookie'] = opts.authCookie
+
+    const tempUri = `${dir}project-export-${projectId}-${Date.now()}.shogo`
+    const result = await downloadAsync(
+      api.getProjectBundleDownloadUrl(projectId, { includeChats: opts?.includeChats }),
+      tempUri,
+      { headers },
+    )
+    if (result.status < 200 || result.status >= 300) {
+      throw new Error(`Export failed with status ${result.status}`)
+    }
+
+    const disposition = result.headers['content-disposition'] || result.headers['Content-Disposition']
+    const filename = filenameFromContentDisposition(disposition) || 'project.shogo'
+    let fileUri = `${dir}${filename}`
+    if ((await getInfoAsync(fileUri)).exists) {
+      fileUri = `${dir}${withTimestampSuffix(filename)}`
+    }
+    if (fileUri !== tempUri) {
+      await moveAsync({ from: tempUri, to: fileUri })
+    }
+
+    return { uri: fileUri, filename }
   },
 
   async exportProjectBlob(

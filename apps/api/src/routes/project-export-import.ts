@@ -129,6 +129,13 @@ const BUNDLE_FORMAT_VERSION = '1.1'
 const SUPPORTED_BUNDLE_VERSIONS = new Set(['1.0', '1.1'])
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB per file (export-only)
+const MAX_EXPORT_FILE_COUNT = Number(process.env.PROJECT_EXPORT_MAX_FILES ?? 10_000)
+const MAX_SOURCE_EXPORT_TOTAL_BYTES = Number(
+  process.env.PROJECT_SOURCE_EXPORT_MAX_BYTES ?? 250 * 1024 * 1024,
+)
+const MAX_BUNDLE_EXPORT_TOTAL_BYTES = Number(
+  process.env.PROJECT_BUNDLE_EXPORT_MAX_BYTES ?? 500 * 1024 * 1024,
+)
 // Total import bundle caps, gated by plan tier. Pro+ (pro/business/enterprise)
 // may import large projects; Free/Basic are limited to a much smaller bundle.
 const MAX_TOTAL_SIZE_PRO = 500 * 1024 * 1024 // 500 MB total bundle (pro+)
@@ -149,6 +156,65 @@ const SECRET_KEY_PATTERN =
   /token|secret|apikey|api_key|password|passwd|(^|_)pat$|webhook.*url|bearer|client[_-]?secret|refresh[_-]?token|access[_-]?token|database[_-]?url|redis[_-]?url|mongo[_-]?url|connection[_-]?string|private[_-]?key|ssh[_-]?key|signing[_-]?secret|encryption[_-]?key|\.pem$/i
 
 const isSecretKey = (key: string): boolean => SECRET_KEY_PATTERN.test(key)
+
+interface ExportStats {
+  fileCount: number
+  totalBytes: number
+}
+
+function getExportStats(files: Record<string, Uint8Array>): ExportStats {
+  let totalBytes = 0
+  let fileCount = 0
+  for (const data of Object.values(files)) {
+    fileCount++
+    totalBytes += data.byteLength
+  }
+  return { fileCount, totalBytes }
+}
+
+function rejectExportIfTooLarge(
+  projectId: string,
+  kind: 'source' | 'bundle',
+  stats: ExportStats,
+): Response | null {
+  const maxBytes = kind === 'source'
+    ? MAX_SOURCE_EXPORT_TOTAL_BYTES
+    : MAX_BUNDLE_EXPORT_TOTAL_BYTES
+
+  if (stats.fileCount > MAX_EXPORT_FILE_COUNT) {
+    console.warn('[ProjectExport] rejected file-count limit', {
+      projectId,
+      kind,
+      fileCount: stats.fileCount,
+      maxFiles: MAX_EXPORT_FILE_COUNT,
+      totalBytes: stats.totalBytes,
+    })
+    return Response.json(
+      {
+        error: `Project export has ${stats.fileCount} files, above the ${MAX_EXPORT_FILE_COUNT} file limit.`,
+      },
+      { status: 413 },
+    )
+  }
+
+  if (stats.totalBytes > maxBytes) {
+    console.warn('[ProjectExport] rejected byte limit', {
+      projectId,
+      kind,
+      fileCount: stats.fileCount,
+      totalBytes: stats.totalBytes,
+      maxBytes,
+    })
+    return Response.json(
+      {
+        error: `Project export is ${Math.ceil(stats.totalBytes / 1024 / 1024)} MB, above the ${Math.floor(maxBytes / 1024 / 1024)} MB limit.`,
+      },
+      { status: 413 },
+    )
+  }
+
+  return null
+}
 
 interface RequiredCredential {
   channel: string
@@ -994,13 +1060,17 @@ export function projectExportImportRoutes() {
     // /agent/workspace/bundle) where the old `GET /download` tar.gz route 404s.
     if (sourceOnly) {
       const BUILD_DIRS = new Set(['dist', 'build'])
-      const { files } = await collectExportWorkspaceFiles(projectId, {
+      const { files, sourceMode, fileSkipped } = await collectExportWorkspaceFiles(projectId, {
         extraExcludedDirs: BUILD_DIRS,
       })
       const sourceZip: Record<string, Uint8Array> = {}
       for (const [relPath, data] of Object.entries(files)) {
         sourceZip[relPath] = data
       }
+      const sourceStats = getExportStats(sourceZip)
+      const sourceLimitResponse = rejectExportIfTooLarge(projectId, 'source', sourceStats)
+      if (sourceLimitResponse) return sourceLimitResponse
+
       // Always ship a valid, non-empty archive (e.g. cold-starting pod / empty
       // workspace) so the client download never yields a 0-entry zip.
       if (Object.keys(sourceZip).length === 0) {
@@ -1009,6 +1079,14 @@ export function projectExportImportRoutes() {
         )
       }
       const zippedSource = zipSync(sourceZip, { level: 6 })
+      console.info('[ProjectExport] source export completed', {
+        projectId,
+        sourceMode,
+        fileCount: sourceStats.fileCount,
+        totalBytes: sourceStats.totalBytes,
+        zippedBytes: zippedSource.byteLength,
+        skippedCount: fileSkipped.length,
+      })
       const sourceName =
         project.name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60) || 'project'
       const sourceBody = zippedSource.buffer.slice(
@@ -1020,6 +1098,9 @@ export function projectExportImportRoutes() {
           'Content-Type': 'application/zip',
           'Content-Disposition': `attachment; filename="${sourceName}.zip"`,
           'Content-Length': String(zippedSource.byteLength),
+          'X-Export-File-Count': String(sourceStats.fileCount),
+          'X-Export-Uncompressed-Bytes': String(sourceStats.totalBytes),
+          'X-Export-Source-Mode': sourceMode,
         },
       })
     }
@@ -1265,6 +1346,10 @@ export function projectExportImportRoutes() {
       inventory[top] = (inventory[top] || 0) + 1
     }
 
+    const bundleStatsBeforeManifest = getExportStats(zipContents)
+    const bundleLimitResponse = rejectExportIfTooLarge(projectId, 'bundle', bundleStatsBeforeManifest)
+    if (bundleLimitResponse) return bundleLimitResponse
+
     const manifest = {
       bundleVersion: BUNDLE_FORMAT_VERSION,
       generatedAt: new Date().toISOString(),
@@ -1291,6 +1376,16 @@ export function projectExportImportRoutes() {
     const zipped = passwordProtect
       ? await encryptZipCrypto(zipContents, password)
       : zipSync(zipContents, { level: 6 })
+    console.info('[ProjectExport] bundle export completed', {
+      projectId,
+      sourceMode,
+      fileCount: bundleStatsBeforeManifest.fileCount + 1,
+      totalBytes: bundleStatsBeforeManifest.totalBytes + zipContents['manifest.json'].byteLength,
+      zippedBytes: zipped.byteLength,
+      skippedCount: fileSkipped.length,
+      includeChats,
+      passwordProtected: passwordProtect,
+    })
 
     const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)
     const filename = `${safeName}.shogo`
@@ -1301,6 +1396,11 @@ export function projectExportImportRoutes() {
         'Content-Type': 'application/zip',
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Content-Length': String(zipped.byteLength),
+        'X-Export-File-Count': String(bundleStatsBeforeManifest.fileCount + 1),
+        'X-Export-Uncompressed-Bytes': String(
+          bundleStatsBeforeManifest.totalBytes + zipContents['manifest.json'].byteLength,
+        ),
+        'X-Export-Source-Mode': sourceMode,
       },
     })
   })

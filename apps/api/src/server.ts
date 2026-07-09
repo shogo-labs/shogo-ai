@@ -3519,6 +3519,29 @@ app.get('/api/projects/:projectId/download', async (c) => {
   return app.fetch(exportReq)
 })
 
+// Native clients need a GET URL for file-system streaming downloads. This route
+// keeps passwords out of URLs by supporting only unencrypted `.shogo` exports;
+// password-protected mobile exports need a separate token/job contract.
+app.get('/api/projects/:projectId/export-file', async (c) => {
+  const projectId = c.req.param('projectId')
+  const includeChats = c.req.query('includeChats') !== 'false'
+
+  const url = new URL(c.req.url)
+  url.pathname = `/api/projects/${projectId}/export`
+  url.search = ''
+
+  const headers = new Headers(c.req.raw.headers)
+  headers.set('content-type', 'application/json')
+
+  const exportReq = new Request(url.toString(), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ includeChats }),
+  })
+
+  return app.fetch(exportReq)
+})
+
 // =============================================================================
 // S3 Files routes - Project file listing and access via S3 pre-signed URLs
 // =============================================================================
