@@ -80,9 +80,9 @@ const server = Bun.serve({
       }
 
       if (path === '/resume' && req.method === 'POST') {
-        const { projectId } = await json(req)
+        const { projectId, env } = await json(req)
         if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
-        const r = await pool.resume(projectId)
+        const r = await pool.resume(projectId, env ?? {})
         if (!r) return Response.json({ error: 'no restorable snapshot (cold miss)' }, { status: 409 })
         const url = await fwd.ensure(projectId, r.assigned.handle.guestIp)
         return Response.json({ url, source: r.source, readyMs: r.readyMs })

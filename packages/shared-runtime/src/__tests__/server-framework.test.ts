@@ -720,6 +720,159 @@ describe('/pool/assign', () => {
 })
 
 // ---------------------------------------------------------------------------
+// /pool/refresh-env  (audit Finding 1: resume never re-applies guest env)
+//
+// A metal resume restores the process with the env baked at first assign, so a
+// later change to AI_PROXY_URL/token, SHOGO_API_URL, or a rotated secret never
+// reached a resumed guest. /pool/refresh-env re-applies the env in-process and
+// bounces the sidecar (onRefreshEnv) only when something actually changed.
+// ---------------------------------------------------------------------------
+describe('/pool/refresh-env', () => {
+  const AUTH = { 'x-runtime-token': 'test-runtime-secret', 'content-type': 'application/json' }
+
+  async function buildAssigned(onRefreshEnv?: any) {
+    const refreshCalls: Array<{ projectId: string; changedKeys: string[]; env: any }> = []
+    const { app, state } = await buildApp({
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true' },
+      config: {
+        async onAssign() {},
+        onRefreshEnv:
+          onRefreshEnv ??
+          ((projectId: string, changedKeys: string[], env: any) => {
+            refreshCalls.push({ projectId, changedKeys, env })
+          }),
+      },
+    })
+    const assign = await app.request('/pool/assign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'proj-x', env: { CUSTOM: 'v1' } }),
+    })
+    expect(assign.status).toBe(200)
+    return { app, state, refreshCalls }
+  }
+
+  test('rejects when not in pool mode', async () => {
+    const { app } = await buildApp()
+    const res = await app.request('/pool/refresh-env', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({ projectId: 'p1', env: {} }),
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/Not in pool mode/)
+  })
+
+  test('rejects when in pool mode but not yet assigned', async () => {
+    const { app } = await buildApp({
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true' },
+    })
+    // Pre-assignment /pool/* has no auth bypass beyond assign/activity, but the
+    // handler still guards on poolAssigned. Send auth so we hit the handler.
+    const res = await app.request('/pool/refresh-env', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({ projectId: 'p1', env: {} }),
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/Not assigned/)
+  })
+
+  test('requires auth once assigned', async () => {
+    const { app } = await buildAssigned()
+    const noAuth = await app.request('/pool/refresh-env', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'proj-x', env: { CUSTOM: 'v2' } }),
+    })
+    expect(noAuth.status).toBe(401)
+  })
+
+  test('applies changed env, updates process.env, reports changed keys', async () => {
+    const { app, refreshCalls } = await buildAssigned()
+    const res = await app.request('/pool/refresh-env', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({
+        projectId: 'proj-x',
+        env: { CUSTOM: 'v2', SHOGO_API_URL: 'http://api.new.local' },
+      }),
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.ok).toBe(true)
+    expect(body.changed.sort()).toEqual(['CUSTOM', 'SHOGO_API_URL'])
+    expect(process.env.CUSTOM).toBe('v2')
+    expect(process.env.SHOGO_API_URL).toBe('http://api.new.local')
+    // The sidecar-bounce hook fired with the changed keys (fire-and-forget on
+    // the guest; awaited here via a microtask flush).
+    await new Promise((r) => setTimeout(r, 5))
+    expect(refreshCalls.length).toBe(1)
+    expect(refreshCalls[0].projectId).toBe('proj-x')
+    expect(refreshCalls[0].changedKeys.sort()).toEqual(['CUSTOM', 'SHOGO_API_URL'])
+  })
+
+  test('no-op when env is unchanged — reports changed:[] and does NOT bounce the sidecar', async () => {
+    const { app, refreshCalls } = await buildAssigned()
+    const res = await app.request('/pool/refresh-env', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({
+        projectId: 'proj-x',
+        env: { CUSTOM: 'v1', SHOGO_API_URL: 'http://api.test.local' },
+      }),
+    })
+    expect(res.status).toBe(200)
+    expect((await res.json()).changed).toEqual([])
+    await new Promise((r) => setTimeout(r, 5))
+    expect(refreshCalls.length).toBe(0) // unchanged resume pays no restart
+  })
+
+  test('rejects a misrouted refresh for a different project (409)', async () => {
+    const { app } = await buildAssigned()
+    const res = await app.request('/pool/refresh-env', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({ projectId: 'some-other-project', env: { CUSTOM: 'v9' } }),
+    })
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toMatch(/projectId mismatch/)
+    // The bogus value must NOT have been applied.
+    expect(process.env.CUSTOM).toBe('v1')
+  })
+
+  test('rejects an invalid JSON body', async () => {
+    const { app } = await buildAssigned()
+    const res = await app.request('/pool/refresh-env', {
+      method: 'POST',
+      headers: AUTH,
+      body: 'not-json{{{',
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/Invalid request body/)
+  })
+
+  test('a failing onRefreshEnv hook never fails the refresh', async () => {
+    const origErr = console.error
+    console.error = () => {}
+    try {
+      const { app } = await buildAssigned(() => {
+        throw new Error('sidecar bounce boom')
+      })
+      const res = await app.request('/pool/refresh-env', {
+        method: 'POST',
+        headers: AUTH,
+        body: JSON.stringify({ projectId: 'proj-x', env: { CUSTOM: 'v2' } }),
+      })
+      expect(res.status).toBe(200)
+      expect((await res.json()).changed).toEqual(['CUSTOM'])
+    } finally {
+      console.error = origErr
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Pool-mode middleware behavior
 // ---------------------------------------------------------------------------
 describe('pool-mode middleware', () => {

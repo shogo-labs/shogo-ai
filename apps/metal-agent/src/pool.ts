@@ -156,6 +156,37 @@ export class MetalWarmPool {
     }
   }
 
+  /**
+   * Re-apply the injected env to an already-restored guest via
+   * `POST /pool/refresh-env`. Snapshots freeze the env at first assign, so a
+   * later change (AI-proxy URL/token, SHOGO_API_URL, rotated secrets) never
+   * reaches a resumed VM without this. The guest diffs against its live env and
+   * only bounces its API sidecar when something actually changed. Authenticated
+   * with the runtime token (the endpoint sits under the auth-gated `/pool`
+   * prefix once assigned). A 404 (guest predates the endpoint) is tolerated.
+   */
+  private async refreshGuestEnv(
+    handle: FcVmHandle,
+    projectId: string,
+    env: Record<string, string>,
+  ): Promise<void> {
+    if (!env || Object.keys(env).length === 0) return
+    const token = env.RUNTIME_AUTH_SECRET
+    const res = await fetch(`${handle.agentUrl}/pool/refresh-env`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ projectId, env }),
+      signal: AbortSignal.timeout(this.cfg.rehydrateTimeoutMs),
+    })
+    if (res.status === 404) return // guest predates /pool/refresh-env
+    if (!res.ok) {
+      throw new Error(`/pool/refresh-env ${res.status}: ${await res.text().catch(() => '')}`)
+    }
+  }
+
   async waitForHealth(handle: FcVmHandle, isAlive: () => boolean): Promise<number> {
     const start = performance.now()
     for (let i = 0; i < this.cfg.healthRetries; i++) {
@@ -456,7 +487,7 @@ export class MetalWarmPool {
       }
       if (await this.canResume(projectId)) {
         try {
-          const res = await this.resume(projectId)
+          const res = await this.resume(projectId, env)
           if (res)
             return {
               handle: res.assigned.handle,
@@ -728,6 +759,7 @@ export class MetalWarmPool {
    */
   async resume(
     projectId: string,
+    env: Record<string, string> = {},
   ): Promise<{ assigned: AssignedVm; apiMs: number; readyMs: number; source: 'local' | 'store' } | null> {
     let s = this.suspended.get(projectId)
     let source: 'local' | 'store' = 'local'
@@ -790,9 +822,24 @@ export class MetalWarmPool {
       assignedAt: now,
       lastTouchedAt: now,
       restoredFrom: { vmstate: s.snapshot.snapshotPath, mem: s.snapshot.memFilePath },
+      // Carry the runtime token so /pool/export (source backup on suspend) and
+      // adopt-on-restart keep working after a resume, not just after an assign.
+      runtimeToken: env.RUNTIME_AUTH_SECRET || undefined,
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)
+    // Re-apply the injected env to the restored guest. A snapshot restore
+    // brings back the process with the env baked at first assign, so any change
+    // since then (AI-proxy URL/token, SHOGO_API_URL, rotated secrets) would be
+    // stale until a cold boot — the root cause of the "provider connection
+    // errors" incidents. Best-effort: a guest that predates /pool/refresh-env
+    // 404s and keeps serving with its prior env.
+    await this.refreshGuestEnv(handle, projectId, env).catch((err) =>
+      console.error(
+        `[pool] env refresh for ${projectId} failed (serving with prior env):`,
+        err?.message ?? err,
+      ),
+    )
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
     return { assigned: a, apiMs, readyMs: apiMs + readyMs, source }
   }

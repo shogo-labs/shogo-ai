@@ -711,6 +711,26 @@ const { app, state, logTiming } = await createRuntimeApp({
     gateway: agentGateway?.getStatus() ?? null,
     workspace: workspaceStatus,
   }),
+  // Called by /pool/refresh-env after a resume re-applies env and something
+  // changed. The framework already reconfigured the AI proxy + token loop
+  // in-process (fixes the gateway), but the project's API sidecar (server.tsx)
+  // captured its env at spawn time — bounce it so it re-reads the fresh values
+  // (e.g. a corrected SHOGO_API_URL / AI proxy URL). Only bounce a sidecar
+  // that's actually up; a project with no running API server has nothing stale.
+  async onRefreshEnv(projectId, changedKeys) {
+    try {
+      const pm = getPreviewManager()
+      const st = pm.getStatus()
+      if (st.apiServerPhase === 'healthy' || st.running) {
+        console.log(
+          `[agent-runtime] pool env refresh for ${projectId} changed [${changedKeys.join(', ')}] — restarting API sidecar`,
+        )
+        await pm.restartApiServerOnly()
+      }
+    } catch (err: any) {
+      console.error(`[agent-runtime] onRefreshEnv sidecar restart failed: ${err?.message ?? err}`)
+    }
+  },
 })
 
 // Readiness probe.
