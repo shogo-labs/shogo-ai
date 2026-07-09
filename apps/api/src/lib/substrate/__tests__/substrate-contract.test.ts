@@ -52,6 +52,7 @@ const metalCase: Case = {
       },
       async stopProject(id) {
         stopped.push(id)
+        return { suspended: true, busy: false }
       },
       async destroyProject(id) {
         destroyed.push(id)

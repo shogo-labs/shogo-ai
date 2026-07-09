@@ -57,6 +57,12 @@ export interface AssignedVm {
   /** Last activity counter seen from the guest (for the activity poll). */
   lastActivityAt?: number
   /**
+   * Active agent message streams the guest reported at the last activity poll.
+   * `> 0` means a live generation is in flight, so the idle reaper must not
+   * snapshot the VM away (it would kill the turn). Refreshed each pollActivity.
+   */
+  activeStreams?: number
+  /**
    * Always-on (paid instance tier): the idle-suspend reaper must never suspend
    * this VM. Set from the control-plane's `SHOGO_ALWAYS_ON` assign env on every
    * open and persisted so it survives adopt-on-restart.
@@ -872,8 +878,12 @@ export class MetalWarmPool {
             a.lastTouchedAt = now // fail open
             return
           }
-          const body = (await res.json()) as { lastRequestAt?: number }
+          const body = (await res.json()) as { lastRequestAt?: number; activeStreams?: number }
           const last = typeof body.lastRequestAt === 'number' ? body.lastRequestAt : 0
+          // Cache live-stream count so reapIdle can skip a project mid-generation
+          // even when no new HTTP request has bumped lastRequestAt for a while.
+          a.activeStreams = typeof body.activeStreams === 'number' ? body.activeStreams : 0
+          if (a.activeStreams > 0) a.lastTouchedAt = now // an active turn is activity
           if (a.lastActivityAt === undefined) a.lastActivityAt = last
           if (last > a.lastActivityAt) {
             a.lastActivityAt = last
@@ -884,6 +894,30 @@ export class MetalWarmPool {
         }
       }),
     )
+  }
+
+  /**
+   * True if the project's guest is mid-generation — an active agent message
+   * stream (`activeStreams > 0` from /pool/activity). Suspending it would
+   * snapshot away a live turn, so both the explicit `/stop` and the idle reaper
+   * consult this first. Fail-SAFE: a poll error → treat as busy (don't suspend
+   * on an unknown state); a clean 404 (guest opts out) or `activeStreams:0` →
+   * not busy. Only assigned (running) projects can be busy.
+   */
+  async isBusy(projectId: string): Promise<boolean> {
+    const a = this.assigned.get(projectId)
+    if (!a) return false
+    try {
+      const res = await fetch(`${a.handle.agentUrl}/pool/activity`, {
+        signal: AbortSignal.timeout(this.cfg.activityTimeoutMs),
+      })
+      if (res.status === 404) return false // guest opts out of activity reporting
+      if (!res.ok) return true // unknown state → don't risk killing a live turn
+      const body = (await res.json()) as { activeStreams?: number }
+      return (body.activeStreams ?? 0) > 0
+    } catch {
+      return true // can't confirm idleness → fail safe (don't suspend)
+    }
   }
 
   /**
@@ -901,6 +935,11 @@ export class MetalWarmPool {
     )
     const done: string[] = []
     for (const a of stale) {
+      // A long-running generation can outlast the idle window without any new
+      // external request bumping lastTouchedAt, so also skip any VM the last
+      // activity poll saw mid-stream — never snapshot away an active agent
+      // message. (The reaper timer polls activity immediately before this.)
+      if ((a.activeStreams ?? 0) > 0) continue
       try {
         await this.suspend(a.projectId)
         done.push(a.projectId)

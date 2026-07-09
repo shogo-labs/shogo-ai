@@ -107,11 +107,15 @@ const server = Bun.serve({
         // that isn't currently assigned is already stopped.
         const { projectId } = await json(req)
         if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
-        if (!pool.getAssigned(projectId)) return Response.json({ ok: true, alreadyStopped: true })
+        if (!pool.getAssigned(projectId)) return Response.json({ ok: true, alreadyStopped: true, suspended: false })
+        // Never suspend a project mid-generation: snapshotting it would kill the
+        // active agent message. Report busy so the control plane leaves it in the
+        // user's open set and retries the eviction on a later (idle) open.
+        if (await pool.isBusy(projectId)) return Response.json({ ok: true, busy: true, suspended: false })
         const s = await pool.suspend(projectId)
         fwd.remove(projectId)
         reportPlacement('suspended', projectId)
-        return Response.json({ ok: true, memBytes: s.snapshot.bytesMem })
+        return Response.json({ ok: true, suspended: true, memBytes: s.snapshot.bytesMem })
       }
 
       if (path === '/destroy' && req.method === 'POST') {
