@@ -66,6 +66,20 @@ export interface RuntimeAppConfig {
    * without an explicit key, so this hook is optional belt-and-suspenders.
    */
   onTokenRotate?: (env: Record<string, string>) => void | Promise<void>
+  /**
+   * Optional hook invoked by `POST /pool/refresh-env` when a resume re-applies
+   * the injected env and one or more values actually CHANGED. Use it to bounce
+   * runtime-owned child processes that captured env at spawn time (e.g. the
+   * project's API sidecar `server.tsx`) so they pick up the new values. Not
+   * called when the refreshed env is identical to the running env (the common
+   * case), so an unchanged resume never pays a restart. Errors are caught and
+   * logged; they never fail the refresh.
+   */
+  onRefreshEnv?: (
+    projectId: string,
+    changedKeys: string[],
+    env: Record<string, string>,
+  ) => void | Promise<void>
 }
 
 export interface RuntimeState {
@@ -699,6 +713,85 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       console.error(`[${config.name}] Pool assignment failed for ${projectId}:`, error.message)
       return c.json({ error: `Assignment failed: ${error.message}` }, 500)
     }
+  })
+
+  // ---------------------------------------------------------------------------
+  // POST /pool/refresh-env
+  //
+  // Re-apply the injected env to an ALREADY-assigned pod WITHOUT a re-assign.
+  //
+  // Why: metal resumes a project from a memory snapshot, which restores the
+  // process with whatever env was baked at first assign. A change since then to
+  // the AI-proxy URL/token, SHOGO_API_URL, or any rotated secret therefore never
+  // reaches a resumed guest — it runs with stale config until a cold boot. That
+  // is the root cause of the 2026-07 "provider connection errors" incidents
+  // (guests pinned to an old, now-unreachable in-cluster proxy URL).
+  //
+  // The metal host calls this on every resume. We diff the incoming env against
+  // the live process env, apply the deltas, reconfigure the AI proxy + token
+  // loop in-process (fixes the agent gateway immediately), and only bounce
+  // runtime-owned child servers (onRefreshEnv, fire-and-forget) when something
+  // actually changed — so the common "unchanged resume" pays no restart.
+  app.post('/pool/refresh-env', async (c) => {
+    if (!IS_POOL_MODE) return c.json({ error: 'Not in pool mode' }, 400)
+    if (!state.poolAssigned) return c.json({ error: 'Not assigned' }, 400)
+
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: 'Invalid request body' }, 400)
+    }
+    const { projectId, env: envVars } = body ?? {}
+
+    // Guard against a misrouted refresh poisoning a different project's env.
+    // Workspace binds key off `ws:<id>`; skip the strict identity check there.
+    if (
+      typeof projectId === 'string' &&
+      state.currentProjectId &&
+      !state.currentProjectId.startsWith('ws:') &&
+      projectId !== state.currentProjectId
+    ) {
+      return c.json({ error: 'projectId mismatch', assigned: state.currentProjectId }, 409)
+    }
+
+    const changed: string[] = []
+    if (envVars && typeof envVars === 'object') {
+      for (const [key, value] of Object.entries(envVars)) {
+        if (typeof value !== 'string') continue
+        if (process.env[key] !== value) {
+          process.env[key] = value
+          changed.push(key)
+        }
+      }
+    }
+
+    // Reconfigure the AI proxy in-process (cheap, idempotent) so the agent
+    // gateway picks up a new AI_PROXY_URL/token immediately, and re-arm the
+    // token-refresh loop against the (possibly new) API URL. Never fatal.
+    try {
+      state.aiProxy = configureAIProxy({ logPrefix: config.name })
+      if (state.aiProxy.useProxy) Object.assign(process.env, state.aiProxy.env)
+      ensureTokenRefreshLoop()
+    } catch (err: any) {
+      console.error(`[${config.name}] refresh-env AI proxy reconfigure failed: ${err?.message ?? err}`)
+    }
+
+    // Bounce runtime-owned child servers only when a value actually changed.
+    // Fire-and-forget: the in-process reapply above already fixed the gateway,
+    // so the sidecar restart must not add wake latency to the resume path.
+    if (changed.length > 0 && config.onRefreshEnv) {
+      const pid = state.currentProjectId ?? (typeof projectId === 'string' ? projectId : '')
+      const hook = config.onRefreshEnv
+      // Defer into the microtask queue so a hook that throws *synchronously*
+      // can't escape and fail the refresh response.
+      void Promise.resolve()
+        .then(() => hook(pid, changed, (envVars ?? {}) as Record<string, string>))
+        .catch((err: any) => console.error(`[${config.name}] onRefreshEnv failed: ${err?.message ?? err}`))
+    }
+
+    logTiming(`Pool env refresh for ${state.currentProjectId} (changed=${changed.length})`)
+    return c.json({ ok: true, changed })
   })
 
   logTiming('Shared framework initialized')
