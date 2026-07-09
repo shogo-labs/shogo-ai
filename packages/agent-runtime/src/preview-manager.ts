@@ -813,6 +813,11 @@ export class PreviewManager {
   // window before the sidecar is spawned.
   private hasApiServer: boolean | null = null
   private regenerating = false
+  // Latches true once the preview has reached `ready` at least once. Lets the
+  // readiness gate keep reporting `running` during an in-place schema regen
+  // (which transiently moves `_phase` off 'ready') without falsely reporting
+  // ready during the very first cold-boot build.
+  private everReady = false
   private pendingSchemaChange = false
   // In-flight pool pre-warm (see `prewarm()`). Memoized so repeated calls
   // join the same run, and awaited at the top of `backgroundSetup()` so an
@@ -1237,16 +1242,25 @@ export class PreviewManager {
 
     console.log(`[${LOG_PREFIX}] sync() — stopping API server, regenerating, then restarting...`)
     this.regenerating = true
-    await this.killApiServer()
+    const wasStarted = this.started
+    let ok = false
+    try {
+      await this.killApiServer()
 
-    const ok = await this.runShogoGenerate()
-    if (ok) {
-      const timings: Record<string, number> = {}
-      await this.runPrismaIfNeeded(timings)
-      await this.startApiServer()
+      ok = await this.runShogoGenerate()
+      if (ok) {
+        const timings: Record<string, number> = {}
+        await this.runPrismaIfNeeded(timings)
+        await this.startApiServer()
+      }
+    } finally {
+      // See handleSchemaChange: restore the 'ready' phase clobbered by
+      // runPrismaIfNeeded so the metal preview readiness probe doesn't wedge the
+      // preview on "loading" after a sync()/schema regen.
+      if (wasStarted) this._phase = 'ready'
+      this.regenerating = false
+      this.startSchemaWatcher()
     }
-    this.regenerating = false
-    this.startSchemaWatcher()
 
     return ok
       ? { ok: this.apiPhase === 'healthy', phase: this.apiPhase }
@@ -1676,15 +1690,27 @@ export class PreviewManager {
     console.log(`[${LOG_PREFIX}] schema.prisma changed, regenerating...`)
     this.regenerating = true
     this.pendingSchemaChange = false
-    await this.killApiServer()
+    const wasStarted = this.started
+    try {
+      await this.killApiServer()
 
-    const ok = await this.runShogoGenerate()
-    if (ok) {
-      const timings: Record<string, number> = {}
-      await this.runPrismaIfNeeded(timings)
-      await this.startApiServer()
+      const ok = await this.runShogoGenerate()
+      if (ok) {
+        const timings: Record<string, number> = {}
+        await this.runPrismaIfNeeded(timings)
+        await this.startApiServer()
+      }
+    } finally {
+      // An in-place regen only bounces the API sidecar + re-pushes the DB; the
+      // bundler/static server stayed up. `runPrismaIfNeeded` clobbered `_phase`
+      // to 'generating-prisma'/'pushing-db', so restore 'ready' here — otherwise
+      // the preview readiness gate (running === _phase==='ready') wedges the
+      // preview on "loading" forever after an agent schema edit. Restore even on
+      // a generate failure: the last-good dist keeps serving (API errors surface
+      // via apiServerPhase/errors) rather than an infinite loading spinner.
+      if (wasStarted) this._phase = 'ready'
+      this.regenerating = false
     }
-    this.regenerating = false
 
     if (this.pendingSchemaChange) {
       console.log(`[${LOG_PREFIX}] Schema changed during regeneration, re-running...`)
@@ -2309,14 +2335,17 @@ export class PreviewManager {
       }
     }
 
-    this._phase = 'pushing-db'
     const devDb = join(cwd, 'prisma', 'dev.db')
     if (existsSync(devDb)) {
       console.log(`[${LOG_PREFIX}] SQLite db exists — skipping db push`)
       timings.dbPush = 0
+      // NB: do NOT set `_phase='pushing-db'` before this early return — a skip
+      // would otherwise leave the phase wedged off 'ready' when a caller (e.g.
+      // the schema watcher) doesn't own a subsequent phase restore.
       return
     }
 
+    this._phase = 'pushing-db'
     const t2 = Date.now()
     try {
       await pkg.prismaDbPushAsync(cwd, {
@@ -2456,7 +2485,14 @@ export class PreviewManager {
       generate: string | null
     }
   } {
-    const running = this.started && this._phase === 'ready'
+    if (this.started && this._phase === 'ready') this.everReady = true
+    // A schema-triggered regen (the agent edits prisma/schema.prisma) bounces
+    // the API sidecar and re-pushes the DB, transiently moving `_phase` off
+    // 'ready' — but the bundler/static server stays up the whole time. An
+    // already-serving project must keep reporting `running`, otherwise the
+    // preview-router Worker drops the iframe to "loading preview" mid-session
+    // (and, before the phase-restore fix in handleSchemaChange/sync, forever).
+    const running = this.started && (this._phase === 'ready' || (this.regenerating && this.everReady))
     return {
       running,
       port: running ? this.runtimePort : null,
