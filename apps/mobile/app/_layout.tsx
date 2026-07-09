@@ -78,62 +78,7 @@ import { safeSetItem } from '../lib/safe-storage'
 import { setPendingLicenseCode } from '../lib/pending-license'
 import * as ExpoLinking from 'expo-linking'
 
-type SentryBeforeSend = NonNullable<Parameters<typeof Sentry.init>[0]>['beforeSend']
-type SentryErrorEvent = Parameters<NonNullable<SentryBeforeSend>>[0]
-
-/**
- * production_web noise filter. These high-volume issues are environmental,
- * not Shogo code defects — left unfiltered they bury real regressions in
- * the dashboard and burn quota. Each branch maps to a specific issue
- * confirmed during Sentry triage (see the triage plan, Tier 2).
- */
-function isNoiseEvent(event: SentryErrorEvent): boolean {
-  const values = event.exception?.values ?? []
-  const messages = values
-    .map((v) => `${v.type ?? ''}: ${v.value ?? ''}`)
-    .concat(typeof event.message === 'string' ? [event.message] : [])
-  const frames = values.flatMap((v) => v.stacktrace?.frames ?? [])
-  const reqUrl = typeof event.request?.url === 'string' ? event.request.url : ''
-
-  // 1. Preview-iframe failures (top issue by volume). The sandboxed preview
-  //    app injects `frame_ant.js`, which fetches its own origin
-  //    (<uuid>.preview.shogo.ai). While the preview is booting / being torn
-  //    down those reject with "Failed to fetch" — surfaced here but owned by
-  //    the preview runtime, not studio.
-  const PREVIEW_HOST_RE = /(?:preview--[^.\s/]+|[^.\s/]+\.preview)\.shogo\.ai/i
-  const isPreviewIframe =
-    frames.some((f) => (f.filename ?? '').includes('frame_ant')) ||
-    messages.some((m) => PREVIEW_HOST_RE.test(m)) ||
-    PREVIEW_HOST_RE.test(reqUrl)
-  if (isPreviewIframe) return true
-
-  // 2. Transient backend availability / network — server health, not a
-  //    client bug. The SDK surfaces 5xx as ShogoError; `AbortSignal.timeout`
-  //    surfaces as TimeoutError; dropped/blocked connections as
-  //    "Failed to fetch" / "Load failed" / "NetworkError".
-  const isTransientBackend = messages.some(
-    (m) =>
-      /Request failed with status 50[234]\b/.test(m) ||
-      /\bTimeoutError\b/.test(m) ||
-      /signal timed out/i.test(m) ||
-      /Failed to fetch\b/.test(m) ||
-      /\bLoad failed\b/.test(m) ||
-      /NetworkError when attempting to fetch/i.test(m),
-  )
-  if (isTransientBackend) return true
-
-  // 3. Browser-extension DOM races (e.g. Google Translate mutates the
-  //    React-owned DOM, then React's insertBefore/removeChild can't find the
-  //    node). Not reproducible in-app and unfixable from our side.
-  const isExtensionDomRace = messages.some(
-    (m) =>
-      /Failed to execute '(insertBefore|removeChild)' on 'Node'/.test(m) &&
-      /not a child of this node|node to be removed is not a child/.test(m),
-  )
-  if (isExtensionDomRace) return true
-
-  return false
-}
+import { isNoiseEvent } from '../lib/sentry-noise-filter'
 
 Sentry.init({
   dsn: sentryDsn,

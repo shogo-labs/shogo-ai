@@ -307,9 +307,16 @@ export const BillingAccountCollection = types
           throw new Error("Item not found")
         }
 
-        // Don't allow concurrent updates
+        // Coalesce concurrent updates instead of throwing. A second
+        // update for the same id while the first PATCH is in flight used
+        // to `throw new Error("Update already in progress")`; optimistic-UI
+        // callers fire these writes without awaiting/catching the returned
+        // promise, so the throw surfaced as an unhandled promise rejection
+        // (Sentry REACT-3A / REACT-43). Mirror `delete`'s no-op-on-
+        // concurrency behavior: let the in-flight update win and return the
+        // current node.
         if (pendingUpdates.has(id)) {
-          throw new Error("Update already in progress")
+          return existing
         }
 
         // Save previous state for rollback

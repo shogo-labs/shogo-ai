@@ -57,6 +57,7 @@ import {
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
+  buildChatStreamErrorReport,
 } from "@shogo/shared-app/chat"
 import {
   useChatTransportConfig,
@@ -99,6 +100,7 @@ import {
 import { useDualPlan } from "../../lib/dual-plan-preference"
 import {
   isChatStalled,
+  resolveProgressAfterVisibilityChange,
   DEFAULT_SUBMITTED_STALL_MS,
   DEFAULT_STREAMING_STALL_MS,
 } from "../../lib/chat-stall-watchdog"
@@ -1448,6 +1450,35 @@ export const ChatPanel = observer(function ChatPanel({
     experimental_throttle: 120,
     onError: (err) => {
       console.error("[ChatPanel] Stream error:", err)
+
+      // Surface the transport-failure class in Sentry. This path (network
+      // resets → "Connection interrupted. Please tap Retry to continue.") used
+      // to be console-only, so a very common source of user-facing pain never
+      // appeared in the dashboard. `buildChatStreamErrorReport` returns null for
+      // user-initiated aborts (Stop / new message / navigation), and tags the
+      // event so the production_web noise filter keeps it despite the raw
+      // "Failed to fetch"-style message. The stall watchdog already owns the
+      // separate "stuck with no error" case (`chat_stall_watchdog_tripped`).
+      try {
+        const report = buildChatStreamErrorReport(err, {
+          turnId: currentTurnIdRef.current,
+          sessionId: currentSessionIdRef.current,
+          projectId: projectId ?? null,
+          lastSeq: turnLastSeqRef.current,
+          userInitiatedStop: userInitiatedStopRef.current,
+          phase: "stream",
+        })
+        if (report) {
+          Sentry.captureException(err, {
+            level: report.level,
+            tags: report.tags,
+            extra: report.extra,
+            fingerprint: report.fingerprint,
+          })
+        }
+      } catch (reportErr) {
+        console.warn("[ChatPanel] failed to report stream error to Sentry:", reportErr)
+      }
 
       setMessages((prev) =>
         prev.map((msg) => {
@@ -3942,6 +3973,26 @@ export const ChatPanel = observer(function ChatPanel({
     lastChatProgressAtRef.current = Date.now()
   }, [messages, status])
 
+  // Restart the stall window whenever the tab returns to the foreground. While
+  // hidden, `setInterval` is throttled/suspended and `Date.now()` jumps, so a
+  // long background stint would otherwise make the watchdog trip on the first
+  // foreground tick — force-stopping a healthy turn and emitting a false
+  // `chat_stall_watchdog_tripped` (Sentry REACT-38: ~half of trips had elapsed
+  // ≫ threshold, up to ~2h). Resetting the progress mark on refocus gives the
+  // turn a fresh threshold window to show progress / auto-resume reattach.
+  useEffect(() => {
+    if (typeof document === "undefined") return
+    const onVisibility = () => {
+      lastChatProgressAtRef.current = resolveProgressAfterVisibilityChange({
+        isVisibleNow: document.visibilityState === "visible",
+        now: Date.now(),
+        lastProgressAt: lastChatProgressAtRef.current,
+      })
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+    return () => document.removeEventListener("visibilitychange", onVisibility)
+  }, [])
+
   useEffect(() => {
     if (!isStreaming) return
     const intervalMs = Math.min(DEFAULT_SUBMITTED_STALL_MS, DEFAULT_STREAMING_STALL_MS, 15_000)
@@ -3953,6 +4004,8 @@ export const ChatPanel = observer(function ChatPanel({
           status,
           lastProgressAt,
           now,
+          documentHidden:
+            typeof document !== "undefined" && document.visibilityState === "hidden",
         })
       ) {
         const elapsedMs = now - lastProgressAt

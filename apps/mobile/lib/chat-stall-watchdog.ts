@@ -75,6 +75,19 @@ export interface StallWatchdogState {
   submittedThresholdMs?: number
   /** Override for `'streaming'` threshold (ms). Defaults to {@link DEFAULT_STREAMING_STALL_MS}. */
   streamingThresholdMs?: number
+  /**
+   * Whether the tab/document is currently backgrounded (`document.visibilityState
+   * === 'hidden'`). Browsers throttle `setInterval` to ≥1/min in hidden tabs and
+   * the OS may suspend the page entirely, so `now - lastProgressAt` balloons far
+   * past the threshold purely from time spent hidden — NOT from a dead turn. The
+   * turn is very likely still streaming (or already completed) server-side, and
+   * `auto-resuming-fetch` reattaches on refocus. Tripping here would force-stop a
+   * healthy turn AND emit a false `chat_stall_watchdog_tripped` (Sentry REACT-38:
+   * ~half of trips had elapsed ≫ threshold, up to ~2h). When hidden we never
+   * stall; the caller restarts the window on the foreground transition via
+   * {@link resolveProgressAfterVisibilityChange}.
+   */
+  documentHidden?: boolean
 }
 
 /**
@@ -90,6 +103,10 @@ export interface StallWatchdogState {
 export function isChatStalled(state: StallWatchdogState): boolean {
   const { status, lastProgressAt, now } = state
   if (status === 'ready' || status === 'error') return false
+  // Never trip while backgrounded — throttled/suspended timers make `elapsed`
+  // meaningless and the turn is almost certainly alive server-side. See
+  // `documentHidden` docs above (Sentry REACT-38).
+  if (state.documentHidden) return false
 
   const elapsed = now - lastProgressAt
   if (elapsed < 0) return false // clock skew / future timestamp — never stall
@@ -100,4 +117,29 @@ export function isChatStalled(state: StallWatchdogState): boolean {
       : state.streamingThresholdMs ?? DEFAULT_STREAMING_STALL_MS
 
   return elapsed >= threshold
+}
+
+/**
+ * The wall-clock timestamp the watchdog should treat as the latest forward
+ * progress after a visibility transition.
+ *
+ * Returning to the foreground restarts the stall window (returns `now`) so time
+ * that accrued while the tab was hidden — when `setInterval` is throttled and
+ * the turn may have completed server-side — never counts toward a stall. Any
+ * other transition keeps the existing mark unchanged.
+ *
+ * Pairs with {@link StallWatchdogState.documentHidden}: `documentHidden` stops
+ * the watchdog from tripping *while* hidden; this restarts the clock the moment
+ * the user comes back so a long background stint doesn't instantly trip on the
+ * first foreground tick.
+ */
+export function resolveProgressAfterVisibilityChange(opts: {
+  /** True when the document just became visible (foreground). */
+  isVisibleNow: boolean
+  /** Wall-clock ms now. */
+  now: number
+  /** The current `lastProgressAt` mark. */
+  lastProgressAt: number
+}): number {
+  return opts.isVisibleNow ? opts.now : opts.lastProgressAt
 }

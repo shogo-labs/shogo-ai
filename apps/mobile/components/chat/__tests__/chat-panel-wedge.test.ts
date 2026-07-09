@@ -31,6 +31,7 @@
 import { describe, test, expect, beforeEach } from 'bun:test'
 import {
   isChatStalled,
+  resolveProgressAfterVisibilityChange,
   DEFAULT_SUBMITTED_STALL_MS,
   DEFAULT_STREAMING_STALL_MS,
 } from '../../../lib/chat-stall-watchdog'
@@ -343,6 +344,79 @@ describe('isChatStalled — predicate semantics', () => {
     expect(
       isChatStalled({ status: 'submitted', lastProgressAt: 10_000_000, now: 0 }),
     ).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sentry REACT-38 regression: backgrounded-tab false positives.
+//
+// ~half of `chat_stall_watchdog_tripped` events had `elapsedMs` far beyond the
+// threshold (up to ~2h) — the signature of a hidden tab whose throttled/
+// suspended `setInterval` + jumped `Date.now()` make the turn *look* stalled on
+// refocus, even though it was alive (or already completed) server-side. Tripping
+// there force-stopped healthy turns AND emitted false telemetry.
+// ---------------------------------------------------------------------------
+describe('isChatStalled — backgrounded tab must not trip (REACT-38)', () => {
+  test('a huge elapsed does NOT stall while the document is hidden', () => {
+    // 2 hours of "elapsed" — but purely from the tab being backgrounded.
+    const twoHours = 2 * 60 * 60_000
+    expect(
+      isChatStalled({
+        status: 'streaming',
+        lastProgressAt: 0,
+        now: twoHours,
+        documentHidden: true,
+      }),
+    ).toBe(false)
+    expect(
+      isChatStalled({
+        status: 'submitted',
+        lastProgressAt: 0,
+        now: twoHours,
+        documentHidden: true,
+      }),
+    ).toBe(false)
+  })
+
+  test('the same elapsed DOES stall once foreground (documentHidden falsey)', () => {
+    const twoHours = 2 * 60 * 60_000
+    expect(
+      isChatStalled({ status: 'streaming', lastProgressAt: 0, now: twoHours }),
+    ).toBe(true)
+  })
+})
+
+describe('resolveProgressAfterVisibilityChange — restart the window on refocus', () => {
+  test('returning to foreground restarts the stall window at now', () => {
+    expect(
+      resolveProgressAfterVisibilityChange({ isVisibleNow: true, now: 5_000_000, lastProgressAt: 0 }),
+    ).toBe(5_000_000)
+  })
+
+  test('staying hidden keeps the existing progress mark', () => {
+    expect(
+      resolveProgressAfterVisibilityChange({ isVisibleNow: false, now: 5_000_000, lastProgressAt: 42 }),
+    ).toBe(42)
+  })
+
+  test('end-to-end: a long background stint does not trip on the first foreground tick', () => {
+    // Turn started at t=0, tab hidden the whole time, user returns at t=2h.
+    const now = 2 * 60 * 60_000
+    // While hidden the watchdog would have been suppressed by documentHidden.
+    expect(isChatStalled({ status: 'streaming', lastProgressAt: 0, now, documentHidden: true })).toBe(false)
+    // On refocus we restart the window, so the very next foreground tick is NOT
+    // an instant stall — the turn gets a fresh threshold to show progress /
+    // auto-resume reattach.
+    const restarted = resolveProgressAfterVisibilityChange({ isVisibleNow: true, now, lastProgressAt: 0 })
+    expect(isChatStalled({ status: 'streaming', lastProgressAt: restarted, now })).toBe(false)
+    // ...and it still trips if it stays dead past the threshold after refocus.
+    expect(
+      isChatStalled({
+        status: 'streaming',
+        lastProgressAt: restarted,
+        now: now + DEFAULT_STREAMING_STALL_MS,
+      }),
+    ).toBe(true)
   })
 })
 

@@ -87,6 +87,12 @@ function CloudModelSettingsPage() {
         setCloudAdvancedModel(data.advanced || '')
         setDefaultMode(data.defaultMode || '')
       })
+      // `/api/admin/settings/agent-models` is super-admin-only. A non-super-admin
+      // reaching this screen (or a session that lost the role) gets a 403 →
+      // `ShogoError('Super admin access required')`. Without this catch the
+      // rejection is unhandled and floods Sentry (REACT-3Q). Match the other
+      // `getAgentModelDefaults()` call sites in this file, which already catch.
+      .catch(() => {})
       .finally(() => setIsLoading(false))
   }, [platform])
 
