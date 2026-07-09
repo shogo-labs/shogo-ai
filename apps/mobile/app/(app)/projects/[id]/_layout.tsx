@@ -56,7 +56,7 @@ import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
-import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas } from '../../../../lib/preview-gate'
+import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas, isPreviewFailed } from '../../../../lib/preview-gate'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
 import {
@@ -4029,9 +4029,29 @@ function CanvasPanel({
           ? 'Connecting to agent runtime...'
           : 'Loading preview...'
       : PHASE_LABELS['starting-api']
+    const previewFailed = isPreviewFailed({ phase: previewPhase })
     return (
       <View className="flex-1 items-center justify-center px-6">
-        {baseTimedOut ? (
+        {previewFailed ? (
+          <>
+            <View className="w-3 h-3 rounded-full mb-3 bg-destructive" />
+            <Text className="text-foreground font-semibold mb-1">
+              Preview build failed
+            </Text>
+            <Text className="text-muted-foreground text-center text-sm">
+              The project couldn't finish building. Check the build logs, or ask the agent to diagnose and fix the error.
+            </Text>
+            {onRefresh && (
+              <Pressable
+                onPress={onRefresh}
+                className="mt-4 flex-row items-center gap-2 rounded-md border border-border px-4 py-2 active:opacity-70"
+              >
+                <RefreshCw size={14} className="text-muted-foreground" />
+                <Text className="text-muted-foreground text-sm">Retry</Text>
+              </Pressable>
+            )}
+          </>
+        ) : baseTimedOut ? (
           <>
             <View className="w-3 h-3 rounded-full mb-3 bg-destructive" />
             <Text className="text-foreground font-semibold mb-1">
@@ -4104,6 +4124,7 @@ const PHASE_LABELS: Record<string, string> = {
   building: 'Building app...',
   'starting-api': 'Starting API server...',
   ready: 'Ready',
+  failed: 'Preview build failed',
 }
 
 /**

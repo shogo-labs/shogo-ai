@@ -734,6 +734,11 @@ export type PreviewPhase =
   | 'building'
   | 'starting-api'
   | 'ready'
+  // Terminal setup failure (install/generate/build/API spawn threw before the
+  // preview ever reached 'ready'). Surfaced so the client shows an error instead
+  // of an indefinite "loading preview" spinner. A later sync()/schema edit can
+  // still recover the project out of this state.
+  | 'failed'
 
 export type ApiServerPhase = 'idle' | 'generating' | 'starting' | 'healthy' | 'restarting' | 'crashed' | 'stopped'
 
@@ -838,6 +843,11 @@ export class PreviewManager {
   // report every step as `ok` once the pod reached `ready` even when the
   // project was fundamentally broken. See SHOG-592 review notes.
   private lastInstallError: string | null = null
+  // Reason the cold-boot setup terminally failed (install/generate/build/API
+  // spawn threw before the preview ever became ready). Non-null iff `_phase ===
+  // 'failed'`. Surfaced via getStatus().errors.setup so the client can render a
+  // real error instead of spinning on "loading preview" forever.
+  private lastSetupError: string | null = null
   /**
    * Crash-recovery state.
    *
@@ -1821,6 +1831,10 @@ export class PreviewManager {
     // Fresh preview session — align console buffer with an empty on-disk log (matches build refresh UX).
     this.clearRuntimeConsoleLog()
 
+    // A fresh start clears any prior terminal-failure marker so a re-run isn't
+    // wedged in 'failed' from a previous attempt.
+    this.lastSetupError = null
+
     const timings: Record<string, number> = {}
     const bundlerCwd = this.resolveBundlerCwd()
 
@@ -1847,6 +1861,7 @@ export class PreviewManager {
       this.started = true
       this.backgroundSetupMetro(timings, bundlerCwd).catch((err: any) => {
         console.error(`[${LOG_PREFIX}] Background Metro setup failed:`, err.message)
+        this.markSetupFailed(err)
       })
       // Mode label here is "in-progress" — final label (with tunnel
       // status etc.) is logged when backgroundSetupMetro finishes.
@@ -1865,6 +1880,7 @@ export class PreviewManager {
 
     this.backgroundSetup(timings).catch((err) => {
       console.error(`[${LOG_PREFIX}] Background setup failed:`, err.message)
+      this.markSetupFailed(err)
     })
 
     return {
@@ -2439,6 +2455,24 @@ export class PreviewManager {
   }
 
   /**
+   * Record a terminal cold-boot setup failure. Called from the background-setup
+   * catch handlers so a genuine install/generate/build/API-spawn error surfaces
+   * as `phase='failed'` (with a reason) instead of leaving `_phase` wedged at an
+   * intermediate step and `running=false` forever — the "loading preview"
+   * spinner that never resolves.
+   *
+   * A preview that already reached `ready` (e.g. a prebuilt dist serving while a
+   * later background step blows up) is left untouched — the static preview still
+   * works, so we must not flip it to failed.
+   */
+  private markSetupFailed(err: unknown): void {
+    if (this._phase === 'ready') return
+    const msg = err instanceof Error ? err.message : String(err)
+    this.lastSetupError = msg || 'setup failed'
+    this._phase = 'failed'
+  }
+
+  /**
    * Get the current preview status.
    * `running` is true when the preview is serveable — either because a pre-built
    * dist/ exists (started=true immediately) or because vite build --watch is live.
@@ -2483,6 +2517,8 @@ export class PreviewManager {
     errors: {
       install: string | null
       generate: string | null
+      // Non-null when cold-boot setup terminally failed (phase === 'failed').
+      setup: string | null
     }
   } {
     if (this.started && this._phase === 'ready') this.everReady = true
@@ -2511,6 +2547,7 @@ export class PreviewManager {
       errors: {
         install: this.lastInstallError,
         generate: this.lastGenerateError,
+        setup: this.lastSetupError,
       },
     }
   }

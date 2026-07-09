@@ -38,14 +38,27 @@ export function resolveApiReady(status: PreviewStatusLike): boolean {
 }
 
 /**
+ * Whether the runtime reported a terminal cold-boot setup failure.
+ *
+ * `phase === 'failed'` means install/generate/build/API-spawn threw before the
+ * preview ever became ready — the project will never come up on its own. The
+ * client uses this to stop polling and show a real error instead of an
+ * indefinite "loading preview" spinner.
+ */
+export function isPreviewFailed(status: PreviewStatusLike): boolean {
+  return status.phase === 'failed'
+}
+
+/**
  * Whether `usePreviewPhase` should stop polling `/preview/status`.
  *
  * We keep polling while the preview is `running` but the API isn't ready yet:
  * the prebuilt-`dist/` start path flips `running` true immediately, well
  * before the sidecar comes up, so `running` alone is not a safe stop signal.
- * Stop only once the API is also ready (or absent).
+ * Stop once the API is ready (or absent), OR once setup has terminally failed.
  */
 export function shouldStopPreviewPoll(status: PreviewStatusLike): boolean {
+  if (isPreviewFailed(status)) return true
   return !!status.running && resolveApiReady(status)
 }
 

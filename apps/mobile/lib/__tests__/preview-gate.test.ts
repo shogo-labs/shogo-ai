@@ -15,6 +15,7 @@ import {
   resolveApiReady,
   shouldStopPreviewPoll,
   shouldShowCanvas,
+  isPreviewFailed,
 } from '../preview-gate'
 
 describe('resolveApiReady', () => {
@@ -53,6 +54,22 @@ describe('shouldStopPreviewPoll', () => {
   test('does not stop before the preview is running', () => {
     expect(shouldStopPreviewPoll({})).toBe(false)
     expect(shouldStopPreviewPoll({ apiReady: true })).toBe(false)
+  })
+
+  test('stops immediately when setup terminally failed (no infinite spinner)', () => {
+    // phase=failed means the runtime will never come up on its own — stop
+    // polling and let the UI render the error instead of spinning forever.
+    expect(shouldStopPreviewPoll({ phase: 'failed' })).toBe(true)
+    expect(shouldStopPreviewPoll({ phase: 'failed', running: false })).toBe(true)
+  })
+})
+
+describe('isPreviewFailed', () => {
+  test('true only for the terminal failed phase', () => {
+    expect(isPreviewFailed({ phase: 'failed' })).toBe(true)
+    expect(isPreviewFailed({ phase: 'building' })).toBe(false)
+    expect(isPreviewFailed({ phase: 'ready' })).toBe(false)
+    expect(isPreviewFailed({})).toBe(false)
   })
 })
 
