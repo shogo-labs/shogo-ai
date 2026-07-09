@@ -195,6 +195,19 @@ export const config = {
   s3Region: env('S3_REGION', 'us-east-1'),
 
   /**
+   * Writable-state bucket for SERVER-BACKED published apps (the metal analog of
+   * the Knative runtime's PublishedDataSync target). Holds `{subdomain}/data.tar.gz`
+   * — the SQLite DB + upload dirs a published microVM accumulates. The metal-agent
+   * (trusted, holds S3 creds) hydrates it into a published guest on cold boot and
+   * exports it back periodically / on suspend, so the guest never needs S3 creds
+   * (same trust model as the source workspace archive). Unset → published
+   * writable-state durability is disabled (a fresh DB on every cold boot).
+   */
+  publishDataBucket: env('PUBLISH_DATA_BUCKET', env('S3_PUBLISHED_DATA_BUCKET', '')),
+  /** How often to export a live published VM's writable state to S3 (0 = only on suspend). */
+  publishDataExportIntervalMs: parseInt(env('METAL_PUBLISH_DATA_EXPORT_INTERVAL_MS', '120000'), 10),
+
+  /**
    * Parallel ranged GET for large durable artifacts (the ~400 MiB compressed
    * mem image dominates an S3 hydration). A single stream to OCI's S3-compat
    * endpoint caps at ~27 MB/s (~15s for the mem); splitting the object into

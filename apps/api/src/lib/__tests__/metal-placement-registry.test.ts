@@ -43,6 +43,18 @@ describe('MetalPlacementRegistry (in-memory fallback)', () => {
     expect(await r.getPlacement('p')).toBeNull()
   })
 
+  it('set/get/clear published placement round-trips (subdomain → published VM)', async () => {
+    const r = mk()
+    await r.setPublishedPlacement('my-site', { projectId: 'p1', hostId: 'ash-1', region: 'us', alwaysOn: true })
+    const p = await r.getPublishedPlacement('my-site')
+    expect(p?.projectId).toBe('p1')
+    expect(p?.hostId).toBe('ash-1')
+    expect(p?.alwaysOn).toBe(true)
+    expect(typeof p?.updatedAt).toBe('number')
+    await r.clearPublishedPlacement('my-site')
+    expect(await r.getPublishedPlacement('my-site')).toBeNull()
+  })
+
   it('lease is exclusive: a second holder cannot acquire until release', async () => {
     const r = mk()
     expect(await r.acquireLease('p', 'holderA', 60_000)).toBe(true)

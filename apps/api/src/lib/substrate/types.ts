@@ -70,6 +70,30 @@ export interface RuntimeSummary {
   region?: string
 }
 
+/**
+ * Inputs for provisioning a project's LIVE published site ({subdomain}.shogo.one).
+ * `serverBacked` is resolved by the caller (publish.ts probes /agent/server-info)
+ * so the substrate never has to reach into the dev runtime — it just provisions
+ * the right shape (static vs a long-running backend). `alwaysOn` pins a warm
+ * replica (paid perk); otherwise the published runtime may scale/suspend to zero
+ * and wake on visit.
+ */
+export interface PublishOpts {
+  subdomain: string
+  serverBacked: boolean
+  alwaysOn?: boolean
+}
+
+/** Outcome of provisioning a published site. */
+export interface PublishResult {
+  /** The serving class that was provisioned. */
+  serverBacked: boolean
+  /** Which substrate now owns the published runtime. */
+  substrate: SubstrateKind
+  /** Cluster/mesh-routable URL of the published runtime, when one exists. */
+  url?: string
+}
+
 export interface ProjectSubstrate {
   readonly kind: SubstrateKind
 
@@ -98,6 +122,42 @@ export interface ProjectSubstrate {
    * surfaces a SubstrateUnsupportedError.
    */
   resize?(projectId: string, resources: Resources): Promise<void>
+
+  // --- publishing surface --------------------------------------------------
+  // The LIVE published site ({subdomain}.shogo.one), promoted to the substrate
+  // interface so publish.ts stops branching on Knative directly. Static apps are
+  // served entirely from PUBLISH_BUCKET + the Cloudflare Worker on BOTH
+  // substrates (no runtime); only server-backed apps get a runtime here
+  // (Knative published-{id} ksvc, or a metal published microVM).
+
+  /**
+   * Provision (or reconcile) the live published site for a project. Idempotent:
+   * safe to call on every (re)publish. Static → no runtime; server-backed →
+   * a long-running backend serving `/api/*`.
+   */
+  publish(projectId: string, opts: PublishOpts): Promise<PublishResult>
+
+  /**
+   * Tear down the published runtime + routing for a project. Idempotent and
+   * best-effort (an already-unpublished project is a no-op). The durable
+   * published-data archive is intentionally KEPT so a later republish restores
+   * end-user writes.
+   */
+  unpublish(projectId: string, subdomain: string): Promise<void>
+
+  /**
+   * Ensure the published runtime is up, waking it from scale-to-zero / suspend
+   * if needed. Never throws (returns `ready:false` on failure) so the visitor
+   * loading page can keep polling. Static apps are always `ready:true`.
+   */
+  wakePublished(projectId: string, subdomain: string, opts?: WakeOpts): Promise<{ ready: boolean; url?: string }>
+
+  /**
+   * Flip the published runtime between always-on (pinned warm replica, no cold
+   * start) and scale/suspend-to-zero. Best-effort; the DB flag is the source of
+   * truth and the next republish reconciles. No-op for static apps.
+   */
+  setPublishedAlwaysOn(projectId: string, subdomain: string, on: boolean): Promise<void>
 }
 
 /** Thrown when an optional substrate operation isn't implemented for a kind. */

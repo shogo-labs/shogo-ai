@@ -40,6 +40,7 @@ import {
   type SnapshotStore,
 } from './snapshot-store'
 import { fetchWorkspaceArchive, uploadWorkspaceArchive } from './workspace-archive'
+import { fetchPublishedDataArchive, uploadPublishedDataArchive } from './published-data-archive'
 
 export interface PooledVm {
   handle: FcVmHandle
@@ -74,6 +75,14 @@ export interface AssignedVm {
    * suspend. Persisted so it survives adopt-on-restart. Host-local only.
    */
   runtimeToken?: string
+  /**
+   * Set for a SERVER-BACKED published microVM (assign env `SHOGO_PUBLISHED_MODE`
+   * + `PUBLISHED_SUBDOMAIN`). Marks this VM as owning a live site's writable
+   * state, so the pool hydrates `{subdomain}/data.tar.gz` into it on cold boot
+   * and exports it back to S3 periodically / on suspend (host-side, since the
+   * guest holds no S3 creds). Absent on ordinary dev/preview VMs.
+   */
+  publishedSubdomain?: string
 }
 
 export interface SuspendedVm {
@@ -100,6 +109,17 @@ export interface GcReport {
  * a re-suspend are still reclaimed promptly.
  */
 const ORPHAN_GRACE_MS = 180_000
+
+/**
+ * Extract the published subdomain from an assign env when the control plane
+ * flagged this as a server-backed published microVM. Returns undefined for an
+ * ordinary dev/preview VM (no PUBLISHED_SUBDOMAIN / SHOGO_PUBLISHED_MODE).
+ */
+function publishedSubdomainFromEnv(env: Record<string, string>): string | undefined {
+  const published = env.SHOGO_PUBLISHED_MODE === 'true' || env.SHOGO_PUBLISHED_MODE === '1'
+  const subdomain = env.PUBLISHED_SUBDOMAIN
+  return published && subdomain ? subdomain : undefined
+}
 
 async function probeHealth(url: string, timeoutMs = 1000): Promise<boolean> {
   try {
@@ -373,6 +393,7 @@ export class MetalWarmPool {
         projectId: e.projectId,
         alwaysOn: e.alwaysOn,
         runtimeToken: e.runtimeToken,
+        publishedSubdomain: e.publishedSubdomain,
         handle,
         assignedAt: e.assignedAt,
         lastTouchedAt: Date.now(),
@@ -422,6 +443,7 @@ export class MetalWarmPool {
       restoredFrom: a.restoredFrom,
       alwaysOn: a.alwaysOn,
       runtimeToken: a.runtimeToken,
+      publishedSubdomain: a.publishedSubdomain,
       v: 1,
     })
   }
@@ -523,12 +545,14 @@ export class MetalWarmPool {
     // path with `env`, so it also (re)applies the flag after a resume (which
     // carries no env) and re-persists it for adopt-on-restart.
     const alwaysOn = env.SHOGO_ALWAYS_ON === '1' || env.SHOGO_ALWAYS_ON === 'true'
+    const publishedSubdomain = publishedSubdomainFromEnv(env) ?? this.assigned.get(projectId)?.publishedSubdomain
     const a = this.assigned.get(projectId)
     if (a) {
       const token = env.RUNTIME_AUTH_SECRET || a.runtimeToken
-      if (!!a.alwaysOn !== alwaysOn || a.runtimeToken !== token) {
+      if (!!a.alwaysOn !== alwaysOn || a.runtimeToken !== token || a.publishedSubdomain !== publishedSubdomain) {
         a.alwaysOn = alwaysOn
         a.runtimeToken = token
+        a.publishedSubdomain = publishedSubdomain
         this.writeLive(a)
       }
     }
@@ -562,7 +586,15 @@ export class MetalWarmPool {
     }
 
     const now = Date.now()
-    const a: AssignedVm = { projectId, handle: vm.handle, assignedAt: now, lastTouchedAt: now }
+    const publishedSubdomain = publishedSubdomainFromEnv(env)
+    const a: AssignedVm = {
+      projectId,
+      handle: vm.handle,
+      assignedAt: now,
+      lastTouchedAt: now,
+      runtimeToken: env.RUNTIME_AUTH_SECRET,
+      publishedSubdomain,
+    }
     this.assigned.set(projectId, a)
     this.writeLive(a)
 
@@ -575,6 +607,16 @@ export class MetalWarmPool {
     await this.hydrateFromBackup(projectId, vm.handle, env).catch((err) =>
       console.error(`[pool] hydrate-from-backup failed for ${projectId} (serving template):`, err?.message ?? err),
     )
+
+    // Server-backed published VM: overlay the live site's writable state
+    // ({subdomain}/data.tar.gz) on top of the git-restored source so the app
+    // boots with accumulated end-user data (not a fresh DB). Host-side — the
+    // guest holds no S3 creds. Best-effort: a fresh/first publish has no archive.
+    if (publishedSubdomain) {
+      await this.hydratePublishedData(publishedSubdomain, vm.handle, env).catch((err) =>
+        console.error(`[pool] published-data hydrate failed for ${publishedSubdomain} (fresh DB):`, err?.message ?? err),
+      )
+    }
     return a
   }
 
@@ -664,6 +706,99 @@ export class MetalWarmPool {
     }
   }
 
+  // --- server-backed published writable-state durability -------------------
+  // The metal analog of the Knative runtime's PublishedDataSync, done host-side
+  // because the guest holds no S3 creds. Hydrate on cold boot; export
+  // periodically + on suspend. All best-effort — the site still serves without
+  // durability, it just cold-boots a fresh DB.
+
+  /** Fetch a published subdomain's writable-state archive. `protected` for tests. */
+  protected fetchPublishedData(subdomain: string): Promise<Uint8Array | null> {
+    return fetchPublishedDataArchive(subdomain, this.cfg)
+  }
+
+  /** Upload a published subdomain's writable-state archive. `protected` for tests. */
+  protected uploadPublishedData(subdomain: string, bytes: Uint8Array): Promise<boolean> {
+    return uploadPublishedDataArchive(subdomain, bytes, this.cfg)
+  }
+
+  private async hydratePublishedData(
+    subdomain: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+  ): Promise<void> {
+    const archive = await this.fetchPublishedData(subdomain)
+    if (!archive) {
+      console.log(`[pool] no published-data archive for ${subdomain} — booting fresh DB`)
+      return
+    }
+    const token = env.RUNTIME_AUTH_SECRET
+    // Reuse the guest's /pool/hydrate control endpoint: it extracts a tar over
+    // the workspace tree, so a data.tar.gz rooted at the writable paths
+    // (prisma/dev.db, uploads/) overlays cleanly on top of the git-restored source.
+    const res = await fetch(`${handle.agentUrl}/pool/hydrate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/gzip',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: archive,
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (!res.ok) throw new Error(`/pool/hydrate (data) failed (${res.status}): ${await res.text()}`)
+    console.log(`[pool] hydrated published-data for ${subdomain} (${archive.byteLength} bytes)`)
+  }
+
+  /**
+   * Pull the guest's CURRENT writable state and upload it to `{subdomain}/data.tar.gz`.
+   * Uses the guest's authenticated `/agent/published-data-archive` endpoint (the
+   * same tar the API's dev->live push reads), so the archive stays interchangeable
+   * across the Knative pod, the manual push, and this metal VM. Best-effort +
+   * idempotent; a no-op when the guest reports nothing writable yet.
+   */
+  async exportPublishedData(a: AssignedVm): Promise<boolean> {
+    if (!a.publishedSubdomain) return false
+    const bytes = await this.fetchPublishedExport(a.handle, a.runtimeToken)
+    if (!bytes) return false
+    const uploaded = await this.uploadPublishedData(a.publishedSubdomain, bytes)
+    if (uploaded) {
+      console.log(`[pool] exported published-data for ${a.publishedSubdomain} (${bytes.byteLength} bytes)`)
+    }
+    return uploaded
+  }
+
+  /** Pull the guest's writable-state tar over the control channel. `protected` for tests. */
+  protected async fetchPublishedExport(handle: FcVmHandle, token?: string): Promise<Uint8Array | null> {
+    const res = await fetch(`${handle.agentUrl}/agent/published-data-archive`, {
+      method: 'GET',
+      headers: { ...(token ? { 'x-runtime-token': token } : {}) },
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (res.status === 404 || res.status === 204) return null
+    if (!res.ok) throw new Error(`/agent/published-data-archive failed (${res.status}): ${await res.text()}`)
+    const { archive } = (await res.json().catch(() => ({}))) as { archive?: string }
+    if (!archive) return null
+    return new Uint8Array(Buffer.from(archive, 'base64'))
+  }
+
+  /**
+   * Export writable state for every live published VM — driven by the agent's
+   * periodic exporter loop so long-running always-on sites persist end-user
+   * writes without waiting for a suspend (which may never come). Best-effort.
+   */
+  async exportAllPublishedData(): Promise<number> {
+    let n = 0
+    for (const a of this.assigned.values()) {
+      if (!a.publishedSubdomain) continue
+      const ok = await this.exportPublishedData(a).catch((err) => {
+        console.error(`[pool] periodic published-data export for ${a.publishedSubdomain} failed:`, err?.message ?? err)
+        return false
+      })
+      if (ok) n++
+    }
+    return n
+  }
+
   /**
    * Suspend an assigned project to a snapshot, freeing host RAM.
    * quiesce guest → snapshot (local NVMe) → push to durable store (if enabled).
@@ -683,6 +818,15 @@ export class MetalWarmPool {
       await this.saveBackupToStore(a).catch((err) =>
         console.error(`[pool] source backup for ${a.projectId} failed (snapshot still durable):`, err?.message ?? err),
       )
+
+      // Server-backed published VM: also flush the live writable state to the
+      // published-data bucket so a resume on a DIFFERENT host (snapshot miss)
+      // — or a republish/data-push — sees the latest end-user data.
+      if (a.publishedSubdomain) {
+        await this.exportPublishedData(a).catch((err) =>
+          console.error(`[pool] published-data export for ${a.publishedSubdomain} failed (snapshot still durable):`, err?.message ?? err),
+        )
+      }
 
       await this.callGuestHook(a.handle.agentUrl, 'quiesce', this.cfg.quiesceTimeoutMs)
       const snapshot = await this.heavy.run(() => this.mgr.snapshotVM(a.handle))
@@ -833,6 +977,9 @@ export class MetalWarmPool {
       // Carry the runtime token so /pool/export (source backup on suspend) and
       // adopt-on-restart keep working after a resume, not just after an assign.
       runtimeToken: env.RUNTIME_AUTH_SECRET || undefined,
+      // Carry the published marker so a resumed server-backed site keeps
+      // exporting its writable state (the resume env re-asserts it).
+      publishedSubdomain: publishedSubdomainFromEnv(env),
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)

@@ -276,6 +276,12 @@ variable "kourier_origin" {
   default     = null
 }
 
+variable "api_published_origin" {
+  description = "Forwarded to `publish-hosting-oci`: public Shogo API base URL the subdomain-router Worker proxies METAL-backed published `/api/*` to (→ /api/published/{subdomain}/...). The API resolves the project's `published:{id}` microVM placement and forwards over the mesh (Workers can't fetch a raw IP:port). Must be a proxied hostname CF can fetch. Null disables metal-backed publishing at the edge (falls back to static serving)."
+  type        = string
+  default     = null
+}
+
 variable "site_auth_secret" {
   description = "Forwarded to `publish-hosting-oci`: HMAC secret the subdomain-router Worker uses to sign/verify the password-gate cookie for password-protected published sites (bound as SITE_AUTH_SECRET). Null/empty disables the gate (sites fail open to public) even when the SITE_AUTH KV map has entries. Use a long random value."
   type        = string

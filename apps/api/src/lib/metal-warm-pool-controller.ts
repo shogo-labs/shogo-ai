@@ -26,8 +26,19 @@
  */
 
 import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
-import { buildProjectEnv } from './runtime/build-project-env'
+import { buildProjectEnv, buildPublishedProjectEnv } from './runtime/build-project-env'
 import { getMetalPlacementRegistry, type HostScalars, type MetalPlacementRegistry } from './metal-placement-registry'
+
+/**
+ * The controller keys every runtime by an opaque string. A dev/preview runtime
+ * uses the bare `projectId`; a LIVE published site uses a distinct
+ * `published:{projectId}` key so its always-on, published-mode microVM never
+ * collides with the same project's editing VM (different env, different
+ * snapshot). Keep this the single source of the convention.
+ */
+export function publishedRuntimeKey(projectId: string): string {
+  return `published:${projectId}`
+}
 
 const tracer = trace.getTracer('shogo-metal-pool')
 const meter = metrics.getMeter('shogo-metal-pool')
@@ -230,6 +241,11 @@ type EnvBuilder = (
   projectId: string,
   opts?: { logPrefix?: string; forMetal?: boolean },
 ) => Promise<Record<string, string>>
+type PublishedEnvBuilder = (
+  projectId: string,
+  subdomain: string,
+  opts?: { alwaysOn?: boolean },
+) => Promise<Record<string, string>>
 type FetchImpl = typeof fetch
 
 export class MetalWarmPoolController {
@@ -253,6 +269,7 @@ export class MetalWarmPoolController {
     private fetchImpl: FetchImpl = fetch,
     private now: () => number = Date.now,
     private registry: MetalPlacementRegistry = getMetalPlacementRegistry(),
+    private publishedEnvBuilder: PublishedEnvBuilder = buildPublishedProjectEnv,
   ) {}
 
   /** Upsert a host from its heartbeat, mirroring scalars to the shared registry. */
@@ -360,19 +377,31 @@ export class MetalWarmPoolController {
    * back to the Knative path.
    */
   async getMetalProjectUrl(projectId: string): Promise<string> {
-    // Fast path: an already-resolved, still-running project returns its cached
+    return this.resolveRuntime(projectId, () => this.envBuilder(projectId, { forMetal: true }))
+  }
+
+  /**
+   * Resolve ANY runtime key (a bare projectId for dev/preview, or
+   * `published:{id}` for a live site) to a mesh-routable URL. Shares the whole
+   * hot path — URL cache, singleflight, lease, placement, sticky candidate
+   * ordering — so a published microVM gets the same anti-split-brain + cache-
+   * aware routing as a preview VM. `buildEnv` supplies the assign env lazily
+   * (only built once the lease is held / a host is available).
+   */
+  private async resolveRuntime(runtimeKey: string, buildEnv: () => Promise<Record<string, string>>): Promise<string> {
+    // Fast path: an already-resolved, still-running runtime returns its cached
     // URL without touching the host — killing the per-request /assign churn that
     // a client polling loop (e.g. a stuck preview iframe) would otherwise create.
-    const cached = this.getCachedUrl(projectId)
+    const cached = this.getCachedUrl(runtimeKey)
     if (cached) {
       this.stats.cacheHit++
       urlCacheHitCounter.add(1)
       return cached
     }
-    const inflight = this.pending.get(projectId)
+    const inflight = this.pending.get(runtimeKey)
     if (inflight) return inflight
-    const p = this._resolve(projectId).finally(() => this.pending.delete(projectId))
-    this.pending.set(projectId, p)
+    const p = this._resolve(runtimeKey, buildEnv).finally(() => this.pending.delete(runtimeKey))
+    this.pending.set(runtimeKey, p)
     return p
   }
 
@@ -398,7 +427,7 @@ export class MetalWarmPoolController {
     this.urlCache.delete(projectId)
   }
 
-  private async _resolve(projectId: string): Promise<string> {
+  private async _resolve(projectId: string, buildEnv: () => Promise<Record<string, string>>): Promise<string> {
     return tracer.startActiveSpan('metal.get_pod_url', { attributes: { 'project.id': projectId } }, async (span) => {
       try {
         // Anti split brain: acquire a short-TTL lease before resuming. The
@@ -426,7 +455,7 @@ export class MetalWarmPoolController {
 
         // forMetal: the guest runs outside OKE and must reach the AI proxy /
         // Shogo API over the PUBLIC URL (in-cluster DNS is unresolvable there).
-        const env = await this.envBuilder(projectId, { forMetal: true })
+        const env = await buildEnv()
         let lastErr: unknown
 
         for (const host of cands) {
@@ -718,6 +747,79 @@ export class MetalWarmPoolController {
     return body
   }
 
+  // --- published site runtime (published:{id} key) -------------------------
+  // A server-backed published app runs as its OWN always-on microVM, distinct
+  // from the project's editing VM. These wrap the generic runtime lifecycle with
+  // the `published:{id}` key + published-mode env, and mirror the subdomain →
+  // placement into the registry so the API `/api/published` proxy + wake can
+  // route the edge's `/api/*` to the live box.
+
+  /**
+   * Resolve (waking/booting if needed) the live published microVM for a project
+   * and publish its subdomain placement. Throws (NoMetalHostError / assign
+   * failure) exactly like getMetalProjectUrl so the substrate can surface a
+   * retryable state.
+   */
+  async getMetalPublishedUrl(
+    projectId: string,
+    subdomain: string,
+    opts?: { alwaysOn?: boolean },
+  ): Promise<{ url: string; hostId?: string; region?: string }> {
+    const key = publishedRuntimeKey(projectId)
+    const url = await this.resolveRuntime(key, () => this.publishedEnvBuilder(projectId, subdomain, opts))
+    const hostId = this.projectHost.get(key)
+    const host = hostId ? this.hosts.get(hostId) : undefined
+    await this.registry
+      .setPublishedPlacement(subdomain, {
+        projectId,
+        hostId: hostId ?? '',
+        region: host?.region ?? '',
+        alwaysOn: !!opts?.alwaysOn,
+      })
+      .catch(() => {})
+    return { url, hostId, region: host?.region }
+  }
+
+  /** Runtime status of a project's published microVM (substrate.getStatus). */
+  async getPublishedStatus(projectId: string) {
+    return this.getProjectStatus(publishedRuntimeKey(projectId))
+  }
+
+  /** Suspend a published microVM (allowed only when not always-on). */
+  async stopPublished(projectId: string): Promise<StopResult> {
+    return this.stopProject(publishedRuntimeKey(projectId))
+  }
+
+  /**
+   * Permanently tear down a project's published microVM fleet-wide and clear its
+   * subdomain placement. Best-effort + idempotent (used on unpublish/delete).
+   */
+  async destroyPublished(projectId: string, subdomain?: string): Promise<void> {
+    await this.destroyProject(publishedRuntimeKey(projectId))
+    if (subdomain) await this.registry.clearPublishedPlacement(subdomain).catch(() => {})
+  }
+
+  /**
+   * Push the always-on flag to a running published microVM's host (live) so an
+   * enable stops the idle reaper immediately and a disable re-arms it. The new
+   * flag also lands in the env on the next cold boot/resume. Refreshes the
+   * subdomain placement's alwaysOn marker. Best-effort.
+   */
+  async setPublishedAlwaysOn(projectId: string, subdomain: string, on: boolean): Promise<void> {
+    await this.resizeProject(publishedRuntimeKey(projectId), { minScale: on ? 1 : 0 })
+    const existing = await this.registry.getPublishedPlacement(subdomain).catch(() => null)
+    if (existing) {
+      await this.registry
+        .setPublishedPlacement(subdomain, {
+          projectId: existing.projectId,
+          hostId: existing.hostId,
+          region: existing.region,
+          alwaysOn: on,
+        })
+        .catch(() => {})
+    }
+  }
+
   /** Best-effort keep-alive → defer host-side idle auto-suspend + renew lease. */
   async touch(projectId: string): Promise<void> {
     const hostId = this.projectHost.get(projectId)
@@ -882,6 +984,30 @@ export async function destroyMetalProject(projectId: string): Promise<void> {
 /** Every project running/cached on the metal fleet (substrate.listAll). */
 export async function listMetalProjects() {
   return getMetalWarmPoolController().listProjects()
+}
+
+/** Resolve + wake a project's live published microVM (substrate.publish/wake). */
+export async function getMetalPublishedUrl(
+  projectId: string,
+  subdomain: string,
+  opts?: { alwaysOn?: boolean },
+) {
+  return getMetalWarmPoolController().getMetalPublishedUrl(projectId, subdomain, opts)
+}
+
+/** Status of a project's published microVM. */
+export async function getMetalPublishedStatus(projectId: string) {
+  return getMetalWarmPoolController().getPublishedStatus(projectId)
+}
+
+/** Tear down a project's published microVM + subdomain placement (unpublish). */
+export async function destroyMetalPublished(projectId: string, subdomain?: string): Promise<void> {
+  return getMetalWarmPoolController().destroyPublished(projectId, subdomain)
+}
+
+/** Flip a project's published microVM always-on state. */
+export async function setMetalPublishedAlwaysOn(projectId: string, subdomain: string, on: boolean): Promise<void> {
+  return getMetalWarmPoolController().setPublishedAlwaysOn(projectId, subdomain, on)
 }
 
 /** Registry-aware fleet status for the super-admin panel (all replicas). */

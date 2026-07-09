@@ -241,6 +241,66 @@ describe('MetalWarmPoolController', () => {
     expect(a).toBe(b)
     expect(calls).toBe(1)
   })
+
+  // --- published site runtime (published:{id}) ----------------------------
+
+  it('getMetalPublishedUrl assigns a published VM under a distinct key and publishes placement', async () => {
+    const assignBodies: any[] = []
+    const fetchImpl = (async (url: string, init: any) => {
+      assignBodies.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ url: 'http://10.8.0.2:8080', mode: 'assigned' }), { status: 200 })
+    }) as any
+    const reg = new MetalPlacementRegistry(() => null)
+    _setMetalPlacementRegistry(reg)
+    // Published env builder is the 5th ctor arg; assert published-mode env flows through.
+    const pubEnv = async (id: string, subdomain: string, opts?: { alwaysOn?: boolean }) => ({
+      PROJECT_ID: id,
+      SHOGO_PUBLISHED_MODE: 'true',
+      PUBLISHED_SUBDOMAIN: subdomain,
+      ...(opts?.alwaysOn ? { SHOGO_ALWAYS_ON: '1' } : {}),
+    })
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl, Date.now, reg, pubEnv)
+    c.registerHost(REG)
+
+    const res = await c.getMetalPublishedUrl('p1', 'my-site', { alwaysOn: true })
+    expect(res.url).toBe('http://10.8.0.2:8080')
+    // The assign carried the published:{id} runtime key + published-mode env.
+    expect(assignBodies[0].projectId).toBe('published:p1')
+    expect(assignBodies[0].env.SHOGO_PUBLISHED_MODE).toBe('true')
+    expect(assignBodies[0].env.SHOGO_ALWAYS_ON).toBe('1')
+    // Subdomain → placement is published for the edge proxy / wake.
+    const placed = await reg.getPublishedPlacement('my-site')
+    expect(placed?.projectId).toBe('p1')
+    expect(placed?.alwaysOn).toBe(true)
+  })
+
+  it('published + dev runtimes for one project are independent VMs', async () => {
+    const keys: string[] = []
+    const fetchImpl = (async (_url: string, init: any) => {
+      keys.push(JSON.parse(init.body).projectId)
+      return new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+    c.registerHost(REG)
+    await c.getMetalProjectUrl('p1')
+    await c.getMetalPublishedUrl('p1', 'my-site')
+    expect(keys).toContain('p1')
+    expect(keys).toContain('published:p1')
+  })
+
+  it('destroyPublished tears down the published VM and clears its subdomain placement', async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })) as any
+    const reg = new MetalPlacementRegistry(() => null)
+    _setMetalPlacementRegistry(reg)
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl, Date.now, reg)
+    c.registerHost(REG)
+
+    await c.getMetalPublishedUrl('p1', 'my-site')
+    expect(await reg.getPublishedPlacement('my-site')).not.toBeNull()
+    await c.destroyPublished('p1', 'my-site')
+    expect(await reg.getPublishedPlacement('my-site')).toBeNull()
+  })
 })
 
 describe('metal eligibility', () => {

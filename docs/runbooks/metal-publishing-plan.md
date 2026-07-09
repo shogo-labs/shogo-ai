@@ -1,8 +1,61 @@
 # Metal publishing — design & rollout plan
 
-Status: **Draft / not implemented.** This is the design for bringing published
-apps (`{subdomain}.shogo.one`) and published always-on to the bare-metal
-(Firecracker) substrate so we can eventually decommission the Knative fleet.
+Status: **Metal is AUTHORITATIVE for publishing — Knative decommission deferred.**
+The publishing path runs through the `ProjectSubstrate` seam for BOTH substrates,
+but the **publish** decision is now decoupled from the graduated preview rollout:
+once the metal fleet is enabled, EVERY new/re-publish lands on a `published:{id}`
+microVM (`getPublishSubstrate` / `isPublishMetalAuthoritative`). The Knative
+published-service code, `KOURIER_ORIGIN`, and the `PUBLISH_SUBSTRATE=knative`
+rollback switch are intentionally KEPT until metal is proven in prod (the
+"decommission" step below).
+
+**Publish-substrate authority** (`isPublishMetalAuthoritative`,
+`apps/api/src/lib/publish-substrate-config.ts`):
+- `PUBLISH_SUBSTRATE=metal` → force metal (even if the fleet flag is off).
+- `PUBLISH_SUBSTRATE=knative` → force Knative (rollback; pair with a KV re-flip
+  via the migration script's `--to knative`).
+- unset (default) → metal whenever `isMetalEnabled()`, else Knative.
+
+Publishing does NOT follow `METAL_ROLLOUT_PERCENT` / `METAL_PROJECT_ALLOWLIST`
+(those still gate preview/dev routing via `getProjectSubstrate`) — the published
+path is a single always-on-metal target.
+
+**Migrating existing sites**: `apps/api/scripts/migrate-publishing-to-metal.ts`
+backfills sites published while Knative owned publishing. It flips each
+server-backed site's `SERVER_BACKED` edge flag `knative → metal` (re-pointing the
+Worker's `/api/*` proxy at the API published endpoint, which lazily boots the
+`published:{id}` VM on the next request); static apps are already edge-only, so
+there's nothing to move; writable state already lives in `PUBLISH_DATA_BUCKET`
+and is hydrated host-side on cold boot, so no data copy is needed. Dry-run by
+default; `--yes` applies; `--teardown-knative` removes the now-dormant published
+ksvc + DomainMapping (the irreversible decommission per site).
+
+What's built:
+
+- **Substrate publish surface** (`apps/api/src/lib/substrate/types.ts`):
+  `publish` / `unpublish` / `wakePublished` / `setPublishedAlwaysOn`, implemented
+  by `KnativeSubstrate` + `MetalSubstrate` and proven at parity by
+  `substrate-contract.test.ts`.
+- **publish.ts** routes `configurePublishedService`, unpublish, and the always-on
+  toggle through the publish-authoritative `getPublishSubstrate(...)` (+
+  `unpublishProjectEverywhere` for leak-proof cutover teardown). The published
+  `wake` endpoint (`server.ts`) also targets metal via `getPublishSubstrate` when
+  publishing is metal-authoritative.
+- **Static apps are edge-only** by default (`shouldServeStaticFromEdgeOnly`,
+  `PUBLISH_STATIC_KSVC=true` to restore the nginx ksvc): served purely from
+  `PUBLISH_BUCKET` + the Worker on both substrates.
+- **Metal published runtime**: `MetalWarmPoolController.getMetalPublishedUrl` /
+  `getPublishedStatus` / `destroyPublished` / `setPublishedAlwaysOn` keyed by
+  `published:{id}` with `buildPublishedProjectEnv`; subdomain→VM placement in
+  `MetalPlacementRegistry` (`setPublishedPlacement` etc.).
+- **Host-side durability** (`apps/metal-agent`): `published-data-archive.ts` +
+  pool hydrate-on-cold-boot / export-on-suspend + a periodic exporter, so the
+  guest never holds S3 creds (`{subdomain}/data.tar.gz` in `PUBLISH_DATA_BUCKET`).
+- **Edge routing**: API `/api/published/:subdomain/api/*` proxy + the
+  subdomain-router Worker sends `/api/*` (and the wake probe) to
+  `API_PUBLISHED_ORIGIN` when the `SERVER_BACKED` KV value is `metal` (else
+  Kourier). Password gate + canonical redirect are unchanged (run before the
+  backend branch).
 
 Related: `docs/runbooks/metal-fleet.md`, `docs/custom-domains.md`,
 `apps/api/src/routes/publish.ts`, `apps/api/src/lib/substrate/`.
@@ -133,8 +186,9 @@ interface ProjectSubstrate {
   - static → upload to `PUBLISH_BUCKET` + set Worker KV (no VM).
   - server-backed → provision/refresh a published microVM (always-on), register
     placement, set Worker KV to route `/api/*` via the API proxy.
-- `publish.ts` calls `getProjectSubstrate(projectId).publish(...)` instead of
-  `getKnativeProjectManager()` directly.
+- `publish.ts` calls `getPublishSubstrate(projectId).publish(...)` (publish is
+  metal-authoritative fleet-wide) instead of `getKnativeProjectManager()`
+  directly.
 
 ---
 
@@ -161,7 +215,8 @@ Reuse existing columns. Add:
 | **3** | Routing: `/api/published/:subdomain/*` API proxy + Worker route to metal; `wakePublished` → agent `/resume`. | Med |
 | **4** | `publishedAlwaysOn` parity on metal (pin vs allow-suspend); `/api/published/:subdomain/wake`. | Med |
 | **5** | Custom domains: point Worker KV backend at metal placement (edge unchanged). | Low |
-| **6** | Substrate publish contract + parity tests; then allow Knative published fleet decommission once metal is authoritative for publishing. | — |
+| **6** | Substrate publish contract + parity tests. | — |
+| **7** | **Metal authoritative for publishing** (`getPublishSubstrate` / `isPublishMetalAuthoritative`, decoupled from the preview rollout) + `migrate-publishing-to-metal.ts` to flip existing sites. Knative published fleet decommission is the remaining `--teardown-knative` step once metal is proven. | Med |
 
 ---
 

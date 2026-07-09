@@ -53,6 +53,8 @@ export interface LiveVmEntry {
   alwaysOn?: boolean
   /** Guest RUNTIME_AUTH_SECRET — lets suspend call the guest `/pool/export`. */
   runtimeToken?: string
+  /** Server-backed published subdomain — drives host-side writable-state export. */
+  publishedSubdomain?: string
   v: 1
 }
 

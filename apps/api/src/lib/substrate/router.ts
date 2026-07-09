@@ -20,11 +20,14 @@ import {
   isMetalEnabled as metalEnabled,
   isMetalEligibleProject as metalEligible,
 } from '../metal-eligibility'
+import { isPublishMetalAuthoritative as publishMetalAuthoritative } from '../publish-substrate-config'
 
 export interface SubstrateRouterOpts {
   _isKubernetes?: () => boolean
   _isMetalEnabled?: () => boolean
   _isMetalEligible?: (projectId: string) => boolean
+  /** Publish-substrate authority probe (getPublishSubstrate). */
+  _isPublishMetalAuthoritative?: () => boolean
   _metalSubstrate?: ProjectSubstrate
   _knativeSubstrate?: ProjectSubstrate
 }
@@ -56,6 +59,28 @@ export async function getProjectSubstrate(projectId: string, opts: SubstrateRout
   const isMetalEnabled = opts._isMetalEnabled ?? (() => metalEnabled())
   const isMetalEligible = opts._isMetalEligible ?? ((id: string) => metalEligible(id))
   if (isMetalEnabled() && isMetalEligible(projectId)) {
+    return opts._metalSubstrate ?? (await makeMetalSubstrate())
+  }
+  return opts._knativeSubstrate ?? (await makeKnativeSubstrate())
+}
+
+/**
+ * The substrate that OWNS a project's PUBLISHED site for a NEW (re)publish.
+ *
+ * Distinct from getProjectSubstrate (preview/dev routing): publishing is metal-
+ * authoritative fleet-wide once the metal fleet is enabled — it does NOT follow
+ * the graduated per-project preview rollout (METAL_ROLLOUT_PERCENT / allowlist),
+ * because the published path is a single always-on-metal target. See
+ * isPublishMetalAuthoritative for the precedence (incl. the PUBLISH_SUBSTRATE
+ * rollback/force override).
+ *
+ * This picks where a publish/republish PROVISIONS the site and which substrate
+ * the wake/always-on ops target. Teardown of the OTHER substrate on a cutover is
+ * handled by unpublishProjectEverywhere so nothing leaks.
+ */
+export async function getPublishSubstrate(projectId: string, opts: SubstrateRouterOpts = {}): Promise<ProjectSubstrate> {
+  const authoritative = opts._isPublishMetalAuthoritative ?? (() => publishMetalAuthoritative())
+  if (authoritative()) {
     return opts._metalSubstrate ?? (await makeMetalSubstrate())
   }
   return opts._knativeSubstrate ?? (await makeKnativeSubstrate())
@@ -105,4 +130,41 @@ export async function resizeProjectRuntime(projectId: string, resources: Resourc
   const substrate = await getProjectSubstrate(projectId, opts)
   if (!substrate.resize) throw new SubstrateUnsupportedError('resize', substrate.kind)
   await substrate.resize(projectId, resources)
+}
+
+/**
+ * Tear down a project's PUBLISHED site on EVERY substrate, best-effort. Like
+ * destroyProjectRuntime, this is leak-proof during a drain/cutover: a project
+ * that changed substrates could have BOTH a Knative published ksvc + DomainMapping
+ * AND a metal published microVM + placement, so unpublishing only the "owner"
+ * would leak the other. A no-op off Kubernetes.
+ */
+export async function unpublishProjectEverywhere(
+  projectId: string,
+  subdomain: string,
+  opts: SubstrateRouterOpts = {},
+): Promise<void> {
+  const isK8s = opts._isKubernetes ?? defaultIsKubernetes
+  if (!isK8s()) return
+
+  const isMetalEnabled = opts._isMetalEnabled ?? (() => metalEnabled())
+  const jobs: Promise<void>[] = []
+
+  if (opts._metalSubstrate || isMetalEnabled()) {
+    const metal = opts._metalSubstrate ?? (await makeMetalSubstrate())
+    jobs.push(
+      metal.unpublish(projectId, subdomain).catch((e) => {
+        console.warn(`[substrate] metal unpublish ${projectId} failed: ${(e as any)?.message ?? e}`)
+      }),
+    )
+  }
+
+  const knative = opts._knativeSubstrate ?? (await makeKnativeSubstrate())
+  jobs.push(
+    knative.unpublish(projectId, subdomain).catch((e) => {
+      console.warn(`[substrate] knative unpublish ${projectId} failed: ${(e as any)?.message ?? e}`)
+    }),
+  )
+
+  await Promise.all(jobs)
 }
