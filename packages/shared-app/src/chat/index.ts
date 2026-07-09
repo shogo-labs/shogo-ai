@@ -10,6 +10,17 @@ export {
 } from './message-helpers'
 
 export {
+  buildChatStreamErrorReport,
+  classifyChatError,
+  shouldReportChatError,
+  chatErrorMessage,
+  SHOGO_TELEMETRY_TAG,
+  type ChatErrorClass,
+  type ChatErrorContext,
+  type ChatErrorReport,
+} from './chat-error-telemetry'
+
+export {
   useChatTransportConfig,
   buildChatApiUrl,
   buildChatTurnUrl,
