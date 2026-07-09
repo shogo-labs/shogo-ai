@@ -219,19 +219,49 @@ export async function sendChatMessage(page: Page, text: string) {
   await page.keyboard.press("Enter")
 }
 
-export async function waitForAgentResponse(page: Page, timeoutMs = 90_000) {
-  const stopSel = '[data-testid="stop-streaming"], [aria-label="Stop"]'
-  // First wait for the stop button to appear (agent starts streaming)
+/**
+ * The composer's stop control (`testID="stop-streaming"`, `aria-label="Stop"`)
+ * is present ONLY while the agent is streaming. It's the single source of truth
+ * for "is the agent busy?" — while it's up the composer shows a "Queue message"
+ * button, not "Send message", and the input can be non-editable.
+ */
+export const AGENT_STOP_SELECTOR = '[data-testid="stop-streaming"], [aria-label="Stop"]'
+
+/**
+ * Wait for the agent to finish its current turn (the stop-streaming control to
+ * disappear).
+ *
+ * The default budget is deliberately large: an open-ended first prompt can send
+ * the agent off building an elaborate multi-file app (schema + components + API)
+ * that streams for minutes on staging. The previous 90s budget expired
+ * mid-build, so callers proceeded while the agent was still streaming and then
+ * failed trying to send a follow-up (no "Send message" button while streaming).
+ */
+export async function waitForAgentResponse(page: Page, timeoutMs = 240_000) {
+  // First wait for the stop button to appear (agent starts streaming). Give it
+  // a bit longer than before — on a cold runtime the first token can lag.
   try {
-    await page.waitForSelector(stopSel, { state: "attached", timeout: 10_000 })
+    await page.waitForSelector(AGENT_STOP_SELECTOR, { state: "attached", timeout: 20_000 })
   } catch {
     // Agent may have already finished or not started — that's fine
   }
   // Then wait for it to disappear (agent done)
   await page
-    .waitForSelector(stopSel, { state: "detached", timeout: timeoutMs })
+    .waitForSelector(AGENT_STOP_SELECTOR, { state: "detached", timeout: timeoutMs })
     .catch(() => {})
   await page.waitForTimeout(1000)
+}
+
+/**
+ * Wait until the agent is idle: the stop-streaming control is gone. Unlike
+ * {@link waitForAgentResponse} this does NOT first wait for streaming to start,
+ * so it's the right guard immediately before sending a message (a follow-up must
+ * never be typed/sent while the previous turn is still streaming).
+ */
+export async function waitForAgentIdle(page: Page, timeoutMs = 240_000) {
+  await page
+    .waitForSelector(AGENT_STOP_SELECTOR, { state: "detached", timeout: timeoutMs })
+    .catch(() => {})
 }
 
 export async function createProjectAndWait(page: Page, prompt: string) {

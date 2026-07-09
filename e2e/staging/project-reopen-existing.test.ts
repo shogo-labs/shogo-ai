@@ -6,6 +6,7 @@ import {
   makeTestUser,
   signUpAndOnboard,
   suspendRuntimeViaApi,
+  waitForAgentIdle,
   waitForAgentResponse,
   type TestUser,
 } from "./helpers"
@@ -84,15 +85,27 @@ function visibleComposer(page: Page) {
 
 async function sendProjectChatMessage(page: Page, text: string): Promise<void> {
   const snippet = text.slice(0, 24)
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // A follow-up must never be sent while the previous turn is still streaming:
+    // the composer shows a "Queue message" button (not "Send message") and the
+    // input can be non-editable. Wait for the agent to go idle first.
+    await waitForAgentIdle(page)
     const box = visibleComposer(page)
     await box.waitFor({ state: "visible", timeout: 15_000 })
     await box.fill(text)
-    await page
+    // "Send message" only exists once idle + the input has text. If it's not
+    // there, the agent likely resumed streaming (or the input was disabled) —
+    // loop back and wait for idle again.
+    const sendBtn = page
       .getByRole("button", { name: "Send message" })
       .filter({ visible: true })
       .first()
-      .click({ force: true })
+    const ready = await sendBtn
+      .waitFor({ state: "visible", timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!ready) continue
+    await sendBtn.click({ force: true })
     const landed = await page
       .getByText(snippet, { exact: false })
       .first()
@@ -102,6 +115,39 @@ async function sendProjectChatMessage(page: Page, text: string): Promise<void> {
     if (landed) return
   }
   throw new Error("sendProjectChatMessage: message never appeared in the transcript")
+}
+
+/**
+ * Reloads the preview iframe and waits for it to render `heading`, retrying the
+ * reload until the timeout.
+ *
+ * The preview does NOT auto-refresh after the agent edits source: the in-iframe
+ * canvas-bridge shows a manual "Update available — Refresh" pill on the
+ * runtime's SSE `reload` event and deliberately does not reload on its own so it
+ * won't disrupt a user mid-interaction. A test that edits source must drive the
+ * reload itself — clicking the top-bar "Refresh preview" control (aria-label
+ * "Refresh preview") — and retry, since the rebuild of dist/ can land slightly
+ * after the agent says "Done".
+ */
+async function expectPreviewHeading(page: Page, heading: string): Promise<void> {
+  await waitForPreviewIframe(page)
+  const deadline = Date.now() + PREVIEW_CONTENT_TIMEOUT_MS
+  let lastErr: unknown
+  while (Date.now() < deadline) {
+    await page.getByLabel("Refresh preview").first().click({ force: true }).catch(() => {})
+    const ok = await previewFrame(page)
+      .getByText(heading, { exact: false })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 })
+      .then(() => true)
+      .catch((e) => {
+        lastErr = e
+        return false
+      })
+    if (ok) return
+    await page.waitForTimeout(1_500)
+  }
+  throw new Error(`preview never rendered "${heading}" after refresh: ${String(lastErr)}`)
 }
 
 /** Drive the agent to write App.tsx to a single heading equal to `heading`. */
@@ -115,10 +161,7 @@ async function setAppHeadingViaAgent(page: Page, heading: string): Promise<void>
       `writing the file, stop.`,
   )
   await waitForAgentResponse(page)
-  await waitForPreviewIframe(page)
-  await expect(previewFrame(page).getByText(heading, { exact: false })).toBeVisible({
-    timeout: PREVIEW_CONTENT_TIMEOUT_MS,
-  })
+  await expectPreviewHeading(page, heading)
 }
 
 async function createProjectReturningId(page: Page, prompt: string): Promise<string> {
@@ -145,10 +188,17 @@ test.describe("Reopen existing project", () => {
   })
 
   test("reopen serves the saved source, not the template", async () => {
-    test.setTimeout(360_000)
+    test.setTimeout(480_000)
 
-    // 1. Create a project and give it distinctive, non-template source.
-    const projectId = await createProjectReturningId(page, "Reopen-existing test project")
+    // 1. Create a project and give it distinctive, non-template source. Keep the
+    //    seed prompt minimal — the initial build content is irrelevant (we
+    //    overwrite App.tsx below), and an open-ended prompt sends the agent off
+    //    on a multi-minute app build that just slows the test and risks
+    //    overrunning the budget.
+    const projectId = await createProjectReturningId(
+      page,
+      "Create the simplest possible starter app: a single page that shows the word Hello. Do not add any extra pages, components, features, or backend.",
+    )
     await page.goto(`/projects/${projectId}`)
     await setAppHeadingViaAgent(page, MARKER)
 
@@ -170,14 +220,13 @@ test.describe("Reopen existing project", () => {
     await page.goto("/")
     await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
     await page.goto(`/projects/${projectId}`)
-    await waitForPreviewIframe(page)
 
-    const frame = previewFrame(page)
-    // The saved source must come back...
-    await expect(frame.getByText(MARKER, { exact: false })).toBeVisible({
-      timeout: PREVIEW_CONTENT_TIMEOUT_MS,
-    })
+    // The saved source must come back. Reload-and-retry: a freshly-resumed
+    // runtime can finish rebuilding dist/ just after the iframe first loads, and
+    // the preview does not auto-refresh.
+    await expectPreviewHeading(page, MARKER)
     // ...and the pristine template must NOT (the regression served this).
+    const frame = previewFrame(page)
     await expect(frame.getByText("Project Ready", { exact: false })).toHaveCount(0)
     await expect(frame.getByText("Start building your app!", { exact: false })).toHaveCount(0)
   })

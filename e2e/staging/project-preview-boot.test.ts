@@ -6,6 +6,7 @@ import {
   homeComposerInput,
   makeTestUser,
   signUpAndOnboard,
+  waitForAgentIdle,
   waitForAgentResponse,
   type TestUser,
 } from "./helpers"
@@ -157,15 +158,27 @@ function visibleComposer(page: Page) {
 /** Sends a message into the project chat composer and waits for it to land. */
 async function sendProjectChatMessage(page: Page, text: string): Promise<void> {
   const snippet = text.slice(0, 24)
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // A follow-up must never be sent while the previous turn is still streaming:
+    // the composer shows a "Queue message" button (not "Send message") and the
+    // input can be non-editable. Wait for the agent to go idle first.
+    await waitForAgentIdle(page)
     const box = visibleComposer(page)
     await box.waitFor({ state: "visible", timeout: 15_000 })
     await box.fill(text)
-    await page
+    // "Send message" only exists once idle + the input has text. If it's not
+    // there, the agent likely resumed streaming (or the input was disabled) —
+    // loop back and wait for idle again.
+    const sendBtn = page
       .getByRole("button", { name: "Send message" })
       .filter({ visible: true })
       .first()
-      .click({ force: true })
+    const ready = await sendBtn
+      .waitFor({ state: "visible", timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!ready) continue
+    await sendBtn.click({ force: true })
     const landed = await page
       .getByText(snippet, { exact: false })
       .first()
@@ -178,9 +191,43 @@ async function sendProjectChatMessage(page: Page, text: string): Promise<void> {
 }
 
 /**
+ * Reloads the preview iframe and waits for it to render `heading`, retrying the
+ * reload until the timeout.
+ *
+ * The preview does NOT auto-refresh after the agent edits source: the in-iframe
+ * canvas-bridge shows a manual "Update available — Refresh" pill on the
+ * runtime's SSE `reload` event (refreshBtn → window.location.reload()) and
+ * deliberately does not reload on its own so it won't disrupt a user
+ * mid-interaction. So a test that edits source must drive the reload itself —
+ * clicking the top-bar "Refresh preview" control (BarIconButton, aria-label
+ * "Refresh preview") — before the new content is observable. We retry because
+ * the runtime's rebuild of dist/ can land slightly after the agent says "Done".
+ */
+async function expectPreviewHeading(page: Page, heading: string): Promise<void> {
+  await waitForPreviewIframe(page)
+  const deadline = Date.now() + PREVIEW_CONTENT_TIMEOUT_MS
+  let lastErr: unknown
+  while (Date.now() < deadline) {
+    await page.getByLabel("Refresh preview").first().click({ force: true }).catch(() => {})
+    const ok = await previewFrame(page)
+      .getByText(heading, { exact: false })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 })
+      .then(() => true)
+      .catch((e) => {
+        lastErr = e
+        return false
+      })
+    if (ok) return
+    await page.waitForTimeout(1_500)
+  }
+  throw new Error(`preview never rendered "${heading}" after refresh: ${String(lastErr)}`)
+}
+
+/**
  * Drives the agent to replace src/App.tsx so the preview renders a single
- * heading exactly equal to `heading`, then waits for the agent to finish
- * and the preview iframe (HMR) to show it.
+ * heading exactly equal to `heading`, then waits for the agent to finish and
+ * reloads the preview iframe to show it.
  */
 async function setAppHeadingViaAgent(page: Page, heading: string): Promise<void> {
   await waitForAgentResponse(page)
@@ -192,10 +239,7 @@ async function setAppHeadingViaAgent(page: Page, heading: string): Promise<void>
       `writing the file, stop.`,
   )
   await waitForAgentResponse(page)
-  await waitForPreviewIframe(page)
-  await expect(previewFrame(page).getByText(heading, { exact: false })).toBeVisible({
-    timeout: PREVIEW_CONTENT_TIMEOUT_MS,
-  })
+  await expectPreviewHeading(page, heading)
 }
 
 // ── Project switcher (the "cycle through projects" control) ──────────────────
@@ -258,13 +302,19 @@ test.describe("Project preview boot & cycle", () => {
   test("two projects render distinct previews and cycle via the switcher", async () => {
     test.setTimeout(480_000)
 
+    // Minimal seed prompts: the initial build content is irrelevant here — we
+    // overwrite App.tsx via setAppHeadingViaAgent — and an open-ended prompt
+    // sends the agent off on a multi-minute build that risks overrunning the
+    // budget.
+    const SEED = "Create the simplest possible starter app: a single page that shows the word Hello. Do not add any extra pages, components, features, or backend."
+
     // Project A → "Project A Ready"
-    const projectA = await createProjectReturningId(page, "Project A for preview-cycle testing")
+    const projectA = await createProjectReturningId(page, SEED)
     await page.goto(`/projects/${projectA}`)
     await setAppHeadingViaAgent(page, "Project A Ready")
 
     // Project B → "Project B Ready"
-    const projectB = await createProjectReturningId(page, "Project B for preview-cycle testing")
+    const projectB = await createProjectReturningId(page, SEED)
     await page.goto(`/projects/${projectB}`)
     await setAppHeadingViaAgent(page, "Project B Ready")
 
@@ -272,20 +322,14 @@ test.describe("Project preview boot & cycle", () => {
 
     // We are on B. Cycle B → A and assert A's preview.
     await switchToProject(page, projectA)
-    await waitForPreviewIframe(page)
-    await expect(previewFrame(page).getByText("Project A Ready", { exact: false })).toBeVisible({
-      timeout: PREVIEW_CONTENT_TIMEOUT_MS,
-    })
+    await expectPreviewHeading(page, "Project A Ready")
     await expect(
       previewFrame(page).getByText("Project B Ready", { exact: false }),
     ).toHaveCount(0)
 
     // Cycle A → B and assert B's preview.
     await switchToProject(page, projectB)
-    await waitForPreviewIframe(page)
-    await expect(previewFrame(page).getByText("Project B Ready", { exact: false })).toBeVisible({
-      timeout: PREVIEW_CONTENT_TIMEOUT_MS,
-    })
+    await expectPreviewHeading(page, "Project B Ready")
     await expect(
       previewFrame(page).getByText("Project A Ready", { exact: false }),
     ).toHaveCount(0)
