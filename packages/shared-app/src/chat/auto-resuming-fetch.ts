@@ -9,12 +9,17 @@
  *   - `data-turn-seq`      — every ~250ms with `{ seq }` (last buffered chunk)
  *   - `data-turn-complete` — exactly once at clean termination
  *
- * If the response body ends without ever emitting `data-turn-complete`, the
- * turn was interrupted (proxy idle timeout, mobile background, network
- * blip, etc.) but the runtime is almost certainly still producing tokens
- * into its in-memory buffer. This wrapper transparently calls the
- * `/stream?fromSeq=N` endpoint and continues piping bytes into the
- * underlying body so the AI SDK never sees a disconnect.
+ * If the response body ends without ever emitting `data-turn-complete` —
+ * whether by a clean premature EOF OR by a mid-stream transport failure that
+ * makes `reader.read()` throw (an HTTP/2 reset surfacing as
+ * `net::ERR_HTTP2_PROTOCOL_ERROR` / `TypeError: network error`, or an aborted
+ * `BodyStreamBuffer`) — the turn was interrupted (proxy idle timeout, mobile
+ * background, network blip, etc.) but the runtime is almost certainly still
+ * producing tokens into its in-memory buffer. This wrapper transparently calls
+ * the `/stream?fromSeq=N` endpoint and continues piping bytes into the
+ * underlying body so the AI SDK never sees a disconnect. Only if every resume
+ * attempt is exhausted does an unrecovered transport error propagate to the
+ * AI SDK.
  *
  * The wrapper is invisible to the AI SDK: it returns a Response whose body
  * is a single ReadableStream that keeps yielding bytes across reconnects
@@ -244,12 +249,29 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       const pumpBody = async (
         body: ReadableStream<Uint8Array>,
         resumed: boolean,
-      ): Promise<{ bytes: number }> => {
+      ): Promise<{ bytes: number; error?: unknown }> => {
         const reader = body.getReader()
         let bytes = 0
         try {
           while (!cancelled) {
-            const { done, value } = await reader.read()
+            let done: boolean
+            let value: Uint8Array | undefined
+            try {
+              const r = await reader.read()
+              done = r.done
+              value = r.value
+            } catch (err) {
+              // Mid-stream transport failure — the underlying HTTP/2 stream was
+              // reset (`net::ERR_HTTP2_PROTOCOL_ERROR` → `TypeError: network
+              // error`) or the body buffer was aborted (`BodyStreamBuffer was
+              // aborted`). This is NOT a clean EOF, but the runtime is almost
+              // certainly still buffering the turn server-side, so treat it
+              // exactly like a premature EOF: return (rather than throw) so the
+              // caller's resume loop can reattach via `/stream?fromSeq=N`
+              // instead of killing the whole stream. The error is surfaced so an
+              // eventual give-up can still propagate it to the UI.
+              return { bytes, error: err }
+            }
             if (done) return { bytes }
             if (!value) continue
             bytes += value.byteLength
@@ -282,8 +304,15 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
 
       const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
+      // Tracks the most recent mid-stream transport error (a thrown
+      // `reader.read()`), if any. A clean pump (EOF) clears it. If we
+      // ultimately give up while one is still pending, we propagate it so the
+      // UI surfaces the interrupted state instead of silently truncating.
+      let lastTransportError: unknown = null
+
       try {
-        await pumpBody(initialBody, /* resumed */ false)
+        const firstPump = await pumpBody(initialBody, /* resumed */ false)
+        lastTransportError = firstPump.error ?? null
 
         while (!turnCompleted && !cancelled && resumeAttempts < maxResumeAttempts) {
           resumeAttempts++
@@ -291,8 +320,11 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             initialBackoffMs * Math.pow(2, resumeAttempts - 1),
             maxBackoffMs,
           )
+          const reason = lastTransportError
+            ? `stream errored mid-turn (${(lastTransportError as any)?.message || lastTransportError})`
+            : 'stream EOF without turn-complete'
           warn(
-            `stream EOF without turn-complete; reconnecting fromSeq=${lastSeq} (attempt ${resumeAttempts}/${maxResumeAttempts}, backoff ${backoff}ms)`,
+            `${reason}; reconnecting fromSeq=${lastSeq} (attempt ${resumeAttempts}/${maxResumeAttempts}, backoff ${backoff}ms)`,
           )
           await sleep(backoff)
           if (cancelled) break
@@ -302,6 +334,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             const url = `${resumeUrl}?fromSeq=${lastSeq}`
             resumeRes = await fetcher(url, { method: 'GET', credentials })
           } catch (err: any) {
+            lastTransportError = err
             warn(`resume fetch threw: ${err?.message || err}`)
             continue
           }
@@ -334,12 +367,24 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           // Only reset the attempt counter if the resume actually
           // delivered bytes — otherwise an endless loop of empty 200s
           // would never surface as "stalled".
-          const { bytes } = await pumpBody(resumeRes.body, /* resumed */ true)
+          const { bytes, error } = await pumpBody(resumeRes.body, /* resumed */ true)
+          // A resume that ended on a clean EOF clears any pending transport
+          // error; one that threw again keeps it set for the (bounded) loop.
+          lastTransportError = error ?? null
           if (bytes > 0) resumeAttempts = 0
         }
 
         if (!turnCompleted && !cancelled) {
           warn(`gave up after ${resumeAttempts} resume attempts; closing stream`)
+          // If we bailed with an unrecovered transport error still pending,
+          // propagate it so the AI SDK's `onError` fires (interrupted banner +
+          // stuck-tool cleanup) and the stall watchdog can probe/reattach. A
+          // clean-EOF give-up closes silently and defers to the watchdog, as
+          // before.
+          if (lastTransportError) {
+            try { controller.error(lastTransportError) } catch { /* already errored */ }
+            return
+          }
         }
       } catch (err: any) {
         warn(`durable body errored: ${err?.message || err}`)
