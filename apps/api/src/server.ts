@@ -2571,6 +2571,13 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         // reachable; throws (NoMetalHostError / assign failure) while starting.
         await getMetalProjectUrl(projectId)
         console.log(`[sandbox/url] ${projectId.slice(0, 8)} ready via metal`)
+        // Per-user open cap: record this open and suspend the user's
+        // least-recently-opened project(s) beyond METAL_MAX_OPEN_PROJECTS_PER_USER
+        // so one user can't pin unbounded host RAM. Fire-and-forget: never blocks
+        // or fails the open (suspend is reversible — resumes on next open).
+        void import('./lib/metal-user-open-limit')
+          .then((m) => m.enforceUserMetalOpenLimit(userId, projectId))
+          .catch((err) => console.warn(`[sandbox/url] user open-limit enforce failed (non-fatal): ${err?.message ?? err}`))
         return c.json(metalBody(true), 200)
       } catch (err: any) {
         console.log(`[sandbox/url] ${projectId.slice(0, 8)} metal still starting: ${err?.message ?? err}`)

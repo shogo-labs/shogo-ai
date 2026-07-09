@@ -91,6 +91,21 @@ describe('pool idle-suspend always-on exemption', () => {
     expect(pool.suspended).toEqual([])
   })
 
+  test('reapIdle skips an idle VM that has an active agent message (activeStreams>0)', async () => {
+    const pool = makePool(dir)
+    const old = Date.now() - 10_000 // past the idle threshold
+    const busy = pool.seed('generating', old, false)
+    busy.activeStreams = 1 // last activity poll saw a live turn in flight
+    pool.seed('quiet', old, false)
+
+    const suspended = await pool.reapIdle(1000)
+
+    // Only the idle, non-generating VM is suspended; the busy one keeps running.
+    expect(suspended).toEqual(['quiet'])
+    expect(pool.peek('generating')).toBeDefined()
+    expect(pool.peek('quiet')).toBeUndefined()
+  })
+
   test('open() applies SHOGO_ALWAYS_ON=1 from env to a live VM and persists it', async () => {
     const pool = makePool(dir)
     pool.seed('p1', Date.now(), false)

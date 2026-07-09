@@ -13,13 +13,13 @@
  */
 
 import type { ProjectSubstrate, Resources, RuntimeStatus, RuntimeSummary } from './types'
-import { getMetalWarmPoolController } from '../metal-warm-pool-controller'
+import { getMetalWarmPoolController, type StopResult } from '../metal-warm-pool-controller'
 
 /** The slice of MetalWarmPoolController this substrate needs (DI seam for tests). */
 export interface MetalBackend {
   getMetalProjectUrl(projectId: string): Promise<string>
   getProjectStatus(projectId: string): Promise<{ exists: boolean; ready: boolean; replicas: number; url?: string }>
-  stopProject(projectId: string): Promise<void>
+  stopProject(projectId: string): Promise<StopResult>
   destroyProject(projectId: string): Promise<void>
   resizeProject(projectId: string, resources: { cpu?: string; memory?: string; disk?: string; minScale?: number }): Promise<void>
   listProjects(): Promise<RuntimeSummary[]>

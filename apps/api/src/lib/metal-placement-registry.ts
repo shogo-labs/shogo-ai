@@ -71,6 +71,11 @@ export interface BurstHostRecord {
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const PLACEMENT_TTL_S = parseInt(process.env.METAL_PLACEMENT_TTL_S || '86400', 10) // 24h
 const LEASE_TTL_MS = parseInt(process.env.METAL_LEASE_TTL_MS || '60000', 10)
+// How long a per-user "recently opened" entry lingers before it stops counting
+// against the user's open cap (rolling — refreshed on every open). Default 12h:
+// long enough to cover a working session, short enough that a project the user
+// abandoned days ago doesn't keep occupying one of their slots.
+const USER_OPEN_TTL_S = parseInt(process.env.METAL_USER_OPEN_TTL_S || `${12 * 60 * 60}`, 10)
 
 const HOST_KEY = 'metal:host:'
 const HOST_SET = 'metal:hosts'
@@ -80,6 +85,7 @@ const CORDON_SET = 'metal:cordoned'
 const BURST_HASH = 'metal:burst' // hostId → BurstHostRecord JSON
 const RECONCILE_LEASE_KEY = 'metal:reconcile:leader'
 const SCALE_COOLDOWN_KEY = 'metal:burst:cooldown:' // + region → epoch ms of last scale action
+const USER_OPEN_KEY = 'metal:useropen:' // + userId → ZSET(member=projectId, score=openedAt ms)
 
 // Compare-and-delete / compare-and-expire so only the lease holder can
 // renew or release it (a stale holder must not free a re-acquired lease).
@@ -96,6 +102,8 @@ export class MetalPlacementRegistry {
   private memBurst = new Map<string, BurstHostRecord>()
   private memReconcileLease: { holder: string; expiresAt: number } | null = null
   private memCooldown = new Map<string, number>()
+  // userId → (projectId → openedAt ms). The in-process analog of the Redis ZSET.
+  private memUserOpen = new Map<string, Map<string, number>>()
 
   constructor(private redisGetter: () => Redis | null = getSharedRedis) {}
 
@@ -398,6 +406,101 @@ export class MetalPlacementRegistry {
       this.memCooldown.set(region, ts)
     }
   }
+
+  // --- per-user open set (LRU cap on concurrently-open projects) -----------
+  // A per-user ZSET of recently-opened projectIds, scored by open time. Shared
+  // across API replicas so the "user has >N projects open → suspend the oldest"
+  // cap is enforced consistently regardless of which replica served each open.
+  // Entries older than USER_OPEN_TTL_S are pruned on read/write so an abandoned
+  // project stops occupying a slot. Best-effort; never throws into the request
+  // path (a Redis blip just means the cap isn't enforced for that open).
+
+  /**
+   * Record that `userId` just opened `projectId` (upsert its open time to now)
+   * and refresh the set's TTL. Prunes entries older than the rolling window.
+   */
+  async recordUserOpen(userId: string, projectId: string, now: number = Date.now()): Promise<void> {
+    if (!userId || !projectId) return
+    const r = this.redis()
+    if (!r) {
+      const m = this.memUserOpen.get(userId) ?? new Map<string, number>()
+      m.set(projectId, now)
+      this.pruneMemUserOpen(m, now)
+      this.memUserOpen.set(userId, m)
+      return
+    }
+    try {
+      const key = `${USER_OPEN_KEY}${userId}`
+      const cutoff = now - USER_OPEN_TTL_S * 1000
+      await r
+        .multi()
+        .zadd(key, String(now), projectId)
+        .zremrangebyscore(key, '-inf', `(${cutoff}`)
+        .expire(key, USER_OPEN_TTL_S)
+        .exec()
+    } catch {
+      const m = this.memUserOpen.get(userId) ?? new Map<string, number>()
+      m.set(projectId, now)
+      this.pruneMemUserOpen(m, now)
+      this.memUserOpen.set(userId, m)
+    }
+  }
+
+  /**
+   * The user's currently-open projects, OLDEST open first (the eviction order),
+   * pruned to the rolling window.
+   */
+  async listUserOpen(userId: string, now: number = Date.now()): Promise<Array<{ projectId: string; openedAt: number }>> {
+    if (!userId) return []
+    const r = this.redis()
+    const cutoff = now - USER_OPEN_TTL_S * 1000
+    if (!r) {
+      const m = this.memUserOpen.get(userId)
+      if (!m) return []
+      this.pruneMemUserOpen(m, now)
+      return [...m.entries()]
+        .sort((a, b) => a[1] - b[1])
+        .map(([projectId, openedAt]) => ({ projectId, openedAt }))
+    }
+    try {
+      const key = `${USER_OPEN_KEY}${userId}`
+      // Prune stale first so counts/order reflect only the live window.
+      await r.zremrangebyscore(key, '-inf', `(${cutoff}`).catch(() => {})
+      const flat = await r.zrange(key, 0, -1, 'WITHSCORES')
+      const out: Array<{ projectId: string; openedAt: number }> = []
+      for (let i = 0; i < flat.length; i += 2) {
+        out.push({ projectId: flat[i], openedAt: parseInt(flat[i + 1], 10) || 0 })
+      }
+      return out
+    } catch {
+      const m = this.memUserOpen.get(userId)
+      if (!m) return []
+      this.pruneMemUserOpen(m, now)
+      return [...m.entries()]
+        .sort((a, b) => a[1] - b[1])
+        .map(([projectId, openedAt]) => ({ projectId, openedAt }))
+    }
+  }
+
+  /** Drop a project from the user's open set (e.g. after we suspend it). */
+  async removeUserOpen(userId: string, projectId: string): Promise<void> {
+    if (!userId || !projectId) return
+    const r = this.redis()
+    if (!r) {
+      this.memUserOpen.get(userId)?.delete(projectId)
+      return
+    }
+    try {
+      await r.zrem(`${USER_OPEN_KEY}${userId}`, projectId)
+    } catch {
+      this.memUserOpen.get(userId)?.delete(projectId)
+    }
+  }
+
+  private pruneMemUserOpen(m: Map<string, number>, now: number): void {
+    const cutoff = now - USER_OPEN_TTL_S * 1000
+    for (const [pid, ts] of m) if (ts < cutoff) m.delete(pid)
+  }
 }
 
 let registry: MetalPlacementRegistry | null = null
@@ -413,3 +516,4 @@ export function _setMetalPlacementRegistry(r: MetalPlacementRegistry | null): vo
 }
 
 export const _leaseTtlMs = LEASE_TTL_MS
+export const _userOpenTtlS = USER_OPEN_TTL_S

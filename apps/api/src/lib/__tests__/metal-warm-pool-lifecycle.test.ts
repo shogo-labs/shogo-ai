@@ -85,8 +85,35 @@ describe('MetalWarmPoolController lifecycle', () => {
     const { impl, calls } = recordingFetch()
     const c = new MetalWarmPoolController(fakeEnv(), impl)
     c.registerHost(REG)
-    await c.stopProject('never-opened')
+    const res = await c.stopProject('never-opened')
     expect(calls.some((x) => x.path === '/stop')).toBe(false)
+    expect(res).toEqual({ suspended: false, busy: false })
+  })
+
+  it('stopProject reports suspended:true when the agent confirms it', async () => {
+    const impl = (async (url: string) => {
+      const path = new URL(url).pathname
+      if (path === '/assign') return new Response(JSON.stringify({ url: 'http://10.8.0.2:8080', mode: 'assigned' }), { status: 200 })
+      if (path === '/stop') return new Response(JSON.stringify({ ok: true, suspended: true, memBytes: 123 }), { status: 200 })
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), impl)
+    c.registerHost(REG)
+    await c.getMetalProjectUrl('p1')
+    expect(await c.stopProject('p1')).toEqual({ suspended: true, busy: false })
+  })
+
+  it('stopProject reports busy (not suspended) when the agent refuses an active-message project', async () => {
+    const impl = (async (url: string) => {
+      const path = new URL(url).pathname
+      if (path === '/assign') return new Response(JSON.stringify({ url: 'http://10.8.0.2:8080', mode: 'assigned' }), { status: 200 })
+      if (path === '/stop') return new Response(JSON.stringify({ ok: true, busy: true, suspended: false }), { status: 200 })
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), impl)
+    c.registerHost(REG)
+    await c.getMetalProjectUrl('p1')
+    expect(await c.stopProject('p1')).toEqual({ suspended: false, busy: true })
   })
 
   it('resizeProject POSTs /resize with alwaysOn=true for a paid (minScale≥1) tier', async () => {

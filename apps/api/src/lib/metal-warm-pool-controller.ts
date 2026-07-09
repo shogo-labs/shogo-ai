@@ -184,6 +184,14 @@ interface AssignResult {
   readyMs?: number
 }
 
+/** Outcome of a stop (suspend-to-snapshot) request. */
+export interface StopResult {
+  /** The project was actually suspended (or was already stopped). */
+  suspended: boolean
+  /** The node-agent refused because the project has an active agent message. */
+  busy: boolean
+}
+
 type EnvBuilder = (
   projectId: string,
   opts?: { logPrefix?: string; forMetal?: boolean },
@@ -485,16 +493,35 @@ export class MetalWarmPoolController {
    * Stop a project (suspend-to-snapshot, freeing host RAM) — the metal analog of
    * scaling a Knative service to zero. Best-effort and idempotent: no live
    * placement, a down host, or an already-stopped project are all no-ops.
+   *
+   * Returns whether the project was actually suspended. The node-agent refuses
+   * to suspend a project mid-generation (an active agent message) and reports
+   * `busy` instead; callers (the per-user open-cap enforcer) use this to leave a
+   * busy project running and retry later rather than killing its live turn.
    */
-  async stopProject(projectId: string): Promise<void> {
+  async stopProject(projectId: string): Promise<StopResult> {
     const host = await this.hostForProject(projectId)
-    if (!host) return
-    await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/stop`, {
-      method: 'POST',
-      headers: this.agentHeaders(),
-      body: JSON.stringify({ projectId }),
-      signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
-    }).catch((err) => console.warn(`[MetalPool] stop ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}`))
+    if (!host) return { suspended: false, busy: false }
+    try {
+      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/stop`, {
+        method: 'POST',
+        headers: this.agentHeaders(),
+        body: JSON.stringify({ projectId }),
+        signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+      })
+      const body: any = await res.json().catch(() => ({}))
+      const busy = body?.busy === true
+      // Only treat it as suspended when the agent confirms it (fresh suspend or
+      // already-stopped). A busy/ambiguous reply → not suspended.
+      const suspended = body?.suspended === true || body?.alreadyStopped === true
+      if (busy) {
+        console.log(`[MetalPool] stop ${projectId} on ${host.hostId} skipped: busy (active message)`)
+      }
+      return { suspended, busy }
+    } catch (err) {
+      console.warn(`[MetalPool] stop ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}`)
+      return { suspended: false, busy: false }
+    }
   }
 
   /**
@@ -746,7 +773,7 @@ export async function getMetalProjectStatus(projectId: string) {
 }
 
 /** Suspend a project on metal, freeing host RAM (substrate.stop). */
-export async function stopMetalProject(projectId: string): Promise<void> {
+export async function stopMetalProject(projectId: string): Promise<StopResult> {
   return getMetalWarmPoolController().stopProject(projectId)
 }
 
