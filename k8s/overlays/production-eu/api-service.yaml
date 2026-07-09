@@ -530,6 +530,14 @@ spec:
                   optional: true
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "https://ingest.us.signoz.cloud:443"
+            # OTLP export deadline. The default (3s) is tripped under event-loop
+            # pressure on busy pods: the export's wall-clock deadline elapses
+            # before the (normally ~90ms) response is processed, so the SDK
+            # aborts it at exactly 3s ("remaining timeout -Xms" spam + dropped
+            # spans/metrics). 10s gives ample slack; shutdown stays bounded
+            # separately by OTEL_SHUTDOWN_TIMEOUT_MS.
+            - name: OTEL_EXPORTER_TIMEOUT_MS
+              value: "10000"
             - name: OTEL_SERVICE_NAME
               value: "shogo-api-production-eu"
             - name: OTEL_LOG_LEVEL
