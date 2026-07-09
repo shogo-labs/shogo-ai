@@ -141,6 +141,12 @@ export function buildBurstUserData(o: BurstUserDataOpts): string {
     envLine('METAL_S3_GET_CONCURRENCY', '8'),
     envLine('METAL_S3_GET_PART_MB', '16'),
     envLine('METAL_REAP_INTERVAL_MS', '15000'),
+    // Persist the rootfs-rebuild inputs into the agent env so self-update's
+    // rebuildRootfs (which inherits the metal-agent process env) can run the
+    // bundled build-runtime-rootfs.sh — a rebuildRootfs release is a silent
+    // no-op without these. DOCKER_CONFIG points at the OCIR creds written below.
+    envLine('RUNTIME_IMAGE', o.runtimeImage),
+    envLine('DOCKER_CONFIG', '/root/.docker-ocir'),
   ].join('\n')
 
   // NOTE: heredocs are quoted ('EOF') so the shell does NOT expand $VARS inside

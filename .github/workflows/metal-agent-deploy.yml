@@ -144,8 +144,17 @@ jobs:
           set -euo pipefail
           VERSION="$(git rev-parse --short HEAD)"
           # Content of a bundle == exactly what the agent swaps in (self-update.ts / deploy-fleet.sh).
+          # Include the rootfs build script at scripts/metal-agent/ so a rebuildRootfs
+          # release can actually run it — self-update.ts resolves it relative to the
+          # extracted bundle root; without it the rebuild silently no-ops.
           OUT="agent-${VERSION}.tgz"
-          tar -czf "$OUT" -C apps/metal-agent src package.json tsconfig.json
+          STAGE="$(mktemp -d)"
+          cp -a apps/metal-agent/src "$STAGE/src"
+          cp -a apps/metal-agent/package.json apps/metal-agent/tsconfig.json "$STAGE/"
+          mkdir -p "$STAGE/scripts/metal-agent"
+          cp -a scripts/metal-agent/build-runtime-rootfs.sh "$STAGE/scripts/metal-agent/"
+          tar -czf "$OUT" -C "$STAGE" src package.json tsconfig.json scripts
+          rm -rf "$STAGE"
           SHA="$(sha256sum "$OUT" | awk '{print $1}')"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "file=$OUT" >> "$GITHUB_OUTPUT"
