@@ -19,6 +19,7 @@
     ".": "./src/cli.ts",
     "./tunnel": "./src/lib/tunnel.ts",
     "./runtime-manager": "./src/lib/runtime-manager.ts",
+    "./resource-limits": "./src/lib/resource-limits.ts",
     "./cloud-sync-watcher": "./src/lib/cloud-sync-watcher.ts",
     "./git-cloner": "./src/lib/git-cloner.ts",
     "./runtime-resolver": "./src/lib/runtime-resolver.ts",

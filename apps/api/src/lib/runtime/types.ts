@@ -78,6 +78,13 @@ export interface IRuntimeManager {
   start(projectId: string, opts?: { background?: boolean }): Promise<IProjectRuntime>
 
   /**
+   * Seed the on-disk workspace for a project and install dependencies WITHOUT
+   * spawning a runtime. Returns the resolved project directory. Used by the
+   * host warm pool to ready a workspace before assigning a pre-booted runtime.
+   */
+  prepareProjectWorkspace(projectId: string): Promise<string>
+
+  /**
    * Stop the runtime for the specified project.
    *
    * `reason` is a diagnostic tag identifying the trigger (e.g. 'preview-lru',

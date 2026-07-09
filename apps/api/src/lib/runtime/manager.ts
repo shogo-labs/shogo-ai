@@ -1889,6 +1889,39 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     return { dir: mergedRoot, linkedFolders, readonlyFolders }
   }
 
+  /**
+   * Seed the on-disk workspace for a project (bundled template copy / tech-stack
+   * seed / cloud pull) and install its dependencies, WITHOUT spawning a runtime.
+   * Returns the resolved project directory.
+   *
+   * This is the same preamble `doStart` runs before it spawns the agent-runtime.
+   * The host warm pool uses it so a pre-booted generic (`PROJECT_ID=__POOL__`)
+   * runtime can be pointed at a ready-to-serve workspace via `/pool/assign`.
+   */
+  async prepareProjectWorkspace(projectId: string): Promise<string> {
+    const projectInfo = await this.getProjectInfo(projectId)
+    const isExternal = projectInfo.workingMode === 'external'
+    let externalPrimary: string | undefined
+    if (isExternal) {
+      externalPrimary = projectInfo.folders?.find((f) => f.isPrimary)?.path
+      if (!externalPrimary) {
+        throw new Error(
+          `External project ${projectId} has no primary linked folder. Re-bind a folder via POST /api/local/projects/${projectId}/primary { folderId } before starting.`,
+        )
+      }
+      if (!existsSync(externalPrimary)) {
+        throw new Error(
+          `Primary folder for project ${projectId} no longer exists on disk: ${externalPrimary}. Relocate the folder before starting.`,
+        )
+      }
+    }
+    return this.ensureProjectDirectory(
+      projectId,
+      projectInfo.techStackId,
+      isExternal ? { primaryPath: externalPrimary! } : undefined,
+    )
+  }
+
   private async doStart(projectId: string): Promise<IProjectRuntime> {
     const startedAtMs = Date.now()
     const phase = (name: string, extra?: Record<string, unknown>) => {

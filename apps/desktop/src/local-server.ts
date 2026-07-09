@@ -254,6 +254,17 @@ function isVMIsolationEnabled(): boolean {
   }
 }
 
+function readHostRuntimeConfig(): import('./config').HostRuntimeConfig {
+  try {
+    const { readConfig } = require('./config') as typeof import('./config')
+    return readConfig().hostRuntime
+  } catch {
+    // Config unreadable (first launch race, corrupt file) — fall back to the
+    // safe defaults so limits are still applied. Mirrors the DEFAULT in config.ts.
+    return { memoryMB: 2048, cpuPercent: 0, warmPoolSize: 0 }
+  }
+}
+
 // --- Main server lifecycle ---
 
 export async function startLocalServer(): Promise<void> {
@@ -281,6 +292,9 @@ export async function startLocalServer(): Promise<void> {
   } else {
     console.log('[Desktop] VM isolation not available, using host execution')
   }
+
+  // Host-runtime resource limits + warm pool config (see apps/desktop/src/config.ts).
+  const hostRuntime = readHostRuntimeConfig()
 
   apiPort = await findFreePort()
   if (apiPort !== PREFERRED_PORT) {
@@ -363,6 +377,11 @@ export async function startLocalServer(): Promise<void> {
       SHOGO_VM_ISOLATION: 'true',
       SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, IS_DEV),
     } : {}),
+    // Host-mode per-project resource limits (enforced by WorkerRuntimeManager)
+    // and warm-pool sizing (HostWarmPoolController). See config.ts defaults.
+    RUNTIME_MEMORY_MB: String(hostRuntime.memoryMB),
+    RUNTIME_CPU_PERCENT: String(hostRuntime.cpuPercent),
+    HOST_WARM_POOL_SIZE: String(hostRuntime.warmPoolSize),
   }
 
   // Defense-in-depth for the env-bleed described above: a `DATABASE_URL` (or

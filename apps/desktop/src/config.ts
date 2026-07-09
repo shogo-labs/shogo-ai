@@ -23,6 +23,19 @@ export interface VMIsolationConfig {
   mountWorkspace: boolean
 }
 
+export interface HostRuntimeConfig {
+  /** Per-project RAM ceiling in MB for the host-spawned agent-runtime process
+   *  group (bun + vite + preview sidecars). Enforced via cgroup v2 on Linux, a
+   *  Job Object on Windows, and an RSS watchdog on macOS. */
+  memoryMB: number
+  /** CPU ceiling as a percentage of a single core (100 = one full core). Only
+   *  enforced where the OS supports it (cgroup CPUQuota on Linux). 0 = no cap. */
+  cpuPercent: number
+  /** Number of generic (PROJECT_ID=__POOL__) runtimes to keep pre-booted so a
+   *  project open can claim one and skip the cold spawn. 0 = disabled. */
+  warmPoolSize: number
+}
+
 export interface MeetingConfig {
   autoDetect: boolean
   autoRecord: boolean
@@ -43,6 +56,7 @@ export interface BugReportConfig {
 export interface DesktopConfig {
   mode: 'local' | 'cloud'
   vmIsolation: VMIsolationConfig
+  hostRuntime: HostRuntimeConfig
   meetings: MeetingConfig
   bugReport?: BugReportConfig
   /** Stable per-machine identifier. Generated on first launch and used so
@@ -75,6 +89,12 @@ const DEFAULT_VM_CONFIG: VMIsolationConfig = {
   mountWorkspace: true,
 }
 
+const DEFAULT_HOST_RUNTIME_CONFIG: HostRuntimeConfig = {
+  memoryMB: 2048,
+  cpuPercent: 0,  // 0 = no CPU cap
+  warmPoolSize: 0,  // 0 = warm pool disabled
+}
+
 const DEFAULT_MEETING_CONFIG: MeetingConfig = {
   autoDetect: true,
   autoRecord: false,
@@ -88,6 +108,7 @@ const DEFAULT_MEETING_CONFIG: MeetingConfig = {
 const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   mode: 'local',
   vmIsolation: { ...DEFAULT_VM_CONFIG },
+  hostRuntime: { ...DEFAULT_HOST_RUNTIME_CONFIG },
   meetings: { ...DEFAULT_MEETING_CONFIG },
 }
 
@@ -116,6 +137,12 @@ export function readConfig(): DesktopConfig {
       ...DEFAULT_VM_CONFIG,
       ...(typeof parsed.vmIsolation === 'object' && parsed.vmIsolation !== null
         ? parsed.vmIsolation
+        : {}),
+    },
+    hostRuntime: {
+      ...DEFAULT_HOST_RUNTIME_CONFIG,
+      ...(typeof parsed.hostRuntime === 'object' && parsed.hostRuntime !== null
+        ? parsed.hostRuntime
         : {}),
     },
     meetings: {
