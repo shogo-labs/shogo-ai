@@ -85,6 +85,12 @@ variable "kourier_origin" {
   default     = null
 }
 
+variable "api_published_origin" {
+  description = "Public base URL of the Shogo API used by the subdomain-router Worker to serve METAL-backed server-backed published apps. When a subdomain's SERVER_BACKED KV value is `metal`, the Worker proxies `/api/*` (and the wake probe) to `${api_published_origin}/api/published/{subdomain}/...` instead of to the Knative ingress (`kourier_origin`). The API then resolves the project's `published:{id}` microVM placement and forwards to the box over the mesh — Workers can't fetch a raw IP:port (error 1003), so the API (a real hostname) is the hop. Must be a proxied hostname CF can fetch (e.g. https://api.shogo.ai). Leave null to disable metal-backed publishing at the edge (falls back to static serving)."
+  type        = string
+  default     = null
+}
+
 variable "site_auth_secret" {
   description = "HMAC signing secret used by the subdomain-router Worker to mint/verify the password-gate cookie (shogo_site_auth) for password-protected published sites. Bound to the Worker as SITE_AUTH_SECRET. Leave null/empty to disable the password gate even when the SITE_AUTH KV map has entries (the Worker guards on `env.SITE_AUTH_SECRET`). Use a long random value; rotating it invalidates all outstanding visitor sessions."
   type        = string
@@ -345,6 +351,17 @@ resource "cloudflare_worker_script" "subdomain_router" {
       text = var.kourier_origin
     }
   }
+
+  # The Shogo API origin for METAL-backed server-backed `/api/*`. Only bound
+  # when configured; the Worker guards on `env.API_PUBLISHED_ORIGIN` presence
+  # and only uses it when a subdomain's SERVER_BACKED value is `metal`.
+  dynamic "plain_text_binding" {
+    for_each = var.api_published_origin != null && var.api_published_origin != "" ? [1] : []
+    content {
+      name = "API_PUBLISHED_ORIGIN"
+      text = var.api_published_origin
+    }
+  }
   # The OCI PAR `access_uri` returned by the provider ends in `/o/`
   # (verified via OCI CLI on the live PAR; matches OCI docs). The
   # original implementation built `originUrl = par_base_url + path`
@@ -583,26 +600,49 @@ resource "cloudflare_worker_script" "subdomain_router" {
     // -----------------------------------------------------------------------
     const WAKE_PATHS = ['/__shogo/wake', '/__shogo/ready'];
 
-    async function isServerBacked(env, subdomain) {
-      if (!env.SERVER_BACKED) return false;
-      try { return !!(await env.SERVER_BACKED.get(subdomain)); } catch (e) { return false; }
+    // Raw SERVER_BACKED value: `metal` (proxy /api/* to the Shogo API published
+    // endpoint), or any other truthy value — legacy `1` / `knative` — (proxy to
+    // the Kourier ingress). Empty/absent → static app.
+    async function serverBackedFlag(env, subdomain) {
+      if (!env.SERVER_BACKED) return null;
+      try { return (await env.SERVER_BACKED.get(subdomain)) || null; } catch (e) { return null; }
     }
 
-    // Probe published-{id}/ready via the Kourier ingress (same routing as the
-    // /api/* proxy: keep the published host in the URL so the DomainMapping
-    // resolves to published-{id}, only override DNS to Kourier). Same-zone
-    // subrequests skip this Worker, so there is no self-loop. Returns true when
-    // the pod answers /ready 2xx; a short timeout keeps the loading page polling
-    // rather than holding one request open across a long cold start.
-    async function probePublishedReady(env, subdomain, url, timeoutMs) {
-      const KOURIER_ORIGIN = (env.KOURIER_ORIGIN || '').replace(/\/+$/, '');
-      if (!KOURIER_ORIGIN) return false;
-      const kourierHost = KOURIER_ORIGIN.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-      const publishedHost = subdomain + '.' + PUBLISH_DOMAIN;
-      const probeUrl = url.protocol + '//' + publishedHost + '/ready';
+    async function isServerBacked(env, subdomain) {
+      return !!(await serverBackedFlag(env, subdomain));
+    }
+
+    // Probe a server-backed app's readiness, waking it if asleep. Backend-aware:
+    //   - metal   → GET ${API_PUBLISHED_ORIGIN}/api/published/{subdomain}/wake,
+    //               which resolves/resumes the project's microVM and reports
+    //               { ready }. API_PUBLISHED_ORIGIN is a real hostname CF can
+    //               fetch (a metal box is a raw IP:port the Worker can't reach).
+    //   - knative → probe published-{id}/ready via the Kourier ingress (keep the
+    //               published host in the URL so the DomainMapping resolves,
+    //               only override DNS to Kourier).
+    // Same-zone subrequests skip this Worker, so there is no self-loop. A short
+    // timeout keeps the loading page polling rather than holding one request open.
+    async function probePublishedReady(env, subdomain, url, timeoutMs, backend) {
       const ctrl = new AbortController();
       const timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
       try {
+        if (backend === 'metal') {
+          const API = (env.API_PUBLISHED_ORIGIN || '').replace(/\/+$/, '');
+          if (!API) return false;
+          const wakeUrl = API + '/api/published/' + subdomain + '/wake';
+          const resp = await fetch(wakeUrl, {
+            signal: ctrl.signal,
+            headers: { 'User-Agent': 'Cloudflare-Worker-Wake' },
+          });
+          if (!resp.ok) return false;
+          const body = await resp.json().catch(function () { return { ready: false }; });
+          return !!(body && body.ready);
+        }
+        const KOURIER_ORIGIN = (env.KOURIER_ORIGIN || '').replace(/\/+$/, '');
+        if (!KOURIER_ORIGIN) return false;
+        const kourierHost = KOURIER_ORIGIN.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+        const publishedHost = subdomain + '.' + PUBLISH_DOMAIN;
+        const probeUrl = url.protocol + '//' + publishedHost + '/ready';
         const resp = await fetch(probeUrl, {
           cf: { resolveOverride: kourierHost },
           signal: ctrl.signal,
@@ -732,53 +772,64 @@ resource "cloudflare_worker_script" "subdomain_router" {
         const gated = await siteAuthGate(request, env, url, subdomain);
         if (gated) return gated;
 
+        // Resolve the server-backed backend once (metal | knative | null) and
+        // reuse it across wake, /api/* proxy, and the cold-navigation check.
+        const backend = await serverBackedFlag(env, subdomain);
+        const isMetal = backend === 'metal';
+
         // Wake control endpoint, polled by the loading page below. For
-        // server-backed apps this probes published-{id}/ready (waking the pod
-        // via the activator) and reports readiness; static apps are always
-        // "ready" (served from the edge).
+        // server-backed apps this wakes the backend (metal: API /wake; knative:
+        // published-{id}/ready via the activator) and reports readiness; static
+        // apps are always "ready" (served from the edge).
         if (WAKE_PATHS.indexOf(url.pathname) !== -1) {
-          if (!(await isServerBacked(env, subdomain))) return wakeJsonResponse(true);
-          return wakeJsonResponse(await probePublishedReady(env, subdomain, url, 5000));
+          if (!backend) return wakeJsonResponse(true);
+          return wakeJsonResponse(await probePublishedReady(env, subdomain, url, 5000, backend));
         }
 
         // SERVER-BACKED apps: proxy dynamic `/api/*` to the project's running
-        // server.tsx via the Knative ingress instead of Object Storage. The
-        // backend is reached at KOURIER_ORIGIN (a DNS-only host that lands on
-        // Kourier); we rewrite the Host header to the published hostname so the
-        // `{subdomain}.PUBLISH_DOMAIN` DomainMapping routes to published-{id}.
-        // Static assets keep serving from OCI below (CDN-fast, scale-to-zero
-        // safe). Falls through to static when the app isn't server-backed, the
-        // origin is unconfigured, or the path isn't dynamic.
-        const KOURIER_ORIGIN = (env.KOURIER_ORIGIN || '').replace(/\/+$/, '');
-        if (KOURIER_ORIGIN && env.SERVER_BACKED && isDynamicPath(url.pathname)) {
-          const flag = await env.SERVER_BACKED.get(subdomain);
-          if (flag) {
-            const publishedHost = subdomain + '.' + PUBLISH_DOMAIN;
-            // Kourier routes by Host to the `{subdomain}.PUBLISH_DOMAIN`
-            // DomainMapping (→ published-{projectId}). Cloudflare derives the
-            // upstream Host from the subrequest URL and IGNORES a manually-set
-            // Host header, so we keep the published host IN THE URL (correct
-            // Host) and use `resolveOverride` to send the connection to the
-            // Kourier ingress host instead of the published host's own (dummy
-            // wildcard) origin. resolveOverride requires both the URL host and
-            // the override host to be orange-clouded in this zone; same-zone
-            // subrequests skip the Worker, so there is no self-loop.
-            const kourierHost = KOURIER_ORIGIN.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-            const backendUrl = url.protocol + '//' + publishedHost + url.pathname + url.search;
-            const backendReq = new Request(backendUrl, request);
-            backendReq.headers.set('X-Forwarded-Host', publishedHost);
-            backendReq.headers.set('X-Forwarded-Proto', 'https');
-            return fetch(backendReq, { cf: { resolveOverride: kourierHost } });
+        // server.tsx instead of Object Storage. Two backends:
+        //   - metal   → the Shogo API published endpoint
+        //     (${API_PUBLISHED_ORIGIN}/api/published/{subdomain}/api/...), which
+        //     resolves the microVM placement and forwards over the mesh. A metal
+        //     box is a raw IP:port the Worker can't fetch (error 1003), so the
+        //     API (a real hostname) is the hop.
+        //   - knative → the Kourier ingress: keep the published host in the URL
+        //     so the `{subdomain}.PUBLISH_DOMAIN` DomainMapping routes to
+        //     published-{id}, and resolveOverride DNS to Kourier.
+        // Static assets keep serving from OCI below. Falls through to static when
+        // the app isn't server-backed, the origin is unconfigured, or the path
+        // isn't dynamic.
+        if (backend && isDynamicPath(url.pathname)) {
+          if (isMetal) {
+            const API = (env.API_PUBLISHED_ORIGIN || '').replace(/\/+$/, '');
+            if (API) {
+              const backendUrl = API + '/api/published/' + subdomain + url.pathname + url.search;
+              const backendReq = new Request(backendUrl, request);
+              backendReq.headers.set('X-Forwarded-Host', subdomain + '.' + PUBLISH_DOMAIN);
+              backendReq.headers.set('X-Forwarded-Proto', 'https');
+              return fetch(backendReq);
+            }
+          } else {
+            const KOURIER_ORIGIN = (env.KOURIER_ORIGIN || '').replace(/\/+$/, '');
+            if (KOURIER_ORIGIN) {
+              const publishedHost = subdomain + '.' + PUBLISH_DOMAIN;
+              const kourierHost = KOURIER_ORIGIN.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+              const backendUrl = url.protocol + '//' + publishedHost + url.pathname + url.search;
+              const backendReq = new Request(backendUrl, request);
+              backendReq.headers.set('X-Forwarded-Host', publishedHost);
+              backendReq.headers.set('X-Forwarded-Proto', 'https');
+              return fetch(backendReq, { cf: { resolveOverride: kourierHost } });
+            }
           }
         }
 
         // Server-backed app + top-level navigation: if the backend is asleep,
         // serve a loading page that wakes it instead of the static shell (whose
-        // /api/* calls would fail against a scaled-to-zero pod). The probe nudges
-        // the activator so the pod is already cold-starting while the visitor
-        // waits. Skipped for static apps (no backend to wake).
-        if (isDocumentRequest(request, url) && (await isServerBacked(env, subdomain))) {
-          const ready = await probePublishedReady(env, subdomain, url, 3000);
+        // /api/* calls would fail against a scaled-to-zero / suspended backend).
+        // The probe nudges the backend so it is already starting while the
+        // visitor waits. Skipped for static apps (no backend to wake).
+        if (backend && isDocumentRequest(request, url)) {
+          const ready = await probePublishedReady(env, subdomain, url, 3000, backend);
           if (!ready) return shogoLoadingResponse(subdomain + '.' + PUBLISH_DOMAIN);
         }
 

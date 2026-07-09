@@ -53,6 +53,21 @@ export interface Placement {
 }
 
 /**
+ * Placement of a LIVE published site's microVM — the metal analog of the Knative
+ * `{subdomain}.shogo.one -> published-{id}` DomainMapping. Keyed by subdomain so
+ * the Cloudflare Worker's `/api/*` proxy (via the API published endpoint) can
+ * resolve the owning project/host without a DB round trip on the hot path.
+ */
+export interface PublishedPlacement {
+  projectId: string
+  hostId: string
+  region: string
+  /** True when the published VM is pinned always-on (never idle-suspended). */
+  alwaysOn: boolean
+  updatedAt: number
+}
+
+/**
  * A burst host the fleet reconciler provisioned (hourly, above baseline). We
  * track these separately from baseline hosts so scale-down only ever destroys
  * reconciler-created capacity — never a monthly baseline host — and so it can
@@ -80,6 +95,7 @@ const USER_OPEN_TTL_S = parseInt(process.env.METAL_USER_OPEN_TTL_S || `${12 * 60
 const HOST_KEY = 'metal:host:'
 const HOST_SET = 'metal:hosts'
 const PLACE_KEY = 'metal:place:'
+const PUB_PLACE_KEY = 'metal:pubplace:' // + subdomain → PublishedPlacement JSON
 const LEASE_KEY = 'metal:lease:'
 const CORDON_SET = 'metal:cordoned'
 const BURST_HASH = 'metal:burst' // hostId → BurstHostRecord JSON
@@ -97,6 +113,7 @@ export class MetalPlacementRegistry {
   // In-process fallback state (used only when Redis is unavailable).
   private memHosts = new Map<string, HostScalars>()
   private memPlace = new Map<string, Placement>()
+  private memPubPlace = new Map<string, PublishedPlacement>()
   private memLease = new Map<string, { holder: string; expiresAt: number }>()
   private memCordoned = new Set<string>()
   private memBurst = new Map<string, BurstHostRecord>()
@@ -229,6 +246,50 @@ export class MetalPlacementRegistry {
       await r.del(`${PLACE_KEY}${projectId}`)
     } catch {
       this.memPlace.delete(projectId)
+    }
+  }
+
+  // --- published placement (subdomain → published microVM) -----------------
+  // The metal analog of the Knative published DomainMapping. Longer-lived than a
+  // preview placement (a live site outlives an editing session), but still TTL'd
+  // so a stale mapping self-heals — the API re-resolves + re-publishes the
+  // placement on the next wake.
+
+  async setPublishedPlacement(subdomain: string, p: Omit<PublishedPlacement, 'updatedAt'>): Promise<void> {
+    const rec: PublishedPlacement = { ...p, updatedAt: Date.now() }
+    const r = this.redis()
+    if (!r) {
+      this.memPubPlace.set(subdomain, rec)
+      return
+    }
+    try {
+      await r.set(`${PUB_PLACE_KEY}${subdomain}`, JSON.stringify(rec), 'EX', PLACEMENT_TTL_S)
+    } catch {
+      this.memPubPlace.set(subdomain, rec)
+    }
+  }
+
+  async getPublishedPlacement(subdomain: string): Promise<PublishedPlacement | null> {
+    const r = this.redis()
+    if (!r) return this.memPubPlace.get(subdomain) ?? null
+    try {
+      const v = await r.get(`${PUB_PLACE_KEY}${subdomain}`)
+      return v ? (JSON.parse(v) as PublishedPlacement) : null
+    } catch {
+      return this.memPubPlace.get(subdomain) ?? null
+    }
+  }
+
+  async clearPublishedPlacement(subdomain: string): Promise<void> {
+    const r = this.redis()
+    if (!r) {
+      this.memPubPlace.delete(subdomain)
+      return
+    }
+    try {
+      await r.del(`${PUB_PLACE_KEY}${subdomain}`)
+    } catch {
+      this.memPubPlace.delete(subdomain)
     }
   }
 

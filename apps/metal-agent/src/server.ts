@@ -247,6 +247,26 @@ if (config.gcIntervalMs > 0) {
   }, config.gcIntervalMs)
 }
 
+// Published-data exporter: periodically flush every live SERVER-BACKED published
+// microVM's writable state (SQLite DB + uploads) to the published-data bucket.
+// Always-on sites may run for weeks without a suspend, so relying on the
+// suspend-time export alone would risk losing end-user writes on a host loss.
+// Host-side (the guest holds no S3 creds); best-effort.
+let pubDataExporter: ReturnType<typeof setInterval> | null = null
+if (config.publishDataBucket && config.publishDataExportIntervalMs > 0) {
+  console.log(
+    `[metal-agent] published-data export on: interval=${config.publishDataExportIntervalMs}ms bucket=${config.publishDataBucket}`,
+  )
+  pubDataExporter = setInterval(() => {
+    pool.exportAllPublishedData().then(
+      (n) => {
+        if (n) console.log(`[metal-agent] exported published-data for ${n} live site(s)`)
+      },
+      (err) => console.error('[metal-agent] published-data exporter error:', err?.message ?? err),
+    )
+  }, config.publishDataExportIntervalMs)
+}
+
 // Graceful shutdown for rolling deploys. systemd is configured `KillMode=process`
 // so it signals ONLY this agent; the firecracker children keep running. We must
 // therefore NOT tear down the live data path: leave assigned VMs and their DNAT
@@ -258,6 +278,7 @@ process.on('SIGTERM', async () => {
   stopRegistration()
   if (reaper) clearInterval(reaper)
   if (gc) clearInterval(gc)
+  if (pubDataExporter) clearInterval(pubDataExporter)
   await pool.prepareForRestart().catch(() => {})
   process.exit(0)
 })

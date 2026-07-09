@@ -34,10 +34,25 @@ export function getServerBackedKvConfig(): ServerBackedKvConfig | null {
 }
 
 /**
- * Flag a published subdomain as server-backed so the Worker proxies its
- * `/api/*` to the Knative ingress. Best-effort; returns false when unconfigured.
+ * The routing target for a server-backed subdomain, stored as the KV VALUE so
+ * the Worker knows WHERE to send `/api/*`:
+ *   - `knative` (legacy `1` also accepted) → proxy to the Kourier ingress
+ *     (`KOURIER_ORIGIN`), which routes the DomainMapping to `published-{id}`.
+ *   - `metal` → proxy to the API published endpoint (`API_PUBLISHED_ORIGIN`),
+ *     which resolves the metal placement and forwards to the published microVM.
  */
-export async function setServerBackedFlag(subdomain: string): Promise<boolean> {
+export type ServerBackedBackend = 'knative' | 'metal'
+
+/**
+ * Flag a published subdomain as server-backed so the Worker proxies its
+ * `/api/*` to the right backend (`knative` = Kourier, `metal` = API published
+ * endpoint). Best-effort; returns false when unconfigured. Defaults to
+ * `knative` for backward-compat with entries the Worker still reads as truthy.
+ */
+export async function setServerBackedFlag(
+  subdomain: string,
+  backend: ServerBackedBackend = 'knative',
+): Promise<boolean> {
   const cfg = getServerBackedKvConfig()
   if (!cfg) return false
   try {
@@ -49,7 +64,7 @@ export async function setServerBackedFlag(subdomain: string): Promise<boolean> {
           Authorization: `Bearer ${cfg.apiToken}`,
           'Content-Type': 'text/plain',
         },
-        body: '1',
+        body: backend,
       },
     )
     if (!res.ok) throw new Error(`KV put ${res.status}`)
@@ -81,6 +96,39 @@ export async function getServerBackedFlag(subdomain: string): Promise<boolean | 
     return val.length > 0
   } catch (err: any) {
     console.error(`[cf-server-backed] KV get ${subdomain} failed (non-fatal):`, err?.message ?? err)
+    return null
+  }
+}
+
+/**
+ * Read the RAW server-backed routing target for a subdomain (the KV value), not
+ * just a boolean. Used by the publishing migration to decide idempotently what
+ * (if anything) to flip:
+ *   - `'metal'`   → already routed to the metal published proxy.
+ *   - `'knative'` → routed to Kourier (legacy `'1'` normalizes to this).
+ *   - `null`      → no flag (static, edge-only) OR the KV is unconfigured / a
+ *                   read error occurred (indistinguishable — callers treat null
+ *                   as "static / nothing to migrate").
+ */
+export async function getServerBackedBackend(
+  subdomain: string,
+): Promise<ServerBackedBackend | null> {
+  const cfg = getServerBackedKvConfig()
+  if (!cfg) return null
+  try {
+    const res = await fetch(
+      `${CF_API_BASE}/accounts/${cfg.accountId}/storage/kv/namespaces/${cfg.kvNamespaceId}/values/${encodeURIComponent(subdomain)}`,
+      { headers: { Authorization: `Bearer ${cfg.apiToken}` } },
+    )
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(`KV get ${res.status}`)
+    const val = (await res.text()).trim().toLowerCase()
+    if (!val) return null
+    if (val === 'metal') return 'metal'
+    // Anything else truthy (incl. the legacy `1`) is the Kourier/Knative path.
+    return 'knative'
+  } catch (err: any) {
+    console.error(`[cf-server-backed] KV get(raw) ${subdomain} failed (non-fatal):`, err?.message ?? err)
     return null
   }
 }

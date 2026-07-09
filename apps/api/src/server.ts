@@ -1873,6 +1873,24 @@ app.get('/api/published/:subdomain/wake', async (c) => {
     if (!isKubernetes()) {
       return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
     }
+
+    // Metal substrate: the published site runs as a `published:{id}` microVM
+    // with no Knative service. Resolve (resume/boot) it through the PUBLISH
+    // substrate — that IS the wake — and report readiness. Publishing is metal-
+    // authoritative fleet-wide (not the graduated preview rollout), and the
+    // subdomain-router Worker only routes a `metal`-flagged app's wake here, so
+    // this is the path for every migrated site. Never fall through to Knative
+    // for a metal-owned publish (there is nothing there to route to).
+    const { isPublishMetalAuthoritative } = await import('./lib/publish-substrate-config')
+    if (isPublishMetalAuthoritative()) {
+      const { getPublishSubstrate } = await import('./lib/substrate/router')
+      const substrate = await getPublishSubstrate(project.id)
+      if (substrate.kind === 'metal') {
+        const { ready } = await substrate.wakePublished(project.id, subdomain)
+        return c.json({ ready }, 200, WAKE_RESPONSE_HEADERS)
+      }
+    }
+
     const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
     // A short probe against published-{id}/ready both reports readiness AND
     // triggers scale-from-zero via the activator. The page keeps polling rather
@@ -2045,6 +2063,84 @@ const previewRenderHandler = async (c: any) => {
 }
 app.all('/api/preview/:projectId/render', previewRenderHandler)
 app.all('/api/preview/:projectId/render/*', previewRenderHandler)
+
+// -----------------------------------------------------------------------------
+// Published API proxy — serves a metal-backed published site's `/api/*` via the API.
+// -----------------------------------------------------------------------------
+// For a SERVER-BACKED published app on the metal substrate, the subdomain-router
+// Worker proxies `{subdomain}.shogo.one/api/<path>` here (the SERVER_BACKED KV
+// value is `metal`) instead of to Kourier — because a metal microVM is reached
+// over the box's PUBLIC DNAT port and Cloudflare Workers cannot fetch() a raw
+// IP:port (error 1003). Routing through the API (a real hostname) sidesteps that
+// AND keeps the box's data ports locked to the OKE egress IP.
+//
+// Static assets are served by the Worker straight from PUBLISH_BUCKET; only the
+// dynamic `/api/*` calls reach here. We resolve (waking if needed) the project's
+// `published:{id}` microVM and proxy to `${url}/api/<path>` at the root — exactly
+// as Kourier→published-{id} did on Knative. The password gate / canonical
+// redirect stay at the edge (Worker), unchanged.
+const publishedApiHandler = async (c: any) => {
+  const subdomain = (c.req.param('subdomain') || '').toLowerCase()
+  try {
+    const project = await prisma.project.findUnique({
+      where: { publishedSubdomain: subdomain },
+      select: { id: true, publishedAlwaysOn: true } as any,
+    })
+    if (!project) return c.json({ error: { code: 'not_found' } }, 404)
+    if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
+
+    const { getMetalPublishedUrl } = await import('./lib/metal-warm-pool-controller')
+    let target: string
+    try {
+      const resolved = await getMetalPublishedUrl(project.id, subdomain, {
+        alwaysOn: (project as any).publishedAlwaysOn === true,
+      })
+      target = resolved.url
+    } catch (err: any) {
+      // Backend still resuming/booting — retryable 503 so the visitor's loading
+      // interstitial keeps polling /wake rather than surfacing a hard error.
+      console.warn(`[published/api] ${subdomain} not ready:`, err?.message || err)
+      return c.json({ error: { code: 'pod_starting', message: 'published backend starting' } }, 503, {
+        'Cache-Control': 'no-store',
+      })
+    }
+
+    const prefix = `/api/published/${subdomain}`
+    const rawPath = c.req.path.startsWith(prefix) ? c.req.path.slice(prefix.length) : ''
+    const path = rawPath || '/'
+    const search = new URL(c.req.url).search
+    const targetUrl = `${target.replace(/\/+$/, '')}${path}${search}`
+
+    const headers = new Headers()
+    for (const h of [
+      'content-type', 'accept', 'accept-encoding', 'accept-language',
+      'user-agent', 'range', 'if-none-match', 'if-modified-since', 'cache-control',
+      'cookie', 'authorization', 'x-forwarded-for', 'x-forwarded-host',
+    ]) {
+      const v = c.req.header(h)
+      if (v) headers.set(h, v)
+    }
+    const init: RequestInit = { method: c.req.method, headers, redirect: 'manual' }
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') init.body = await c.req.arrayBuffer()
+
+    const resp = await fetch(targetUrl, init)
+
+    // Strip hop-by-hop headers; keep set-cookie (a published app is a real site
+    // that may set session cookies for its own users, unlike embedded previews).
+    const outHeaders = new Headers()
+    resp.headers.forEach((value, key) => {
+      const k = key.toLowerCase()
+      if (k === 'transfer-encoding' || k === 'connection') return
+      outHeaders.set(key, value)
+    })
+    return new Response(resp.body, { status: resp.status, headers: outHeaders })
+  } catch (err: any) {
+    console.error('[published/api]', err?.message || err)
+    return c.json({ error: { code: 'proxy_error', message: 'published proxy failed' } }, 502)
+  }
+}
+app.all('/api/published/:subdomain/api', publishedApiHandler)
+app.all('/api/published/:subdomain/api/*', publishedApiHandler)
 
 // =============================================================================
 // Thumbnail routes

@@ -240,8 +240,14 @@ module "publish_hosting" {
 
   # Server-backed published apps (run server.tsx in production) are always on.
   # Set kourier_origin to a DNS-only host that terminates at this region's
-  # Knative (Kourier) ingress so the Worker can proxy `/api/*`.
+  # Knative (Kourier) ingress so the Worker can proxy `/api/*` for KNATIVE-backed
+  # published apps.
   kourier_origin = var.kourier_origin
+
+  # METAL-backed published apps: the public Shogo API origin the Worker proxies
+  # `/api/*` to (→ /api/published/{subdomain}/...) so the API can forward to the
+  # project's microVM over the mesh. Falls back to static serving when unset.
+  api_published_origin = var.api_published_origin
 
   # HMAC secret for the password-gate cookie on password-protected published
   # sites. Null disables the edge gate (fail-open to public).

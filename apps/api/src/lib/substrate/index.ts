@@ -20,7 +20,9 @@ export { MetalSubstrate, type MetalBackend } from './metal-substrate'
 export { KnativeSubstrate, type KnativeBackend } from './knative-substrate'
 export {
   getProjectSubstrate,
+  getPublishSubstrate,
   destroyProjectRuntime,
   resizeProjectRuntime,
+  unpublishProjectEverywhere,
   type SubstrateRouterOpts,
 } from './router'

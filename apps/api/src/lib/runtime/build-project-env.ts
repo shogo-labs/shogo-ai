@@ -234,3 +234,47 @@ export async function buildProjectEnv(
   console.log(`[${prefix}] total ${Date.now() - startTime}ms for ${projectId}`)
   return env
 }
+
+/**
+ * Build the environment for a SERVER-BACKED published microVM on the metal
+ * substrate — the metal analog of KnativeProjectManager.createPublishedServerService's
+ * env block. Starts from the normal metal project env (proxy tokens, public API
+ * URLs, S3 source hydration) and layers the published-mode switches on top:
+ *
+ *   - SHOGO_PUBLISHED_MODE=true / PUBLISHED_SUBDOMAIN — run server.tsx only, no
+ *     agent gateway (see packages/agent-runtime/src/server.ts).
+ *   - SHOGO_CLOUD_SYNC_MODE=git_only — source is restored read-only from the
+ *     durable git repo pinned to `published/<subdomain>`; no S3 source uploader.
+ *   - SHOGO_ALWAYS_ON — pins the microVM against the host idle reaper when the
+ *     app is always-on; otherwise it may suspend and wake on visit.
+ *
+ * Crucially it does NOT inject S3_PUBLISHED_DATA_BUCKET or AWS credentials: on
+ * metal the guest holds no S3 creds (same trust model as preview), so writable
+ * state durability is done host-side by the metal-agent (published-data-archive),
+ * NOT by the guest's PublishedDataSync.
+ */
+export async function buildPublishedProjectEnv(
+  projectId: string,
+  subdomain: string,
+  opts?: { alwaysOn?: boolean },
+): Promise<Record<string, string>> {
+  const env = await buildProjectEnv(projectId, { logPrefix: 'buildPublishedProjectEnv', forMetal: true })
+  const publishDomain = process.env.PUBLISH_DOMAIN || 'shogo.one'
+
+  env.SHOGO_PUBLISHED_MODE = 'true'
+  env.PUBLISHED_SUBDOMAIN = subdomain
+  env.PUBLISH_DOMAIN = publishDomain
+  env.PUBLIC_PREVIEW_URL = `https://${subdomain}.${publishDomain}`
+  // Source is restored read-only from the durable git repo (carries the
+  // published tag + the builder's seed DB); pin git_only so no S3 source
+  // uploader/watcher runs in published mode.
+  env.SHOGO_CLOUD_SYNC_MODE = 'git_only'
+  // Writable-state durability is host-side (metal-agent) — the guest must not
+  // try to reach the published-data bucket itself (no creds on metal).
+  delete env.S3_PUBLISHED_DATA_BUCKET
+
+  if (opts?.alwaysOn) env.SHOGO_ALWAYS_ON = '1'
+  else delete env.SHOGO_ALWAYS_ON
+
+  return env
+}

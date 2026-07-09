@@ -837,39 +837,48 @@ async function pushPublishedData(
 }
 
 /**
- * Provision the right published service for a project: a server-backed
- * Knative pod (running server.tsx) when the app needs a backend, else the
- * static nginx service. Either way the `{subdomain}.shogo.one` DomainMapping
- * is (re)created and the SERVER_BACKED Worker KV flag is set/cleared so the
- * edge routes `/api/*` correctly. Shared by publish + republish.
+ * Provision the live published site for a project through its owning substrate
+ * (Knative ksvc + DomainMapping, or a metal published microVM). The substrate
+ * decides the runtime shape; this function owns the substrate-independent bits:
+ * detecting whether the app needs a backend and seeding writable state.
+ *
+ * Static apps serve entirely from PUBLISH_BUCKET + the Cloudflare Worker on both
+ * substrates (the substrate just clears the edge flag / drops any leftover
+ * runtime). Server-backed apps get a long-running backend; we seed the
+ * published-data bucket BEFORE provisioning so the runtime hydrates the
+ * builder's data on first boot (a no-op when an archive already exists, so a
+ * republish never clobbers accumulated end-user writes). Shared by publish +
+ * republish.
  */
 async function configurePublishedService(
   projectId: string,
   subdomain: string,
   opts?: { alwaysOn?: boolean },
 ): Promise<{ serverBacked: boolean }> {
-  const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
-  const { setServerBackedFlag, clearServerBackedFlag } = await import("../lib/cloudflare-server-backed-kv")
-  const manager = getKnativeProjectManager()
-
   const serverBacked = await detectServerBacked(projectId)
-  // Always-on keeps a warm replica for BOTH service types so the first visit
-  // after idle never pays a cold start. A static app keeps a (much cheaper)
-  // nginx pod warm; a server-backed app keeps the heavier runtime pod warm.
-  const minScale = opts?.alwaysOn ? 1 : 0
-  if (serverBacked) {
-    const serviceUrl = await manager.createPublishedServerService(projectId, subdomain, { minScale })
-    console.log(`[Publish] Server-backed published service ready: ${serviceUrl} (min-scale=${minScale})`)
-    await manager.createPublishedDomainMapping(subdomain, projectId)
-    await seedPublishedData(subdomain, projectId)
-    await setServerBackedFlag(subdomain)
-  } else {
-    const serviceUrl = await manager.createPublishedService(projectId, subdomain, { minScale })
-    console.log(`[Publish] Static published service ready: ${serviceUrl}`)
-    await manager.createPublishedDomainMapping(subdomain, projectId)
-    await clearServerBackedFlag(subdomain)
-  }
-  return { serverBacked }
+
+  // Seed writable state before provisioning so a server-backed runtime boots
+  // with the builder's data. Substrate-independent (API-side S3 write); the
+  // runtime — Knative pod or metal host-side hydration — pulls it on first boot.
+  if (serverBacked) await seedPublishedData(subdomain, projectId)
+
+  // Publishing is metal-authoritative fleet-wide (getPublishSubstrate), NOT
+  // gated by the graduated per-project preview rollout — so every new publish
+  // lands on metal once the fleet is enabled. unpublishProjectEverywhere covers
+  // the other substrate on a cutover so a project that was previously on Knative
+  // doesn't leak its old published ksvc.
+  const { getPublishSubstrate } = await import("../lib/substrate/router")
+  const substrate = await getPublishSubstrate(projectId)
+  const result = await substrate.publish(projectId, {
+    subdomain,
+    serverBacked,
+    alwaysOn: opts?.alwaysOn,
+  })
+  console.log(
+    `[Publish] Published ${projectId} via ${result.substrate} substrate ` +
+      `(serverBacked=${result.serverBacked}${result.url ? `, url=${result.url}` : ""})`,
+  )
+  return { serverBacked: result.serverBacked }
 }
 
 /**
@@ -1497,26 +1506,20 @@ export function publishRoutes() {
         return c.json({ error: { code: "not_published", message: "Project is not published" } }, 400)
       }
 
-      // Delete DomainMapping, Knative service, and S3 files
+      // Tear down the published runtime + edge routing via the owning substrate
+      // (Knative ksvc + DomainMapping, or metal published microVM + placement),
+      // then delete the static S3 content. The published-data archive is
+      // intentionally KEPT so a later republish restores end-user writes.
       if (isKubernetes()) {
         try {
-          const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
-          const manager = getKnativeProjectManager()
-          await manager.deletePublishedDomainMapping(project.publishedSubdomain)
-          await manager.deletePublishedService(projectId)
-          console.log(`[Publish] Published service + DomainMapping deleted for ${projectId}`)
+          const { unpublishProjectEverywhere } = await import("../lib/substrate/router")
+          // Tear down on BOTH substrates — during a cutover a project can have a
+          // Knative published ksvc AND a metal published microVM, so unpublishing
+          // only the owner would leak the other.
+          await unpublishProjectEverywhere(projectId, project.publishedSubdomain)
+          console.log(`[Publish] Published runtime torn down for ${projectId}`)
         } catch (err: any) {
-          console.warn("[Publish] Failed to delete published service:", err.message)
-        }
-
-        // Clear the server-backed edge flag so the Worker stops trying to
-        // proxy /api/* for this subdomain. The published-data archive is
-        // intentionally kept so a later republish restores end-user writes.
-        try {
-          const { clearServerBackedFlag } = await import("../lib/cloudflare-server-backed-kv")
-          await clearServerBackedFlag(project.publishedSubdomain)
-        } catch (err: any) {
-          console.warn("[Publish] Failed to clear server-backed flag:", err.message)
+          console.warn("[Publish] Failed to unpublish runtime:", err.message)
         }
 
         try {
@@ -1828,15 +1831,17 @@ export function publishRoutes() {
 
         updates.publishedAlwaysOn = wantOn
 
-        // Apply to the live service. Best-effort: the DB flag is the source of
-        // truth and the next (re)publish reconciles min-scale regardless.
-        if (isKubernetes()) {
+        // Apply to the live runtime via the owning substrate (Knative min-scale,
+        // or the metal published VM's always-on pin). Best-effort: the DB flag is
+        // the source of truth and the next (re)publish reconciles regardless.
+        if (isKubernetes() && project.publishedSubdomain) {
           try {
-            const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
-            await getKnativeProjectManager().setPublishedMinScale(projectId, wantOn ? 1 : 0)
+            const { getPublishSubstrate } = await import("../lib/substrate/router")
+            const substrate = await getPublishSubstrate(projectId)
+            await substrate.setPublishedAlwaysOn(projectId, project.publishedSubdomain, wantOn)
           } catch (err: any) {
             console.warn(
-              `[Publish] setPublishedMinScale failed for ${projectId} (flag persisted, will reconcile on republish):`,
+              `[Publish] setPublishedAlwaysOn failed for ${projectId} (flag persisted, will reconcile on republish):`,
               err?.message ?? err,
             )
           }
