@@ -26,10 +26,15 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,
   // Each hosted test provisions its own isolated account, so files can run
-  // concurrently. 4 workers in CI keeps the ~118-test suite under the job
-  // timeout (1 worker previously ran past 30m). Stays serial locally to avoid
-  // hammering a localhost target.
-  workers: process.env.CI ? 4 : 1,
+  // concurrently. Hosted CI runs 8 workers to keep the ~118-test suite well
+  // under the (now 60m) job timeout; the env override lets a run dial this up
+  // or down without a code change. Stays serial locally to avoid hammering a
+  // localhost target.
+  workers: process.env.E2E_WORKERS
+    ? Number(process.env.E2E_WORKERS)
+    : process.env.CI
+      ? 8
+      : 1,
   reporter: [["html", { outputFolder: "../test-results/e2e-report" }]],
   timeout: 120_000,
   expect: { timeout: 15_000 },
