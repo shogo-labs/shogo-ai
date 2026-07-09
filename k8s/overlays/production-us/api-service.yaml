@@ -555,20 +555,27 @@ spec:
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
             # --- Metal microVM substrate (bare-metal Firecracker) -----------
-            # Production cutover to metal is a "sticky-drain": when
-            # SHOGO_METAL_DRAIN_MODE is flipped on (live, via
-            # .github/scripts/sync-api-env.sh — NOT baked here until the region
-            # is proven stable) every NEW open routes to the metal warm pool,
-            # while a project that still has a live Knative pod keeps being
-            # served from Knative until that pod idles out. A metal miss for a
-            # project with no live pod is authoritative (retryable 503 /
-            # chat-wait; no silent Knative fallback), so the old fleet drains.
+            # Production is metal-only: SHOGO_METAL_ALL_PROJECTS=true routes
+            # EVERY project to the metal warm-pool controller (node-agent
+            # /assign over the mesh) instead of Knative — no per-project choice
+            # and NO silent Knative fallback. A metal miss returns a retryable
+            # 503 (pod_starting) / chat-wait so the client backs off while the
+            # microVM resumes/boots; traffic never quietly lands on Knative.
+            #
+            # BAKED here (not a live sync-api-env.sh flip) so a deploy re-applying
+            # this overlay can't silently revert prod to Knative — that revert is
+            # exactly the 2026-07 regression where a routine deploy wiped the
+            # live-patched flag and prod fell back to the old fleet.
+            #
             # Depends on (already present in this overlay): REDIS_URL (fleet
             # discovery shared across api replicas) and SHOGO_INTERNAL_SECRET
             # (the node-agent register+assign token).
-            # To roll back the cutover (incident switch):
+            # To roll back to Knative (incident switch — takes effect until the
+            # next deploy re-applies this overlay's "true"):
             #   .github/scripts/sync-api-env.sh shogo-production-system \
-            #       SHOGO_METAL_DRAIN_MODE false
+            #       SHOGO_METAL_ALL_PROJECTS false
+            - name: SHOGO_METAL_ALL_PROJECTS
+              value: "true"
             #
             # Metal fleet reconciler: ENABLED runs the loop; ACTUATE
             # (deliberately unset = false) keeps it OBSERVE-only — it logs the
