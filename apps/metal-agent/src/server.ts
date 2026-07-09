@@ -58,7 +58,7 @@ const server = Bun.serve({
         // concurrent burst). A stale/cold miss falls through to a fresh assign.
         const r = await pool.open(projectId, env ?? {})
         const url = await fwd.ensure(projectId, r.handle.guestIp)
-        return Response.json({ url, mode: r.mode, source: r.source, readyMs: r.readyMs })
+        return Response.json({ url, mode: r.mode, source: r.source, readyMs: r.readyMs, reused: r.reused })
       }
 
       if (path === '/gc' && req.method === 'POST') {

@@ -38,6 +38,12 @@ const assignmentsCounter = meter.createCounter('metal.assignments', {
 const coldMissCounter = meter.createCounter('metal.cold_miss', {
   description: 'Metal assigns that were a fresh claim (no snapshot to resume) — the cold-start denominator for hit-rate',
 })
+const reusedCounter = meter.createCounter('metal.reused', {
+  description: 'Metal /assign resolutions that re-attached an ALREADY-RUNNING VM (no boot, no resume) — a warm hit, NOT a cold miss',
+})
+const urlCacheHitCounter = meter.createCounter('metal.url_cache_hit', {
+  description: 'getMetalProjectUrl calls served from the short-TTL resolved-URL cache without calling the host /assign',
+})
 const hostErrorCounter = meter.createCounter('metal.host_errors', {
   description: 'Metal host /assign call failures (network/5xx), labelled by reason',
 })
@@ -168,6 +174,21 @@ const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const ASSIGN_TIMEOUT_MS = parseInt(process.env.METAL_ASSIGN_TIMEOUT_MS || '30000', 10)
 /** Hosts at/above this used% are de-prioritized for NEW cold placements (GC pressure). */
 const DISK_HIGH_PCT = parseInt(process.env.METAL_DISK_HIGH_PCT || '85', 10)
+/**
+ * How long a resolved (projectId → runtime URL) mapping stays cached before the
+ * next resolve re-hits the host's /assign. A project's URL is stable while it's
+ * running (mesh IP + persisted DNAT port survive even an agent rolling restart,
+ * which re-adopts the VM), so serving repeat proxy/preview/chat requests from
+ * this cache eliminates the churn of re-`/assign`-ing an already-running VM on
+ * every request (the source of the inflated cold-miss metric and needless
+ * agent/Redis load). Kept short so a suspend/migrate is picked up quickly; a
+ * stale hit just fails the proxy once and re-resolves. `<= 0` disables caching.
+ *
+ * SAFE vs idle-suspend: the host tracks idleness from REAL guest traffic (the
+ * activity poll over DNAT), NOT from control-plane /assign calls — so skipping
+ * /assign here never causes an actively-served project to be suspended.
+ */
+const URL_CACHE_TTL_MS = parseInt(process.env.METAL_URL_CACHE_TTL_MS || '15000', 10)
 
 export class NoMetalHostError extends Error {
   readonly code = 'NO_METAL_HOST'
@@ -182,6 +203,19 @@ interface AssignResult {
   mode?: 'assigned' | 'resumed'
   source?: 'local' | 'store'
   readyMs?: number
+  /**
+   * True when `mode:'assigned'` re-attached a VM that was ALREADY RUNNING on the
+   * host (the agent's `live` fast-path) rather than a fresh cold claim. Lets the
+   * controller record a warm hit instead of a cold miss for repeat resolves.
+   */
+  reused?: boolean
+}
+
+/** A cached resolution of a project to its runtime URL (see URL_CACHE_TTL_MS). */
+interface UrlCacheEntry {
+  url: string
+  hostId: string
+  expiresAt: number
 }
 
 /** Outcome of a stop (suspend-to-snapshot) request. */
@@ -203,7 +237,10 @@ export class MetalWarmPoolController {
   /** projectId → hostId. Sticky so a project returns to the host holding its snapshot. */
   private projectHost = new Map<string, string>()
   private pending = new Map<string, Promise<string>>()
-  private stats = { assigned: 0, resumed: 0, coldMiss: 0, hostErrors: 0, noHost: 0 }
+  /** projectId → resolved runtime URL, short-lived (URL_CACHE_TTL_MS). Skips the
+   * host /assign for repeat requests to an already-running project. */
+  private urlCache = new Map<string, UrlCacheEntry>()
+  private stats = { assigned: 0, resumed: 0, reused: 0, coldMiss: 0, cacheHit: 0, hostErrors: 0, noHost: 0 }
   /** Cordoned hostIds (admin drain) — excluded from NEW placements. Synced from
    * the shared registry on each resolve so every API replica honors a cordon. */
   private cordoned = new Set<string>()
@@ -323,11 +360,42 @@ export class MetalWarmPoolController {
    * back to the Knative path.
    */
   async getMetalProjectUrl(projectId: string): Promise<string> {
+    // Fast path: an already-resolved, still-running project returns its cached
+    // URL without touching the host — killing the per-request /assign churn that
+    // a client polling loop (e.g. a stuck preview iframe) would otherwise create.
+    const cached = this.getCachedUrl(projectId)
+    if (cached) {
+      this.stats.cacheHit++
+      urlCacheHitCounter.add(1)
+      return cached
+    }
     const inflight = this.pending.get(projectId)
     if (inflight) return inflight
     const p = this._resolve(projectId).finally(() => this.pending.delete(projectId))
     this.pending.set(projectId, p)
     return p
+  }
+
+  /** Live cached URL for a project, or undefined if absent/expired/disabled. */
+  private getCachedUrl(projectId: string): string | undefined {
+    if (URL_CACHE_TTL_MS <= 0) return undefined
+    const e = this.urlCache.get(projectId)
+    if (!e) return undefined
+    if (this.now() >= e.expiresAt) {
+      this.urlCache.delete(projectId)
+      return undefined
+    }
+    return e.url
+  }
+
+  /**
+   * Drop a project's cached URL so the next resolve re-hits the host. Call
+   * whenever the runtime may have moved or gone away: assign failure, suspend
+   * (/stop), or destroy. Public so routes that knowingly change a project's
+   * placement (e.g. an admin move) can force a fresh resolve.
+   */
+  invalidateUrlCache(projectId: string): void {
+    this.urlCache.delete(projectId)
   }
 
   private async _resolve(projectId: string): Promise<string> {
@@ -375,17 +443,33 @@ export class MetalWarmPoolController {
             assignmentsCounter.add(1, { mode, source })
             span.setAttribute('resolve.host', host.hostId)
             span.setAttribute('resolve.region', host.region)
-            span.setAttribute('resolve.method', mode === 'resumed' ? `resumed_${source}` : 'assigned')
+            span.setAttribute(
+              'resolve.method',
+              mode === 'resumed' ? `resumed_${source}` : res.reused ? 'reused' : 'assigned',
+            )
             if (mode === 'resumed') {
               this.stats.resumed++
               if (typeof res.readyMs === 'number') {
                 wakeLatency.record(res.readyMs, { source })
                 span.setAttribute('resolve.wake_ms', res.readyMs)
               }
+            } else if (res.reused) {
+              // Already-running VM re-attached (agent `live` fast-path). Not a
+              // cold boot — record a warm hit so it doesn't pollute cold-miss.
+              this.stats.reused++
+              reusedCounter.add(1)
             } else {
               this.stats.assigned++
               this.stats.coldMiss++
               coldMissCounter.add(1)
+            }
+            // Cache the resolution so repeat requests skip /assign entirely.
+            if (URL_CACHE_TTL_MS > 0) {
+              this.urlCache.set(projectId, {
+                url: res.url,
+                hostId: host.hostId,
+                expiresAt: this.now() + URL_CACHE_TTL_MS,
+              })
             }
             span.setStatus({ code: SpanStatusCode.OK })
             return res.url
@@ -393,8 +477,9 @@ export class MetalWarmPoolController {
             lastErr = err
             this.stats.hostErrors++
             hostErrorCounter.add(1, { host: host.hostId })
-            // Drop stickiness/placement so we don't keep hammering a dead host.
+            // Drop stickiness/placement/cache so we don't keep hammering a dead host.
             if (this.projectHost.get(projectId) === host.hostId) this.projectHost.delete(projectId)
+            this.urlCache.delete(projectId)
             void this.registry.clearPlacement(projectId).catch(() => {})
             console.warn(`[MetalPool] assign on host ${host.hostId} failed for ${projectId}: ${(err as any)?.message ?? err}`)
           }
@@ -500,6 +585,9 @@ export class MetalWarmPoolController {
    * busy project running and retry later rather than killing its live turn.
    */
   async stopProject(projectId: string): Promise<StopResult> {
+    // A stop suspends the VM (URL goes away) — drop the cached URL up front so a
+    // racing resolve can't hand back a soon-to-be-dead endpoint.
+    this.urlCache.delete(projectId)
     const host = await this.hostForProject(projectId)
     if (!host) return { suspended: false, busy: false }
     try {
@@ -579,6 +667,7 @@ export class MetalWarmPoolController {
       ),
     )
     this.projectHost.delete(projectId)
+    this.urlCache.delete(projectId)
     await this.registry.clearPlacement(projectId).catch(() => {})
     await this.registry.releaseLease(projectId, this.holderId).catch(() => {})
   }
@@ -653,6 +742,8 @@ export class MetalWarmPoolController {
   getStatus() {
     const live = this.liveHosts()
     const resumedPlusCold = this.stats.resumed + this.stats.coldMiss
+    const warmTotal = this.stats.resumed + this.stats.reused + this.stats.cacheHit
+    const warmPlusCold = warmTotal + this.stats.coldMiss
     return {
       hosts: {
         total: this.hosts.size,
@@ -675,11 +766,14 @@ export class MetalWarmPoolController {
       projects: this.projectHost.size,
       stats: {
         ...this.stats,
-        // Snapshot hit-rate: fraction of resolutions served by a resume vs a
-        // cold claim. The headline "sleep/wake" effectiveness number.
+        // Snapshot hit-rate: fraction of resolutions served by a snapshot resume
+        // vs a cold claim. The headline "sleep/wake" effectiveness number.
         snapshotHitRate: resumedPlusCold > 0 ? +(this.stats.resumed / resumedPlusCold).toFixed(3) : null,
+        // Warm hit-rate: fraction of resolutions that avoided a cold boot
+        // altogether — a resume, an already-running reuse, or a URL-cache hit.
+        warmHitRate: warmPlusCold > 0 ? +(warmTotal / warmPlusCold).toFixed(3) : null,
       },
-      config: { hostTtlMs: HOST_TTL_MS, assignTimeoutMs: ASSIGN_TIMEOUT_MS },
+      config: { hostTtlMs: HOST_TTL_MS, assignTimeoutMs: ASSIGN_TIMEOUT_MS, urlCacheTtlMs: URL_CACHE_TTL_MS },
     }
   }
 
@@ -692,6 +786,8 @@ export class MetalWarmPoolController {
     const live = await this.liveHostsShared() // also refreshes this.cordoned
     const cordoned = this.cordoned
     const resumedPlusCold = this.stats.resumed + this.stats.coldMiss
+    const warmTotal = this.stats.resumed + this.stats.reused + this.stats.cacheHit
+    const warmPlusCold = warmTotal + this.stats.coldMiss
     return {
       hosts: live
         .map((h) => ({
@@ -712,8 +808,9 @@ export class MetalWarmPoolController {
       stats: {
         ...this.stats,
         snapshotHitRate: resumedPlusCold > 0 ? +(this.stats.resumed / resumedPlusCold).toFixed(3) : null,
+        warmHitRate: warmPlusCold > 0 ? +(warmTotal / warmPlusCold).toFixed(3) : null,
       },
-      config: { hostTtlMs: HOST_TTL_MS, assignTimeoutMs: ASSIGN_TIMEOUT_MS, diskHighPct: DISK_HIGH_PCT },
+      config: { hostTtlMs: HOST_TTL_MS, assignTimeoutMs: ASSIGN_TIMEOUT_MS, diskHighPct: DISK_HIGH_PCT, urlCacheTtlMs: URL_CACHE_TTL_MS },
     }
   }
 
