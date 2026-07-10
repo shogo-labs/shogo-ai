@@ -90,10 +90,10 @@ const hostFcProcsGauge = meter.createObservableGauge('metal.host.fc_procs', {
   description: 'Live firecracker processes on a metal host — should track available+assigned; a growing gap is the churn process-leak fingerprint',
 })
 const hostPoolSizeGauge = meter.createObservableGauge('metal.host.pool_size', {
-  description: 'Configured warm-pool target (capacity) on a metal host',
+  description: 'Configured WARM-POOL target on a metal host (idle pre-booted VMs; NOT total capacity)',
 })
 const hostUtilGauge = meter.createObservableGauge('metal.host.util_pct', {
-  description: 'assigned/poolSize utilization percent on a metal host (burst scale-up trigger basis)',
+  description: 'assigned/MAX_VMS_PER_HOST utilization percent on a metal host (burst scale-up trigger basis)',
 })
 const hostDiskUsedGauge = meter.createObservableGauge('metal.host.disk_used_pct', {
   description: 'NVMe cache disk used percent on a metal host',
@@ -185,6 +185,19 @@ const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const ASSIGN_TIMEOUT_MS = parseInt(process.env.METAL_ASSIGN_TIMEOUT_MS || '30000', 10)
 /** Hosts at/above this used% are de-prioritized for NEW cold placements (GC pressure). */
 const DISK_HIGH_PCT = parseInt(process.env.METAL_DISK_HIGH_PCT || '85', 10)
+/**
+ * Schedulable microVM slots per metal host — the REAL capacity denominator for
+ * utilization. An s3-large-x86 box (24c / 512 GB) comfortably runs ~80
+ * concurrent ~1 GB microVMs.
+ *
+ * This is deliberately NOT `capacity.poolSize`, which is only the WARM-POOL
+ * target (the agent's METAL_POOL_SIZE, default 1 — how many idle VMs it keeps
+ * pre-booted). Dividing the count of LIVE `assigned` projects by the warm-pool
+ * size made a host running a dozen projects report >100% "utilization" and
+ * falsely trip burst scale-up (e.g. 13 assigned / poolSize 4 = 325%). Utilization
+ * is `assigned / MAX_VMS_PER_HOST`. Override with METAL_MAX_VMS_PER_HOST.
+ */
+export const MAX_VMS_PER_HOST = Math.max(1, parseInt(process.env.METAL_MAX_VMS_PER_HOST || '80', 10))
 /**
  * How long a resolved (projectId → runtime URL) mapping stays cached before the
  * next resolve re-hits the host's /assign. A project's URL is stable while it's
@@ -924,11 +937,11 @@ export class MetalWarmPoolController {
   }
 }
 
-/** assigned/poolSize load ratio; unknown capacity sorts last. */
+/** assigned/capacity load ratio (0 = idle). Used only to order hosts
+ * lightest-first for NEW placements; with a flat per-host capacity this ranks by
+ * absolute assigned count, so an empty host is preferred. */
 function loadRatio(h: HostEntry): number {
-  const cap = h.capacity?.poolSize || 0
-  if (cap <= 0) return Number.POSITIVE_INFINITY
-  return (h.load?.assigned ?? 0) / cap
+  return (h.load?.assigned ?? 0) / MAX_VMS_PER_HOST
 }
 
 /** True if the host is at/over the disk high-watermark (GC is shedding). */
@@ -936,11 +949,9 @@ function overWatermark(h: HostEntry): boolean {
   return typeof h.disk?.usedPct === 'number' && h.disk.usedPct >= DISK_HIGH_PCT
 }
 
-/** assigned/poolSize as a whole-number percent (0 when capacity unknown). */
+/** assigned/MAX_VMS_PER_HOST as a whole-number percent. */
 function utilizationPct(h: HostEntry): number {
-  const cap = h.capacity?.poolSize || 0
-  if (cap <= 0) return 0
-  return Math.round(((h.load?.assigned ?? 0) / cap) * 100)
+  return Math.round(((h.load?.assigned ?? 0) / MAX_VMS_PER_HOST) * 100)
 }
 
 // --- singleton ---------------------------------------------------------------

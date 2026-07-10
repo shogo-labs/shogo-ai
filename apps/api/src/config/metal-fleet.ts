@@ -43,7 +43,9 @@ export interface MetalBurstPolicy {
   billing: 'hourly'
   /** Max burst hosts to add per region on top of baseline. */
   maxPerRegion: number
-  /** Add a host when fleet assigned/poolSize utilization exceeds this. */
+  /** Add a host when region utilization exceeds this. Utilization is live
+   * assigned microVMs ÷ real capacity (liveHosts × MAX_VMS_PER_HOST), NOT the
+   * warm-pool poolSize. */
   scaleUpUtilPct: number
   /** Remove the newest burst host when utilization drops below this. */
   scaleDownUtilPct: number

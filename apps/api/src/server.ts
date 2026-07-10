@@ -5463,7 +5463,7 @@ app.all('/api/admin/regions/:regionId/*', async (c) => {
 // GET /api/admin/metal/fleet — desired baseline vs live registry + drift.
 app.get('/api/admin/metal/fleet', async (c) => {
   try {
-    const { getMetalFleetStatus } = await import('./lib/metal-warm-pool-controller')
+    const { getMetalFleetStatus, MAX_VMS_PER_HOST } = await import('./lib/metal-warm-pool-controller')
     const { getFleetEnv, fleetEnvKey, METAL_FLEET } = await import('./config/metal-fleet')
     const { getMetalHostRecordMap } = await import('./lib/metal-fleet-hosts')
 
@@ -5503,16 +5503,25 @@ app.get('/api/admin/metal/fleet', async (c) => {
       .filter((h) => !desiredIds.has(h.hostId))
       .map((h) => ({ hostId: h.hostId, region: h.region, kind: 'burst' as const, present: true, provisioned: true, live: h }))
 
-    // Region rollups (utilization for burst decisions).
-    const byRegion: Record<string, { hosts: number; live: number; assigned: number; poolSize: number; utilPct: number }> = {}
+    // Region rollups (utilization for burst decisions). utilPct is assigned live
+    // microVMs over REAL capacity (live hosts × MAX_VMS_PER_HOST), NOT the
+    // warm-pool poolSize (which is just the idle pre-boot target and made util
+    // read >100% on lightly-loaded regions). poolSize is still surfaced for ops.
+    const byRegion: Record<
+      string,
+      { hosts: number; live: number; assigned: number; poolSize: number; capacity: number; utilPct: number }
+    > = {}
     for (const h of status.hosts) {
-      const r = (byRegion[h.region] ||= { hosts: 0, live: 0, assigned: 0, poolSize: 0, utilPct: 0 })
+      const r = (byRegion[h.region] ||= { hosts: 0, live: 0, assigned: 0, poolSize: 0, capacity: 0, utilPct: 0 })
       r.hosts++
       r.live++
       r.assigned += h.load?.assigned ?? 0
       r.poolSize += h.capacity?.poolSize ?? 0
     }
-    for (const r of Object.values(byRegion)) r.utilPct = r.poolSize > 0 ? Math.round((r.assigned / r.poolSize) * 100) : 0
+    for (const r of Object.values(byRegion)) {
+      r.capacity = r.live * MAX_VMS_PER_HOST
+      r.utilPct = r.capacity > 0 ? Math.round((r.assigned / r.capacity) * 100) : 0
+    }
 
     return c.json({
       ok: true,
