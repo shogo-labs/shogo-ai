@@ -255,7 +255,12 @@ jobs:
           # image so agent + guest come from one commit.
           for envn in production-us production-eu; do
             echo "::notice::Dispatching metal-agent-deploy for $envn (rebuild_rootfs=true) @ $REF"
+            # -R is REQUIRED: this job has no checkout, so without an explicit repo
+            # `gh` tries to infer it from the git remote and dies with "not a git
+            # repository" — silently skipping the whole fleet converge (the
+            # 2026-07 prod release: agent fix built but never dispatched to hosts).
             gh workflow run metal-agent-deploy.yml \
+              -R "$GITHUB_REPOSITORY" \
               --ref "$REF" \
               -f environment="$envn" \
               -f channel=stable \
