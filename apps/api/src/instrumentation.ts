@@ -4,9 +4,7 @@ import { diag, DiagConsoleLogger, DiagLogLevel, trace, SpanStatusCode } from '@o
 import { NodeSDK } from '@opentelemetry/sdk-node'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http'
-import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http'
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
-import { BatchLogRecordProcessor, SimpleLogRecordProcessor, type LogRecordProcessor } from '@opentelemetry/sdk-logs'
 import { BatchSpanProcessor, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { resourceFromAttributes } from '@opentelemetry/resources'
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions'
@@ -89,30 +87,13 @@ if (isEnabled) {
     console.warn(`[OTEL] Failed to create metric exporter: ${err.message}`)
   }
 
-  // Logs: export application log records to SigNoz on /v1/logs, correlated with
-  // the active span (trace_id/span_id) via the console bridge below. Batched in
-  // prod so exports run off the hot path; eager in dev for immediate visibility.
-  let logRecordProcessors: LogRecordProcessor[] = []
-  try {
-    const logExporter = new OTLPLogExporter({
-      url: `${endpoint}/v1/logs`,
-      headers,
-      timeoutMillis: exportTimeoutMs,
-    })
-    logRecordProcessors = [
-      isProduction
-        ? new BatchLogRecordProcessor(logExporter, {
-            maxQueueSize: 2048,
-            maxExportBatchSize: 512,
-            scheduledDelayMillis: 5000,
-            exportTimeoutMillis: exportTimeoutMs,
-          })
-        : new SimpleLogRecordProcessor(logExporter),
-    ]
-    console.log(`[OTEL] Logs exporter configured → ${endpoint}/v1/logs`)
-  } catch (err: any) {
-    console.warn(`[OTEL] Failed to create log exporter: ${err.message}`)
-  }
+  // NOTE: logs are intentionally NOT exported via OTLP here. The app-level OTLP
+  // log export proved unreliable under Bun event-loop pressure (batches dropped
+  // when the wall-clock export deadline elapsed), which is why API logs vanished
+  // from SigNoz. Logs now reach SigNoz via the always-on k8s-infra otelAgent
+  // DaemonSet that tails pod stdout; the structured console below stamps each
+  // stdout line with trace_id/span_id so a SigNoz log pipeline can correlate
+  // them with traces without depending on this process's OTLP export ("Option B").
 
   sdk = new NodeSDK({
     resource: resourceFromAttributes({
@@ -121,7 +102,6 @@ if (isEnabled) {
       'deployment.environment.name': process.env.NODE_ENV || 'development',
     }),
     spanProcessors: [spanProcessor],
-    logRecordProcessors,
     metricReader,
     instrumentations,
   })
@@ -153,16 +133,15 @@ if (isEnabled) {
     console.error(`[OTEL] Failed to emit test span: ${err.message}`)
   }
 
-  // Bridge console.* → OTLP logs. Installed after sdk.start() so the global
-  // LoggerProvider registered by NodeSDK is live. Only meaningful when a log
-  // processor was actually created above.
-  if (logRecordProcessors.length > 0) {
-    try {
-      const { installConsoleBridge } = await import('./lib/otel-console-bridge')
-      installConsoleBridge(process.env.OTEL_SERVICE_NAME || 'shogo-api')
-    } catch (err: any) {
-      console.warn(`[OTEL] Failed to install console→logs bridge: ${err.message}`)
-    }
+  // Patch console.* → trace-correlated structured JSON on stdout. Installed
+  // after sdk.start() so `trace.getActiveSpan()` resolves against the live
+  // tracer. This is the durable log path (scraped from stdout by the k8s-infra
+  // DaemonSet); no-op outside prod/staging where plain-text console is kept.
+  try {
+    const { installStructuredConsole } = await import('./lib/structured-console')
+    installStructuredConsole(process.env.OTEL_SERVICE_NAME || 'shogo-api')
+  } catch (err: any) {
+    console.warn(`[OTEL] Failed to install structured console: ${err.message}`)
   }
 } else {
   console.log('[OTEL] Tracing disabled (OTEL_EXPORTER_OTLP_ENDPOINT not set)')

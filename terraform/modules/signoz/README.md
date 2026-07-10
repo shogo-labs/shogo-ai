@@ -2,25 +2,49 @@
 
 This module deploys the SigNoz K8s Infra Helm chart for comprehensive Kubernetes cluster observability.
 
-## Logs: two complementary paths
+## Logs: stdout scraping is the authoritative path ("Option B")
 
-Logs reach SigNoz through two independent mechanisms:
+Logs reach SigNoz via the **`k8s-infra` `otelAgent` DaemonSet** (`enableLogs =
+true`), which tails every pod's stdout/stderr independently of the app process.
+This is the only reliable path: the app-level OTLP log export proved unreliable
+under Bun event-loop pressure — batches were silently dropped when the
+wall-clock export deadline elapsed, which is what made `[MetalPool]` /
+`[metal-fleet]` logs vanish from SigNoz. The app therefore **does not export
+logs over OTLP** (traces and metrics still do).
 
-1. **App-level OTLP logs (primary, trace-correlated).** The API and runtime
-   services export log records directly to `<OTEL_EXPORTER_OTLP_ENDPOINT>/v1/logs`
-   via the OpenTelemetry Logs SDK, alongside the traces and metrics they already
-   emit. Because records are emitted within the active span, they carry
-   `trace_id`/`span_id` and line up with request traces in SigNoz. The API mirrors
-   its `console.*` output through a bridge (`apps/api/src/lib/otel-console-bridge.ts`),
-   and runtime services emit structured records through `createLogger`
-   (`@shogo-ai/core/logger`). Toggle the API bridge with `OTEL_LOGS_CONSOLE_BRIDGE`.
-2. **Container-log scraping (fallback, stdout).** The `k8s-infra` chart's
-   `otelAgent` DaemonSet (`enableLogs = true`) tails pod stdout/stderr. This keeps
-   working even when the app-level pipeline is off, and continues to feed the
-   `[Publish]` string-based alerts/dashboards below. It has no trace correlation.
+Trace correlation is preserved without depending on that export:
 
-Both paths point at the same SigNoz endpoint, so a given line may appear once from
-each source; the app-level record is the one with populated trace context.
+1. **Structured, trace-stamped stdout (app side).** In prod/staging the API
+   writes each `console.*` line as a structured JSON record carrying the active
+   `trace_id`/`span_id` (`apps/api/src/lib/structured-console.ts`, installed from
+   `apps/api/src/instrumentation.ts`; toggle with `OTEL_LOGS_CONSOLE_BRIDGE`).
+   Runtime services get the same via `createLogger` (`@shogo-ai/core/logger`),
+   whose entries are stamped by a trace-context provider registered in
+   `packages/core/src/instrumentation.ts`. The trace context comes from the
+   in-process active span and is valid even when the trace *export* is dropped,
+   so logs are always groupable by request.
+2. **Log pipeline (SigNoz side).** The `pipelines/api-trace-correlation.yaml`
+   pipeline JSON-parses the stdout line and promotes `trace_id`/`span_id`,
+   severity, and the human message into first-class log fields — giving
+   clickable log↔trace links. Applied manually (see below), it is
+   chart-version-independent.
+
+The `[Publish]` string-based alerts/dashboards continue to work: the substring
+still lives in the log body (inside `msg`, and after the pipeline runs, as the
+body itself).
+
+### Bare-metal fleet (outside k8s)
+
+The metal Firecracker hosts run outside Kubernetes, so the k8s-infra DaemonSet
+can't scrape them. The dependency-free `metal-agent` logs to journald, and a
+host-local `otelcol-contrib` (`otelcol-metal.service`, installed by
+`scripts/metal-agent/host-bootstrap.sh`) tails that journal and ships it to this
+same SigNoz endpoint over OTLP/HTTP — the bare-metal analogue of the DaemonSet.
+Logs land as `service.name=metal-agent` / `service.namespace=metal-fleet`,
+tagged with `metal.host.id` and `metal.region`. It's gated on
+`OTEL_EXPORTER_OTLP_ENDPOINT` (+ `SIGNOZ_INGESTION_KEY`) being present in
+`/etc/metal-agent.env`; burst hosts receive those from cloud-init automatically
+(`apps/api/src/lib/metal-cloud-init.ts`). See `docs/runbooks/metal-fleet.md`.
 
 ## Alerts and dashboards (manual sync)
 
@@ -50,6 +74,10 @@ they're managed separately as YAML/JSON files under this directory:
   Catches the 2026-07 staging drift where the agent was parked via an
   out-of-band `nodeSelector` while the app-level OTLP export was also
   failing, so all API logs vanished with nothing to signal it.
+- `pipelines/api-trace-correlation.yaml` — logs pipeline that parses the
+  API/runtime structured JSON stdout and promotes `trace_id`/`span_id`,
+  severity, and the human message into first-class log fields (clickable
+  log↔trace links) without relying on the app's OTLP log export.
 - `dashboards/publish-funnel.json` — per-step counters for the publish
   pipeline so we can spot exactly where publishes are dying.
 - `dashboards/metal-fleet.json` — live fleet state + health: per-host
@@ -59,9 +87,10 @@ they're managed separately as YAML/JSON files under this directory:
   API plus the per-host gauges folded from each agent heartbeat.
 
 To apply, either import via the SigNoz UI (`Alert Rules` /
-`Dashboards` → `Import`) or POST the file body to
-`POST /api/v1/rules` / `POST /api/v1/dashboards`. Re-run after every
-change to a YAML/JSON file in this directory.
+`Dashboards` → `Import`, or `Logs` → `Pipelines` → `New Pipeline` for
+the pipeline) or POST the file body to `POST /api/v1/rules` /
+`POST /api/v1/dashboards` / `POST /api/v1/logs/pipelines`. Re-run after
+every change to a YAML/JSON file in this directory.
 
 These were introduced in the post-2026-05-20 publish-pipeline-hardening
 PR; see `docs/runbooks/deploy-prod.md` for triage steps each one

@@ -1,0 +1,97 @@
+# SigNoz Logs Pipeline: API stdout → trace-correlated structured logs ("Option B")
+#
+# Why this exists
+# ---------------
+# API logs reach SigNoz via the always-on k8s-infra `otelAgent` DaemonSet that
+# tails pod stdout — NOT via the app's own OTLP log export, which is unreliable
+# under Bun event-loop pressure (batches are dropped when the export deadline
+# elapses; this is what made [MetalPool]/[metal-fleet] logs vanish). To keep the
+# reliable stdout path but still get log↔trace correlation, the API now writes
+# each `console.*` line as a structured JSON record carrying the active trace
+# context (see apps/api/src/lib/structured-console.ts):
+#
+#   {"timestamp":"2026-07-09T...","level":"info","service":"shogo-api",
+#    "msg":"[MetalPool] assign ...","trace_id":"<32-hex>","span_id":"<16-hex>"}
+#
+# The DaemonSet delivers that line as the log `body` (a JSON string). This
+# pipeline parses it and PROMOTES the fields into the log record's first-class
+# columns so SigNoz shows a human `body`, a real severity, and a clickable
+# trace/span link — with zero dependence on the app's OTLP log export.
+#
+# How to apply (manual sync, same convention as alerts/ and dashboards/)
+# ----------------------------------------------------------------------
+# Log pipelines live in SigNoz, not in the Helm chart. Create it in the SigNoz
+# UI: Logs → Pipelines → New Pipeline, using the filter and ordered operators
+# below (or POST an equivalent payload to `POST /api/v1/logs/pipelines`).
+# Re-apply after any change to this file. Operators run top-to-bottom.
+
+name: api-trace-correlation
+description: >-
+  Parse JSON stdout from shogo-api / runtime services and promote
+  trace_id/span_id, severity, and the human message into first-class log fields.
+
+# Only touch our own structured JSON lines. `service` is emitted by the
+# structured console / createLogger; matching on it avoids trying to JSON-parse
+# unrelated plaintext pod logs.
+filter: "attributes.service EXISTS OR body REGEXP '^\\{\"timestamp\":'"
+
+# Whether the pipeline is active once created.
+enabled: true
+
+operators:
+  # 1. Parse the JSON stdout line into attributes. `if` guards against the rare
+  #    non-JSON line (e.g. a pre-instrumentation boot log) so a parse failure
+  #    never drops the record — it just passes through unparsed.
+  - type: json_parser
+    id: parse-json-body
+    parse_from: body
+    parse_to: attributes
+    if: "body matches '^\\\\{'"
+
+  # 2. Promote trace context to the record's linked TraceId/SpanId fields. The
+  #    app emits OpenTelemetry hex form (32-char trace, 16-char span), so no
+  #    decoding is needed. This is what makes logs clickable → trace in SigNoz.
+  - type: trace_parser
+    id: promote-trace-context
+    if: "attributes.trace_id != nil"
+    trace_id:
+      parse_from: attributes.trace_id
+    span_id:
+      parse_from: attributes.span_id
+
+  # 3. Map the `level` string onto SigNoz severity so filtering by severity and
+  #    error highlighting work.
+  - type: severity_parser
+    id: parse-severity
+    parse_from: attributes.level
+    mapping:
+      debug: debug
+      info: info
+      warn: warn
+      error: error
+
+  # 4. Show the human-readable message as the log body (instead of the raw JSON
+  #    string). Full-text search still matches — the substring lives in `msg`.
+  - type: move
+    id: msg-to-body
+    from: attributes.msg
+    to: body
+
+  # 5. Tidy up: the promoted fields now live in first-class columns, so drop the
+  #    now-duplicated attributes. `service` is kept as a searchable attribute.
+  - type: remove
+    id: drop-trace-id-attr
+    field: attributes.trace_id
+    if: "attributes.trace_id != nil"
+  - type: remove
+    id: drop-span-id-attr
+    field: attributes.span_id
+    if: "attributes.span_id != nil"
+  - type: remove
+    id: drop-level-attr
+    field: attributes.level
+    if: "attributes.level != nil"
+  - type: remove
+    id: drop-timestamp-attr
+    field: attributes.timestamp
+    if: "attributes.timestamp != nil"
