@@ -24,6 +24,15 @@ Copyright (C) 2026 Shogo Technologies, Inc.
 - **Observability**: `metal.*` router metrics + per-host `metal.host.*` gauges in
   SigNoz; dashboard `terraform/modules/signoz/dashboards/metal-fleet.json`;
   alerts under `terraform/modules/signoz/alerts/metal-*.yaml`.
+- **Host logs**: the metal-agent is dependency-free and logs to journald; a
+  host-local `otelcol-metal.service` (installed by `host-bootstrap.sh`, gated on
+  `OTEL_EXPORTER_OTLP_ENDPOINT`) tails that journal and ships it to SigNoz as
+  `service.name=metal-agent` (`service.namespace=metal-fleet`, tagged with
+  `metal.host.id`/`metal.region`). This is the bare-metal analogue of the
+  in-cluster k8s-infra stdout scraper. Burst hosts get the SigNoz creds from
+  cloud-init automatically; for a pre-existing host, populate the two vars in
+  `/etc/metal-agent.env` and re-run `host-bootstrap.sh`. Verify with
+  `systemctl status otelcol-metal` and `journalctl -u otelcol-metal`.
 - **Admin panel**: super-admin → Infrastructure → Metal Fleet (view drift,
   cordon/drain hosts).
 

@@ -226,6 +226,13 @@ METAL_CACHE_MAX_BYTES=0
 METAL_DURABLE_ACTIVE_WINDOW_MS=1209600000
 METAL_SNAP_SLIM=0
 METAL_ACTIVITY_POLL=1
+# Host log shipper (otelcol-metal.service): ship metal-agent's journald output
+# to SigNoz. Empty by default — a burst-host cloud-init / code deploy that holds
+# the SigNoz creds fills these in (apps/api/src/lib/metal-cloud-init.ts), and the
+# collector below is only installed+started when OTEL_EXPORTER_OTLP_ENDPOINT is
+# non-empty, so an unconfigured host provisions cleanly.
+OTEL_EXPORTER_OTLP_ENDPOINT=
+SIGNOZ_INGESTION_KEY=
 ENV
 fi
 cat > /etc/systemd/system/metal-agent.service <<'UNIT'
@@ -258,4 +265,147 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
+
+# --- Host log shipper: otelcol-contrib (journald -> SigNoz) ------------------
+# The metal-agent is a dependency-free `bun run` and deliberately carries no OTel
+# SDK; it logs to stdout, which systemd captures in journald. To get those logs
+# into SigNoz WITHOUT an in-agent SDK (and without the Bun OTLP-export fragility
+# we hit in the API), a tiny sidecar collector tails the metal-agent journal and
+# ships it over OTLP/HTTP. This is the bare-metal analogue of the k8s-infra
+# otelAgent DaemonSet that scrapes pod stdout in-cluster.
+#
+# Gated on OTEL_EXPORTER_OTLP_ENDPOINT being set in /etc/metal-agent.env: an
+# unconfigured host skips the (large) collector download entirely and never
+# crash-loops. Burst hosts get the endpoint+key from cloud-init, so they install
+# and start it automatically. Re-run this script on an existing host after
+# populating the endpoint to add the shipper.
+if grep -qE "^OTEL_EXPORTER_OTLP_ENDPOINT=['\"]?[^'\"[:space:]]" /etc/metal-agent.env 2>/dev/null; then
+  OTELCOL_VERSION="${OTELCOL_VERSION:-0.139.0}"
+  case "$ARCH" in
+    x86_64) OTELCOL_ARCH=amd64 ;;
+    aarch64|arm64) OTELCOL_ARCH=arm64 ;;
+    *) OTELCOL_ARCH="$ARCH" ;;
+  esac
+
+  if [ ! -x /usr/local/bin/otelcol-contrib ]; then
+    log "installing otelcol-contrib v${OTELCOL_VERSION} (${OTELCOL_ARCH}) for host log shipping..."
+    curl -fsSL \
+      "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL_VERSION}/otelcol-contrib_${OTELCOL_VERSION}_linux_${OTELCOL_ARCH}.tar.gz" \
+      -o /tmp/otelcol-contrib.tgz
+    tar -xzf /tmp/otelcol-contrib.tgz -C /tmp otelcol-contrib
+    install -m0755 /tmp/otelcol-contrib /usr/local/bin/otelcol-contrib
+    rm -f /tmp/otelcol-contrib.tgz /tmp/otelcol-contrib
+  fi
+  /usr/local/bin/otelcol-contrib --version | head -1 || true
+
+  install -d /etc/otelcol-metal /var/lib/otelcol-metal
+
+  # Config uses ${env:...} substitution resolved by the collector at start from
+  # the systemd EnvironmentFile (/etc/metal-agent.env). Quoted heredoc so the
+  # shell does NOT expand these — the collector must see them literally.
+  cat > /etc/otelcol-metal/config.yaml <<'OTELCOL_CFG'
+# Managed by scripts/metal-agent/host-bootstrap.sh — host-local log shipper for
+# the bare-metal Firecracker fleet. Tails the metal-agent journald unit and
+# exports to SigNoz over OTLP/HTTP. See terraform/modules/signoz/README.md.
+extensions:
+  # Persist the journald read cursor + export queue across restarts so a code
+  # deploy / collector restart neither replays the whole journal nor drops logs.
+  file_storage/state:
+    directory: /var/lib/otelcol-metal
+
+receivers:
+  journald:
+    units:
+      - metal-agent.service
+    # First start (no cursor yet) begins at the journal tail; subsequent starts
+    # resume from the persisted cursor.
+    start_at: end
+    storage: file_storage/state
+    operators:
+      # journald PRIORITY (syslog severity) -> OTel severity.
+      - type: severity_parser
+        parse_from: body.PRIORITY
+        mapping:
+          fatal: ["0", "1", "2"]
+          error: "3"
+          warn: "4"
+          info: ["5", "6"]
+          debug: "7"
+      # Surface the human message as the log body (instead of the raw journal map).
+      - type: move
+        from: body.MESSAGE
+        to: body
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 128
+  resourcedetection/system:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+  resource:
+    attributes:
+      - { key: service.name, value: metal-agent, action: upsert }
+      - { key: service.namespace, value: metal-fleet, action: upsert }
+      - { key: metal.host.id, value: "${env:METAL_HOST_ID}", action: upsert }
+      - { key: metal.region, value: "${env:METAL_REGION}", action: upsert }
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  otlphttp/signoz:
+    # SigNoz Cloud ingest; otlphttp appends /v1/logs. Same endpoint + key the
+    # API pod uses.
+    endpoint: "${env:OTEL_EXPORTER_OTLP_ENDPOINT}"
+    headers:
+      signoz-ingestion-key: "${env:SIGNOZ_INGESTION_KEY}"
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+      storage: file_storage/state
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  extensions: [file_storage/state]
+  pipelines:
+    logs:
+      receivers: [journald]
+      processors: [memory_limiter, resourcedetection/system, resource, batch]
+      exporters: [otlphttp/signoz]
+OTELCOL_CFG
+
+  cat > /etc/systemd/system/otelcol-metal.service <<'OTELCOL_UNIT'
+[Unit]
+Description=Shogo metal host log shipper (metal-agent journald -> SigNoz)
+After=network-online.target metal-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/metal-agent.env
+# Do nothing (cleanly) when no SigNoz endpoint is configured — never crash-loop.
+ExecStartPre=/bin/sh -c 'test -n "$OTEL_EXPORTER_OTLP_ENDPOINT" || { echo "otelcol-metal: OTEL_EXPORTER_OTLP_ENDPOINT unset; nothing to ship"; exit 1; }'
+ExecStart=/usr/local/bin/otelcol-contrib --config /etc/otelcol-metal/config.yaml
+Restart=on-failure
+RestartSec=5
+# Reading the systemd journal needs privilege; the host is single-tenant.
+User=root
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+OTELCOL_UNIT
+
+  systemctl daemon-reload
+  log "starting host log shipper (otelcol-metal -> SigNoz)..."
+  systemctl enable --now otelcol-metal || log "WARN: otelcol-metal failed to start (check: journalctl -u otelcol-metal)"
+else
+  log "host log shipper skipped (OTEL_EXPORTER_OTLP_ENDPOINT not set in /etc/metal-agent.env)"
+fi
+
 log "done. push node-agent code + rootfs to the host, then: systemctl enable --now metal-agent"

@@ -103,6 +103,11 @@ function burstUserDataFor(hostId: string, region: string): string {
     ocirDockerConfigB64: required.ocirDockerConfigB64,
     runtimeImage: required.runtimeImage,
     bundleUrl: required.bundleUrl,
+    // Observability for the host-local log shipper. OPTIONAL (not in `required`)
+    // so a control plane without SigNoz configured still provisions hosts — the
+    // collector just stays stopped. Reuses the API pod's own OTLP config.
+    signozEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || '',
+    signozIngestionKey: process.env.SIGNOZ_INGESTION_KEY || '',
   })
 }
 
