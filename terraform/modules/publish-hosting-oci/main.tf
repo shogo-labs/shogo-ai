@@ -613,7 +613,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
     }
 
     // Probe a server-backed app's readiness, waking it if asleep. Backend-aware:
-    //   - metal   → GET ${API_PUBLISHED_ORIGIN}/api/published/{subdomain}/wake,
+    //   - metal   → GET $${API_PUBLISHED_ORIGIN}/api/published/{subdomain}/wake,
     //               which resolves/resumes the project's microVM and reports
     //               { ready }. API_PUBLISHED_ORIGIN is a real hostname CF can
     //               fetch (a metal box is a raw IP:port the Worker can't reach).
@@ -789,7 +789,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // SERVER-BACKED apps: proxy dynamic `/api/*` to the project's running
         // server.tsx instead of Object Storage. Two backends:
         //   - metal   → the Shogo API published endpoint
-        //     (${API_PUBLISHED_ORIGIN}/api/published/{subdomain}/api/...), which
+        //     ($${API_PUBLISHED_ORIGIN}/api/published/{subdomain}/api/...), which
         //     resolves the microVM placement and forwards over the mesh. A metal
         //     box is a raw IP:port the Worker can't fetch (error 1003), so the
         //     API (a real hostname) is the hop.
