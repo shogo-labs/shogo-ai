@@ -103,6 +103,9 @@ const ENV_KEYS = [
   'SHOGO_VOICE_MODE',
   'SHOGO_DEMO_VOICE',
   'SHOGO_MOCK_CAPTURE_DIR',
+  'OTEL_EXPORTER_OTLP_ENDPOINT',
+  'SIGNOZ_INGESTION_KEY',
+  'BETTER_AUTH_URL',
 ] as const
 
 beforeEach(() => {
@@ -170,6 +173,7 @@ describe('buildProjectEnv — proxy URLs', () => {
     expect(env.AI_PROXY_URL).toBe(`${base}/api/ai/v1`)
     expect(env.ANTHROPIC_PROXY_URL).toBe(`${base}/api/ai/anthropic`)
     expect(env.OPENAI_PROXY_URL).toBe(`${base}/api/ai/v1`)
+    expect(env.TOOLS_PROXY_URL).toBe(`${base}/api/tools`)
     expect(env.SHOGO_API_URL).toBe(base)
   })
 
@@ -207,6 +211,10 @@ describe('buildProjectEnv — proxy URLs', () => {
     expect(env.AI_PROXY_URL).toBe('https://studio.shogo.ai/api/ai/v1')
     expect(env.ANTHROPIC_PROXY_URL).toBe('https://studio.shogo.ai/api/ai/anthropic')
     expect(env.OPENAI_PROXY_URL).toBe('https://studio.shogo.ai/api/ai/v1')
+    // Web search / Composio / embeddings proxy must ALSO use the reachable
+    // public URL on metal — otherwise serperSearch builds an unreachable /
+    // invalid URL and every web search fails ("fetch() URL is invalid").
+    expect(env.TOOLS_PROXY_URL).toBe('https://studio.shogo.ai/api/tools')
     // trust-resolver reads SHOGO_API_URL — must also be the reachable public URL.
     expect(env.SHOGO_API_URL).toBe('https://studio.shogo.ai')
   })
@@ -230,6 +238,45 @@ describe('buildProjectEnv — proxy URLs', () => {
     process.env.SHOGO_PUBLIC_API_URL = 'https://studio.shogo.ai'
     const env = await buildProjectEnv('proj-knative')
     expect(env.AI_PROXY_URL).toBe('http://api.shogo-prod.svc.cluster.local/api/ai/v1')
+  })
+})
+
+// ─── OTEL telemetry + public URL passthroughs (metal parity) ──────────────
+//
+// The k8s warm-pool / Knative pod templates inject these; metal microVMs are
+// assigned solely from buildProjectEnv, so it must forward them or metal-hosted
+// runtimes go dark in SigNoz (no traces/logs) and build broken OAuth callback /
+// embed URLs.
+describe('buildProjectEnv — OTEL + public URL passthroughs', () => {
+  test('forwards OTEL endpoint, service name, and ingestion key when set', async () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://ingest.us.signoz.cloud:443'
+    process.env.SIGNOZ_INGESTION_KEY = 'ingest-key-123'
+    const env = await buildProjectEnv('proj-otel')
+    expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('https://ingest.us.signoz.cloud:443')
+    expect(env.OTEL_SERVICE_NAME).toBe('shogo-runtime')
+    expect(env.SIGNOZ_INGESTION_KEY).toBe('ingest-key-123')
+  })
+
+  test('omits all OTEL vars when the endpoint is unset (no partial telemetry config)', async () => {
+    process.env.SIGNOZ_INGESTION_KEY = 'orphan-key'
+    const env = await buildProjectEnv('proj-otel-none')
+    expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined()
+    expect(env.OTEL_SERVICE_NAME).toBeUndefined()
+    expect(env.SIGNOZ_INGESTION_KEY).toBeUndefined()
+  })
+
+  test('forwards BETTER_AUTH_URL and SHOGO_PUBLIC_API_URL when set', async () => {
+    process.env.BETTER_AUTH_URL = 'https://studio.shogo.ai'
+    process.env.SHOGO_PUBLIC_API_URL = 'https://studio.shogo.ai'
+    const env = await buildProjectEnv('proj-public')
+    expect(env.BETTER_AUTH_URL).toBe('https://studio.shogo.ai')
+    expect(env.SHOGO_PUBLIC_API_URL).toBe('https://studio.shogo.ai')
+  })
+
+  test('omits the public URL passthroughs when unset', async () => {
+    const env = await buildProjectEnv('proj-public-none')
+    expect(env.BETTER_AUTH_URL).toBeUndefined()
+    expect(env.SHOGO_PUBLIC_API_URL).toBeUndefined()
   })
 })
 

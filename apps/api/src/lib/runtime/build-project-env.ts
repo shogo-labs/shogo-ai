@@ -11,6 +11,7 @@ import { generateProxyToken } from '../ai-proxy-token'
 import { getAgentModeOverrides } from '@shogo/model-catalog'
 import { buildAutoTierMapEnv } from './auto-tier-env'
 import { INSTANCE_SIZES } from '../../config/instance-sizes'
+import { buildToolsProxyUrl } from '../cloud-urls'
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -164,6 +165,17 @@ export async function buildProjectEnv(
   env.ANTHROPIC_PROXY_URL = `${apiBase}/api/ai/anthropic`
   env.OPENAI_PROXY_URL = `${apiBase}/api/ai/v1`
 
+  // TOOLS_PROXY_URL — the runtime appends `/serper/...` (web search),
+  // `/composio` and embeddings paths to this, so it MUST end in `/api/tools`
+  // (see buildToolsProxyUrl + gateway-tools.ts serperSearch). Knative pods and
+  // the k8s warm pool inject this at pod-creation (knative-project-manager.ts /
+  // warm-pool-controller.ts), but metal microVMs are assigned purely from this
+  // builder's output — without it the guest has AI_PROXY_TOKEN but no proxy URL,
+  // so serperSearch builds `undefined/serper/search` and every web SEARCH fails
+  // with "fetch() URL is invalid". Derived from the same apiBase as the AI proxy
+  // URLs, so it uses the public URL on metal and in-cluster DNS on k8s.
+  env.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
+
   // PUBLIC_PREVIEW_URL — the externally-reachable, deterministic preview URL
   // ({projectId}.preview.{env}.shogo.ai). Pods created directly by the Knative
   // manager get this baked into the Service spec, but pooled/warm pods are
@@ -187,6 +199,22 @@ export async function buildProjectEnv(
   // AI proxy URLs use — both endpoints live on the API service.
   env.SHOGO_API_URL = apiBase
 
+  // Public-facing URLs the guest needs for browser-reachable contexts. The
+  // Knative pod template injects both (knative-project-manager.ts); metal
+  // microVMs are assigned solely from this builder, so forward them here too:
+  //   - BETTER_AUTH_URL: base for OAuth callback URLs the runtime builds for
+  //     Composio `connect` — without it the callback points at a wrong/empty
+  //     host and the OAuth round-trip fails.
+  //   - SHOGO_PUBLIC_API_URL: user-browser-reachable API origin baked into
+  //     webchat widget embed snippets the agent generates.
+  // Both are public URLs, reachable from the metal guest's egress NAT.
+  if (process.env.BETTER_AUTH_URL) {
+    env.BETTER_AUTH_URL = process.env.BETTER_AUTH_URL
+  }
+  if (process.env.SHOGO_PUBLIC_API_URL) {
+    env.SHOGO_PUBLIC_API_URL = process.env.SHOGO_PUBLIC_API_URL
+  }
+
   // Inject admin-configured agent model overrides so the gateway resolves correctly
   const modelOverrides = getAgentModeOverrides()
   if (modelOverrides.basic) env.AGENT_BASIC_MODEL = modelOverrides.basic
@@ -196,6 +224,23 @@ export async function buildProjectEnv(
   // to backing model ids) so the spawn router can route Auto to e.g. Hoshi.
   const autoTierMapEnv = buildAutoTierMapEnv()
   if (autoTierMapEnv) env.AGENT_AUTO_TIER_MAP = autoTierMapEnv
+
+  // OTEL telemetry → SigNoz. The k8s warm-pool / Knative pod templates inject
+  // this at pod-creation (warm-pool-controller.ts), but metal microVMs are
+  // assigned solely from this builder — without it a metal-hosted runtime emits
+  // NO traces or logs to SigNoz (which is why metal turns are invisible in
+  // observability). The endpoint is SigNoz Cloud (public), reachable from the
+  // guest's egress NAT; SIGNOZ_INGESTION_KEY comes from a secretKeyRef on k8s,
+  // so here we forward the literal value the API process already holds. A slow
+  // or unreachable collector never blocks the guest — the OTEL SDK bounds the
+  // export timeout and drops spans (see packages/core/src/instrumentation.ts).
+  if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    env.OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    env.OTEL_SERVICE_NAME = 'shogo-runtime'
+    if (process.env.SIGNOZ_INGESTION_KEY) {
+      env.SIGNOZ_INGESTION_KEY = process.env.SIGNOZ_INGESTION_KEY
+    }
+  }
 
   if (process.env.S3_WORKSPACES_BUCKET) {
     env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET

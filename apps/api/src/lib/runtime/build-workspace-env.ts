@@ -37,9 +37,17 @@ import { generateProxyToken } from '../ai-proxy-token'
 import { getAgentModeOverrides } from '@shogo/model-catalog'
 import { buildAutoTierMapEnv } from './auto-tier-env'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
+import { buildToolsProxyUrl } from '../cloud-urls'
 
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
+  /**
+   * Metal microVM assignment. When true the AI/tools proxy + API URLs are
+   * pinned to the PUBLIC API base (SHOGO_PUBLIC_API_URL/APP_URL) instead of the
+   * in-cluster service DNS, which is unresolvable from a Firecracker guest that
+   * runs outside the OKE cluster. Mirrors `buildProjectEnv({ forMetal })`.
+   */
+  forMetal?: boolean
   /**
    * For project-anchored merged runtimes: the anchor project id. Exposed to
    * the runtime as `WORKSPACE_ANCHOR_PROJECT_ID` so it can pick a sensible
@@ -209,10 +217,24 @@ export async function buildWorkspaceEnv(
   // Workspace-scoped runtime capability (NOT a project token).
   env.RUNTIME_AUTH_SECRET = deriveWorkspaceRuntimeToken(workspaceId)
 
-  // AI proxy URLs — identical resolution to build-project-env.ts.
+  // AI proxy URLs — identical resolution to build-project-env.ts, including the
+  // metal case: Firecracker guests run OUTSIDE the OKE cluster, so in-cluster
+  // service DNS is unresolvable and every LLM turn 502s with "Provider error:
+  // Connection error". forMetal pins the URLs to the PUBLIC API base instead
+  // (the guest egress-NATs to the internet; TLS + the project-scoped proxy
+  // token keep it safe over the public path).
   const ns = process.env.SYSTEM_NAMESPACE
+  const publicApiBase = (process.env.SHOGO_PUBLIC_API_URL || process.env.APP_URL || '').replace(/\/+$/, '')
   let apiBase: string
-  if (ns) {
+  if (opts.forMetal && publicApiBase) {
+    apiBase = publicApiBase
+  } else if (ns) {
+    if (opts.forMetal) {
+      console.error(
+        `[${prefix}] metal env for workspace ${workspaceId} but SHOGO_PUBLIC_API_URL/APP_URL unset — ` +
+          `AI proxy will be UNREACHABLE from the guest (falling back to in-cluster DNS)`,
+      )
+    }
     apiBase = `http://api.${ns}.svc.cluster.local`
   } else {
     const apiPort = process.env.API_PORT || '8002'
@@ -223,6 +245,11 @@ export async function buildWorkspaceEnv(
   env.ANTHROPIC_PROXY_URL = `${apiBase}/api/ai/anthropic`
   env.OPENAI_PROXY_URL = `${apiBase}/api/ai/v1`
   env.SHOGO_API_URL = apiBase
+  // Web search / Composio / embeddings proxy. Must end in `/api/tools` (see
+  // buildToolsProxyUrl). Mirrors buildProjectEnv so workspace runtimes assigned
+  // purely from this env (e.g. metal) can reach the tools proxy instead of
+  // constructing an invalid `undefined/serper/search` URL.
+  env.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
 
   const modelOverrides = getAgentModeOverrides()
   if (modelOverrides.basic) env.AGENT_BASIC_MODEL = modelOverrides.basic
@@ -230,6 +257,30 @@ export async function buildWorkspaceEnv(
 
   const autoTierMapEnv = buildAutoTierMapEnv()
   if (autoTierMapEnv) env.AGENT_AUTO_TIER_MAP = autoTierMapEnv
+
+  // OTEL telemetry → SigNoz. Mirrors buildProjectEnv so metal-hosted workspace
+  // runtimes emit traces/logs instead of going dark in observability. Endpoint
+  // is SigNoz Cloud (public, reachable from the guest); the ingestion key comes
+  // from a secretKeyRef on k8s, so we forward the literal value the API process
+  // holds. Unreachable collectors never block the guest (bounded export timeout
+  // in packages/core/src/instrumentation.ts).
+  if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    env.OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    env.OTEL_SERVICE_NAME = 'shogo-runtime'
+    if (process.env.SIGNOZ_INGESTION_KEY) {
+      env.SIGNOZ_INGESTION_KEY = process.env.SIGNOZ_INGESTION_KEY
+    }
+  }
+
+  // Public-facing URLs (OAuth callbacks for Composio `connect`, webchat embed
+  // snippets). Mirrors buildProjectEnv / the Knative pod template. Both are
+  // public URLs reachable from the metal guest's egress NAT.
+  if (process.env.BETTER_AUTH_URL) {
+    env.BETTER_AUTH_URL = process.env.BETTER_AUTH_URL
+  }
+  if (process.env.SHOGO_PUBLIC_API_URL) {
+    env.SHOGO_PUBLIC_API_URL = process.env.SHOGO_PUBLIC_API_URL
+  }
 
   if (process.env.S3_WORKSPACES_BUCKET) {
     env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET
