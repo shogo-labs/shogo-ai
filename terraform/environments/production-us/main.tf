@@ -280,6 +280,16 @@ module "us" {
   # locals note above for the IP-fetch + Worker-loop gotchas this avoids).
   kourier_origin = "http://${cloudflare_record.kourier_us.hostname}"
 
+  # METAL-backed published apps: the public Shogo API origin the subdomain-router
+  # Worker proxies `/api/*` to (→ /api/published/{subdomain}/...). The API
+  # resolves the project's `published:{id}` microVM placement and forwards over
+  # the mesh (Workers can't fetch a raw IP:port). We reuse `studio.shogo.ai` —
+  # the same proxied API host the preview-router already fetches for metal
+  # previews (edge-global api_wake_origin) — since this is the identical
+  # Worker→API→metal-box pattern. Null would disable metal publishing at the
+  # edge (server-backed apps fall back to static serving).
+  api_published_origin = "https://studio.shogo.ai"
+
   # Bring-your-own custom hostnames (Cloudflare for SaaS). Off until a
   # DEDICATED zone (separate from shogo.one) is supplied — see variables.tf.
   enable_custom_domains = var.enable_custom_domains
