@@ -55,7 +55,9 @@ function makePool(dir: string): TestPool {
   } as typeof config
   mkdirSync(cfg.snapDir, { recursive: true })
   mkdirSync(cfg.runDir, { recursive: true })
-  const fakeMgr = { procCount: () => 0 } as unknown as FirecrackerVMManager
+  // isRunning:true — the seeded VMs are healthy, so open()'s liveness gate
+  // reuses them (these tests exercise always-on flag handling, not liveness).
+  const fakeMgr = { procCount: () => 0, isRunning: () => true } as unknown as FirecrackerVMManager
   return new TestPool(fakeMgr, cfg, { kind: 'none' } as unknown as SnapshotStore)
 }
 

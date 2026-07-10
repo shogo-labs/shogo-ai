@@ -196,9 +196,23 @@ let reaper: ReturnType<typeof setInterval> | null = null
 if (config.idleSuspendMs > 0) {
   console.log(`[metal-agent] idle-suspend on: idleMs=${config.idleSuspendMs} scan=${config.reapIntervalMs}ms store=${config.snapStore}`)
   reaper = setInterval(() => {
+    // Liveness sweep FIRST: clear any assigned VM whose firecracker process has
+    // died. A continuously wake-polled dead VM never goes idle (each poll bumps
+    // lastTouchedAt), so the idle reaper below can't help — this is the only
+    // thing that stops routing from resolving to a dead box (the "Unable to
+    // connect" 502 loop). Drop its DNAT forward and tell the control plane the
+    // project is gone from here so it re-places / cold-boots on the next open.
     pool
-      .pollActivity()
-      .catch(() => {})
+      .reapDeadAssigned()
+      .then((deadIds) => {
+        for (const id of deadIds) {
+          fwd.remove(id)
+          reportPlacement('cold', id)
+        }
+        if (deadIds.length) console.log(`[metal-agent] reaped dead assigned VM(s): ${deadIds.join(', ')}`)
+      })
+      .catch((err) => console.error('[metal-agent] dead-vm reap error:', err?.message ?? err))
+      .then(() => pool.pollActivity().catch(() => {}))
       .then(() => pool.reapIdle())
       .then(
         (ids) => {
