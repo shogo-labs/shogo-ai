@@ -14,9 +14,12 @@
 export {
   StreamBufferStore,
   createBufferingTransform,
+  encodeTurnCompleteFrame,
+  TURN_COMPLETE_EVENT_TYPE,
   type StreamBufferWriter,
   type TurnStatus,
   type TurnTerminal,
   type TurnSnapshot,
+  type TurnCompleteFrameData,
   type ReplayOptions,
 } from '@shogo-ai/sdk/stream-buffer'

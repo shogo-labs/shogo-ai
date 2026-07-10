@@ -300,6 +300,38 @@ export class StreamBufferStore {
   }
 }
 
+/**
+ * The SSE data-part event type the client's auto-resuming fetch treats as a
+ * turn's terminal marker. The client keeps reconnecting to `/stream?fromSeq=N`
+ * until it parses one of these; a buffer that reaches a terminal `status`
+ * WITHOUT such a frame makes the client replay the tail forever and pins
+ * `useChat().status` at `streaming` (composer stuck on Stop/Queue).
+ */
+export const TURN_COMPLETE_EVENT_TYPE = 'data-turn-complete' as const
+
+export interface TurnCompleteFrameData {
+  turnId: string
+  chatSessionId: string
+  status: TurnStatus
+  error?: string
+  lastSeq: number
+  completedAt?: number
+}
+
+/**
+ * Encode a `data-turn-complete` SSE frame as raw bytes suitable for
+ * {@link StreamBufferWriter.append}. Matches the AI SDK UI-message-stream wire
+ * format (`data: <json>\n\n`) so the client's SSE parser recognizes it
+ * identically to frames written through the live `writer`. Use this to
+ * synthesize a terminal marker when a turn ends abnormally (transport error,
+ * abort race) before the normal terminal frame was emitted.
+ */
+export function encodeTurnCompleteFrame(data: TurnCompleteFrameData): Uint8Array {
+  return new TextEncoder().encode(
+    `data: ${JSON.stringify({ type: TURN_COMPLETE_EVENT_TYPE, data })}\n\n`,
+  )
+}
+
 function generateTurnId(): string {
   // Lightweight random id — we don't need cryptographic strength here, just
   // uniqueness within the store's lifetime. Fall back to Math.random in

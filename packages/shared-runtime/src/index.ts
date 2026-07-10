@@ -189,7 +189,10 @@ export {
 export {
   StreamBufferStore,
   createBufferingTransform,
+  encodeTurnCompleteFrame,
+  TURN_COMPLETE_EVENT_TYPE,
   type StreamBufferWriter,
+  type TurnCompleteFrameData,
 } from './stream-buffer'
 
 

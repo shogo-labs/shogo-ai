@@ -364,14 +364,27 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             break
           }
 
-          // Only reset the attempt counter if the resume actually
-          // delivered bytes — otherwise an endless loop of empty 200s
-          // would never surface as "stalled".
+          // Snapshot the durable seq cursor BEFORE pumping so we can tell
+          // real forward progress (new frames past what we've seen) from a
+          // completed buffer merely replaying its tail.
+          const seqBeforeResume = lastSeq
           const { bytes, error } = await pumpBody(resumeRes.body, /* resumed */ true)
           // A resume that ended on a clean EOF clears any pending transport
           // error; one that threw again keeps it set for the (bounded) loop.
           lastTransportError = error ?? null
-          if (bytes > 0) resumeAttempts = 0
+          // Only reset the attempt budget when the resume ADVANCED the seq
+          // cursor. The old `if (bytes > 0)` check treated any bytes as
+          // progress — but a turn that completed server-side WITHOUT a
+          // `data-turn-complete` frame in its buffer (abnormal termination:
+          // pod OOM/crash, bg-reader error, abort race) replays the same
+          // tail on every `?fromSeq=N` reconnect. Since `fromSeq` never
+          // advances (no new `data-turn-seq`), each replay delivered bytes,
+          // reset the counter, and the loop ran until the 30s buffer grace —
+          // pinning `useChat().status` at `streaming` the whole time and
+          // wedging the composer on Stop/Queue. Gating the reset on seq
+          // progress lets pure-duplicate replays accrue toward
+          // `maxResumeAttempts` so we give up and close the body (→ ready).
+          if (bytes > 0 && lastSeq > seqBeforeResume) resumeAttempts = 0
         }
 
         if (!turnCompleted && !cancelled) {
