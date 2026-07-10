@@ -54,6 +54,18 @@ export interface InstrumentationConfig {
 }
 
 export function initInstrumentation(config: InstrumentationConfig): void {
+  // Re-entrant / idempotent. Metal resumes call this again from
+  // `/pool/refresh-env` when a snapshot-restored guest is handed an
+  // `OTEL_EXPORTER_OTLP_ENDPOINT` it didn't have at boot (a suspend/restore
+  // brings the process back with its boot-time env, so a guest that first
+  // booted without the endpoint starts with telemetry DISABLED). Once the SDK
+  // is live we MUST NOT rebuild it — doing so would leak a second NodeSDK,
+  // duplicate exporters/processors, and register a second `createLogger` OTEL
+  // sink (double-emitting every log). So if we're already running, no-op; the
+  // running exporter keeps its boot-time endpoint/headers. Only when the SDK is
+  // not yet live do we (re-)evaluate the endpoint below and start if present.
+  if (sdk) return
+
   const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT
   if (!endpoint) {
     console.log(`[OTEL] Tracing disabled for ${config.serviceName} (OTEL_EXPORTER_OTLP_ENDPOINT not set)`)
