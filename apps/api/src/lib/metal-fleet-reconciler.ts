@@ -32,7 +32,7 @@
 
 import { metrics } from '@opentelemetry/api'
 import { getFleetEnv, type MetalFleetEnv } from '../config/metal-fleet'
-import { getMetalWarmPoolController, type MetalWarmPoolController } from './metal-warm-pool-controller'
+import { getMetalWarmPoolController, MAX_VMS_PER_HOST, type MetalWarmPoolController } from './metal-warm-pool-controller'
 import { getMetalPlacementRegistry, type BurstHostRecord, type MetalPlacementRegistry } from './metal-placement-registry'
 import { getLatitudeClient, type LatitudeClient } from './latitude-client'
 import { buildBurstUserData } from './metal-cloud-init'
@@ -143,15 +143,17 @@ export interface ReconcilePlan {
   regions: RegionAssessment[]
 }
 
-/** assigned/poolSize as a whole-number percent across a region's live hosts. */
+/**
+ * Region utilization as a whole-number percent: total LIVE assigned microVMs
+ * divided by real capacity (liveHosts × MAX_VMS_PER_HOST). Deliberately NOT
+ * divided by the warm-pool `capacity.poolSize` — that made a lightly-loaded
+ * region report >100% and falsely trip burst scale-up.
+ */
 function regionUtilPct(live: LiveHost[]): number {
+  if (live.length === 0) return 0
   let assigned = 0
-  let cap = 0
-  for (const h of live) {
-    assigned += h.load?.assigned ?? 0
-    cap += h.capacity?.poolSize ?? 0
-  }
-  if (cap <= 0) return 0
+  for (const h of live) assigned += h.load?.assigned ?? 0
+  const cap = live.length * MAX_VMS_PER_HOST
   return Math.round((assigned / cap) * 100)
 }
 

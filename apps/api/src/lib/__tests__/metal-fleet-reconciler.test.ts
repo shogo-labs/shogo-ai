@@ -10,7 +10,11 @@
 
 import { describe, expect, it } from 'bun:test'
 import { planReconcile, type ReconcileSnapshot } from '../metal-fleet-reconciler'
+import { MAX_VMS_PER_HOST } from '../metal-warm-pool-controller'
 import type { MetalFleetEnv } from '../../config/metal-fleet'
+
+// >70% of a single host's real capacity → "hot" enough to trigger burst scale-up.
+const HOT = Math.ceil(MAX_VMS_PER_HOST * 0.75)
 
 const DESIRED: MetalFleetEnv = {
   baseline: [
@@ -29,6 +33,9 @@ const DESIRED: MetalFleetEnv = {
   },
 }
 
+// `poolSize` is the host's WARM-POOL target (idle pre-boot count); it is NOT the
+// utilization denominator — capacity is MAX_VMS_PER_HOST per live host. `assigned`
+// is the count of live microVMs, i.e. the numerator.
 function host(hostId: string, region: string, poolSize: number, assigned: number): any {
   return { hostId, region, capacity: { poolSize }, load: { assigned } }
 }
@@ -54,8 +61,8 @@ describe('planReconcile — baseline drift', () => {
 
 describe('planReconcile — scale up', () => {
   it('adds a burst host when a region is hot and under the cap', () => {
-    // us: 22/24 assigned ≈ 92% > 70%
-    const plan = planReconcile(snap({ live: [host('latitude-dal-1', 'us', 24, 22)] }))
+    // us: HOT/MAX_VMS_PER_HOST = 75% > 70%
+    const plan = planReconcile(snap({ live: [host('latitude-dal-1', 'us', 24, HOT)] }))
     const up = plan.actions.find((a) => a.kind === 'scale_up') as any
     expect(up).toBeTruthy()
     expect(up.region).toBe('us')
@@ -65,7 +72,7 @@ describe('planReconcile — scale up', () => {
   it('does NOT scale up past maxPerRegion', () => {
     const plan = planReconcile(
       snap({
-        live: [host('latitude-dal-1', 'us', 24, 24)],
+        live: [host('latitude-dal-1', 'us', 24, HOT)],
         burst: [
           { hostId: 'b1', serverId: 'sv_1', region: 'us', site: 'DAL', createdAt: 1 },
           { hostId: 'b2', serverId: 'sv_2', region: 'us', site: 'DAL', createdAt: 2 },
@@ -80,7 +87,7 @@ describe('planReconcile — scale up', () => {
     const plan = planReconcile(
       snap({
         now,
-        live: [host('latitude-dal-1', 'us', 24, 24)],
+        live: [host('latitude-dal-1', 'us', 24, HOT)],
         lastScaleAt: { us: now - 100_000 }, // 100s ago < 900s cooldown
       }),
     )
@@ -91,7 +98,7 @@ describe('planReconcile — scale up', () => {
 
   it('does nothing when burst is disabled', () => {
     const desired = { ...DESIRED, burst: { ...DESIRED.burst, enabled: false } }
-    const plan = planReconcile(snap({ desired, live: [host('latitude-dal-1', 'us', 24, 24)] }))
+    const plan = planReconcile(snap({ desired, live: [host('latitude-dal-1', 'us', 24, HOT)] }))
     expect(plan.actions.some((a) => a.kind === 'scale_up')).toBe(false)
   })
 })
@@ -146,10 +153,11 @@ describe('planReconcile — scale down (drain-first, two phase)', () => {
 })
 
 describe('planReconcile — region assessment', () => {
-  it('computes utilization across a region and reports zero when idle', () => {
-    const plan = planReconcile(snap({ live: [host('latitude-dal-1', 'us', 24, 6)] }))
+  it('computes utilization across a region as assigned ÷ (liveHosts × MAX_VMS_PER_HOST)', () => {
+    const assigned = 6
+    const plan = planReconcile(snap({ live: [host('latitude-dal-1', 'us', 24, assigned)] }))
     const us = plan.regions.find((r) => r.region === 'us')!
-    expect(us.utilPct).toBe(25)
+    expect(us.utilPct).toBe(Math.round((assigned / MAX_VMS_PER_HOST) * 100))
     expect(plan.actions.some((a) => a.kind === 'scale_up' || a.kind === 'cordon_for_drain')).toBe(false)
   })
 })
