@@ -130,3 +130,63 @@ export function fleetEnvKey(): string {
 export function getFleetEnv(envKey: string = fleetEnvKey()): MetalFleetEnv {
   return METAL_FLEET.environments[envKey] ?? METAL_FLEET.environments.staging
 }
+
+/** Every fleet-region token declared across all environments (us | eu | ...). */
+function knownFleetRegions(): Set<string> {
+  const regions = new Set<string>()
+  for (const env of Object.values(METAL_FLEET.environments)) {
+    for (const b of env.baseline) regions.add(b.region)
+  }
+  return regions
+}
+
+/**
+ * The fleet region THIS control plane owns (us | eu | ...), or undefined when
+ * it can't be determined.
+ *
+ * Each production region runs its OWN control plane (separate DB + registry),
+ * and a node-agent only ever heartbeats to its region's control plane. So a
+ * control plane must diff the committed baseline against ONLY its own region —
+ * otherwise every OTHER region's baseline hosts look like permanent "drift"
+ * (they're live and healthy, just registered to a different control plane). That
+ * cross-region phantom is exactly what made a healthy EU fleet read as "down" on
+ * the US control plane.
+ *
+ * Resolution order:
+ *   1. explicit METAL_FLEET_REGION override (operator-set, trusted as-is);
+ *   2. derived from the OCI REGION_ID prefix (us-ashburn-1 → us,
+ *      eu-frankfurt-1 → eu), but ONLY if that prefix is a region we actually
+ *      declare a baseline for — an unrecognized value returns undefined so we
+ *      fail SAFE (fall back to the full multi-region baseline) rather than
+ *      silently manage nothing.
+ *
+ * Returns undefined for staging/tests/local (no region env) → callers use the
+ * full baseline, preserving the original behavior.
+ */
+export function homeFleetRegion(): string | undefined {
+  const explicit = (process.env.METAL_FLEET_REGION || '').trim().toLowerCase()
+  if (explicit) return explicit
+  const rid = (process.env.REGION_ID || '').trim().toLowerCase()
+  const prefix = rid.split('-')[0]
+  return prefix && knownFleetRegions().has(prefix) ? prefix : undefined
+}
+
+/**
+ * Desired fleet scoped to THIS control plane's region (see homeFleetRegion).
+ * Use this — not getFleetEnv — for baseline-drift, region telemetry, and burst
+ * actuation, so a regional control plane never reports another region's
+ * (live-elsewhere) baseline hosts as missing.
+ *
+ * Falls back to the FULL multi-region env when the region is unknown
+ * (staging/tests) or when scoping would leave an empty baseline (a region env
+ * that declares nothing for us) — better to over-report drift than to silently
+ * stop managing the whole fleet.
+ */
+export function getHomeFleetEnv(envKey: string = fleetEnvKey()): MetalFleetEnv {
+  const full = getFleetEnv(envKey)
+  const region = homeFleetRegion()
+  if (!region) return full
+  const baseline = full.baseline.filter((b) => b.region === region)
+  if (baseline.length === 0) return full
+  return { ...full, baseline }
+}
