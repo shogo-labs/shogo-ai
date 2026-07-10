@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
-import { createLogger } from '../logger.js'
+import { createLogger, setTraceContextProvider } from '../logger.js'
 
 let savedLog: any, savedWarn: any, savedErr: any
 let logs: string[], warns: string[], errs: string[]
@@ -15,6 +15,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   console.log = savedLog; console.warn = savedWarn; console.error = savedErr
+  setTraceContextProvider(null)
 })
 
 describe('createLogger', () => {
@@ -83,6 +84,31 @@ describe('createLogger', () => {
     log.info('msg')
     expect(logs[0]).toContain('app')
     expect(logs[0]).toContain('core')
+  })
+
+  it('stamps trace_id/span_id from the registered trace-context provider', () => {
+    // Option B: the stdout line itself must carry trace context so a log
+    // scraper can correlate to traces without the OTLP log export.
+    setTraceContextProvider(() => ({ trace_id: 'trace-abc', span_id: 'span-xyz' }))
+    const log = createLogger('svc')
+    log.info('msg')
+    expect(logs[0]).toContain('trace-abc')
+    expect(logs[0]).toContain('span-xyz')
+  })
+
+  it('omits trace context when the provider returns null (no active span)', () => {
+    setTraceContextProvider(() => null)
+    const log = createLogger('svc')
+    log.info('msg')
+    expect(logs[0]).not.toContain('trace_id')
+  })
+
+  it('never breaks logging when the trace-context provider throws', () => {
+    setTraceContextProvider(() => { throw new Error('boom') })
+    const log = createLogger('svc')
+    log.info('still logged')
+    expect(logs.length).toBe(1)
+    expect(logs[0]).toContain('still logged')
   })
 
   it('child of child merges defaultExtras', () => {

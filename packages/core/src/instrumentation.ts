@@ -28,7 +28,7 @@
  *   process.on('SIGTERM', () => shutdownInstrumentation())
  */
 
-import { diag, DiagConsoleLogger, DiagLogLevel, trace, SpanStatusCode, type Span } from '@opentelemetry/api'
+import { diag, DiagConsoleLogger, DiagLogLevel, trace, isSpanContextValid, SpanStatusCode, type Span } from '@opentelemetry/api'
 import { logs, SeverityNumber } from '@opentelemetry/api-logs'
 import { NodeSDK } from '@opentelemetry/sdk-node'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
@@ -37,7 +37,7 @@ import { BatchSpanProcessor, SimpleSpanProcessor } from '@opentelemetry/sdk-trac
 import { BatchLogRecordProcessor, SimpleLogRecordProcessor, type LogRecordProcessor } from '@opentelemetry/sdk-logs'
 import { resourceFromAttributes } from '@opentelemetry/resources'
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions'
-import { setOtelLogSink, type LogLevel } from './logger'
+import { setOtelLogSink, setTraceContextProvider, type LogLevel } from './logger'
 
 const SEVERITY_BY_LEVEL: Record<LogLevel, { number: SeverityNumber; text: string }> = {
   debug: { number: SeverityNumber.DEBUG, text: 'DEBUG' },
@@ -166,6 +166,19 @@ export function initInstrumentation(config: InstrumentationConfig): void {
     return
   }
 
+  // Stamp every `createLogger` entry with the active trace context so the
+  // stdout line (and the serial console on bare-metal guests) is trace-
+  // correlated even when the OTLP log export is dropped — the durable
+  // "trace-ids-on-stdout" path. A downstream scraper (SigNoz k8s-infra
+  // DaemonSet, or a host collector for guests) promotes these into the linked
+  // trace fields. Cleared in `shutdownInstrumentation`.
+  setTraceContextProvider(() => {
+    const ctx = trace.getActiveSpan()?.spanContext()
+    return ctx && isSpanContextValid(ctx)
+      ? { trace_id: ctx.traceId, span_id: ctx.spanId }
+      : null
+  })
+
   // Route `createLogger` output through the OTEL LoggerProvider that NodeSDK
   // registered globally, so runtime-service logs land in SigNoz correlated
   // with traces. No-op if the log exporter above failed to initialize.
@@ -208,8 +221,9 @@ export function initInstrumentation(config: InstrumentationConfig): void {
 
 export async function shutdownInstrumentation(): Promise<void> {
   if (!sdk) return
-  // Stop forwarding logs before the provider shuts down.
+  // Stop forwarding logs / stamping trace context before the provider shuts down.
   setOtelLogSink(null)
+  setTraceContextProvider(null)
   // Never let a hung flush block process shutdown — race the SDK's final
   // export against a short deadline so exit is bounded even if the collector
   // is unreachable. Errors are swallowed (telemetry is best-effort and must

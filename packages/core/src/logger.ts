@@ -86,6 +86,37 @@ export function setOtelLogSink(sink: LogSink | null): void {
   logSink = sink
 }
 
+/** Active trace context, in OpenTelemetry hex form (32-char / 16-char). */
+export interface TraceContext {
+  trace_id: string
+  span_id: string
+}
+
+/**
+ * Optional provider of the active trace context, used to stamp `trace_id` /
+ * `span_id` onto every log entry so the *stdout line itself* is trace-
+ * correlated. This is the durable "trace-ids-on-stdout" path: a log scraper
+ * (the SigNoz k8s-infra DaemonSet, or a host collector tailing serial output
+ * on bare-metal guests) can then link logs to traces WITHOUT depending on the
+ * app-level OTLP log export, which is unreliable under Bun event-loop pressure.
+ *
+ * Kept as a plain callback so this module keeps ZERO OpenTelemetry dependency —
+ * `instrumentation.ts` registers it once a tracer is live, and userland
+ * consumers that just want a console logger are unaffected.
+ */
+export type TraceContextProvider = () => TraceContext | null
+
+let traceContextProvider: TraceContextProvider | null = null
+
+/**
+ * Register (or clear, with `null`) the provider consulted on every log call to
+ * enrich entries with the active `trace_id` / `span_id`. Errors thrown by the
+ * provider are swallowed — telemetry must never break application logging.
+ */
+export function setTraceContextProvider(provider: TraceContextProvider | null): void {
+  traceContextProvider = provider
+}
+
 export function createLogger(service: string, defaultExtra?: Record<string, unknown>): Logger {
   function log(level: LogLevel, msg: string, extra?: Record<string, unknown>): void {
     if (!shouldLog(level)) return
@@ -97,6 +128,20 @@ export function createLogger(service: string, defaultExtra?: Record<string, unkn
       timestamp: new Date().toISOString(),
       ...defaultExtra,
       ...extra,
+    }
+
+    // Stamp the active trace context so the emitted line is trace-correlated on
+    // stdout — independent of whether the OTLP log export succeeds.
+    if (traceContextProvider) {
+      try {
+        const tc = traceContextProvider()
+        if (tc) {
+          entry.trace_id = tc.trace_id
+          entry.span_id = tc.span_id
+        }
+      } catch {
+        // best-effort: never let telemetry break logging
+      }
     }
 
     const formatted = formatEntry(entry)
