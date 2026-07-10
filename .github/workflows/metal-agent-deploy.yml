@@ -153,7 +153,14 @@ jobs:
           cp -a apps/metal-agent/package.json apps/metal-agent/tsconfig.json "$STAGE/"
           mkdir -p "$STAGE/scripts/metal-agent"
           cp -a scripts/metal-agent/build-runtime-rootfs.sh "$STAGE/scripts/metal-agent/"
-          tar -czf "$OUT" -C "$STAGE" src package.json tsconfig.json scripts
+          # Deterministic tar+gzip: identical bundle CONTENT must always yield an
+          # identical sha256. tar otherwise records per-file mtime/uid/gid and gzip
+          # records a build timestamp+filename, so two runs of the SAME commit
+          # produced DIFFERENT shas — and the immutable-reuse path below then left an
+          # old object in place under a freshly-computed pointer sha, which every
+          # host rejects with a sha256 mismatch (2026-07 prod US self-update loop).
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -cf - -C "$STAGE" src package.json tsconfig.json scripts | gzip -n > "$OUT"
           rm -rf "$STAGE"
           SHA="$(sha256sum "$OUT" | awk '{print $1}')"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -179,14 +186,12 @@ jobs:
           BUCKET: ${{ vars.METAL_RELEASE_BUCKET }}
           PREFIX: ${{ vars.METAL_RELEASE_PREFIX }}
           FILE: ${{ steps.bundle.outputs.file }}
+          EXPECTED_SHA: ${{ steps.bundle.outputs.sha256 }}
         run: |
           set -euo pipefail
           PFX="${PREFIX:-metal-agent-releases/}"
           KEY="${PFX}${FILE}"
-          # Immutable: never overwrite an existing version's bundle.
-          if aws s3api head-object --endpoint-url "$ENDPOINT" --bucket "$BUCKET" --key "$KEY" >/dev/null 2>&1; then
-            echo "Bundle already published at s3://$BUCKET/$KEY (immutable) — reusing."
-          else
+          put_object() {
             # Low-level put-object (not `s3 cp`): the high-level transfer manager
             # still forced a CRC checksum → aws-chunked on some CLI builds even with
             # WHEN_REQUIRED; put-object reliably honors it against OCI.
@@ -195,6 +200,26 @@ jobs:
               --bucket "$BUCKET" --key "$KEY" \
               --body "$FILE" \
               --content-type application/gzip >/dev/null
+          }
+          # A bundle is addressed by version, but the channel pointer we publish
+          # carries THIS build's sha256, so the stored object MUST match it or every
+          # host rejects the self-update on a sha256 mismatch. Guard the reuse path
+          # against a pre-existing object whose bytes differ (an older
+          # non-reproducible build, or another region sharing this bucket): compare
+          # shas and overwrite when they drift, instead of blindly reusing.
+          if aws s3api head-object --endpoint-url "$ENDPOINT" --bucket "$BUCKET" --key "$KEY" >/dev/null 2>&1; then
+            TMP="$(mktemp)"
+            aws s3api get-object --endpoint-url "$ENDPOINT" --bucket "$BUCKET" --key "$KEY" "$TMP" >/dev/null
+            EXISTING_SHA="$(sha256sum "$TMP" | awk '{print $1}')"
+            rm -f "$TMP"
+            if [[ "$EXISTING_SHA" == "$EXPECTED_SHA" ]]; then
+              echo "Bundle already published at s3://$BUCKET/$KEY (sha matches) — reusing."
+            else
+              echo "::warning::Existing s3://$BUCKET/$KEY sha=$EXISTING_SHA != built sha=$EXPECTED_SHA — overwriting so the channel pointer matches the stored object."
+              put_object
+            fi
+          else
+            put_object
           fi
           echo "bundle_url=s3://$BUCKET/$KEY" >> "$GITHUB_OUTPUT"
           echo "Published bundle: s3://$BUCKET/$KEY"
