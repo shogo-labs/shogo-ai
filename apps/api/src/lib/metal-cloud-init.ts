@@ -54,6 +54,18 @@ export interface BurstUserDataOpts {
   /** Control-plane egress CIDR allowed to reach forwarded VM ports (e.g. 1.2.3.4/32). */
   fwdAllowCidr: string
 
+  /**
+   * SigNoz OTLP endpoint + ingestion key for the host-local log shipper
+   * (`otelcol-metal.service`: journald → SigNoz). Optional — when either is
+   * absent the collector is installed but left stopped, so a host provisions
+   * cleanly even without observability config. These are the SAME values the
+   * API pod uses (`OTEL_EXPORTER_OTLP_ENDPOINT` / `SIGNOZ_INGESTION_KEY`); the
+   * metal-agent itself stays dependency-free and never talks OTLP — the
+   * sidecar collector reads its journald output and ships it.
+   */
+  signozEndpoint?: string
+  signozIngestionKey?: string
+
   // Durable snapshot store (OCI S3-compat). For EU hosts point these at the EU
   // bucket/endpoint for data residency.
   s3Endpoint: string
@@ -136,6 +148,12 @@ export function buildBurstUserData(o: BurstUserDataOpts): string {
     envLine('METAL_REGION', o.region),
     envLine('METAL_HOST_ID', o.hostId),
     envLine('METAL_FWD_ALLOW_CIDR', o.fwdAllowCidr),
+    // Host log shipper (otelcol-metal.service) reads these to ship metal-agent's
+    // journald output to SigNoz. Emitted only when configured; when absent the
+    // collector stays stopped (host-bootstrap gates `enable --now` on the
+    // endpoint being set), so provisioning never depends on observability.
+    ...(o.signozEndpoint ? [envLine('OTEL_EXPORTER_OTLP_ENDPOINT', o.signozEndpoint)] : []),
+    ...(o.signozIngestionKey ? [envLine('SIGNOZ_INGESTION_KEY', o.signozIngestionKey)] : []),
     envLine('NODE_TLS_REJECT_UNAUTHORIZED', '0'),
     envLine('METAL_HEAVY_CONCURRENCY', heavy),
     envLine('METAL_S3_GET_CONCURRENCY', '8'),

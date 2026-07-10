@@ -87,4 +87,20 @@ describe('buildBurstUserData', () => {
     const s = buildBurstUserData({ ...BASE, idleSuspendMs: 60_000 })
     expect(s).toContain("METAL_IDLE_SUSPEND_MS='60000'")
   })
+
+  it('injects the SigNoz endpoint + key for the host log shipper when provided', () => {
+    const s = buildBurstUserData({
+      ...BASE,
+      signozEndpoint: 'https://ingest.us.signoz.cloud:443',
+      signozIngestionKey: 'sk-signoz-123',
+    })
+    expect(s).toContain("OTEL_EXPORTER_OTLP_ENDPOINT='https://ingest.us.signoz.cloud:443'")
+    expect(s).toContain("SIGNOZ_INGESTION_KEY='sk-signoz-123'")
+  })
+
+  it('omits the SigNoz env entirely when not configured (collector stays stopped)', () => {
+    const s = buildBurstUserData(BASE)
+    expect(s).not.toContain('OTEL_EXPORTER_OTLP_ENDPOINT')
+    expect(s).not.toContain('SIGNOZ_INGESTION_KEY')
+  })
 })
