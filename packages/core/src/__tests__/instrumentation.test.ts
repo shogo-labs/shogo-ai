@@ -305,6 +305,31 @@ describe('initInstrumentation', () => {
   })
 })
 
+describe('initInstrumentation — re-entrancy (metal resume activation)', () => {
+  it('no-ops on a second call once the SDK is live (no duplicate SDK/exporters)', () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    initInstrumentation({ serviceName: 'svc' })
+    expect(sdkStartMock).toHaveBeenCalledTimes(1)
+    // A second call (e.g. a later resume) must NOT rebuild the SDK — that would
+    // leak a second NodeSDK + duplicate the createLogger OTEL sink.
+    initInstrumentation({ serviceName: 'svc' })
+    expect(sdkStartMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('activates on a later call once the endpoint appears (disabled → enabled)', () => {
+    // Models a snapshot-restored guest that booted WITHOUT the OTEL endpoint:
+    // the first call early-returns disabled and leaves the SDK unstarted.
+    initInstrumentation({ serviceName: 'svc' })
+    expect(logs.join('\n')).toContain('Tracing disabled for svc')
+    expect(sdkStartMock).not.toHaveBeenCalled()
+    // `/pool/refresh-env` later injects the endpoint and calls init again.
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://x.example.com'
+    initInstrumentation({ serviceName: 'svc' })
+    expect(sdkStartMock).toHaveBeenCalledTimes(1)
+    expect(logs.some(l => l.includes('Tracing enabled for svc'))).toBe(true)
+  })
+})
+
 describe('initInstrumentation — logs pipeline', () => {
   it('configures the OTLP log exporter at /v1/logs with the ingestion header', () => {
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://otel.example.com'

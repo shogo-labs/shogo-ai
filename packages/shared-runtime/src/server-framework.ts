@@ -777,6 +777,23 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       console.error(`[${config.name}] refresh-env AI proxy reconfigure failed: ${err?.message ?? err}`)
     }
 
+    // Activate OpenTelemetry in-process if this resume just delivered the OTEL
+    // endpoint to a guest that booted without it. A metal snapshot restore
+    // brings the runtime process back with its boot-time env, so a guest that
+    // first booted before the control plane injected OTEL started with the SDK
+    // DISABLED (initInstrumentation early-returns when the endpoint is unset).
+    // Mutating process.env above is not enough — the SDK was never started — so
+    // without this the guest would stay dark in SigNoz until a cold boot.
+    // initInstrumentation is idempotent (no-op if already running), so this is
+    // safe to call on every resume where the endpoint newly appears. Never fatal.
+    if (changed.includes('OTEL_EXPORTER_OTLP_ENDPOINT')) {
+      try {
+        initInstrumentation({ serviceName: `shogo-${config.name}` })
+      } catch (err: any) {
+        console.error(`[${config.name}] refresh-env OTEL activation failed: ${err?.message ?? err}`)
+      }
+    }
+
     // Bounce runtime-owned child servers only when a value actually changed.
     // Fire-and-forget: the in-process reapply above already fixed the gateway,
     // so the sidecar restart must not add wake latency to the resume path.
