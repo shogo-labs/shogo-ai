@@ -1,0 +1,67 @@
+# SigNoz alert: log-collection agent down (logs silently stop reaching SigNoz)
+#
+# Why: the k8s-infra `otelAgent` DaemonSet tails every pod's stdout/stderr and
+# is the *app-independent* path that gets logs into SigNoz — the fallback the
+# README calls out as "keeps working even when the app-level pipeline is off".
+# The app-level OTLP log export from the Bun API is unreliable under event-loop
+# pressure (its wall-clock export deadline elapses before the response is
+# processed and batches are dropped), so this DaemonSet is effectively the
+# authoritative log path.
+#
+# On 2026-07 the DaemonSet was silently parked in staging via an out-of-band
+# `nodeSelector: non-existing=true` patch (drift from Terraform, which declares
+# it enabled on every node). With the app-OTLP path also failing, ALL API logs
+# — including [MetalPool]/[metal-fleet] — vanished from SigNoz with nothing to
+# signal it. This alert makes that failure loud: if the agent has zero ready
+# pods, logs are not being collected on that cluster.
+#
+# Catches: manual parking (nodeSelector/`kubectl scale`), crash-loop, eviction,
+# or the whole DaemonSet being deleted.
+
+alert: LogCollectionAgentDown
+ruleType: threshold_rule
+condition:
+  compositeQuery:
+    queryType: promql
+    promQueries:
+      A:
+        query: |
+          min(kube_daemonset_status_number_ready{
+            daemonset="signoz-k8s-infra-otel-agent"
+          })
+        legend: agent_ready
+        disabled: false
+  op: "<"
+  target: 1
+  matchType: "1" # at-least-once-during
+  selectedQuery: A
+evalWindow: "15m0s"
+frequency: "1m0s"
+labels:
+  severity: critical
+  team: platform
+  incident_class: observability
+annotations:
+  summary: "SigNoz log-collection agent has no ready pods — logs are not reaching SigNoz"
+  description: |
+    The `signoz-k8s-infra-otel-agent` DaemonSet has had zero ready pods for
+    15+ minutes on at least one cluster. This is the app-independent path that
+    tails pod stdout/stderr into SigNoz, and with the Bun API's app-level OTLP
+    export being unreliable, it is effectively the authoritative log path — so
+    while it is down, API logs (including [MetalPool]/[metal-fleet]) silently
+    stop appearing in SigNoz even though the pods are logging normally.
+
+    Triage:
+    1. Check the DaemonSet:
+       `kubectl -n signoz get ds signoz-k8s-infra-otel-agent -o wide`
+       - DESIRED 0 + `NODE SELECTOR non-existing=true` (or any bogus selector)
+         => it was parked out-of-band. Restore the Terraform-declared state:
+         `kubectl -n signoz patch ds signoz-k8s-infra-otel-agent --type merge \
+            -p '{"spec":{"template":{"spec":{"nodeSelector":null}}}}'`
+       - Pods CrashLoopBackOff => `kubectl -n signoz logs ds/signoz-k8s-infra-otel-agent`
+    2. Confirm recovery: agent pods Running 1/1 and their logs show
+       `filelog/k8s ... Started watching file .../<ns>_<pod>/.../0.log`.
+    3. The IaC desired state lives in `terraform/modules/signoz` (enable_logs =
+       true, no nodeSelector). A `terraform apply` reconciles any drift.
+
+    Runbook: docs/runbooks/deploy-prod.md

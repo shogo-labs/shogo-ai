@@ -45,6 +45,11 @@ they're managed separately as YAML/JSON files under this directory:
 - `alerts/metal-no-host-fallback.yaml` — pages when metal routing finds
   no live host (5+ fallbacks in 5m: fleet down, mesh broken, or all
   cordoned; slow Knative fallback, or 503s in metal-only).
+- `alerts/log-agent-down.yaml` — pages when the `otelAgent` DaemonSet has
+  zero ready pods for 15+ minutes (logs silently stop reaching SigNoz).
+  Catches the 2026-07 staging drift where the agent was parked via an
+  out-of-band `nodeSelector` while the app-level OTLP export was also
+  failing, so all API logs vanished with nothing to signal it.
 - `dashboards/publish-funnel.json` — per-step counters for the publish
   pipeline so we can spot exactly where publishes are dying.
 - `dashboards/metal-fleet.json` — live fleet state + health: per-host
