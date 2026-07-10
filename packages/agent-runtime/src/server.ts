@@ -41,6 +41,7 @@ import {
   initializePostgresBackup,
   configureAIProxy,
   StreamBufferStore,
+  encodeTurnCompleteFrame,
   isMacOSJunkName,
   isBinaryFilePath,
   GitWorkspaceSync,
@@ -1742,6 +1743,15 @@ app.post('/agent/chat', async (c) => {
   const turnId = bufWriter.turnId
 
   trackStreamStart()
+  // Tracks whether an explicit `data-turn-complete` terminal frame has been
+  // emitted for this turn. The client's auto-resuming fetch keeps reconnecting
+  // to `/stream?fromSeq=N` until it parses this frame; if the turn ends
+  // abnormally (bg-reader transport error, process abort race) before the
+  // try/catch below writes one, the buffer would be marked `completed` with NO
+  // terminal frame and the client would replay the tail forever — pinning
+  // `useChat().status` at `streaming` and wedging the composer on Stop/Queue.
+  // The bgReader `finally` synthesizes one when this stays false.
+  let terminalFrameWritten = false
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       let turnSucceeded = false
@@ -1820,6 +1830,7 @@ app.post('/agent/chat', async (c) => {
             completedAt: Date.now(),
           },
         } as any)
+        terminalFrameWritten = true
         writer.write({ type: 'finish', finishReason: usage?.wasAborted ? 'abort' : 'stop' })
         turnSucceeded = true
 
@@ -1873,6 +1884,7 @@ app.post('/agent/chat', async (c) => {
             completedAt: Date.now(),
           },
         } as any)
+        terminalFrameWritten = true
         writer.write({ type: 'error', errorText: error.message || 'Agent chat error' } as any)
       } finally {
         clearInterval(seqHeartbeat)
@@ -1902,6 +1914,32 @@ app.post('/agent/chat', async (c) => {
       } catch (err: any) {
         console.log(`[AgentChat] Background stream error for session: ${chatSessionKey}:`, err?.message || err)
       } finally {
+        // Guarantee a terminal frame in the buffer. If the turn ended without
+        // the try/catch above writing one (bg-reader transport error, abort
+        // race, or any path that tore the agent stream before the terminal
+        // marker), synthesize one now — WHILE the buffer is still `active`, so
+        // `append` assigns it a seq and it reaches both live subscribers and
+        // future `?fromSeq=N` replays. Without this, the client's
+        // auto-resuming fetch never sees `data-turn-complete`, replays the
+        // tail forever, and the composer stays wedged in `streaming`.
+        if (!terminalFrameWritten) {
+          try {
+            bufWriter.append(
+              encodeTurnCompleteFrame({
+                turnId,
+                chatSessionId: chatSessionKey,
+                status: 'failed',
+                error: 'stream ended without terminal frame',
+                lastSeq: bufWriter.lastSeq,
+                completedAt: Date.now(),
+              }),
+            )
+            terminalFrameWritten = true
+            console.log(`[AgentChat] Synthesized terminal frame for session: ${chatSessionKey} (turn ${turnId})`)
+          } catch (sErr: any) {
+            console.warn(`[AgentChat] Failed to synthesize terminal frame for ${chatSessionKey}:`, sErr?.message || sErr)
+          }
+        }
         bufWriter.complete()
       }
     })()
