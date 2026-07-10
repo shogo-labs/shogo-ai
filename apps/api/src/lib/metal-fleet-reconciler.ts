@@ -31,7 +31,7 @@
  */
 
 import { metrics } from '@opentelemetry/api'
-import { getFleetEnv, type MetalFleetEnv } from '../config/metal-fleet'
+import { getHomeFleetEnv, homeFleetRegion, type MetalFleetEnv } from '../config/metal-fleet'
 import { getMetalWarmPoolController, MAX_VMS_PER_HOST, type MetalWarmPoolController } from './metal-warm-pool-controller'
 import { getMetalPlacementRegistry, type BurstHostRecord, type MetalPlacementRegistry } from './metal-placement-registry'
 import { getLatitudeClient, type LatitudeClient } from './latitude-client'
@@ -272,9 +272,14 @@ export class MetalFleetReconciler {
 
   /** Build the current snapshot from live registry state. */
   private async snapshot(): Promise<ReconcileSnapshot> {
-    const desired = getFleetEnv()
+    // Scope to THIS control plane's region: hosts only heartbeat to their own
+    // region's control plane, so diffing the full multi-region baseline here
+    // would flag every other region's (healthy, live-elsewhere) hosts as drift.
+    const desired = getHomeFleetEnv()
+    const home = homeFleetRegion()
     const fleet = await this.controller.getFleetStatus()
-    const burst = await this.registry.listBurstHosts()
+    const allBurst = await this.registry.listBurstHosts()
+    const burst = home ? allBurst.filter((b) => b.region === home) : allBurst
     const regions = new Set<string>([...desired.baseline.map((b) => b.region), ...burst.map((b) => b.region)])
     const lastScaleAt: Record<string, number> = {}
     for (const region of regions) lastScaleAt[region] = await this.registry.getLastScaleAt(region)

@@ -5464,12 +5464,16 @@ app.all('/api/admin/regions/:regionId/*', async (c) => {
 app.get('/api/admin/metal/fleet', async (c) => {
   try {
     const { getMetalFleetStatus, MAX_VMS_PER_HOST } = await import('./lib/metal-warm-pool-controller')
-    const { getFleetEnv, fleetEnvKey, METAL_FLEET } = await import('./config/metal-fleet')
+    const { getHomeFleetEnv, fleetEnvKey, METAL_FLEET } = await import('./config/metal-fleet')
     const { getMetalHostRecordMap } = await import('./lib/metal-fleet-hosts')
 
     const status = await getMetalFleetStatus()
     const envKey = fleetEnvKey()
-    const env = getFleetEnv(envKey)
+    // Scope the baseline to THIS control plane's region. Each region runs its own
+    // control plane (separate registry) and hosts only heartbeat to their own; the
+    // full multi-region baseline would otherwise list every other region's
+    // (healthy, live-elsewhere) hosts as permanent phantom "missing" drift.
+    const env = getHomeFleetEnv(envKey)
     // Provider/ops identity (serverId, publicIp, enable flag, notes) is stored in
     // the DB (super-admin managed), NOT in the committed config — keeps server
     // IPs out of source control on this public repo.
