@@ -510,10 +510,25 @@ export class MetalWarmPool {
       // host — would otherwise trigger).
       const live = this.assigned.get(projectId)
       if (live) {
-        live.lastTouchedAt = Date.now()
-        // `reused`: re-attached an already-running VM (no boot, no resume). The
-        // control plane records this as a warm hit, not a cold miss.
-        return { handle: live.handle, mode: 'assigned' as const, reused: true }
+        // Only hand back the tracked VM if its firecracker process is still
+        // alive. A dead process (crash, OOM-kill, or a lost suspend race) left
+        // in the assigned map is a PHANTOM: we would return its guest URL as a
+        // warm "reused" hit, the control plane would proxy to it and get
+        // ECONNREFUSED/timeout ("Unable to connect" → 502), and because the
+        // wake poll keeps touching the entry the idle reaper never clears it —
+        // the preview then spins on "Waking things up" forever. Discard the
+        // dead entry (reaping its leaked tap/socket) and fall through to a
+        // fresh resume/boot so THIS open self-heals.
+        if (this.mgr.isRunning(live.handle)) {
+          live.lastTouchedAt = Date.now()
+          // `reused`: re-attached an already-running VM (no boot, no resume).
+          // The control plane records this as a warm hit, not a cold miss.
+          return { handle: live.handle, mode: 'assigned' as const, reused: true }
+        }
+        console.warn(
+          `[pool] assigned VM ${live.handle.id} for ${projectId} is dead (fc process gone) — discarding and reprovisioning`,
+        )
+        await this.discardDeadVm(live)
       }
       if (await this.canResume(projectId)) {
         try {
@@ -1097,6 +1112,42 @@ export class MetalWarmPool {
       }
     }
     return done
+  }
+
+  /**
+   * Tear down a tracked VM whose firecracker process is already gone: drop it
+   * from the assigned map + adopt-on-restart registry, then best-effort stopVM
+   * to reclaim its leaked tap/socket/rootfs (the process is already dead, so
+   * this only reclaims host resources + stale state). Shared by the open()
+   * liveness gate and the dead-VM reaper. NOT for a live VM — that would kill a
+   * running guest; callers must confirm `!isRunning` first.
+   */
+  private async discardDeadVm(a: AssignedVm): Promise<void> {
+    this.assigned.delete(a.projectId)
+    this.live.remove(a.projectId)
+    await this.mgr.stopVM(a.handle).catch(() => {})
+  }
+
+  /**
+   * Reap assigned VMs whose firecracker process has died. The idle reaper only
+   * suspends VMs that have gone QUIET, but a dead VM under a continuous wake
+   * poll never goes idle — every poll's assign/touch bumps `lastTouchedAt` — so
+   * it lingers forever as a phantom "live" entry whose guest URL refuses every
+   * connection (the "Unable to connect" 502 loop). This liveness sweep clears
+   * such entries regardless of idle time so routing stops resolving to the dead
+   * box; the control plane re-places / cold-boots on the next assign. Returns
+   * the reaped projectIds so the caller can drop their DNAT forwards + report
+   * the placement as gone. Driven by the reaper timer in server.ts.
+   */
+  async reapDeadAssigned(): Promise<string[]> {
+    const dead = [...this.assigned.values()].filter((a) => !this.mgr.isRunning(a.handle))
+    const reaped: string[] = []
+    for (const a of dead) {
+      console.warn(`[pool] reaping dead assigned VM ${a.handle.id} for ${a.projectId} (fc process gone)`)
+      await this.discardDeadVm(a)
+      reaped.push(a.projectId)
+    }
+    return reaped
   }
 
   getAssigned(projectId: string): AssignedVm | undefined {
