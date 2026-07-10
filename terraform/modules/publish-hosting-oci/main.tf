@@ -86,7 +86,7 @@ variable "kourier_origin" {
 }
 
 variable "api_published_origin" {
-  description = "Public base URL of the Shogo API used by the subdomain-router Worker to serve METAL-backed server-backed published apps. When a subdomain's SERVER_BACKED KV value is `metal`, the Worker proxies `/api/*` (and the wake probe) to `${api_published_origin}/api/published/{subdomain}/...` instead of to the Knative ingress (`kourier_origin`). The API then resolves the project's `published:{id}` microVM placement and forwards to the box over the mesh — Workers can't fetch a raw IP:port (error 1003), so the API (a real hostname) is the hop. Must be a proxied hostname CF can fetch (e.g. https://api.shogo.ai). Leave null to disable metal-backed publishing at the edge (falls back to static serving)."
+  description = "Public base URL of the Shogo API used by the subdomain-router Worker to serve METAL-backed server-backed published apps. When a subdomain's SERVER_BACKED KV value is `metal`, the Worker proxies `/api/*` (and the wake probe) to `$${api_published_origin}/api/published/{subdomain}/...` instead of to the Knative ingress (`kourier_origin`). The API then resolves the project's `published:{id}` microVM placement and forwards to the box over the mesh — Workers can't fetch a raw IP:port (error 1003), so the API (a real hostname) is the hop. Must be a proxied hostname CF can fetch (e.g. https://api.shogo.ai). Leave null to disable metal-backed publishing at the edge (falls back to static serving)."
   type        = string
   default     = null
 }
