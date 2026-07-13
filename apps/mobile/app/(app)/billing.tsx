@@ -38,7 +38,6 @@ import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
 import { clearPendingLicenseCode } from '../../lib/pending-license'
-import { openWebAppSession } from '../../lib/openWebAppSession'
 import { purchaseSubscription, finishPurchase, restorePurchases, initIapListeners, IapError, APP_STORE_SUBSCRIPTIONS_URL } from '../../lib/iap'
 import type { IapPurchaseResult } from '../../lib/iap'
 import type { RegionalPricingResponse } from '../../lib/api'
@@ -549,11 +548,6 @@ export default observer(function BillingPage() {
     }
   }, [http, currentWorkspace?.id, refetchSubscription, refetchUsageWallet])
 
-  const handleManageBillingOnWeb = useCallback(() => {
-    openWebAppSession('/billing').catch((err) =>
-      console.warn('[Billing] failed to open web billing:', err),
-    )
-  }, [])
 
   if (isAuthLoading || isBillingLoading) {
     return (
@@ -664,9 +658,10 @@ export default observer(function BillingPage() {
       </Card>
 
       {/* Billing history (recent Stripe invoices) */}
-      <BillingHistory workspaceId={currentWorkspace.id} />
+      {Platform.OS !== 'ios' && <BillingHistory workspaceId={currentWorkspace.id} />}
 
       {/* Redeem a license key */}
+      {Platform.OS !== 'ios' && (
       <Card className="mb-4">
         <CardContent className="p-4 gap-3">
           <View className="flex-row items-center gap-2">
@@ -700,6 +695,7 @@ export default observer(function BillingPage() {
           </View>
         </CardContent>
       </Card>
+      )}
 
       {/* Usage Display — time-gated rolling windows */}
       <Card className="mb-8">
@@ -905,11 +901,11 @@ export default observer(function BillingPage() {
                   </Text>
                 </View>
                 <Text className="text-sm text-muted-foreground">per month</Text>
-                <Text className="text-sm text-muted-foreground">
-                  {Platform.OS === 'ios'
-                    ? `$${proPricing.monthly}/seat`
-                    : `$${proPricing.monthly}/seat × ${proSeats} seat${proSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
-                </Text>
+                {Platform.OS !== 'ios' && (
+                  <Text className="text-sm text-muted-foreground">
+                    {`$${proPricing.monthly}/seat × ${proSeats} seat${proSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
+                  </Text>
+                )}
                 {billingInterval === 'annual' && regionalPricing && (
                   <Text className="text-sm text-muted-foreground">
                     {fmtAnnualPrice(proPricing.annual * proSeats, 'pro')}/year
@@ -917,15 +913,11 @@ export default observer(function BillingPage() {
                 )}
               </View>
 
-              <View className="lg:min-h-[76px]">
-                <Text className="text-sm font-medium text-foreground mb-2">
-                  Seats
-                </Text>
-                {Platform.OS === 'ios' ? (
-                  <Text className="text-xs text-muted-foreground">
-                    iOS purchases include 1 seat per subscription.
+              {Platform.OS !== 'ios' && (
+                <View className="lg:min-h-[76px]">
+                  <Text className="text-sm font-medium text-foreground mb-2">
+                    Seats
                   </Text>
-                ) : (
                   <SeatCounter
                     value={proSeats}
                     onChange={setProSeats}
@@ -933,8 +925,8 @@ export default observer(function BillingPage() {
                     max={500}
                     label="Usage windows scale per seat"
                   />
-                )}
-              </View>
+                </View>
+              )}
 
               <Pressable
                 onPress={() => handleCheckout('pro', proSeats)}
@@ -988,11 +980,11 @@ export default observer(function BillingPage() {
                   </Text>
                 </View>
                 <Text className="text-sm text-muted-foreground">per month</Text>
-                <Text className="text-sm text-muted-foreground">
-                  {Platform.OS === 'ios'
-                    ? `$${businessPricing.monthly}/seat`
-                    : `$${businessPricing.monthly}/seat × ${businessSeats} seat${businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
-                </Text>
+                {Platform.OS !== 'ios' && (
+                  <Text className="text-sm text-muted-foreground">
+                    {`$${businessPricing.monthly}/seat × ${businessSeats} seat${businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
+                  </Text>
+                )}
                 {billingInterval === 'annual' && regionalPricing && (
                   <Text className="text-sm text-muted-foreground">
                     {fmtAnnualPrice(businessPricing.annual * businessSeats, 'business')}/year
@@ -1000,15 +992,11 @@ export default observer(function BillingPage() {
                 )}
               </View>
 
-              <View className="lg:min-h-[76px]">
-                <Text className="text-sm font-medium text-foreground mb-2">
-                  Seats
-                </Text>
-                {Platform.OS === 'ios' ? (
-                  <Text className="text-xs text-muted-foreground">
-                    iOS purchases include 1 seat per subscription.
+              {Platform.OS !== 'ios' && (
+                <View className="lg:min-h-[76px]">
+                  <Text className="text-sm font-medium text-foreground mb-2">
+                    Seats
                   </Text>
-                ) : (
                   <SeatCounter
                     value={businessSeats}
                     onChange={setBusinessSeats}
@@ -1016,8 +1004,8 @@ export default observer(function BillingPage() {
                     max={500}
                     label="Usage windows scale per seat"
                   />
-                )}
-              </View>
+                </View>
+              )}
 
               <Pressable
                 onPress={() => handleCheckout('business', businessSeats)}
@@ -1040,6 +1028,7 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Enterprise Plan */}
+        {Platform.OS !== 'ios' && (
         <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-enterprise">
           <View className="hidden lg:block lg:min-h-8" />
           <Card className="lg:flex-1 flex flex-col">
@@ -1072,23 +1061,9 @@ export default observer(function BillingPage() {
             </CardContent>
           </Card>
         </View>
+        )}
       </View>
 
-      {Platform.OS === 'ios' && (
-        <Card className="mt-6">
-          <CardContent className="p-4 gap-3">
-            <View className="gap-1">
-              <Text className="text-sm font-semibold text-foreground">Manage billing on the web</Text>
-              <Text className="text-sm text-muted-foreground">
-                Additional seats and usage payment settings are managed from your web account.
-              </Text>
-            </View>
-            <Button variant="outline" onPress={handleManageBillingOnWeb}>
-              <Text className="text-foreground font-medium text-sm">Manage on the web</Text>
-            </Button>
-          </CardContent>
-        </Card>
-      )}
 
       {/*
         App Store Guideline 3.1.2(c) — Auto-renewable subscriptions must
