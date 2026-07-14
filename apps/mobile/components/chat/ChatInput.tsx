@@ -10,7 +10,7 @@
  * - Bottom toolbar with action buttons
  * - Agent mode selector via popover dropdown
  *
- * Supports image attachments via file picker, drag-and-drop, and paste (web).
+ * Supports image, video, and file attachments via picker, drag-and-drop, and paste (web).
  * Native: Expo ImagePicker + DocumentPicker (AttachSourceSheet + native-attachment-picker).
  */
 
@@ -58,6 +58,7 @@ import {
   Mic,
   Sparkles,
   Languages,
+  Video,
 } from "lucide-react-native"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
@@ -79,6 +80,12 @@ import { AgentClient } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../lib/agent-fetch"
 import { useChatContextSafe } from "./ChatContext"
 import type { IdeContextState, IdeFileResult } from "./ideBridge"
+import {
+  formatAttachmentSize,
+  isImageAttachment,
+  isVideoAttachment,
+  processChatAttachmentFiles,
+} from "./video-attachment-utils"
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
@@ -862,11 +869,7 @@ function ChatInputImpl({
     })
   }, [inputValue])
 
-  const formatFileSize = useCallback((bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  }, [])
+  const formatFileSize = useCallback(formatAttachmentSize, [])
 
   const handleRemoveFile = useCallback((fileId: string) => {
     setPendingFiles((prev) => prev.filter((f) => f.id !== fileId))
@@ -884,43 +887,24 @@ function ChatInputImpl({
   }, [])
 
   const processFiles = useCallback((files: FileList | File[]) => {
-    Array.from(files).forEach((file: File) => {
-      const lowerName = file.name.toLowerCase()
-      const isExempt =
-        lowerName.endsWith(".zip") ||
-        lowerName.endsWith(".shogo") ||
-        lowerName.endsWith(".shogo-project") ||
-        file.type === "application/zip" ||
-        file.type === "application/x-zip-compressed"
-      if (!isExempt && file.size > MAX_FILE_SIZE) {
-        setFileError(`File "${file.name}" exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`)
-        return
-      }
-
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = reader.result as string
-        setPendingFiles((prev) => {
-          if (prev.length >= MAX_FILES) {
-            setFileError(`Maximum ${MAX_FILES} files allowed`)
-            return prev
-          }
-          setFileError(null)
-          return [
-            ...prev,
-            {
-              id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-              dataUrl,
-              name: file.name,
-              type: file.type,
-              size: file.size,
-            },
-          ]
-        })
-      }
-      reader.readAsDataURL(file)
+    setIsProcessingFiles(true)
+    processChatAttachmentFiles(files, {
+      currentCount: pendingFiles.length,
+      maxFiles: MAX_FILES,
+      maxFileSizeBytes: MAX_FILE_SIZE,
     })
-  }, [])
+      .then((result) => {
+        setPendingFiles((prev) => {
+          const remaining = Math.max(0, MAX_FILES - prev.length)
+          return [...prev, ...result.files.slice(0, remaining)]
+        })
+        setFileError(result.errors[0] ?? null)
+      })
+      .catch((err) => {
+        setFileError(err instanceof Error ? err.message : "Could not process attachment")
+      })
+      .finally(() => setIsProcessingFiles(false))
+  }, [pendingFiles.length])
 
   const handleWebFileChange = useCallback(
     (e: any) => {
@@ -991,18 +975,18 @@ function ChatInputImpl({
       const cd = e.clipboardData
       if (!cd) return
       const items = cd.items
-      const imageFiles: File[] = []
+      const mediaFiles: File[] = []
       if (items) {
         for (let i = 0; i < items.length; i++) {
-          if (items[i].type.startsWith("image/")) {
+          if (items[i].type.startsWith("image/") || items[i].type.startsWith("video/")) {
             const file = items[i].getAsFile()
-            if (file) imageFiles.push(file)
+            if (file) mediaFiles.push(file)
           }
         }
       }
-      if (imageFiles.length > 0) {
+      if (mediaFiles.length > 0) {
         e.preventDefault()
-        processFiles(imageFiles)
+        processFiles(mediaFiles)
         return
       }
 
@@ -1153,9 +1137,12 @@ function ChatInputImpl({
     setReferences((prev) => prev.filter((ref) => referenceKey(ref) !== key))
   }, [])
 
-  const getFileIcon = useCallback((fileType: string) => {
-    if (fileType.startsWith("image/")) {
+  const getFileIcon = useCallback((fileType: string, fileName?: string) => {
+    if (isImageAttachment(fileType)) {
       return <ImageIcon className="h-4 w-4 text-muted-foreground" size={16} />
+    }
+    if (isVideoAttachment(fileType, fileName)) {
+      return <Video className="h-4 w-4 text-muted-foreground" size={16} />
     }
     if (
       fileType.includes("pdf") ||
@@ -1238,7 +1225,8 @@ function ChatInputImpl({
           contentContainerClassName="gap-2 mb-2"
         >
           {pendingFiles.map((file) => {
-            const isImage = file.type.startsWith("image/")
+            const isImage = isImageAttachment(file.type)
+            const isVideo = isVideoAttachment(file.type, file.name)
             return (
               <View
                 key={file.id}
@@ -1253,10 +1241,18 @@ function ChatInputImpl({
                     className="h-[80px] rounded border border-border w-full"
                     resizeMode="cover"
                   />
+                ) : isVideo && Platform.OS === "web" ? (
+                  React.createElement("video", {
+                    src: file.dataUrl,
+                    className: "h-[80px] rounded border border-border w-full object-cover",
+                    muted: true,
+                    controls: true,
+                    preload: "metadata",
+                  })
                 ) : (
                   <View className="flex-row items-center gap-2">
                     <View className="flex-shrink-0">
-                      {getFileIcon(file.type)}
+                      {getFileIcon(file.type, file.name)}
                     </View>
                     <View className="flex-1 min-w-0">
                       <Text
@@ -1726,6 +1722,7 @@ function ChatInputImpl({
             ref={fileInputRef as any}
             type="file"
             multiple
+            accept="image/*,video/*,.pdf,.txt,.md,.csv,.json,.xml,.yaml,.yml,.zip,.shogo,.shogo-project"
             capture={undefined}
             onChange={handleWebFileChange}
             tabIndex={-1}

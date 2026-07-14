@@ -4,7 +4,7 @@
  * CompactChatInput Component (React Native)
  *
  * Chat input card with attach button and send button.
- * Supports file attachments.
+ * Supports file, image, and video attachments.
  * Styled to match ChatInput exactly (shared toolbar layout).
  *
  * Note: ThemeSelector is omitted for mobile (web-only feature).
@@ -35,6 +35,7 @@ import {
   Mic,
   Square,
   Languages,
+  Video,
 } from "lucide-react-native"
 import {
   INTERACTION_MODES,
@@ -62,6 +63,12 @@ import {
   useTypingPlaceholder,
   AGENT_PLACEHOLDER_PREFIX,
 } from "../../hooks/useTypingPlaceholder"
+import {
+  formatAttachmentSize,
+  isImageAttachment,
+  isVideoAttachment,
+  processChatAttachmentFiles,
+} from "./video-attachment-utils"
 
 import { AttachSourceSheet } from "./AttachSourceSheet"
 
@@ -175,6 +182,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
     const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
     const [fileError, setFileError] = useState<string | null>(null)
+    const [isProcessingFiles, setIsProcessingFiles] = useState(false)
     const [attachSheetOpen, setAttachSheetOpen] = useState(false)
     const [interactionModeOpen, setInteractionModeOpen] = useState(false)
     const [modelPickerOpen, setModelPickerOpen] = useState(false)
@@ -249,11 +257,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             ? "Ask a question..."
             : "Describe the agent you want to build..."))
 
-    const formatFileSize = useCallback((bytes: number): string => {
-      if (bytes < 1024) return `${bytes} B`
-      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-    }, [])
+    const formatFileSize = useCallback(formatAttachmentSize, [])
 
     const handleRemoveFile = useCallback((fileId: string) => {
       setPendingFiles((prev) => prev.filter((f) => f.id !== fileId))
@@ -269,42 +273,24 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     }, [])
 
     const processFiles = useCallback((files: FileList | File[]) => {
-      Array.from(files).forEach((file: File) => {
-        const lowerName = file.name.toLowerCase()
-        const isExempt =
-          lowerName.endsWith(".zip") ||
-          lowerName.endsWith(".shogo") ||
-          lowerName.endsWith(".shogo-project") ||
-          file.type === "application/zip" ||
-          file.type === "application/x-zip-compressed"
-        if (!isExempt && file.size > MAX_FILE_SIZE) {
-          setFileError(`File "${file.name}" exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`)
-          return
-        }
-        const reader = new FileReader()
-        reader.onload = () => {
-          const dataUrl = reader.result as string
-          setPendingFiles((prev) => {
-            if (prev.length >= MAX_FILES) {
-              setFileError(`Maximum ${MAX_FILES} files allowed`)
-              return prev
-            }
-            setFileError(null)
-            return [
-              ...prev,
-              {
-                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                dataUrl,
-                name: file.name,
-                type: file.type,
-                size: file.size,
-              },
-            ]
-          })
-        }
-        reader.readAsDataURL(file)
+      setIsProcessingFiles(true)
+      processChatAttachmentFiles(files, {
+        currentCount: pendingFiles.length,
+        maxFiles: MAX_FILES,
+        maxFileSizeBytes: MAX_FILE_SIZE,
       })
-    }, [])
+        .then((result) => {
+          setPendingFiles((prev) => {
+            const remaining = Math.max(0, MAX_FILES - prev.length)
+            return [...prev, ...result.files.slice(0, remaining)]
+          })
+          setFileError(result.errors[0] ?? null)
+        })
+        .catch((err) => {
+          setFileError(err instanceof Error ? err.message : "Could not process attachment")
+        })
+        .finally(() => setIsProcessingFiles(false))
+    }, [pendingFiles.length])
 
     const handleWebFileChange = useCallback(
       (e: any) => {
@@ -380,18 +366,18 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
         const cd = e.clipboardData
         if (!cd) return
         const items = cd.items
-        const imageFiles: File[] = []
+        const mediaFiles: File[] = []
         if (items) {
           for (let i = 0; i < items.length; i++) {
-            if (items[i].type.startsWith("image/")) {
+            if (items[i].type.startsWith("image/") || items[i].type.startsWith("video/")) {
               const file = items[i].getAsFile()
-              if (file) imageFiles.push(file)
+              if (file) mediaFiles.push(file)
             }
           }
         }
-        if (imageFiles.length > 0) {
+        if (mediaFiles.length > 0) {
           e.preventDefault()
-          processFiles(imageFiles as any)
+          processFiles(mediaFiles as any)
           return
         }
         const text = cd.getData("text")
@@ -443,6 +429,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
         (!trimmedContent && pendingFiles.length === 0 && pastedTexts.length === 0) ||
         disabled ||
         isLoading ||
+        isProcessingFiles ||
         voiceInput.isBusy
       ) {
         return
@@ -469,7 +456,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       setPastedTexts([])
       setViewingPastedId(null)
       textInputRef.current?.focus()
-    }, [value, disabled, isLoading, onSubmit, pendingFiles, pastedTexts, voiceInput.isBusy, setValue])
+    }, [value, disabled, isLoading, isProcessingFiles, onSubmit, pendingFiles, pastedTexts, voiceInput.isBusy, setValue])
 
     // Fallback paste detection for platforms where the DOM paste listener
     // doesn't fire (native). If a large chunk was just inserted, pull it
@@ -495,9 +482,12 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       [setValue, addPastedText]
     )
 
-    const getFileIcon = useCallback((fileType: string) => {
-      if (fileType.startsWith("image/")) {
+    const getFileIcon = useCallback((fileType: string, fileName?: string) => {
+      if (isImageAttachment(fileType)) {
         return <ImageIcon className="h-4 w-4 text-muted-foreground" size={16} />
+      }
+      if (isVideoAttachment(fileType, fileName)) {
+        return <Video className="h-4 w-4 text-muted-foreground" size={16} />
       }
       if (
         fileType.includes("pdf") ||
@@ -521,6 +511,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               ref={fileInputRef as any}
               type="file"
               multiple
+              accept="image/*,video/*,.pdf,.txt,.md,.csv,.json,.xml,.yaml,.yml,.zip,.shogo,.shogo-project"
               capture={undefined}
               onChange={handleWebFileChange}
               tabIndex={-1}
@@ -537,7 +528,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               contentContainerClassName="gap-2 p-4 pb-2"
             >
               {pendingFiles.map((file) => {
-                const isImage = file.type.startsWith("image/")
+                const isImage = isImageAttachment(file.type)
+                const isVideo = isVideoAttachment(file.type, file.name)
                 return (
                   <View
                     key={file.id}
@@ -552,9 +544,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                         className="h-[80px] rounded border border-border w-full"
                         resizeMode="cover"
                       />
+                    ) : isVideo && Platform.OS === "web" ? (
+                      React.createElement("video", {
+                        src: file.dataUrl,
+                        className: "h-[80px] rounded border border-border w-full object-cover",
+                        muted: true,
+                        controls: true,
+                        preload: "metadata",
+                      })
                     ) : (
                       <View className="flex-row items-center gap-2">
-                        {getFileIcon(file.type)}
+                        {getFileIcon(file.type, file.name)}
                         <View className="flex-1 min-w-0">
                           <Text
                             className="text-xs font-medium text-foreground"
@@ -578,6 +578,12 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 )
               })}
             </ScrollView>
+          )}
+
+          {isProcessingFiles && (
+            <Text className="text-xs text-muted-foreground px-4 pb-2">
+              Processing files...
+            </Text>
           )}
 
           {/* Error message */}
@@ -833,7 +839,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               <View className="flex-row items-center gap-1">
                 <Pressable
                   onPress={handleAttachClick}
-                  disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
+                  disabled={disabled || isLoading || isProcessingFiles || pendingFiles.length >= MAX_FILES}
                   role="button"
                   accessibilityLabel="Attach file"
                   className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
@@ -842,7 +848,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   <Plus
                     className={cn(
                       "h-4 w-4",
-                      disabled || isLoading || pendingFiles.length >= MAX_FILES
+                      disabled || isLoading || isProcessingFiles || pendingFiles.length >= MAX_FILES
                         ? "text-muted-foreground/40"
                         : "text-muted-foreground"
                     )}
@@ -850,7 +856,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   />
                 </Pressable>
 
-                {isLoading ? (
+                {isLoading || isProcessingFiles ? (
                   <View className="h-5 w-5 rounded-full items-center justify-center bg-primary opacity-50">
                     <Loader2 className="h-3 w-3 text-primary-foreground animate-spin" size={12} />
                   </View>

@@ -85,6 +85,41 @@ describe('parseFileAttachments', () => {
     expect(textContext).toContain('Saved to workspace at `files/pic.png`')
   })
 
+  test('detects video uploads by filename when picker reports octet-stream', () => {
+    const parts: FilePart[] = [
+      {
+        type: 'file',
+        mediaType: 'application/octet-stream',
+        url: dataUrl('application/octet-stream', Buffer.from([0x00, 0x00, 0x00, 0x18])),
+        name: 'screen-recording.mov',
+        savedPath: 'files/screen-recording.mov',
+      },
+    ]
+    const { textContext, videos } = parseFileAttachments(parts)
+    expect(videos).toBe(1)
+    expect(textContext).toContain('[Attached Video (screen-recording.mov (application/octet-stream))]:')
+    expect(textContext).not.toContain('[End of Attached File]')
+  })
+
+  test('emits video context without attempting to inline binary bytes', () => {
+    const parts: FilePart[] = [
+      {
+        type: 'file',
+        mediaType: 'video/mp4',
+        url: dataUrl('video/mp4', Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70])),
+        name: 'demo.mp4',
+        savedPath: 'files/demo.mp4',
+      },
+    ]
+    const { textContext, images, videos } = parseFileAttachments(parts)
+    expect(images).toEqual([])
+    expect(videos).toBe(1)
+    expect(textContext).toContain('[Attached Video (demo.mp4 (video/mp4))]:')
+    expect(textContext).toContain('Saved to workspace at `files/demo.mp4`')
+    expect(textContext).toContain('Representative deduped frame images')
+    expect(textContext).not.toContain('[End of Attached File]')
+  })
+
   test('omits saved-path note when no savedPath is provided', () => {
     const parts: FilePart[] = [
       {

@@ -3690,6 +3690,7 @@ export const ChatPanel = observer(function ChatPanel({
       userInitiatedStopRef.current = false
 
       const fileArray = files || []
+      const firstImageFile = fileArray.find((file) => (file.type || extractMediaType(file.dataUrl)).startsWith("image/"))
 
       if (!content.trim() && fileArray.length === 0 && (!references || references.length === 0)) {
         return
@@ -3764,7 +3765,7 @@ export const ChatPanel = observer(function ChatPanel({
           sessionId: currentSessionId,
           role: "user",
           content: trimmedContent,
-          imageData: fileArray.length > 0 ? fileArray[0].dataUrl : undefined,
+          imageData: firstImageFile?.dataUrl,
           parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
         })
         .catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))

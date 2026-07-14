@@ -21,6 +21,18 @@ const TEXT_MEDIA_TYPES = new Set([
   'application/ld+json',
 ])
 
+const VIDEO_EXTENSIONS = new Set([
+  '.mp4',
+  '.mov',
+  '.m4v',
+  '.webm',
+  '.avi',
+  '.mkv',
+  '.mpeg',
+  '.mpg',
+  '.3gp',
+])
+
 export interface FilePart {
   type: string
   mediaType?: string
@@ -37,11 +49,22 @@ export interface FilePart {
 
 export interface ParsedAttachments {
   images: ImageContent[]
+  videos: number
   textContext: string
 }
 
 function formatSavedPathSuffix(savedPath?: string): string {
   return savedPath ? ` Saved to workspace at \`${savedPath}\`.` : ''
+}
+
+function extensionOf(name: string | undefined): string {
+  if (!name) return ''
+  const dot = name.lastIndexOf('.')
+  return dot >= 0 ? name.slice(dot).toLowerCase() : ''
+}
+
+function isVideoFile(mediaType: string, name?: string): boolean {
+  return mediaType.startsWith('video/') || VIDEO_EXTENSIONS.has(extensionOf(name))
 }
 
 /**
@@ -68,9 +91,10 @@ export const _fileAttachmentSeamForTests: {
 
 export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
   const fileParts = parts.filter((p) => p.type === 'file' && p.url)
-  if (fileParts.length === 0) return { images: [], textContext: '' }
+  if (fileParts.length === 0) return { images: [], videos: 0, textContext: '' }
 
   const images: ImageContent[] = []
+  let videos = 0
   const sections: string[] = []
 
   for (const fp of fileParts) {
@@ -89,6 +113,14 @@ export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
       if (fp.savedPath) {
         sections.push(`[Attached Image (${label})]:${savedSuffix}`)
       }
+      continue
+    }
+
+    if (isVideoFile(mediaType, fp.name)) {
+      videos++
+      sections.push(
+        `[Attached Video (${label})]: Binary video content.${savedSuffix} Representative deduped frame images and a video-context text file are included when the client can extract them. If more detail, audio, transcript, or exact timing is needed, inspect the saved original video file with available workspace tools.`,
+      )
       continue
     }
 
@@ -112,7 +144,7 @@ export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
     }
   }
 
-  return { images, textContext: sections.join('\n\n') }
+  return { images, videos, textContext: sections.join('\n\n') }
 }
 
 /** @deprecated Use parseFileAttachments instead */

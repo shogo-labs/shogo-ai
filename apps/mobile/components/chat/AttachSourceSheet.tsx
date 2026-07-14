@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { Modal, View, Text, Pressable } from "react-native"
-import { Camera, FolderOpen, Image as ImageIcon, X } from "lucide-react-native"
+import { Camera, FolderOpen, Image as ImageIcon, Video, X } from "lucide-react-native"
 import {
   executeNativeAttachAction,
   type NativeAttachAction,
@@ -33,9 +33,15 @@ const ROWS: {
     Icon: Camera,
   },
   {
+    action: "camera-video",
+    label: "Record video",
+    hint: "Capture a video",
+    Icon: Video,
+  },
+  {
     action: "library",
     label: "Photo library",
-    hint: "Pick from your gallery",
+    hint: "Pick photos or videos",
     Icon: ImageIcon,
   },
 ]

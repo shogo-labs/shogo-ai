@@ -14,7 +14,7 @@ export interface NativePickedAttachment {
   size: number
 }
 
-export type NativeAttachAction = "library" | "camera" | "documents"
+export type NativeAttachAction = "library" | "camera" | "camera-video" | "documents"
 
 export interface NativeAttachPickerOptions {
   currentCount: number

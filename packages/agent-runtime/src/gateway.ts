@@ -1533,6 +1533,9 @@ export class AgentGateway {
         images = parsed.images
         this.emitLog(`Attached ${parsed.images.length} image(s) for vision`)
       }
+      if (parsed.videos > 0) {
+        this.emitLog(`Attached ${parsed.videos} video(s) with deduped frame/context support`)
+      }
       if (parsed.textContext) {
         effectiveText = text
           ? `${text}\n\n${parsed.textContext}`

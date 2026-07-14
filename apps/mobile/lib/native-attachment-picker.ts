@@ -4,7 +4,7 @@
 /**
  * Native file/image attachment picker for Android & iOS.
  *
- * Uses expo-image-picker for photos (gallery + camera) and
+ * Uses expo-image-picker for photos/videos (gallery + camera) and
  * expo-document-picker for files. Document bytes are read with
  * expo-file-system and encoded via @shogo-ai/sdk (no fetch on file URIs).
  *
@@ -23,7 +23,7 @@ export interface NativePickedAttachment {
   size: number
 }
 
-export type NativeAttachAction = "library" | "camera" | "documents"
+export type NativeAttachAction = "library" | "camera" | "camera-video" | "documents"
 
 export interface NativeAttachPickerOptions {
   currentCount: number
@@ -56,6 +56,13 @@ function mimeFromName(name: string): string {
   if (l.endsWith(".heic")) return "image/heic"
   if (l.endsWith(".bmp")) return "image/bmp"
   if (l.endsWith(".svg")) return "image/svg+xml"
+  if (l.endsWith(".mp4") || l.endsWith(".m4v")) return "video/mp4"
+  if (l.endsWith(".mov")) return "video/quicktime"
+  if (l.endsWith(".webm")) return "video/webm"
+  if (l.endsWith(".avi")) return "video/x-msvideo"
+  if (l.endsWith(".mkv")) return "video/x-matroska"
+  if (l.endsWith(".mpeg") || l.endsWith(".mpg")) return "video/mpeg"
+  if (l.endsWith(".3gp")) return "video/3gpp"
   if (l.endsWith(".zip")) return "application/zip"
   return "application/octet-stream"
 }
@@ -83,14 +90,42 @@ export function executeNativeAttachAction(
     })
   }
 
+  const buildAttachmentFromAsset = async (
+    asset: ImagePicker.ImagePickerAsset,
+    fallbackName: string,
+    fallbackMime: string,
+  ): Promise<NativePickedAttachment | null> => {
+    const mime = asset.mimeType ?? (asset.fileName ? mimeFromName(asset.fileName) : fallbackMime)
+    const name = asset.fileName?.trim() || fallbackName
+    const b64 = asset.base64
+    const size = asset.fileSize ?? (b64 ? Math.floor((b64.length * 3) / 4) : undefined)
+    if (typeof size === "number" && size > maxFileSizeBytes) {
+      onError(`"${name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
+      return null
+    }
+    const dataUrl = b64 ? `data:${mime};base64,${b64}` : await uriToDataUrl(asset.uri, mime)
+    const finalSize = size ?? Math.floor(Math.max(0, dataUrl.length - `data:${mime};base64,`.length) * 3 / 4)
+    if (finalSize > maxFileSizeBytes) {
+      onError(`"${name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
+      return null
+    }
+    return {
+      id: uid(),
+      dataUrl,
+      name,
+      type: mime,
+      size: finalSize,
+    }
+  }
+
   const pickLibrary = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync()
     if (!perm.granted) {
-      onError("Allow photo access in Settings to attach images.")
+      onError("Allow photo access in Settings to attach photos or videos.")
       return
     }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
+      mediaTypes: ["images", "videos"],
       allowsMultipleSelection: remaining > 1,
       selectionLimit: remaining,
       quality: 0.92,
@@ -100,25 +135,16 @@ export function executeNativeAttachAction(
 
     const out: NativePickedAttachment[] = []
     for (const asset of result.assets) {
-      if (asset.type === "video") continue
-      const b64 = asset.base64
-      if (!b64) {
-        onError("Could not read the selected image. Try again.")
+      const fallbackMime = asset.type === "video" ? "video/mp4" : "image/jpeg"
+      const fallbackExt = asset.type === "video" ? "mp4" : "jpg"
+      let attachment: NativePickedAttachment | null
+      try {
+        attachment = await buildAttachmentFromAsset(asset, `${asset.type || "media"}_${uid()}.${fallbackExt}`, fallbackMime)
+      } catch {
+        onError(`Could not read the selected ${asset.type === "video" ? "video" : "image"}. Try again.`)
         return
       }
-      const mime = asset.mimeType ?? "image/jpeg"
-      const size = asset.fileSize ?? Math.floor((b64.length * 3) / 4)
-      if (size > maxFileSizeBytes) {
-        onError(`Each file must be under ${maxFileSizeBytes / (1024 * 1024)} MB.`)
-        return
-      }
-      out.push({
-        id: uid(),
-        dataUrl: `data:${mime};base64,${b64}`,
-        name: asset.fileName?.trim() || `image_${uid()}.jpg`,
-        type: mime,
-        size,
-      })
+      if (attachment) out.push(attachment)
     }
     if (out.length > 0) onFiles(out)
   }
@@ -129,29 +155,30 @@ export function executeNativeAttachAction(
       onError("Allow camera access in Settings to take a photo.")
       return
     }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.92, base64: true })
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ["images"], quality: 0.92, base64: true })
     if (result.canceled || !result.assets?.[0]) return
-    const asset = result.assets[0]
-    const b64 = asset.base64
-    if (!b64) {
+    try {
+      const attachment = await buildAttachmentFromAsset(result.assets[0], `photo_${Date.now()}.jpg`, "image/jpeg")
+      if (attachment) onFiles([attachment])
+    } catch {
       onError("Could not read the captured photo.")
+    }
+  }
+
+  const recordVideo = async () => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync()
+    if (!perm.granted) {
+      onError("Allow camera access in Settings to record a video.")
       return
     }
-    const mime = asset.mimeType ?? "image/jpeg"
-    const size = asset.fileSize ?? Math.floor((b64.length * 3) / 4)
-    if (size > maxFileSizeBytes) {
-      onError(`Each file must be under ${maxFileSizeBytes / (1024 * 1024)} MB.`)
-      return
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ["videos"], quality: 0.92 })
+    if (result.canceled || !result.assets?.[0]) return
+    try {
+      const attachment = await buildAttachmentFromAsset(result.assets[0], `video_${Date.now()}.mp4`, "video/mp4")
+      if (attachment) onFiles([attachment])
+    } catch {
+      onError("Could not read the recorded video.")
     }
-    onFiles([
-      {
-        id: uid(),
-        dataUrl: `data:${mime};base64,${b64}`,
-        name: asset.fileName?.trim() || `photo_${Date.now()}.jpg`,
-        type: mime,
-        size,
-      },
-    ])
   }
 
   const pickDocuments = async () => {
@@ -200,5 +227,6 @@ export function executeNativeAttachAction(
 
   if (action === "library") run(pickLibrary)
   else if (action === "camera") run(pickCamera)
+  else if (action === "camera-video") run(recordVideo)
   else run(pickDocuments)
 }
