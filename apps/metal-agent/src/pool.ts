@@ -105,6 +105,16 @@ export interface SuspendedVm {
   snapshot: FcSnapshot
   suspendedAt: number
   lastAccessAt: number
+  /**
+   * Golden-rootfs identity this snapshot was taken against. A Firecracker
+   * resume restores the frozen guest RAM verbatim, so it only makes sense on a
+   * byte-compatible rootfs; after a rootfs rebuild (new guest code / deps) a
+   * mismatch must cold-boot instead so the project picks up the new userspace —
+   * the same gate the durable store's pull() already enforces. Optional so a
+   * legacy index entry written before identities were stamped is treated as
+   * compatible (never mass-cold-boots the fleet on the first deploy of this).
+   */
+  rootfsIdentity?: string
 }
 
 export interface GcReport {
@@ -504,6 +514,7 @@ export class MetalWarmPool {
         snapshot,
         suspendedAt: e.suspendedAt,
         lastAccessAt: e.lastAccessAt,
+        rootfsIdentity: e.rootfsIdentity,
       })
       n++
     }
@@ -873,7 +884,7 @@ export class MetalWarmPool {
       this.live.remove(projectId) // no longer a live process — snapshot is the source of truth
       const now = Date.now()
       const lastAccessAt = Math.max(a.lastTouchedAt, now)
-      const s: SuspendedVm = { projectId, snapshot, suspendedAt: now, lastAccessAt }
+      const s: SuspendedVm = { projectId, snapshot, suspendedAt: now, lastAccessAt, rootfsIdentity: this.rootfsId }
       this.suspended.set(projectId, s)
       this.writeIndex(s)
 
@@ -941,6 +952,18 @@ export class MetalWarmPool {
   }
 
   /**
+   * A locally-cached snapshot is resumable only if it was taken against the
+   * SAME golden rootfs this agent now runs. After a rootfs rebuild the stamped
+   * identity no longer matches, so restoring it would thaw the OLD guest
+   * userspace (e.g. a pre-update agent-runtime) — we must cold-boot instead.
+   * A missing identity (legacy entry) is treated as compatible so the first
+   * deploy that ships this gate doesn't cold-boot the whole cache at once.
+   */
+  private localSnapshotIsStale(s: SuspendedVm): boolean {
+    return !!s.rootfsIdentity && s.rootfsIdentity !== this.rootfsId
+  }
+
+  /**
    * Resume a suspended project. Prefers the hot local snapshot (sub-second);
    * on a local miss (node-agent restarted, or the project was suspended on
    * another host) it pulls from the durable store, discarding it as stale if
@@ -954,6 +977,18 @@ export class MetalWarmPool {
   ): Promise<{ assigned: AssignedVm; apiMs: number; readyMs: number; source: 'local' | 'store' } | null> {
     let s = this.suspended.get(projectId)
     let source: 'local' | 'store' = 'local'
+
+    // Rootfs-identity gate for the hot local copy (mirrors the durable pull()).
+    // A snapshot from a different golden rootfs would restore stale guest code,
+    // so drop it — reclaiming NVMe — and fall through to the durable pull (also
+    // identity-gated) / cold boot, which brings the project up on new guest code.
+    if (s && this.localSnapshotIsStale(s)) {
+      console.log(
+        `[pool] local snapshot for ${projectId} is stale (rootfs ${s.rootfsIdentity} != ${this.rootfsId}) — evicting and cold-booting for fresh guest code`,
+      )
+      this.evictLocal(projectId)
+      s = undefined
+    }
 
     if (!s) {
       if (this.store.kind === 'none') {
