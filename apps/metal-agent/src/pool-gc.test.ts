@@ -94,6 +94,35 @@ function makePool(
   return { pool: new MetalWarmPool(fakeMgr, cfg, store), cfg }
 }
 
+/** Like `seed`, but stamps a caller-chosen rootfs identity (to model a snapshot
+ *  taken against an OLD golden rootfs, i.e. before a rootfs rebuild). */
+function seedWithIdentity(cfg: any, projectId: string, rootfsIdentity: string, lastAccessAt = 100) {
+  const snapshotPath = join(cfg.snapDir, `${projectId}.vmstate`)
+  const memFilePath = join(cfg.snapDir, `${projectId}.mem`)
+  const rootfs = join(cfg.runDir, `${projectId}.rootfs.ext4`)
+  for (const p of [snapshotPath, memFilePath, rootfs]) writeFileSync(p, 'x')
+  const e: CacheEntry = {
+    projectId,
+    vmId: `vm-${projectId}`,
+    snapshotPath,
+    memFilePath,
+    rootfs,
+    net,
+    vcpus: 2,
+    memoryMB: 1024,
+    bytesMem: 1000,
+    bytesState: 100,
+    bytesRootfs: 5000,
+    createdAt: 1,
+    suspendedAt: lastAccessAt,
+    lastAccessAt,
+    rootfsIdentity,
+    v: 1,
+  }
+  new CacheIndex(cfg.snapDir).put(e)
+  return { snapshotPath, memFilePath, rootfs }
+}
+
 /** Write an index entry plus its (real) artifact files so rehydrate accepts it. */
 function seed(cfg: any, projectId: string, lastAccessAt: number) {
   const snapshotPath = join(cfg.snapDir, `${projectId}.vmstate`)
@@ -328,5 +357,49 @@ describe('pool GC', () => {
     // Durable tiering: only the stale project's durable snapshot is removed.
     expect(store.removed).toEqual(['stale'])
     expect(pool.status().suspended).toEqual([])
+  })
+})
+
+describe('pool resume rootfs-identity gate', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-pool-rootfs-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('resume evicts a local snapshot from a DIFFERENT rootfs and cold-boots (returns null)', async () => {
+    // Agent now runs rootfs 'NEW'; the cached snapshot was taken on 'OLD'.
+    const store = new FakeStore('OLD', /*present*/ false) // no durable copy → cold miss
+    const { pool, cfg } = makePool(dir, store, { rootfsIdentity: 'NEW' })
+    const a = seedWithIdentity(cfg, 'proj', 'OLD')
+    pool.rehydrate()
+    expect(pool.status().suspended.map((s) => s.projectId)).toEqual(['proj'])
+
+    const r = await pool.resume('proj')
+
+    // Stale local copy is skipped → cold boot signalled to the caller.
+    expect(r).toBeNull()
+    // Local artifacts + index entry are dropped (NVMe reclaimed)...
+    expect(pool.status().suspended).toEqual([])
+    expect(existsSync(a.snapshotPath)).toBe(false)
+    expect(existsSync(a.rootfs)).toBe(false)
+    expect(new CacheIndex(cfg.snapDir).get('proj')).toBeNull()
+    // ...but the durable copy is left intact (we only evicted the local hot copy).
+    expect(store.removed).toEqual([])
+  })
+
+  test('localSnapshotIsStale: mismatch=stale, match=fresh, missing identity=compatible', () => {
+    const { pool, cfg } = makePool(dir, new FakeStore('NEW'), { rootfsIdentity: 'NEW' })
+    seedWithIdentity(cfg, 'match', 'NEW')
+    seedWithIdentity(cfg, 'stale', 'OLD')
+    seedWithIdentity(cfg, 'legacy', '') // pre-identity entry
+    pool.rehydrate()
+
+    const isStale = (id: string) => (pool as any).localSnapshotIsStale((pool as any).suspended.get(id))
+    expect(isStale('stale')).toBe(true)
+    expect(isStale('match')).toBe(false)
+    expect(isStale('legacy')).toBe(false)
   })
 })
