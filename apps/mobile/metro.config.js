@@ -66,7 +66,7 @@ config.resolver.blockList = [
   new RegExp(escapePathForRegex(path.resolve(monorepoRoot, 'tests')) + '.*'),
   new RegExp(escapePathForRegex(path.resolve(monorepoRoot, 'workspaces')) + '.*'),
   new RegExp(escapePathForRegex(path.resolve(monorepoRoot, 'templates/runtime-template/node_modules')) + '.*'),
-  new RegExp(escapePathForRegex(path.resolve(__dirname)) + '.*[/\\]__tests__[/\\].*'),
+  new RegExp(escapePathForRegex(path.resolve(__dirname)) + '.*[/\\\\]__tests__[/\\\\].*'),
   new RegExp(escapePathForRegex(path.resolve(__dirname)) + '.*\\.(test|spec)\\.(js|jsx|ts|tsx)$'),
 ]
 
