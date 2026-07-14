@@ -40,7 +40,15 @@ export interface HostScalars {
   region: string
   arch: string
   capacity: { poolSize: number; memMiB: number; vcpus: number }
-  load: { available: number; assigned: number; suspended: number; fcProcs?: number }
+  load: {
+    available: number
+    assigned: number
+    suspended: number
+    fcProcs?: number
+    /** Assigned-set liveness decomposition (app-users / agent-turns / idle-tail);
+     * disjoint buckets that sum to `assigned`. Absent on older agents. */
+    liveness?: { appActive: number; agentActive: number; idleTail: number }
+  }
   /** NVMe cache scalars from the heartbeat (Phase 5). */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
   lastSeenAt: number

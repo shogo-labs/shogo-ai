@@ -14,7 +14,9 @@
     { "i": "cache_count",    "x": 0, "y": 13, "w": 6, "h": 5 },
     { "i": "wake_quantiles", "x": 6, "y": 13, "w": 6, "h": 5 },
     { "i": "assign_mix",     "x": 0, "y": 18, "w": 6, "h": 5 },
-    { "i": "host_errors",    "x": 6, "y": 18, "w": 6, "h": 5 }
+    { "i": "host_errors",    "x": 6, "y": 18, "w": 6, "h": 5 },
+    { "i": "liveness_mix",     "x": 0, "y": 23, "w": 6, "h": 5 },
+    { "i": "liveness_by_host", "x": 6, "y": 23, "w": 6, "h": 5 }
   ],
   "widgets": [
     {
@@ -123,6 +125,27 @@
       "panelTypes": "graph",
       "query": { "queryType": "promql", "promql": [
         { "query": "sum by (reason) (rate(metal_host_errors[5m]))", "legend": "{{reason}}" }
+      ] }
+    },
+    {
+      "id": "liveness_mix",
+      "title": "Why VMs are live (fleet): app-users / agent-turns / idle-tail",
+      "panelTypes": "graph",
+      "description": "Decomposes assigned (running) VMs by liveness class — app_active (serving /api/* end-user traffic) + agent_active (an agent chat turn in flight) + idle_tail (running but neither). The three sum to metal_host_assigned; a large idle_tail is the open-tab/30-min-suspend-window churn. Series only appear for hosts/guests on the new build, so a lagging total during rollout is expected.",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "sum(max by (host_id) (metal_host_app_active))", "legend": "app_active" },
+        { "query": "sum(max by (host_id) (metal_host_agent_active))", "legend": "agent_active" },
+        { "query": "sum(max by (host_id) (metal_host_idle_tail))", "legend": "idle_tail" }
+      ] }
+    },
+    {
+      "id": "liveness_by_host",
+      "title": "App-users vs agent-turns (by host)",
+      "panelTypes": "graph",
+      "description": "Per-host app_active (real end-user app traffic) and agent_active (agent chat turns in flight). Lets you spot a host carrying a live published app vs one full of editor sessions.",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "max by (host_id) (metal_host_app_active)", "legend": "{{host_id}} app" },
+        { "query": "max by (host_id) (metal_host_agent_active)", "legend": "{{host_id}} agent" }
       ] }
     }
   ]

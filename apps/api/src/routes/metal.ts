@@ -69,6 +69,18 @@ export function metalRoutes(): Hono {
         available: Number(body.load?.available ?? 0),
         assigned: Number(body.load?.assigned ?? 0),
         suspended: Number(body.load?.suspended ?? 0),
+        fcProcs: body.load?.fcProcs != null ? Number(body.load.fcProcs) : undefined,
+        // Per-class liveness decomposition (app-users / agent-turns / idle-tail).
+        // Only forwarded when the agent actually reported it, so a missing value
+        // stays absent (an old agent) rather than becoming a misleading 0.
+        liveness:
+          body.load?.liveness && typeof body.load.liveness === 'object'
+            ? {
+                appActive: Number(body.load.liveness.appActive ?? 0),
+                agentActive: Number(body.load.liveness.agentActive ?? 0),
+                idleTail: Number(body.load.liveness.idleTail ?? 0),
+              }
+            : undefined,
       },
       disk: body.disk
         ? {

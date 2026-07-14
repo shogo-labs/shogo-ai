@@ -105,6 +105,20 @@ const hostDiskFreeGauge = meter.createObservableGauge('metal.host.disk_free_byte
 const hostCacheCountGauge = meter.createObservableGauge('metal.host.cache_local_count', {
   description: 'Locally cached suspended-project snapshots on a metal host',
 })
+// Assigned-set decomposition by liveness class (see MetalHostRegistration.load.
+// liveness). These sum to metal.host.assigned and answer "of the N running VMs,
+// how many have real users vs an agent turn vs are just in the idle tail" — the
+// signal that separates true demand from open-tab churn. Absent on old agents /
+// pre-rootfs-rebuild guests, so a missing series means "not reporting yet".
+const hostAppActiveGauge = meter.createObservableGauge('metal.host.app_active', {
+  description: 'Assigned microVMs serving end-user APP traffic (/api/*) within the activity window',
+})
+const hostAgentActiveGauge = meter.createObservableGauge('metal.host.agent_active', {
+  description: 'Assigned microVMs with an AGENT chat turn in flight at the last activity poll',
+})
+const hostIdleTailGauge = meter.createObservableGauge('metal.host.idle_tail', {
+  description: 'Assigned microVMs that are running but neither used nor mid-turn — the idle-suspend tail',
+})
 
 let fleetGaugesRegistered = false
 
@@ -136,6 +150,14 @@ function ensureFleetGauges(): void {
           obs.observe(hostDiskFreeGauge, h.disk.freeBytes, attrs)
           obs.observe(hostCacheCountGauge, h.disk.localCount, attrs)
         }
+        // Only emit the liveness decomposition when the host actually reported
+        // it — a zero would otherwise be indistinguishable from "old agent not
+        // reporting", masking rollout progress on the dashboard.
+        if (h.load?.liveness) {
+          obs.observe(hostAppActiveGauge, h.load.liveness.appActive, attrs)
+          obs.observe(hostAgentActiveGauge, h.load.liveness.agentActive, attrs)
+          obs.observe(hostIdleTailGauge, h.load.liveness.idleTail, attrs)
+        }
       }
     },
     [
@@ -149,6 +171,9 @@ function ensureFleetGauges(): void {
       hostDiskUsedGauge,
       hostDiskFreeGauge,
       hostCacheCountGauge,
+      hostAppActiveGauge,
+      hostAgentActiveGauge,
+      hostIdleTailGauge,
     ],
   )
 }
@@ -168,6 +193,17 @@ export interface MetalHostRegistration {
     /** Live firecracker processes on the host. Absent on older agents. A gap
      * above available+assigned is the churn process-leak fingerprint. */
     fcProcs?: number
+    /**
+     * Assigned (running) set decomposed by WHY each VM is live, so a raw
+     * `assigned` count can be read as app-users + agent-turns + idle-tail:
+     *   appActive   — served end-user app traffic (/api/*) recently
+     *   agentActive — an agent chat turn was in flight at the last poll
+     *   idleTail    — running but neither used nor mid-turn (idle-suspend tail)
+     * The three buckets are disjoint and sum to `assigned`. Absent on older
+     * agents (pre this build) and on guests still running the old rootfs (they
+     * report no per-class activity, so the agent buckets them as idleTail).
+     */
+    liveness?: { appActive: number; agentActive: number; idleTail: number }
   }
   /** NVMe cache scalars (Phase 5). Absent on older agents → treated as headroom. */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
