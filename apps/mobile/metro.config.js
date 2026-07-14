@@ -58,12 +58,16 @@ if (enableSdkSourceHmr) {
     new Set([...existingSourceExts, 'ts', 'tsx']),
   )
 }
+const escapePathForRegex = (filePath) => filePath.replace(/[/\\]/g, '[/\\\\]')
+
 config.resolver.blockList = [
-  new RegExp(path.resolve(monorepoRoot, 'packages/sdk/examples').replace(/[/\\]/g, '[/\\\\]') + '.*'),
+  new RegExp(escapePathForRegex(path.resolve(monorepoRoot, 'packages/sdk/examples')) + '.*'),
   /\.old-[A-F0-9]+/,
-  new RegExp(path.resolve(monorepoRoot, 'tests').replace(/[/\\]/g, '[/\\\\]') + '.*'),
-  new RegExp(path.resolve(monorepoRoot, 'workspaces').replace(/[/\\]/g, '[/\\\\]') + '.*'),
-  new RegExp(path.resolve(monorepoRoot, 'templates/runtime-template/node_modules').replace(/[/\\]/g, '[/\\\\]') + '.*'),
+  new RegExp(escapePathForRegex(path.resolve(monorepoRoot, 'tests')) + '.*'),
+  new RegExp(escapePathForRegex(path.resolve(monorepoRoot, 'workspaces')) + '.*'),
+  new RegExp(escapePathForRegex(path.resolve(monorepoRoot, 'templates/runtime-template/node_modules')) + '.*'),
+  new RegExp(escapePathForRegex(path.resolve(__dirname)) + '.*[/\\\\]__tests__[/\\\\].*'),
+  new RegExp(escapePathForRegex(path.resolve(__dirname)) + '.*\\.(test|spec)\\.(js|jsx|ts|tsx)$'),
 ]
 
 const SINGLETON_PACKAGES = [
