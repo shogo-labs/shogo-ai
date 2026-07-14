@@ -471,6 +471,54 @@ describe('activity tracking', () => {
     await app.request('/custom-internal')
     expect(state.lastRequestAt).toBe(before)
   })
+
+  test('a /api/* request is classified as app usage', async () => {
+    const { app, state } = await buildApp()
+    app.get('/api/todos', (c) => c.json({ ok: true }))
+    expect(state.lastAppRequestAt).toBe(0)
+    await app.request('/api/todos')
+    expect(state.lastAppRequestAt).toBeGreaterThan(0)
+    expect(state.appRequestCount).toBe(1)
+    // App traffic is NOT agent-chat.
+    expect(state.lastAgentRequestAt).toBe(0)
+    // Still bumps the generic idle signal.
+    expect(state.lastRequestAt).toBe(state.lastAppRequestAt)
+  })
+
+  test('a POST /agent/chat request is classified as agent chat, not app', async () => {
+    const { app, state } = await buildApp()
+    app.post('/agent/chat', (c) => c.json({ ok: true }))
+    await app.request('/agent/chat', {
+      method: 'POST',
+      headers: { 'x-runtime-token': 'test-runtime-secret' },
+    })
+    expect(state.lastAgentRequestAt).toBeGreaterThan(0)
+    expect(state.lastAppRequestAt).toBe(0)
+    expect(state.appRequestCount).toBe(0)
+  })
+
+  test('editor/control traffic bumps neither app nor agent class', async () => {
+    const { app, state } = await buildApp()
+    app.get('/agent/status', (c) => c.json({ ok: true }))
+    await app.request('/agent/status', {
+      headers: { 'x-runtime-token': 'test-runtime-secret' },
+    })
+    expect(state.lastRequestAt).toBeGreaterThan(0)
+    expect(state.lastAppRequestAt).toBe(0)
+    expect(state.lastAgentRequestAt).toBe(0)
+  })
+
+  test('/pool/activity surfaces per-class liveness fields', async () => {
+    const { app } = await buildApp()
+    app.get('/api/orders', (c) => c.json({ ok: true }))
+    await app.request('/api/orders')
+    const body = await (await app.request('/pool/activity')).json()
+    expect(typeof body.lastAppRequestAt).toBe('number')
+    expect(body.appRequestCount).toBe(1)
+    expect(typeof body.appIdleSeconds).toBe('number')
+    // No agent turn happened → null.
+    expect(body.lastAgentRequestAt).toBeNull()
+  })
 })
 
 // ---------------------------------------------------------------------------

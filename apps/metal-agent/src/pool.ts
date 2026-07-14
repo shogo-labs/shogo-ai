@@ -64,6 +64,21 @@ export interface AssignedVm {
    */
   activeStreams?: number
   /**
+   * Wall-clock (ms) of the last request the guest classified as *app usage* —
+   * an end-user hitting the built app's `/api/*` sidecar. Observability only:
+   * it does NOT gate the idle reaper (which stays on `lastTouchedAt`), but it
+   * lets the fleet distinguish "a live app with real users" from "an editor tab
+   * left open". Undefined until the first app request. Refreshed each poll.
+   */
+  lastAppRequestAt?: number
+  /** Guest-reported count of app-usage requests (monotonic). */
+  appRequestCount?: number
+  /**
+   * Wall-clock (ms) of the last *agent chat* turn the guest served (someone
+   * talking to Shogo). Observability companion to `activeStreams`.
+   */
+  lastAgentRequestAt?: number
+  /**
    * Always-on (paid instance tier): the idle-suspend reaper must never suspend
    * this VM. Set from the control-plane's `SHOGO_ALWAYS_ON` assign env on every
    * open and persisted so it survives adopt-on-restart.
@@ -109,6 +124,15 @@ export interface GcReport {
  * a re-suspend are still reclaimed promptly.
  */
 const ORPHAN_GRACE_MS = 180_000
+
+/**
+ * How recently a VM must have served end-user *app* traffic to count as
+ * "app-active" in the fleet gauges. Generous enough to bridge the gaps between
+ * a real user's requests (page loads, API calls) without flapping the bucket,
+ * short enough that a genuinely-abandoned app falls into the idle tail. Purely
+ * an observability window — it does not affect suspend/reap decisions.
+ */
+const APP_ACTIVE_WINDOW_MS = 120_000
 
 /**
  * Extract the published subdomain from an assign env when the control plane
@@ -1042,7 +1066,13 @@ export class MetalWarmPool {
             a.lastTouchedAt = now // fail open
             return
           }
-          const body = (await res.json()) as { lastRequestAt?: number; activeStreams?: number }
+          const body = (await res.json()) as {
+            lastRequestAt?: number
+            activeStreams?: number
+            lastAppRequestAt?: number | null
+            appRequestCount?: number
+            lastAgentRequestAt?: number | null
+          }
           const last = typeof body.lastRequestAt === 'number' ? body.lastRequestAt : 0
           // Cache live-stream count so reapIdle can skip a project mid-generation
           // even when no new HTTP request has bumped lastRequestAt for a while.
@@ -1053,6 +1083,13 @@ export class MetalWarmPool {
             a.lastActivityAt = last
             a.lastTouchedAt = now // real traffic since we last looked
           }
+          // Per-class liveness (observability only — does NOT gate the reaper).
+          // Fold the guest's app/agent classification into the assigned entry so
+          // the fleet can distinguish a live app with real users from an idle
+          // editor tab. Null/absent means "no request of that class yet".
+          if (typeof body.lastAppRequestAt === 'number') a.lastAppRequestAt = body.lastAppRequestAt
+          if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
+          if (typeof body.lastAgentRequestAt === 'number') a.lastAgentRequestAt = body.lastAgentRequestAt
         } catch {
           a.lastTouchedAt = now // fail open: never evict on missing data
         }
@@ -1438,6 +1475,31 @@ export class MetalWarmPool {
     metrics.gauge(M.diskFreeBytes, disk.freeBytes)
     metrics.gauge(M.cacheLocalCount, this.suspended.size)
     metrics.gauge(M.cacheLocalBytes, this.cacheBytes())
+    metrics.gauge(M.assignedCount, this.assigned.size)
+    const cls = this.classifyAssigned()
+    metrics.gauge(M.assignedAppActive, cls.appActive)
+    metrics.gauge(M.assignedAgentActive, cls.agentActive)
+    metrics.gauge(M.assignedIdleTail, cls.idleTail)
+  }
+
+  /**
+   * Decompose the assigned (running) set by liveness class for the fleet
+   * gauges. A VM counts as `agentActive` if it reported an in-flight agent turn
+   * at the last poll, `appActive` if it served end-user app traffic within
+   * {@link APP_ACTIVE_WINDOW_MS}, and `idleTail` otherwise (running but neither
+   * being used nor edited — the 30-min idle-suspend tail). agent-active wins
+   * when a VM is both, so the buckets are disjoint and sum to `assigned.size`.
+   */
+  private classifyAssigned(now = Date.now()): { appActive: number; agentActive: number; idleTail: number } {
+    let appActive = 0
+    let agentActive = 0
+    let idleTail = 0
+    for (const a of this.assigned.values()) {
+      if ((a.activeStreams ?? 0) > 0) agentActive++
+      else if (a.lastAppRequestAt && now - a.lastAppRequestAt <= APP_ACTIVE_WINDOW_MS) appActive++
+      else idleTail++
+    }
+    return { appActive, agentActive, idleTail }
   }
 
   /**
@@ -1546,6 +1608,7 @@ export class MetalWarmPool {
   status() {
     const now = Date.now()
     this.publishGauges()
+    const liveness = this.classifyAssigned(now)
     return {
       store: this.store.kind,
       idleSuspendMs: this.cfg.idleSuspendMs,
@@ -1553,6 +1616,9 @@ export class MetalWarmPool {
       disk: this.disk(),
       cache: { localCount: this.suspended.size, localBytes: this.cacheBytes() },
       available: this.available.length,
+      // Assigned (running) set decomposed by why each VM is live, so the raw
+      // count can be read as app-users + agent-turns + idle-tail.
+      liveness,
       // Live FC processes vs tracked VMs — a growing gap flags a process leak.
       fcProcs: this.mgr.procCount(),
       assigned: [...this.assigned.values()].map((a) => ({
@@ -1560,6 +1626,12 @@ export class MetalWarmPool {
         url: a.handle.agentUrl,
         vmId: a.handle.id,
         idleMs: now - a.lastTouchedAt,
+        // Per-class liveness (see AssignedVm). `*IdleMs: null` = no request of
+        // that class observed yet; `activeStreams>0` = an agent turn in flight.
+        activeStreams: a.activeStreams ?? 0,
+        appIdleMs: a.lastAppRequestAt ? now - a.lastAppRequestAt : null,
+        appRequestCount: a.appRequestCount ?? 0,
+        agentIdleMs: a.lastAgentRequestAt ? now - a.lastAgentRequestAt : null,
       })),
       suspended: [...this.suspended.values()].map((s) => ({
         projectId: s.projectId,

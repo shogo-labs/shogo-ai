@@ -91,8 +91,22 @@ export interface RuntimeState {
   poolAssigned: boolean
   /** Timestamp of pool assignment completion */
   poolAssignedAt: number | null
-  /** Timestamp of last external HTTP request */
+  /** Timestamp of last external HTTP request (any class — the legacy idle signal) */
   lastRequestAt: number
+  /**
+   * Timestamp of the last request classified as *app usage* — an end-user
+   * hitting the built app's `server.tsx` sidecar (`/api/*`, `/p/:id/api/*`).
+   * 0 = never. Distinct from editing: this is "someone is USING what was built".
+   */
+  lastAppRequestAt: number
+  /** Monotonic count of app-usage requests since server start. */
+  appRequestCount: number
+  /**
+   * Timestamp of the last request classified as *agent chat* — someone talking
+   * to the Shogo agent (`POST /agent/chat`). 0 = never. The in-flight count for
+   * this class is `activeStreams` (from getActivityStats).
+   */
+  lastAgentRequestAt: number
   /** AI proxy configuration (reconfigured on assign) */
   aiProxy: ReturnType<typeof configureAIProxy>
   /**
@@ -115,6 +129,34 @@ export interface RuntimeApp {
 }
 
 const POOL_PROJECT_ID = '__POOL__'
+
+/**
+ * Liveness class for an inbound request. A project can be "live" for very
+ * different reasons and we want to tell them apart instead of collapsing
+ * everything into one idle timestamp:
+ *   - `app`    — an end-user hitting the built app's `server.tsx` sidecar
+ *                (`/api/*`, `/p/:id/api/*`). "Someone is USING what was built."
+ *   - `agent`  — a chat turn against the Shogo agent (`POST /agent/chat`).
+ *                "Someone is TALKING to the agent." (in-flight → activeStreams)
+ *   - `editor` — everything else non-internal (file ops, terminal, saves,
+ *                preview polling, HMR). Kept as the generic `lastRequestAt`
+ *                signal so idle/reaper behaviour is unchanged by this split.
+ */
+export type ActivityClass = 'app' | 'agent' | 'editor'
+
+const WORKSPACE_API_RE = /^\/p\/[^/]+\/api(\/|$)/
+
+export function classifyActivity(path: string): ActivityClass {
+  // End-user traffic to the user app's Hono sidecar — the unambiguous
+  // "the app is being used" signal (root mount + workspace-runtime mux).
+  if (path === '/api' || path.startsWith('/api/') || WORKSPACE_API_RE.test(path)) {
+    return 'app'
+  }
+  // A chat turn against the agent. `/agent/chat/*` sub-routes (history,
+  // processes) are control/polling, not turns, so match the turn path exactly.
+  if (path === '/agent/chat') return 'agent'
+  return 'editor'
+}
 
 export async function createRuntimeApp(config: RuntimeAppConfig): Promise<RuntimeApp> {
   // ---------------------------------------------------------------------------
@@ -229,6 +271,9 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     poolAssigned,
     poolAssignedAt,
     lastRequestAt,
+    lastAppRequestAt: 0,
+    appRequestCount: 0,
+    lastAgentRequestAt: 0,
     aiProxy,
     tokenRefresh: null,
     serverStartTime: SERVER_START_TIME,
@@ -313,10 +358,22 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     credentials: true,
   }))
 
-  // Track last external HTTP request for idle detection
+  // Track last external HTTP request for idle detection, split by liveness
+  // class so the control plane can tell app-usage from agent-chat from generic
+  // editor traffic. `lastRequestAt` keeps its any-request semantics (the idle
+  // reaper still keys off it) — the per-class timestamps are additive.
   app.use('*', async (c, next) => {
-    if (!internalPaths.has(c.req.path)) {
-      state.lastRequestAt = Date.now()
+    const path = c.req.path
+    if (!internalPaths.has(path)) {
+      const now = Date.now()
+      state.lastRequestAt = now
+      const cls = classifyActivity(path)
+      if (cls === 'app') {
+        state.lastAppRequestAt = now
+        state.appRequestCount++
+      } else if (cls === 'agent') {
+        state.lastAgentRequestAt = now
+      }
     }
     await next()
   })
@@ -567,6 +624,14 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       activeSessions: activityStats.activeSessions,
       lastRequestAt: state.lastRequestAt,
       lastSessionActivityAt: lastSessionActivity,
+      // Per-class liveness. `lastAppRequestAt`/`lastAgentRequestAt` are 0 until
+      // the first request of that class; the node-agent treats 0 as "never".
+      lastAppRequestAt: state.lastAppRequestAt || null,
+      appRequestCount: state.appRequestCount,
+      appIdleSeconds: state.lastAppRequestAt
+        ? Math.floor((now - state.lastAppRequestAt) / 1000)
+        : null,
+      lastAgentRequestAt: state.lastAgentRequestAt || null,
       poolAssigned: state.poolAssigned,
     })
   })

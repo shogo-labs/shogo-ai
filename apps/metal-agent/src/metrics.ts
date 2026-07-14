@@ -59,6 +59,14 @@ export const M = {
   diskFreeBytes: 'metal_disk_free_bytes',
   cacheLocalCount: 'metal_cache_local_count',
   cacheLocalBytes: 'metal_cache_local_bytes',
+  // Per-class liveness of the assigned (running) set. These decompose the raw
+  // "assigned" count into WHY each VM is live, so a running total of e.g. 96
+  // can be read as "N serving app traffic + M mid agent-turn + K idle tail"
+  // instead of one opaque gauge.
+  assignedCount: 'metal_assigned_count',
+  assignedAppActive: 'metal_assigned_app_active',
+  assignedAgentActive: 'metal_assigned_agent_active',
+  assignedIdleTail: 'metal_assigned_idle_tail',
 } as const
 
 export const metrics = new Metrics()

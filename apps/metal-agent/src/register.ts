@@ -43,6 +43,10 @@ function payload(pool: MetalWarmPool) {
       // gap is the churn process-leak fingerprint (the control plane turns this
       // into a fleet-wide alarm so a recurrence is caught without SSH).
       fcProcs: s.fcProcs,
+      // Why the assigned VMs are live: end-user app traffic vs in-flight agent
+      // turns vs the idle-suspend tail. Lets the control plane report "N running
+      // = X app-users + Y agent-turns + Z idle" instead of one opaque number.
+      liveness: s.liveness,
     },
     // NVMe cache scalars so the control plane can route disk- and cache-aware
     // (Phase 2) without shipping per-project cache manifests in the heartbeat.
