@@ -57,7 +57,11 @@ describe('metalRoutes', () => {
   it('registers a host and reflects it in status', async () => {
     const reg = await req('/register', { method: 'POST', body: REG, token: 'secret-tok' })
     expect(reg.status).toBe(200)
-    expect(await reg.json()).toEqual({ ok: true })
+    // The heartbeat response also carries the pull-based-deploy `desired`
+    // version pointer (null when the control plane can't resolve one in-test).
+    const regBody = (await reg.json()) as any
+    expect(regBody.ok).toBe(true)
+    expect(regBody).toHaveProperty('desired')
 
     const status = await req('/status', { token: 'secret-tok' })
     expect(status.status).toBe(200)
@@ -72,5 +76,27 @@ describe('metalRoutes', () => {
     delete process.env.METAL_REGISTER_TOKEN
     const res = await req('/register', { method: 'POST', body: REG, token: 'anything' })
     expect(res.status).toBe(401)
+  })
+
+  it('ingests the per-class liveness decomposition + fcProcs from the heartbeat', async () => {
+    const body = {
+      ...REG,
+      load: { available: 2, assigned: 5, suspended: 3, fcProcs: 7, liveness: { appActive: 2, agentActive: 1, idleTail: 2 } },
+    }
+    const reg = await req('/register', { method: 'POST', body, token: 'secret-tok' })
+    expect(reg.status).toBe(200)
+
+    const status = await req('/status', { token: 'secret-tok' })
+    const detail = ((await status.json()) as any).hosts.detail[0]
+    expect(detail.load.fcProcs).toBe(7)
+    expect(detail.load.liveness).toEqual({ appActive: 2, agentActive: 1, idleTail: 2 })
+  })
+
+  it('leaves liveness undefined for an older agent that omits it', async () => {
+    const reg = await req('/register', { method: 'POST', body: REG, token: 'secret-tok' })
+    expect(reg.status).toBe(200)
+    const status = await req('/status', { token: 'secret-tok' })
+    const detail = ((await status.json()) as any).hosts.detail[0]
+    expect(detail.load.liveness).toBeUndefined()
   })
 })
