@@ -29,7 +29,7 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
-import { runAgentLoop, type LoopDetectorConfig } from './agent-loop'
+import { runAgentLoop, classifyRetryability, type LoopDetectorConfig } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
@@ -233,6 +233,65 @@ function toUserMessage(toolkit: string, raw: string): string {
   if (l.includes('rate limit') || l.includes('429'))
     return `${toolkit} rate limit reached. Please wait a moment and try again.`
   return `${toolkit} encountered an issue: ${raw.length > 120 ? raw.slice(0, 120) + '...' : raw}`
+}
+
+/**
+ * Map a failed turn's raw error to a clean, user-facing message.
+ *
+ * The raw text is an INTERNAL wrapper (e.g. `Provider error: Connection error.`)
+ * or a raw upstream body — neither should ever reach the client. We classify it
+ * with the SAME `classifyRetryability` the agent loop used when it retried the
+ * call (to exhaustion), so the surfaced message matches the real cause, and we
+ * NEVER echo the raw text (the detail stays in the server logs only).
+ *
+ * `Connection error.` is the OpenAI SDK's APIConnectionError message, surfaced
+ * when the runtime cannot reach the AI proxy — the class of failure behind the
+ * 2026-07 metal provider-connection incidents. It classifies as `network`, so
+ * we ask the user to retry (NOT to switch models — a network fault is
+ * provider-independent) instead of leaking `Provider error: Connection error.`.
+ */
+export function describeTurnFailure(
+  rawMessage: string | undefined | null,
+  // Shown only when the cause can't be classified. Defaults to a plain retry;
+  // the hard-exception path passes a "start a new conversation" hedge since an
+  // uncaught throw may indicate a corrupt turn rather than a transient fault.
+  unknownFallback = 'I encountered an issue processing your message. Please try again.',
+): string {
+  const raw = (rawMessage && String(rawMessage)) || 'An unexpected error occurred'
+
+  // A Shogo agent-loop concept, not a provider failure — decide before
+  // classification so it isn't mistaken for an "unknown" provider error.
+  if (/maximum iteration limit/i.test(raw)) {
+    return 'This task is taking more steps than a single run allows — I kept going as far as I could. Reply "continue" if you\'d like me to pick up where I left off.'
+  }
+
+  // classifyRetryability reads the proxy's `[shogo:retryable=...]` marker (if
+  // present) before falling back to text heuristics, so pass the raw message.
+  const { reason } = classifyRetryability({ message: raw })
+  switch (reason) {
+    case 'billing':
+      return 'Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.'
+    case 'network':
+      return "I couldn't reach the model just now — the connection dropped. Please try again in a moment."
+    case 'timeout':
+    case 'idle_timeout':
+      return 'The model took too long to respond. Please try again in a moment.'
+    case 'truncated':
+      return 'The response was cut off before it finished. Please try again.'
+    case 'overloaded':
+    case 'server_5xx':
+    case 'upstream_error':
+      return 'Model unavailable. Please try again shortly, or switch to a different model.'
+    case 'auth':
+      return 'The model provider rejected the request. Please check your AI provider settings.'
+    case 'content_policy':
+      return "This request was blocked by the model provider's content filter. Please rephrase and try again."
+    case 'invalid_request':
+    case 'unknown':
+    default:
+      // Never surface the raw internal/upstream text to the client.
+      return unknownFallback
+  }
 }
 
 export type VisualMode = 'canvas' | 'app' | 'none'
@@ -3057,25 +3116,16 @@ export class AgentGateway {
 
         if (result.error) {
           const msg = result.error.message || 'An unexpected error occurred'
-          const isIterationLimit = /maximum iteration limit/i.test(msg)
-          const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout|billing|insufficient.credits|usage limit/i.test(msg)
-          const isBillingError = /billing|insufficient.credits|usage limit|upgrade your plan|usage.based pricing/i.test(msg)
           console.error(
             `${this.logPrefix} Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
           )
           chunker?.dispose()
           if (uiWriter) {
-            const errorText = isIterationLimit
-              ? 'This task is taking more steps than a single run allows — I kept going as far as I could. Reply "continue" if you\'d like me to pick up where I left off.'
-              : isBillingError
-                ? 'Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.'
-                : isProviderError
-                  // Don't leak raw upstream provider bodies (e.g. a WAF block
-                  // page) to the client — the full message is in the server
-                  // logs above. Surface a generic, actionable message instead.
-                  ? 'Model unavailable. Please try again shortly, or switch to a different model.'
-                  : `I encountered an issue processing your message: ${msg}`
-            uiWriter.write({ type: 'error', errorText } as any)
+            // Classify by cause and surface a clean, actionable message. Never
+            // echo the raw wrapper/upstream text (e.g. "Provider error:
+            // Connection error." or a WAF block page) — it stays in the server
+            // logs above. See describeTurnFailure.
+            uiWriter.write({ type: 'error', errorText: describeTurnFailure(msg) } as any)
           }
         } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
           console.error(
@@ -3113,15 +3163,16 @@ export class AgentGateway {
       chunker?.dispose()
       try {
         if (uiWriter) {
-          const msg = error.message || 'An unexpected error occurred'
-          const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
+          // Classify by cause; never surface raw provider bodies (e.g. WAF
+          // block pages) — they stay in the server logs above. An uncaught
+          // throw may indicate a corrupt turn, so unrecognized causes hedge
+          // toward starting a new conversation.
           uiWriter.write({
             type: 'error',
-            // Generic message — raw provider bodies (e.g. WAF block pages) stay
-            // in the server logs above and are never surfaced to the client.
-            errorText: isProviderError
-              ? 'Model unavailable. Please try again shortly, or switch to a different model.'
-              : 'I encountered an issue processing your message. Please try starting a new conversation.',
+            errorText: describeTurnFailure(
+              error.message,
+              'I encountered an issue processing your message. Please try starting a new conversation.',
+            ),
           } as any)
         }
       } catch { /* writer may be dead — ignore */ }

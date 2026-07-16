@@ -6,7 +6,7 @@
 // re-exported here — it's an agent-runtime internal type that stays in
 // `./gateway-tools`. The handful of internal call sites import it from
 // there directly.
-export { runAgentLoop } from '@shogo-ai/sdk/agent-loop'
+export { runAgentLoop, classifyRetryability, stripStreamErrorMarker } from '@shogo-ai/sdk/agent-loop'
 export type {
   LoopDetectorConfig,
   LoopDetectorResult,
@@ -15,4 +15,6 @@ export type {
   AgentLoopOptions,
   ToolCallRecord,
   AgentLoopResult,
+  RetryClassification,
+  RetryReason,
 } from '@shogo-ai/sdk/agent-loop'
