@@ -12,7 +12,13 @@
  * guest on suspend and uploads it host-side to that durable key.
  *
  * We drive the seams directly (`fetchExport` over a stubbed global `fetch`,
- * `uploadBackup` recorded) so no real guest / S3 / Firecracker is needed.
+ * `uploadBackupGuarded` recorded) so no real guest / S3 / Firecracker is needed.
+ *
+ * The guard: `saveBackupToStore` must only overwrite the durable backup a
+ * workspace descends from (lineage = `backupParentEtag`). A template-origin VM,
+ * or one whose lineage no longer matches, is diverted to a quarantine key
+ * (`conflict`) rather than clobbering the real backup — the data-loss incident
+ * these tests pin down.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
@@ -20,31 +26,41 @@ import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
-import { MetalWarmPool } from './pool'
+import { MetalWarmPool, type AssignedVm } from './pool'
+import { M, metrics } from './metrics'
+import type { BackupWriteOutcome } from './workspace-archive'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 
 const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.9' } as any
 
 class TestPool extends MetalWarmPool {
-  uploads: Array<{ projectId: string; bytes: Uint8Array }> = []
-  uploadResult = true
-  protected override uploadBackup(projectId: string, bytes: Uint8Array): Promise<boolean> {
-    this.uploads.push({ projectId, bytes })
-    return Promise.resolve(this.uploadResult)
+  uploads: Array<{ projectId: string; bytes: Uint8Array; opts: { parentEtag?: string; adoptWhenUnknown?: boolean } }> = []
+  outcome: BackupWriteOutcome = { status: 'written', etag: '"new"' }
+  protected override uploadBackupGuarded(
+    projectId: string,
+    bytes: Uint8Array,
+    opts: { parentEtag?: string; adoptWhenUnknown?: boolean },
+  ): Promise<BackupWriteOutcome> {
+    this.uploads.push({ projectId, bytes, opts })
+    return Promise.resolve(this.outcome)
   }
   export(token?: string) {
     return (this as any).fetchExport(HANDLE, token) as Promise<Uint8Array | null>
   }
-  save(projectId: string, runtimeToken?: string) {
+  save(projectId: string, runtimeToken?: string, extra: Partial<AssignedVm> = {}) {
     ;(this as any).assigned.set(projectId, {
       projectId,
       handle: HANDLE,
       assignedAt: Date.now(),
       lastTouchedAt: Date.now(),
       runtimeToken,
+      ...extra,
     })
     return (this as any).saveBackupToStore((this as any).assigned.get(projectId))
+  }
+  assignedEntry(projectId: string): AssignedVm | undefined {
+    return (this as any).assigned.get(projectId)
   }
 }
 
@@ -104,7 +120,7 @@ describe('pool write-side backup (save on stop)', () => {
     const pool = makePool(dir)
     globalThis.fetch = mock(async () => new Response(new Uint8Array([5, 6, 7, 8]), { status: 200 })) as any
 
-    await pool.save('p1', 'tok')
+    await pool.save('p1', 'tok', { workspaceOrigin: 'backup', backupParentEtag: '"parent"' })
     expect(pool.uploads).toHaveLength(1)
     expect(pool.uploads[0].projectId).toBe('p1')
     expect(pool.uploads[0].bytes).toEqual(new Uint8Array([5, 6, 7, 8]))
@@ -116,5 +132,55 @@ describe('pool write-side backup (save on stop)', () => {
 
     await pool.save('empty', 'tok')
     expect(pool.uploads).toHaveLength(0)
+  })
+
+  test('passes the workspace lineage (parentEtag) to the guard, and does NOT adopt for a backup origin', async () => {
+    const pool = makePool(dir)
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([1]), { status: 200 })) as any
+
+    await pool.save('p1', 'tok', { workspaceOrigin: 'backup', backupParentEtag: '"parent"' })
+    expect(pool.uploads[0].opts).toEqual({ parentEtag: '"parent"', adoptWhenUnknown: false })
+  })
+
+  test('allows a legacy snapshot origin (no stamped etag) to adopt on write', async () => {
+    const pool = makePool(dir)
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([1]), { status: 200 })) as any
+
+    await pool.save('p1', 'tok', { workspaceOrigin: 'snapshot' })
+    expect(pool.uploads[0].opts).toEqual({ parentEtag: undefined, adoptWhenUnknown: true })
+  })
+
+  test('a template origin never adopts (adoptWhenUnknown:false)', async () => {
+    const pool = makePool(dir)
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([1]), { status: 200 })) as any
+
+    await pool.save('p1', 'tok', { workspaceOrigin: 'template' })
+    expect(pool.uploads[0].opts.adoptWhenUnknown).toBe(false)
+  })
+
+  test('a successful write re-anchors the lineage to the new etag (so later suspends keep passing the guard)', async () => {
+    const pool = makePool(dir)
+    pool.outcome = { status: 'written', etag: '"fresh"' }
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([9]), { status: 200 })) as any
+
+    await pool.save('p1', 'tok', { workspaceOrigin: 'backup', backupParentEtag: '"old"' })
+    const a = pool.assignedEntry('p1')!
+    expect(a.backupParentEtag).toBe('"fresh"')
+    expect(a.workspaceOrigin).toBe('backup')
+  })
+
+  test('a conflict quarantines: bumps the metric and leaves the durable lineage UNCHANGED (no clobber)', async () => {
+    const pool = makePool(dir)
+    pool.outcome = { status: 'conflict', quarantineKey: 'p1/conflict/123-abc.tar.gz', currentEtag: '"real"' }
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([3, 3, 7]), { status: 200 })) as any
+
+    const before = metrics.getCounter(M.backupConflict)
+    await pool.save('p1', 'tok', { workspaceOrigin: 'template' })
+    expect(metrics.getCounter(M.backupConflict)).toBe(before + 1)
+    // Lineage must NOT be re-anchored on a conflict — the template did not
+    // become the durable backup, so its "origin" stays template.
+    const a = pool.assignedEntry('p1')!
+    expect(a.workspaceOrigin).toBe('template')
+    expect(a.backupParentEtag).toBeUndefined()
   })
 })

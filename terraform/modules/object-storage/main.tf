@@ -114,16 +114,47 @@ resource "oci_objectstorage_bucket" "schemas" {
 # a reachability-based GC job (enumerate live pointer oids per project, delete
 # unreferenced objects) is a required follow-up before this is load-bearing.
 # Set S3_LFS_BUCKET on the app to split LFS into a dedicated bucket instead.
+#
+# Versioning is ENABLED so an overwrite of `<projectId>/project-src.tar.gz`
+# never permanently destroys the prior source. This is the durability backstop
+# for the write-side clobber class of bug (a VM that came up as the bare
+# template packing ~337 KB over a multi-MB/GB real backup): with versioning on,
+# the clobbered content survives as a noncurrent version and is recoverable,
+# turning "permanent data loss" into "restore the previous version". The
+# metal-agent's lineage guard (apps/metal-agent/src/workspace-archive.ts) now
+# prevents the clobber in the first place; versioning is the safety net for any
+# future bug in that class. Noncurrent versions are reaped after 30 days by the
+# lifecycle policy below so this doesn't grow unbounded.
 resource "oci_objectstorage_bucket" "workspaces" {
   compartment_id = coalesce(var.workspaces_compartment_id, var.compartment_id)
   namespace      = local.namespace
   name           = "shogo-workspaces-${var.environment}"
   access_type    = "NoPublicAccess"
-  versioning     = "Disabled"
+  versioning     = "Enabled"
 
   freeform_tags = merge(var.tags, {
     Purpose = "workspace-file-sync"
   })
+}
+
+resource "oci_objectstorage_object_lifecycle_policy" "workspaces_lifecycle" {
+  depends_on = [oci_identity_policy.lifecycle_service_principal]
+
+  namespace = local.namespace
+  bucket    = oci_objectstorage_bucket.workspaces.name
+
+  # Keep noncurrent versions for 30 days — a comfortable recovery window for a
+  # clobbered `project-src.tar.gz` — then reclaim them so versioning doesn't
+  # accumulate cost. Only PREVIOUS versions are deleted; the current object is
+  # never touched by this rule.
+  rules {
+    name        = "cleanup-old-versions"
+    action      = "DELETE"
+    time_amount = 30
+    time_unit   = "DAYS"
+    is_enabled  = true
+    target      = "previous-object-versions"
+  }
 }
 
 # -----------------------------------------------------------------------------
