@@ -67,6 +67,14 @@ export const M = {
   assignedAppActive: 'metal_assigned_app_active',
   assignedAgentActive: 'metal_assigned_agent_active',
   assignedIdleTail: 'metal_assigned_idle_tail',
+  // Guest-side failures scraped from the per-VM serial console by serial-watcher.
+  // These are the ONLY fleet-wide signal for in-guest breakage that survives a
+  // guest too broken to ship its own telemetry (e.g. TLS failing on clock skew).
+  guestErrorTotal: 'metal_guest_error_total',
+  guestTlsClockSkew: 'metal_guest_tls_clock_skew_total',
+  guestProviderError: 'metal_guest_provider_error_total',
+  guestConnectionError: 'metal_guest_connection_error_total',
+  guestInferenceRetry: 'metal_guest_inference_retry_total',
 } as const
 
 export const metrics = new Metrics()

@@ -131,6 +131,24 @@ export const config = {
   reapIntervalMs: parseInt(env('METAL_REAP_INTERVAL_MS', '15000'), 10),
 
   /**
+   * Guest serial-log error watcher. In-guest failures (TLS "certificate is not
+   * yet valid" from resume clock-skew, provider/connection errors, inference
+   * retries) only land in the per-VM serial console file — the guest's own OTLP
+   * export is best-effort and a broken guest often can't ship its own logs. The
+   * always-running host agent tails those files, matches known failure
+   * signatures, and re-emits them as host-side ERROR/WARN logs (journald ->
+   * otelcol-metal -> SigNoz) + counters, so guest-side breakage is centrally
+   * visible and alertable. Set METAL_SERIAL_WATCH=0 to disable.
+   */
+  serialWatch: env('METAL_SERIAL_WATCH', '1') !== '0',
+  /** How often to poll live serial logs for newly-appended lines. */
+  serialWatchIntervalMs: parseInt(env('METAL_SERIAL_WATCH_INTERVAL_MS', '10000'), 10),
+  /** Max bytes read per serial file per tick (skips ahead if a file grew more). */
+  serialWatchMaxReadBytes: parseInt(env('METAL_SERIAL_WATCH_MAX_READ_KB', '256'), 10) * 1024,
+  /** Min gap between emitted lines for the same project+category (metrics still count every match). */
+  serialWatchEmitThrottleMs: parseInt(env('METAL_SERIAL_WATCH_THROTTLE_MS', '60000'), 10),
+
+  /**
    * Best-effort guest lifecycle hooks the node-agent calls around a
    * snapshot/restore so the in-guest runtime can flush + drop stale sockets
    * (AI-proxy/MCP/LSP/DB) before freeze and re-establish them after wake:

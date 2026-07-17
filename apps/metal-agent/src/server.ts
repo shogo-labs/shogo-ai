@@ -25,6 +25,7 @@ import { metrics } from './metrics'
 import { MetalWarmPool } from './pool'
 import { PortForward } from './port-forward'
 import { reportPlacement, startRegistration } from './register'
+import { SerialWatcher } from './serial-watcher'
 const pool = new MetalWarmPool()
 // Pre-mesh data path: DNAT a public host port to each assigned guest and hand
 // back http://{publicHost}:{port}. No-op (returns the private guest URL) unless
@@ -190,6 +191,20 @@ pool.start().then(
 const stopRegistration = startRegistration(pool)
 console.log(`[metal-agent] self-update: ${config.selfUpdate ? 'on (heartbeat desired)' : 'off'} version=${config.agentVersion}`)
 
+// Guest serial-log error watcher: tails each live VM's serial console and
+// re-emits known in-guest failures (TLS cert-not-yet-valid from resume clock
+// skew, provider/connection errors, inference retries) as host-side ERROR/WARN
+// logs (-> journald -> otelcol-metal -> SigNoz) + counters. This is the only
+// central signal for guests too broken to ship their own telemetry — the exact
+// blind spot behind the "provider connection error" incidents. See
+// apps/metal-agent/src/serial-watcher.ts.
+let serialWatcher: SerialWatcher | null = null
+if (config.serialWatch) {
+  serialWatcher = new SerialWatcher()
+  serialWatcher.start()
+  console.log(`[metal-agent] guest serial-log watcher on: interval=${config.serialWatchIntervalMs}ms`)
+}
+
 // Idle reaper: fold real guest traffic into idleness (activity poll), then
 // quiesce + snapshot assigned VMs that have gone quiet (free host RAM).
 let reaper: ReturnType<typeof setInterval> | null = null
@@ -290,6 +305,7 @@ if (config.publishDataBucket && config.publishDataExportIntervalMs > 0) {
 process.on('SIGTERM', async () => {
   console.log('[metal-agent] SIGTERM: graceful restart — keeping assigned microVMs + forwards alive')
   stopRegistration()
+  serialWatcher?.stop()
   if (reaper) clearInterval(reaper)
   if (gc) clearInterval(gc)
   if (pubDataExporter) clearInterval(pubDataExporter)
