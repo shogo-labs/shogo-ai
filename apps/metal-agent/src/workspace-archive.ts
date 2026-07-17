@@ -94,12 +94,17 @@ function archiveKey(projectId: string): string {
 
 /**
  * Quarantine key for an export we refused to write over the durable backup.
- * Namespaced per-project + timestamped so multiple conflicts never collide and
- * an operator can recover the bytes (they are a real, if orphaned, workspace).
+ *
+ * Lives under a single top-level `conflict/` prefix (namespaced per-project +
+ * timestamped so multiple conflicts never collide and an operator can recover
+ * the bytes — they are a real, if orphaned, workspace). The top-level prefix
+ * (rather than `{projectId}/conflict/`) is deliberate: it lets an OCI object
+ * lifecycle rule TTL the whole quarantine area by prefix, so refused exports
+ * don't accumulate unbounded storage cost. See terraform/modules/object-storage.
  */
-function quarantineKey(projectId: string): string {
+export function quarantineKey(projectId: string): string {
   const rand = Math.random().toString(36).slice(2, 8)
-  return `${projectId}/conflict/${Date.now()}-${rand}.tar.gz`
+  return `conflict/${projectId}/${Date.now()}-${rand}.tar.gz`
 }
 
 /**

@@ -155,6 +155,26 @@ resource "oci_objectstorage_object_lifecycle_policy" "workspaces_lifecycle" {
     is_enabled  = true
     target      = "previous-object-versions"
   }
+
+  # Reap quarantined exports. When the metal-agent's lineage guard refuses to
+  # overwrite a real backup (a template/stale/losing-racer write), it diverts
+  # the bytes to `conflict/<projectId>/<ts>-<rand>.tar.gz` rather than clobber.
+  # Those are recoverable-but-orphaned workspaces; keep them 30 days for
+  # investigation/recovery, then delete so the quarantine area can't grow
+  # unbounded. Scoped by prefix so ONLY the quarantine namespace is affected —
+  # never `<projectId>/project-src.tar.gz` or any live source.
+  rules {
+    name        = "cleanup-quarantined-exports"
+    action      = "DELETE"
+    time_amount = 30
+    time_unit   = "DAYS"
+    is_enabled  = true
+    target      = "objects"
+
+    object_name_filter {
+      inclusion_prefixes = ["conflict/"]
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------
