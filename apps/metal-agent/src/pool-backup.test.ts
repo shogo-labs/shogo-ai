@@ -171,7 +171,7 @@ describe('pool write-side backup (save on stop)', () => {
 
   test('a conflict quarantines: bumps the metric and leaves the durable lineage UNCHANGED (no clobber)', async () => {
     const pool = makePool(dir)
-    pool.outcome = { status: 'conflict', quarantineKey: 'p1/conflict/123-abc.tar.gz', currentEtag: '"real"' }
+    pool.outcome = { status: 'conflict', quarantineKey: 'conflict/p1/123-abc.tar.gz', currentEtag: '"real"' }
     globalThis.fetch = mock(async () => new Response(new Uint8Array([3, 3, 7]), { status: 200 })) as any
 
     const before = metrics.getCounter(M.backupConflict)

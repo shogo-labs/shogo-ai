@@ -1027,10 +1027,17 @@ export class MetalWarmPool {
         // yet, so its first push still creates one.)
         if (a.workspaceOrigin === 'template' && (await this.store.head(projectId)) != null) {
           metrics.inc(M.backupTemplateSnapshotBlocked)
+          // Don't clobber the durable snapshot — AND don't keep this template
+          // snapshot locally either: resume() prefers the hot local copy, so a
+          // retained template snapshot would SHADOW the real durable one on the
+          // next open (a template served over real source). Evict it so the next
+          // resume misses locally and pulls the real durable snapshot instead.
           console.error(
             `[pool] REFUSED durable snapshot push for ${projectId} — template-origin VM would clobber an ` +
-              `existing durable snapshot. Kept hot local snapshot only; durable snapshot left intact.`,
+              `existing durable snapshot. Evicting local template snapshot so the next open restores the ` +
+              `real durable copy; durable snapshot left intact.`,
           )
+          this.evictLocal(projectId)
           return s
         }
         // In dm mode the durable rootfs artifact is the small CoW *diff*, not

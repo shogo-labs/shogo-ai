@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { decideBackupWrite, etagEq } from './workspace-archive'
+import { decideBackupWrite, etagEq, quarantineKey } from './workspace-archive'
 
 describe('decideBackupWrite (anti-clobber invariant)', () => {
   test('no object in S3 → create the first backup', () => {
@@ -54,6 +54,26 @@ describe('decideBackupWrite (anti-clobber invariant)', () => {
     // Both hosts descended from "v1"; one wins and advances S3 to "v2". The
     // other still carries "v1" and must NOT clobber the winner's write.
     expect(decideBackupWrite({ exists: true, currentEtag: '"v2"', parentEtag: '"v1"' })).toBe('quarantine')
+  })
+})
+
+describe('quarantineKey (top-level prefix for lifecycle TTL)', () => {
+  // The OCI lifecycle rule `cleanup-quarantined-exports` (terraform/modules/
+  // object-storage) TTLs quarantined exports by the `conflict/` prefix. That
+  // rule ONLY works if quarantine keys are top-level `conflict/...` and NEVER
+  // `{projectId}/conflict/...` (a per-project prefix can't be prefix-matched),
+  // and must never collide with a live `{projectId}/project-src.tar.gz`.
+  test('lives under the top-level conflict/ prefix, namespaced per project', () => {
+    const k = quarantineKey('proj-123')
+    expect(k.startsWith('conflict/proj-123/')).toBe(true)
+    expect(k.endsWith('.tar.gz')).toBe(true)
+    // Must NOT be under the project prefix (would dodge the lifecycle rule and
+    // could shadow the real source listing).
+    expect(k.startsWith('proj-123/')).toBe(false)
+  })
+
+  test('two conflicts for the same project never collide', () => {
+    expect(quarantineKey('p1')).not.toBe(quarantineKey('p1'))
   })
 })
 
