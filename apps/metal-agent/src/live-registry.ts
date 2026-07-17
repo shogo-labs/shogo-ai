@@ -55,6 +55,14 @@ export interface LiveVmEntry {
   runtimeToken?: string
   /** Server-backed published subdomain — drives host-side writable-state export. */
   publishedSubdomain?: string
+  /**
+   * Workspace lineage, persisted so adopt-on-restart keeps the write-side
+   * anti-clobber guard armed: whether this VM's source came from the template,
+   * a durable backup, or a snapshot, and the ETag of the backup it descends
+   * from. See AssignedVm.workspaceOrigin / backupParentEtag.
+   */
+  workspaceOrigin?: 'template' | 'backup' | 'snapshot'
+  backupParentEtag?: string
   v: 1
 }
 

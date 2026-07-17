@@ -32,12 +32,13 @@ const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.
 /** MetalWarmPool subclass exposing the private hydrate + an injectable archive. */
 class TestPool extends MetalWarmPool {
   archive: Uint8Array | null = null
-  override fetchArchive(_projectId: string): Promise<Uint8Array | null> {
-    return Promise.resolve(this.archive)
+  etag: string | null = null
+  override fetchArchive(_projectId: string): Promise<import('./workspace-archive').WorkspaceArchive | null> {
+    return Promise.resolve(this.archive ? { bytes: this.archive, etag: this.etag } : null)
   }
   hydrate(projectId: string, env: Record<string, string>) {
     // hydrateFromBackup is private; reach it through the instance.
-    return (this as any).hydrateFromBackup(projectId, HANDLE, env)
+    return (this as any).hydrateFromBackup(projectId, HANDLE, env) as Promise<{ hydrated: boolean; parentEtag?: string }>
   }
 }
 
@@ -66,9 +67,10 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('streams the durable archive to the guest /pool/hydrate with the runtime token', async () => {
+  test('streams the durable archive to the guest /pool/hydrate with the runtime token and returns its lineage etag', async () => {
     const pool = makePool(dir)
     pool.archive = new Uint8Array([1, 2, 3, 4])
+    pool.etag = '"abc123"'
 
     const calls: Array<{ url: string; init: any }> = []
     globalThis.fetch = mock(async (url: any, init: any) => {
@@ -76,16 +78,19 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
       return new Response(JSON.stringify({ ok: true, bytes: 4 }), { status: 200 })
     }) as any
 
-    await pool.hydrate('p1', { RUNTIME_AUTH_SECRET: 'secret-token' })
+    const result = await pool.hydrate('p1', { RUNTIME_AUTH_SECRET: 'secret-token' })
 
     expect(calls).toHaveLength(1)
     expect(calls[0].url).toBe('http://10.0.0.9:8080/pool/hydrate')
     expect(calls[0].init.method).toBe('POST')
     expect(calls[0].init.headers.Authorization).toBe('Bearer secret-token')
     expect(calls[0].init.body).toEqual(pool.archive)
+    // The returned lineage anchors the workspace to the backup we applied, so a
+    // later suspend can safely overwrite exactly that object.
+    expect(result).toEqual({ hydrated: true, parentEtag: '"abc123"' })
   })
 
-  test('is a no-op when the project has no durable backup (new project)', async () => {
+  test('is a no-op returning hydrated:false when the project has no durable backup (new project)', async () => {
     const pool = makePool(dir)
     pool.archive = null // no backup
 
@@ -95,8 +100,9 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
       return new Response('{}', { status: 200 })
     }) as any
 
-    await pool.hydrate('brand-new', { RUNTIME_AUTH_SECRET: 'tok' })
+    const result = await pool.hydrate('brand-new', { RUNTIME_AUTH_SECRET: 'tok' })
     expect(called).toBe(false)
+    expect(result).toEqual({ hydrated: false })
   })
 
   test('throws when the guest rejects the hydrate so assign() logs a real failure', async () => {

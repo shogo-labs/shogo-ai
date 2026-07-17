@@ -39,7 +39,12 @@ import {
   type SnapshotMeta,
   type SnapshotStore,
 } from './snapshot-store'
-import { fetchWorkspaceArchive, uploadWorkspaceArchive } from './workspace-archive'
+import {
+  fetchWorkspaceArchive,
+  uploadWorkspaceArchiveGuarded,
+  type BackupWriteOutcome,
+  type WorkspaceArchive,
+} from './workspace-archive'
 import { fetchPublishedDataArchive, uploadPublishedDataArchive } from './published-data-archive'
 
 export interface PooledVm {
@@ -98,6 +103,27 @@ export interface AssignedVm {
    * guest holds no S3 creds). Absent on ordinary dev/preview VMs.
    */
   publishedSubdomain?: string
+  /**
+   * Lineage of this VM's workspace — where its current source came from, so the
+   * write side can tell whether it may overwrite the durable backup:
+   *   'template' → a warm VM's pristine template (new project, or a cold boot
+   *                that found no durable backup). MUST NOT overwrite an existing
+   *                backup (that is the data-loss incident): a template export
+   *                over a real backup is quarantined, never written.
+   *   'backup'   → cold-hydrated from the durable backup at assign time.
+   *   'snapshot' → restored from a local/durable snapshot (which itself
+   *                descends from a backup, carried via SnapshotMeta.backupEtag).
+   * Undefined only transiently before assign/resume stamps it.
+   */
+  workspaceOrigin?: 'template' | 'backup' | 'snapshot'
+  /**
+   * ETag of the durable backup this workspace descends from. `saveBackupToStore`
+   * only overwrites the durable object when this still matches what's in S3;
+   * otherwise it quarantines rather than clobber. Undefined = template/unknown
+   * lineage (see workspace-archive's guard). Refreshed after every successful
+   * backup write and persisted for adopt-on-restart.
+   */
+  backupParentEtag?: string
 }
 
 export interface SuspendedVm {
@@ -105,6 +131,14 @@ export interface SuspendedVm {
   snapshot: FcSnapshot
   suspendedAt: number
   lastAccessAt: number
+  /**
+   * ETag of the durable backup that was current when this snapshot was taken —
+   * the workspace frozen in the snapshot descends from it. Carried back into
+   * AssignedVm.backupParentEtag on resume so a resumed VM's next suspend can
+   * safely overwrite the backup it actually derives from. Undefined for a
+   * legacy snapshot taken before lineage stamping shipped.
+   */
+  backupEtag?: string
   /**
    * Golden-rootfs identity this snapshot was taken against. A Firecracker
    * resume restores the frozen guest RAM verbatim, so it only makes sense on a
@@ -432,6 +466,8 @@ export class MetalWarmPool {
         assignedAt: e.assignedAt,
         lastTouchedAt: Date.now(),
         restoredFrom: e.restoredFrom,
+        workspaceOrigin: e.workspaceOrigin,
+        backupParentEtag: e.backupParentEtag,
       })
       adoptedIds.add(e.vmId)
       adoptedProjects.push(e.projectId)
@@ -478,6 +514,8 @@ export class MetalWarmPool {
       alwaysOn: a.alwaysOn,
       runtimeToken: a.runtimeToken,
       publishedSubdomain: a.publishedSubdomain,
+      workspaceOrigin: a.workspaceOrigin,
+      backupParentEtag: a.backupParentEtag,
       v: 1,
     })
   }
@@ -515,6 +553,7 @@ export class MetalWarmPool {
         suspendedAt: e.suspendedAt,
         lastAccessAt: e.lastAccessAt,
         rootfsIdentity: e.rootfsIdentity,
+        backupEtag: e.backupEtag,
       })
       n++
     }
@@ -644,6 +683,10 @@ export class MetalWarmPool {
       lastTouchedAt: now,
       runtimeToken: env.RUNTIME_AUTH_SECRET,
       publishedSubdomain,
+      // Provisional: a warm VM boots from the template. Promoted to 'backup'
+      // below iff hydrate applies real source; a hydrate that CAN'T confirm the
+      // template is correct fails the open rather than leave a mislabeled VM.
+      workspaceOrigin: 'template',
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)
@@ -652,11 +695,28 @@ export class MetalWarmPool {
     // "Project Ready" placeholder — the project's real source lives only in the
     // durable S3 backup. (Resume-from-snapshot in open() already carries the
     // real workspace and never lands here.) Hydrate host-side so the guest gets
-    // its source without ever holding S3 credentials. Best-effort: on failure we
-    // leave the template in place rather than fail the open.
-    await this.hydrateFromBackup(projectId, vm.handle, env).catch((err) =>
-      console.error(`[pool] hydrate-from-backup failed for ${projectId} (serving template):`, err?.message ?? err),
-    )
+    // its source without ever holding S3 credentials.
+    //
+    // FAIL CLOSED: unlike before, a hydrate error is NOT swallowed. If a durable
+    // backup exists but we couldn't apply it (guest rejected it, or S3 was
+    // unreachable so we can't even rule out a backup), serving the template is
+    // never acceptable — the user sees the wrong app AND the template would be
+    // snapshotted/backed up over their real source on the next idle-suspend.
+    // Tear the VM down and surface the error so the control plane retries.
+    try {
+      const h = await this.hydrateFromBackup(projectId, vm.handle, env)
+      if (h.hydrated) {
+        a.workspaceOrigin = 'backup'
+        a.backupParentEtag = h.parentEtag
+        this.writeLive(a)
+      }
+    } catch (err: any) {
+      console.error(`[pool] hydrate-from-backup failed for ${projectId} — failing open (NOT serving template):`, err?.message ?? err)
+      this.assigned.delete(projectId)
+      this.live.remove(projectId)
+      await this.mgr.stopVM(vm.handle).catch(() => {})
+      throw err
+    }
 
     // Server-backed published VM: overlay the live site's writable state
     // ({subdomain}/data.tar.gz) on top of the git-restored source so the app
@@ -679,22 +739,35 @@ export class MetalWarmPool {
    * is a no-op — the template is the correct initial state.
    */
   /**
-   * Fetch the durable source backup for a project. A `protected` seam so tests
-   * can inject a canned archive (or `null`) without touching S3 or module mocks.
+   * Fetch the durable source backup (bytes + lineage ETag) for a project. A
+   * `protected` seam so tests can inject a canned archive (or `null`) without
+   * touching S3 or module mocks.
    */
-  protected fetchArchive(projectId: string): Promise<Uint8Array | null> {
+  protected fetchArchive(projectId: string): Promise<WorkspaceArchive | null> {
     return fetchWorkspaceArchive(projectId, this.cfg)
   }
 
+  /**
+   * Cold-start hydration. Returns whether a durable backup was applied and, if
+   * so, the ETag the resulting workspace descends from (its lineage anchor).
+   *   - no durable backup (new project) → `{ hydrated: false }`; the template
+   *     is the correct initial state.
+   *   - backup applied → `{ hydrated: true, parentEtag }`.
+   *   - backup exists but the guest rejected it, OR S3 was unreachable so we
+   *     can't even tell if a backup exists → THROWS. The caller (assign) fails
+   *     closed: it must NOT serve the template over real source, because a
+   *     later idle-suspend would then snapshot/back up the template and destroy
+   *     the user's app (the incident this guards).
+   */
   private async hydrateFromBackup(
     projectId: string,
     handle: FcVmHandle,
     env: Record<string, string>,
-  ): Promise<void> {
+  ): Promise<{ hydrated: boolean; parentEtag?: string }> {
     const archive = await this.fetchArchive(projectId)
     if (!archive) {
       console.log(`[pool] no durable backup for ${projectId} — cold start keeps template`)
-      return
+      return { hydrated: false }
     }
     const token = env.RUNTIME_AUTH_SECRET
     const res = await fetch(`${handle.agentUrl}/pool/hydrate`, {
@@ -703,11 +776,12 @@ export class MetalWarmPool {
         'Content-Type': 'application/gzip',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: archive,
+      body: archive.bytes,
       signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
     })
     if (!res.ok) throw new Error(`/pool/hydrate failed (${res.status}): ${await res.text()}`)
-    console.log(`[pool] hydrated ${projectId} from durable backup (${archive.byteLength} bytes)`)
+    console.log(`[pool] hydrated ${projectId} from durable backup (${archive.bytes.byteLength} bytes, etag=${archive.etag ?? 'none'})`)
+    return { hydrated: true, parentEtag: archive.etag ?? undefined }
   }
 
   /**
@@ -737,22 +811,67 @@ export class MetalWarmPool {
    * logged and never blocks/faults the suspend.
    */
   /**
-   * Upload the packed source to the durable store. A `protected` seam mirroring
-   * `fetchArchive`/`fetchExport` so tests exercise the save wiring without S3.
+   * Lineage-guarded upload of the packed source to the durable store. A
+   * `protected` seam mirroring `fetchArchive`/`fetchExport` so tests exercise
+   * the guard wiring without S3.
    */
-  protected uploadBackup(projectId: string, bytes: Uint8Array): Promise<boolean> {
-    return uploadWorkspaceArchive(projectId, bytes, this.cfg)
+  protected uploadBackupGuarded(
+    projectId: string,
+    bytes: Uint8Array,
+    opts: { parentEtag?: string; adoptWhenUnknown?: boolean },
+  ): Promise<BackupWriteOutcome> {
+    return uploadWorkspaceArchiveGuarded(projectId, bytes, opts, this.cfg)
   }
 
+  /**
+   * Write-side durability with a STRUCTURAL anti-clobber guard. Pull the guest's
+   * latest source and upload it to the durable backup ONLY if this workspace
+   * descends from the object currently in S3 (lineage = `backupParentEtag`).
+   *
+   * A workspace that came up as the template, or from a stale snapshot, has a
+   * lineage that no longer matches the real backup — so instead of overwriting
+   * it (the incident that reduced a 148 MB project to a 337 KB template) the
+   * guard diverts the export to a quarantine key and logs loudly. The one
+   * exception is the migration tail: a resume of a snapshot taken before
+   * lineage stamping shipped has UNKNOWN (not mismatched) lineage, so we trust
+   * it (`adoptWhenUnknown`) to preserve pre-change behavior for legitimate
+   * legacy workspaces — a genuine template origin is never trusted this way.
+   */
   private async saveBackupToStore(a: AssignedVm): Promise<void> {
     const bytes = await this.fetchExport(a.handle, a.runtimeToken)
     if (!bytes) {
       console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
       return
     }
-    const uploaded = await this.uploadBackup(a.projectId, bytes)
-    if (uploaded) {
-      console.log(`[pool] saved source backup for ${a.projectId} (${bytes.byteLength} bytes)`)
+    const outcome = await this.uploadBackupGuarded(a.projectId, bytes, {
+      parentEtag: a.backupParentEtag,
+      // Only a resumed legacy snapshot (origin 'snapshot' with no stamped ETag)
+      // may overwrite an object it can't prove it descends from. A template
+      // origin must NEVER adopt — that is exactly the clobber we prevent.
+      adoptWhenUnknown: a.workspaceOrigin === 'snapshot',
+    })
+    switch (outcome.status) {
+      case 'created':
+      case 'written':
+      case 'adopted':
+        // Re-anchor lineage to the object we just wrote so subsequent suspends
+        // (and adopt-on-restart) keep passing the guard.
+        a.backupParentEtag = outcome.etag ?? a.backupParentEtag
+        a.workspaceOrigin = 'backup'
+        this.writeLive(a)
+        console.log(`[pool] saved source backup for ${a.projectId} (${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`)
+        break
+      case 'conflict':
+        metrics.inc(M.backupConflict)
+        console.error(
+          `[pool] REFUSED to overwrite durable backup for ${a.projectId} — workspace lineage ` +
+            `(origin=${a.workspaceOrigin ?? 'unknown'}, parentEtag=${a.backupParentEtag ?? 'none'}) does not match ` +
+            `current backup (etag=${outcome.currentEtag ?? 'none'}). Export quarantined at ${outcome.quarantineKey} ` +
+            `(${bytes.byteLength} bytes) — durable backup left intact.`,
+        )
+        break
+      case 'skipped':
+        break
     }
   }
 
@@ -884,11 +1003,36 @@ export class MetalWarmPool {
       this.live.remove(projectId) // no longer a live process — snapshot is the source of truth
       const now = Date.now()
       const lastAccessAt = Math.max(a.lastTouchedAt, now)
-      const s: SuspendedVm = { projectId, snapshot, suspendedAt: now, lastAccessAt, rootfsIdentity: this.rootfsId }
+      // Stamp the backup lineage into the snapshot so a resume (here or on
+      // another host) carries it back into AssignedVm.backupParentEtag and its
+      // next suspend can safely overwrite the backup it actually derives from.
+      const s: SuspendedVm = {
+        projectId,
+        snapshot,
+        suspendedAt: now,
+        lastAccessAt,
+        rootfsIdentity: this.rootfsId,
+        backupEtag: a.backupParentEtag,
+      }
       this.suspended.set(projectId, s)
       this.writeIndex(s)
 
       if (this.store.kind !== 'none') {
+        // Anti-clobber for the DURABLE SNAPSHOT tier (mirrors the backup guard):
+        // a template-origin VM must not push a template snapshot over a real
+        // one. If this workspace is still the template AND a durable snapshot
+        // already exists, that existing snapshot descends from real source we
+        // must not overwrite — keep the hot local snapshot and skip the push.
+        // (A genuinely new project has origin 'template' but no durable snapshot
+        // yet, so its first push still creates one.)
+        if (a.workspaceOrigin === 'template' && (await this.store.head(projectId)) != null) {
+          metrics.inc(M.backupTemplateSnapshotBlocked)
+          console.error(
+            `[pool] REFUSED durable snapshot push for ${projectId} — template-origin VM would clobber an ` +
+              `existing durable snapshot. Kept hot local snapshot only; durable snapshot left intact.`,
+          )
+          return s
+        }
         // In dm mode the durable rootfs artifact is the small CoW *diff*, not
         // the mapper device; in full/reflink it's the image file itself.
         const durable = this.mgr.durableRootfs(snapshot.rootfs)
@@ -905,6 +1049,7 @@ export class MetalWarmPool {
           rootfsMode: durable.mode,
           baseIdentity: this.rootfsId,
           rootfsIdentity: this.rootfsId,
+          backupEtag: a.backupParentEtag,
           v: 1,
         }
         await this.heavy
@@ -939,6 +1084,7 @@ export class MetalWarmPool {
       suspendedAt: s.suspendedAt,
       lastAccessAt: s.lastAccessAt,
       rootfsIdentity: this.rootfsId,
+      backupEtag: s.backupEtag,
       v: 1,
     }
     this.index.put(e)
@@ -1016,7 +1162,13 @@ export class MetalWarmPool {
         bytesState: pulled.meta.bytesState,
         bytesRootfs: allocatedBytes(pulled.files.rootfs),
       }
-      s = { projectId, snapshot, suspendedAt: pulled.meta.createdAt, lastAccessAt: Date.now() }
+      s = {
+        projectId,
+        snapshot,
+        suspendedAt: pulled.meta.createdAt,
+        lastAccessAt: Date.now(),
+        backupEtag: pulled.meta.backupEtag,
+      }
       source = 'store'
     }
 
@@ -1054,6 +1206,12 @@ export class MetalWarmPool {
       // Carry the published marker so a resumed server-backed site keeps
       // exporting its writable state (the resume env re-asserts it).
       publishedSubdomain: publishedSubdomainFromEnv(env),
+      // A restored workspace descends from the backup that was current when the
+      // snapshot was taken. Carry that lineage so the next suspend can safely
+      // overwrite it; a legacy snapshot with no stamped ETag stays unknown
+      // (saveBackupToStore's `adoptWhenUnknown` handles that migration case).
+      workspaceOrigin: 'snapshot',
+      backupParentEtag: s.backupEtag,
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)

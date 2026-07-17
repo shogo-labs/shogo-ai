@@ -55,6 +55,15 @@ export const M = {
   resumeLocalHits: 'metal_resume_local_hits_total',
   resumeStoreHits: 'metal_resume_store_hits_total',
   resumeColdMiss: 'metal_resume_cold_miss_total',
+  // Write-side anti-clobber guard (see pool.saveBackupToStore / suspend). A
+  // non-zero rate here means workspaces are coming up with a lineage that
+  // doesn't match their durable backup (template reverts, stale snapshots,
+  // cross-host races) — the exact condition that used to silently destroy
+  // real backups. `backupConflict` = a source export quarantined instead of
+  // overwriting; `backupTemplateSnapshotBlocked` = a template-origin VM
+  // prevented from clobbering an existing durable snapshot.
+  backupConflict: 'metal_backup_conflict_total',
+  backupTemplateSnapshotBlocked: 'metal_backup_template_snapshot_blocked_total',
   diskUsedPct: 'metal_disk_used_pct',
   diskFreeBytes: 'metal_disk_free_bytes',
   cacheLocalCount: 'metal_cache_local_count',
