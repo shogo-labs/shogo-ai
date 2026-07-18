@@ -61,9 +61,13 @@ export const M = {
   // cross-host races) — the exact condition that used to silently destroy
   // real backups. `backupConflict` = a source export quarantined instead of
   // overwriting; `backupTemplateSnapshotBlocked` = a template-origin VM
-  // prevented from clobbering an existing durable snapshot.
+  // prevented from clobbering an existing durable snapshot;
+  // `backupSizeRegression` = the size backstop refused an otherwise-permitted
+  // write (an `adopt`) that would have collapsed a real backup to a
+  // template-shaped one — the mislabeled-lineage clobber vector.
   backupConflict: 'metal_backup_conflict_total',
   backupTemplateSnapshotBlocked: 'metal_backup_template_snapshot_blocked_total',
+  backupSizeRegression: 'metal_backup_size_regression_total',
   diskUsedPct: 'metal_disk_used_pct',
   diskFreeBytes: 'metal_disk_free_bytes',
   cacheLocalCount: 'metal_cache_local_count',

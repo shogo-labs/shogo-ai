@@ -861,15 +861,23 @@ export class MetalWarmPool {
         this.writeLive(a)
         console.log(`[pool] saved source backup for ${a.projectId} (${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`)
         break
-      case 'conflict':
+      case 'conflict': {
         metrics.inc(M.backupConflict)
+        if (outcome.reason === 'size-regression') metrics.inc(M.backupSizeRegression)
+        const why =
+          outcome.reason === 'size-regression'
+            ? `SIZE BACKSTOP tripped — this ${bytes.byteLength}-byte (template-shaped) export would have ` +
+              `collapsed a real durable backup; refusing to adopt/overwrite`
+            : `workspace lineage (origin=${a.workspaceOrigin ?? 'unknown'}, ` +
+              `parentEtag=${a.backupParentEtag ?? 'none'}) does not match current backup ` +
+              `(etag=${outcome.currentEtag ?? 'none'})`
         console.error(
-          `[pool] REFUSED to overwrite durable backup for ${a.projectId} — workspace lineage ` +
-            `(origin=${a.workspaceOrigin ?? 'unknown'}, parentEtag=${a.backupParentEtag ?? 'none'}) does not match ` +
-            `current backup (etag=${outcome.currentEtag ?? 'none'}). Export quarantined at ${outcome.quarantineKey} ` +
-            `(${bytes.byteLength} bytes) — durable backup left intact.`,
+          `[pool] REFUSED to overwrite durable backup for ${a.projectId} — ${why}. ` +
+            `Export quarantined at ${outcome.quarantineKey} (${bytes.byteLength} bytes) — ` +
+            `durable backup left intact.`,
         )
         break
+      }
       case 'skipped':
         break
     }

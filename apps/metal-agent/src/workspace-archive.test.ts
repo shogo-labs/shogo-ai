@@ -13,7 +13,17 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { decideBackupWrite, etagEq, quarantineKey } from './workspace-archive'
+import {
+  decideBackupWrite,
+  etagEq,
+  isTemplateRegression,
+  quarantineKey,
+  REAL_MIN_BYTES,
+  TEMPLATE_MAX_BYTES,
+} from './workspace-archive'
+
+const TEMPLATE_BYTES = 337_752 // an observed real template export size
+const REAL_BYTES = 6_537_360 // an observed real user backup size
 
 describe('decideBackupWrite (anti-clobber invariant)', () => {
   test('no object in S3 → create the first backup', () => {
@@ -48,6 +58,85 @@ describe('decideBackupWrite (anti-clobber invariant)', () => {
     expect(
       decideBackupWrite({ exists: true, currentEtag: '"current"', parentEtag: undefined, adoptWhenUnknown: true }),
     ).toBe('adopt')
+    // A legacy resume carrying REAL content over a real backup still adopts:
+    // the size backstop only fires on a regression to a template-shaped export.
+    expect(
+      decideBackupWrite({
+        exists: true,
+        currentEtag: '"current"',
+        parentEtag: undefined,
+        adoptWhenUnknown: true,
+        currentSize: REAL_BYTES,
+        incomingSize: REAL_BYTES + 1000,
+      }),
+    ).toBe('adopt')
+  })
+
+  test('THE SECOND VECTOR: a template snapshot laundered to origin=snapshot must NOT adopt a template over a real backup', () => {
+    // dal-1 clobber path: a template VM snapshotted locally, resumed as
+    // origin 'snapshot' with NO parent etag, then adopted a ~337 KB template
+    // over a real multi-MB backup. The size backstop turns that adopt into a
+    // quarantine so the real backup survives.
+    expect(
+      decideBackupWrite({
+        exists: true,
+        currentEtag: '"real-6mb"',
+        parentEtag: undefined,
+        adoptWhenUnknown: true,
+        currentSize: REAL_BYTES,
+        incomingSize: TEMPLATE_BYTES,
+      }),
+    ).toBe('quarantine')
+  })
+
+  test('size backstop defers to lineage when sizes are unknown (fails safe, no false quarantine)', () => {
+    // Old callers / a HEAD that could not read a size must not change behavior:
+    // adopt still adopts when we cannot prove a regression.
+    expect(
+      decideBackupWrite({
+        exists: true,
+        currentEtag: '"current"',
+        parentEtag: undefined,
+        adoptWhenUnknown: true,
+        currentSize: null,
+        incomingSize: TEMPLATE_BYTES,
+      }),
+    ).toBe('adopt')
+  })
+
+  test('size backstop does NOT block a matching-lineage overwrite (legit user shrink persists)', () => {
+    // An overwrite means the VM PROVABLY descends from the current backup, so a
+    // shrink is the same workspace evolving (e.g. the user deleted assets). The
+    // backstop only guards the unverifiable `adopt` path, never a real overwrite.
+    expect(
+      decideBackupWrite({
+        exists: true,
+        currentEtag: '"v2"',
+        parentEtag: '"v2"',
+        currentSize: REAL_BYTES,
+        incomingSize: TEMPLATE_BYTES,
+      }),
+    ).toBe('overwrite')
+  })
+})
+
+describe('isTemplateRegression (size backstop core)', () => {
+  test('real → template-shaped is a regression', () => {
+    expect(isTemplateRegression(REAL_BYTES, TEMPLATE_BYTES)).toBe(true)
+  })
+  test('real → real is not', () => {
+    expect(isTemplateRegression(REAL_BYTES, REAL_BYTES)).toBe(false)
+  })
+  test('small (sub-real) current → template is not (avoids false-positive on tiny real projects)', () => {
+    // Current below the real floor: we can't be sure it was real, so defer.
+    expect(isTemplateRegression(TEMPLATE_MAX_BYTES + 1, TEMPLATE_BYTES)).toBe(false)
+  })
+  test('unknown sizes never regress', () => {
+    expect(isTemplateRegression(null, TEMPLATE_BYTES)).toBe(false)
+    expect(isTemplateRegression(REAL_BYTES, null)).toBe(false)
+  })
+  test('boundary: incoming exactly at the template ceiling, current exactly at the real floor', () => {
+    expect(isTemplateRegression(REAL_MIN_BYTES, TEMPLATE_MAX_BYTES)).toBe(true)
   })
 
   test('cross-host race: a losing writer whose lineage no longer matches → quarantine', () => {
