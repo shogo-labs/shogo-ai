@@ -2502,3 +2502,90 @@ jobs:
             -R "$GITHUB_REPOSITORY" \
             --ref "$REF" \
             -f environment=production
+
+  # ===========================================================================
+  # Stage 8: Metal node-agent release (fold the bare-metal fleet into the tag
+  # cycle). The metal fleet deploys PULL-based via metal-agent-deploy.yml; on a
+  # `v*` tag we publish the `stable` channel to BOTH production control planes so
+  # a release reaches the Firecracker hosts too — it is no longer a separate
+  # manual dispatch. Mirrors dispatch-metal-runtime-image (which handles the
+  # guest runtime image); this handles the host agent bundle + golden-rootfs
+  # rebuild. Hosts converge on their next heartbeat (apps/api metal-agent-release).
+  # ===========================================================================
+  dispatch-metal-agent-release:
+    name: Publish prod metal-agent release (stable)
+    runs-on: ubuntu-latest
+    needs: [resolve-config, deploy-us, deploy-eu, dispatch-metal-runtime-image]
+    # Production tag only, and only once both regional control-plane deploys AND
+    # the runtime-image dispatch succeeded (we're about to ask hosts to rebuild
+    # their rootfs from that image).
+    if: |
+      always() &&
+      needs.resolve-config.outputs.is_production == 'true' &&
+      needs.deploy-us.result == 'success' &&
+      needs.deploy-eu.result == 'success' &&
+      needs.dispatch-metal-runtime-image.result == 'success'
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Wait for the prod runtime image, then publish stable to both regions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # dispatch-metal-runtime-image kicked off runtime-multiarch (production)
+          # fire-and-forget. A `stable` release with rebuildRootfs=true tells every
+          # host to rebuild its golden rootfs from that freshly-published image, so
+          # the image MUST exist first — wait for that run (on THIS commit) to
+          # finish before flipping the channel. Same retry/wait pattern as
+          # finalize-release.yml.
+          echo "::notice::Waiting for runtime-multiarch (production) on $SHA before publishing metal-agent stable"
+          deadline=$(( $(date +%s) + 3600 ))
+          get_run() {
+            local attempt out
+            for attempt in 1 2 3 4 5; do
+              if out=$(gh run list --workflow runtime-multiarch.yml --commit "$SHA" \
+                         --json status,conclusion --limit 1 2>/dev/null); then
+                printf '%s' "$out"; return 0
+              fi
+              echo "  transient error querying runtime-multiarch run (attempt $attempt/5)" >&2
+              sleep $(( attempt * 5 ))
+            done
+            return 1
+          }
+          while :; do
+            run=$(get_run || echo '[]')
+            status=$(jq -r '.[0].status // "missing"' <<<"$run")
+            concl=$(jq -r '.[0].conclusion // ""' <<<"$run")
+            if [ "$status" = "completed" ]; then
+              if [ "$concl" = "success" ]; then
+                echo "runtime-multiarch (production) succeeded — proceeding."
+                break
+              fi
+              echo "::error::runtime-multiarch (production) concluded '$concl' for $SHA — refusing to publish a rootfs-rebuild release."
+              exit 1
+            fi
+            if [ "$(date +%s)" -gt "$deadline" ]; then
+              echo "::error::Timed out waiting for runtime-multiarch (production) on $SHA."
+              exit 1
+            fi
+            echo "  runtime-multiarch: status=$status (waiting)"
+            sleep 30
+          done
+
+          # Each production region is a distinct control plane (separate DB), so
+          # publish the pointer to both. rebuild_rootfs=true because a tag release
+          # may carry guest/runtime changes now baked into the new runtime image.
+          for TARGET in production-us production-eu; do
+            echo "::notice::Publishing metal-agent stable (rebuildRootfs) to $TARGET @ $REF"
+            gh workflow run metal-agent-deploy.yml \
+              -R "$GITHUB_REPOSITORY" \
+              --ref "$REF" \
+              -f environment="$TARGET" \
+              -f channel=stable \
+              -f rebuild_rootfs=true
+          done
+          echo "::notice::Metal-agent stable published to production-us + production-eu; hosts converge on next heartbeat."
