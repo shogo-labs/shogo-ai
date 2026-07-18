@@ -140,9 +140,9 @@ function ImageThumbnail({
 
   if (hasError) {
     return (
-      <View className="max-w-[200px] rounded-md border border-border bg-muted p-2">
-        <Text className="text-xs text-muted-foreground">
-          Failed to load image
+      <View className="rounded-lg border border-border bg-muted items-center justify-center" style={{ width: 72, height: 72 }}>
+        <Text className="text-[10px] text-muted-foreground text-center">
+          Failed to load
         </Text>
       </View>
     )
@@ -159,14 +159,15 @@ function ImageThumbnail({
         accessibilityHint="Opens a larger preview."
         className={Platform.OS === "web" ? "cursor-zoom-in" : undefined}
       >
-        <Image
-          source={{ uri: url }}
-          className="max-w-[280px] rounded-md"
-          resizeMode="contain"
-          accessibilityLabel={`Image attachment ${index + 1}`}
-          onError={() => setHasError(true)}
-          style={{ width: 280, aspectRatio: 4 / 3 }}
-        />
+        <View className="rounded-lg overflow-hidden border border-border/40" style={{ width: 96, height: 72 }}>
+          <Image
+            source={{ uri: url }}
+            resizeMode="cover"
+            accessibilityLabel={`Image attachment ${index + 1}`}
+            onError={() => setHasError(true)}
+            style={{ width: 96, height: 72 }}
+          />
+        </View>
       </Pressable>
       <ImagePreviewModal
         visible={showModal}
