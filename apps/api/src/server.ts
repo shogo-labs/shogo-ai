@@ -17,6 +17,7 @@ import { auth } from './auth'
 import { getPriceId, getInstancePriceId, type PaidInstanceSize } from './config/stripe-prices'
 import { getCurrencyForCountry, formatPrice, SUPPORTED_CURRENCIES } from './config/currencies'
 import { getExchangeRates, convertPrice } from './services/exchange-rate.service'
+import { buildRegionalPlans } from './config/regional-plan-pricing'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
 import * as appleIap from './services/apple-iap.service'
@@ -7010,31 +7011,7 @@ app.get('/api/billing/regional-pricing', async (c) => {
       return currency.decimalPlaces === 0 ? Math.round(converted) : Math.round(converted * 100) / 100
     }
 
-    const plans = {
-      free: { monthly: 0, annual: 0 },
-      basic: { monthly: convert(8), annual: convert(80) },
-      pro_100: { monthly: convert(12), annual: convert(120) },
-      pro_200: { monthly: convert(25), annual: convert(250) },
-      pro_400: { monthly: convert(50), annual: convert(500) },
-      pro_800: { monthly: convert(98), annual: convert(980) },
-      pro_1600: { monthly: convert(190), annual: convert(1900) },
-      pro_2400: { monthly: convert(280), annual: convert(2800) },
-      pro_4000: { monthly: convert(460), annual: convert(4600) },
-      pro_6000: { monthly: convert(680), annual: convert(6800) },
-      pro_10000: { monthly: convert(1100), annual: convert(11000) },
-      pro_15000: { monthly: convert(1650), annual: convert(16500) },
-      pro_20000: { monthly: convert(2200), annual: convert(22000) },
-      business_200: { monthly: convert(40), annual: convert(400) },
-      business_400: { monthly: convert(65), annual: convert(650) },
-      business_800: { monthly: convert(130), annual: convert(1300) },
-      business_1600: { monthly: convert(250), annual: convert(2500) },
-      business_2400: { monthly: convert(365), annual: convert(3650) },
-      business_4000: { monthly: convert(600), annual: convert(6000) },
-      business_6000: { monthly: convert(885), annual: convert(8850) },
-      business_10000: { monthly: convert(1430), annual: convert(14300) },
-      business_15000: { monthly: convert(2145), annual: convert(21450) },
-      business_20000: { monthly: convert(2860), annual: convert(28600) },
-    }
+    const plans = buildRegionalPlans(convert)
 
     return c.json({
       country,

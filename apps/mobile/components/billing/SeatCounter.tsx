@@ -28,14 +28,14 @@ export function SeatCounter({
   const inc = () => onChange(Math.min(max, value + 1))
 
   return (
-    <View className="flex-row items-center justify-between border border-border rounded-md bg-background px-3 py-2">
-      <Text className="text-sm text-foreground">{label}</Text>
+    <View className="flex-row items-center justify-between rounded-lg bg-muted/60 px-3 py-2.5">
+      <Text className="text-sm font-medium text-foreground">{label}</Text>
       <View className="flex-row items-center gap-3">
         <Pressable
           onPress={dec}
           disabled={value <= min}
           className={cn(
-            'h-8 w-8 items-center justify-center rounded-md border border-border',
+            'h-9 w-9 items-center justify-center rounded-full border border-border bg-background',
             value <= min ? 'opacity-40' : 'active:bg-muted'
           )}
           accessibilityLabel="Decrease seats"
@@ -49,7 +49,7 @@ export function SeatCounter({
           onPress={inc}
           disabled={value >= max}
           className={cn(
-            'h-8 w-8 items-center justify-center rounded-md border border-border',
+            'h-9 w-9 items-center justify-center rounded-full border border-border bg-background',
             value >= max ? 'opacity-40' : 'active:bg-muted'
           )}
           accessibilityLabel="Increase seats"
