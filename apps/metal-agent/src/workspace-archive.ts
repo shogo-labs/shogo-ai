@@ -59,15 +59,22 @@ export interface WorkspaceArchive {
  *              see `adoptWhenUnknown`). Self-heals: the returned etag becomes
  *              the lineage for subsequent writes.
  *   conflict — the writer did NOT descend from the current object (template, a
- *              stale snapshot, or a losing racer). The bytes were diverted to
- *              `quarantineKey`; the durable backup was left UNTOUCHED.
+ *              stale snapshot, or a losing racer), OR the write would have
+ *              collapsed a real backup to a template-shaped one (`reason`). The
+ *              bytes were diverted to `quarantineKey`; the backup was UNTOUCHED.
  *   skipped  — S3 is not configured (best-effort backups disabled).
  */
 export type BackupWriteOutcome =
   | { status: 'created'; etag: string | null }
   | { status: 'written'; etag: string | null }
   | { status: 'adopted'; etag: string | null }
-  | { status: 'conflict'; quarantineKey: string; currentEtag: string | null }
+  | {
+      status: 'conflict'
+      quarantineKey: string
+      currentEtag: string | null
+      /** Why we quarantined: a lineage mismatch, or the size backstop tripping. */
+      reason: 'lineage' | 'size-regression'
+    }
   | { status: 'skipped' }
 
 /** Bucket + credential resolution shared by fetch/upload. Null when S3 unusable. */
@@ -122,13 +129,41 @@ export function etagEq(a: string | null | undefined, b: string | null | undefine
 export type BackupWriteAction = 'create' | 'overwrite' | 'adopt' | 'quarantine'
 
 /**
+ * Template exports (the "Project Ready" placeholder workspace) pack to ~337 KB;
+ * real user source is materially larger. A write at or below this size is
+ * "template-shaped". Generous ceiling so a slightly-heavier template variant
+ * still counts, with a clear gap below {@link REAL_MIN_BYTES}.
+ */
+export const TEMPLATE_MAX_BYTES = 512 * 1024
+/** A durable object at or above this size is unambiguously real user source. */
+export const REAL_MIN_BYTES = 1024 * 1024
+
+/**
+ * True when replacing a `currentSize`-byte object with `incomingSize` bytes
+ * would collapse a real backup down to a template-shaped one — the exact
+ * signature of the clobber incident (multi-MB real → ~337 KB template). Used as
+ * a size backstop on the `adopt` path so a mislabeled-lineage template can
+ * never overwrite real source. Fails SAFE: when either size is unknown it
+ * returns false (defer to the lineage decision).
+ */
+export function isTemplateRegression(
+  currentSize: number | null,
+  incomingSize: number | null,
+): boolean {
+  if (currentSize == null || incomingSize == null) return false
+  return currentSize >= REAL_MIN_BYTES && incomingSize <= TEMPLATE_MAX_BYTES
+}
+
+/**
  * Pure decision core of {@link uploadWorkspaceArchiveGuarded}, factored out so
  * the anti-clobber invariant is unit-testable without S3. Given whether an
- * object exists, its current ETag, the writer's lineage ETag, and whether an
- * unknown-lineage write may be trusted (migration), returns what to do:
+ * object exists, its current ETag, the writer's lineage ETag, whether an
+ * unknown-lineage write may be trusted (migration), and the two sizes, returns
+ * what to do:
  *   - nothing in S3                    → 'create'
  *   - writer descends from current     → 'overwrite'
- *   - unknown lineage + adopt allowed  → 'adopt'
+ *   - unknown lineage + adopt allowed  → 'adopt' … UNLESS adopting would regress
+ *     a real backup to a template-shaped one (size backstop) → 'quarantine'
  *   - otherwise (template / stale / racer) → 'quarantine' (NEVER clobber)
  */
 export function decideBackupWrite(input: {
@@ -136,10 +171,27 @@ export function decideBackupWrite(input: {
   currentEtag: string | null
   parentEtag?: string | null
   adoptWhenUnknown?: boolean
+  currentSize?: number | null
+  incomingSize?: number | null
 }): BackupWriteAction {
   if (!input.exists) return 'create'
   if (input.parentEtag && etagEq(input.parentEtag, input.currentEtag)) return 'overwrite'
-  if (!input.parentEtag && input.adoptWhenUnknown) return 'adopt'
+  if (!input.parentEtag && input.adoptWhenUnknown) {
+    // SIZE BACKSTOP for the `adopt` escape hatch. `adoptWhenUnknown` trusts a
+    // snapshot with unknown lineage (the pre-guard migration tail). But a
+    // template snapshot that has been through one suspend→resume cycle ALSO
+    // arrives here as origin 'snapshot' with no parent ETag — and adopting it
+    // would collapse a real multi-MB backup down to a ~337 KB template (the
+    // clobber incident's second vector, observed re-clobbering new projects
+    // after a cross-host double-assign). Refuse when the adopt would regress a
+    // real object to a template-shaped one; the bytes go to quarantine
+    // (recoverable) and the real backup is left intact. A legitimate legacy
+    // resume carries real content, so its adopt is never a regression.
+    if (isTemplateRegression(input.currentSize ?? null, input.incomingSize ?? null)) {
+      return 'quarantine'
+    }
+    return 'adopt'
+  }
   return 'quarantine'
 }
 
@@ -150,6 +202,18 @@ async function statEtag(file: import('bun').S3File): Promise<string | null> {
     return st.etag ?? null
   } catch {
     return null
+  }
+}
+
+/** Best-effort ETag + size of an object; nulls when absent or on any HEAD error. */
+async function statMeta(
+  file: import('bun').S3File,
+): Promise<{ etag: string | null; size: number | null }> {
+  try {
+    const st = await file.stat()
+    return { etag: st.etag ?? null, size: typeof st.size === 'number' ? st.size : null }
+  } catch {
+    return { etag: null, size: null }
   }
 }
 
@@ -209,17 +273,21 @@ export async function uploadWorkspaceArchiveGuarded(
   const key = archiveKey(projectId)
   const file = s3.client.file(key)
 
-  // `exists()` decides the branch; `stat()` reads the ETag we compare lineage
-  // against. A transport error here propagates (the write is best-effort and
-  // the caller logs it) rather than risk a wrong overwrite/quarantine decision.
+  // `exists()` decides the branch; `stat()` reads the ETag (lineage anchor) AND
+  // the size (the backstop input) we compare against. A transport error here
+  // propagates (the write is best-effort and the caller logs it) rather than
+  // risk a wrong overwrite/quarantine decision.
   const exists = await file.exists()
-  const currentEtag = exists ? await statEtag(file) : null
+  const cur = exists ? await statMeta(file) : { etag: null, size: null }
+  const currentEtag = cur.etag
 
   const action = decideBackupWrite({
     exists,
     currentEtag,
     parentEtag: opts.parentEtag,
     adoptWhenUnknown: opts.adoptWhenUnknown,
+    currentSize: cur.size,
+    incomingSize: bytes.byteLength,
   })
 
   switch (action) {
@@ -233,11 +301,17 @@ export async function uploadWorkspaceArchiveGuarded(
       await s3.client.write(key, bytes, { type: 'application/gzip' })
       return { status: 'adopted', etag: await statEtag(file) }
     case 'quarantine': {
-      // The writer does NOT descend from the current backup. NEVER clobber:
-      // divert to a quarantine key so the bytes are recoverable + investigable.
+      // The writer either does NOT descend from the current backup, or its
+      // export would collapse a real backup to a template (size backstop).
+      // NEVER clobber: divert to a quarantine key so the bytes are recoverable
+      // + investigable. `reason` distinguishes the two so ops can tell a benign
+      // lineage race from the backstop catching a real clobber attempt.
       const qkey = quarantineKey(projectId)
       await s3.client.write(qkey, bytes, { type: 'application/gzip' })
-      return { status: 'conflict', quarantineKey: qkey, currentEtag }
+      const reason: 'lineage' | 'size-regression' = isTemplateRegression(cur.size, bytes.byteLength)
+        ? 'size-regression'
+        : 'lineage'
+      return { status: 'conflict', quarantineKey: qkey, currentEtag, reason }
     }
   }
 }

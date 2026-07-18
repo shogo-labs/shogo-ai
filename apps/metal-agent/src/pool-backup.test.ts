@@ -171,7 +171,12 @@ describe('pool write-side backup (save on stop)', () => {
 
   test('a conflict quarantines: bumps the metric and leaves the durable lineage UNCHANGED (no clobber)', async () => {
     const pool = makePool(dir)
-    pool.outcome = { status: 'conflict', quarantineKey: 'conflict/p1/123-abc.tar.gz', currentEtag: '"real"' }
+    pool.outcome = {
+      status: 'conflict',
+      quarantineKey: 'conflict/p1/123-abc.tar.gz',
+      currentEtag: '"real"',
+      reason: 'lineage',
+    }
     globalThis.fetch = mock(async () => new Response(new Uint8Array([3, 3, 7]), { status: 200 })) as any
 
     const before = metrics.getCounter(M.backupConflict)
@@ -181,6 +186,29 @@ describe('pool write-side backup (save on stop)', () => {
     // become the durable backup, so its "origin" stays template.
     const a = pool.assignedEntry('p1')!
     expect(a.workspaceOrigin).toBe('template')
+    expect(a.backupParentEtag).toBeUndefined()
+  })
+
+  test('a size-regression conflict bumps BOTH the conflict and the size-regression metric', async () => {
+    const pool = makePool(dir)
+    pool.outcome = {
+      status: 'conflict',
+      quarantineKey: 'conflict/p1/456-def.tar.gz',
+      currentEtag: '"real"',
+      reason: 'size-regression',
+    }
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([1, 2]), { status: 200 })) as any
+
+    const conflictBefore = metrics.getCounter(M.backupConflict)
+    const regressionBefore = metrics.getCounter(M.backupSizeRegression)
+    // A laundered template snapshot (origin=snapshot, no stamped etag): without
+    // the backstop this would have adopted a template over a real backup.
+    await pool.save('p1', 'tok', { workspaceOrigin: 'snapshot' })
+    expect(metrics.getCounter(M.backupConflict)).toBe(conflictBefore + 1)
+    expect(metrics.getCounter(M.backupSizeRegression)).toBe(regressionBefore + 1)
+    // The real backup is untouched, so lineage is NOT re-anchored.
+    const a = pool.assignedEntry('p1')!
+    expect(a.workspaceOrigin).toBe('snapshot')
     expect(a.backupParentEtag).toBeUndefined()
   })
 })
