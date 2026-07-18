@@ -6032,4 +6032,10 @@ export default {
     close: ptyWs.close,
   },
   idleTimeout: 0,
+  // Durable-backup hydration (`POST /pool/hydrate`) streams a full project
+  // tarball — source + uploaded assets + built `dist/` — into the guest. Bun's
+  // default 128 MB request-body cap rejected large restored workspaces with a
+  // 413, leaving those projects unable to load. Raise the cap so realistic
+  // asset-heavy workspaces hydrate; 1 GiB stays well under the guest's 4 GB RAM.
+  maxRequestBodySize: 1024 * 1024 * 1024,
 }
