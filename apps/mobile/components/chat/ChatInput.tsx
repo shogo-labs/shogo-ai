@@ -58,6 +58,7 @@ import {
   Mic,
   Sparkles,
   Languages,
+  Play,
 } from "lucide-react-native"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
@@ -1773,10 +1774,11 @@ function ChatInputImpl({
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8, paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4 }}
+            contentContainerStyle={{ gap: 8, paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4, alignItems: 'flex-end' }}
           >
             {pendingFiles.map((file) => {
               const isImage = file.type.startsWith("image/")
+              const isVideo = file.type.startsWith("video/")
               return (
                 <View key={file.id} className="relative">
                   {isImage ? (
@@ -1786,6 +1788,17 @@ function ChatInputImpl({
                         style={{ width: 72, height: 72 }}
                         resizeMode="cover"
                       />
+                    </View>
+                  ) : isVideo ? (
+                    <View className="rounded-lg overflow-hidden border border-border/60 bg-black/80 items-center justify-center" style={{ width: 72, height: 72 }}>
+                      <View className="absolute inset-0 items-center justify-center">
+                        <View className="rounded-full bg-white/20 items-center justify-center" style={{ width: 32, height: 32 }}>
+                          <Play size={16} className="text-white" fill="white" />
+                        </View>
+                      </View>
+                      <Text className="text-[9px] text-white/50 absolute bottom-1.5 left-0 right-0 text-center" numberOfLines={1}>
+                        {file.name}
+                      </Text>
                     </View>
                   ) : (
                     <View
