@@ -72,6 +72,7 @@ import {
 } from "./long-text-utils"
 import { resolveChatInputTextChange, type ChatInputTextChange } from "./chat-input-text-change"
 import { FileViewerModal } from "./FileViewerModal"
+import { VideoPreviewModal } from "./VideoPreviewModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
 import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
@@ -540,6 +541,7 @@ function ChatInputImpl({
   // chip).
   const [pastedTexts, setPastedTexts] = useState<PastedTextEntry[]>([])
   const [viewingPastedId, setViewingPastedId] = useState<string | null>(null)
+  const [previewVideoFile, setPreviewVideoFile] = useState<{ url: string; name: string } | null>(null)
   const lastRestoredDraftNonceRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -1790,16 +1792,22 @@ function ChatInputImpl({
                       />
                     </View>
                   ) : isVideo ? (
-                    <View className="rounded-lg overflow-hidden border border-border/60 bg-black/80 items-center justify-center" style={{ width: 72, height: 72 }}>
-                      <View className="absolute inset-0 items-center justify-center">
-                        <View className="rounded-full bg-white/20 items-center justify-center" style={{ width: 32, height: 32 }}>
-                          <Play size={16} className="text-white" fill="white" />
+                    <Pressable
+                      onPress={() => setPreviewVideoFile({ url: file.dataUrl, name: file.name })}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Preview video ${file.name}`}
+                    >
+                      <View className="rounded-lg overflow-hidden border border-border/60 bg-black/80 items-center justify-center" style={{ width: 72, height: 72 }}>
+                        <View className="absolute inset-0 items-center justify-center">
+                          <View className="rounded-full bg-white/20 items-center justify-center" style={{ width: 32, height: 32 }}>
+                            <Play size={16} className="text-white" fill="white" />
+                          </View>
                         </View>
+                        <Text className="text-[9px] text-white/50 absolute bottom-1.5 left-0 right-0 text-center" numberOfLines={1}>
+                          {file.name}
+                        </Text>
                       </View>
-                      <Text className="text-[9px] text-white/50 absolute bottom-1.5 left-0 right-0 text-center" numberOfLines={1}>
-                        {file.name}
-                      </Text>
-                    </View>
+                    </Pressable>
                   ) : (
                     <View
                       className="flex-row items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2"
@@ -2340,6 +2348,13 @@ function ChatInputImpl({
         </View>
         </View>
       </View>
+
+      <VideoPreviewModal
+        visible={previewVideoFile !== null}
+        onClose={() => setPreviewVideoFile(null)}
+        url={previewVideoFile?.url ?? ""}
+        title={previewVideoFile?.name ?? "Video preview"}
+      />
 
       {viewingPasted && (
         <FileViewerModal
