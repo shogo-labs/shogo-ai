@@ -65,6 +65,7 @@ mock.module('../routes/api-keys',          () => ({ resolveApiKey: async () => (
 mock.module('../lib/push-notifications',   () => ({ sendPushToInstance: async () => ({ sent: false }) }))
 mock.module('../lib/proxy-billing-session',() => ({
   openSession: () => null, closeSession: async () => null, hasSession: () => false,
+  hasActiveSession: () => false,
   setQualitySignals: () => false, accumulateUsage: () => {}, accumulateImageUsage: () => {},
 }))
 mock.module('../lib/chat-usage-tracker',   () => ({ trackChatStreamForBilling: () => {} }))

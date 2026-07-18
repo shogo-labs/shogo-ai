@@ -42,6 +42,7 @@ mock.module('../services/billing.service', () => ({
 mock.module('../lib/proxy-billing-session', () => ({
   accumulateUsage: () => {},
   hasSession: () => false,
+  hasActiveSession: () => false,
 }))
 
 mock.module('../lib/project-user-context', () => ({

@@ -1754,7 +1754,7 @@ function normalizeThinkingForModel(parsed: any, apiModel: string): void {
 import { calculateUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing.service'
 import { getProjectUser } from '../lib/project-user-context'
-import { accumulateUsage, accumulateImageUsage } from '../lib/proxy-billing-session'
+import { accumulateUsage, accumulateImageUsage, hasActiveSession } from '../lib/proxy-billing-session'
 
 /**
  * Build the time-gating detail attached to a 402 "usage limit reached"
@@ -1819,6 +1819,32 @@ function resolveInternalUsage(c: any, tokenPayload: ProxyTokenPayload): { action
   const tag = c.req.header(INTERNAL_USAGE_TAG_HEADER)
   if (tag && INTERNAL_USAGE_TAGS.has(tag)) return { actionType: tag }
   return null
+}
+
+/**
+ * Whether this proxied call belongs to an already-admitted chat turn that is
+ * still in flight (a billing session is open for it).
+ *
+ * A chat turn is gated for usage exactly once, at turn start
+ * (project-chat / workspace-chat). It then makes up to AGENT_MAX_ITERATIONS
+ * proxied LLM/image calls. Re-running the 402 usage pre-flight on every one of
+ * those would drop a long build halfway ("model did not produce a final answer
+ * after tool execution"). When a session is open the turn already passed the
+ * start gate, so the per-call pre-flight is skipped and the message is allowed
+ * to finish; the overage is billed at session close and gates the NEXT turn.
+ *
+ * Resolves the billing project id the same way `recordUsage` does (the
+ * `'api-key'` / `'system'` sentinels are not real projects and never carry a
+ * chat billing session), and keys the lookup on the forwarded
+ * `x-chat-session-id` header when present.
+ */
+function isTurnInFlight(c: any, tokenPayload: ProxyTokenPayload): boolean {
+  const billingProjectId =
+    tokenPayload.projectId === 'api-key' || tokenPayload.projectId === 'system'
+      ? null
+      : (tokenPayload.projectId || null)
+  if (!billingProjectId) return false
+  return hasActiveSession(billingProjectId, c.req.header('x-chat-session-id') || null)
 }
 
 export async function recordUsage(
@@ -2472,8 +2498,9 @@ export function aiProxyRoutes() {
     const internalUsage = resolveInternalUsage(c, tokenPayload)
 
     // Pre-check: reject if workspace has no included USD left (skip in local dev
-    // and for internal, non-billable completions)
-    if (!isLocalDev && !internalUsage && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+    // and for internal, non-billable completions). An already-admitted chat turn
+    // that is still in flight is never re-gated mid-message (see isTurnInFlight).
+    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
         {
@@ -2686,7 +2713,7 @@ export function aiProxyRoutes() {
     // chat/completions for the credit-ledger FK rationale).
     const internalUsage = resolveInternalUsage(c, tokenPayload)
 
-    if (!isLocalDev && !internalUsage && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
         { error: { message: 'Usage limit reached.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
@@ -2996,8 +3023,9 @@ export function aiProxyRoutes() {
     // chat/completions for the credit-ledger FK rationale).
     const internalUsage = resolveInternalUsage(c, tokenPayload)
 
-    // Pre-check usage balance (skip in local dev and for internal usage)
-    if (!isLocalDev && !internalUsage && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+    // Pre-check usage balance (skip in local dev and for internal usage). An
+    // already-admitted chat turn still in flight is never re-gated mid-message.
+    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
         { type: 'error', error: { type: 'billing_error', message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', ...usageLimit } },
@@ -3420,7 +3448,9 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!await billingService.hasBalance(tokenPayload.workspaceId)) {
+    // An already-admitted chat turn still in flight is never re-gated
+    // mid-message — a build that generates images mid-turn isn't interrupted.
+    if (!isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
         { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
@@ -3514,7 +3544,9 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!await billingService.hasBalance(tokenPayload.workspaceId)) {
+    // An already-admitted chat turn still in flight is never re-gated
+    // mid-message — a build that edits images mid-turn isn't interrupted.
+    if (!isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
         { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },

@@ -91,6 +91,7 @@ mock.module('../lib/proxy-billing-session', () => ({
   closeSession: async () => ({ done: true }),
   setQualitySignals: () => false,
   hasSession: () => false,
+  hasActiveSession: () => false,
   accumulateUsage: () => {},
 }))
 
