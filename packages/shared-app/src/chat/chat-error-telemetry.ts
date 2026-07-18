@@ -31,7 +31,7 @@
 /** Tag key that marks an event as a deliberate Shogo capture (never noise). */
 export const SHOGO_TELEMETRY_TAG = 'shogo_telemetry'
 
-export type ChatErrorClass = 'user-abort' | 'connection' | 'other'
+export type ChatErrorClass = 'user-abort' | 'connection' | 'parse' | 'other'
 
 /** Best-effort message extraction from an unknown thrown value. */
 export function chatErrorMessage(err: unknown): string {
@@ -60,6 +60,31 @@ const USER_ABORT_PATTERNS = [
   /operation was aborted/i,
   /\bAbortError\b/i,
 ]
+
+// Stream-decoding failures thrown by the AI SDK's SSE/JSON reader
+// (`safeParseJSON` → `AI_JSONParseError`). These are NOT transport failures —
+// they mean a malformed/truncated frame reached the parser (e.g. a mid-frame
+// disconnect spliced against a durable-resume replay). They MUST be matched
+// before {@link CONNECTION_PATTERNS}: an `AI_JSONParseError`'s message embeds
+// the entire offending payload, and a tool output that merely mentions
+// "network error" (browser-QA results routinely do) would otherwise be
+// misfiled as `connection`. Matched against the error NAME and the message
+// PREFIX only, never the embedded body.
+const PARSE_NAME_PATTERNS = [/JSONParseError/i, /^SyntaxError$/]
+const PARSE_MESSAGE_PREFIX_PATTERNS = [
+  /^JSON parsing failed/i,
+  /^JSON Parse error/i,
+  /^Unexpected (?:token|end of JSON)/i,
+  /^Unterminated string in JSON/i,
+]
+
+function isParseError(name: string, message: string): boolean {
+  if (PARSE_NAME_PATTERNS.some((p) => p.test(name))) return true
+  // Only inspect the message PREFIX — an `AI_JSONParseError` appends the raw
+  // (often multi-KB) payload after the prefix, which we must not scan.
+  const head = message.slice(0, 64)
+  return PARSE_MESSAGE_PREFIX_PATTERNS.some((p) => p.test(head))
+}
 
 // Genuine transport/connection failures — the silent "Connection interrupted"
 // class we want surfaced.
@@ -92,6 +117,9 @@ export function classifyChatError(err: unknown, userInitiatedStop = false): Chat
   const message = chatErrorMessage(err)
   if (name === 'AbortError') return 'user-abort'
   if (USER_ABORT_PATTERNS.some((p) => p.test(message))) return 'user-abort'
+  // Parse failures first — their message embeds the raw payload, so testing
+  // the connection patterns against it produces false `connection` labels.
+  if (isParseError(name, message)) return 'parse'
   if (CONNECTION_PATTERNS.some((p) => p.test(message))) return 'connection'
   return 'other'
 }

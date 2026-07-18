@@ -196,8 +196,17 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       let turnCompleted = false
       let cancelled = false
       let resumeAttempts = 0
-      const decoder = new TextDecoder()
-      let parseBuf = ''
+      const encoder = new TextEncoder()
+      // A fresh decoder is minted per underlying body (initial + each resume)
+      // via `resetFrameBuffer()` so a multi-byte UTF-8 sequence split across a
+      // disconnect boundary never corrupts the next body's first frame.
+      let decoder = new TextDecoder()
+      // Text of bytes read off the wire but NOT yet forwarded to the AI SDK.
+      // Invariant: after every `flushCompleteFrames()` this holds AT MOST one
+      // trailing PARTIAL SSE frame (everything up to the last `\n\n` has been
+      // enqueued). On a mid-turn disconnect it is DISCARDED — see
+      // `resetFrameBuffer()`.
+      let pending = ''
 
       const log = (msg: string) => {
         if (logger) logger.log(`[AutoResume:${turnId.slice(0, 8)}] ${msg}`)
@@ -206,16 +215,46 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
         if (logger) logger.warn(`[AutoResume:${turnId.slice(0, 8)}] ${msg}`)
       }
 
-      const inspectChunk = (chunk: Uint8Array) => {
-        // Append decoded text and parse complete SSE frames separated by
-        // a blank line. Any partial frame stays in `parseBuf`.
-        parseBuf += decoder.decode(chunk, { stream: true })
-        let nlnl: number
-        while ((nlnl = parseBuf.indexOf('\n\n')) !== -1) {
-          const frame = parseBuf.slice(0, nlnl)
-          parseBuf = parseBuf.slice(nlnl + 2)
-          parseFrame(frame)
+      // Enqueue every COMPLETE SSE frame currently buffered in `pending`
+      // (frames are delimited by a blank line, `\n\n`) into the AI SDK body,
+      // parsing each for durable-turn book-keeping on the way out. A trailing
+      // partial frame — the tail of a frame still mid-flight on the wire —
+      // stays in `pending` and is NEVER forwarded until its `\n\n` arrives.
+      //
+      // This is the crux of the fix: the AI SDK's SSE/JSON parser must only
+      // ever be handed whole frames. Forwarding a partial frame lets a
+      // subsequent resume (which replays from a chunk/seq boundary that does
+      // not line up with where the wire cut the frame) splice the truncated
+      // head against a replayed frame → `AI_JSONParseError: Expected '}'`.
+      //
+      // Returns false if the downstream consumer (AI SDK) cancelled.
+      const flushCompleteFrames = (): boolean => {
+        let idx = pending.indexOf('\n\n')
+        if (idx === -1) return true
+        let out = ''
+        while (idx !== -1) {
+          parseFrame(pending.slice(0, idx))
+          out += pending.slice(0, idx + 2)
+          pending = pending.slice(idx + 2)
+          idx = pending.indexOf('\n\n')
         }
+        try {
+          controller.enqueue(encoder.encode(out))
+        } catch {
+          // Downstream (AI SDK) cancelled — stop pumping.
+          cancelled = true
+          return false
+        }
+        return true
+      }
+
+      // Drop any buffered partial frame and reset the streaming decoder before
+      // reattaching to a new (resumed) body. The resume replays the interrupted
+      // frame in full from `?fromSeq=N`, so keeping the stale partial around
+      // would re-create the very splice we are guarding against.
+      const resetFrameBuffer = () => {
+        pending = ''
+        decoder = new TextDecoder()
       }
 
       const parseFrame = (frame: string) => {
@@ -275,12 +314,13 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             if (done) return { bytes }
             if (!value) continue
             bytes += value.byteLength
-            inspectChunk(value)
             // Wire-level liveness signal — fire BEFORE enqueueing so a
             // downstream cancel (e.g. user-stop) that throws from
             // `controller.enqueue()` doesn't swallow the heartbeat for
-            // the chunk we just successfully read. Best-effort; never
-            // let a buggy callback break the body pipeline.
+            // the chunk we just successfully read. Fired per RAW read (not
+            // per forwarded frame) so a long partial frame still counts as
+            // liveness for the stall watchdog. Best-effort; never let a buggy
+            // callback break the body pipeline.
             if (onChunk) {
               try {
                 onChunk({ bytes: value.byteLength, resumed })
@@ -288,11 +328,12 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
                 /* swallow — onChunk is advisory */
               }
             }
-            try {
-              controller.enqueue(value)
-            } catch {
+            // Accumulate the raw bytes and forward only COMPLETE frames. A
+            // trailing partial frame is held back (and dropped on the next
+            // resume) so the AI SDK never parses a spliced/half `data:` line.
+            pending += decoder.decode(value, { stream: true })
+            if (!flushCompleteFrames()) {
               // Downstream consumer (AI SDK) cancelled — stop pumping.
-              cancelled = true
               return { bytes }
             }
           }
@@ -363,6 +404,12 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             try { resumeRes.body.cancel() } catch { /* noop */ }
             break
           }
+
+          // Discard any partial frame left over from the interrupted body.
+          // The resume replays that frame in full from `?fromSeq=N`, so
+          // keeping the truncated head would splice it against the replayed
+          // copy — the `AI_JSONParseError` this whole wrapper must avoid.
+          resetFrameBuffer()
 
           // Snapshot the durable seq cursor BEFORE pumping so we can tell
           // real forward progress (new frames past what we've seen) from a
