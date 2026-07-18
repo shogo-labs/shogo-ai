@@ -218,7 +218,10 @@ export default observer(function CreatorProfileScreen() {
       </View>
 
       <FlatList
-        key={`profile-grid-${numColumns}`}
+        // Key MUST reflect the ACTUAL column count: `numColumns` flips to 1 in
+        // list view, and RN forbids changing `numColumns` on the fly — the key
+        // change forces a remount instead (Sentry JAVASCRIPT-REACT-4C).
+        key={`profile-grid-${viewMode === 'list' ? 1 : numColumns}`}
         data={restListings}
         keyExtractor={(item) => item.slug}
         numColumns={viewMode === 'list' ? 1 : numColumns}
