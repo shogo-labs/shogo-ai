@@ -31,7 +31,15 @@
 /** Tag key that marks an event as a deliberate Shogo capture (never noise). */
 export const SHOGO_TELEMETRY_TAG = 'shogo_telemetry'
 
-export type ChatErrorClass = 'user-abort' | 'connection' | 'parse' | 'other'
+export type ChatErrorClass = 'user-abort' | 'expected' | 'connection' | 'parse' | 'other'
+
+/**
+ * Classes that are NORMAL control flow / expected business conditions, not
+ * defects — never reported to Sentry. `user-abort` is the user pressing Stop /
+ * navigating away; `expected` is a handled, user-facing server state (usage
+ * limit, rate limit) that the chat already renders a friendly message for.
+ */
+const NON_REPORTED_CLASSES: ReadonlySet<ChatErrorClass> = new Set(['user-abort', 'expected'])
 
 /** Best-effort message extraction from an unknown thrown value. */
 export function chatErrorMessage(err: unknown): string {
@@ -59,6 +67,24 @@ const USER_ABORT_PATTERNS = [
   /BodyStreamBuffer was aborted/i,
   /operation was aborted/i,
   /\bAbortError\b/i,
+]
+
+// Expected, user-facing server conditions — NOT defects. The chat already maps
+// these to a friendly message (`ERROR_CODE_MESSAGES` in `message-helpers`) and
+// shows a paywall/retry affordance, so capturing them floods Sentry with a
+// non-actionable business state. Historically the biggest offender was
+// `usage_limit_reached` (Sentry JAVASCRIPT-REACT-45, >1k events): it carries
+// the `shogo_telemetry` tag, so it bypasses the production_web noise filter and
+// was reported as an `error`. We match BOTH the raw error code (when the SDK
+// throws `{"error":{"code":"usage_limit_reached"}}`) and the resolved friendly
+// message (when the code has already been mapped upstream).
+const EXPECTED_PATTERNS = [
+  /\busage_limit_reached\b/i,
+  /\binsufficient_credits\b/i,
+  /\brate_limit_exceeded\b/i,
+  /usage limit reached/i,
+  /usage-based pricing/i,
+  /sending messages too quickly/i,
 ]
 
 // Stream-decoding failures thrown by the AI SDK's SSE/JSON reader
@@ -117,16 +143,23 @@ export function classifyChatError(err: unknown, userInitiatedStop = false): Chat
   const message = chatErrorMessage(err)
   if (name === 'AbortError') return 'user-abort'
   if (USER_ABORT_PATTERNS.some((p) => p.test(message))) return 'user-abort'
-  // Parse failures first — their message embeds the raw payload, so testing
+  // Expected business conditions (usage/rate limit) before everything else —
+  // these are handled + user-facing, never a defect.
+  if (EXPECTED_PATTERNS.some((p) => p.test(message))) return 'expected'
+  // Parse failures next — their message embeds the raw payload, so testing
   // the connection patterns against it produces false `connection` labels.
   if (isParseError(name, message)) return 'parse'
   if (CONNECTION_PATTERNS.some((p) => p.test(message))) return 'connection'
   return 'other'
 }
 
-/** Whether a chat error should be reported to Sentry (i.e. is not a user abort). */
+/**
+ * Whether a chat error should be reported to Sentry. Skips normal control flow
+ * (user aborts) and expected, already-surfaced business states (usage/rate
+ * limit) — see {@link NON_REPORTED_CLASSES}.
+ */
 export function shouldReportChatError(err: unknown, userInitiatedStop = false): boolean {
-  return classifyChatError(err, userInitiatedStop) !== 'user-abort'
+  return !NON_REPORTED_CLASSES.has(classifyChatError(err, userInitiatedStop))
 }
 
 export interface ChatErrorContext {
@@ -153,8 +186,10 @@ export interface ChatErrorReport {
 }
 
 /**
- * Build the Sentry payload for a chat stream error, or `null` when it should not
- * be reported (user abort). The caller passes the returned fields straight to
+ * Build the Sentry payload for a chat stream error, or `null` when it should
+ * not be reported — user aborts and expected business states (usage/rate
+ * limit); see {@link NON_REPORTED_CLASSES}. The caller passes the returned
+ * fields straight to
  * `Sentry.captureException(err, { level, tags, extra, fingerprint })`.
  */
 export function buildChatStreamErrorReport(
@@ -162,7 +197,7 @@ export function buildChatStreamErrorReport(
   ctx: ChatErrorContext = {},
 ): ChatErrorReport | null {
   const cls = classifyChatError(err, ctx.userInitiatedStop ?? false)
-  if (cls === 'user-abort') return null
+  if (NON_REPORTED_CLASSES.has(cls)) return null
 
   const rawMessage = chatErrorMessage(err)
   const tags: Record<string, string> = {

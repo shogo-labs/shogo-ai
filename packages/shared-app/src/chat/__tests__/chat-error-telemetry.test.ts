@@ -41,6 +41,24 @@ describe('classifyChatError', () => {
     expect(classifyChatError(new Error('Agent returned empty response'))).toBe('other')
   })
 
+  test('expected server states (usage/rate limit) → "expected" (never reported)', () => {
+    // Regression (Sentry JAVASCRIPT-REACT-45, >1k events): the resolved
+    // friendly message that the chat renders to the user.
+    expect(
+      classifyChatError(
+        new Error(
+          'Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.',
+        ),
+      ),
+    ).toBe('expected')
+    // The raw error code form, before it's mapped to a friendly message.
+    expect(classifyChatError(new Error('{"error":{"code":"usage_limit_reached"}}'))).toBe('expected')
+    expect(classifyChatError(new Error('{"error":{"code":"insufficient_credits"}}'))).toBe('expected')
+    expect(classifyChatError(new Error('{"error":{"code":"rate_limit_exceeded"}}'))).toBe('expected')
+    expect(classifyChatError(new Error("You're sending messages too quickly. Please wait a moment and try again.")))
+      .toBe('expected')
+  })
+
   test('AI SDK stream parse failures → "parse" (not misfiled as "connection")', () => {
     expect(classifyChatError({ name: 'AI_JSONParseError', message: 'JSON parsing failed: Text: {...}' }))
       .toBe('parse')
@@ -59,11 +77,14 @@ describe('classifyChatError', () => {
 })
 
 describe('shouldReportChatError', () => {
-  test('reports connection + other, skips user aborts', () => {
+  test('reports connection + other, skips user aborts and expected states', () => {
     expect(shouldReportChatError(new TypeError('Failed to fetch'))).toBe(true)
     expect(shouldReportChatError(new Error('boom'))).toBe(true)
     expect(shouldReportChatError({ name: 'AbortError', message: 'aborted' })).toBe(false)
     expect(shouldReportChatError(new TypeError('Failed to fetch'), true)).toBe(false)
+    // Expected business states are handled + user-facing → not reported.
+    expect(shouldReportChatError(new Error('Usage limit reached. Enable usage-based pricing.'))).toBe(false)
+    expect(shouldReportChatError(new Error('{"error":{"code":"rate_limit_exceeded"}}'))).toBe(false)
   })
 })
 
@@ -71,6 +92,16 @@ describe('buildChatStreamErrorReport', () => {
   test('returns null for user aborts', () => {
     expect(buildChatStreamErrorReport({ name: 'AbortError', message: 'x' })).toBeNull()
     expect(buildChatStreamErrorReport(new TypeError('Failed to fetch'), { userInitiatedStop: true })).toBeNull()
+  })
+
+  test('returns null for expected business states (usage/rate limit)', () => {
+    expect(
+      buildChatStreamErrorReport(
+        new Error('Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.'),
+        { projectId: 'proj-1', sessionId: 'sess-1' },
+      ),
+    ).toBeNull()
+    expect(buildChatStreamErrorReport(new Error('{"error":{"code":"usage_limit_reached"}}'))).toBeNull()
   })
 
   test('builds a tagged, fingerprinted report for a connection failure', () => {
