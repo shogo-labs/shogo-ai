@@ -150,6 +150,7 @@ mock.module('../lib/proxy-billing-session', () => ({
   },
   setQualitySignals: () => false,
   hasSession: () => false,
+  hasActiveSession: () => false,
   accumulateUsage: () => {},
 }))
 

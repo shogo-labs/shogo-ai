@@ -139,6 +139,33 @@ export function hasSession(projectId: string, chatSessionId?: string | null): bo
 }
 
 /**
+ * Check whether a turn is currently in flight for `projectId` — i.e. a billing
+ * session was opened for it and hasn't been closed yet.
+ *
+ * Used by the AI proxy's per-call usage pre-flight to avoid killing an
+ * already-admitted message mid-generation: a chat turn is gated for usage once
+ * at turn start (project-chat / workspace-chat), then makes up to
+ * AGENT_MAX_ITERATIONS proxied LLM/image calls. Re-running the 402 pre-flight
+ * on those intermediate calls would drop the run halfway. If a session is
+ * open, the turn already passed the start gate, so we let it finish.
+ *
+ * Resolution order:
+ *   1. `lookupSession` (composite `(projectId, chatSessionId)` key, then the
+ *      legacy projectId-only fallback).
+ *   2. A scan for any open session belonging to `projectId`. This covers
+ *      header-less/sentinel callers where the runtime dropped the
+ *      `x-chat-session-id` header (gateway `isRealChatSession === false`), so
+ *      the keyed lookups miss even though a turn is genuinely in flight.
+ */
+export function hasActiveSession(projectId: string, chatSessionId?: string | null): boolean {
+  if (lookupSession(projectId, chatSessionId)) return true
+  for (const s of sessions.values()) {
+    if (s.projectId === projectId) return true
+  }
+  return false
+}
+
+/**
  * Accumulate token usage from an AI proxy call. Returns true if tokens were
  * accumulated against an active session, false if no session exists (caller
  * should charge per-call).

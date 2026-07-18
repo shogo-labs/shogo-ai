@@ -49,6 +49,7 @@ mock.module('../../services/cost-analytics.service', () => ({
 const {
   openSession,
   hasSession,
+  hasActiveSession,
   accumulateUsage,
   accumulateImageUsage,
   setQualitySignals,
@@ -80,10 +81,14 @@ beforeEach(() => {
 
 afterEach(async () => {
   // Drain any leftover sessions so cross-test contamination can't happen.
+  // hasActiveSession scans by projectId, so every composite key opened under
+  // p1 must be drained here or it leaks into a sibling test's scan.
   await closeSession('p').catch(() => {})
   await closeSession('p', { chatSessionId: 'c1' }).catch(() => {})
   await closeSession('p1').catch(() => {})
   await closeSession('p1', { chatSessionId: 'c1' }).catch(() => {})
+  await closeSession('p1', { chatSessionId: 'cA' }).catch(() => {})
+  await closeSession('p1', { chatSessionId: 'cB' }).catch(() => {})
   await closeSession('p2').catch(() => {})
   console.log = origConsole.log
   console.warn = origConsole.warn
@@ -132,6 +137,46 @@ describe('openSession + hasSession', () => {
     } finally {
       calcImpl = origCalc
     }
+  })
+})
+
+describe('hasActiveSession', () => {
+  it('returns false when no session exists for the project', () => {
+    expect(hasActiveSession('p1')).toBe(false)
+    expect(hasActiveSession('p1', 'cA')).toBe(false)
+  })
+
+  it('finds a legacy projectId-only session', async () => {
+    openSession('p1', 'w1', 'u1')
+    expect(hasActiveSession('p1')).toBe(true)
+    // Even a lookup with a chatSessionId resolves via the projectId-scan
+    // fallback, so a header-less turn is still detected as in flight.
+    expect(hasActiveSession('p1', 'cMissing')).toBe(true)
+    await closeSession('p1')
+    expect(hasActiveSession('p1')).toBe(false)
+  })
+
+  it('finds a composite-keyed session by its own chatSessionId', async () => {
+    openSession('p1', 'w1', 'u1', 'cA')
+    expect(hasActiveSession('p1', 'cA')).toBe(true)
+    await closeSession('p1', { chatSessionId: 'cA' })
+  })
+
+  it('finds a composite-keyed session even when the chat-session header was dropped', async () => {
+    // Mirrors the gateway isRealChatSession=false case: the runtime forwards
+    // no x-chat-session-id, so the proxy looks up with chatSessionId=null but
+    // the session was opened under a composite key. The projectId scan must
+    // still detect the in-flight turn.
+    openSession('p1', 'w1', 'u1', 'cA')
+    expect(hasActiveSession('p1', null)).toBe(true)
+    expect(hasActiveSession('p1')).toBe(true)
+    await closeSession('p1', { chatSessionId: 'cA' })
+  })
+
+  it('does not match a different project', async () => {
+    openSession('p1', 'w1', 'u1', 'cA')
+    expect(hasActiveSession('p2')).toBe(false)
+    await closeSession('p1', { chatSessionId: 'cA' })
   })
 })
 

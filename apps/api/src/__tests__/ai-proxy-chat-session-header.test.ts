@@ -28,13 +28,21 @@ process.env.NODE_ENV = 'test'
 // closeSession; capturing the metadata lets us read back which chat
 // session the accumulated tokens were attributed to.
 const consumeUsageCalls: any[] = []
+// Flip to false to simulate an exhausted wallet for the usage-limit-grace
+// tests below (a build must not be dropped mid-turn when the limit is hit).
+let hasBalanceResult = true
 mock.module('../services/billing.service', () => ({
   consumeUsage: async (args: any) => {
     consumeUsageCalls.push(args)
     return { success: true, remainingIncludedUsd: 100 }
   },
-  hasBalance: async () => true,
+  hasBalance: async () => hasBalanceResult,
   hasAdvancedModelAccess: async () => true,
+  // buildUsageLimitInfo (the 402 detail builder) calls this.
+  getUsageWindows: async () => ({
+    fiveHour: { kind: 'five_hour', usedUsd: 0, limitUsd: null, utilization: 0, resetsAt: null },
+    weekly: { kind: 'weekly', usedUsd: 0, limitUsd: null, utilization: 0, resetsAt: null },
+  }),
 }))
 
 // recordAgentCostMetric pulls in Prisma — stub it out so closeSession
@@ -72,12 +80,13 @@ afterAll(() => {
 
 beforeEach(() => {
   consumeUsageCalls.length = 0
+  hasBalanceResult = true
 })
 
 const { Hono } = await import('hono')
 const { aiProxyRoutes } = await import('../routes/ai-proxy')
 const { generateProxyToken } = await import('../lib/ai-proxy-token')
-const { openSession, closeSession } = await import('../lib/proxy-billing-session')
+const { openSession, closeSession, hasSession } = await import('../lib/proxy-billing-session')
 
 const PROJECT_ID = 'proj-header-rt'
 const WORKSPACE_ID = 'ws-header-rt'
@@ -126,6 +135,124 @@ describe('AI proxy honors X-Chat-Session-Id on outbound runtime calls', () => {
     expect(call.actionMetadata.chatSessionId).toBe('chat-B')
     expect(call.actionMetadata.inputTokens).toBe(100)
     expect(call.actionMetadata.outputTokens).toBe(25)
+  })
+
+  // ── Usage-limit grace: don't drop a build mid-message ──
+  // A chat turn is gated for usage once at turn start. Once admitted (a billing
+  // session is open), the per-call 402 pre-flight in the proxy must NOT re-gate
+  // its intermediate LLM/image calls, or a long build dies halfway with
+  // "model did not produce a final answer after tool execution".
+
+  test('exhausted wallet does NOT 402 a text call that belongs to an in-flight turn', async () => {
+    const app = makeApp()
+    const token = await generateProxyToken(PROJECT_ID, WORKSPACE_ID, USER_ID)
+    hasBalanceResult = false // wallet crossed the limit mid-build
+
+    openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-grace')
+
+    const res = await app.request('/api/ai/anthropic/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': token,
+        'X-Chat-Session-Id': 'chat-grace',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        messages: [{ role: 'user', content: 'keep building' }],
+        max_tokens: 64,
+      }),
+    })
+    // The message is allowed to finish rather than being cut off with a 402.
+    expect(res.status).not.toBe(402)
+    expect(res.status).toBe(200)
+
+    await closeSession(PROJECT_ID, { chatSessionId: 'chat-grace' })
+  })
+
+  test('grace still applies when the runtime dropped the chat-session header', async () => {
+    const app = makeApp()
+    const token = await generateProxyToken(PROJECT_ID, WORKSPACE_ID, USER_ID)
+    hasBalanceResult = false
+
+    // Session opened under a composite key, but the proxy call omits the
+    // header (gateway isRealChatSession=false). The projectId-scan fallback in
+    // hasActiveSession must still detect the in-flight turn.
+    openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-headerless')
+
+    const res = await app.request('/api/ai/anthropic/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': token,
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        messages: [{ role: 'user', content: 'keep building' }],
+        max_tokens: 64,
+      }),
+    })
+    expect(res.status).not.toBe(402)
+
+    await closeSession(PROJECT_ID, { chatSessionId: 'chat-headerless' })
+  })
+
+  test('exhausted wallet DOES 402 when no turn is in flight (no open session)', async () => {
+    const app = makeApp()
+    const token = await generateProxyToken(PROJECT_ID, WORKSPACE_ID, USER_ID)
+    hasBalanceResult = false
+
+    // No session opened → this is a brand-new request, so the usage limit is
+    // enforced as before.
+    expect(hasSession(PROJECT_ID)).toBe(false)
+
+    const res = await app.request('/api/ai/anthropic/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': token,
+        'X-Chat-Session-Id': 'chat-none',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 64,
+      }),
+    })
+    expect(res.status).toBe(402)
+    const json = (await res.json()) as any
+    expect(json.error?.type).toBe('billing_error')
+  })
+
+  test('image generation is not cut off mid-turn, but is 402d with no session', async () => {
+    const app = makeApp()
+    const token = await generateProxyToken(PROJECT_ID, WORKSPACE_ID, USER_ID)
+    hasBalanceResult = false
+
+    // Image endpoints authenticate via `Authorization: Bearer`, not x-api-key.
+    // No session → hard 402 (enforced as before).
+    const gated = await app.request('/api/ai/v1/images/generations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ prompt: 'a cat', model: 'dall-e-3' }),
+    })
+    expect(gated.status).toBe(402)
+
+    // In-flight turn → the pre-flight is skipped so the image call proceeds
+    // (downstream status varies under the stub; it just must not be 402).
+    openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-img')
+    const granted = await app.request('/api/ai/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'X-Chat-Session-Id': 'chat-img',
+      },
+      body: JSON.stringify({ prompt: 'a cat', model: 'dall-e-3' }),
+    })
+    expect(granted.status).not.toBe(402)
+
+    await closeSession(PROJECT_ID, { chatSessionId: 'chat-img' })
   })
 
   test('missing header falls back to the legacy projectId-only billing session', async () => {

@@ -49,6 +49,7 @@ mock.module('../services/billing.service', () => ({
 mock.module('../lib/proxy-billing-session', () => ({
   openSession: () => null,
   hasSession: () => false,
+  hasActiveSession: () => false,
   accumulateUsage: () => false,
   accumulateImageUsage: () => {},
   setQualitySignals: () => false,
