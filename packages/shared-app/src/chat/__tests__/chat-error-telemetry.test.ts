@@ -40,6 +40,22 @@ describe('classifyChatError', () => {
     expect(classifyChatError(new Error('Request failed with status 500'))).toBe('other')
     expect(classifyChatError(new Error('Agent returned empty response'))).toBe('other')
   })
+
+  test('AI SDK stream parse failures → "parse" (not misfiled as "connection")', () => {
+    expect(classifyChatError({ name: 'AI_JSONParseError', message: 'JSON parsing failed: Text: {...}' }))
+      .toBe('parse')
+    expect(classifyChatError(new Error('JSON Parse error: Expected \'}\''))).toBe('parse')
+    // Regression (Sentry JAVASCRIPT-REACT-46): the `AI_JSONParseError` message
+    // embeds the whole tool-output payload, which for a browser-QA turn
+    // literally contains "network errors" — that must NOT flip it to
+    // "connection". The parse check runs first and matches the name.
+    const embeddedPayload =
+      'JSON parsing failed: Text: {"type":"tool-output-available",' +
+      '"output":{"text":"run browser tests to check for console and network errors"}}'
+    expect(classifyChatError({ name: 'AI_JSONParseError', message: embeddedPayload })).toBe('parse')
+    // Even without the SDK error name, the message prefix is enough.
+    expect(classifyChatError(new Error(embeddedPayload))).toBe('parse')
+  })
 })
 
 describe('shouldReportChatError', () => {
