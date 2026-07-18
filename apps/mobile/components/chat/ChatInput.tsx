@@ -72,6 +72,7 @@ import {
 } from "./long-text-utils"
 import { resolveChatInputTextChange, type ChatInputTextChange } from "./chat-input-text-change"
 import { FileViewerModal } from "./FileViewerModal"
+import { ImagePreviewModal } from "./ImagePreviewModal"
 import { VideoPreviewModal } from "./VideoPreviewModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
@@ -542,6 +543,7 @@ function ChatInputImpl({
   const [pastedTexts, setPastedTexts] = useState<PastedTextEntry[]>([])
   const [viewingPastedId, setViewingPastedId] = useState<string | null>(null)
   const [previewVideoFile, setPreviewVideoFile] = useState<{ url: string; name: string } | null>(null)
+  const [previewImageFile, setPreviewImageFile] = useState<{ url: string; name: string } | null>(null)
   const lastRestoredDraftNonceRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -1784,13 +1786,19 @@ function ChatInputImpl({
               return (
                 <View key={file.id} className="relative">
                   {isImage ? (
-                    <View className="rounded-lg overflow-hidden border border-border/60" style={{ width: 72, height: 72 }}>
-                      <Image
-                        source={{ uri: file.dataUrl }}
-                        style={{ width: 72, height: 72 }}
-                        resizeMode="cover"
-                      />
-                    </View>
+                    <Pressable
+                      onPress={() => setPreviewImageFile({ url: file.dataUrl, name: file.name })}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Preview image ${file.name}`}
+                    >
+                      <View className="rounded-lg overflow-hidden border border-border/60" style={{ width: 72, height: 72 }}>
+                        <Image
+                          source={{ uri: file.dataUrl }}
+                          style={{ width: 72, height: 72 }}
+                          resizeMode="cover"
+                        />
+                      </View>
+                    </Pressable>
                   ) : isVideo ? (
                     <Pressable
                       onPress={() => setPreviewVideoFile({ url: file.dataUrl, name: file.name })}
@@ -1832,13 +1840,9 @@ function ChatInputImpl({
             })}
             {isProcessingFiles && (
               <View
-                className="rounded-lg border border-border/60 bg-muted/40 items-center justify-center"
+                className="rounded-lg overflow-hidden border border-border/60 bg-muted/30 animate-pulse"
                 style={{ width: 72, height: 72 }}
-              >
-                <Text className="text-[10px] text-muted-foreground text-center">
-                  Uploading…
-                </Text>
-              </View>
+              />
             )}
           </ScrollView>
         )}
@@ -2348,6 +2352,13 @@ function ChatInputImpl({
         </View>
         </View>
       </View>
+
+      <ImagePreviewModal
+        visible={previewImageFile !== null}
+        onClose={() => setPreviewImageFile(null)}
+        url={previewImageFile?.url ?? ""}
+        title={previewImageFile?.name}
+      />
 
       <VideoPreviewModal
         visible={previewVideoFile !== null}
