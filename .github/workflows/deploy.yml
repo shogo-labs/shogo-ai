@@ -1581,6 +1581,43 @@ jobs:
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
+      # Retire stale studio revisions. The `studio-direct` Service (see
+      # k8s/overlays/*/studio-ws-ingress.yaml) selects EVERY studio revision by
+      # `serving.knative.dev/service=studio`, and each revision keeps a warm pod
+      # (min-scale + studio-direct feeding its queue-proxy keeps the autoscaler
+      # from scaling it to zero). So without this, old revisions keep serving —
+      # historically 404ing hashed assets ~half the time, and even with the
+      # shared-asset CDN they still serve stale HTML. Once the new revision is
+      # Ready, delete every other studio revision so studio-direct converges to
+      # a single serving build. Guarded so a bad rollout (latest not Ready)
+      # never deletes the only working revision.
+      #
+      # This step previously only existed in the staging job — its absence
+      # here on US/EU is exactly what let studio-00323/00324/00325 all keep
+      # serving concurrently in EU on 2026-07-18, causing the CSS-404 incident
+      # (studio-direct round-robined requests across mismatched-hash builds).
+      - name: Retire stale studio revisions
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        run: |
+          set -euo pipefail
+          NS="${{ env.NS_SYSTEM }}"
+          echo "Waiting for studio ksvc to be Ready..."
+          kubectl wait --for=condition=Ready ksvc/studio -n "$NS" --timeout=300s
+          LATEST=$(kubectl get ksvc studio -n "$NS" -o jsonpath='{.status.latestReadyRevisionName}')
+          if [ -z "$LATEST" ]; then
+            echo "ERROR: studio has no latestReadyRevisionName; refusing to GC revisions." >&2
+            exit 1
+          fi
+          echo "Keeping latest-ready studio revision: $LATEST"
+          STALE=$(kubectl get revisions -n "$NS" -l serving.knative.dev/service=studio \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -v "^${LATEST}$" || true)
+          if [ -z "$STALE" ]; then
+            echo "No stale studio revisions to delete."
+          else
+            echo "Deleting stale studio revisions:"; echo "$STALE"
+            echo "$STALE" | xargs -r -n1 kubectl delete revision -n "$NS"
+          fi
+
       # The inline `python3 ... 2>/dev/null) || IDX="-1"` block that used
       # to live at the bottom of `Deploy Knative services` silently
       # skipped on every error path (the kubectl pipefail, the python
@@ -2383,6 +2420,43 @@ jobs:
           patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
+
+      # Retire stale studio revisions. The `studio-direct` Service (see
+      # k8s/overlays/*/studio-ws-ingress.yaml) selects EVERY studio revision by
+      # `serving.knative.dev/service=studio`, and each revision keeps a warm pod
+      # (min-scale + studio-direct feeding its queue-proxy keeps the autoscaler
+      # from scaling it to zero). So without this, old revisions keep serving —
+      # historically 404ing hashed assets ~half the time, and even with the
+      # shared-asset CDN they still serve stale HTML. Once the new revision is
+      # Ready, delete every other studio revision so studio-direct converges to
+      # a single serving build. Guarded so a bad rollout (latest not Ready)
+      # never deletes the only working revision.
+      #
+      # This step previously only existed in the staging job — its absence
+      # here on US/EU is exactly what let studio-00323/00324/00325 all keep
+      # serving concurrently in EU on 2026-07-18, causing the CSS-404 incident
+      # (studio-direct round-robined requests across mismatched-hash builds).
+      - name: Retire stale studio revisions
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        run: |
+          set -euo pipefail
+          NS="${{ env.NS_SYSTEM }}"
+          echo "Waiting for studio ksvc to be Ready..."
+          kubectl wait --for=condition=Ready ksvc/studio -n "$NS" --timeout=300s
+          LATEST=$(kubectl get ksvc studio -n "$NS" -o jsonpath='{.status.latestReadyRevisionName}')
+          if [ -z "$LATEST" ]; then
+            echo "ERROR: studio has no latestReadyRevisionName; refusing to GC revisions." >&2
+            exit 1
+          fi
+          echo "Keeping latest-ready studio revision: $LATEST"
+          STALE=$(kubectl get revisions -n "$NS" -l serving.knative.dev/service=studio \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -v "^${LATEST}$" || true)
+          if [ -z "$STALE" ]; then
+            echo "No stale studio revisions to delete."
+          else
+            echo "Deleting stale studio revisions:"; echo "$STALE"
+            echo "$STALE" | xargs -r -n1 kubectl delete revision -n "$NS"
+          fi
 
       # The inline `python3 ... 2>/dev/null) || IDX="-1"` block that used
       # to live at the bottom of `Deploy Knative services` silently
