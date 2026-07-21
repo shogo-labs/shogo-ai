@@ -350,6 +350,7 @@ assertTrue(
 {
   const ideViewsPath = path.join(__dirname, 'src', 'ide-views.ts')
   const ideViewsSrc = fs.readFileSync(ideViewsPath, 'utf8')
+  const shogoIdeSrc = fs.readFileSync(path.join(__dirname, 'src', 'shogo-ide.ts'), 'utf8')
   assertTrue(
     'ide-views.ts extracts Code OSS URLs through a dedicated filter',
     /extractCodeOssServerUrl\s*\(/.test(ideViewsSrc),
@@ -364,6 +365,41 @@ assertTrue(
     'ide-views.ts no longer resolves the first arbitrary HTTPS URL from launch output',
     !ideViewsSrc.includes('const match = text.match(/https?:\\/\\/[^\\s]+/)'),
     'generic first-URL extraction would incorrectly accept https://nodejs.org inspector help output',
+  )
+  assertTrue(
+    'ide-views.ts resolves the Code OSS launcher before spawning it',
+    /function resolveCodeOssLauncher\s*\(/.test(ideViewsSrc) && ideViewsSrc.includes('const launch = resolveCodeOssLauncher(scriptPath, args, env)'),
+    'Code OSS launch must resolve an executable before spawn()',
+  )
+  assertTrue(
+    'ide-views.ts does not spawn a bare npx command',
+    !ideViewsSrc.includes("command: 'npx'") && !ideViewsSrc.includes("spawn('npx'") && !ideViewsSrc.includes('spawn("npx"'),
+    'Code OSS launch must not rely on PATH resolving bare npx',
+  )
+  assertTrue(
+    'ide-views.ts fails with an actionable launcher error when npx cannot be resolved',
+    ideViewsSrc.includes('Could not launch Shogo IDE because the required Code OSS launcher executable') && ideViewsSrc.includes('Searched PATH:'),
+    'missing launcher error must be deterministic and actionable',
+  )
+  assertTrue(
+    'ide-views.ts launches with the normalized setup command environment',
+    ideViewsSrc.includes('...setupCommandEnv()') && !ideViewsSrc.includes('...process.env,\n      SHOGO_IDE_PHASE'),
+    'Code OSS launch must not use raw production process.env',
+  )
+  assertTrue(
+    'shogo-ide.ts exposes the normalized setup command environment to the launch path',
+    /export function setupCommandEnv\s*\(/.test(shogoIdeSrc),
+    'setupCommandEnv must be exported for launch-time executable resolution',
+  )
+  assertTrue(
+    'shogo-ide.ts resolves setup executables before spawning npm or npx',
+    /function resolveSetupCommand\s*\(command: string, env: NodeJS\.ProcessEnv\)/.test(shogoIdeSrc) && shogoIdeSrc.includes('const resolvedCommand = resolveSetupCommand(command, env)'),
+    'setup commands must resolve npm/npx before spawn()',
+  )
+  assertTrue(
+    'shogo-ide.ts does not probe npm root through a bare npm command',
+    !shogoIdeSrc.includes("spawnSync('npm', ['root', '-g']") && shogoIdeSrc.includes("const npmCommand = resolveExecutableFromEnv('npm', env)"),
+    'npm CLI discovery must resolve npm before spawnSync()',
   )
 }
 
