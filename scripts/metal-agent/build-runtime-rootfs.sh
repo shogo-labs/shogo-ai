@@ -101,6 +101,19 @@ mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sys /sys 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
+mkdir -p /dev/pts
+if ! grep -Eq ' /dev/pts .* - devpts ' /proc/self/mountinfo 2>/dev/null; then
+  mount -t devpts devpts /dev/pts -o newinstance,ptmxmode=0666,mode=0620,gid=5 2>/dev/null || true
+fi
+if [ -e /dev/pts/ptmx ]; then
+  rm -f /dev/ptmx 2>/dev/null || true
+  ln -s pts/ptmx /dev/ptmx 2>/dev/null || true
+fi
+if ! grep -Eq ' /dev/pts .* - devpts ' /proc/self/mountinfo 2>/dev/null || [ ! -e /dev/pts/ptmx ] || [ ! -e /dev/ptmx ]; then
+  echo "[fc-init] WARNING: PTY device setup incomplete; Bun.spawn({ terminal }) may fail" >&2
+  mount | grep devpts >&2 || true
+  ls -l /dev/ptmx /dev/pts /dev/pts/ptmx >&2 || true
+fi
 
 # eth0 is configured by the kernel ip= cmdline; the host tap is the gateway and
 # NATs us out (net.ts). The container image's /etc/resolv.conf points at the

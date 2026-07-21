@@ -56,6 +56,13 @@ interface Health {
   gateway?: { running?: boolean }
 }
 
+interface TerminalSession {
+  id: string
+  cwd: string
+  cols: number
+  rows: number
+}
+
 async function health(url: string, timeoutMs = 2000): Promise<Health | null> {
   try {
     const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(timeoutMs) })
@@ -64,6 +71,28 @@ async function health(url: string, timeoutMs = 2000): Promise<Health | null> {
   } catch {
     return null
   }
+}
+
+async function verifyTerminalPty(url: string): Promise<TerminalSession> {
+  const res = await fetch(`${url}/terminal/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ cols: 80, rows: 24 }),
+    signal: AbortSignal.timeout(5000),
+  })
+  const body = await res.json().catch(() => null) as TerminalSession | { error?: { code?: string; message?: string } } | null
+  if (!res.ok) {
+    const err = body && 'error' in body ? body.error : undefined
+    throw new Error(`terminal PTY create failed (${res.status}): ${err?.code ?? 'unknown'} ${err?.message ?? ''}`.trim())
+  }
+  const session = body as TerminalSession
+  if (!session?.id) throw new Error('terminal PTY create returned no session id')
+  const cleanup = await fetch(`${url}/terminal/sessions/${encodeURIComponent(session.id)}`, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(3000),
+  })
+  if (!cleanup.ok) throw new Error(`terminal PTY cleanup failed (${cleanup.status}) for ${session.id}`)
+  return session
 }
 
 /**
@@ -119,6 +148,8 @@ async function main() {
     log('boot', `health status=${h.status} poolMode=${h.poolMode} projectId=${h.projectId} gatewayRunning=${h.gateway?.running}`)
     if (h.projectId !== '__POOL__') throw new Error(`expected pool mode, got projectId=${h.projectId}`)
     if (!h.poolMode) throw new Error('runtime did not come up in poolMode')
+    const terminal = await verifyTerminalPty(handle.agentUrl)
+    log('verify', `terminalPty: PASS session=${terminal.id} cwd=${terminal.cwd}`)
     const baseline = h
 
     // Let the boot-time workspace pre-seed warm so the snapshot freezes a
@@ -176,8 +207,9 @@ async function main() {
       // budget; a restore ready in a fraction of that resumed from RAM.
       restoreFasterThanReboot: report.restore.readyMs.p95 < Math.max(2000, report.steps.coldBootReadyMs / 3),
       hostRamFreedOnSuspend: report.steps.vmGoneAfterSuspend === true,
+      terminalPty: terminal.id.length > 0,
     }
-    report.correctness = { baseline, warmed, firstAfter, checks }
+    report.correctness = { baseline, warmed, firstAfter, terminal, checks }
     for (const [k, v] of Object.entries(checks)) log('verify', `${k}: ${v ? 'PASS' : 'FAIL'}`)
 
     const allPass = Object.values(checks).every(Boolean)
