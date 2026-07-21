@@ -1,7 +1,7 @@
 {
   "id": "python-data",
-  "name": "Python Data Science",
-  "description": "Data analysis and visualization with Python, Jupyter, pandas, matplotlib, and plotly. Write notebooks or scripts to explore, transform, and visualize data.",
+  "name": "Data & Charts",
+  "description": "Explore information, find insights, and create charts or reports.",
   "tags": ["python", "data", "jupyter", "pandas", "matplotlib", "plotly", "analysis"],
   "target": "data",
   "seedsOwnTemplate": true,

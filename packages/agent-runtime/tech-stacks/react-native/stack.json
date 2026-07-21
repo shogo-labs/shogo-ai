@@ -1,7 +1,7 @@
 {
   "id": "react-native",
-  "name": "React Native (bare)",
-  "description": "Build cross-platform mobile apps with bare React Native + TypeScript (no Expo). Metro bundler is supervised by the runtime. The workspace ships with a Hono + Prisma backend at the root for CRUD APIs that the mobile client can call. Web preview is not produced by bare RN; cloud preview is device-only.",
+  "name": "Custom Mobile App",
+  "description": "Create an iPhone and Android app when you need deeper device-level control.",
   "tags": ["react-native", "mobile", "ios", "android", "metro", "typescript", "bare"],
   "target": "mobile",
   "seedsOwnTemplate": true,

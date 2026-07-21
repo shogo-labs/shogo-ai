@@ -50,6 +50,7 @@ import { ProjectImportModal } from '../projects/ProjectImportModal'
 import { CloudProjectPickerModal } from '../projects/CloudProjectPickerModal'
 import { useOpenLocalFolder } from './useOpenLocalFolder'
 import { useOpenCloudProject } from './useOpenCloudProject'
+import { WebTooltip } from '../ui/web-tooltip'
 
 export type ProjectSourceVariant = 'chip' | 'button'
 
@@ -143,20 +144,22 @@ export function ProjectSourceMenu({
 
   const trigger = (triggerProps: any) =>
     variant === 'chip' ? (
-      <Pressable
-        {...triggerProps}
-        accessibilityLabel="Project source"
-        className={cn(
-          'h-[22px] flex-row items-center gap-1 rounded-md px-1.5',
-          'border border-border/60 bg-muted/40 active:opacity-80',
-          isPicking && 'opacity-60',
-        )}
-        testID="project-source-menu-trigger"
-      >
-        <Sparkles className="h-3 w-3 text-muted-foreground" size={12} />
-        <Text className="text-[11px] text-muted-foreground">New</Text>
-        <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
-      </Pressable>
+      <WebTooltip label="Choose how to start the project" placement="bottom">
+        <Pressable
+          {...triggerProps}
+          accessibilityLabel="Project source"
+          className={cn(
+            'h-[22px] flex-row items-center gap-1 rounded-md px-1.5',
+            'border border-border/60 bg-muted/40 active:opacity-80',
+            isPicking && 'opacity-60',
+          )}
+          testID="project-source-menu-trigger"
+        >
+          <Sparkles className="h-3 w-3 text-muted-foreground" size={12} />
+          <Text className="text-[11px] text-muted-foreground">New</Text>
+          <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
+        </Pressable>
+      </WebTooltip>
     ) : (
       <Pressable
         {...triggerProps}

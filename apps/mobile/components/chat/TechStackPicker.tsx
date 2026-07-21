@@ -16,7 +16,7 @@
  * reflects what the runtime would seed even before the user touches it.
  */
 import React, { useEffect, useMemo, useRef, useState } from "react"
-import { View, Text, Pressable, ScrollView, Platform } from "react-native"
+import { View, Text, Pressable, ScrollView } from "react-native"
 import { Layers, ChevronDown, Check } from "lucide-react-native"
 import {
   Popover,
@@ -25,21 +25,7 @@ import {
 } from "@/components/ui/popover"
 import { cn } from "@shogo/shared-ui/primitives"
 import { api, createHttpClient, type TechStackSummary } from "../../lib/api"
-
-/**
- * Show a native browser tooltip on hover (web only). Wraps children in a
- * `display: contents` div with the `title` attribute so layout is unaffected
- * and the trigger's own ref (popover positioning) isn't disturbed. On native
- * this is a transparent passthrough — the icon click opens the popover.
- */
-function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
-  if (Platform.OS !== "web") return <>{children}</>
-  return React.createElement(
-    "div",
-    { title: label, style: { display: "contents" } },
-    children,
-  )
-}
+import { WebTooltip } from "../ui/web-tooltip"
 
 export interface TechStackPickerProps {
   /** Currently selected stack id (e.g. "react-app"). */
@@ -70,8 +56,8 @@ export function TechStackPicker({ value, onChange, disabled }: TechStackPickerPr
   )
 
   // Until the list loads (or if the id has no match) we don't have a human
-  // label, so fall back to a generic "Stack" rather than flashing the raw id.
-  const displayLabel = selected?.name ?? "Stack"
+  // label, so fall back to a generic "Type" rather than flashing the raw id.
+  const displayLabel = selected?.name ?? "Type"
 
   // Nothing to choose from (tech-stacks dir missing on disk / fetch failed).
   // Hide the chip entirely rather than render a dead control.
@@ -85,11 +71,11 @@ export function TechStackPicker({ value, onChange, disabled }: TechStackPickerPr
       onOpen={() => setOpen(true)}
       onClose={() => setOpen(false)}
       trigger={(triggerProps) => (
-        <WebTooltip label={`Tech stack: ${selected?.name ?? "default"}`}>
+        <WebTooltip label={`Project type: ${selected?.name ?? "default"}`} placement="bottom">
           <Pressable
             {...triggerProps}
             disabled={disabled}
-            accessibilityLabel={`Tech stack: ${selected?.name ?? "default"}`}
+            accessibilityLabel={`Project type: ${selected?.name ?? "default"}`}
             className={cn(
               "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
               "border border-border/60 bg-muted/40 active:opacity-80",
@@ -109,7 +95,7 @@ export function TechStackPicker({ value, onChange, disabled }: TechStackPickerPr
         <ScrollView>
           <View className="px-3 pt-3 pb-1">
             <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-              Tech Stack
+              Project Type
             </Text>
           </View>
           {stacks.map((stack) => {

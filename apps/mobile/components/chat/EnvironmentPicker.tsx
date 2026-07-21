@@ -28,6 +28,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover"
 import { cn } from "@shogo/shared-ui/primitives"
+import { WebTooltip } from "../ui/web-tooltip"
 import { useActiveInstance } from "../../contexts/active-instance"
 import { useInstancePicker, type Instance } from "@shogo/shared-app/hooks"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
@@ -38,21 +39,6 @@ function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === "web") return {}
   const cookie = (authClient as any).getCookie?.()
   return cookie ? { Cookie: cookie } : {}
-}
-
-/**
- * Show a native browser tooltip on hover (web only). Wraps children in a
- * `display: contents` div with the `title` attribute so layout is unaffected
- * and the trigger's own ref isn't disturbed. On native this is a transparent
- * passthrough — the icon click opens the popover menu.
- */
-function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
-  if (Platform.OS !== "web") return <>{children}</>
-  return React.createElement(
-    "div",
-    { title: label, style: { display: "contents" } },
-    children,
-  )
 }
 
 function StatusDot({ status }: { status: Instance["status"] }) {
@@ -104,7 +90,7 @@ export function EnvironmentPicker({ disabled }: EnvironmentPickerProps) {
       onOpen={() => { setOpen(true); refresh() }}
       onClose={() => setOpen(false)}
       trigger={(triggerProps) => (
-        <WebTooltip label={`Environment: ${displayLabel}`}>
+        <WebTooltip label={`Environment: ${displayLabel}`} placement="bottom">
           <Pressable
             {...triggerProps}
             disabled={disabled}
