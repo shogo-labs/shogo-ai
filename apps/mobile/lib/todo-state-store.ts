@@ -103,6 +103,7 @@ export interface TodoStateStore {
    *   see the freshest agent state.
    */
   registerWrite(toolId: string, todos: TodoItem[]): void
+  cancelInProgress(): void
   subscribe(fn: () => void): () => void
   clear(): void
 }
@@ -147,6 +148,17 @@ export function createTodoStateStore(): TodoStateStore {
         changed = true
       }
       if (changed) notify()
+    },
+    cancelInProgress() {
+      let changed = false
+      const next = latestTodos.map((todo) => {
+        if (todo.status !== "in_progress") return todo
+        changed = true
+        return { ...todo, status: "cancelled" as const }
+      })
+      if (!changed) return
+      latestTodos = next
+      notify()
     },
     subscribe(fn: () => void): () => void {
       listeners.add(fn)

@@ -1511,6 +1511,13 @@ export class PreviewManager {
       args = [bundledSdkCli!, 'generate']
       cmdLabel = `bun ${bundledSdkCli} generate (bundled fallback)`
     } else {
+      if (/\s/.test(cwd)) {
+        this.lastGenerateError =
+          `No path-safe shogo generate CLI is available for workspace path with spaces: ${cwd}`
+        this.apiPhase = 'crashed'
+        console.error(`[${LOG_PREFIX}] ${this.lastGenerateError}`)
+        return false
+      }
       args = ['x', 'shogo', 'generate']
       cmdLabel = 'bun x shogo generate'
     }

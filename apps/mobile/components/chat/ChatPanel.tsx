@@ -72,7 +72,7 @@ import { decideMessagesPropagation } from "./messages-propagation"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import { probeChatTurnStatus, shouldAttachLiveStream, type ChatTurnStatus } from "./probe-turn-status"
 import { decideRetryAction, lastAssistantHasResumableWork } from "./retry-triage"
-import { decideStallRecovery, computeRecoveryBackoff } from "./stall-recovery"
+import { decideStallRecovery, computeRecoveryBackoff, decideStallGiveUpAction } from "./stall-recovery"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
@@ -4514,8 +4514,19 @@ export const ChatPanel = observer(function ChatPanel({
             return
           }
           if (action === "give-up") {
-            // Terminal or persistently-unknown: leave the manual Retry banner
-            // for the user. `handleRetry` will still triage continue/resend.
+            const giveUpAction = decideStallGiveUpAction({
+              turnStatus,
+              userInitiatedStop: userInitiatedStopRef.current,
+            })
+            if (giveUpAction === "fail-closed") {
+              turnCompletedRef.current = true
+              turnStalledRef.current = false
+              todoStateStore.cancelInProgress()
+              setEmptyResponseError(
+                "The previous response was interrupted before the runtime sent a completion marker. Completed work was preserved, but the turn has been marked failed so it does not stay active forever.",
+              )
+              setErrorDismissed(false)
+            }
             return
           }
           // retry-later: brief backoff, then probe again.
@@ -4533,6 +4544,7 @@ export const ChatPanel = observer(function ChatPanel({
     expoFetch,
     nativeHeaders,
     resumeStream,
+    todoStateStore,
   ])
   stallRecoveryRef.current = attemptStallRecovery
 

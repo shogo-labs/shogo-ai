@@ -16,13 +16,14 @@
  * static "tap Retry" banner even though the agent may still be running.
  *
  * This test drives the REAL probe against a 404 and confirms the full chain
- * lands on "give-up".
+ * lands on "give-up". The production fix then converts that give-up into a
+ * local fail-closed UI state so active tasks do not spin forever.
  *
  * Run: bun test apps/mobile/components/chat/__tests__/stall-recovery.repro.test.ts
  */
 import { describe, expect, test } from 'bun:test'
 import { probeChatTurnStatus } from '../probe-turn-status'
-import { decideStallRecovery } from '../stall-recovery'
+import { decideStallGiveUpAction, decideStallRecovery } from '../stall-recovery'
 
 const TURN_URL = 'https://api.example.com/api/projects/d9d1f5a6/chat/98731fc1/turn'
 
@@ -44,10 +45,12 @@ describe('REPRODUCTION: /turn 404 (lost session affinity) → auto-recovery give
     }
 
     // Every intermediate attempt only buys "retry-later"; the final attempt
-    // gives up → falls through to the manual banner. Never "reconnect".
+    // gives up. The follow-up give-up decision must then fail-closed locally
+    // instead of leaving the turn visually active forever.
     expect(actions).not.toContain('reconnect')
     expect(actions[actions.length - 1]).toBe('give-up')
     expect(actions.slice(0, -1).every((a) => a === 'retry-later')).toBe(true)
+    expect(decideStallGiveUpAction({ turnStatus: 'unknown', userInitiatedStop: false })).toBe('fail-closed')
   })
 
   test('a raw network throw on the probe also collapses to unknown → give-up', async () => {
@@ -57,5 +60,6 @@ describe('REPRODUCTION: /turn 404 (lost session affinity) → auto-recovery give
     const turnStatus = await probeChatTurnStatus({ url: TURN_URL, fetch: fetchThrows })
     expect(turnStatus).toBe('unknown')
     expect(decideStallRecovery({ turnStatus, attempt: 5, maxAttempts: 5 })).toBe('give-up')
+    expect(decideStallGiveUpAction({ turnStatus, userInitiatedStop: false })).toBe('fail-closed')
   })
 })

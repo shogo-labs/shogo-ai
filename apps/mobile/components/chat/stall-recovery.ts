@@ -24,6 +24,7 @@
 import type { ChatTurnStatus } from "./probe-turn-status"
 
 export type StallRecoveryAction = "reconnect" | "retry-later" | "give-up"
+export type StallGiveUpAction = "fail-closed" | "ignore"
 
 export interface StallRecoveryInput {
   /** Status from the runtime's read-only `/turn` probe. */
@@ -59,6 +60,31 @@ export function decideStallRecovery({
   if (turnStatus === "active") return "reconnect"
   if (turnStatus === "unknown" && attempt < maxAttempts) return "retry-later"
   return "give-up"
+}
+
+export interface StallGiveUpInput {
+  /** The latest status from the final `/turn` probe before giving up. */
+  turnStatus: ChatTurnStatus
+  /** Whether the user explicitly pressed Stop for this turn. */
+  userInitiatedStop: boolean
+}
+
+/**
+ * Decide the local UI terminal action when automatic recovery gives up.
+ *
+ * A stream EOF without `data-turn-complete` is not a normal completed turn. If
+ * the user did not press Stop and the runtime is not actively streamable, close
+ * the UI as a failed/partial turn: clear stale active task state and show a
+ * concrete retry banner. That prevents desktop runtime crashes (for example a
+ * local preview/generate crash) from leaving the turn visually active forever.
+ */
+export function decideStallGiveUpAction({
+  turnStatus,
+  userInitiatedStop,
+}: StallGiveUpInput): StallGiveUpAction {
+  if (userInitiatedStop) return "ignore"
+  if (turnStatus === "active") return "ignore"
+  return "fail-closed"
 }
 
 export interface RecoveryBackoffOptions {

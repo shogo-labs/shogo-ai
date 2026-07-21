@@ -15,7 +15,7 @@
  * Run: bun test apps/mobile/components/chat/__tests__/stall-recovery.test.ts
  */
 import { describe, expect, test } from "bun:test"
-import { computeRecoveryBackoff, decideStallRecovery } from "../stall-recovery"
+import { computeRecoveryBackoff, decideStallRecovery, decideStallGiveUpAction } from "../stall-recovery"
 
 describe("decideStallRecovery", () => {
   test("active turn -> reconnect (agent still running, transport drop)", () => {
@@ -51,6 +51,19 @@ describe("decideStallRecovery", () => {
     // never silently restart a turn behind the user's back.
     expect(actions).not.toContain("resend" as never)
     expect(actions).not.toContain("continue" as never)
+  })
+})
+
+describe("decideStallGiveUpAction", () => {
+  test("non-user-initiated unknown/terminal turn -> fail-closed", () => {
+    for (const turnStatus of ["unknown", "completed", "failed", "aborted"] as const) {
+      expect(decideStallGiveUpAction({ turnStatus, userInitiatedStop: false })).toBe("fail-closed")
+    }
+  })
+
+  test("active or user-stopped turn -> ignore", () => {
+    expect(decideStallGiveUpAction({ turnStatus: "active", userInitiatedStop: false })).toBe("ignore")
+    expect(decideStallGiveUpAction({ turnStatus: "unknown", userInitiatedStop: true })).toBe("ignore")
   })
 })
 

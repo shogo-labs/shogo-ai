@@ -199,6 +199,70 @@ describe('PreviewManager runShogoGenerate (private — invoked indirectly)', () 
       err.mockRestore()
     }
   })
+
+  it('uses the bundled path-safe SDK CLI for legacy generate scripts under paths with spaces', async () => {
+    const workspaceDir = join(dir, 'Application Support')
+    const cwd = join(workspaceDir, 'project')
+    mkdirSync(join(cwd, 'prisma'), { recursive: true })
+    writeFileSync(join(cwd, 'prisma', 'schema.prisma'), 'datasource db {}')
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({
+      scripts: { generate: 'bunx shogo generate' },
+    }))
+    const bundledCli = join(dir, 'sdk cli.mjs')
+    writeFileSync(bundledCli, '')
+    const previousBundledCli = process.env.SHOGO_BUNDLED_SDK_CLI
+    process.env.SHOGO_BUNDLED_SDK_CLI = bundledCli
+    const m = mk({ workspaceDir }) as any
+    let spawnedArgs: string[] = []
+    const spawnSpy = spyOn(childProc, 'spawn').mockImplementation((_cmd: any, args: any, _opts: any) => {
+      spawnedArgs = args
+      return {
+        stdout: { on: () => {} },
+        stderr: { on: () => {} },
+        on: (event: string, cb: any) => { if (event === 'close') setImmediate(() => cb(0)) },
+        kill: () => {},
+        killed: false,
+      } as any
+    })
+    const log = spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const ok = await m.runShogoGenerate()
+      expect(ok).toBe(true)
+      expect(spawnedArgs).toEqual([bundledCli, 'generate'])
+    } finally {
+      if (previousBundledCli === undefined) delete process.env.SHOGO_BUNDLED_SDK_CLI
+      else process.env.SHOGO_BUNDLED_SDK_CLI = previousBundledCli
+      spawnSpy.mockRestore()
+      log.mockRestore()
+    }
+  })
+
+  it('fails before spawning unsafe bun x shogo on workspace paths with spaces when no path-safe CLI exists', async () => {
+    const workspaceDir = join(dir, 'Application Support')
+    const cwd = join(workspaceDir, 'project')
+    mkdirSync(join(cwd, 'prisma'), { recursive: true })
+    writeFileSync(join(cwd, 'prisma', 'schema.prisma'), 'datasource db {}')
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({}))
+    const previousBundledCli = process.env.SHOGO_BUNDLED_SDK_CLI
+    delete process.env.SHOGO_BUNDLED_SDK_CLI
+    const m = mk({ workspaceDir }) as any
+    const spawnSpy = spyOn(childProc, 'spawn').mockImplementation(() => {
+      throw new Error('unsafe spawn should not be called')
+    })
+    const err = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const ok = await m.runShogoGenerate()
+      expect(ok).toBe(false)
+      expect(spawnSpy).not.toHaveBeenCalled()
+      expect(m.lastGenerateError).toContain('No path-safe shogo generate CLI is available')
+      expect(m.apiPhase).toBe('crashed')
+    } finally {
+      if (previousBundledCli === undefined) delete process.env.SHOGO_BUNDLED_SDK_CLI
+      else process.env.SHOGO_BUNDLED_SDK_CLI = previousBundledCli
+      spawnSpy.mockRestore()
+      err.mockRestore()
+    }
+  })
 })
 
 // --- runExpoExportWeb early bail ------------------------------------------
