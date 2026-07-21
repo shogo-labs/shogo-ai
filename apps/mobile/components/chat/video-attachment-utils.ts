@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
+import {
+  VIDEO_DERIVED_ATTACHMENT,
+  isVideoAttachmentType,
+  videoMimeTypeFromName,
+} from "@shogo-ai/core/video-attachment-contract"
+
 export interface ChatAttachmentFile {
   id: string
   dataUrl: string
   name: string
   type: string
   size: number
+  internal?: boolean
+  sourceFileId?: string
 }
 
 export interface ProcessChatAttachmentOptions {
@@ -15,43 +23,39 @@ export interface ProcessChatAttachmentOptions {
   maxFileSizeBytes: number
 }
 
+export type AttachmentProcessingErrorCode =
+  | "unsupported_file"
+  | "file_too_large"
+  | "read_failed"
+  | "video_metadata_failed"
+  | "video_frame_extraction_failed"
+  | "attachment_limit_exceeded"
+
+export interface AttachmentProcessingError {
+  code: AttachmentProcessingErrorCode
+  message: string
+  fileName?: string
+}
+
 export interface ProcessChatAttachmentResult {
   files: ChatAttachmentFile[]
   errors: string[]
+  structuredErrors: AttachmentProcessingError[]
 }
 
-const VIDEO_EXTENSIONS = new Set([
-  ".mp4",
-  ".mov",
-  ".m4v",
-  ".webm",
-  ".avi",
-  ".mkv",
-  ".mpeg",
-  ".mpg",
-  ".3gp",
-])
-
-const MAX_VIDEO_FRAME_ATTACHMENTS = 8
-const VIDEO_FRAME_CANDIDATES = 14
+const MAX_VIDEO_FRAME_ATTACHMENTS = VIDEO_DERIVED_ATTACHMENT.maxFrames
+const VIDEO_FRAME_CANDIDATES = VIDEO_DERIVED_ATTACHMENT.frameCandidates
 const FRAME_HASH_SIZE = 8
 const FRAME_HASH_DUPLICATE_DISTANCE = 6
-const FRAME_MAX_WIDTH = 768
-const FRAME_JPEG_QUALITY = 0.72
+const FRAME_MAX_WIDTH = VIDEO_DERIVED_ATTACHMENT.maxFrameWidth
+const FRAME_JPEG_QUALITY = VIDEO_DERIVED_ATTACHMENT.jpegQuality
 
 function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
-function extensionOf(name: string): string {
-  const dot = name.lastIndexOf(".")
-  return dot >= 0 ? name.slice(dot).toLowerCase() : ""
-}
-
 export function isVideoAttachment(type?: string, name?: string): boolean {
-  const normalizedType = (type || "").toLowerCase()
-  if (normalizedType.startsWith("video/")) return true
-  return !!name && VIDEO_EXTENSIONS.has(extensionOf(name))
+  return isVideoAttachmentType(type, name)
 }
 
 export function isImageAttachment(type?: string): boolean {
@@ -75,6 +79,44 @@ export function formatAttachmentSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+export function allocateVideoFrameBudgets(videoCount: number, availableSlots: number, maxFramesPerVideo = MAX_VIDEO_FRAME_ATTACHMENTS): number[] {
+  if (videoCount <= 0 || availableSlots <= 0 || maxFramesPerVideo <= 0) return Array(Math.max(0, videoCount)).fill(0)
+  const budgets = Array(videoCount).fill(0)
+  let remaining = Math.min(availableSlots, videoCount * maxFramesPerVideo)
+  while (remaining > 0) {
+    let changed = false
+    for (let i = 0; i < videoCount && remaining > 0; i++) {
+      if (budgets[i] >= maxFramesPerVideo) continue
+      budgets[i]++
+      remaining--
+      changed = true
+    }
+    if (!changed) break
+  }
+  return budgets
+}
+
+function addError(errors: AttachmentProcessingError[], code: AttachmentProcessingErrorCode, message: string, fileName?: string): void {
+  errors.push({ code, message, fileName })
+}
+
+function fileTooLargeMessage(fileName: string, limitBytes: number, video: boolean): string {
+  const limit = formatAttachmentSize(limitBytes)
+  if (video) return `This video is too large for chat upload. Try a shorter clip or compress it. "${fileName}" exceeds ${limit}.`
+  return `File "${fileName}" exceeds ${limit} limit.`
+}
+
+function readFailedMessage(fileName: string, video: boolean): string {
+  if (video) return `Could not read the video from your device. Try choosing it from Files instead.`
+  return `Could not read "${fileName}".`
+}
+
+function frameExtractionWarning(error?: string): string {
+  return error
+    ? `Video uploaded, but frames could not be extracted. The original video will still be available to the agent. ${error}`
+    : "Video uploaded, but frames could not be extracted. The original video will still be available to the agent."
+}
+
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -93,7 +135,15 @@ function loadVideo(url: string): Promise<any> {
     video.onloadedmetadata = () => resolve(video)
     video.onerror = () => reject(new Error("Could not load video metadata"))
     video.src = url
+    video.load?.()
   })
+}
+
+export function normaliseVideoFileForMetadata(file: File): File | Blob {
+  const declaredType = (file.type || "").toLowerCase()
+  const inferredType = videoMimeTypeFromName(file.name)
+  if (!inferredType || (declaredType && declaredType !== "application/octet-stream")) return file
+  return new Blob([file], { type: inferredType })
 }
 
 function seekVideo(video: any, time: number): Promise<void> {
@@ -169,6 +219,7 @@ function buildVideoContextAttachment(video: {
   frameCount: number
   frameTimes: number[]
   frameExtractionError?: string
+  sourceFileId: string
 }): ChatAttachmentFile {
   const lines = [
     `Video attachment: ${video.name}`,
@@ -188,9 +239,11 @@ function buildVideoContextAttachment(video: {
   return {
     id: uid(),
     dataUrl: `data:text/plain;base64,${encoded}`,
-    name: `${safeBaseName(video.name)}.video-context.txt`,
+    name: `${safeBaseName(video.name)}${VIDEO_DERIVED_ATTACHMENT.contextSuffix}`,
     type: "text/plain",
     size: lines.length,
+    internal: true,
+    sourceFileId: video.sourceFileId,
   }
 }
 
@@ -206,7 +259,7 @@ async function extractVideoFrameAttachments(file: File): Promise<{
     return { frames: [], times: [], error: "Video frame extraction is unavailable on this platform." }
   }
 
-  const objectUrl = URL.createObjectURL(file)
+  const objectUrl = URL.createObjectURL(normaliseVideoFileForMetadata(file))
   try {
     const video = await loadVideo(objectUrl)
     const duration = Number(video.duration)
@@ -246,7 +299,7 @@ async function extractVideoFrameAttachments(file: File): Promise<{
       frames.push({
         id: uid(),
         dataUrl,
-        name: `${baseName}.frame-${String(frames.length + 1).padStart(2, "0")}-${time.toFixed(2)}s.jpg`,
+        name: `${baseName}${VIDEO_DERIVED_ATTACHMENT.frameNamePattern}${String(frames.length + 1).padStart(2, "0")}-${time.toFixed(2)}s.jpg`,
         type: "image/jpeg",
         size: Math.ceil((dataUrl.length * 3) / 4),
       })
@@ -261,7 +314,7 @@ async function extractVideoFrameAttachments(file: File): Promise<{
       frames.push({
         id: uid(),
         dataUrl,
-        name: `${baseName}.frame-01-${time.toFixed(2)}s.jpg`,
+        name: `${baseName}${VIDEO_DERIVED_ATTACHMENT.frameNamePattern}01-${time.toFixed(2)}s.jpg`,
         type: "image/jpeg",
         size: Math.ceil((dataUrl.length * 3) / 4),
       })
@@ -280,30 +333,35 @@ async function extractVideoFrameAttachments(file: File): Promise<{
   }
 }
 
+interface AcceptedAttachmentRecord {
+  original: ChatAttachmentFile
+  video: boolean
+  analysis?: Awaited<ReturnType<typeof extractVideoFrameAttachments>>
+}
+
 export async function processChatAttachmentFiles(
   inputFiles: FileList | File[],
   options: ProcessChatAttachmentOptions,
 ): Promise<ProcessChatAttachmentResult> {
   const files = Array.from(inputFiles)
-  const out: ChatAttachmentFile[] = []
-  const errors: string[] = []
-  let used = options.currentCount
-
-  const pushIfRoom = (file: ChatAttachmentFile): boolean => {
-    if (used >= options.maxFiles) {
-      errors.push(`Maximum ${options.maxFiles} files allowed`)
-      return false
-    }
-    out.push(file)
-    used++
-    return true
-  }
+  const records: AcceptedAttachmentRecord[] = []
+  const structuredErrors: AttachmentProcessingError[] = []
+  const availableSlots = Math.max(0, options.maxFiles - options.currentCount)
+  let reservedSlots = 0
 
   for (const file of files) {
     const type = file.type || "application/octet-stream"
+    const video = isVideoAttachment(type, file.name)
     const isExempt = isArchiveAttachment(type, file.name)
+    const requiredSlots = video ? 2 : 1
+
+    if (reservedSlots + requiredSlots > availableSlots) {
+      addError(structuredErrors, "attachment_limit_exceeded", `Maximum ${options.maxFiles} files allowed`, file.name)
+      continue
+    }
+
     if (!isExempt && file.size > options.maxFileSizeBytes) {
-      errors.push(`File "${file.name}" exceeds ${options.maxFileSizeBytes / (1024 * 1024)}MB limit`)
+      addError(structuredErrors, "file_too_large", fileTooLargeMessage(file.name, options.maxFileSizeBytes, video), file.name)
       continue
     }
 
@@ -311,33 +369,63 @@ export async function processChatAttachmentFiles(
     try {
       dataUrl = await readFileAsDataUrl(file)
     } catch {
-      errors.push(`Could not read "${file.name}"`)
+      addError(structuredErrors, "read_failed", readFailedMessage(file.name, video), file.name)
       continue
     }
 
-    if (!pushIfRoom({ id: uid(), dataUrl, name: file.name, type, size: file.size })) continue
+    const record: AcceptedAttachmentRecord = {
+      original: { id: uid(), dataUrl, name: file.name, type, size: file.size },
+      video,
+    }
+    reservedSlots += requiredSlots
 
-    if (!isVideoAttachment(type, file.name)) continue
+    if (video) {
+      record.analysis = await extractVideoFrameAttachments(file)
+      if (record.analysis.error) {
+        const code = record.analysis.error.toLowerCase().includes("metadata")
+          ? "video_metadata_failed"
+          : "video_frame_extraction_failed"
+        addError(structuredErrors, code, frameExtractionWarning(record.analysis.error), file.name)
+      }
+    }
 
-    const analysis = await extractVideoFrameAttachments(file)
-    const remainingForDerived = options.maxFiles - used
-    const frameRoom = Math.max(0, remainingForDerived - 1)
-    const framesToAttach = analysis.frames.slice(0, frameRoom)
-    for (const frame of framesToAttach) pushIfRoom(frame)
-
-    const context = buildVideoContextAttachment({
-      name: file.name,
-      type,
-      size: file.size,
-      duration: analysis.duration,
-      width: analysis.width,
-      height: analysis.height,
-      frameCount: framesToAttach.length,
-      frameTimes: analysis.times.slice(0, framesToAttach.length),
-      frameExtractionError: analysis.error,
-    })
-    pushIfRoom(context)
+    records.push(record)
   }
 
-  return { files: out, errors: Array.from(new Set(errors)) }
+  const videoRecords = records.filter((record) => record.video)
+  const frameBudgets = allocateVideoFrameBudgets(
+    videoRecords.length,
+    Math.max(0, availableSlots - reservedSlots),
+    MAX_VIDEO_FRAME_ATTACHMENTS,
+  )
+  const frameBudgetByRecord = new Map<AcceptedAttachmentRecord, number>()
+  videoRecords.forEach((record, index) => frameBudgetByRecord.set(record, frameBudgets[index] ?? 0))
+
+  const out: ChatAttachmentFile[] = []
+  for (const record of records) {
+    out.push(record.original)
+    if (!record.video || !record.analysis) continue
+    const frameBudget = frameBudgetByRecord.get(record) ?? 0
+    const framesToAttach = record.analysis.frames.slice(0, frameBudget)
+    framesToAttach.forEach((frame) => {
+      frame.internal = true
+      frame.sourceFileId = record.original.id
+    })
+    out.push(...framesToAttach)
+    out.push(buildVideoContextAttachment({
+      name: record.original.name,
+      type: record.original.type,
+      size: record.original.size,
+      duration: record.analysis.duration,
+      width: record.analysis.width,
+      height: record.analysis.height,
+      frameCount: framesToAttach.length,
+      frameTimes: record.analysis.times.slice(0, framesToAttach.length),
+      frameExtractionError: record.analysis.error,
+      sourceFileId: record.original.id,
+    }))
+  }
+
+  const errors = Array.from(new Set(structuredErrors.map((error) => error.message)))
+  return { files: out, errors, structuredErrors }
 }

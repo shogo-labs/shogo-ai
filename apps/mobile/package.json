@@ -38,6 +38,7 @@
     "@monaco-editor/react": "^4.7.0",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@sentry/react-native": "^8.12.0",
+    "@shogo-ai/core": "workspace:*",
     "@shogo-ai/sdk": "workspace:*",
     "@shogo/domain-stores": "workspace:*",
     "@shogo/desktop-terminal": "workspace:*",

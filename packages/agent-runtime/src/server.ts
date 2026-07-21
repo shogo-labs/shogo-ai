@@ -1632,7 +1632,7 @@ app.post('/agent/chat', async (c) => {
   // and unknown binaries — and the saved path is annotated back onto the file
   // part so downstream parsing can surface it to the agent.
   if (userFileParts.length > 0) {
-    const { saved, savedSummaries, zipUploaded } = saveUploadedFileParts({
+    const { saved, savedSummaries, rejectedSummaries, zipUploaded } = saveUploadedFileParts({
       workspaceDir: WORKSPACE_DIR,
       parts: userFileParts,
     })
@@ -1642,7 +1642,7 @@ app.post('/agent/chat', async (c) => {
       try { getIndexEngine().indexFile('files', sf.baseName).catch(() => {}) } catch { /* best-effort */ }
     }
 
-    const note = buildUploadedFilesNote(savedSummaries, zipUploaded)
+    const note = buildUploadedFilesNote(savedSummaries, zipUploaded, rejectedSummaries)
     if (note) {
       userText = userText ? `${userText}\n\n${note}` : note
     }

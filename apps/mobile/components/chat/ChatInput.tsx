@@ -151,6 +151,8 @@ interface AttachedFile {
   name: string
   type: string
   size: number
+  internal?: boolean
+  sourceFileId?: string
 }
 
 export interface FileAttachment {
@@ -870,9 +872,13 @@ function ChatInputImpl({
   }, [inputValue])
 
   const formatFileSize = useCallback(formatAttachmentSize, [])
+  const visiblePendingFiles = useMemo(
+    () => pendingFiles.filter((file) => !file.internal),
+    [pendingFiles]
+  )
 
   const handleRemoveFile = useCallback((fileId: string) => {
-    setPendingFiles((prev) => prev.filter((f) => f.id !== fileId))
+    setPendingFiles((prev) => prev.filter((f) => f.id !== fileId && f.sourceFileId !== fileId))
     setFileError(null)
   }, [])
 
@@ -1218,13 +1224,13 @@ function ChatInputImpl({
       )}
 
       {/* File previews */}
-      {pendingFiles.length > 0 && (
+      {visiblePendingFiles.length > 0 && (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerClassName="gap-2 mb-2"
         >
-          {pendingFiles.map((file) => {
+          {visiblePendingFiles.map((file) => {
             const isImage = isImageAttachment(file.type)
             const isVideo = isVideoAttachment(file.type, file.name)
             return (
@@ -2198,7 +2204,7 @@ function ChatInputImpl({
                     size={10}
                   />
                 </Pressable>
-                {(inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) && (
+                {(inputValue.trim() || visiblePendingFiles.length > 0 || pastedTexts.length > 0) && (
                   <Pressable
                     onPress={handleSubmit}
                     disabled={disabled || isProcessingFiles}
@@ -2210,7 +2216,7 @@ function ChatInputImpl({
                   </Pressable>
                 )}
               </>
-            ) : (inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0 || references.length > 0) ? (
+            ) : (inputValue.trim() || visiblePendingFiles.length > 0 || pastedTexts.length > 0 || references.length > 0) ? (
               <Pressable
                 onPress={handleSubmit}
                 disabled={disabled || isProcessingFiles}

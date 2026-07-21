@@ -12,6 +12,10 @@
  */
 
 import { buildDataUrlFromBase64 } from "@shogo-ai/sdk"
+import {
+  isVideoAttachmentType,
+  videoMimeTypeFromName,
+} from "@shogo-ai/core/video-attachment-contract"
 import { EncodingType, readAsStringAsync } from "expo-file-system/legacy"
 import * as ImagePicker from "expo-image-picker"
 
@@ -56,13 +60,8 @@ function mimeFromName(name: string): string {
   if (l.endsWith(".heic")) return "image/heic"
   if (l.endsWith(".bmp")) return "image/bmp"
   if (l.endsWith(".svg")) return "image/svg+xml"
-  if (l.endsWith(".mp4") || l.endsWith(".m4v")) return "video/mp4"
-  if (l.endsWith(".mov")) return "video/quicktime"
-  if (l.endsWith(".webm")) return "video/webm"
-  if (l.endsWith(".avi")) return "video/x-msvideo"
-  if (l.endsWith(".mkv")) return "video/x-matroska"
-  if (l.endsWith(".mpeg") || l.endsWith(".mpg")) return "video/mpeg"
-  if (l.endsWith(".3gp")) return "video/3gpp"
+  const videoMime = videoMimeTypeFromName(name)
+  if (videoMime) return videoMime
   if (l.endsWith(".zip")) return "application/zip"
   return "application/octet-stream"
 }
@@ -97,16 +96,21 @@ export function executeNativeAttachAction(
   ): Promise<NativePickedAttachment | null> => {
     const mime = asset.mimeType ?? (asset.fileName ? mimeFromName(asset.fileName) : fallbackMime)
     const name = asset.fileName?.trim() || fallbackName
+    const video = asset.type === "video" || isVideoAttachmentType(mime, name)
     const b64 = asset.base64
     const size = asset.fileSize ?? (b64 ? Math.floor((b64.length * 3) / 4) : undefined)
+    const sizeLimit = `${maxFileSizeBytes / (1024 * 1024)} MB`
+    const tooLargeMessage = video
+      ? `This video is too large for chat upload. Try a shorter clip or compress it. "${name}" exceeds ${sizeLimit}.`
+      : `"${name}" exceeds ${sizeLimit}.`
     if (typeof size === "number" && size > maxFileSizeBytes) {
-      onError(`"${name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
+      onError(tooLargeMessage)
       return null
     }
     const dataUrl = b64 ? `data:${mime};base64,${b64}` : await uriToDataUrl(asset.uri, mime)
     const finalSize = size ?? Math.floor(Math.max(0, dataUrl.length - `data:${mime};base64,`.length) * 3 / 4)
     if (finalSize > maxFileSizeBytes) {
-      onError(`"${name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
+      onError(tooLargeMessage)
       return null
     }
     return {
@@ -129,7 +133,7 @@ export function executeNativeAttachAction(
       allowsMultipleSelection: remaining > 1,
       selectionLimit: remaining,
       quality: 0.92,
-      base64: true,
+      base64: false,
     })
     if (result.canceled || !result.assets?.length) return
 
@@ -141,7 +145,7 @@ export function executeNativeAttachAction(
       try {
         attachment = await buildAttachmentFromAsset(asset, `${asset.type || "media"}_${uid()}.${fallbackExt}`, fallbackMime)
       } catch {
-        onError(`Could not read the selected ${asset.type === "video" ? "video" : "image"}. Try again.`)
+        onError(asset.type === "video" ? "Could not read the video from your device. Try choosing it from Files instead." : "Could not read the selected image. Try again.")
         return
       }
       if (attachment) out.push(attachment)
@@ -201,14 +205,7 @@ export function executeNativeAttachAction(
     const out: NativePickedAttachment[] = []
     for (const doc of result.assets) {
       const mime = doc.mimeType?.trim() || mimeFromName(doc.name)
-      let dataUrl: string
-      try {
-        dataUrl = await uriToDataUrl(doc.uri, mime)
-      } catch {
-        onError(`Could not read "${doc.name}".`)
-        return
-      }
-      const size = doc.size ?? dataUrl.length
+      const video = isVideoAttachmentType(mime, doc.name)
       const lowerName = doc.name.toLowerCase()
       const isExempt =
         lowerName.endsWith(".zip") ||
@@ -216,8 +213,20 @@ export function executeNativeAttachAction(
         lowerName.endsWith(".shogo-project") ||
         mime === "application/zip" ||
         mime === "application/x-zip-compressed"
+      if (!isExempt && typeof doc.size === "number" && doc.size > maxFileSizeBytes) {
+        onError(video ? `This video is too large for chat upload. Try a shorter clip or compress it. "${doc.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.` : `"${doc.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
+        return
+      }
+      let dataUrl: string
+      try {
+        dataUrl = await uriToDataUrl(doc.uri, mime)
+      } catch {
+        onError(video ? "Could not read the video from your device. Try choosing it from Files instead." : `Could not read "${doc.name}".`)
+        return
+      }
+      const size = doc.size ?? Math.floor(Math.max(0, dataUrl.length - `data:${mime};base64,`.length) * 3 / 4)
       if (!isExempt && size > maxFileSizeBytes) {
-        onError(`"${doc.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
+        onError(video ? `This video is too large for chat upload. Try a shorter clip or compress it. "${doc.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.` : `"${doc.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
         return
       }
       out.push({ id: uid(), dataUrl, name: doc.name, type: mime, size })

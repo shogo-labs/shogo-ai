@@ -47,6 +47,7 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@mozilla/readability": "^0.6.0",
     "@playwright/mcp": "^0.0.68",
+    "@shogo-ai/core": "workspace:*",
     "@shogo-ai/sdk": "workspace:*",
     "@shogo/model-catalog": "workspace:*",
     "@shogo/pty-core": "workspace:*",

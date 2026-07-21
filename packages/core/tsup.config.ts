@@ -12,6 +12,7 @@ export default defineConfig({
     'src/macos-junk.ts',
     'src/tech-stack-registry.ts',
     'src/file-types.ts',
+    'src/video-attachment-contract.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,

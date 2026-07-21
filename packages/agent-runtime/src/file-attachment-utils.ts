@@ -7,6 +7,7 @@
  */
 
 import type { ImageContent } from '@mariozechner/pi-ai'
+import { isVideoAttachmentType } from '@shogo-ai/core/video-attachment-contract'
 
 const TEXT_MEDIA_TYPES = new Set([
   'application/json',
@@ -19,18 +20,6 @@ const TEXT_MEDIA_TYPES = new Set([
   'application/x-sh',
   'application/xhtml+xml',
   'application/ld+json',
-])
-
-const VIDEO_EXTENSIONS = new Set([
-  '.mp4',
-  '.mov',
-  '.m4v',
-  '.webm',
-  '.avi',
-  '.mkv',
-  '.mpeg',
-  '.mpg',
-  '.3gp',
 ])
 
 export interface FilePart {
@@ -55,16 +44,6 @@ export interface ParsedAttachments {
 
 function formatSavedPathSuffix(savedPath?: string): string {
   return savedPath ? ` Saved to workspace at \`${savedPath}\`.` : ''
-}
-
-function extensionOf(name: string | undefined): string {
-  if (!name) return ''
-  const dot = name.lastIndexOf('.')
-  return dot >= 0 ? name.slice(dot).toLowerCase() : ''
-}
-
-function isVideoFile(mediaType: string, name?: string): boolean {
-  return mediaType.startsWith('video/') || VIDEO_EXTENSIONS.has(extensionOf(name))
 }
 
 /**
@@ -116,7 +95,7 @@ export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
       continue
     }
 
-    if (isVideoFile(mediaType, fp.name)) {
+    if (isVideoAttachmentType(mediaType, fp.name)) {
       videos++
       sections.push(
         `[Attached Video (${label})]: Binary video content.${savedSuffix} Representative deduped frame images and a video-context text file are included when the client can extract them. If more detail, audio, transcript, or exact timing is needed, inspect the saved original video file with available workspace tools.`,

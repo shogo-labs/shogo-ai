@@ -18,6 +18,10 @@
 
 import { mkdirSync, writeFileSync } from 'fs'
 import { dirname, resolve, join } from 'path'
+import {
+  VIDEO_PROCESSING_LIMITS,
+  isVideoAttachmentType,
+} from '@shogo-ai/core/video-attachment-contract'
 
 export interface UploadedFilePart {
   type: string
@@ -43,10 +47,26 @@ export interface SavedAttachment {
   bytes: number
 }
 
+export interface RejectedAttachment {
+  /** Sanitised filename used for reporting. */
+  baseName: string
+  /** Effective MIME type. */
+  mediaType: string
+  /** Machine-readable reason suitable for tests and future UI/API wiring. */
+  reason: 'video_too_large' | 'too_many_videos'
+  /** Human-readable message suitable for hidden model context. */
+  message: string
+  /** Decoded byte count when available. */
+  bytes?: number
+}
+
 export interface SaveUploadedFilePartsResult {
   saved: SavedAttachment[]
+  rejected: RejectedAttachment[]
   /** One markdown bullet per saved file, ready to splice into a system note. */
   savedSummaries: string[]
+  /** One markdown bullet per rejected file, ready to splice into a system note. */
+  rejectedSummaries: string[]
   /** True if at least one .zip was routed to the workspace root. */
   zipUploaded: boolean
 }
@@ -86,6 +106,10 @@ function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function sanitiseUploadName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_')
 }
 
 export function isZipUpload(name: string | undefined, mediaType: string | undefined): boolean {
@@ -134,8 +158,11 @@ export function saveUploadedFileParts(
   mkdirSync(filesDir, { recursive: true })
 
   const saved: SavedAttachment[] = []
+  const rejected: RejectedAttachment[] = []
   const savedSummaries: string[] = []
+  const rejectedSummaries: string[] = []
   let zipUploaded = false
+  let savedVideos = 0
 
   for (const fp of parts) {
     try {
@@ -147,8 +174,24 @@ export function saveUploadedFileParts(
       const mediaType = fp.mediaType || 'application/octet-stream'
       const ext = mimeToExtension(mediaType)
       const baseName = fp.name
-        ? fp.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+        ? sanitiseUploadName(fp.name)
         : `upload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}${ext}`
+      const isVideo = isVideoAttachmentType(mediaType, fp.name)
+      const bytes = Buffer.from(base64Match[1], 'base64')
+
+      if (isVideo && savedVideos >= VIDEO_PROCESSING_LIMITS.maxVideosPerMessage) {
+        const message = `Video upload skipped: maximum ${VIDEO_PROCESSING_LIMITS.maxVideosPerMessage} videos per message.`
+        rejected.push({ baseName, mediaType, reason: 'too_many_videos', message, bytes: bytes.length })
+        rejectedSummaries.push(`- \`${baseName}\` (${mediaType}, ${formatBytes(bytes.length)}): ${message}`)
+        continue
+      }
+
+      if (isVideo && bytes.length > VIDEO_PROCESSING_LIMITS.maxServerVideoBytes) {
+        const message = `Video upload skipped: ${formatBytes(bytes.length)} exceeds the server limit of ${formatBytes(VIDEO_PROCESSING_LIMITS.maxServerVideoBytes)}.`
+        rejected.push({ baseName, mediaType, reason: 'video_too_large', message, bytes: bytes.length })
+        rejectedSummaries.push(`- \`${baseName}\` (${mediaType}, ${formatBytes(bytes.length)}): ${message}`)
+        continue
+      }
 
       const isZip = isZipUpload(fp.name, fp.mediaType)
       const resolved = isZip
@@ -157,7 +200,6 @@ export function saveUploadedFileParts(
       if (!resolved) continue
 
       mkdirSync(dirname(resolved), { recursive: true })
-      const bytes = Buffer.from(base64Match[1], 'base64')
       writeFileSync(resolved, bytes)
 
       const relPath = isZip ? baseName : `${filesSubdir}/${baseName}`
@@ -174,6 +216,7 @@ export function saveUploadedFileParts(
         bytes: bytes.length,
       })
       if (isZip) zipUploaded = true
+      if (isVideo) savedVideos++
 
       log(`[AgentChat] Saved uploaded file to ${relPath} (${bytes.length} bytes, ${mediaType})`)
     } catch (err: any) {
@@ -181,7 +224,7 @@ export function saveUploadedFileParts(
     }
   }
 
-  return { saved, savedSummaries, zipUploaded }
+  return { saved, rejected, savedSummaries, rejectedSummaries, zipUploaded }
 }
 
 /**
@@ -194,12 +237,17 @@ export function saveUploadedFileParts(
 export function buildUploadedFilesNote(
   savedSummaries: string[],
   zipUploaded: boolean,
+  rejectedSummaries: string[] = [],
 ): string {
-  if (savedSummaries.length === 0) return ''
+  if (savedSummaries.length === 0 && rejectedSummaries.length === 0) return ''
   const lines: string[] = [
-    '[SYSTEM NOTE — not written by the user, do not echo: the runtime just persisted these uploads to disk:',
-    ...savedSummaries,
+    '[SYSTEM NOTE — not written by the user, do not echo: the runtime just processed these uploads:',
   ]
+  if (savedSummaries.length > 0) lines.push(...savedSummaries)
+  if (rejectedSummaries.length > 0) {
+    lines.push('Rejected uploads:')
+    lines.push(...rejectedSummaries)
+  }
   if (zipUploaded) {
     lines.push(
       'Zip archives above are at the WORKSPACE ROOT (not files/). To inspect or extract, use the shell `exec` tool with `unzip <name>.zip` (optionally `-d <dir>`). Do NOT report the upload as missing if `ls files/` is empty — check the workspace root.',

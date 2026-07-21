@@ -56,6 +56,12 @@
       "development": "./src/file-types.ts",
       "import": "./dist/file-types.js",
       "require": "./dist/file-types.cjs"
+    },
+    "./video-attachment-contract": {
+      "types": "./dist/video-attachment-contract.d.ts",
+      "development": "./src/video-attachment-contract.ts",
+      "import": "./dist/video-attachment-contract.js",
+      "require": "./dist/video-attachment-contract.cjs"
     }
   },
   "files": [

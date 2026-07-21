@@ -283,6 +283,58 @@ describe('saveUploadedFileParts', () => {
     expect(savedSummaries).toHaveLength(0)
     expect(zipUploaded).toBe(false)
   })
+
+  test('rejects video uploads that exceed the server-side video byte limit', () => {
+    const oversized = Buffer.alloc(50 * 1024 * 1024 + 1, 0x41)
+    const parts: UploadedFilePart[] = [
+      {
+        type: 'file',
+        mediaType: 'video/mp4',
+        name: 'too-big.mp4',
+        url: dataUrl('video/mp4', oversized),
+      },
+    ]
+
+    const { saved, rejected, rejectedSummaries } = saveUploadedFileParts({
+      workspaceDir,
+      parts,
+      log: SILENT_LOG,
+      logError: SILENT_ERR,
+    })
+
+    expect(saved).toHaveLength(0)
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0].reason).toBe('video_too_large')
+    expect(rejectedSummaries[0]).toContain('server limit')
+    expect(existsSync(join(workspaceDir, 'files', 'too-big.mp4'))).toBe(false)
+    expect(parts[0].savedPath).toBeUndefined()
+  })
+
+  test('rejects videos beyond the per-message server-side video count limit', () => {
+    const parts: UploadedFilePart[] = Array.from({ length: 4 }, (_, index) => ({
+      type: 'file',
+      mediaType: 'application/octet-stream',
+      name: `clip-${index + 1}.mp4`,
+      url: dataUrl('application/octet-stream', Buffer.from(`video-${index + 1}`)),
+    }))
+
+    const { saved, rejected, rejectedSummaries } = saveUploadedFileParts({
+      workspaceDir,
+      parts,
+      log: SILENT_LOG,
+      logError: SILENT_ERR,
+    })
+
+    expect(saved.map((s) => s.savedPath)).toEqual([
+      'files/clip-1.mp4',
+      'files/clip-2.mp4',
+      'files/clip-3.mp4',
+    ])
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0].reason).toBe('too_many_videos')
+    expect(rejectedSummaries[0]).toContain('maximum 3 videos')
+    expect(existsSync(join(workspaceDir, 'files', 'clip-4.mp4'))).toBe(false)
+  })
 })
 
 describe('buildUploadedFilesNote', () => {
@@ -314,5 +366,15 @@ describe('buildUploadedFilesNote', () => {
     expect(note.split('\n')[0]).toContain('not written by the user')
     expect(note.split('\n')[0]).toContain('do not echo')
     expect(note.endsWith(']')).toBe(true)
+  })
+
+  test('includes rejected upload summaries even when nothing was saved', () => {
+    const note = buildUploadedFilesNote([], false, [
+      '- `too-big.mp4` (video/mp4, 50.0 MB): Video upload skipped: too large.',
+    ])
+
+    expect(note).toContain('Rejected uploads:')
+    expect(note).toContain('too-big.mp4')
+    expect(note).toContain('too large')
   })
 })

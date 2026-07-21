@@ -100,6 +100,8 @@ interface AttachedFile {
   name: string
   type: string
   size: number
+  internal?: boolean
+  sourceFileId?: string
 }
 
 export interface CompactChatInputProps {
@@ -258,9 +260,13 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             : "Describe the agent you want to build..."))
 
     const formatFileSize = useCallback(formatAttachmentSize, [])
+    const visiblePendingFiles = useMemo(
+      () => pendingFiles.filter((file) => !file.internal),
+      [pendingFiles]
+    )
 
     const handleRemoveFile = useCallback((fileId: string) => {
-      setPendingFiles((prev) => prev.filter((f) => f.id !== fileId))
+      setPendingFiles((prev) => prev.filter((f) => f.id !== fileId && f.sourceFileId !== fileId))
       setFileError(null)
     }, [])
 
@@ -521,13 +527,13 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           )}
 
           {/* File previews */}
-          {pendingFiles.length > 0 && (
+          {visiblePendingFiles.length > 0 && (
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerClassName="gap-2 p-4 pb-2"
             >
-              {pendingFiles.map((file) => {
+              {visiblePendingFiles.map((file) => {
                 const isImage = isImageAttachment(file.type)
                 const isVideo = isVideoAttachment(file.type, file.name)
                 return (
@@ -860,7 +866,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   <View className="h-5 w-5 rounded-full items-center justify-center bg-primary opacity-50">
                     <Loader2 className="h-3 w-3 text-primary-foreground animate-spin" size={12} />
                   </View>
-                ) : (value.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) ? (
+                ) : (value.trim() || visiblePendingFiles.length > 0 || pastedTexts.length > 0) ? (
                   <Pressable
                     onPress={handleSubmit}
                     disabled={disabled}
