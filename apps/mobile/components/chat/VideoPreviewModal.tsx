@@ -8,7 +8,7 @@
  * on iOS/Android we show a fallback (no expo-video dependency required).
  */
 
-import React from "react"
+import React, { useEffect, useMemo } from "react"
 import { Platform, Text, useWindowDimensions, View } from "react-native"
 import { VideoIcon, X } from "lucide-react-native"
 import {
@@ -35,6 +35,27 @@ export function VideoPreviewModal({
   title = "Video preview",
 }: VideoPreviewModalProps) {
   const { width, height } = useWindowDimensions()
+
+  // data: URLs are blocked by Electron's CSP — convert to a blob URL instead.
+  const videoSrc = useMemo(() => {
+    if (Platform.OS !== 'web' || !url.startsWith('data:')) return url
+    try {
+      const [header, base64] = url.split(',')
+      const mime = header.match(/data:([^;]+)/)?.[1] ?? 'video/mp4'
+      const bytes = atob(base64)
+      const arr = new Uint8Array(bytes.length)
+      for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i)
+      return URL.createObjectURL(new Blob([arr], { type: mime }))
+    } catch {
+      return url
+    }
+  }, [url])
+
+  useEffect(() => {
+    return () => {
+      if (videoSrc !== url) URL.revokeObjectURL(videoSrc)
+    }
+  }, [videoSrc, url])
 
   const panelMaxWidth = Math.min(Math.max(width - 32, 320), 960)
   const panelMaxHeight = Math.min(Math.max(height * 0.86, 320), 760)
@@ -70,7 +91,7 @@ export function VideoPreviewModal({
             {Platform.OS === "web" ? (
               // @ts-ignore — React Native Web passes through HTML video props
               React.createElement("video", {
-                src: url,
+                src: videoSrc,
                 controls: true,
                 autoPlay: true,
                 style: {
