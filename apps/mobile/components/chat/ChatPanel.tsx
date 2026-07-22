@@ -1316,7 +1316,7 @@ export const ChatPanel = observer(function ChatPanel({
       } as any)
       if (res.ok) {
         const data = await res.json()
-        if (Array.isArray(data?.processes)) setRunningProcesses(data.processes as RunningProcess[])
+        if (Array.isArray(data?.processes)) setRunningProcesses((data.processes as RunningProcess[]).filter((p) => p.runId !== runId))
         else setRunningProcesses((prev) => prev.filter((p) => p.runId !== runId))
       }
     } catch {
@@ -5153,7 +5153,7 @@ export const ChatPanel = observer(function ChatPanel({
 
           {/* Running background processes (visible regardless of streaming) */}
           {runningProcesses.length > 0 && (
-            <View className="px-4 pb-2">
+            <View className="px-4 pb-2 w-full items-center">
               <ProcessPanel
                 processes={runningProcesses}
                 onKill={handleKillProcess}
@@ -5164,7 +5164,7 @@ export const ChatPanel = observer(function ChatPanel({
 
           {/* Tool Error Banner */}
           {toolErrorBanner && (
-            <View className="px-4 pb-2">
+            <View className="px-4 pb-2 w-full items-center">
               <View className={cn(
                 "flex-row items-start gap-2 rounded-lg p-3",
                 toolErrorBanner.isAuthError
