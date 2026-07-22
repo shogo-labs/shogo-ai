@@ -33,11 +33,11 @@ const tooltipStyle = tva({
 });
 
 const tooltipContentStyle = tva({
-  base: 'py-1 px-3 rounded-sm bg-foreground web:pointer-events-auto',
+  base: 'py-1 px-3 rounded-sm border border-border bg-popover shadow-md web:pointer-events-auto',
 });
 
 const tooltipTextStyle = tva({
-  base: 'font-normal tracking-normal web:select-none text-xs text-background',
+  base: 'font-normal tracking-normal web:select-none text-xs text-popover-foreground',
 
   variants: {
     isTruncated: {
@@ -132,38 +132,97 @@ interface WebTooltipProps {
   placement?: 'top' | 'bottom';
 }
 
-function WebTooltip({ label, children, placement = 'top' }: WebTooltipProps) {
-  const [isOpen, setIsOpen] = React.useState(false);
+type TooltipTriggerProps = Record<string, any>;
 
-  // Native keeps the previous passthrough behavior because tap targets already open their full popover/menu labels.
+type PossibleRef<T> = React.Ref<T> | undefined;
+
+function assignRef<T>(ref: PossibleRef<T>, value: T) {
+  if (typeof ref === 'function') {
+    ref(value);
+  } else if (ref && typeof ref === 'object') {
+    (ref as React.MutableRefObject<T>).current = value;
+  }
+}
+
+function mergeRefs<T>(...refs: PossibleRef<T>[]) {
+  return (value: T) => refs.forEach((ref) => assignRef(ref, value));
+}
+
+function composeEventHandlers<T extends (...args: any[]) => void>(
+  childHandler?: T,
+  tooltipHandler?: T
+) {
+  return (...args: Parameters<T>) => {
+    childHandler?.(...args);
+    tooltipHandler?.(...args);
+  };
+}
+
+function mergeTriggerProps(
+  child: React.ReactElement,
+  triggerProps: TooltipTriggerProps,
+  label: string
+) {
+  const childProps = child.props as TooltipTriggerProps;
+  const mergedProps: TooltipTriggerProps = {
+    ...triggerProps,
+    ...childProps,
+    ref: mergeRefs((child as any).ref, triggerProps.ref),
+    'aria-label': childProps['aria-label'] ?? label,
+  };
+
+  for (const eventName of [
+    'onBlur',
+    'onFocus',
+    'onMouseEnter',
+    'onMouseLeave',
+    'onPointerEnter',
+    'onPointerLeave',
+  ]) {
+    if (childProps[eventName] || triggerProps[eventName]) {
+      mergedProps[eventName] = composeEventHandlers(
+        childProps[eventName],
+        triggerProps[eventName]
+      );
+    }
+  }
+
+  return mergedProps;
+}
+
+function WebTooltip({ label, children, placement = 'top' }: WebTooltipProps) {
   if (Platform.OS !== 'web') return <>{children}</>;
 
-  // Web composes the existing Gluestack tooltip primitives, but controls hover/focus state here so the desktop Electron embed does not depend on Gluestack's internal hover wiring.
   return (
     <Tooltip
-      isOpen={isOpen}
       placement={placement}
       offset={8}
       shouldFlip
       openDelay={0}
       closeDelay={0}
-      trigger={(triggerProps: any) => (
-        <span
-          ref={triggerProps.ref}
-          onFocus={() => setIsOpen(true)}
-          onBlur={() => setIsOpen(false)}
-          onMouseEnter={() => setIsOpen(true)}
-          onMouseLeave={() => setIsOpen(false)}
-          aria-describedby={triggerProps['aria-describedby']}
-          aria-label={label}
-          style={{ display: 'inline-flex', alignItems: 'center' }}
-        >
-          {children}
-        </span>
-      )}
+      trigger={(triggerProps: TooltipTriggerProps) => {
+        const child = React.Children.only(children);
+
+        if (React.isValidElement(child)) {
+          return React.cloneElement(
+            child,
+            mergeTriggerProps(child, triggerProps, label)
+          );
+        }
+
+        return (
+          <span
+            {...triggerProps}
+            aria-label={label}
+            style={{ display: 'contents' }}
+          >
+            {child}
+          </span>
+        );
+      }}
     >
-      <TooltipContent className="max-w-[260px] rounded-lg border border-border bg-popover px-2 py-1.5 shadow-lg">
-        <TooltipText className="text-xs font-medium leading-4 text-popover-foreground">
+      <TooltipContent className="max-w-[260px] web:pointer-events-none">
+        <TooltipText className="text-xs font-normal leading-4">
           {label}
         </TooltipText>
       </TooltipContent>
