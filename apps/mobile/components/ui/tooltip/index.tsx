@@ -133,25 +133,29 @@ interface WebTooltipProps {
 }
 
 function WebTooltip({ label, children, placement = 'top' }: WebTooltipProps) {
+  const [isOpen, setIsOpen] = React.useState(false);
+
   // Native keeps the previous passthrough behavior because tap targets already open their full popover/menu labels.
   if (Platform.OS !== 'web') return <>{children}</>;
 
-  // Web composes the existing Gluestack tooltip primitives so placement, flipping, and overlay behavior stay centralized.
+  // Web composes the existing Gluestack tooltip primitives, but controls hover/focus state here so the desktop Electron embed does not depend on Gluestack's internal hover wiring.
   return (
     <Tooltip
+      isOpen={isOpen}
       placement={placement}
       offset={8}
       shouldFlip
-      openDelay={150}
+      openDelay={0}
       closeDelay={0}
       trigger={(triggerProps: any) => (
         <span
           ref={triggerProps.ref}
-          onFocus={triggerProps.onFocus}
-          onBlur={triggerProps.onBlur}
-          onMouseEnter={triggerProps.onMouseEnter}
-          onMouseLeave={triggerProps.onMouseLeave}
+          onFocus={() => setIsOpen(true)}
+          onBlur={() => setIsOpen(false)}
+          onMouseEnter={() => setIsOpen(true)}
+          onMouseLeave={() => setIsOpen(false)}
           aria-describedby={triggerProps['aria-describedby']}
+          aria-label={label}
           style={{ display: 'inline-flex', alignItems: 'center' }}
         >
           {children}
