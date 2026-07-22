@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-
+/**
+ * ProcessPanel — shows background shell processes started by the agent in this
+ * thread that are still running. Lets the user terminate a process or dismiss
+ * a stale entry left over from a runtime restart.
+ *
+ * Data is seeded from the runtime's process endpoint and kept live via
+ * `data-process-update` SSE frames in ChatPanel. Elapsed time is computed
+ * locally using `Date.now() - proc.startedAt` so the display ticks even when
+ * no SSE frames arrive.
+ */
 import { useState, useEffect, useRef } from "react"
 import { View, Text, Pressable, ActivityIndicator } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
