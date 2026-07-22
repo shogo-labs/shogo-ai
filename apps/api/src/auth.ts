@@ -242,13 +242,27 @@ export const auth = betterAuth({
     // Multi-region write-ownership: persist `homeRegion` on the users row.
     // `input: false` so it can never be set from the client — it is stamped
     // server-side in the user.create.before hook to the signing-up region.
-    additionalFields: {
-      homeRegion: {
-        type: "string",
-        required: false,
-        input: false,
-      },
-    },
+    // Cloud-only: `schema.local.prisma` deliberately omits this column
+    // (single-region desktop has no use for it — see check-schema-parity's
+    // allow-list), so declaring it here for local mode makes Better Auth's
+    // Kysely adapter try to INSERT a `homeRegion` value into a `users` table
+    // that doesn't have that column, throwing `SQLiteError: table users has
+    // no column named homeRegion` and silently failing the local auto-seed
+    // (`[LocalMode] Failed to auto-seed user`) — no local user ever gets
+    // created, so every session-dependent flow (onboarding completion,
+    // /api/local/auto-sign-in) 401/503s forever and the user is bounced back
+    // to sign-in on every restart.
+    ...(isLocalMode
+      ? {}
+      : {
+          additionalFields: {
+            homeRegion: {
+              type: "string",
+              required: false,
+              input: false,
+            },
+          },
+        }),
   },
 
   // Session model configuration - uses Prisma's sessions table
@@ -482,18 +496,21 @@ export const auth = betterAuth({
           if (user.name) {
             user.name = sanitizeName(user.name)
           }
-          // Stamp the write-ownership home region for this identity to the
-          // region the signup lands in. `input: false` on the additionalField
-          // means a client can never override it. Null in single-region/local
-          // mode, where the router treats null as primary/local.
-          ;(user as { homeRegion?: string | null }).homeRegion = homeRegionForNewUser()
           if (isLocalMode) {
+            // No `homeRegion` additionalField is registered for local mode
+            // (see the `user` config above) and `schema.local.prisma` has no
+            // such column — stamping it here would make the insert 500/throw
+            // and silently break the single local-account auto-seed.
             const existingCount = await prisma.user.count()
             if (existingCount >= 1) {
               throw new Error('Local mode only supports a single account.')
             }
             return { data: user }
           }
+          // Stamp the write-ownership home region for this identity to the
+          // region the signup lands in. `input: false` on the additionalField
+          // means a client can never override it.
+          ;(user as { homeRegion?: string | null }).homeRegion = homeRegionForNewUser()
 
           // Idempotent signup (multi-region): if a user with this email already
           // exists — including a row that was just created in another region and
