@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-/**
- * ProcessPanel Component (React Native)
- *
- * Shows the background shell processes the agent has started in this thread
- * that are still running. Lets the user terminate one (or dismiss a stale
- * entry left over from a runtime restart). Seeded from the runtime's process
- * endpoint and kept live by `data-process-update` SSE frames.
- */
 
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 import { View, Text, Pressable, ActivityIndicator } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { ChevronDown, ChevronUp, Terminal, X } from "lucide-react-native"
+import { ChevronDown, ChevronUp, Terminal, X, Clock } from "lucide-react-native"
 
 export interface RunningProcess {
   runId: string
@@ -21,15 +13,12 @@ export interface RunningProcess {
   sandboxed?: boolean
   containerName?: string
   startedAt: number
-  elapsedMs: number
   stale?: boolean
 }
 
 export interface ProcessPanelProps {
   processes: RunningProcess[]
-  /** Kill (or dismiss, for stale) a process by run id. */
   onKill: (runId: string) => void | Promise<void>
-  /** Run ids currently being killed (shows a spinner, disables the button). */
   killing?: Set<string>
   defaultExpanded?: boolean
   className?: string
@@ -45,6 +34,10 @@ function formatElapsed(ms: number): string {
   return `${hours}h ${minutes % 60}m`
 }
 
+function truncateCommand(cmd: string, maxLen = 60): string {
+  return cmd.length > maxLen ? cmd.slice(0, maxLen) + "…" : cmd
+}
+
 export function ProcessPanel({
   processes,
   onKill,
@@ -53,93 +46,121 @@ export function ProcessPanel({
   className,
 }: ProcessPanelProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded)
+  const [now, setNow] = useState(() => Date.now())
+  const pendingKills = useRef<Set<string>>(new Set())
 
-  if (processes.length === 0) {
-    return null
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  function handleKill(runId: string) {
+    if (pendingKills.current.has(runId)) return
+    pendingKills.current.add(runId)
+    Promise.resolve(onKill(runId)).finally(() => {
+      pendingKills.current.delete(runId)
+    })
   }
 
+  if (processes.length === 0) return null
+
   return (
-    <View
-      className={cn(
-        "rounded-md border border-gray-200/50 dark:border-gray-700/50 bg-gray-50/40 dark:bg-gray-900/40",
-        "overflow-hidden",
-        className
-      )}
-    >
-      {/* Header */}
+    <View className={cn("max-w-3xl w-full self-center", className)}>
+      {/* Header pill */}
       <Pressable
         onPress={() => setIsExpanded(!isExpanded)}
-        className="w-full flex-row items-center justify-between px-3 py-2"
+        className={cn(
+          "flex-row items-center gap-2 px-3 py-1.5",
+          "bg-zinc-900/90 dark:bg-zinc-800/90",
+          "border border-zinc-700/60",
+          isExpanded ? "rounded-t-lg" : "rounded-lg"
+        )}
       >
-        <View className="flex-row items-center gap-2">
-          <View className="w-2 h-2 rounded-full bg-primary" />
-          <Text className="text-xs font-semibold text-foreground/80">
-            {`Running Command${processes.length > 1 ? "s" : ""}`}
-          </Text>
-          <Text className="text-xs text-gray-400">({processes.length})</Text>
-        </View>
-
+        {/* Pulsing dot */}
+        <View className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+        <Terminal size={11} className="text-zinc-400" />
+        <Text className="flex-1 text-[11px] font-medium text-zinc-300">
+          {processes.length === 1
+            ? truncateCommand(processes[0].command)
+            : `${processes.length} running commands`}
+        </Text>
+        {processes.length === 1 && (
+          <View className="flex-row items-center gap-1">
+            <Clock size={10} className="text-zinc-500" />
+            <Text className="text-[10px] font-mono text-zinc-500">
+              {processes[0].startedAt ? formatElapsed(now - processes[0].startedAt) : "…"}
+            </Text>
+          </View>
+        )}
         {isExpanded ? (
-          <ChevronUp className="w-3.5 h-3.5 text-gray-400" size={14} />
+          <ChevronUp size={12} className="text-zinc-500" />
         ) : (
-          <ChevronDown className="w-3.5 h-3.5 text-gray-400" size={14} />
+          <ChevronDown size={12} className="text-zinc-500" />
         )}
       </Pressable>
 
-      {/* Expanded content */}
+      {/* Expanded rows */}
       {isExpanded && (
-        <View className="px-3 pb-3 gap-2">
-          {processes.map((proc) => {
+        <View
+          className={cn(
+            "bg-zinc-900/70 dark:bg-zinc-800/70",
+            "border-x border-b border-zinc-700/60",
+            "rounded-b-lg overflow-hidden"
+          )}
+        >
+          {processes.map((proc, idx) => {
             const isKilling = killing?.has(proc.runId) ?? false
             return (
               <View
                 key={proc.runId}
-                className="flex-row items-center gap-2 pl-3 border-l-2 border-primary/30"
+                className={cn(
+                  "flex-row items-center gap-2.5 px-3 py-2",
+                  idx < processes.length - 1 && "border-b border-zinc-700/40"
+                )}
               >
-                <Terminal className="w-3.5 h-3.5 text-primary shrink-0" size={14} />
-                <View className="flex-1">
-                  <Text
-                    className="text-xs font-mono text-foreground/90"
-                    numberOfLines={1}
-                  >
-                    {proc.command}
-                  </Text>
-                  <View className="flex-row items-center gap-2 mt-0.5">
-                    {proc.pid != null && (
-                      <Text className="text-[10px] text-gray-400">pid {proc.pid}</Text>
-                    )}
-                    <Text className="text-[10px] text-gray-400">
-                      {formatElapsed(proc.elapsedMs)}
-                    </Text>
-                    {proc.stale && (
-                      <Text className="text-[10px] font-medium px-1.5 py-0.5 rounded text-yellow-600 bg-yellow-500/10">
-                        unverified
-                      </Text>
-                    )}
-                  </View>
-                </View>
-
-                <Pressable
-                  onPress={() => onKill(proc.runId)}
-                  disabled={isKilling}
-                  accessibilityRole="button"
-                  accessibilityLabel={proc.stale ? "Dismiss process" : "Kill process"}
-                  hitSlop={8}
-                  className={cn(
-                    "flex-row items-center gap-1 rounded px-2 py-1",
-                    "border border-red-400/40 active:opacity-70",
-                    isKilling && "opacity-50"
-                  )}
+                <Text
+                  className="flex-1 text-[11px] font-mono text-zinc-300"
+                  numberOfLines={1}
                 >
-                  {isKilling ? (
-                    <ActivityIndicator size="small" />
+                  {proc.command}
+                </Text>
+
+                <View className="flex-row items-center gap-2">
+                  {proc.stale ? (
+                    <Text className="text-[9px] font-medium text-yellow-500/80">
+                      unverified
+                    </Text>
                   ) : (
-                    <X size={12} className="text-red-500" />
+                    <View className="flex-row items-center gap-1">
+                      <Clock size={10} className="text-zinc-600" />
+                      <Text className="text-[10px] font-mono text-zinc-500">
+                        {proc.startedAt ? formatElapsed(now - proc.startedAt) : "…"}
+                      </Text>
+                    </View>
                   )}
-                  <Text className="text-[10px] font-medium text-red-500">
-                    {proc.stale ? "Dismiss" : "Kill"}
-                  </Text>
-                </Pressable>
+
+                  <Pressable
+                    onPress={() => handleKill(proc.runId)}
+                    disabled={isKilling}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel={proc.stale ? "Dismiss" : "Kill process"}
+                    className={cn(
+                      "flex-row items-center gap-1 rounded px-1.5 py-0.5",
+                      "bg-red-500/10 border border-red-500/20 active:opacity-60",
+                      isKilling && "opacity-40"
+                    )}
+                  >
+                    {isKilling ? (
+                      <ActivityIndicator size="small" color="#ef4444" />
+                    ) : (
+                      <X size={10} className="text-red-400" />
+                    )}
+                    <Text className="text-[10px] font-medium text-red-400">
+                      {proc.stale ? "Dismiss" : "Kill"}
+                    </Text>
+                  </Pressable>
+                </View>
               </View>
             )
           })}
