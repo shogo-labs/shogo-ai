@@ -3,7 +3,7 @@
 'use client';
 import React from 'react';
 import { createTooltip } from '@gluestack-ui/core/tooltip/creator';
-import { View, Text, ViewStyle } from 'react-native';
+import { Platform, View, Text, ViewStyle } from 'react-native';
 import type { VariantProps } from '@gluestack-ui/utils/nativewind-utils';
 import { tva } from '@gluestack-ui/utils/nativewind-utils';
 import { withStyleContext } from '@gluestack-ui/utils/nativewind-utils';
@@ -126,8 +126,49 @@ const TooltipText = React.forwardRef<
   );
 });
 
+interface WebTooltipProps {
+  label: string;
+  children: React.ReactNode;
+  placement?: 'top' | 'bottom';
+}
+
+function WebTooltip({ label, children, placement = 'top' }: WebTooltipProps) {
+  // Native keeps the previous passthrough behavior because tap targets already open their full popover/menu labels.
+  if (Platform.OS !== 'web') return <>{children}</>;
+
+  // Web composes the existing Gluestack tooltip primitives so placement, flipping, and overlay behavior stay centralized.
+  return (
+    <Tooltip
+      placement={placement}
+      offset={8}
+      shouldFlip
+      openDelay={150}
+      closeDelay={0}
+      trigger={(triggerProps: any) => (
+        <span
+          ref={triggerProps.ref}
+          onFocus={triggerProps.onFocus}
+          onBlur={triggerProps.onBlur}
+          onMouseEnter={triggerProps.onMouseEnter}
+          onMouseLeave={triggerProps.onMouseLeave}
+          aria-describedby={triggerProps['aria-describedby']}
+          style={{ display: 'inline-flex', alignItems: 'center' }}
+        >
+          {children}
+        </span>
+      )}
+    >
+      <TooltipContent className="max-w-[260px] rounded-lg border border-border bg-popover px-2 py-1.5 shadow-lg">
+        <TooltipText className="text-xs font-medium leading-4 text-popover-foreground">
+          {label}
+        </TooltipText>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 Tooltip.displayName = 'Tooltip';
 TooltipContent.displayName = 'TooltipContent';
 TooltipText.displayName = 'TooltipText';
 
-export { Tooltip, TooltipContent, TooltipText };
+export { Tooltip, TooltipContent, TooltipText, WebTooltip };

@@ -84,7 +84,7 @@ export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
 
 import { EnvironmentPicker } from "./EnvironmentPicker"
-import { WebTooltip } from "../ui/web-tooltip"
+import { WebTooltip } from "../ui/tooltip"
 
 export type InteractionMode = "agent" | "plan" | "ask"
 

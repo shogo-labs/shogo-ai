@@ -28,7 +28,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover"
 import { cn } from "@shogo/shared-ui/primitives"
-import { WebTooltip } from "../ui/web-tooltip"
+import { WebTooltip } from "../ui/tooltip"
 import { useActiveInstance } from "../../contexts/active-instance"
 import { useInstancePicker, type Instance } from "@shogo/shared-app/hooks"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"

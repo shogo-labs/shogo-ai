@@ -64,7 +64,7 @@ import {
 } from "../../hooks/useTypingPlaceholder"
 
 import { AttachSourceSheet } from "./AttachSourceSheet"
-import { WebTooltip } from "../ui/web-tooltip"
+import { WebTooltip } from "../ui/tooltip"
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10

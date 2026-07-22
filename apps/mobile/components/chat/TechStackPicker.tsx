@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/popover"
 import { cn } from "@shogo/shared-ui/primitives"
 import { api, createHttpClient, type TechStackSummary } from "../../lib/api"
-import { WebTooltip } from "../ui/web-tooltip"
+import { WebTooltip } from "../ui/tooltip"
 
 export interface TechStackPickerProps {
   /** Currently selected stack id (e.g. "react-app"). */

@@ -50,7 +50,7 @@ import { ProjectImportModal } from '../projects/ProjectImportModal'
 import { CloudProjectPickerModal } from '../projects/CloudProjectPickerModal'
 import { useOpenLocalFolder } from './useOpenLocalFolder'
 import { useOpenCloudProject } from './useOpenCloudProject'
-import { WebTooltip } from '../ui/web-tooltip'
+import { WebTooltip } from '../ui/tooltip'
 
 export type ProjectSourceVariant = 'chip' | 'button'
 
