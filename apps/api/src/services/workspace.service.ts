@@ -11,6 +11,21 @@ import { homeRegionForNewWorkspace } from '../lib/region';
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6);
 
+const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true';
+
+/**
+ * `homeRegion` fragment for a new `workspace.create()`. Cloud-only:
+ * `schema.local.prisma`'s Workspace model deliberately has no `homeRegion`
+ * column (single-region desktop has no use for it), so spreading this in
+ * unconditionally makes Prisma reject the local write with "Unknown argument
+ * `homeRegion`" — which previously broke the local auto-seed's personal
+ * workspace creation on every fresh install (retried 5x, then gave up,
+ * leaving the seeded local user with no workspace at all).
+ */
+function workspaceHomeRegionField(): { homeRegion?: string | null } {
+  return isLocalMode ? {} : { homeRegion: homeRegionForNewWorkspace() };
+}
+
 export interface CreatePersonalWorkspaceResult {
   workspace: {
     id: string;
@@ -45,7 +60,7 @@ export async function createPersonalWorkspace(
         slug,
         // Pin write-ownership to the region that created the workspace so all
         // workspace-scoped writes stay single-writer (replication-safe).
-        homeRegion: homeRegionForNewWorkspace(),
+        ...workspaceHomeRegionField(),
       },
     });
 
@@ -155,7 +170,7 @@ export async function createPaidWorkspace(
       data: {
         name: workspaceName,
         slug,
-        homeRegion: homeRegionForNewWorkspace(),
+        ...workspaceHomeRegionField(),
       },
     });
 
