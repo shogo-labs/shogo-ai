@@ -453,6 +453,10 @@ function ChatInputImpl({
     { type: "text" }
   > | null>(null)
   const textChangeFlushHandleRef = useRef<number | null>(null)
+  // Counts consecutive SYNCHRONOUS text commits since the last settled
+  // animation frame — see `handleChangeText`'s "fast path vs. slow path"
+  // comment for why this exists.
+  const syncBurstCountRef = useRef(0)
 
   const [inputValue, setInputValue] = useState("")
   // Cancels a pending coalesced text-change flush (see `handleChangeText`)
@@ -461,6 +465,7 @@ function ChatInputImpl({
   // stale buffered keystroke can never fire afterward and clobber it.
   const cancelPendingTextChangeFlush = useCallback(() => {
     pendingTextChangeRef.current = null
+    syncBurstCountRef.current = 0
     if (textChangeFlushHandleRef.current != null) {
       cancelAnimationFrame(textChangeFlushHandleRef.current)
       textChangeFlushHandleRef.current = null
@@ -1153,39 +1158,41 @@ function ChatInputImpl({
     textInputRef.current?.focus()
   }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush])
 
-  // Coalesces "text" changes into at most one React commit per animation
-  // frame. If the browser's main thread falls behind (e.g. a big Streamdown
-  // re-render while a message streams in) it can buffer several native
-  // `input` events and fire them back-to-back once it catches up. Each one
-  // used to call `setInputValue` + `setInputHeight` + skill-picker state +
-  // `updateMentionState` immediately, so a burst of ~50+ could pile up
-  // enough nested updates in a single unyielded batch to trip React's
-  // "Maximum update depth exceeded" safety limit — Sentry JAVASCRIPT-REACT-3C
-  // (see `ChatInput.max-update-depth-repro.test.tsx` for the reproduction).
-  // `inputValueRef` still updates SYNCHRONOUSLY on every keystroke so other
-  // synchronous readers (onSelectionChange, selectMention, submit) always
-  // see the freshest text — only the actual state commits are throttled.
-  const flushPendingTextChange = useCallback(() => {
+  // Applies a resolved "text" change's state commits. Shared by the fast
+  // (synchronous) and slow (coalesced) paths in `handleChangeText`.
+  const applyTextChange = useCallback(
+    (change: Extract<ChatInputTextChange, { type: "text" }>) => {
+      setInputValue(change.text)
+      if (change.resetHeight) {
+        setInputHeight(MIN_INPUT_HEIGHT)
+      }
+
+      if (change.skillPicker.open) {
+        setShowSkillPicker(true)
+        setFilterText(change.skillPicker.filterText ?? "")
+        setSelectedIndex(0)
+      } else {
+        setShowSkillPicker(false)
+      }
+
+      updateMentionState(change.text, change.mentionCaret)
+    },
+    [updateMentionState]
+  )
+
+  // Settles the current animation frame for `handleChangeText`'s burst
+  // guard: resets the consecutive-synchronous-commit counter, and — only if
+  // a pathological burst forced some changes onto the buffered slow path —
+  // applies the latest one now. On ordinary typing `pendingTextChangeRef`
+  // is always null here (every change already committed synchronously), so
+  // this is just a counter reset.
+  const settleTextChangeFrame = useCallback(() => {
     textChangeFlushHandleRef.current = null
+    syncBurstCountRef.current = 0
     const change = pendingTextChangeRef.current
     pendingTextChangeRef.current = null
-    if (!change) return
-
-    setInputValue(change.text)
-    if (change.resetHeight) {
-      setInputHeight(MIN_INPUT_HEIGHT)
-    }
-
-    if (change.skillPicker.open) {
-      setShowSkillPicker(true)
-      setFilterText(change.skillPicker.filterText ?? "")
-      setSelectedIndex(0)
-    } else {
-      setShowSkillPicker(false)
-    }
-
-    updateMentionState(change.text, change.mentionCaret)
-  }, [updateMentionState])
+    if (change) applyTextChange(change)
+  }, [applyTextChange])
 
   useEffect(() => {
     return () => {
@@ -1194,6 +1201,36 @@ function ChatInputImpl({
       }
     }
   }, [])
+
+  // A controlled `TextInput`'s `value` echo landing even ONE frame later
+  // than its `onChangeText` event visibly breaks the caret: on native
+  // (iOS/Android) the view's own internal event-count bookkeeping desyncs
+  // and force-resets the selection to the end of the text; on web, once a
+  // real re-render is triggered by something else while a change is still
+  // "in flight" (e.g. streaming-driven prop updates re-rendering this
+  // memoized component), React can end up reconciling the controlled
+  // `value` against a DOM node whose native selection has already moved on,
+  // collapsing it the same way. Either way, deferring every keystroke's
+  // commit — which is what a flat "always coalesce" fix does — makes the
+  // input feel unusable: the cursor jumps to the end after every character,
+  // so you can only ever fix a typo one letter at a time.
+  //
+  // So most keystrokes now commit SYNCHRONOUSLY (`applyTextChange` runs
+  // directly in the same turn as `onChangeText`, matching pre-`bde7ecf7e`
+  // behavior) and the caret is never at risk. `SYNC_BURST_LIMIT` is a
+  // circuit breaker for the actual failure mode the coalescing was built
+  // for: if the browser's main thread falls behind (e.g. a big Streamdown
+  // re-render while a message streams in) it can buffer many native
+  // `input` events and fire them back-to-back with no yield in between —
+  // ordinary typing never produces anywhere near this many synchronous
+  // commits inside one unyielded JS turn. Once tripped, remaining changes
+  // in that burst buffer into `pendingTextChangeRef` and land on the next
+  // animation frame instead, capping how many nested commits can pile up
+  // in a single batch — that's what protects against React's "Maximum
+  // update depth exceeded" safety limit (Sentry JAVASCRIPT-REACT-3C; see
+  // `ChatInput.max-update-depth-repro.test.tsx`). The guard resets every
+  // settled frame, so it never trips during normal use.
+  const SYNC_BURST_LIMIT = 20
 
   const handleChangeText = useCallback(
     (text: string) => {
@@ -1222,12 +1259,23 @@ function ChatInputImpl({
       }
 
       inputValueRef.current = change.text
-      pendingTextChangeRef.current = change
+
+      if (pendingTextChangeRef.current == null && syncBurstCountRef.current < SYNC_BURST_LIMIT) {
+        // Fast path (the overwhelming majority of keystrokes): commit now.
+        syncBurstCountRef.current += 1
+        applyTextChange(change)
+      } else {
+        // Slow path: only reached once the burst guard has actually
+        // tripped within the current unyielded turn — buffer instead of
+        // committing synchronously.
+        pendingTextChangeRef.current = change
+      }
+
       if (textChangeFlushHandleRef.current == null) {
-        textChangeFlushHandleRef.current = requestAnimationFrame(flushPendingTextChange)
+        textChangeFlushHandleRef.current = requestAnimationFrame(settleTextChangeFrame)
       }
     },
-    [addPastedText, closeMentionMenu, flushPendingTextChange, cancelPendingTextChangeFlush]
+    [addPastedText, applyTextChange, closeMentionMenu, settleTextChangeFrame, cancelPendingTextChangeFlush]
   )
 
   const removeReference = useCallback((key: string) => {
