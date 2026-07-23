@@ -15,7 +15,7 @@
  *    user/profile/sign-out) anchored at the bottom
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, type ComponentProps } from 'react'
 import {
   View,
   Text,
@@ -28,6 +28,7 @@ import {
   Platform,
   ActivityIndicator,
   type GestureResponderEvent,
+  type LayoutChangeEvent,
 } from 'react-native'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useTheme } from '../../contexts/theme'
@@ -224,6 +225,7 @@ function ChatTreeItem({
   onRename,
   onToggleArchive,
   onRequestDelete,
+  onMeasureHeight,
 }: {
   session: any
   active?: boolean
@@ -234,6 +236,7 @@ function ChatTreeItem({
   onRename: (sessionId: string, name: string) => void
   onToggleArchive: (sessionId: string, next: boolean) => void
   onRequestDelete: (sessionId: string) => void
+  onMeasureHeight?: (height: number) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
@@ -260,6 +263,11 @@ function ChatTreeItem({
     const ne = e?.nativeEvent ?? e
     setMenu({ x: ne?.clientX ?? 0, y: ne?.clientY ?? 0 })
   }, [])
+
+  const handleLayout = useCallback((event: LayoutChangeEvent) => {
+    const height = event.nativeEvent.layout.height
+    if (height > 0) onMeasureHeight?.(height)
+  }, [onMeasureHeight])
 
   const menuItems: SidebarMenuEntry[] = [
     {
@@ -319,6 +327,7 @@ function ChatTreeItem({
     <>
     <Pressable
       onPress={() => onSelect(session.id)}
+      onLayout={handleLayout}
       role="link"
       accessibilityLabel={`Chat: ${chatLabel(session)}`}
       aria-current={active ? 'page' : undefined}
@@ -390,9 +399,62 @@ function ChatTreeItem({
 
 // ─── ProjectTreeItem (a project + its nested chats) ─────────
 
-// Cap the per-project chat list; pinned + the active chat always show, the
-// rest collapse behind a "More" toggle.
+// Cap the per-project chat scroll area to 5 visible chat rows.
 const MAX_VISIBLE_CHATS = 5
+const ARCHIVED_CHAT_ROW_ID = 'archived-chats' as const
+const SIDEBAR_CHAT_SCROLL_DATASET = { sidebarChatScroll: 'true' } as const
+const SIDEBAR_CHAT_SCROLL_CONTENT_STYLE = { paddingRight: 2 } as const
+const SIDEBAR_CHAT_WEB_SCROLL_STYLE = {
+  minHeight: 0,
+  maxWidth: '100%',
+  overflowX: 'hidden',
+  overflowY: 'auto',
+  overscrollBehavior: 'contain',
+} as const
+const MENU_ITEM_RADIO_ROLE = 'menuitemradio' as unknown as ComponentProps<typeof Pressable>['role']
+
+type SidebarChatRow =
+  | { type: 'chat'; id: string; session: any }
+  | { type: 'archived-header'; id: typeof ARCHIVED_CHAT_ROW_ID }
+
+function createSidebarChatRows(
+  activeSessions: any[],
+  archivedSessions: any[],
+  archivedExpanded: boolean,
+): SidebarChatRow[] {
+  const rows: SidebarChatRow[] = activeSessions.map((session: any) => ({
+    type: 'chat',
+    id: session.id,
+    session,
+  }))
+
+  if (archivedSessions.length > 0) {
+    rows.push({ type: 'archived-header', id: ARCHIVED_CHAT_ROW_ID })
+  }
+
+  if (archivedExpanded) {
+    rows.push(
+      ...archivedSessions.map((session: any) => ({
+        type: 'chat' as const,
+        id: session.id,
+        session,
+      })),
+    )
+  }
+
+  return rows
+}
+
+function getSidebarChatScrollStyle(chatRowHeight: number | null, rowCount: number) {
+  const maxHeight =
+    chatRowHeight && rowCount > MAX_VISIBLE_CHATS
+      ? chatRowHeight * MAX_VISIBLE_CHATS
+      : undefined
+
+  return Platform.OS === 'web'
+    ? { ...SIDEBAR_CHAT_WEB_SCROLL_STYLE, maxHeight }
+    : { maxHeight }
+}
 
 // Cap the projects list; pinned + the open project always show, the rest
 // collapse behind a "More" toggle.
@@ -417,14 +479,13 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   const http = useDomainHttp()
   const actions = useDomainActions()
   const [expanded, setExpanded] = useState(false)
-  // Per-project "show all chats" toggle (defaults to the capped view).
-  const [showAllChats, setShowAllChats] = useState(false)
   // Chats are fetched directly into local state (rather than the shared
   // chat-session collection) because the collection's loaders prune items
   // from other contexts — expanding a second project would otherwise wipe
   // the first project's chats out of the cache.
   const [sessions, setSessions] = useState<any[]>([])
   const [loaded, setLoaded] = useState(false)
+  const [chatRowHeight, setChatRowHeight] = useState<number | null>(null)
   const seededRef = useRef(false)
   // Collapsible "Archived" subsection (in-memory; defaults to collapsed).
   const [archivedExpanded, setArchivedExpanded] = useState(false)
@@ -483,6 +544,13 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
       setLoaded(true)
     }
   }, [http, project.id])
+
+  const handleChatRowHeight = useCallback((height: number) => {
+    setChatRowHeight((current) => {
+      const next = Math.ceil(height)
+      return current === next ? current : next
+    })
+  }, [])
 
   // Force a re-fetch even if this project's chats were already seeded.
   const refreshChats = useCallback(() => {
@@ -804,27 +872,11 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
       {expanded && (() => {
         const activeSessions = sessions
           .filter((s: any) => !s.isArchived)
-          // Pinned float to the top; the sort is stable so the activity order
-          // (sessions is already sorted by activity desc) holds within groups.
           .sort((a: any, b: any) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0))
         const archivedSessions = sessions.filter((s: any) => s.isArchived)
-        // Cap the visible chats. Pinned + the active chat always show even when
-        // they sort past the cap; everything else collapses behind "more".
-        let visibleSessions = activeSessions
-        if (!showAllChats && activeSessions.length > MAX_VISIBLE_CHATS) {
-          const head = activeSessions.slice(0, MAX_VISIBLE_CHATS)
-          const headIds = new Set(head.map((s: any) => s.id))
-          const forced = activeSessions.filter(
-            (s: any) =>
-              !headIds.has(s.id) &&
-              (s.isPinned || (isActive && s.id === activeChatId)),
-          )
-          visibleSessions = [...head, ...forced]
-        }
-        const hiddenChatCount = activeSessions.length - visibleSessions.length
-        const renderChat = (s: any) => (
+        const renderChat = (s: any, key = s.id) => (
           <ChatTreeItem
-            key={s.id}
+            key={key}
             session={s}
             active={isActive && s.id === activeChatId}
             isStreaming={streamingIds.has(s.id)}
@@ -836,40 +888,41 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
             onRequestDelete={(id) =>
               setConfirmDelete({ kind: 'chat', id, label: chatLabel(s) })
             }
+            onMeasureHeight={handleChatRowHeight}
           />
         )
+        const chatRows = createSidebarChatRows(activeSessions, archivedSessions, archivedExpanded)
         return (
           <View className="ml-6 mt-0.5">
             {sessions.length === 0 ? (
               <View className="px-2 py-1.5">
-                <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                <Text className="text-xs text-muted-foreground opacity-70" numberOfLines={1}>
                   {loaded ? 'No chats yet' : 'Loading…'}
                 </Text>
               </View>
             ) : (
-              <>
-                {visibleSessions.map(renderChat)}
-                {activeSessions.length > MAX_VISIBLE_CHATS && (hiddenChatCount > 0 || showAllChats) && (
-                  <Pressable
-                    onPress={() => setShowAllChats((v) => !v)}
-                    accessibilityLabel={showAllChats ? 'Show fewer chats' : 'Show all chats'}
-                    className="flex-row items-center gap-1 px-1 pt-1 pb-0.5 active:opacity-70"
-                  >
-                    {showAllChats ? (
-                      <ChevronDown size={10} className="text-muted-foreground shrink-0" />
-                    ) : (
-                      <ChevronRight size={10} className="text-muted-foreground shrink-0" />
-                    )}
-                    <Text className="text-[11px] text-muted-foreground flex-1">
-                      {showAllChats ? 'Show less' : `${hiddenChatCount} more`}
-                    </Text>
-                  </Pressable>
-                )}
-                {archivedSessions.length > 0 && (
-                  <>
+              <ScrollView
+                nestedScrollEnabled
+                keyboardShouldPersistTaps="handled"
+                showsHorizontalScrollIndicator={false}
+                showsVerticalScrollIndicator={chatRows.length > MAX_VISIBLE_CHATS}
+                accessibilityLabel={`${project.name || 'Untitled'} chats`}
+                style={getSidebarChatScrollStyle(chatRowHeight, chatRows.length) as any}
+                contentContainerStyle={SIDEBAR_CHAT_SCROLL_CONTENT_STYLE}
+                {...(Platform.OS === 'web' ? ({
+                  dataSet: SIDEBAR_CHAT_SCROLL_DATASET,
+                  tabIndex: 0,
+                  role: 'list',
+                } as any) : {})}
+              >
+                {chatRows.map((row) => {
+                  if (row.type === 'chat') return renderChat(row.session, row.id)
+                  return (
                     <Pressable
+                      key={row.id}
                       onPress={() => setArchivedExpanded((v) => !v)}
                       accessibilityLabel={`${archivedExpanded ? 'Collapse' : 'Expand'} archived chats`}
+                      accessibilityState={{ expanded: archivedExpanded }}
                       className="flex-row items-center gap-1 px-1 pt-2 pb-0.5 active:opacity-70"
                     >
                       {archivedExpanded ? (
@@ -877,17 +930,16 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
                       ) : (
                         <ChevronRight size={10} className="text-muted-foreground shrink-0" />
                       )}
-                      <Text className="text-[10px] uppercase tracking-wide text-muted-foreground flex-1">
+                      <Text className="text-[10px] uppercase tracking-wide text-muted-foreground flex-1" numberOfLines={1}>
                         Archived
                       </Text>
                       <Text className="text-[10px] text-muted-foreground shrink-0">
                         {archivedSessions.length}
                       </Text>
                     </Pressable>
-                    {archivedExpanded && archivedSessions.map(renderChat)}
-                  </>
-                )}
-              </>
+                  )
+                })}
+              </ScrollView>
             )}
           </View>
         )
@@ -1967,7 +2019,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                         <Pressable
                           key={opt.value}
                           onPress={() => updateProjectFilter({ sort: opt.value })}
-                          role="menuitemradio"
+                          role={MENU_ITEM_RADIO_ROLE}
                           accessibilityState={{ checked: projectFilter.sort === opt.value }}
                           className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                         >
@@ -1993,7 +2045,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                         <Pressable
                           key={opt.value}
                           onPress={() => updateProjectFilter({ scope: opt.value })}
-                          role="menuitemradio"
+                          role={MENU_ITEM_RADIO_ROLE}
                           accessibilityState={{ checked: projectFilter.scope === opt.value }}
                           className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                         >
