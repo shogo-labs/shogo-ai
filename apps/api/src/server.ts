@@ -641,6 +641,11 @@ app.use('/api/*', async (c, next) => {
 // Defaults can be overridden via RATE_LIMIT_*_MAX and RATE_LIMIT_*_WINDOW_MS env vars.
 app.use('/api/auth/*', rateLimiter('auth', { max: Number(process.env.RATE_LIMIT_AUTH_MAX) || 60, windowMs: Number(process.env.RATE_LIMIT_AUTH_WINDOW_MS) || 60_000 }))
 app.use('/api/webhooks/*', rateLimiter('webhooks', { max: Number(process.env.RATE_LIMIT_WEBHOOKS_MAX) || 90, windowMs: Number(process.env.RATE_LIMIT_WEBHOOKS_WINDOW_MS) || 60_000 }))
+app.use('/api/client-diagnostics/*', bodyLimit({ maxSize: 16 * 1024 }))
+app.use('/api/client-diagnostics/*', rateLimiter('client-diagnostics', {
+  max: Number(process.env.RATE_LIMIT_CLIENT_DIAGNOSTICS_MAX) || 20,
+  windowMs: Number(process.env.RATE_LIMIT_CLIENT_DIAGNOSTICS_WINDOW_MS) || 60_000,
+}))
 app.use('/api/*', rateLimiter('global', {
   max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600,
   windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000,
@@ -677,6 +682,7 @@ app.use(
       '/api/version',
       '/api/config',
       '/api/webhooks/',
+      '/api/client-diagnostics/',
       '/api/billing/ios/notifications',
       '/api/integrations/',
       '/api/invite-links/',
@@ -780,6 +786,36 @@ app.get('/api/version', (c) => c.json({
   version: process.env.APP_VERSION || '0.0.0',
   buildHash: process.env.BUILD_HASH || 'dev',
 }))
+
+const clientStartupDiagnosticSchema = z.object({
+  type: z.enum(['sentry_init_failed', 'sentry_dsn_invalid']),
+  platform: z.string().max(32).optional(),
+  appEnv: z.string().max(64).optional(),
+  buildHash: z.string().max(128).optional(),
+  release: z.string().max(128).optional(),
+  errorName: z.string().max(128).optional(),
+  message: z.string().max(2000).optional(),
+  stack: z.string().max(4000).optional(),
+  occurredAt: z.string().max(64).optional(),
+})
+
+app.post('/api/client-diagnostics/startup', async (c) => {
+  const rawBody = await c.req.json().catch(() => null)
+  const parsed = clientStartupDiagnosticSchema.safeParse(rawBody)
+  if (!parsed.success) {
+    return c.json({ error: { code: 'invalid_payload', message: 'Invalid startup diagnostic payload' } }, 400)
+  }
+
+  const diagnostic = parsed.data
+  console.warn('[client-diagnostics] startup', JSON.stringify({
+    ...diagnostic,
+    source: 'mobile_startup',
+    userAgent: c.req.header('user-agent')?.slice(0, 300),
+    receivedAt: new Date().toISOString(),
+  }))
+
+  return c.json({ ok: true }, 202)
+})
 
 // OAuth callback for Composio integrations — registered before auth middleware
 // so the page is always reachable (the browser has no session cookie).
