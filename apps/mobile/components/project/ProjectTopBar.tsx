@@ -82,6 +82,7 @@ import { CloudSyncStatusPill } from './CloudSyncStatusPill'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 import { api } from '../../lib/api'
+import { getNativeAgentAuthHeaders } from '../../lib/agent-fetch'
 import { requestIdeActivity } from '../../lib/ide-activity-bus'
 import { ProjectExportModal } from './ProjectExportModal'
 
@@ -1185,12 +1186,11 @@ function ProjectMenuView({
     if (isExporting) return
     setIsExporting(true)
     try {
-      const { blob, filename } = await api.exportProjectBlob(projectId, {
-        includeChats: options.includeChats,
-        password: options.password,
-      })
-
       if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const { blob, filename } = await api.exportProjectBlob(projectId, {
+          includeChats: options.includeChats,
+          password: options.password,
+        })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
@@ -1200,17 +1200,14 @@ function ProjectMenuView({
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
       } else if (Platform.OS !== 'web') {
-        const { documentDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
+        if (options.password) {
+          throw new Error('Password-protected mobile exports need a streaming token flow. Use web/desktop for encrypted exports for now.')
+        }
+        const { uri: fileUri } = await api.downloadProjectBundleFile(projectId, {
+          includeChats: options.includeChats,
+          authCookie: getNativeAgentAuthHeaders().Cookie,
+        })
         const Sharing = await import('expo-sharing')
-        const dir = documentDirectory
-        if (!dir) throw new Error('Could not access app storage')
-        const fileUri = `${dir}${filename}`
-        const arrayBuf = await blob.arrayBuffer()
-        const bytes = new Uint8Array(arrayBuf)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-        const base64 = btoa(binary)
-        await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
         await Sharing.shareAsync(fileUri, {
           mimeType: 'application/zip',
           UTI: 'public.zip-archive' as any,
@@ -1244,11 +1241,10 @@ function ProjectMenuView({
     if (isDownloadingZip) return
     setIsDownloadingZip(true)
     try {
-      const { blob, filename } = await api.exportProjectBlob(projectId, {
-        sourceOnly: true,
-      })
-
       if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const { blob, filename } = await api.exportProjectBlob(projectId, {
+          sourceOnly: true,
+        })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
@@ -1258,17 +1254,10 @@ function ProjectMenuView({
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
       } else if (Platform.OS !== 'web') {
-        const { documentDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
+        const { uri: fileUri } = await api.downloadProjectSourceZipFile(projectId, {
+          authCookie: getNativeAgentAuthHeaders().Cookie,
+        })
         const Sharing = await import('expo-sharing')
-        const dir = documentDirectory
-        if (!dir) throw new Error('Could not access app storage')
-        const fileUri = `${dir}${filename}`
-        const arrayBuf = await blob.arrayBuffer()
-        const bytes = new Uint8Array(arrayBuf)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-        const base64 = btoa(binary)
-        await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
         await Sharing.shareAsync(fileUri, {
           mimeType: 'application/zip',
           UTI: 'public.zip-archive' as any,

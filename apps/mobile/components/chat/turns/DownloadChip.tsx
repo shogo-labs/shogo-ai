@@ -25,7 +25,7 @@ import {
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Download } from "lucide-react-native"
-import { agentFetch } from "../../../lib/agent-fetch"
+import { agentFetch, getNativeAgentAuthHeaders } from "../../../lib/agent-fetch"
 
 export interface DownloadChipProps {
   /** Workspace-relative path of the deliverable file (e.g. `report.pptx`). */
@@ -45,17 +45,6 @@ function buildDownloadUrl(agentUrl: string, path: string): string {
     .map((seg) => encodeURIComponent(seg))
     .join("/")
   return `${agentUrl.replace(/\/$/, "")}/agent/workspace/download/${encoded}`
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
-  let binary = ""
-  // Chunk to avoid `String.fromCharCode(...hugeArray)` stack overflows.
-  const CHUNK = 0x8000
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
-  }
-  return btoa(binary)
 }
 
 export function DownloadChip({ path, agentUrl, className }: DownloadChipProps) {
@@ -80,21 +69,22 @@ export function DownloadChip({ path, agentUrl, className }: DownloadChipProps) {
       return
     }
 
-    // Native: fetch (with auth), write to app storage, present share sheet.
+    // Native: stream to app storage with auth, then present share sheet.
     setBusy(true)
     try {
-      const res = await agentFetch(url)
-      if (!res.ok) throw new Error(`Download failed (${res.status})`)
-      const base64 = arrayBufferToBase64(await res.arrayBuffer())
-
-      const { cacheDirectory, writeAsStringAsync, EncodingType } = await import(
+      const { cacheDirectory, downloadAsync } = await import(
         "expo-file-system/legacy"
       )
       const Sharing = await import("expo-sharing")
       const dir = cacheDirectory
       if (!dir) throw new Error("Could not access app storage")
       const fileUri = `${dir}${Date.now()}-${name}`
-      await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
+      const result = await downloadAsync(url, fileUri, {
+        headers: getNativeAgentAuthHeaders(),
+      })
+      if (result.status < 200 || result.status >= 300) {
+        throw new Error(`Download failed (${result.status})`)
+      }
 
       // Let the active screen settle so the OS can present the share sheet.
       await new Promise<void>((resolve) => {
