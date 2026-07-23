@@ -468,16 +468,16 @@ export function CapabilitiesConfigPane({
         </View>
       </View>
 
-      {/* Tech Stack selector */}
+      {/* Project Type selector */}
       {techStacks.length > 0 && (
         <View className="px-4 pt-3 pb-1">
-          <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Tech Stack</Text>
+          <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Project Type</Text>
           <View className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3">
             <View className="w-8 h-8 rounded-md items-center justify-center bg-primary/10">
               <Layers size={15} className="text-primary" />
             </View>
             <View className="flex-1">
-              <Text className="text-xs text-muted-foreground">Stack</Text>
+              <Text className="text-xs text-muted-foreground">Type</Text>
               <Popover
                 placement="bottom left"
                 isOpen={stackPickerOpen}

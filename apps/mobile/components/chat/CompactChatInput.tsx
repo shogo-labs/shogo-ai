@@ -64,28 +64,13 @@ import {
 } from "../../hooks/useTypingPlaceholder"
 
 import { AttachSourceSheet } from "./AttachSourceSheet"
+import { WebTooltip } from "../ui/tooltip"
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
 
 const MIN_INPUT_HEIGHT = 80
 const MAX_INPUT_HEIGHT = 200
-
-/**
- * Show a native browser tooltip on hover (web only). Wraps children in a
- * `display: contents` div with the `title` attribute so layout is unaffected
- * and the trigger's own ref (e.g. for popover positioning) isn't disturbed.
- * On native this is a transparent passthrough — the icon click opens the
- * popover menu which already shows the full label.
- */
-function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
-  if (Platform.OS !== "web") return <>{children}</>
-  return React.createElement(
-    "div",
-    { title: label, style: { display: "contents" } },
-    children,
-  )
-}
 
 interface AttachedFile {
   id: string
@@ -655,7 +640,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 onOpen={() => setInteractionModeOpen(true)}
                 onClose={() => setInteractionModeOpen(false)}
                 trigger={(triggerProps) => (
-                  <WebTooltip label={`Mode: ${currentInteractionConfig.label}`}>
+                  <WebTooltip label={`Mode: ${currentInteractionConfig.label}`} placement="bottom">
                     <Pressable
                       {...triggerProps}
                       disabled={disabled}
@@ -755,7 +740,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   per-device preference; every subsequent plan auto-generates
                   a stakeholder summary until disabled. */}
               {interactionMode === "plan" && (
-                <WebTooltip label="Also generate a stakeholder summary">
+                <WebTooltip label="Also generate a stakeholder summary" placement="bottom">
                   <Pressable
                     testID="home-dual-plan-toggle"
                     disabled={disabled}
@@ -790,16 +775,18 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 onOpen={() => setModelPickerOpen(true)}
                 onClose={() => setModelPickerOpen(false)}
                 trigger={(triggerProps) => (
-                  <Pressable
-                    {...triggerProps}
-                    disabled={disabled}
-                    className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
-                  >
-                    <Text className="text-xs text-muted-foreground">
-                      {resolveShortName(currentModelId)}
-                    </Text>
-                    <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
-                  </Pressable>
+                  <WebTooltip label={`Model: ${resolveShortName(currentModelId)}`} placement="bottom">
+                    <Pressable
+                      {...triggerProps}
+                      disabled={disabled}
+                      className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
+                    >
+                      <Text className="text-xs text-muted-foreground">
+                        {resolveShortName(currentModelId)}
+                      </Text>
+                      <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
+                    </Pressable>
+                  </WebTooltip>
                 )}
               >
                 <PopoverBackdrop />
@@ -831,24 +818,26 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               </View>
             ) : (
               <View className="flex-row items-center gap-1">
-                <Pressable
-                  onPress={handleAttachClick}
-                  disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
-                  role="button"
-                  accessibilityLabel="Attach file"
-                  className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
-                  android_ripple={{ color: "rgba(128,128,128,0.25)" }}
-                >
-                  <Plus
-                    className={cn(
-                      "h-4 w-4",
-                      disabled || isLoading || pendingFiles.length >= MAX_FILES
-                        ? "text-muted-foreground/40"
-                        : "text-muted-foreground"
-                    )}
-                    size={12}
-                  />
-                </Pressable>
+                <WebTooltip label="Attach files" placement="bottom">
+                  <Pressable
+                    onPress={handleAttachClick}
+                    disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
+                    role="button"
+                    accessibilityLabel="Attach file"
+                    className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
+                    android_ripple={{ color: "rgba(128,128,128,0.25)" }}
+                  >
+                    <Plus
+                      className={cn(
+                        "h-4 w-4",
+                        disabled || isLoading || pendingFiles.length >= MAX_FILES
+                          ? "text-muted-foreground/40"
+                          : "text-muted-foreground"
+                      )}
+                      size={12}
+                    />
+                  </Pressable>
+                </WebTooltip>
 
                 {isLoading ? (
                   <View className="h-5 w-5 rounded-full items-center justify-center bg-primary opacity-50">
@@ -868,47 +857,51 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
                   </Pressable>
                 ) : onStartVoiceProjectCreation ? (
-                  <Pressable
-                    onPress={() => {
-                      voiceInput.clearError()
-                      void Promise.resolve(onStartVoiceProjectCreation()).catch(() => {})
-                    }}
-                    disabled={disabled}
-                    role="button"
-                    accessibilityLabel="Start voice project creation"
-                    className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
-                  >
-                    <Mic
-                      className={cn(
-                        "h-4 w-4",
-                        disabled
-                          ? "text-muted-foreground/40"
-                          : "text-muted-foreground"
-                      )}
-                      size={14}
-                    />
-                  </Pressable>
+                  <WebTooltip label="Start voice project creation" placement="bottom">
+                    <Pressable
+                      onPress={() => {
+                        voiceInput.clearError()
+                        void Promise.resolve(onStartVoiceProjectCreation()).catch(() => {})
+                      }}
+                      disabled={disabled}
+                      role="button"
+                      accessibilityLabel="Start voice project creation"
+                      className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
+                    >
+                      <Mic
+                        className={cn(
+                          "h-4 w-4",
+                          disabled
+                            ? "text-muted-foreground/40"
+                            : "text-muted-foreground"
+                        )}
+                        size={14}
+                      />
+                    </Pressable>
+                  </WebTooltip>
                 ) : voiceInput.canRecord ? (
-                  <Pressable
-                    onPress={() => {
-                      voiceInput.clearError()
-                      voiceInput.toggleRecording().catch(() => {})
-                    }}
-                    disabled={disabled}
-                    role="button"
-                    accessibilityLabel="Start voice recording"
-                    className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
-                  >
-                    <Mic
-                      className={cn(
-                        "h-4 w-4",
-                        disabled
-                          ? "text-muted-foreground/40"
-                          : "text-muted-foreground"
-                      )}
-                      size={14}
-                    />
-                  </Pressable>
+                  <WebTooltip label="Start voice recording" placement="bottom">
+                    <Pressable
+                      onPress={() => {
+                        voiceInput.clearError()
+                        voiceInput.toggleRecording().catch(() => {})
+                      }}
+                      disabled={disabled}
+                      role="button"
+                      accessibilityLabel="Start voice recording"
+                      className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
+                    >
+                      <Mic
+                        className={cn(
+                          "h-4 w-4",
+                          disabled
+                            ? "text-muted-foreground/40"
+                            : "text-muted-foreground"
+                        )}
+                        size={14}
+                      />
+                    </Pressable>
+                  </WebTooltip>
                 ) : null}
               </View>
             )}

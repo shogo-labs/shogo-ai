@@ -1,7 +1,7 @@
 {
   "id": "threejs-game",
-  "name": "Three.js Game Builder",
-  "description": "Build 3D browser games with Three.js, cannon-es physics, and Vite. Includes scene management, game loop, and physics patterns.",
+  "name": "3D Game",
+  "description": "Build an interactive 3D game that runs in a web browser.",
   "tags": ["3d", "games", "threejs", "webgl", "physics", "vite"],
   "target": "web",
   "runtime": {
