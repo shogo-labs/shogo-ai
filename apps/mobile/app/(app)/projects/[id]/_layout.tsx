@@ -147,6 +147,7 @@ import { Heading } from '@/components/ui/heading'
 import { Text as UIText } from '@/components/ui/text'
 import { Button, ButtonText } from '@/components/ui/button'
 import { mark as csMark, markRuntimeReadyAndFlush } from '../../../../lib/cold-start-timing'
+import { getProjectDocumentTitle } from '../../../../lib/window-title'
 
 csMark('project:layout:module-load')
 
@@ -536,6 +537,22 @@ export default observer(function ProjectLayout() {
     const primary = folders.find((f) => f.isPrimary) ?? folders[0]
     return primary?.path ?? null
   }, [project?.projectFolders])
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return
+
+    const title = getProjectDocumentTitle({
+      projectName: project?.name,
+      workspacePath: primaryFolderPath,
+      preferWorkspaceName: isExternalProject,
+    })
+    document.title = title
+
+    return () => {
+      if (document.title === title) document.title = 'Shogo'
+    }
+  }, [isExternalProject, primaryFolderPath, project?.name])
+
   const [externalSavedUrl, setExternalSavedUrl] = useState<string | null>(null)
   const [externalDetectedUrl, setExternalDetectedUrl] = useState<string | null>(null)
   const [trustPromptOpen, setTrustPromptOpen] = useState(false)
