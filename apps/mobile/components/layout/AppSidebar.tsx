@@ -967,7 +967,6 @@ function UserMenuContent({
   isSuperAdmin,
   onClose,
 }: UserMenuProps & { onClose: () => void }) {
-  const [appearanceOpen, setAppearanceOpen] = useState(false)
   const { theme, setTheme } = useTheme()
   const { localMode, shogoKeyConnected } = usePlatformConfig()
   // The Creator hub (marketplace publishing + referrals) is cloud-backed, so
@@ -1000,46 +999,6 @@ function UserMenuContent({
           </Pressable>
         )}
 
-        <Pressable
-          onPress={() => setAppearanceOpen(!appearanceOpen)}
-          role="menuitem"
-          accessibilityLabel="Appearance"
-          accessibilityState={{ expanded: appearanceOpen }}
-          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
-        >
-          <Monitor size={18} className="text-muted-foreground" />
-          <Text className="text-sm text-foreground flex-1">Appearance</Text>
-          {appearanceOpen ? (
-            <ChevronDown size={14} className="text-muted-foreground" />
-          ) : (
-            <ChevronRight size={14} className="text-muted-foreground" />
-          )}
-        </Pressable>
-
-        {appearanceOpen && (
-          <View role="radiogroup" accessibilityLabel="Theme options" className="pl-11 pr-4 py-1">
-            {([
-              { value: 'light' as const, label: 'Light', Icon: Sun },
-              { value: 'dark' as const, label: 'Dark', Icon: Moon },
-              { value: 'system' as const, label: 'System', Icon: Monitor },
-            ] as const).map(({ value, label, Icon }) => (
-              <Pressable
-                key={value}
-                onPress={() => setTheme(value)}
-                role="radio"
-                accessibilityLabel={label}
-                accessibilityState={{ checked: theme === value }}
-                className="flex-row items-center gap-3 py-2.5 active:bg-muted rounded-md px-2"
-              >
-                <Icon size={16} className={theme === value ? 'text-primary' : 'text-muted-foreground'} />
-                <Text className={cn('text-sm flex-1', theme === value ? 'text-primary' : 'text-foreground')}>
-                  {label}
-                </Text>
-                {theme === value && <Check size={16} className="text-primary" />}
-              </Pressable>
-            ))}
-          </View>
-        )}
 
         {isSuperAdmin && (
           <Pressable
