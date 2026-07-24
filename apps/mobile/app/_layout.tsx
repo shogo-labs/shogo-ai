@@ -92,7 +92,6 @@ if (sentryDsn) {
       release: process.env.EXPO_PUBLIC_BUILD_HASH || 'dev',
       tracesSampleRate: 0.2,
       enabled: true,
-      enableNative: Platform.OS !== 'ios',
       enableAutoPerformanceTracing: false,
       enableNativeFramesTracking: false,
       enableUserInteractionTracing: false,
