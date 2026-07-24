@@ -58,6 +58,7 @@ function isValidSentryDsn(value: string | undefined): value is string {
 }
 
 const sentryDsn = isValidSentryDsn(rawSentryDsn) ? rawSentryDsn : undefined
+let sentryReady = false
 
 if (rawSentryDsn && !sentryDsn && __DEV__) {
   console.warn(
@@ -79,55 +80,74 @@ import { setPendingLicenseCode } from '../lib/pending-license'
 import * as ExpoLinking from 'expo-linking'
 
 import { isNoiseEvent } from '../lib/sentry-noise-filter'
+import { reportStartupDiagnostic, type StartupDiagnosticType } from '../lib/startup-diagnostics'
 
-Sentry.init({
-  dsn: sentryDsn,
-  environment: process.env.EXPO_PUBLIC_APP_ENV || 'development',
-  release: process.env.EXPO_PUBLIC_BUILD_HASH || 'dev',
-  tracesSampleRate: 0.2,
-  enabled: !!sentryDsn,
-  // Web symbolication fix. `@sentry/react-native` installs a `RewriteFrames`
-  // integration that rewrites every frame's filename to `app:///<file>` — a
-  // native-bundle convention (Hermes / `index.android.bundle`) that is
-  // meaningless on web. On web it actively breaks symbolication: the Metro
-  // serializer injects Debug IDs into `globalThis._sentryDebugIds` keyed by the
-  // *real* bundle URL (`https://…/_expo/static/js/web/index-<hash>.js`), and
-  // core's `applyDebugIds` matches those against each frame's filename to build
-  // `event.debug_meta`. Once RewriteFrames has changed the filenames to
-  // `app:///index-<hash>.js`, that match fails and events ship with
-  // `debug_meta.images: []` → Sentry has no Debug ID to look up the uploaded
-  // source maps, so production_web stacks stay minified. Dropping the rewrite
-  // on web keeps frame filenames aligned with the injected Debug IDs; native
-  // builds keep the integration (they need `app:///`).
-  integrations: (defaultIntegrations) =>
-    Platform.OS === 'web'
-      ? defaultIntegrations.filter((i) => i.name !== 'RewriteFrames')
-      : defaultIntegrations,
-  // Drop unhandled promise rejections whose "reason" was a non-Error value
-  // (e.g. `Promise.reject(new Event(...))` from third-party libs, or string
-  // rejections from Stripe / posthog). They show up in Sentry as a single
-  // empty `<unknown>` issue with no stack trace, no breadcrumbs that we
-  // can act on, and just inflate the issue count. If a real bug ever
-  // rejects with a non-Error, we'll still see breadcrumbs / network in
-  // adjacent issues.
-  beforeSend(event, hint) {
-    // Drop high-volume non-actionable noise (preview iframe, transient
-    // backend/network, browser-extension DOM races). See triage plan Tier 2.
-    if (isNoiseEvent(event)) return null
+let pendingStartupDiagnostic: { type: StartupDiagnosticType; error?: unknown; message?: string } | null = null
 
-    const reason = hint?.originalException as unknown
-    const isPlainEventReason =
-      typeof reason !== 'undefined' &&
-      reason !== null &&
-      !(reason instanceof Error) &&
-      typeof (reason as { stack?: unknown }).stack !== 'string'
-    const hasUsableStack = !!event.exception?.values?.some(
-      (v) => (v.stacktrace?.frames?.length ?? 0) > 0,
-    )
-    if (isPlainEventReason && !hasUsableStack) return null
-    return event
-  },
-})
+if (sentryDsn) {
+  try {
+    Sentry.init({
+      dsn: sentryDsn,
+      environment: process.env.EXPO_PUBLIC_APP_ENV || 'development',
+      release: process.env.EXPO_PUBLIC_BUILD_HASH || 'dev',
+      tracesSampleRate: 0.2,
+      enabled: true,
+      enableAutoPerformanceTracing: false,
+      enableNativeFramesTracking: false,
+      enableUserInteractionTracing: false,
+      // Web symbolication fix. `@sentry/react-native` installs a `RewriteFrames`
+      // integration that rewrites every frame's filename to `app:///<file>` — a
+      // native-bundle convention (Hermes / `index.android.bundle`) that is
+      // meaningless on web. On web it actively breaks symbolication: the Metro
+      // serializer injects Debug IDs into `globalThis._sentryDebugIds` keyed by the
+      // *real* bundle URL (`https://…/_expo/static/js/web/index-<hash>.js`), and
+      // core's `applyDebugIds` matches those against each frame's filename to build
+      // `event.debug_meta`. Once RewriteFrames has changed the filenames to
+      // `app:///index-<hash>.js`, that match fails and events ship with
+      // `debug_meta.images: []` → Sentry has no Debug ID to look up the uploaded
+      // source maps, so production_web stacks stay minified. Dropping the rewrite
+      // on web keeps frame filenames aligned with the injected Debug IDs; native
+      // builds keep the integration (they need `app:///`).
+      integrations: (defaultIntegrations) =>
+        Platform.OS === 'web'
+          ? defaultIntegrations.filter((i) => i.name !== 'RewriteFrames')
+          : defaultIntegrations,
+      // Drop unhandled promise rejections whose "reason" was a non-Error value
+      // (e.g. `Promise.reject(new Event(...))` from third-party libs, or string
+      // rejections from Stripe / posthog). They show up in Sentry as a single
+      // empty `<unknown>` issue with no stack trace, no breadcrumbs that we
+      // can act on, and just inflate the issue count. If a real bug ever
+      // rejects with a non-Error, we'll still see breadcrumbs / network in
+      // adjacent issues.
+      beforeSend(event, hint) {
+        // Drop high-volume non-actionable noise (preview iframe, transient
+        // backend/network, browser-extension DOM races). See triage plan Tier 2.
+        if (isNoiseEvent(event)) return null
+
+        const reason = hint?.originalException as unknown
+        const isPlainEventReason =
+          typeof reason !== 'undefined' &&
+          reason !== null &&
+          !(reason instanceof Error) &&
+          typeof (reason as { stack?: unknown }).stack !== 'string'
+        const hasUsableStack = !!event.exception?.values?.some(
+          (v) => (v.stacktrace?.frames?.length ?? 0) > 0,
+        )
+        if (isPlainEventReason && !hasUsableStack) return null
+        return event
+      },
+    })
+    sentryReady = true
+  } catch (err) {
+    pendingStartupDiagnostic = { type: 'sentry_init_failed', error: err }
+    console.warn('[sentry] Failed to initialize; continuing without crash reporting.', err)
+  }
+} else if (rawSentryDsn) {
+  pendingStartupDiagnostic = {
+    type: 'sentry_dsn_invalid',
+    message: 'Sentry DSN was present but malformed; startup continued without Sentry.',
+  }
+}
 
 const PENDING_TEMPLATE_KEY = 'pending_template_id'
 const PENDING_APP_TEMPLATE_KEY = 'pending_app_template'
@@ -177,10 +197,19 @@ function useCaptureRedeemDeepLink() {
   }, [nativeUrl])
 }
 
+function useReportStartupDiagnostics() {
+  useEffect(() => {
+    if (!pendingStartupDiagnostic) return
+    reportStartupDiagnostic(pendingStartupDiagnostic)
+    pendingStartupDiagnostic = null
+  }, [])
+}
+
 function RootLayoutInner() {
   csMark('root:layout:render')
   useEffect(() => { csMark('root:layout:mounted') }, [])
   useEffect(() => { captureAttribution() }, [])
+  useReportStartupDiagnostics()
   useCaptureTemplateDeepLink()
   useCaptureRedeemDeepLink()
   const systemColorScheme = useColorScheme()
@@ -227,4 +256,4 @@ function RootLayout() {
   )
 }
 
-export default Sentry.wrap(RootLayout)
+export default sentryReady ? Sentry.wrap(RootLayout) : RootLayout
