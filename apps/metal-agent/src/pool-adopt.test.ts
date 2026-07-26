@@ -23,7 +23,7 @@ import { CacheIndex, type CacheEntry } from './cache-index'
 import { config } from './config'
 import { FirecrackerVMManager } from './firecracker-vm-manager'
 import { LiveRegistry, type LiveVmEntry } from './live-registry'
-import { deriveNet } from './net'
+import { deriveNet, tapCapacity } from './net'
 import { MetalWarmPool } from './pool'
 
 const dirs: string[] = []
@@ -321,6 +321,74 @@ describe('MetalWarmPool.adopt', () => {
       // A survivor appears exactly at the counter value → jump past it.
       ;(mgr as any).hostTapIndices = () => new Set<number>([4])
       expect((mgr as any).nextVmIndex()).toBe(5)
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Regression: the tap-index OVERFLOW outage (2026-07, US region).
+  //
+  // The counter only ever incremented and re-seeded to max(existing)+1 on every
+  // restart. On long-lived, high-churn hosts leaked `fctap<n>` devices filled
+  // the /16 up to index 16383, so the seed became 16384 — one past the address
+  // space. `deriveNet` then emitted `172.16.8282.225/30` (3rd octet 8282), which
+  // `ip addr add` rejected, and EVERY metal /assign 500'd (runtimes stuck on
+  // "Project runtime is starting up…"). The fix makes the allocator WRAP within
+  // [0, capacity) and reclaim freed slots, so it never returns an out-of-range
+  // index and recovers as soon as any low slot is free.
+  // ---------------------------------------------------------------------------
+  describe('tap-index overflow / wrap safety', () => {
+    test('a counter seeded past capacity wraps to a free in-range slot', () => {
+      const cfg = makeCfg()
+      const mgr = new FirecrackerVMManager(cfg as any)
+      const cap = tapCapacity(cfg.tapCidrBase)
+
+      // Simulate the wedged state: the counter climbed past the /16 ceiling.
+      mgr.seedVmSeq(cap + 250_000)
+      ;(mgr as any).hostTapIndices = () => new Set<number>()
+
+      const n = (mgr as any).nextVmIndex()
+      expect(n).toBeGreaterThanOrEqual(0)
+      expect(n).toBeLessThan(cap)
+      // And the derived IP is a real address (would have thrown pre-fix).
+      expect(() => deriveNet(n, cfg.tapCidrBase)).not.toThrow()
+    })
+
+    test('reclaims a freed low index instead of climbing forever', () => {
+      const cfg = makeCfg()
+      const mgr = new FirecrackerVMManager(cfg as any)
+      const cap = tapCapacity(cfg.tapCidrBase)
+
+      // Whole space occupied EXCEPT slot 42; counter parked near the ceiling.
+      const taken = new Set<number>()
+      for (let i = 0; i < cap; i++) if (i !== 42) taken.add(i)
+      ;(mgr as any).hostTapIndices = () => taken
+      mgr.seedVmSeq(cap - 1)
+
+      expect((mgr as any).nextVmIndex()).toBe(42)
+    })
+
+    test('throws a clear error only when the entire space is occupied', () => {
+      const cfg = makeCfg()
+      const mgr = new FirecrackerVMManager(cfg as any)
+      const cap = tapCapacity(cfg.tapCidrBase)
+
+      const full = new Set<number>()
+      for (let i = 0; i < cap; i++) full.add(i)
+      ;(mgr as any).hostTapIndices = () => full
+
+      expect(() => (mgr as any).nextVmIndex()).toThrow(/exhausted/i)
+    })
+
+    test('peekNextTap never derives an out-of-range IP even if mis-seeded high', () => {
+      const cfg = makeCfg()
+      const mgr = new FirecrackerVMManager(cfg as any)
+      const cap = tapCapacity(cfg.tapCidrBase)
+
+      mgr.seedVmSeq(cap + 9_999)
+      const peek = mgr.peekNextTap()
+      expect(peek.index).toBeGreaterThanOrEqual(0)
+      expect(peek.index).toBeLessThan(cap)
+      expect(peek.tap).toBe(`fctap${peek.index}`)
     })
   })
 })
