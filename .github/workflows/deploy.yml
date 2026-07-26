@@ -2614,26 +2614,31 @@ jobs:
           # fire-and-forget. A `stable` release with rebuildRootfs=true tells every
           # host to rebuild its golden rootfs from that freshly-published image, so
           # the image MUST exist first — wait for that run (on THIS commit) to
-          # finish before flipping the channel. Same retry/wait pattern as
-          # finalize-release.yml.
+          # finish before flipping the channel.
+          #
+          # We query the workflow-runs REST endpoint filtered by head_sha directly
+          # via `gh api`, NOT `gh run list --workflow <file> --commit`. The latter
+          # errored on EVERY call under the Actions GITHUB_TOKEN, so the wait never
+          # observed the already-successful build and burned the full hour on every
+          # tagged release (v1.13.20/.21/.22 all failed here even though
+          # runtime-multiarch had succeeded in ~3 min — 2026-07 prod-release
+          # incident). The `head_sha` query param is deterministic and the error is
+          # no longer swallowed, so a real query failure is visible in the log.
+          REPO="$GITHUB_REPOSITORY"
           echo "::notice::Waiting for runtime-multiarch (production) on $SHA before publishing metal-agent stable"
           deadline=$(( $(date +%s) + 3600 ))
-          get_run() {
-            local attempt out
-            for attempt in 1 2 3 4 5; do
-              if out=$(gh run list --workflow runtime-multiarch.yml --commit "$SHA" \
-                         --json status,conclusion --limit 1 2>/dev/null); then
-                printf '%s' "$out"; return 0
-              fi
-              echo "  transient error querying runtime-multiarch run (attempt $attempt/5)" >&2
-              sleep $(( attempt * 5 ))
-            done
-            return 1
+          query() {
+            gh api \
+              "repos/$REPO/actions/workflows/runtime-multiarch.yml/runs?head_sha=$SHA&per_page=1" \
+              --jq '(.workflow_runs[0] // {}) | (.status // "missing") + " " + (.conclusion // "")'
           }
           while :; do
-            run=$(get_run || echo '[]')
-            status=$(jq -r '.[0].status // "missing"' <<<"$run")
-            concl=$(jq -r '.[0].conclusion // ""' <<<"$run")
+            if ! line=$(query 2>&1); then
+              echo "  transient error querying runtime-multiarch run: $line" >&2
+              line="query-error "
+            fi
+            status=${line%% *}
+            concl=${line#* }
             if [ "$status" = "completed" ]; then
               if [ "$concl" = "success" ]; then
                 echo "runtime-multiarch (production) succeeded — proceeding."
@@ -2643,7 +2648,7 @@ jobs:
               exit 1
             fi
             if [ "$(date +%s)" -gt "$deadline" ]; then
-              echo "::error::Timed out waiting for runtime-multiarch (production) on $SHA."
+              echo "::error::Timed out waiting for runtime-multiarch (production) on $SHA (last status='$status')."
               exit 1
             fi
             echo "  runtime-multiarch: status=$status (waiting)"
