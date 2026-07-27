@@ -78,6 +78,8 @@ They import the actual source files from this branch and read
 from the environment.
 
 ```bash
+cd docs/testing/signoz-log-export
+
 export SIGNOZ_BASE_URL=https://<tenant>.<region>.signoz.cloud
 export SIGNOZ_API_KEY=<query-api-key>
 export SIGNOZ_INGESTION_KEY=<ingestion-key>
