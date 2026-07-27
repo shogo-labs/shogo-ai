@@ -3,10 +3,10 @@
 
 /**
  * Tests for src/lib/runtime/build-project-env.ts — the shared env-var
- * builder used by both the K8s WarmPoolController and the desktop
- * VMWarmPoolController. Pulls together prisma, model-catalog,
- * agent-runtime templates, ai-proxy-token, runtime-token, and project
- * user context — every one of those is mocked below.
+ * builder used by the K8s WarmPoolController, metal, and desktop/host
+ * runtime spawns. Pulls together prisma, model-catalog, agent-runtime
+ * templates, ai-proxy-token, runtime-token, and project user context —
+ * every one of those is mocked below.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
@@ -285,7 +285,7 @@ describe('buildProjectEnv — OTEL + public URL passthroughs', () => {
 // Pooled/warm pods learn their project env through this builder. Without
 // PUBLIC_PREVIEW_URL the runtime falls back to a localhost link the user
 // can't open (and the gateway's localhost→preview rewriter stays disabled),
-// so it MUST be injected for cloud (k8s) — but never for desktop VMs, where
+// so it MUST be injected for cloud (k8s) — but never for desktop/host, where
 // localhost IS the URL the user opens.
 describe('buildProjectEnv — PUBLIC_PREVIEW_URL', () => {
   test('injects the deterministic preview URL in k8s (SYSTEM_NAMESPACE set)', async () => {
@@ -295,7 +295,7 @@ describe('buildProjectEnv — PUBLIC_PREVIEW_URL', () => {
     expect(getPreviewUrlMock).toHaveBeenCalledWith('proj-pp')
   })
 
-  test('omits PUBLIC_PREVIEW_URL off-cluster (desktop VM / local — no SYSTEM_NAMESPACE)', async () => {
+  test('omits PUBLIC_PREVIEW_URL off-cluster (desktop / local — no SYSTEM_NAMESPACE)', async () => {
     const env = await buildProjectEnv('proj-pp-local')
     expect(env.PUBLIC_PREVIEW_URL).toBeUndefined()
     expect(getPreviewUrlMock).not.toHaveBeenCalled()

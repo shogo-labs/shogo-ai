@@ -3,8 +3,8 @@
 /**
  * Shared environment builder for project runtime assignment.
  *
- * Used by both WarmPoolController (Kubernetes) and VMWarmPoolController (desktop VM)
- * to assemble the environment variables a runtime pod/VM needs when assigned to a project.
+ * Used by the K8s WarmPoolController, metal, and desktop/host runtime spawns
+ * to assemble the environment variables a runtime needs when assigned to a project.
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
@@ -12,6 +12,7 @@ import { getAgentModeOverrides } from '@shogo/model-catalog'
 import { buildAutoTierMapEnv } from './auto-tier-env'
 import { INSTANCE_SIZES } from '../../config/instance-sizes'
 import { buildToolsProxyUrl } from '../cloud-urls'
+import { getSandboxExecOverride } from '../sandbox-exec-setting'
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -224,6 +225,12 @@ export async function buildProjectEnv(
   // to backing model ids) so the spawn router can route Auto to e.g. Hoshi.
   const autoTierMapEnv = buildAutoTierMapEnv()
   if (autoTierMapEnv) env.AGENT_AUTO_TIER_MAP = autoTierMapEnv
+
+  // Super-admin sandbox-exec override (see sandbox-exec-setting.ts). `null` = no
+  // override, leave SANDBOX_EXEC_ENABLED unset so the runtime falls back to its
+  // own KUBERNETES_SERVICE_HOST heuristic.
+  const sandboxOverride = getSandboxExecOverride()
+  if (sandboxOverride !== null) env.SANDBOX_EXEC_ENABLED = String(sandboxOverride)
 
   // OTEL telemetry → SigNoz. The k8s warm-pool / Knative pod templates inject
   // this at pod-creation (warm-pool-controller.ts), but metal microVMs are

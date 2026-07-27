@@ -94,11 +94,12 @@ import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
 import { metalRoutes } from './routes/metal'
-import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { localProjectsRoutes } from './routes/local-projects'
+import { localLogsRoutes } from './routes/local-logs'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
+import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { normalizeAdminScopes } from './lib/admin-scopes'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
@@ -127,7 +128,6 @@ let runtimeManager: IRuntimeManager | null = null
 
 // Environment detection - check if running in Kubernetes
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
-const isVMIsolation = () => process.env.SHOGO_VM_ISOLATION === 'true'
 
 // Namespace for project runtime pods (configurable for staging/production)
 const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
@@ -692,7 +692,6 @@ app.use(
       '/api/tech-stacks',
       '/api/instances/heartbeat',
       '/api/instances/ws',
-      '/api/vm/',
       // Native MLM affiliate program — public surfaces:
       //   /lookup  → marketing site validates a code before redirect
       //   /click   → Cloudflare Pages Function records the click using
@@ -1029,14 +1028,11 @@ app.get('/api/platform/visible-models', async (c) => {
   }
 })
 
-// ── Local mode: VM management endpoints ──────────────────────────────────────
+// ── Local mode: folder / cloud-project pickers ──────────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
-  app.route('/api/vm', vmRoutes())
-
   // External / IDE-style folder projects (see apps/api/src/routes/local-projects.ts).
-  // Mounted here, next to /api/vm, because they share the same "only
-  // makes sense in local mode" trait — the cloud build doesn't expose
-  // a folder picker.
+  // Mounted here because it shares the same "only makes sense in local mode"
+  // trait as the rest of this block — the cloud build doesn't expose a folder picker.
   app.route('/api/local/projects', localProjectsRoutes())
 
   // Cloud-project picker + content sync (see routes/cloud-projects.ts).
@@ -1044,12 +1040,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   // pulls its workspace files locally and watches for edits to push back.
   app.route('/api/local/cloud-projects', cloudProjectsRoutes())
 
-  // Auto-download VM images in the background if not present
-  setTimeout(() => {
-    triggerVMImageDownload().catch((err) =>
-      console.error('[VM] Background VM image download failed (non-fatal):', err.message)
-    )
-  }, 5000)
+  // Live-tail of the desktop's main.log, used by the mobile admin Logs page
+  // (see routes/local-logs.ts).
+  app.route('/api/local', localLogsRoutes())
 }
 
 // ── Local mode: auto-sign-in + API key management ───────────────────────────
@@ -2315,21 +2308,7 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
       )
     }
   } else {
-    // Local development: Use RuntimeManager (host mode) and the VM warm
-    // pool (VM mode). Both are safe no-ops when not in use, so we stop
-    // both unconditionally — that's the only way `closeProject` from the
-    // renderer can reliably tear down whichever runtime the project is
-    // bound to without round-tripping for an extra status check.
-    try {
-      const mod = await import('./lib/vm-warm-pool-controller')
-      try {
-        mod.getVMWarmPoolController().evictProject(projectId)
-      } catch {
-        // VM pool not initialized — host mode, nothing to evict.
-      }
-    } catch {
-      // Module not available.
-    }
+    // Local development: Use RuntimeManager (host mode).
     const manager = getRuntimeManager()
     const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
     const url = new URL(c.req.url)
@@ -5181,12 +5160,11 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
 async function resolveAgentRuntimeUrl(projectId: string): Promise<string | null> {
   try {
     const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
-    // Tool-mocks installer is best-effort: if VM/K8s/host resolution
+    // Tool-mocks installer is best-effort: if K8s/host resolution
     // fails, return null and let the caller log and skip rather than
     // 503ing the (demo-mode-only) caller.
     const res = await resolveProjectPodUrl(projectId, {
       logTag: 'ToolMocks',
-      onVMPermanentlyDisabled: 'throw',
     })
     return res.url
   } catch (err: any) {
@@ -5868,6 +5846,42 @@ app.get('/api/admin/settings/agent-models', async (c) => {
       if (row.key === 'agent-model.auto-premium') overrides.autoPremium = row.value
     }
     return c.json(overrides)
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// GET /api/admin/settings/sandbox-exec - Read the super-admin sandbox-exec override
+app.get('/api/admin/settings/sandbox-exec', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: SANDBOX_EXEC_SETTING_KEY } })
+    return c.json({ enabled: row ? row.value === 'true' : null })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/sandbox-exec - Set/clear the super-admin sandbox-exec override.
+// `enabled: true/false` pins Docker sandbox-exec platform-wide; `null` clears the
+// override and falls back to the KUBERNETES_SERVICE_HOST heuristic in sandbox-exec.ts.
+app.put('/api/admin/settings/sandbox-exec', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+    const { enabled } = body as { enabled: boolean | null }
+
+    if (enabled === null) {
+      await prisma.platformSetting.deleteMany({ where: { key: SANDBOX_EXEC_SETTING_KEY } })
+    } else {
+      await prisma.platformSetting.upsert({
+        where: { key: SANDBOX_EXEC_SETTING_KEY },
+        create: { key: SANDBOX_EXEC_SETTING_KEY, value: String(enabled), updatedBy: userId },
+        update: { value: String(enabled), updatedBy: userId },
+      })
+    }
+    setSandboxExecOverride(enabled)
+    return c.json({ ok: true, enabled })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
@@ -8510,7 +8524,7 @@ async function gracefulShutdown(signal: string) {
     } catch (_) { /* may not be initialized */ }
   }
 
-  // In local dev mode, stop child-process runtimes and VM warm pool.
+  // In local dev mode, stop child-process runtimes.
   // In K8s mode the project runtimes are independent Knative services and must NOT be killed.
   if (!isKubernetes()) {
     if (runtimeManager) {
@@ -8522,12 +8536,6 @@ async function gracefulShutdown(signal: string) {
         console.error('[Server] Error stopping runtimes:', err.message)
       }
     }
-
-    try {
-      const { stopVMWarmPool } = await import('./lib/vm-warm-pool-controller')
-      await stopVMWarmPool()
-      console.log('[Server] VM warm pool stopped')
-    } catch (_) { /* may not be initialized */ }
 
     try {
       const { stopHostWarmPool } = await import('./lib/host-warm-pool-controller')
@@ -8693,6 +8701,9 @@ await (async () => {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
   }
 })()
+
+// Load the super-admin sandbox-exec override (see apps/api/src/lib/sandbox-exec-setting.ts).
+await loadSandboxExecOverride()
 
 // Self-provision in-process AI proxy credentials so the API server can reach
 // its own AI proxy for server-initiated LLM surfaces (title generation, in-app
@@ -8893,119 +8904,9 @@ if (isKubernetes()) {
   }, 2000)
 }
 
-// Start VM warm pool controller (desktop VM isolation mode)
-if (isVMIsolation() && !isKubernetes()) {
-  setTimeout(async () => {
-    try {
-      const { initVMWarmPool } = await import('./lib/vm-warm-pool-controller')
-      const vmModule = await import('../../desktop/src/vm/index')
-
-      const os = await import('os')
-      const path = await import('path')
-      const crypto = await import('crypto')
-      const home = process.env.HOME || process.env.USERPROFILE || os.homedir()
-      const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(import.meta.dir, '../../../workspaces')
-      const dataDir = process.env.SHOGO_DATA_DIR || path.join(home, '.shogo')
-
-      // VMs can't reach the host at localhost — expose the host IP for the AI proxy.
-      // macOS VZ: gateway is typically 192.168.64.1
-      // Windows QEMU SLIRP: gateway is always 10.0.2.2
-      if (!process.env.API_HOST) {
-        if (process.platform === 'win32') {
-          process.env.API_HOST = '10.0.2.2'
-        } else {
-          const nets = os.networkInterfaces()
-          const bridge = nets['bridge100'] || nets['en0'] || []
-          const hostIp = bridge.find((n: any) => n.family === 'IPv4' && !n.internal)?.address
-          if (hostIp) process.env.API_HOST = hostIp
-        }
-      }
-      const overlayDir = path.join(dataDir, 'vm-overlays')
-      const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(import.meta.dir, '../../desktop/resources/vm')
-      const bundleDir = process.env.SHOGO_VM_BUNDLE_DIR || ''
-
-      // Fire-and-forget: create a provisioned base image for instant cloning.
-      // This can take minutes on first run — must not block warm pool init.
-      if (bundleDir) {
-        (async () => {
-          try {
-            const provisionMgr = vmModule.createVMManager()
-            if ('ensureProvisionedBase' in provisionMgr) {
-              await (provisionMgr as any).ensureProvisionedBase(bundleDir)
-            }
-          } catch (err: any) {
-            console.error('[VMWarmPool] Provisioned base creation failed (non-fatal):', err.message)
-          }
-        })()
-      }
-
-      // Factory: each pool VM gets its own DarwinVMManager instance
-      const managerFactory = () => vmModule.createVMManager()
-
-      // Read persisted config.json (admin UI settings) as fallback for env vars
-      // Default raised from 1536 → 4096 to give vite build --watch / bun /
-      // LSPs / prisma headroom inside the Linux guest. The OOM killer was
-      // reaping `node` mid-build at 1.5 GB. See apps/desktop/src/vm/types.ts.
-      let configMemoryMB = 4096
-      let configPoolMemoryMB = 1536
-      let configCpus = 0
-      let configMountWorkspace = false
-      try {
-        const fs = await import('fs')
-        const configDir = process.platform === 'win32'
-          ? path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Shogo')
-          : process.platform === 'darwin'
-            ? path.join(home, 'Library', 'Application Support', 'Shogo')
-            : path.join(home, '.config', 'shogo')
-        const raw = fs.readFileSync(path.join(configDir, 'config.json'), 'utf-8')
-        const parsed = JSON.parse(raw)
-        if (parsed?.vmIsolation?.memoryMB > 0) configMemoryMB = parsed.vmIsolation.memoryMB
-        if (parsed?.vmIsolation?.poolMemoryMB > 0) configPoolMemoryMB = parsed.vmIsolation.poolMemoryMB
-        if (parsed?.vmIsolation?.cpus > 0) configCpus = parsed.vmIsolation.cpus
-        if (parsed?.vmIsolation?.mountWorkspace === true) configMountWorkspace = true
-      } catch {}
-
-      const memoryMB = parseInt(process.env.VM_MEMORY_MB || String(configMemoryMB), 10)
-      // Pool VMs idle at this size and balloon-deflate to `memoryMB` on
-      // assign. Clamp to ≤ memoryMB so misconfiguration can't inflate
-      // pool VMs above the assigned ceiling.
-      const poolMemoryMB = Math.min(
-        memoryMB,
-        parseInt(process.env.VM_POOL_MEMORY_MB || String(configPoolMemoryMB), 10),
-      )
-      const autoCpus = Math.max(2, Math.floor(os.cpus().length / 2))
-      const cpus = parseInt(process.env.VM_CPUS || String(configCpus > 0 ? configCpus : autoCpus), 10)
-
-      const mountWorkspace = process.env.VM_MOUNT_WORKSPACE === 'true' || configMountWorkspace
-
-      await initVMWarmPool(managerFactory, {
-        workspaceDir: workspacesDir,
-        credentialDirs: [
-          path.join(home, '.ssh'),
-          path.join(home, '.gitconfig'),
-          path.join(home, '.config', 'gh'),
-        ],
-        memoryMB,
-        poolMemoryMB,
-        cpus,
-        networkEnabled: true,
-        overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.qcow2`),
-        vmImageDir,
-        bundleDir: bundleDir || undefined,
-        mountWorkspace,
-        ...(mountWorkspace ? { workspaceMountPath: '/host-workspaces' } : {}),
-      })
-      console.log('[VMWarmPool] VM warm pool controller started')
-    } catch (err: any) {
-      console.error('[VMWarmPool] Failed to start VM warm pool controller (non-fatal):', err.message)
-    }
-  }, 2000)
-}
-
 // Start host warm pool controller (local host mode, opt-in via HOST_WARM_POOL_SIZE).
-// Pre-boots generic agent-runtimes so project opens skip the cold spawn. Kept
-// clear of VM isolation (which has its own pool) and Kubernetes.
-if (!isKubernetes() && !isVMIsolation()) {
+// Pre-boots generic agent-runtimes so project opens skip the cold spawn.
+if (!isKubernetes()) {
   setTimeout(async () => {
     try {
       const { initHostWarmPool, isHostWarmPoolEnabled } = await import('./lib/host-warm-pool-controller')

@@ -31,6 +31,7 @@ import {
   RefreshCw,
   KeyRound,
   ExternalLink,
+  ShieldCheck,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi, type InstanceInfo, type FeatureFlagOverrides } from '@shogo-ai/sdk'
@@ -336,6 +337,11 @@ export default function AdminGeneralPage() {
             Cloud connection, appearance, and machine registration.
           </Text>
         </View>
+
+        {/* Sandbox Execution — relevant everywhere, including single-user local/desktop
+            installs, since it controls whether the agent's exec tool runs commands
+            natively on this machine or inside an ephemeral Docker container. */}
+        <SandboxExecCard />
 
         {/* Feature Flags — platform-wide, cloud-only (no meaning on a single-user local install). */}
         {!localMode && <FeatureFlagsCard />}
@@ -898,6 +904,110 @@ function FeatureFlagsCard() {
               </View>
             )
           })
+        )}
+      </View>
+    </View>
+  )
+}
+
+const SANDBOX_EXEC_OPTIONS: Array<{ value: boolean | null; label: string; hint: string }> = [
+  {
+    value: null,
+    label: 'Auto',
+    hint: 'Native exec, unless this runtime is running inside Kubernetes.',
+  },
+  {
+    value: false,
+    label: 'Always off',
+    hint: 'The exec tool always runs commands natively on the host — no Docker.',
+  },
+  {
+    value: true,
+    label: 'Always on',
+    hint: 'The exec tool always runs commands inside an ephemeral Docker container.',
+  },
+]
+
+function SandboxExecCard() {
+  const [enabled, setEnabled] = useState<boolean | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+
+  const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
+
+  useEffect(() => {
+    let cancelled = false
+    platform.getSandboxExecSetting()
+      .then((setting) => { if (!cancelled) setEnabled(setting.enabled) })
+      .catch((err) => console.error('[SandboxExec] load failed:', err))
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [platform])
+
+  const persist = useCallback(async (value: boolean | null) => {
+    setSaveStatus('saving')
+    try {
+      await platform.putSandboxExecSetting(value)
+      setEnabled(value)
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 1500)
+    } catch (err) {
+      console.error('[SandboxExec] save failed:', err)
+      setSaveStatus('error')
+      setTimeout(() => setSaveStatus('idle'), 2500)
+    }
+  }, [platform])
+
+  return (
+    <View className="bg-card border border-border rounded-xl overflow-hidden">
+      <View className="px-5 py-4 border-b border-border flex-row items-start justify-between">
+        <View className="flex-1 pr-3">
+          <View className="flex-row items-center gap-2.5 mb-1">
+            <ShieldCheck size={16} className="text-foreground" />
+            <Text className="text-base font-semibold text-foreground">Sandbox Execution</Text>
+          </View>
+          <Text className="text-xs text-muted-foreground">
+            Controls whether the agent's exec tool runs shell commands natively on this
+            machine or inside an isolated, network-disabled Docker container. Applies to
+            every project's agent runtime, immediately — no restart required.
+          </Text>
+        </View>
+        <FeatureFlagsSaveIndicator status={saveStatus} />
+      </View>
+      <View className="px-5 py-4">
+        {loading ? (
+          <ActivityIndicator />
+        ) : (
+          <View className="flex-row gap-2">
+            {SANDBOX_EXEC_OPTIONS.map((opt) => {
+              const isActive = enabled === opt.value
+              return (
+                <Pressable
+                  key={opt.label}
+                  onPress={() => {
+                    if (saveStatus === 'saving' || isActive) return
+                    persist(opt.value)
+                  }}
+                  disabled={saveStatus === 'saving'}
+                  className={cn(
+                    'flex-1 rounded-lg border px-3 py-2.5 gap-1',
+                    isActive ? 'bg-primary/10 border-primary' : 'border-border',
+                    saveStatus === 'saving' && 'opacity-60',
+                  )}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: isActive }}
+                >
+                  <Text className={cn(
+                    'text-sm font-medium text-center',
+                    isActive ? 'text-primary' : 'text-foreground',
+                  )}>
+                    {opt.label}
+                  </Text>
+                  <Text className="text-[11px] text-muted-foreground text-center">{opt.hint}</Text>
+                </Pressable>
+              )
+            })}
+          </View>
         )}
       </View>
     </View>

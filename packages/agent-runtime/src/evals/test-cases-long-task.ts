@@ -9,11 +9,12 @@
  *
  * Run with a low ceiling so the cap is hit quickly and deterministically:
  *   EVAL_AGENT_MAX_ITERATIONS=6 \
- *     bun run src/evals/run-eval.ts --track long-task --vm --workers 1
+ *     bun run src/evals/run-eval.ts --track long-task --workers 1
  *
- * The runner threads EVAL_AGENT_MAX_ITERATIONS → AGENT_MAX_ITERATIONS inside
- * the VM (see run-eval.ts vmWorkerConfig.envOverrides), and the harness now
- * captures hitMaxTurns / responseEmpty from the gateway's data-usage frame.
+ * The runner threads EVAL_AGENT_MAX_ITERATIONS → AGENT_MAX_ITERATIONS into
+ * the worker (see run-eval.ts dockerWorkerConfig.envOverrides), and the
+ * harness now captures hitMaxTurns / responseEmpty from the gateway's
+ * data-usage frame.
  *
  * Pre-fix: hitting the ceiling yields an empty final message (RED). Post-fix
  * (main-agent auto-continue + guaranteed non-empty summary on the ceiling):

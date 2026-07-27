@@ -8,14 +8,12 @@ import { usePlatformConfig } from '../../lib/platform-config'
 import { API_URL, api, createHttpClient } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { ChatOnboarding, type OnboardingStep, type WidgetType } from '../../components/onboarding/ChatOnboarding'
-import { VMProgress } from '../../components/onboarding/VMProgress'
 import { NameInput } from '../../components/onboarding/steps/NameInput'
 import { AIConfigForm } from '../../components/onboarding/steps/AIConfigForm'
 import { SecurityForm } from '../../components/onboarding/steps/SecurityForm'
 import { MeetingSetupForm } from '../../components/onboarding/steps/MeetingSetupForm'
 import { FeaturesWidget } from '../../components/onboarding/steps/FeaturesWidget'
 import { CompleteWidget } from '../../components/onboarding/steps/CompleteWidget'
-import { VMSetupProgress } from '../../components/onboarding/steps/VMSetupProgress'
 
 // ---------------------------------------------------------------------------
 // Step sequences
@@ -23,10 +21,6 @@ import { VMSetupProgress } from '../../components/onboarding/steps/VMSetupProgre
 
 function isDesktop(): boolean {
   return Platform.OS === 'web' && typeof window !== 'undefined' && !!(window as any).shogoDesktop
-}
-
-function isWindows(): boolean {
-  return Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.userAgent.includes('Win')
 }
 
 function getLocalSteps(): OnboardingStep[] {
@@ -38,24 +32,6 @@ function getLocalSteps(): OnboardingStep[] {
       advanceDelay: 800,
     },
   ]
-
-  if (isDesktop()) {
-    steps.push({
-      id: 'vm-download',
-      text: "I\u2019m setting up a secure sandbox environment in the background. This is a one-time download.",
-      widget: 'vm-progress',
-      autoAdvance: true,
-      advanceDelay: 1200,
-    })
-
-    if (isWindows()) {
-      steps.push({
-        id: 'vm-setup',
-        text: "For full sandbox isolation, your system needs QEMU and Windows Hypervisor Platform. Let me help you set those up.",
-        widget: 'vm-setup',
-      })
-    }
-  }
 
   steps.push(
     {
@@ -144,16 +120,8 @@ export default function OnboardingPage() {
     router.replace('/(app)')
   }, [router, posthog, isLocal])
 
-  const handleVMDownloadNeeded = useCallback(() => {
-    // VM download is auto-started by the VMProgress widget
-  }, [])
-
   const renderWidget = useCallback((widget: WidgetType, onComplete: () => void) => {
     switch (widget) {
-      case 'vm-progress':
-        return <VMProgress autoStart />
-      case 'vm-setup':
-        return <VMSetupProgress onComplete={onComplete} />
       case 'name-input':
         return (
           <NameInput
@@ -183,7 +151,6 @@ export default function OnboardingPage() {
       steps={steps}
       renderWidget={renderWidget}
       context={context}
-      onVMDownloadNeeded={handleVMDownloadNeeded}
     />
   )
 }

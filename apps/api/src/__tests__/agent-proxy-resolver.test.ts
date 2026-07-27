@@ -22,15 +22,8 @@ afterEach(() => {
 function deps(over: Partial<AgentProxyResolverDeps>): AgentProxyResolverDeps {
   // Provide safe defaults for env probes so a test only specifies what matters.
   return {
-    isVMIsolation: () => false,
     isKubernetes: () => false,
     ...over,
-  }
-}
-
-class VMPoolPermanentlyDisabledError extends Error {
-  constructor(msg = 'VM pool perma-disabled') {
-    super(msg)
   }
 }
 
@@ -42,12 +35,11 @@ describe('resolveAgentProxyPodUrl — happy path', () => {
     expect(resolver).toHaveBeenCalledTimes(1)
   })
 
-  test('passes the projectId and onVMPermanentlyDisabled="fallback-to-host" to the resolver', async () => {
+  test('forwards the projectId and default logTag to the resolver', async () => {
     const resolver = mock(async () => ({ url: 'http://x' }))
     await resolveAgentProxyPodUrl('proj_2', deps({ resolver: resolver as any }))
     const [projectId, opts] = resolver.mock.calls[0]
     expect(projectId).toBe('proj_2')
-    expect(opts.onVMPermanentlyDisabled).toBe('fallback-to-host')
     expect(opts.logTag).toBe('AgentProxy') // default
   })
 
@@ -65,102 +57,6 @@ describe('resolveAgentProxyPodUrl — happy path', () => {
   })
 })
 
-describe('resolveAgentProxyPodUrl — VMPoolPermanentlyDisabledError', () => {
-  test('returns 503 vm_pool_unavailable when the resolver throws VMPoolPermanentlyDisabledError', async () => {
-    const err = new VMPoolPermanentlyDisabledError('pool drained')
-    const resolver = mock(async () => {
-      throw err
-    })
-    const out = await resolveAgentProxyPodUrl('p', deps({ resolver: resolver as any }))
-    expect(out).toEqual({
-      ok: false,
-      status: 503,
-      body: { error: { code: 'vm_pool_unavailable', message: 'pool drained' } },
-    })
-  })
-
-  test('falls back to a default message when the error has no message', async () => {
-    const err = new VMPoolPermanentlyDisabledError('')
-    const resolver = mock(async () => {
-      throw err
-    })
-    const out = await resolveAgentProxyPodUrl('p', deps({ resolver: resolver as any }))
-    expect(out.ok).toBe(false)
-    if (!out.ok) {
-      expect(out.body.error.message).toBe('VM pool permanently disabled')
-    }
-  })
-
-  test('the VMPool branch fires regardless of isVMIsolation/isKubernetes (constructor.name match wins)', async () => {
-    const err = new VMPoolPermanentlyDisabledError('drained')
-    const resolver = mock(async () => {
-      throw err
-    })
-    // Both env probes true — the VMPool path should still take precedence.
-    const out = await resolveAgentProxyPodUrl('p', deps({
-      resolver: resolver as any,
-      isVMIsolation: () => true,
-      isKubernetes: () => true,
-    }))
-    expect(out.ok).toBe(false)
-    if (!out.ok) {
-      expect(out.body.error.code).toBe('vm_pool_unavailable')
-      expect(out.status).toBe(503)
-    }
-  })
-})
-
-describe('resolveAgentProxyPodUrl — VM isolation enabled', () => {
-  test('returns 503 vm_pool_unavailable when VM isolation is on and the resolver throws', async () => {
-    const resolver = mock(async () => {
-      throw new Error('pool not ready')
-    })
-    const out = await resolveAgentProxyPodUrl('p', deps({
-      resolver: resolver as any,
-      isVMIsolation: () => true,
-    }))
-    expect(out).toEqual({
-      ok: false,
-      status: 503,
-      body: {
-        error: {
-          code: 'vm_pool_unavailable',
-          message: 'VM isolation is enabled but the pool is not ready. Retrying...',
-        },
-      },
-    })
-  })
-
-  test('uses a fixed message (not err.message) when VM isolation is the active branch', async () => {
-    const resolver = mock(async () => {
-      throw new Error('some internal driver error')
-    })
-    const out = await resolveAgentProxyPodUrl('p', deps({
-      resolver: resolver as any,
-      isVMIsolation: () => true,
-    }))
-    if (!out.ok) {
-      // Operator-visible message is sanitized — driver internals don't leak.
-      expect(out.body.error.message).not.toContain('driver')
-      expect(out.body.error.message).toBe(
-        'VM isolation is enabled but the pool is not ready. Retrying...'
-      )
-    }
-  })
-
-  test('VM isolation branch wins over the K8s branch when both probes are true', async () => {
-    const resolver = mock(async () => {
-      throw new Error('boom')
-    })
-    const out = await resolveAgentProxyPodUrl('p', deps({
-      resolver: resolver as any,
-      isVMIsolation: () => true,
-      isKubernetes: () => true,
-    }))
-    if (!out.ok) expect(out.body.error.code).toBe('vm_pool_unavailable')
-  })
-})
-
 describe('resolveAgentProxyPodUrl — Kubernetes branch', () => {
   test('returns 502 proxy_error when running on K8s and the resolver throws', async () => {
     const resolver = mock(async () => {
@@ -168,7 +64,6 @@ describe('resolveAgentProxyPodUrl — Kubernetes branch', () => {
     })
     const out = await resolveAgentProxyPodUrl('p', deps({
       resolver: resolver as any,
-      isVMIsolation: () => false,
       isKubernetes: () => true,
     }))
     expect(out).toEqual({
@@ -202,13 +97,12 @@ describe('resolveAgentProxyPodUrl — Kubernetes branch', () => {
 })
 
 describe('resolveAgentProxyPodUrl — local / host-runtime fallback', () => {
-  test('returns 503 agent_start_failed when neither VM nor K8s is enabled and resolver throws', async () => {
+  test('returns 503 agent_start_failed when K8s is not enabled and resolver throws', async () => {
     const resolver = mock(async () => {
       throw new Error('vite never came up')
     })
     const out = await resolveAgentProxyPodUrl('p', deps({
       resolver: resolver as any,
-      isVMIsolation: () => false,
       isKubernetes: () => false,
     }))
     expect(out).toEqual({

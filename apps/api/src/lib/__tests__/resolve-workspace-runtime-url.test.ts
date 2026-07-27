@@ -31,7 +31,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       attachedProjectIds: ['p1', 'p2'],
       _isEnabled: enabled,
       _isKubernetes: () => true,
-      _isVMIsolation: () => false,
       _spawnLease: passthroughLease,
       _k8sResolver: async (wsId, ids) => `http://ws.example/${wsId}/${ids.join('+')}`,
     })
@@ -48,7 +47,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       readonlyProjectIds: ['p2'],
       _isEnabled: enabled,
       _isKubernetes: () => true,
-      _isVMIsolation: () => false,
       _spawnLease: (id, fn) => {
         leaseCalls.push(id)
         return fn()
@@ -66,32 +64,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
     expect(seenReadonly).toEqual(['p2'])
   })
 
-  it('VM + anchor (no k8s) still throws not-yet-supported', async () => {
-    await expect(
-      resolveWorkspaceRuntimeUrl('ws-1', {
-        attachedProjectIds: ['anchor'],
-        anchorProjectId: 'anchor',
-        _isEnabled: enabled,
-        _isKubernetes: () => false,
-        _isVMIsolation: () => true,
-        _spawnLease: passthroughLease,
-        _vmResolver: async () => 'http://vm',
-      }),
-    ).rejects.toThrow(/not yet[\s\S]*VM-isolation/)
-  })
-
-  it('routes VM when SHOGO_VM_ISOLATION and K8s is off', async () => {
-    const res = await resolveWorkspaceRuntimeUrl('ws-1', {
-      attachedProjectIds: ['p1'],
-      _isEnabled: enabled,
-      _isKubernetes: () => false,
-      _isVMIsolation: () => true,
-      _spawnLease: passthroughLease,
-      _vmResolver: async () => 'http://localhost:39300',
-    })
-    expect(res).toEqual({ mode: 'vm', url: 'http://localhost:39300' })
-  })
-
   it('wraps the cloud (k8s) resolver in the spawn lease but NOT host mode', async () => {
     const leaseCalls: string[] = []
     const observingLease = <T>(id: string, fn: () => Promise<T>) => {
@@ -103,7 +75,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       attachedProjectIds: ['p1'],
       _isEnabled: enabled,
       _isKubernetes: () => true,
-      _isVMIsolation: () => false,
       _spawnLease: observingLease,
       _k8sResolver: async () => 'http://ws.cloud',
     })
@@ -114,7 +85,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       attachedProjectIds: ['p1'],
       _isEnabled: enabled,
       _isKubernetes: () => false,
-      _isVMIsolation: () => false,
       _spawnLease: observingLease,
       _hostStart: async () => ({
         projectId: 'ws-host',
@@ -133,7 +103,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       attachedProjectIds: ['p1'],
       _isEnabled: enabled,
       _isKubernetes: () => false,
-      _isVMIsolation: () => false,
       _hostStart: async () => ({
         projectId: 'ws-1',
         port: 37500,
@@ -153,7 +122,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       attachedProjectIds: [],
       _isEnabled: enabled,
       _isKubernetes: () => false,
-      _isVMIsolation: () => false,
       _hostStart: async () => ({
         projectId: 'ws-1',
         port: 37000,
@@ -187,7 +155,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       attachedProjectIds: ['p1', 'p2'],
       _isEnabled: enabled,
       _isKubernetes: () => false,
-      _isVMIsolation: () => false,
       runtimeManager: fakeManager,
     })
     expect(res.mode).toBe('host')
@@ -202,7 +169,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
         attachedProjectIds: [],
         _isEnabled: enabled,
         _isKubernetes: () => false,
-        _isVMIsolation: () => false,
         runtimeManager: {} as any,
       }),
     ).rejects.toThrow(/no startWorkspace/)
@@ -224,7 +190,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       attachedProjectIds: ['p1', 'p2'],
       _isEnabled: enabled,
       _isKubernetes: () => true,
-      _isVMIsolation: () => false,
       _spawnLease: passthroughLease,
     })
     expect(res).toEqual({
@@ -233,17 +198,6 @@ describe('resolveWorkspaceRuntimeUrl', () => {
     })
     expect(seen.ws).toBe('ws-default')
     expect(seen.ids).toEqual(['p1', 'p2'])
-  })
-
-  it('production VM branch throws not-configured when no resolver injected', async () => {
-    await expect(
-      resolveWorkspaceRuntimeUrl('ws-1', {
-        attachedProjectIds: ['p1'],
-        _isEnabled: enabled,
-        _isKubernetes: () => false,
-        _isVMIsolation: () => true,
-      }),
-    ).rejects.toThrow(/VM workspace runtime driver not configured/)
   })
 
   it('requires a workspaceId', async () => {
