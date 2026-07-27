@@ -151,7 +151,7 @@ console.log = (...args: unknown[]) => { origLog(...args); writeLog('INFO', ...ar
 console.error = (...args: unknown[]) => { origError(...args); writeLog('ERROR', ...args) }
 console.warn = (...args: unknown[]) => { origWarn(...args); writeLog('WARN', ...args) }
 
-// Start SigNoz log export (opt-in via SHOGO_SIGNOZ_ENABLED + ingestion key). Must be after the
+// Start SigNoz log export (opt-in via SHOGO_SIGNOZ_ENABLED). Must be after the
 // console.* patch so it captures every main-process log line — including the
 // local API process's stdout/stderr, which local-server.ts pipes through
 // console.*. No-op when disabled; never throws.
