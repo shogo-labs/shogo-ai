@@ -580,11 +580,18 @@ jobs:
           # this IPA — keep in sync with the post-archive sourcemap upload
           # below so events are matchable to bundles.
           EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
-          # Expo Updates resolves this monorepo as the project root during
-          # archive. Make the root/entry explicit so the generated resource
-          # script does not fall back to /index.js at the repository root.
-          PROJECT_ROOT: ${{ github.workspace }}
-          ENTRY_FILE: apps/mobile/index.js
+          # Point the JS bundle phase (Metro + expo-updates createManifest)
+          # at the MOBILE app dir, not the monorepo root. createManifest
+          # reads the Expo app config from PROJECT_ROOT to build the
+          # embedded manifest that populates Constants.expoConfig at
+          # runtime. When PROJECT_ROOT was the repo root (no app.json), the
+          # embedded manifest shipped WITHOUT `scheme`, so expo-router's
+          # Linking.createURL() threw on launch -> RCTFatal -> abort
+          # (SHOG-458, build 465). metro.config.js is already rooted at
+          # apps/mobile (getSentryExpoConfig(__dirname)) with watchFolders
+          # to the hoisted root node_modules, so this is the correct root.
+          PROJECT_ROOT: ${{ github.workspace }}/apps/mobile
+          ENTRY_FILE: index.js
         run: |
           set -o pipefail
           xcodebuild archive \
