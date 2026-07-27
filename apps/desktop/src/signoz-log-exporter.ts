@@ -133,13 +133,6 @@ function toTemplateMessage(value: string): { msg: string; redacted: boolean } {
   return { msg, redacted }
 }
 
-function safeAttributeValue(value: unknown): string | undefined {
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  if (typeof value !== 'string') return undefined
-  if (!value || looksPrivate(value)) return undefined
-  return toTemplateMessage(value).msg
-}
-
 function safeLogRecord(level: DesktopLogLevel, body: string): SafeLogRecord | null {
   const line = normalize(body)
   if (!line) return null
@@ -165,10 +158,16 @@ function safeLogRecord(level: DesktopLogLevel, body: string): SafeLogRecord | nu
     'log.redacted': redacted ? 'true' : 'false',
   }
 
+  // Carry only the trace-correlation fields the web/API structured logs use, so
+  // a desktop line can be joined to a trace exactly like a cloud line. These are
+  // opaque hex IDs (not user content), so they pass through verbatim after a
+  // strict format check rather than the message sanitizer.
   if (parsed) {
-    for (const key of ['service', 'trace_id', 'span_id', 'code', 'status', 'statusCode', 'method']) {
-      const safeValue = safeAttributeValue(parsed[key])
-      if (safeValue) attributes[key === 'service' ? 'log.origin_service' : key] = safeValue
+    for (const key of ['trace_id', 'span_id']) {
+      const value = parsed[key]
+      if (typeof value === 'string' && /^[0-9a-f]{16,32}$/i.test(value)) {
+        attributes[key] = value
+      }
     }
   }
 
