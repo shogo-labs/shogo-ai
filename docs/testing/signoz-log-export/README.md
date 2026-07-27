@@ -4,14 +4,8 @@ Testing performed for **PR #845** / **Issue #844** / **Jira SHOG-730**
 (branch `fix/desktop-chat-not-completing`).
 
 All tests below were run against the **live** SigNoz instance
-(`moving-aardvark.us.signoz.cloud`) using the **exact shipped source**
-(sha-verified copies of `apps/desktop/src/signoz-log-exporter.ts` and
-`packages/core/src/logger.ts` — no test-only forks).
-
-> Honesty note: these are real outputs from executing the shipped source in Bun
-> and querying the live SigNoz query API — **not** SigNoz UI screenshots (only
-> API access was available, not a UI login). Every number below is reproducible
-> from the harness in `harness/`.
+(`moving-aardvark.us.signoz.cloud`) using the **exact shipped source** from this branch
+(`apps/desktop/src/signoz-log-exporter.ts` and `packages/core/src/logger.ts`).
 
 ## Summary
 

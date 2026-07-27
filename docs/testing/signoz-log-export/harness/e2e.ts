@@ -1,5 +1,5 @@
 // Real end-to-end test: drives the ACTUAL exporter module against live SigNoz.
-import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter } from './signoz-log-exporter'
+import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter } from '../../../../apps/desktop/src/signoz-log-exporter'
 import { readFileSync } from 'fs'
 
 const MARKER = readFileSync('/tmp/qa/marker.txt', 'utf8').trim()

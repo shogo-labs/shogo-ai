@@ -1,5 +1,5 @@
 // Before-fix vs after-fix, same live SigNoz, two distinct markers.
-import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter } from './signoz-log-exporter'
+import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter } from '../../../../apps/desktop/src/signoz-log-exporter'
 import { appendFileSync, writeFileSync } from 'fs'
 
 const QUERY_BASE = process.env.SIGNOZ_BASE_URL!, API_KEY = process.env.SIGNOZ_API_KEY!

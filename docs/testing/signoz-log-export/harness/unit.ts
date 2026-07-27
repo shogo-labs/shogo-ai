@@ -1,5 +1,5 @@
 // Unit tests for the safety properties of the REAL exporter module.
-import { initSignozLogExporter, exportLogLine, flush, shutdownSignozLogExporter } from './signoz-log-exporter'
+import { initSignozLogExporter, exportLogLine, flush, shutdownSignozLogExporter } from '../../../../apps/desktop/src/signoz-log-exporter'
 import { appendFileSync, writeFileSync } from 'fs'
 
 const results: { name: string; pass: boolean; detail: string }[] = []
