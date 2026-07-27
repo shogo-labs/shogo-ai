@@ -2422,9 +2422,10 @@ function getConsoleLogsBuffer(): string[] {
  * inside a function called only at runtime.
  */
 // Desktop-only: forward preview/browser console lines to the OTEL log sink for
-// SigNoz export. Gated on SHOGO_SIGNOZ_ENABLED (set by local-server.ts) so cloud
-// runtimes are not flooded — the line is already persisted to console.log below.
-const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.SHOGO_SIGNOZ_ENABLED === 'true'
+// SigNoz export. local-server.ts always labels desktop child runtimes with
+// OTEL_SERVICE_NAME=shogo-desktop-runtime so cloud runtimes are not flooded —
+// the line is already persisted to console.log below.
+const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.OTEL_SERVICE_NAME === 'shogo-desktop-runtime'
 
 function recordConsoleLogLine(line: string, stream: 'stdout' | 'stderr'): void {
   if (!line) return

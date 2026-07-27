@@ -128,7 +128,7 @@ function toDesktopLogLevel(level: string): DesktopLogLevel {
 
 function writeLog(level: string, ...args: unknown[]): void {
   logStream.write(formatLogLine(level, args))
-  // Tee to SigNoz (opt-in, no-op when disabled). exportLogLine MUST NOT call
+  // Tee to SigNoz. exportLogLine MUST NOT call
   // console.* — it runs behind the patched console below, so any console use
   // here would re-enter writeLog and loop.
   exportLogLine(toDesktopLogLevel(level), formatLogMessage(args))
@@ -151,10 +151,9 @@ console.log = (...args: unknown[]) => { origLog(...args); writeLog('INFO', ...ar
 console.error = (...args: unknown[]) => { origError(...args); writeLog('ERROR', ...args) }
 console.warn = (...args: unknown[]) => { origWarn(...args); writeLog('WARN', ...args) }
 
-// Start SigNoz log export (opt-in via SHOGO_SIGNOZ_ENABLED). Must be after the
-// console.* patch so it captures every main-process log line — including the
-// local API process's stdout/stderr, which local-server.ts pipes through
-// console.*. No-op when disabled; never throws.
+// Start SigNoz log export. Must be after the console.* patch so it captures
+// every main-process log line — including the local API process's stdout/stderr,
+// which local-server.ts pipes through console.*. Never throws.
 initSignozLogExporter({ serviceVersion: app.getVersion() })
 
 process.on('uncaughtException', (err) => {

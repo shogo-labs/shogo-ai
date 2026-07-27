@@ -32,13 +32,12 @@ import {
 
 /**
  * Whether to forward runtime build/console log lines to the OTEL log sink for
- * SigNoz export. Gated so this only happens on desktop (where local-server.ts
- * sets SHOGO_SIGNOZ_ENABLED) — cloud/metal runtimes already export their
- * structured `createLogger` logs and must not be flooded with every raw
- * vite-watch build line. Read once at module load; desktop sets the flag before
- * spawning the runtime.
+ * SigNoz export. Desktop local-server.ts always labels its child runtime with
+ * `OTEL_SERVICE_NAME=shogo-desktop-runtime`; use that service identity rather
+ * than a feature switch so Desktop export is always on while cloud/metal
+ * runtimes are not flooded with every raw vite-watch build line.
  */
-const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.SHOGO_SIGNOZ_ENABLED === 'true'
+const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.OTEL_SERVICE_NAME === 'shogo-desktop-runtime'
 
 /** Derive the project id from a `<root>/.shogo/logs/build.log` path (best-effort). */
 function projectIdFromLogPath(logPath: string): string | undefined {
@@ -72,7 +71,7 @@ export function emitBuildLine(
   // and made the agent-runtime's /health endpoint unreachable.
   scheduleLogWrite(buildLogPath, `${prefix} ${line}\n`)
   recordBuildEntry(`${prefix} ${line}`, stream === 'stderr' ? 'error' : 'info')
-  // Forward a copy to SigNoz (desktop only). No-op unless the OTEL sink is
+  // Forward a copy to SigNoz for desktop-local runtimes. No-op unless the OTEL sink is
   // installed; the line is already on disk above, so this only adds the export.
   if (FORWARD_RUNTIME_LOGS_TO_SIGNOZ) {
     const projectId = projectIdFromLogPath(buildLogPath)

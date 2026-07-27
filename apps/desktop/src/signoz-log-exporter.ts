@@ -56,15 +56,13 @@ function attr(key: string, value: string) {
 }
 
 /**
- * Initialize the exporter from env. Opt-in via `SHOGO_SIGNOZ_ENABLED === 'true'`.
- * The desktop build/release environment is expected to provide
- * `SIGNOZ_INGESTION_KEY` when this flag is enabled.
+ * Initialize the exporter from env. The desktop build/release environment is
+ * expected to provide `SIGNOZ_INGESTION_KEY`.
  * Safe to call once at startup; a second call is ignored. Returns whether the
  * exporter became active (useful for tests; callers may ignore it).
  */
 export function initSignozLogExporter(opts: { serviceVersion?: string } = {}): boolean {
   if (enabled) return true
-  if (process.env.SHOGO_SIGNOZ_ENABLED !== 'true') return false
   if (typeof fetch !== 'function') return false
 
   const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'https://ingest.us.signoz.cloud:443'

@@ -397,10 +397,8 @@ export async function startLocalServer(): Promise<void> {
   // it), so only set the values we need to normalize/derive here.
   // `OTEL_SERVICE_NAME` keeps desktop-local runtime telemetry separate from
   // cloud/metal runtime telemetry in SigNoz.
-  if (process.env.SHOGO_SIGNOZ_ENABLED === 'true') {
-    env.OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'https://ingest.us.signoz.cloud:443'
-    env.OTEL_SERVICE_NAME = 'shogo-desktop-runtime'
-  }
+  env.OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'https://ingest.us.signoz.cloud:443'
+  env.OTEL_SERVICE_NAME = 'shogo-desktop-runtime'
 
   ensureDatabase(bunPath)
   runMigrations(bunPath, env)
