@@ -392,22 +392,15 @@ export async function startLocalServer(): Promise<void> {
   delete (env as Record<string, string | undefined>).DATABASE_URL
   delete (env as Record<string, string | undefined>).PROJECTS_DATABASE_URL
 
-  // SigNoz export for local desktop runtimes (opt-in via SHOGO_SIGNOZ_ENABLED).
-  // The heavy OTEL SDK is stripped from the API bundle in local mode, but each
-  // spawned agent-runtime still calls initInstrumentation() and starts exporting
-  // the moment it sees an OTLP endpoint (see packages/core/src/instrumentation.ts
-  // + server-framework.ts). These vars are already inherited via the `...process.env`
-  // spread above; we set them explicitly here so the wiring is intentional, is
-  // clearly gated, and survives future env hardening. `OTEL_SERVICE_NAME` pins a
-  // desktop-specific service so these logs/traces are distinguishable from
-  // cloud/metal runtime telemetry in SigNoz (the API process itself skips
-  // instrumentation in local mode, so setting it here only affects the runtimes).
-  if (process.env.SHOGO_SIGNOZ_ENABLED === 'true') {
-    const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'https://ingest.us.signoz.cloud:443'
-    env.SHOGO_SIGNOZ_ENABLED = 'true'
-    env.OTEL_EXPORTER_OTLP_ENDPOINT = otlpEndpoint
+  // SigNoz export for local desktop runtimes. `env` already inherits
+  // process.env, so only set the values we need to normalize/derive here.
+  // Require the ingestion key before enabling the runtime OTEL endpoint; without
+  // it the runtime would just send unauthenticated OTLP requests that SigNoz
+  // rejects. `OTEL_SERVICE_NAME` keeps desktop-local runtime telemetry separate
+  // from cloud/metal runtime telemetry in SigNoz.
+  if (process.env.SHOGO_SIGNOZ_ENABLED === 'true' && process.env.SIGNOZ_INGESTION_KEY) {
+    env.OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'https://ingest.us.signoz.cloud:443'
     env.OTEL_SERVICE_NAME = 'shogo-desktop-runtime'
-    if (process.env.SIGNOZ_INGESTION_KEY) env.SIGNOZ_INGESTION_KEY = process.env.SIGNOZ_INGESTION_KEY
   }
 
   ensureDatabase(bunPath)
