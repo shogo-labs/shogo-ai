@@ -1,0 +1,37 @@
+{
+  "total": 7,
+  "passed": 7,
+  "failed": 0,
+  "results": [
+    {
+      "name": "emitLogToSink is a no-op (no throw) when no sink installed",
+      "pass": true
+    },
+    {
+      "name": "forwards entry to sink",
+      "pass": true
+    },
+    {
+      "name": "defaults a timestamp when omitted",
+      "pass": true,
+      "detail": "2026-07-27T11:15:39.988Z"
+    },
+    {
+      "name": "passes through custom attributes",
+      "pass": true
+    },
+    {
+      "name": "preserves an explicit timestamp",
+      "pass": true
+    },
+    {
+      "name": "swallows sink errors (never throws to caller)",
+      "pass": true
+    },
+    {
+      "name": "emitLogToSink does not write to console (unlike createLogger)",
+      "pass": true,
+      "detail": "hits=0"
+    }
+  ]
+}
