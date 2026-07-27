@@ -15,6 +15,7 @@
 
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { resolve, dirname, join, extname, basename } from 'path'
+import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import {
   existsSync,
   readFileSync,
@@ -2420,9 +2421,25 @@ function getConsoleLogsBuffer(): string[] {
  * down the file, but TDZ doesn't apply to top-level `let` references
  * inside a function called only at runtime.
  */
+// Desktop-only: forward preview/browser console lines to the OTEL log sink for
+// SigNoz export. Gated on SHOGO_SIGNOZ_ENABLED (set by local-server.ts) so cloud
+// runtimes are not flooded — the line is already persisted to console.log below.
+const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.SHOGO_SIGNOZ_ENABLED === 'true'
+
 function recordConsoleLogLine(line: string, stream: 'stdout' | 'stderr'): void {
   if (!line) return
   appendRuntimeConsoleLogLine(line)
+  if (FORWARD_RUNTIME_LOGS_TO_SIGNOZ) {
+    const projectId = process.env.PROJECT_ID
+    emitLogToSink({
+      level: stream === 'stderr' ? 'error' : 'info',
+      msg: line,
+      service: 'shogo-agent-runtime',
+      'log.source': 'console.log',
+      'log.stream': stream,
+      ...(projectId ? { 'project.id': projectId } : {}),
+    })
+  }
   for (const listener of logStreamListeners) {
     try { listener(line) } catch {}
   }

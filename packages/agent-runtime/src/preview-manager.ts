@@ -21,6 +21,7 @@ import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
+import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
 import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded } from '@shogo-ai/sdk/generators'
 import {
@@ -28,6 +29,22 @@ import {
   cleanupStagingOutput,
   DEFAULT_STAGING_DIR,
 } from './build-output-commit'
+
+/**
+ * Whether to forward runtime build/console log lines to the OTEL log sink for
+ * SigNoz export. Gated so this only happens on desktop (where local-server.ts
+ * sets SHOGO_SIGNOZ_ENABLED) — cloud/metal runtimes already export their
+ * structured `createLogger` logs and must not be flooded with every raw
+ * vite-watch build line. Read once at module load; desktop sets the flag before
+ * spawning the runtime, so it is present at boot.
+ */
+const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.SHOGO_SIGNOZ_ENABLED === 'true'
+
+/** Derive the project id from a `<root>/.shogo/logs/build.log` path (best-effort). */
+function projectIdFromLogPath(logPath: string): string | undefined {
+  const m = logPath.replace(/\\/g, '/').match(/([^/]+)\/\.shogo\/logs\/[^/]+$/)
+  return m?.[1]
+}
 
 /**
  * Append a line to the on-disk runtime build log *and* dispatch it
@@ -55,6 +72,19 @@ export function emitBuildLine(
   // and made the agent-runtime's /health endpoint unreachable.
   scheduleLogWrite(buildLogPath, `${prefix} ${line}\n`)
   recordBuildEntry(`${prefix} ${line}`, stream === 'stderr' ? 'error' : 'info')
+  // Forward a copy to SigNoz (desktop only). No-op unless the OTEL sink is
+  // installed; the line is already on disk above, so this only adds the export.
+  if (FORWARD_RUNTIME_LOGS_TO_SIGNOZ) {
+    const projectId = projectIdFromLogPath(buildLogPath)
+    emitLogToSink({
+      level: stream === 'stderr' ? 'error' : 'info',
+      msg: `${prefix} ${line}`,
+      service: 'shogo-agent-runtime',
+      'log.source': 'build.log',
+      'log.stream': stream,
+      ...(projectId ? { 'project.id': projectId } : {}),
+    })
+  }
 }
 import { createServer } from 'net'
 import { pkg, resolveBinInvocation } from '@shogo/shared-runtime'
