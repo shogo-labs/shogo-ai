@@ -4,31 +4,16 @@
 /**
  * Single source of truth for "where is project P's agent runtime?"
  *
- * Before this helper existed, six different sites in apps/api duplicated
- * the same `if (k8s) … else if (SHOGO_VM_ISOLATION) … else host` cascade:
+ * Before this helper existed, several sites in apps/api duplicated the same
+ * `if (k8s) … else host` cascade (now also joined by the `metal` and host
+ * warm-pool substrates below):
  *
  *   - `routes/runtime.ts`        — `/start`, `/sandbox/url`, `/restart`
  *   - `routes/project-chat.ts`   — `getProjectUrl()`
  *   - `server.ts`                — `/agent-proxy/*` route, `resolveAgentRuntimeUrl`
  *
- * Each copy got the K8s and VM cases right, but the original `server.ts`
- * pair forgot the `SHOGO_VM_ISOLATION` gate entirely — silently starting
- * a host RuntimeManager in parallel with the warm pool and producing
- * the split-brain "Connecting to agent runtime…" hang that 1.6.2 users
- * reported. With every new RuntimeManager caller, the odds of someone
- * forgetting the gate again grew.
- *
- * This helper makes the resolution declarative and testable, with
- * three knobs that capture every variation seen in the call sites:
- *
- *   - logTag: identifies the caller in fallback/error log lines.
- *   - onVMPermanentlyDisabled: 'throw' for /sandbox/url (a
- *     split-brain there would mis-render the preview) vs.
- *     'fallback-to-host' for chat traffic (a working host runtime
- *     is strictly better than a permanently-503'd VM).
- *   - VM retry loop (maxVMRetries / vmRetryDelayMs): project-chat
- *     used to retry transient warm-pool errors 5 times inline; now
- *     it threads those values through here instead.
+ * This helper makes the resolution declarative and testable, with a
+ * `logTag` knob that identifies the caller in fallback/error log lines.
  *
  * Tests (see `__tests__/resolve-pod-url.test.ts`) cover each branch.
  */
@@ -42,11 +27,10 @@ import {
 } from './metal-eligibility'
 import type { KnativeStatusProbe } from './metal-drain'
 
-export type PodMode = 'k8s' | 'vm' | 'host' | 'metal'
+export type PodMode = 'k8s' | 'host' | 'metal'
 
 export type ResolvedPod =
   | { mode: 'k8s'; url: string }
-  | { mode: 'vm'; url: string }
   | { mode: 'metal'; url: string }
   | { mode: 'host'; url: string; runtime: IProjectRuntime }
 
@@ -57,32 +41,6 @@ export interface ResolvePodUrlOpts {
    * (e.g. `[AgentProxy]`, `[Runtime]`, `[ProjectChat]`).
    */
   logTag?: string
-
-  /**
-   * Behaviour when VM_ISOLATION is on and the warm pool has reached
-   * `MAX_CONSECUTIVE_FAILURES` boot failures.
-   *
-   *   - `'throw'` (default): re-throw `VMPoolPermanentlyDisabledError`.
-   *     Use for routes where a host fallback would create a
-   *     split-brain (e.g. `/sandbox/url`'s preview iframe).
-   *   - `'fallback-to-host'`: spin up the host RuntimeManager
-   *     instead. Use for agent traffic paths (chat, agent-proxy)
-   *     where a working host runtime beats a permanently-503'd VM.
-   */
-  onVMPermanentlyDisabled?: 'throw' | 'fallback-to-host'
-
-  /**
-   * If VM isolation throws a *transient* error (warm pool still
-   * trying to boot the first VM), retry up to `maxVMRetries` times
-   * with `vmRetryDelayMs` between attempts.
-   *
-   * Defaults: no retry, throw the first transient error so the
-   * caller can decide whether to 503 or return early. project-chat
-   * passes `{ maxVMRetries: 5, vmRetryDelayMs: 3000 }` to preserve
-   * its prior inline behaviour.
-   */
-  maxVMRetries?: number
-  vmRetryDelayMs?: number
 
   /**
    * Metal substrate only: total time to keep WAITING for the project to become
@@ -111,21 +69,18 @@ export interface ResolvePodUrlOpts {
   runtimeManager?: IRuntimeManager
 
   /**
-   * Test-only overrides for the K8s and VM resolvers. In production
-   * these are dynamically imported from the relevant lib modules,
-   * preserving the existing cold-start cost shape (the helper itself
-   * never pulls k8s/VM dependencies until first call).
+   * Test-only override for the K8s resolver. In production this is
+   * dynamically imported from the relevant lib module, preserving the
+   * existing cold-start cost shape (the helper itself never pulls the
+   * k8s dependency until first call).
    */
   _k8sResolver?: (projectId: string) => Promise<string>
-  _vmResolver?: (projectId: string) => Promise<string>
-  _vmPoolPermanentlyDisabledError?: new (...args: any[]) => Error
 
   /**
-   * Test-only overrides for the env-driven mode probes. In
-   * production these read `process.env`.
+   * Test-only override for the env-driven Kubernetes probe. In
+   * production this reads `process.env`.
    */
   _isKubernetes?: () => boolean
-  _isVMIsolation?: () => boolean
 
   /**
    * Host warm pool (opt-in via `HOST_WARM_POOL_SIZE`). When enabled, the host
@@ -183,10 +138,6 @@ function defaultIsKubernetes(): boolean {
   return !!process.env.KUBERNETES_SERVICE_HOST
 }
 
-function defaultIsVMIsolation(): boolean {
-  return process.env.SHOGO_VM_ISOLATION === 'true'
-}
-
 function defaultIsHostWarmPoolEnabled(): boolean {
   return parseInt(process.env.HOST_WARM_POOL_SIZE || '0', 10) > 0
 }
@@ -203,7 +154,7 @@ function defaultIsMetalEligible(projectId: string): boolean {
 
 /**
  * Resolve the agent-runtime URL for `projectId`, honouring the
- * desktop/K8s/VM/host hierarchy.
+ * metal/K8s/host hierarchy.
  *
  * On the host path this calls `runtimeManager.start(projectId)`,
  * which is idempotent — returns the existing runtime if running,
@@ -217,12 +168,11 @@ export async function resolveProjectPodUrl(
 ): Promise<ResolvedPod> {
   const tag = opts.logTag ?? 'PodResolver'
   const isKubernetes = opts._isKubernetes ?? defaultIsKubernetes
-  const isVMIsolation = opts._isVMIsolation ?? defaultIsVMIsolation
 
   // Metal microVM substrate (cloud-agnostic bare-metal, reached over the mesh).
   //
   //   - Rollout mode (SHOGO_METAL_ENABLED + allowlist/percentage): BEST-EFFORT.
-  //     A miss/host failure falls through to the Knative/VM/host cascade below,
+  //     A miss/host failure falls through to the Knative/host cascade below,
   //     so canarying is safe — a project is never unreachable if a host is down.
   //   - Metal-only mode (SHOGO_METAL_ALL_PROJECTS): EVERY project runs on metal
   //     and Knative is NOT used. A miss throws MetalOnlyUnavailableError (→
@@ -284,7 +234,7 @@ export async function resolveProjectPodUrl(
           throw new MetalOnlyUnavailableError(projectId, err)
         }
         console.warn(
-          `[${tag}] metal resolve failed for ${projectId}; falling back to k8s/vm/host: ${err?.message ?? err}`,
+          `[${tag}] metal resolve failed for ${projectId}; falling back to k8s/host: ${err?.message ?? err}`,
         )
         break // fall through to the standard cascade
       }
@@ -300,43 +250,6 @@ export async function resolveProjectPodUrl(
       ?? (await import('./knative-project-manager')).resolveKnativePodUrl
     const url = await resolver(projectId)
     return { mode: 'k8s', url }
-  }
-
-  if (isVMIsolation()) {
-    const vmPool = opts._vmResolver
-      ? { getVMProjectUrl: opts._vmResolver, VMPoolPermanentlyDisabledError: opts._vmPoolPermanentlyDisabledError }
-      : await import('./vm-warm-pool-controller')
-    const { getVMProjectUrl, VMPoolPermanentlyDisabledError } = vmPool
-
-    const maxRetries = Math.max(1, opts.maxVMRetries ?? 1)
-    const retryDelayMs = opts.vmRetryDelayMs ?? 0
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const url = await getVMProjectUrl(projectId)
-        return { mode: 'vm', url }
-      } catch (err) {
-        const isPermanent =
-          VMPoolPermanentlyDisabledError != null && err instanceof VMPoolPermanentlyDisabledError
-        if (isPermanent) {
-          if (opts.onVMPermanentlyDisabled === 'fallback-to-host') {
-            const consecutiveFailures = (err as any).consecutiveFailures ?? 'unknown'
-            console.warn(
-              `[${tag}] VM warm pool permanently disabled (${consecutiveFailures} boot failures); ` +
-                `falling back to host RuntimeManager for ${projectId}. ` +
-                `Set vmIsolation.enabled=false in the desktop config to silence this warning.`,
-            )
-            break // fall through to host path
-          }
-          throw err
-        }
-        // Transient — retry if budget remains.
-        if (attempt === maxRetries) throw err
-        console.log(`[${tag}] VM not ready (attempt ${attempt}/${maxRetries}), retrying in ${retryDelayMs}ms...`)
-        if (retryDelayMs > 0) await new Promise((r) => setTimeout(r, retryDelayMs))
-      }
-    }
-    // Fell through from the permanent-disabled branch; resolve via host.
   }
 
   // Host warm pool (opt-in via HOST_WARM_POOL_SIZE). Claims a pre-booted generic

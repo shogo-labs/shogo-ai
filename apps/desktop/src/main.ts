@@ -621,48 +621,6 @@ function embeddedDesktopBridgeScript(): string {
 (function(){
   const apiUrl = window.location.origin;
   const platform = ${JSON.stringify(platform)};
-  const vmProgressListeners = [];
-  const vmUpdateListeners = [];
-  const requestJson = async (path, fallback, init) => {
-    try {
-      const res = await fetch(apiUrl + path, Object.assign({ credentials: 'include' }, init || {}));
-      if (!res.ok) return fallback;
-      return await res.json();
-    } catch (_) {
-      return fallback;
-    }
-  };
-  const downloadVMImages = async () => {
-    try {
-      const res = await fetch(apiUrl + '/api/vm/images/download', { method: 'POST', credentials: 'include' });
-      if (!res.ok) return { success: false, error: 'Download failed: HTTP ' + res.status };
-      const reader = res.body && res.body.getReader ? res.body.getReader() : null;
-      if (!reader) return { success: true };
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let finalResult = { success: true };
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          if (!line.startsWith('data:')) continue;
-          const raw = line.slice(5).trim();
-          if (!raw) continue;
-          try {
-            const event = JSON.parse(raw);
-            if (typeof event.percent !== 'undefined') vmProgressListeners.forEach((fn) => { try { fn(event); } catch (_) {} });
-            if (typeof event.success !== 'undefined') finalResult = event;
-          } catch (_) {}
-        }
-      }
-      return finalResult;
-    } catch (err) {
-      return { success: false, error: err && err.message ? err.message : String(err) };
-    }
-  };
   const bridge = {
     platform,
     isDesktop: true,
@@ -673,17 +631,6 @@ function embeddedDesktopBridgeScript(): string {
     clipboardWriteText: async (text) => { try { await navigator.clipboard.writeText(String(text || '')); return true; } catch (_) { return false; } },
     clipboardReadText: async () => { try { return await navigator.clipboard.readText(); } catch (_) { return ''; } },
     pickFolders: async () => ({ ok: false, error: 'Open folders from the main Shogo Desktop window.' }),
-    getVMImageStatus: async () => requestJson('/api/vm/images', { imagesPresent: false }),
-    downloadVMImages,
-    skipVMDownload: async () => ({ success: false, error: 'Not available inside Shogo IDE embed' }),
-    getVMStatus: async () => requestJson('/api/vm/status', { available: false, enabled: false }),
-    setVMConfig: async (config) => requestJson('/api/vm/config', { ok: false }, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config || {}) }),
-    onVMImageNeeded: () => {},
-    onVMImageDownloadProgress: (callback) => { if (typeof callback === 'function') vmProgressListeners.push(callback); },
-    checkVMImageUpdate: async () => requestJson('/api/vm/images/update-check', { available: false, currentVersion: null, latestVersion: '' }),
-    onVMImageUpdateAvailable: (callback) => { if (typeof callback === 'function') vmUpdateListeners.push(callback); },
-    removeVMImageUpdateListener: () => { vmUpdateListeners.length = 0; },
-    recycleVMPool: async () => requestJson('/api/vm/pool/recycle', { ok: false }, { method: 'POST' }),
     startRecording: async () => ({ ok: false, error: 'Recording is not available inside Shogo IDE embed' }),
     stopRecording: async () => ({ ok: false, error: 'Recording is not available inside Shogo IDE embed' }),
     getRecordingStatus: async () => ({ isRecording: false, active: false }),
@@ -1238,72 +1185,6 @@ function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('get-vm-status', () => {
-    const { isVMAvailable } = require('./vm') as typeof import('./vm')
-    const config = readConfig()
-    return {
-      available: isVMAvailable(),
-      enabled: config.vmIsolation.enabled,
-      memoryMB: config.vmIsolation.memoryMB,
-      cpus: config.vmIsolation.cpus,
-      mountWorkspace: config.vmIsolation.mountWorkspace,
-    }
-  })
-
-  ipcMain.handle('set-vm-config', (_event, vmConfig: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number; mountWorkspace?: boolean }) => {
-    const current = readConfig()
-    writeConfig({
-      vmIsolation: { ...current.vmIsolation, ...vmConfig },
-    })
-    return readConfig().vmIsolation
-  })
-
-  ipcMain.handle('get-vm-image-status', () => {
-    const { isVMAvailable, getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
-    const imageDir = getVMImageDir()
-    const mgr = new VMImageManager(imageDir)
-    return {
-      imagesPresent: mgr.isImagePresent(),
-      vmAvailable: isVMAvailable(),
-      imageVersion: mgr.getImageVersion(),
-      imageDir,
-    }
-  })
-
-  ipcMain.handle('download-vm-images', (event) => {
-    const { getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
-    const imageDir = getVMImageDir()
-    const mgr = new VMImageManager(imageDir)
-
-    return mgr.downloadImage((progress) => {
-      event.sender.send('vm-image-download-progress', progress)
-    }).then(async () => {
-      console.log('[Desktop] VM images downloaded successfully')
-      try {
-        await fetch(`${getApiUrl()}/api/vm/pool/recycle`, { method: 'POST' })
-        console.log('[Desktop] VM pool recycled with new images')
-      } catch { /* pool may not be running */ }
-      return { success: true }
-    }).catch((err: Error) => {
-      console.error('[Desktop] VM image download failed:', err)
-      return { success: false, error: err.message }
-    })
-  })
-
-  ipcMain.handle('recycle-vm-pool', async () => {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/vm/pool/recycle`, { method: 'POST' })
-      return res.json()
-    } catch (err: any) {
-      return { success: false, error: err?.message || 'Recycle failed' }
-    }
-  })
-
-  ipcMain.handle('skip-vm-download', () => {
-    console.log('[Desktop] User skipped VM image download')
-    return { success: true }
-  })
-
   // Desktop notification for remote actions
   ipcMain.handle('show-remote-action-notification', (_event, title: string, body: string) => {
     if (Notification.isSupported()) {
@@ -1335,22 +1216,6 @@ function registerIpcHandlers(): void {
   ipcMain.handle('get-window-focused', (event) => {
     const window = windowManager.getWindowForWebContents(event.sender)
     return !!window && window.isFocused()
-  })
-
-  ipcMain.handle('check-vm-image-update', async () => {
-    try {
-      const { getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
-      const imageDir = getVMImageDir()
-      const mgr = new VMImageManager(imageDir)
-      if (!mgr.isImagePresent()) {
-        return { available: false, currentVersion: null, latestVersion: '' }
-      }
-      const result = await mgr.checkForUpdate()
-      return { available: result.available, currentVersion: mgr.getImageVersion(), latestVersion: result.version }
-    } catch (err) {
-      console.warn('[Desktop] VM image update check failed:', err)
-      return { available: false, currentVersion: null, latestVersion: '' }
-    }
   })
 
   // --- Bug report / log sharing ---
@@ -1699,31 +1564,6 @@ function setupSessionHandlers(): void {
   })
 }
 
-const VM_IMAGE_CHECK_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes
-
-function startVMImageUpdateChecker(): void {
-  async function check() {
-    try {
-      const { getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
-      const imageDir = getVMImageDir()
-      const mgr = new VMImageManager(imageDir)
-      if (!mgr.isImagePresent()) return
-
-      const result = await mgr.checkForUpdate()
-      if (result.available) {
-        console.log(`[Desktop] VM image update available: ${result.version}`)
-        const payload = { currentVersion: mgr.getImageVersion(), latestVersion: result.version }
-        for (const win of BrowserWindow.getAllWindows()) {
-          win.webContents.send('vm-image-update-available', payload)
-        }
-      }
-    } catch { /* network failures are expected — silently retry later */ }
-  }
-
-  setTimeout(check, 60_000)
-  setInterval(check, VM_IMAGE_CHECK_INTERVAL_MS)
-}
-
 app.whenReady().then(async () => {
   const config = readConfig()
   isCloudMode = config.mode === 'cloud'
@@ -1859,10 +1699,6 @@ app.whenReady().then(async () => {
     ipcMain.handle('download-update', () => ({ ok: false, error: 'Updates disabled in dev mode' }))
     ipcMain.handle('dismiss-update', () => ({ ok: true }))
     ipcMain.handle('install-update', () => {})
-  }
-
-  if (!isCloudMode) {
-    startVMImageUpdateChecker()
   }
 
   app.on('activate', () => {

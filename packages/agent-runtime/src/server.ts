@@ -5565,14 +5565,14 @@ async function startGateway(): Promise<void> {
   // Pool-mode invariant: the gateway starts the TypeScript + Pyright LSPs
   // (~450 MB combined RSS), prisma generate, and the canvas vite build
   // watcher. None of these should fire before /pool/assign, otherwise
-  // every warm pool VM would sit at ~3 GB RSS even when idle. The plan
-  // (vm-pool-oom-fix) tracks this property as part of the host-memory
-  // budget for desktop VMs.
+  // every warm pool instance would sit at ~3 GB RSS even when idle. The
+  // plan (vm-pool-oom-fix) tracks this property as part of the host-memory
+  // budget for pooled runtimes.
   if (state.isPoolMode && !state.poolAssigned) {
     console.warn(
       '[agent-runtime] startGateway() called in pool mode before /pool/assign — refusing. ' +
       'This would prematurely start the TS/Py LSPs and prisma engine, blowing the ' +
-      'idle pool VM memory budget. The caller likely forgot to await onAssign().',
+      'idle pool memory budget. The caller likely forgot to await onAssign().',
     )
     return
   }
@@ -5997,7 +5997,7 @@ export default {
       // they're safe in the hot path.
       const poolMode = state.isPoolMode && !state.poolAssigned
       // Mirror just enough of the slow-path `gateway` shape that the eval
-      // worker readiness checks (vm-worker / docker-worker / k8s-worker)
+      // worker readiness checks (docker-worker / k8s-worker / local-worker)
       // can detect a started gateway. We deliberately do NOT call
       // agentGateway.getStatus() here — that walks the memory dir and
       // would re-introduce the Windows JIT freeze this fast path exists

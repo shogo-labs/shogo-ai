@@ -101,29 +101,11 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         )
       }
 
-      // Why `onVMPermanentlyDisabled: 'throw'`: silently spinning up a
-      // host RuntimeManager when the user explicitly enabled VM
-      // isolation would create the split-brain described in the
-      // agent-proxy gate (preview from host, agent from VM). Better
-      // to surface 503 and let the client retry.
-      let res
-      try {
-        const { resolveProjectPodUrl } = await import("../lib/resolve-pod-url")
-        res = await resolveProjectPodUrl(projectId, {
-          logTag: 'Runtime',
-          onVMPermanentlyDisabled: 'throw',
-          runtimeManager,
-        })
-      } catch (vmErr: any) {
-        if (process.env.SHOGO_VM_ISOLATION === 'true') {
-          console.error('[Runtime] VM pool unavailable, not falling back to host runtime to avoid split-brain:', vmErr.message)
-          return c.json(
-            { error: { code: "vm_pool_unavailable", message: "VM isolation is enabled but the pool is not ready. Retrying..." } },
-            503
-          )
-        }
-        throw vmErr
-      }
+      const { resolveProjectPodUrl } = await import("../lib/resolve-pod-url")
+      const res = await resolveProjectPodUrl(projectId, {
+        logTag: 'Runtime',
+        runtimeManager,
+      })
 
       if (res.mode === 'host') {
         return c.json({
@@ -239,37 +221,21 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       }
 
       // The agent URL is always the proxy path on this API server —
-      // works the same in host and VM modes (the proxy itself routes
+      // works the same in host and cloud modes (the proxy itself routes
       // to the correct backend via `resolveProjectPodUrl`).
       const host = c.req.header('host') || `localhost:${process.env.API_PORT || process.env.PORT || '8002'}`
       const protocol = c.req.header('x-forwarded-proto') || 'http'
       const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
 
-      // `onVMPermanentlyDisabled: 'throw'` for the same split-brain
-      // reason as `/runtime/start` — the preview iframe specifically
-      // would mis-render if VM and host disagreed on workspace state.
-      let res
-      try {
-        const t1 = Date.now()
-        const { resolveProjectPodUrl } = await import("../lib/resolve-pod-url")
-        log('imported resolve-pod-url', { ms: Date.now() - t1 })
-        const t2 = Date.now()
-        res = await resolveProjectPodUrl(projectId, {
-          logTag: 'Runtime',
-          onVMPermanentlyDisabled: 'throw',
-          runtimeManager,
-        })
-        log('resolveProjectPodUrl', { ms: Date.now() - t2, mode: res?.mode, status: (res as any)?.runtime?.status })
-      } catch (vmErr: any) {
-        if (process.env.SHOGO_VM_ISOLATION === 'true') {
-          console.error('[Runtime] VM pool unavailable for sandbox/url:', vmErr.message)
-          return c.json(
-            { url: null, status: 'starting', ready: false, error: { code: "vm_pool_unavailable", message: "VM starting up, please retry..." } },
-            503
-          )
-        }
-        throw vmErr
-      }
+      const t1 = Date.now()
+      const { resolveProjectPodUrl } = await import("../lib/resolve-pod-url")
+      log('imported resolve-pod-url', { ms: Date.now() - t1 })
+      const t2 = Date.now()
+      const res = await resolveProjectPodUrl(projectId, {
+        logTag: 'Runtime',
+        runtimeManager,
+      })
+      log('resolveProjectPodUrl', { ms: Date.now() - t2, mode: res?.mode, status: (res as any)?.runtime?.status })
 
       if (res.mode === 'host') {
         // The UI is actively opening/viewing this project's preview. Refresh
@@ -307,9 +273,9 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         })
       }
 
-      // K8s, VM and metal modes all expose the runtime at `res.url`
+      // K8s and metal modes both expose the runtime at `res.url`
       // directly — same URL serves preview, direct, and canvas.
-      const modeLabel = res.mode === 'vm' ? 'VM' : res.mode === 'metal' ? 'Metal' : 'K8s'
+      const modeLabel = res.mode === 'metal' ? 'Metal' : 'K8s'
       log('done', { ready: true, mode: modeLabel })
       return c.json({
         url: res.url,
@@ -355,33 +321,17 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
 
       // For host mode `/restart` must explicitly stop the existing
       // runtime before the helper short-circuits on a running one.
-      // For VM/K8s modes the "restart" semantic is the warm-pool
-      // assignment itself — no host runtime to stop. We can tell
-      // which mode we're in by env probes without going through the
-      // helper, but it's simpler to call the helper twice and let
-      // the host path do the stop only when needed.
-      if (process.env.SHOGO_VM_ISOLATION !== 'true' && !process.env.KUBERNETES_SERVICE_HOST) {
+      // For K8s mode the "restart" semantic is the warm-pool
+      // assignment itself — no host runtime to stop.
+      if (!process.env.KUBERNETES_SERVICE_HOST) {
         await runtimeManager.stop(projectId)
       }
 
-      let res
-      try {
-        const { resolveProjectPodUrl } = await import("../lib/resolve-pod-url")
-        res = await resolveProjectPodUrl(projectId, {
-          logTag: 'Runtime',
-          onVMPermanentlyDisabled: 'throw',
-          runtimeManager,
-        })
-      } catch (vmErr: any) {
-        if (process.env.SHOGO_VM_ISOLATION === 'true') {
-          console.error('[Runtime] VM pool unavailable for restart:', vmErr.message)
-          return c.json(
-            { error: { code: "vm_pool_unavailable", message: "VM isolation is enabled but the pool is not ready. Retrying..." } },
-            503
-          )
-        }
-        throw vmErr
-      }
+      const { resolveProjectPodUrl } = await import("../lib/resolve-pod-url")
+      const res = await resolveProjectPodUrl(projectId, {
+        logTag: 'Runtime',
+        runtimeManager,
+      })
 
       if (res.mode === 'host') {
         return c.json({

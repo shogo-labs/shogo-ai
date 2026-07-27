@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
- * MetalWarmPool — the bare-metal analog of apps/api's VMWarmPoolController and
- * the cloud WarmPoolController. Maintains a pool of pre-booted Firecracker
+ * MetalWarmPool — the bare-metal analog of the cloud WarmPoolController.
+ * Maintains a pool of pre-booted Firecracker
  * microVMs (pool-agent in PROJECT_ID=__POOL__ mode), claims + assigns them via
  * the same POST /pool/assign contract, and adds the substrate's headline
  * capability: suspend-to-snapshot on idle / restore-from-snapshot on open.

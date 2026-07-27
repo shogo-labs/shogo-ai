@@ -4,9 +4,7 @@
 /**
  * Metal Warm Pool Controller — the control-plane (apps/api) side of the
  * cloud-agnostic Firecracker substrate (see the Cloud Firecracker snapshots
- * plan). It is the `metal` analog of:
- *   - warm-pool-controller.ts   (Knative pods)
- *   - vm-warm-pool-controller.ts (desktop VMs, getVMProjectUrl)
+ * plan). It is the `metal` analog of warm-pool-controller.ts (Knative pods).
  *
  * Unlike those two, the pool lives OFF-cluster on bare-metal hosts (Latitude.sh
  * pilot) reached over the WireGuard mesh. Each host runs apps/metal-agent, which:
