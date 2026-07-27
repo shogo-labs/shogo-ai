@@ -1694,6 +1694,17 @@ export default observer(function ProjectLayout() {
     setPreviewTab(tabId)
   }, [])
 
+  const toggleChatFullscreen = useCallback(() => {
+    setAttentionTab(null)
+    setChatCollapsed(false)
+    setPreviewTab((current) => {
+      if (current === 'chat-fullscreen') {
+        return isExternalProject ? 'external-preview' : 'canvas'
+      }
+      return 'chat-fullscreen'
+    })
+  }, [isExternalProject])
+
   useEffect(() => {
     subagentStreamStore.onRequestTabSwitch((toolId?: string) => {
       setSelectedAgentToolId(toolId ?? null)
@@ -2747,9 +2758,9 @@ export default observer(function ProjectLayout() {
     // so the project's own in-split chat-sessions panel and its toggles are
     // disabled. The `chat-fullscreen` power-user mode is left intact.
     showChatSessions: false,
-    isChatCollapsed: isChatFullscreen ? true : chatCollapsed,
+    isChatCollapsed: isChatFullscreen,
     onChatSessionsToggle: undefined,
-    onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
+    onChatCollapseToggle: isWide ? toggleChatFullscreen : undefined,
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
     chatPanelWidth: clampChatWidth(chatPanelWidth),
     // Fullscreen no longer renders its own chat-history rail (the app sidebar

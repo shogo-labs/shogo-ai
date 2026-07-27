@@ -30,8 +30,8 @@ import {
 import { useRouter } from 'expo-router'
 import {
   ArrowLeft,
-  PanelLeftClose,
-  PanelLeft,
+  PanelRightClose,
+  PanelRightOpen,
   Zap,
   ChevronDown,
   ChevronLeft,
@@ -859,13 +859,13 @@ export function ProjectTopBar({
           />
         )}
 
-        {/* Chat collapse/expand */}
+        {/* Side panel collapse/expand */}
         {onChatCollapseToggle && (
           <View className="flex-row items-center gap-0.5">
             {!isChatCollapsed ? (
-              <BarIconButton icon={PanelLeftClose} onPress={onChatCollapseToggle} title="Collapse chat" />
+              <BarIconButton icon={PanelRightClose} onPress={onChatCollapseToggle} title="Hide side panels" />
             ) : (
-              <BarIconButton icon={PanelLeft} onPress={onChatCollapseToggle} title="Expand chat" />
+              <BarIconButton icon={PanelRightOpen} onPress={onChatCollapseToggle} title="Show side panels" />
             )}
           </View>
         )}

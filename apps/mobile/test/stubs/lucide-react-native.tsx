@@ -146,6 +146,8 @@ export {
   Icon as Palette,
   Icon as PanelLeft,
   Icon as PanelLeftClose,
+  Icon as PanelRightClose,
+  Icon as PanelRightOpen,
   Icon as Pencil,
   Icon as Phone,
   Icon as PhoneIncoming,
