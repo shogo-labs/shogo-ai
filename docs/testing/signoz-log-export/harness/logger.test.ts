@@ -1,4 +1,4 @@
-import { emitLogToSink, setOtelLogSink, createLogger } from './logger'
+import { emitLogToSink, setOtelLogSink, createLogger } from '../../../../packages/core/src/logger'
 import { writeFileSync } from 'fs'
 
 const results: { name: string; pass: boolean; detail?: string }[] = []

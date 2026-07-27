@@ -79,7 +79,7 @@ Raw: [`results/unit_result.json`](./results/unit_result.json) ·
 ## Reproduce
 
 The harness scripts in [`harness/`](./harness) are self-contained Bun scripts.
-They import sha-verified copies of the shipped modules and read
+They import the actual source files from this branch and read
 `SIGNOZ_BASE_URL`, `SIGNOZ_API_KEY` (query) and `SIGNOZ_INGESTION_KEY` (ingest)
 from the environment.
 
