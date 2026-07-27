@@ -29,6 +29,8 @@ import {
   ActivityIndicator,
   type GestureResponderEvent,
   type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useTheme } from '../../contexts/theme'
@@ -401,6 +403,7 @@ function ChatTreeItem({
 
 // Cap the per-project chat scroll area to 5 visible chat rows.
 const MAX_VISIBLE_CHATS = 5
+const CHAT_SESSION_PAGE_SIZE = 50
 const ARCHIVED_CHAT_ROW_ID = 'archived-chats' as const
 const SIDEBAR_CHAT_SCROLL_DATASET = { sidebarChatScroll: 'true' } as const
 const SIDEBAR_CHAT_SCROLL_CONTENT_STYLE = { paddingRight: 2 } as const
@@ -485,6 +488,8 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   // the first project's chats out of the cache.
   const [sessions, setSessions] = useState<any[]>([])
   const [loaded, setLoaded] = useState(false)
+  const [hasMoreChats, setHasMoreChats] = useState(false)
+  const [loadingMoreChats, setLoadingMoreChats] = useState(false)
   const [chatRowHeight, setChatRowHeight] = useState<number | null>(null)
   const seededRef = useRef(false)
   // Collapsible "Archived" subsection (in-memory; defaults to collapsed).
@@ -517,12 +522,19 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
     if (routeChatId) setActiveOverride(routeChatId)
   }, [routeChatId])
 
-  const loadChats = useCallback(async () => {
-    if (seededRef.current || !http) return
-    seededRef.current = true
+  const loadChats = useCallback(async (limit = CHAT_SESSION_PAGE_SIZE) => {
+    const loadingMore = limit > CHAT_SESSION_PAGE_SIZE
+    if (!http) return
+    if (!loadingMore) {
+      if (seededRef.current) return
+      seededRef.current = true
+    } else {
+      if (!hasMoreChats || loadingMoreChats) return
+      setLoadingMoreChats(true)
+    }
     try {
       const res = await http.get<{ ok: boolean; items?: any[] }>(
-        `/api/chat-sessions?contextId=${encodeURIComponent(project.id)}&limit=50`,
+        `/api/chat-sessions?contextId=${encodeURIComponent(project.id)}&limit=${limit}`,
       )
       const items = Array.isArray(res.data?.items) ? res.data!.items! : []
       const normalized = items
@@ -537,13 +549,15 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
         }))
         .sort((a, b) => b.activity - a.activity)
       setSessions(normalized)
+      setHasMoreChats(items.length >= limit)
     } catch (e) {
       console.error('[AppSidebar] Failed to load chats:', e)
-      seededRef.current = false
+      if (!loadingMore) seededRef.current = false
     } finally {
       setLoaded(true)
+      if (loadingMore) setLoadingMoreChats(false)
     }
-  }, [http, project.id])
+  }, [hasMoreChats, http, loadingMoreChats, project.id])
 
   const handleChatRowHeight = useCallback((height: number) => {
     setChatRowHeight((current) => {
@@ -555,8 +569,20 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   // Force a re-fetch even if this project's chats were already seeded.
   const refreshChats = useCallback(() => {
     seededRef.current = false
+    setHasMoreChats(false)
+    setLoadingMoreChats(false)
     void loadChats()
   }, [loadChats])
+
+  const handleChatScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (!hasMoreChats || loadingMoreChats) return
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
+      const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height)
+      if (distanceFromBottom <= 24) void loadChats(sessions.length + CHAT_SESSION_PAGE_SIZE)
+    },
+    [hasMoreChats, loadingMoreChats, loadChats, sessions.length],
+  )
 
   const toggleExpanded = useCallback(() => {
     setExpanded((prev) => {
@@ -909,6 +935,8 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
                 accessibilityLabel={`${project.name || 'Untitled'} chats`}
                 style={getSidebarChatScrollStyle(chatRowHeight, chatRows.length) as any}
                 contentContainerStyle={SIDEBAR_CHAT_SCROLL_CONTENT_STYLE}
+                onScroll={handleChatScroll}
+                scrollEventThrottle={64}
                 {...(Platform.OS === 'web' ? ({
                   dataSet: SIDEBAR_CHAT_SCROLL_DATASET,
                   tabIndex: 0,
@@ -939,6 +967,13 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
                     </Pressable>
                   )
                 })}
+                {loadingMoreChats && (
+                  <View className="px-2 py-1.5">
+                    <Text className="text-xs text-muted-foreground opacity-70" numberOfLines={1}>
+                      Loading more…
+                    </Text>
+                  </View>
+                )}
               </ScrollView>
             )}
           </View>
