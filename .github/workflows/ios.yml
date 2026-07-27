@@ -600,6 +600,38 @@ jobs:
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
             | xcbeautify || exit ${PIPESTATUS[0]}
 
+      # SHOG-458 guard: build 465 crashed on launch with an uncaught JS
+      # exception -- expo-router calls Linking.createURL() and
+      # expo-linking.resolveScheme() throws "Cannot make a deep link into a
+      # standalone app with no custom scheme defined" -> RCTFatal -> abort.
+      # Root cause: the expo-updates embedded manifest (which populates
+      # Constants.expoConfig at runtime) shipped WITHOUT `scheme`, though
+      # app.json defines it. Fail the build BEFORE signing/export/submit if
+      # the scheme is not embedded, so a crash-on-launch IPA can never ship.
+      - name: Verify embedded Expo manifest has URL scheme (SHOG-458 guard)
+        run: |
+          set -uo pipefail
+          APP="$RUNNER_TEMP/Shogo.xcarchive/Products/Applications/Shogo.app"
+          echo "Inspecting app bundle: $APP"
+          if [ ! -d "$APP" ]; then
+            echo "::error title=App bundle missing::$APP not found after archive."
+            exit 1
+          fi
+          MANIFEST="$(find "$APP" -maxdepth 3 -type f \( -name 'app.manifest' -o -name '*.manifest' \) 2>/dev/null | head -1)"
+          if [ -z "$MANIFEST" ]; then
+            echo "::error title=Embedded manifest missing::No app.manifest in .app bundle. Constants.expoConfig will be null at runtime -> crash on launch (SHOG-458)."
+            echo "----- .app contents -----"; ls -la "$APP" || true
+            exit 1
+          fi
+          echo "Found embedded manifest: $MANIFEST"
+          if grep -a -Eq '"scheme"[[:space:]]*:[[:space:]]*"shogo"' "$MANIFEST"; then
+            echo "OK: embedded manifest contains scheme shogo -- SHOG-458 guard passed."
+          else
+            echo "::error title=URL scheme not embedded::$MANIFEST lacks scheme shogo. expo-linking.resolveScheme will throw on launch (SHOG-458)."
+            echo "----- manifest (first 2KB) -----"; head -c 2048 "$MANIFEST" || true; echo
+            exit 1
+          fi
+
       - name: Upload dSYMs to Sentry (optional, non-fatal)
         # Best-effort symbolication. This step is intentionally non-fatal: a
         # misconfigured Sentry org/project, an expired token, or a transient
