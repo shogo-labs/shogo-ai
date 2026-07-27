@@ -1,0 +1,72 @@
+{
+  "total": 13,
+  "passed": 13,
+  "failed": 0,
+  "results": [
+    {
+      "name": "init returns true when SHOGO_SIGNOZ_ENABLED=true",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "disabled-before-init line is dropped",
+      "pass": true,
+      "detail": "sent=1"
+    },
+    {
+      "name": "post-init line is exported",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "payload has resource service.name",
+      "pass": true,
+      "detail": "service.name,service.version,deployment.environment,os.type,host.arch"
+    },
+    {
+      "name": "logRecord has severityNumber+Text+body+timeUnixNano",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "logRecord has log.source attribute",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "single flush sends <= MAX_BATCH (512)",
+      "pass": true,
+      "detail": "sent=512"
+    },
+    {
+      "name": "remaining flushed on next call",
+      "pass": true,
+      "detail": "total=600"
+    },
+    {
+      "name": "queue capped at MAX_QUEUE (2048) — oldest 100 dropped",
+      "pass": true,
+      "detail": "sent=2048"
+    },
+    {
+      "name": "oldest record (Q_0) was dropped",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "flush does not throw on network failure",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "exporter never calls console.* (recursion guard) on failure",
+      "pass": true,
+      "detail": "hits=0"
+    },
+    {
+      "name": "flush does not throw on synchronous fetch throw",
+      "pass": true,
+      "detail": ""
+    }
+  ]
+}

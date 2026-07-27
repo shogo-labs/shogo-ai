@@ -1,0 +1,7 @@
+[e2e] marker = SHOGO_SIGNOZ_E2E_MARKER_e2e-1785150813
+[e2e] BEFORE emit — SigNoz rows for marker: 0
+[e2e] initSignozLogExporter active = true
+[e2e] enqueued 3 records; flushing via shutdownSignozLogExporter()...
+[e2e] flush complete
+[e2e] AFTER poll #1 (t=5s) — SigNoz rows for marker: 3
+[e2e] RESULT: {"marker":"SHOGO_SIGNOZ_E2E_MARKER_e2e-1785150813","before":0,"after":3,"active":true,"pass":true}
