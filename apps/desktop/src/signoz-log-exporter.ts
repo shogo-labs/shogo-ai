@@ -45,7 +45,7 @@ const EXPORT_TIMEOUT_MS = 3000
 
 let enabled = false
 let logsUrl: string | null = null
-let ingestionKey: string | null = null
+let ingestionKey: string | undefined
 let resourceAttributes: { key: string; value: { stringValue: string } }[] = []
 let queue: QueuedRecord[] = []
 let flushTimer: ReturnType<typeof setInterval> | null = null
@@ -56,15 +56,15 @@ function attr(key: string, value: string) {
 }
 
 /**
- * Initialize the exporter from env. Opt-in via `SHOGO_SIGNOZ_ENABLED === 'true'`
- * and requires `SIGNOZ_INGESTION_KEY` so we don't emit unauthenticated OTLP.
+ * Initialize the exporter from env. Opt-in via `SHOGO_SIGNOZ_ENABLED === 'true'`.
+ * The desktop build/release environment is expected to provide
+ * `SIGNOZ_INGESTION_KEY` when this flag is enabled.
  * Safe to call once at startup; a second call is ignored. Returns whether the
  * exporter became active (useful for tests; callers may ignore it).
  */
 export function initSignozLogExporter(opts: { serviceVersion?: string } = {}): boolean {
   if (enabled) return true
   if (process.env.SHOGO_SIGNOZ_ENABLED !== 'true') return false
-  if (!process.env.SIGNOZ_INGESTION_KEY) return false
   if (typeof fetch !== 'function') return false
 
   const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'https://ingest.us.signoz.cloud:443'
@@ -128,14 +128,12 @@ function buildPayload(batch: QueuedRecord[]) {
  * swallowed, and re-entrancy guarded so overlapping flushes can't pile up.
  */
 export async function flush(): Promise<void> {
-  if (!enabled || flushing || queue.length === 0 || !logsUrl || !ingestionKey) return
+  if (!enabled || flushing || queue.length === 0 || !logsUrl) return
   flushing = true
   try {
     const batch = queue.splice(0, MAX_BATCH)
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      'signoz-ingestion-key': ingestionKey,
-    }
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (ingestionKey) headers['signoz-ingestion-key'] = ingestionKey
 
     let signal: AbortSignal | undefined
     try {

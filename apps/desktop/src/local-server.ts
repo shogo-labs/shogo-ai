@@ -393,12 +393,11 @@ export async function startLocalServer(): Promise<void> {
   delete (env as Record<string, string | undefined>).PROJECTS_DATABASE_URL
 
   // SigNoz export for local desktop runtimes. `env` already inherits
-  // process.env, so only set the values we need to normalize/derive here.
-  // Require the ingestion key before enabling the runtime OTEL endpoint; without
-  // it the runtime would just send unauthenticated OTLP requests that SigNoz
-  // rejects. `OTEL_SERVICE_NAME` keeps desktop-local runtime telemetry separate
-  // from cloud/metal runtime telemetry in SigNoz.
-  if (process.env.SHOGO_SIGNOZ_ENABLED === 'true' && process.env.SIGNOZ_INGESTION_KEY) {
+  // process.env (including SIGNOZ_INGESTION_KEY when the desktop build provides
+  // it), so only set the values we need to normalize/derive here.
+  // `OTEL_SERVICE_NAME` keeps desktop-local runtime telemetry separate from
+  // cloud/metal runtime telemetry in SigNoz.
+  if (process.env.SHOGO_SIGNOZ_ENABLED === 'true') {
     env.OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'https://ingest.us.signoz.cloud:443'
     env.OTEL_SERVICE_NAME = 'shogo-desktop-runtime'
   }
