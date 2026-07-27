@@ -86,6 +86,34 @@ export function setOtelLogSink(sink: LogSink | null): void {
   logSink = sink
 }
 
+/**
+ * Forward a pre-built structured entry to the OTEL log sink (if one is
+ * installed via `setOtelLogSink`) WITHOUT writing it to the console.
+ *
+ * `createLogger` always writes to the console *and* the sink. Some callers
+ * already persist the line through another channel — e.g. the agent-runtime
+ * writes a project's build/console stdout+stderr to on-disk log files — and
+ * only need the *additional* OTLP export copy for SigNoz. Routing those lines
+ * through `createLogger` would re-print every one of them to the process's own
+ * stdout (doubling the on-disk logs and the volume), so this bypasses the
+ * console and emits straight to the sink.
+ *
+ * No-op when no sink is installed (e.g. OTEL disabled), so it is always safe to
+ * call unconditionally. Errors thrown by the sink are swallowed — telemetry
+ * must never break the caller. `timestamp` defaults to now; any extra fields
+ * become OTLP log-record attributes.
+ */
+export function emitLogToSink(
+  entry: { level: LogLevel; msg: string; service: string; timestamp?: string; [key: string]: unknown },
+): void {
+  if (!logSink) return
+  try {
+    logSink({ timestamp: new Date().toISOString(), ...entry })
+  } catch {
+    // best-effort: never let telemetry break the caller
+  }
+}
+
 /** Active trace context, in OpenTelemetry hex form (32-char / 16-char). */
 export interface TraceContext {
   trace_id: string
