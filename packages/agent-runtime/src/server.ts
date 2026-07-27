@@ -2424,7 +2424,10 @@ function getConsoleLogsBuffer(): string[] {
 // Desktop-only: forward preview/browser console lines to the OTEL log sink for
 // SigNoz export. Gated on SHOGO_SIGNOZ_ENABLED (set by local-server.ts) so cloud
 // runtimes are not flooded — the line is already persisted to console.log below.
-const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.SHOGO_SIGNOZ_ENABLED === 'true'
+// Also require the ingestion key so a flag-only launch does not attempt
+// unauthenticated raw-log export.
+const FORWARD_RUNTIME_LOGS_TO_SIGNOZ =
+  process.env.SHOGO_SIGNOZ_ENABLED === 'true' && !!process.env.SIGNOZ_INGESTION_KEY
 
 function recordConsoleLogLine(line: string, stream: 'stdout' | 'stderr'): void {
   if (!line) return

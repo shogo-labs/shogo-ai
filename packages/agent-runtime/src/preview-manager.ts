@@ -35,10 +35,12 @@ import {
  * SigNoz export. Gated so this only happens on desktop (where local-server.ts
  * sets SHOGO_SIGNOZ_ENABLED) — cloud/metal runtimes already export their
  * structured `createLogger` logs and must not be flooded with every raw
- * vite-watch build line. Read once at module load; desktop sets the flag before
- * spawning the runtime, so it is present at boot.
+ * vite-watch build line. Also require the ingestion key before forwarding raw
+ * log lines so a flag-only launch does not attempt unauthenticated export. Read
+ * once at module load; desktop sets these vars before spawning the runtime.
  */
-const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.SHOGO_SIGNOZ_ENABLED === 'true'
+const FORWARD_RUNTIME_LOGS_TO_SIGNOZ =
+  process.env.SHOGO_SIGNOZ_ENABLED === 'true' && !!process.env.SIGNOZ_INGESTION_KEY
 
 /** Derive the project id from a `<root>/.shogo/logs/build.log` path (best-effort). */
 function projectIdFromLogPath(logPath: string): string | undefined {
