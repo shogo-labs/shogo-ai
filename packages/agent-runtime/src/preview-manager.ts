@@ -22,6 +22,7 @@ import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, mkd
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
+import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
 import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded } from '@shogo-ai/sdk/generators'
 import {
@@ -74,15 +75,20 @@ export function emitBuildLine(
   // Forward a copy to SigNoz for desktop-local runtimes. No-op unless the OTEL sink is
   // installed; the line is already on disk above, so this only adds the export.
   if (FORWARD_RUNTIME_LOGS_TO_SIGNOZ) {
-    const projectId = projectIdFromLogPath(buildLogPath)
-    emitLogToSink({
-      level: stream === 'stderr' ? 'error' : 'info',
-      msg: `${prefix} ${line}`,
-      service: 'shogo-agent-runtime',
-      'log.source': 'build.log',
-      'log.stream': stream,
-      ...(projectId ? { 'project.id': projectId } : {}),
-    })
+    const safe = sanitizeRuntimeLineForSignoz(`${prefix} ${line}`, 'build.log')
+    if (safe) {
+      const projectId = projectIdFromLogPath(buildLogPath)
+      emitLogToSink({
+        level: stream === 'stderr' ? 'error' : 'info',
+        msg: safe.msg,
+        service: 'shogo-agent-runtime',
+        'log.source': 'build.log',
+        'log.stream': stream,
+        'log.category': safe.category,
+        'log.redacted': safe.redacted ? 'true' : 'false',
+        ...(projectId ? { 'project.id': projectId } : {}),
+      })
+    }
   }
 }
 import { createServer } from 'net'

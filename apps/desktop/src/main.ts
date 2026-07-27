@@ -151,9 +151,10 @@ console.log = (...args: unknown[]) => { origLog(...args); writeLog('INFO', ...ar
 console.error = (...args: unknown[]) => { origError(...args); writeLog('ERROR', ...args) }
 console.warn = (...args: unknown[]) => { origWarn(...args); writeLog('WARN', ...args) }
 
-// Start SigNoz log export. Must be after the console.* patch so it captures
-// every main-process log line — including the local API process's stdout/stderr,
-// which local-server.ts pipes through console.*. Never throws.
+// Start SigNoz log export. Must be after the console.* patch so it can derive
+// sanitized structured telemetry from main-process log lines — including the
+// local API process's stdout/stderr, which local-server.ts pipes through
+// console.*. Never throws.
 initSignozLogExporter({ serviceVersion: app.getVersion() })
 
 process.on('uncaughtException', (err) => {

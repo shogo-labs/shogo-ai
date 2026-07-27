@@ -16,6 +16,7 @@
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { resolve, dirname, join, extname, basename } from 'path'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
+import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import {
   existsSync,
   readFileSync,
@@ -2431,15 +2432,20 @@ function recordConsoleLogLine(line: string, stream: 'stdout' | 'stderr'): void {
   if (!line) return
   appendRuntimeConsoleLogLine(line)
   if (FORWARD_RUNTIME_LOGS_TO_SIGNOZ) {
-    const projectId = process.env.PROJECT_ID
-    emitLogToSink({
-      level: stream === 'stderr' ? 'error' : 'info',
-      msg: line,
-      service: 'shogo-agent-runtime',
-      'log.source': 'console.log',
-      'log.stream': stream,
-      ...(projectId ? { 'project.id': projectId } : {}),
-    })
+    const safe = sanitizeRuntimeLineForSignoz(line, 'console.log')
+    if (safe) {
+      const projectId = process.env.PROJECT_ID
+      emitLogToSink({
+        level: stream === 'stderr' ? 'error' : 'info',
+        msg: safe.msg,
+        service: 'shogo-agent-runtime',
+        'log.source': 'console.log',
+        'log.stream': stream,
+        'log.category': safe.category,
+        'log.redacted': safe.redacted ? 'true' : 'false',
+        ...(projectId ? { 'project.id': projectId } : {}),
+      })
+    }
   }
   for (const listener of logStreamListeners) {
     try { listener(line) } catch {}

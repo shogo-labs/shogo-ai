@@ -8,9 +8,9 @@
  * (see apps/api/src/entry.ts + apps/desktop/scripts/bundle-main.mjs), so we
  * cannot construct a LoggerProvider here. Instead this posts OTLP-JSON log
  * records straight to `${endpoint}/v1/logs` with the SigNoz ingestion header,
- * batching in memory and flushing on a timer. It captures the main-process
- * logs written to `main.log` — including the local API process's stdout/stderr,
- * which main.ts pipes through the patched `console.*`.
+ * batching in memory and flushing on a timer. It exports sanitized structured
+ * events derived from `main.log` rather than raw log text, because local logs can
+ * include chats, prompts, tool payloads, paths, and tokens.
  *
  * HARD RULES (this module runs *behind* the patched console.* in main.ts):
  *   1. NEVER call console.log/warn/error. `writeLog()` is wired to console.*,
@@ -32,10 +32,16 @@ const SEVERITY_NUMBER: Record<DesktopLogLevel, number> = {
   FATAL: 21,
 }
 
-interface QueuedRecord {
+interface SafeLogRecord {
+  msg: string
+  category: string
+  redacted: boolean
+  attributes: Record<string, string>
+}
+
+interface QueuedRecord extends SafeLogRecord {
   timeUnixNano: string
   level: DesktopLogLevel
-  body: string
 }
 
 const MAX_QUEUE = 2048
@@ -53,6 +59,120 @@ let flushing = false
 
 function attr(key: string, value: string) {
   return { key, value: { stringValue: value } }
+}
+
+
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*m/g, '')
+}
+
+function normalize(value: string): string {
+  return stripAnsi(value).replace(/\s+/g, ' ').trim()
+}
+
+function bracketCategory(value: string): string | null {
+  const match = value.match(/^\[([A-Za-z0-9:_./-]{1,80})\]/)
+  return match?.[1] ?? null
+}
+
+function looksPrivate(value: string): boolean {
+  return /\b(chat|conversation|transcript|prompt|completion|messages?|content|input|output|request body|response body|user message|assistant message|system message|tool result|claude|anthropic|openai|api[_-]?key|authorization|cookie|password|secret|token|cloud key)\b/i.test(value)
+}
+
+function looksOperational(value: string): boolean {
+  return /\b(uncaught|exception|error|failed|failure|warn|warning|starting|started|startup|ready|listening|otel|signoz|trace|span|build|vite|bundle|compile|server|api|runtime|database|migration|window|update|port)\b/i.test(value)
+}
+
+function classifyMessage(value: string): string {
+  const category = bracketCategory(value)
+  if (category) return category
+  if (/\b(uncaught|exception|error|failed|failure)\b/i.test(value)) return 'error'
+  if (/\b(warn|warning)\b/i.test(value)) return 'warning'
+  if (/\b(starting|started|startup|ready|listening)\b/i.test(value)) return 'startup'
+  if (/\b(otel|signoz|trace|span)\b/i.test(value)) return 'telemetry'
+  if (/\b(build|vite|bundle|compile)\b/i.test(value)) return 'build'
+  if (/\b(server|api|runtime)\b/i.test(value)) return 'runtime'
+  return 'desktop'
+}
+
+function toTemplateMessage(value: string): { msg: string; redacted: boolean } {
+  let msg = normalize(value)
+  let redacted = false
+  const category = bracketCategory(msg)
+
+  if (looksPrivate(msg) || (!category && !looksOperational(msg))) {
+    return {
+      msg: category ? `[${category}] private payload redacted` : 'desktop log redacted',
+      redacted: true,
+    }
+  }
+
+  const replacements: Array<[RegExp, string]> = [
+    [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '<email>'],
+    [/https?:\/\/[^\s)]+/gi, '<url>'],
+    [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '<id>'],
+    [/\b[0-9a-f]{32,}\b/gi, '<id>'],
+    [/\b(?:sk|pk|rk|whsec|shogo_sk|ghp|github_pat|xox[baprs])-?[A-Za-z0-9_=-]{12,}\b/g, '<secret>'],
+    [/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer <secret>'],
+    [/(?:[A-Za-z]:\\|\/Users\/|\/home\/|\/tmp\/|\/var\/)[^\s)]+/g, '<path>'],
+    [/"[^"\\]*(?:\\.[^"\\]*)*"/g, '"<value>"'],
+    [/'[^'\\]*(?:\\.[^'\\]*)*'/g, "'<value>'"],
+  ]
+
+  for (const [pattern, replacement] of replacements) {
+    const next = msg.replace(pattern, replacement)
+    if (next !== msg) redacted = true
+    msg = next
+  }
+
+  if (msg.length > 220) {
+    msg = `${msg.slice(0, 217)}...`
+    redacted = true
+  }
+
+  return { msg, redacted }
+}
+
+function safeAttributeValue(value: unknown): string | undefined {
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (typeof value !== 'string') return undefined
+  if (!value || looksPrivate(value)) return undefined
+  return toTemplateMessage(value).msg
+}
+
+function safeLogRecord(level: DesktopLogLevel, body: string): SafeLogRecord | null {
+  const line = normalize(body)
+  if (!line) return null
+
+  let parsed: Record<string, unknown> | null = null
+  if (line.startsWith('{') && line.endsWith('}')) {
+    try {
+      const value = JSON.parse(line)
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        parsed = value as Record<string, unknown>
+      }
+    } catch {
+      parsed = null
+    }
+  }
+
+  const rawMsg = typeof parsed?.msg === 'string' ? parsed.msg : line
+  const { msg, redacted } = toTemplateMessage(rawMsg)
+  const category = classifyMessage(rawMsg)
+  const attributes: Record<string, string> = {
+    'log.source': 'main.log',
+    'log.category': category,
+    'log.redacted': redacted ? 'true' : 'false',
+  }
+
+  if (parsed) {
+    for (const key of ['service', 'trace_id', 'span_id', 'code', 'status', 'statusCode', 'method']) {
+      const safeValue = safeAttributeValue(parsed[key])
+      if (safeValue) attributes[key === 'service' ? 'log.origin_service' : key] = safeValue
+    }
+  }
+
+  return { msg, category, redacted, attributes }
 }
 
 /**
@@ -91,11 +211,13 @@ export function initSignozLogExporter(opts: { serviceVersion?: string } = {}): b
  */
 export function exportLogLine(level: DesktopLogLevel, body: string): void {
   if (!enabled || !body) return
+  const safe = safeLogRecord(level, body)
+  if (!safe) return
   if (queue.length >= MAX_QUEUE) queue.shift()
   queue.push({
     timeUnixNano: `${Date.now()}000000`,
     level,
-    body,
+    ...safe,
   })
 }
 
@@ -111,8 +233,16 @@ function buildPayload(batch: QueuedRecord[]) {
               timeUnixNano: r.timeUnixNano,
               severityNumber: SEVERITY_NUMBER[r.level],
               severityText: r.level,
-              body: { stringValue: r.body },
-              attributes: [attr('log.source', 'main.log')],
+              body: {
+                stringValue: JSON.stringify({
+                  timestamp: new Date(Number(r.timeUnixNano.slice(0, -6))).toISOString(),
+                  level: r.level.toLowerCase(),
+                  service: 'shogo-desktop',
+                  msg: r.msg,
+                  category: r.category,
+                }),
+              },
+              attributes: Object.entries(r.attributes).map(([key, value]) => attr(key, value)),
             })),
           },
         ],
