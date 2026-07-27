@@ -93,13 +93,3 @@ bun run harness/beforeafter.ts   # before-fix vs after-fix
 bun run harness/unit.ts          # 13 exporter safety checks
 bun run harness/logger.test.ts   # 7 emitLogToSink checks
 ```
-
-## What could NOT be tested from CI/sandbox (needs a real desktop run)
-
-- The full Electron app on macOS with a display (headless Linux sandbox, and a
-  full monorepo install OOM'd). The exporter logic, OTLP shape, live delivery,
-  gating, and safety are all covered above; what remains is the desktop
-  integration wiring, which needs a run on the branch with:
-  `SHOGO_SIGNOZ_ENABLED=true SIGNOZ_INGESTION_KEY=<key> bun run desktop:dev`
-  (and `SHOGO_AGENT_RUNTIME_BIN` pointed at a freshly-built runtime so Track A
-  changes are exercised).
