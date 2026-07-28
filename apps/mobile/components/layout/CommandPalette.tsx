@@ -39,7 +39,7 @@ import {
   MessageSquare,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useProjectCollection } from '../../contexts/domain'
+import { useProjectCollection, useWorkspaceCollection } from '../../contexts/domain'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { getActiveWorkspaceId } from '../../lib/workspace-store'
 import { searchWorkspaceChats, type ChatSearchConversationDto, type ChatSearchHitDto } from '../../lib/chat-search-api'
@@ -88,6 +88,7 @@ export const CommandPalette = observer(function CommandPalette({
 }: CommandPaletteProps) {
   const router = useRouter()
   const projects = useProjectCollection()
+  const workspaces = useWorkspaceCollection()
   const { localMode, features } = usePlatformConfig()
   const [query, setQuery] = useState('')
   const [activeCategory, setActiveCategory] = useState<ActiveCategory>('all')
@@ -99,13 +100,13 @@ export const CommandPalette = observer(function CommandPalette({
 
   const workspaceId = useMemo(() => {
     const active = getActiveWorkspaceId()
-    if (active) return active
     try {
-      return projects?.all?.[0]?.workspaceId ?? null
+      if (active && workspaces?.all?.some((workspace: any) => workspace.id === active)) return active
+      return workspaces?.all?.[0]?.id ?? projects?.all?.[0]?.workspaceId ?? null
     } catch {
-      return null
+      return active ?? null
     }
-  }, [projects?.all])
+  }, [projects?.all, workspaces?.all])
 
   const commands = useMemo<CommandItem[]>(() => {
     const items: CommandItem[] = [
@@ -278,6 +279,7 @@ export const CommandPalette = observer(function CommandPalette({
     if (!q) return categoryFiltered
     const lowerQuery = query.toLowerCase()
     return categoryFiltered.filter((cmd) => {
+      if (cmd.category === 'chat') return true
       const labelMatch = cmd.label.toLowerCase().includes(lowerQuery)
       const descMatch = cmd.description?.toLowerCase().includes(lowerQuery)
       const keywordMatch = cmd.keywords?.some((k) => k.includes(lowerQuery))
@@ -297,6 +299,8 @@ export const CommandPalette = observer(function CommandPalette({
     })
     return groups
   }, [filteredCommands])
+
+  const isChatSearchActive = query.trim().length > 0 && (activeCategory === 'all' || activeCategory === 'chat')
 
   useEffect(() => {
     setSelectedIndex(0)
@@ -509,7 +513,14 @@ export const CommandPalette = observer(function CommandPalette({
             onScroll={handleResultsScroll}
             scrollEventThrottle={64}
           >
-            {filteredCommands.length === 0 ? (
+            {filteredCommands.length === 0 && isChatSearchActive && isLoadingChatSearch ? (
+              <View className="items-center py-8">
+                <ActivityIndicator size="small" />
+                <Text className="mt-2 text-sm text-muted-foreground">
+                  Searching chats...
+                </Text>
+              </View>
+            ) : filteredCommands.length === 0 ? (
               <View className="items-center py-8">
                 <Text className="text-sm text-muted-foreground">
                   No results found for "{query}"

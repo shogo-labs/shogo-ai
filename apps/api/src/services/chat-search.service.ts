@@ -34,6 +34,7 @@ const MAX_CANDIDATE_MESSAGES = 500
 const MAX_CANDIDATE_SESSIONS = 200
 const MAX_HITS_PER_CONVERSATION = 6
 const MAX_SNIPPET_LENGTH = 160
+const TITLE_MATCH_CONVERSATION_BOOST = 220
 
 export function tokenizeChatSearchQuery(query: string): string[] {
   const tokens = query
@@ -176,13 +177,17 @@ export async function searchWorkspaceChats(input: {
   const limit = input.limit ?? 50
   const offset = input.offset ?? 0
   const rankedConversations = Array.from(grouped.values())
-    .map((conversation) => ({
-      ...conversation,
-      hits: conversation.hits
+    .map((conversation) => {
+      const hits = conversation.hits
         .sort((a, b) => b.score - a.score || b.createdAt - a.createdAt)
-        .slice(0, MAX_HITS_PER_CONVERSATION),
-    }))
-    .sort((a, b) => b.score - a.score || b.updatedAt - a.updatedAt)
+        .slice(0, MAX_HITS_PER_CONVERSATION)
+      return {
+        ...conversation,
+        hits,
+        score: computeConversationScore(hits, conversation.updatedAt),
+      }
+    })
+    .sort(compareConversationResults)
 
   const page = rankedConversations.slice(offset, offset + limit)
   const nextOffset = offset + page.length
@@ -253,11 +258,35 @@ function addHit(
 
   const existing = grouped.get(meta.conversationId)
   if (existing) {
-    existing.score += hit.score
     existing.hits.push(hit)
   } else {
     grouped.set(meta.conversationId, { ...meta, score: hit.score, hits: [hit] })
   }
+}
+
+function computeConversationScore(hits: ChatSearchHitDto[], updatedAt: number): number {
+  const bestHit = hits[0]?.score ?? 0
+  const titleBoost = hits.some((hit) => hit.field === 'title') ? TITLE_MATCH_CONVERSATION_BOOST : 0
+  const frequencyBoost = Math.min(hits.length, 10) * 4
+  const recencyBoost = computeRecencyBoost(updatedAt, Date.now())
+  return bestHit + titleBoost + frequencyBoost + recencyBoost
+}
+
+function compareConversationResults(a: ChatSearchConversationDto, b: ChatSearchConversationDto): number {
+  const fieldDelta = getBestFieldPriority(b.hits) - getBestFieldPriority(a.hits)
+  if (fieldDelta !== 0) return fieldDelta
+
+  const recencyDelta = b.updatedAt - a.updatedAt
+  if (recencyDelta !== 0) return recencyDelta
+
+  return b.score - a.score
+}
+
+function getBestFieldPriority(hits: ChatSearchHitDto[]): number {
+  if (hits.some((hit) => hit.field === 'title')) return 3
+  if (hits.some((hit) => hit.field === 'project')) return 2
+  if (hits.length > 0) return 1
+  return 0
 }
 
 function toMillis(value: Date | string | number | null | undefined): number {
@@ -276,7 +305,8 @@ function escapeRegExp(value: string): string {
 }
 
 function buildContainsFilter(token: string): Record<string, string> {
-  const isSQLite = (process.env.DATABASE_URL || '').startsWith('file:')
+  const databaseUrl = process.env.SHOGO_APP_DATABASE_URL || process.env.DATABASE_URL || ''
+  const isSQLite = databaseUrl.startsWith('file:')
   return isSQLite ? { contains: token } : { contains: token, mode: 'insensitive' }
 }
 
