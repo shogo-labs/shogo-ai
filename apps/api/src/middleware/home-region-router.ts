@@ -67,7 +67,6 @@ const SKIP_PREFIXES = [
   '/api/health',
   '/api/version',
   '/api/config',
-  '/api/client-diagnostics/',
   '/api/ai/',
   '/api/v1/',
   '/api/tools/',
