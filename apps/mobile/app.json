@@ -17,7 +17,8 @@
       "bundleIdentifier": "ai.shogo.app",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "scheme": "shogo"
     },
     "android": {
       "adaptiveIcon": {
