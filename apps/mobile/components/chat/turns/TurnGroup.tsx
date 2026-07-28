@@ -28,6 +28,7 @@ export interface TurnGroupProps {
   activeSubagents?: SubagentProgress[]
   recentTools?: RecentTool[]
   showToolTimeline?: boolean
+  highlightedMessageId?: string | null
   className?: string
 }
 
@@ -128,9 +129,13 @@ export const TurnGroup = memo(
     activeSubagents = [],
     recentTools = [],
     showToolTimeline = false,
+    highlightedMessageId,
     className,
   }: TurnGroupProps) {
     const colors = usePhaseColor(phase || "")
+    const isSearchHighlighted =
+      highlightedMessageId != null &&
+      (turn.userMessage?.id === highlightedMessageId || turn.assistantMessage?.id === highlightedMessageId)
 
   return (
     <Motion.View
@@ -140,6 +145,7 @@ export const TurnGroup = memo(
       style={WEB_CONTAIN_STYLE}
       className={cn(
         "gap-2",
+        isSearchHighlighted && "rounded-lg bg-yellow-100/70 p-2 dark:bg-yellow-900/25",
         turn.assistantMessage ? colors.border : "border-primary/30",
         className
       )}
@@ -208,6 +214,7 @@ export const TurnGroup = memo(
     prev.activeSubagents === next.activeSubagents &&
     prev.recentTools === next.recentTools &&
     prev.showToolTimeline === next.showToolTimeline &&
+    prev.highlightedMessageId === next.highlightedMessageId &&
     prev.className === next.className,
 )
 

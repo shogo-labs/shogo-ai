@@ -336,6 +336,8 @@ export interface ChatPanelProps {
   onResolveSessionModel?: (modelId: string | null) => void
   /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
   isActive?: boolean
+  /** Message id selected from global search. The panel loads toward it, scrolls to it, then flashes the turn. */
+  targetMessageId?: string | null
   /** Enables IDE-specific context bridge and compact composer affordances. */
   ideMode?: boolean
   /**
@@ -752,6 +754,7 @@ export const ChatPanel = observer(function ChatPanel({
   onModelChange: controlledOnModelChange,
   onResolveSessionModel,
   isActive = true,
+  targetMessageId,
   ideMode = false,
   enrichMessage,
 }: ChatPanelProps) {
@@ -882,6 +885,8 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Auto-scroll refs
   const scrollViewRef = useRef<ScrollView>(null)
+  const messageLayoutYRef = useRef<Map<string, number>>(new Map())
+  const [highlightedSearchMessageId, setHighlightedSearchMessageId] = useState<string | null>(null)
   const isUserAtBottomRef = useRef(true)
   /** Native only: true = follow new content; set false the instant the user drags */
   const stickToBottomRef = useRef(true)
@@ -984,6 +989,10 @@ export const ChatPanel = observer(function ChatPanel({
     markProgrammaticScroll()
     scrollViewRef.current?.scrollToEnd({ animated: true })
   }, [markProgrammaticScroll])
+
+  const handleMessageLayout = useCallback((messageId: string, y: number) => {
+    messageLayoutYRef.current.set(messageId, y)
+  }, [])
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
@@ -3627,7 +3636,57 @@ export const ChatPanel = observer(function ChatPanel({
     stickToBottomRef.current = true
     setIsFollowing(true)
     prevDisplayLengthRef.current = 0
+    messageLayoutYRef.current.clear()
   }, [currentSessionId])
+
+  useEffect(() => {
+    if (!targetMessageId || !currentSessionId || !sessionMessages) return
+    if (displayMessages.some((message) => message.id === targetMessageId)) return
+    if (!sessionMessages.hasMore || sessionMessages.isLoadingMore) return
+
+    let cancelled = false
+    const loadTowardTarget = async () => {
+      for (let attempt = 0; attempt < 20 && !cancelled; attempt += 1) {
+        const offset = sessionMessages.all.length
+        await sessionMessages.loadPage(
+          { sessionId: currentSessionId, agent: 'technical' },
+          { limit: MESSAGE_PAGE_SIZE, offset },
+        )
+        const allLoaded = [...sessionMessages.all].sort(
+          (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
+        )
+        const aiMessages = allLoaded.map((msg: any) => {
+          const baseMessage: any = {
+            id: msg.id,
+            role: msg.role as "user" | "assistant",
+            content: msg.content,
+          }
+          if (msg.parts) {
+            try { baseMessage.parts = JSON.parse(msg.parts) } catch {}
+          }
+          return baseMessage
+        })
+        setMessages(aiMessages)
+        if (allLoaded.some((msg: any) => msg.id === targetMessageId) || !sessionMessages.hasMore) break
+      }
+    }
+
+    void loadTowardTarget().catch((err) => {
+      console.warn('[ChatPanel] Failed to load search target message:', err)
+    })
+    return () => { cancelled = true }
+  }, [targetMessageId, currentSessionId, sessionMessages, displayMessages, setMessages])
+
+  useEffect(() => {
+    if (!targetMessageId || !displayMessages.some((message) => message.id === targetMessageId)) return
+    const y = messageLayoutYRef.current.get(targetMessageId)
+    if (typeof y !== 'number') return
+    markProgrammaticScroll()
+    scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 24), animated: true })
+    setHighlightedSearchMessageId(targetMessageId)
+    const timer = setTimeout(() => setHighlightedSearchMessageId((current) => current === targetMessageId ? null : current), 2400)
+    return () => clearTimeout(timer)
+  }, [targetMessageId, displayMessages, markProgrammaticScroll])
 
   useEffect(() => {
     if (displayMessages.length === 0) return
@@ -5094,6 +5153,8 @@ export const ChatPanel = observer(function ChatPanel({
                   activeSubagents={activeSubagentsList}
                   recentTools={recentToolsList}
                   subagentToolCalls={accumulatedSubagentTools}
+                  highlightedMessageId={highlightedSearchMessageId}
+                  onMessageLayout={handleMessageLayout}
                 />
               </MessageEditProvider>
             ) : !isStreaming && !isInitialLoadComplete && currentSessionId ? (

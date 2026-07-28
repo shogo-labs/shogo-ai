@@ -61,6 +61,7 @@ import { publicApiRoutes } from './routes/public-api'
 import { voiceRoutes } from './routes/voice'
 import { chatRoutes } from './routes/chat'
 import { createChatMessageEditRoutes } from './routes/chat-message-edits'
+import { chatSearchRoutes } from './routes/chat-search'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import {
   generateTitleCompletion,
@@ -8468,6 +8469,7 @@ app.get('/api/invite-links/:token/info', async (c) => {
 // more specific `/:id/truncate-from` here instead of falling through
 // to the generated `/:id` PATCH/DELETE handlers in chat-message.routes.ts.
 app.route('/api/chat-messages', createChatMessageEditRoutes())
+app.route('/api', chatSearchRoutes())
 
 // Unread notification count for the in-app inbox bell/badge. MUST be mounted
 // BEFORE the generated routes so Hono matches `/notifications/unread-count`

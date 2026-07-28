@@ -293,6 +293,8 @@ export default observer(function ProjectLayout() {
     newChatNonce?: string
     /** When 'ide', render only the canonical chat for embedding in Shogo IDE. */
     embed?: string
+    /** Message id selected from global chat search. */
+    searchMessageId?: string
   }>()
   const projectId = params.id
   const isIdeChatEmbed = params.embed === 'ide'
@@ -2661,6 +2663,7 @@ export default observer(function ProjectLayout() {
                       : 'project'
                 }
                 isActive={isActive}
+                targetMessageId={isActive ? params.searchMessageId ?? null : null}
                 localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
                 initialMessage={isInitialSession ? capturedInitialMessage : (debugSeed ?? undefined)}
                 initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}

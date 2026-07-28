@@ -22,6 +22,8 @@ export interface TurnListProps {
   activeSubagents?: SubagentProgress[]
   recentTools?: RecentTool[]
   subagentToolCalls?: ToolCallData[]
+  highlightedMessageId?: string | null
+  onMessageLayout?: (messageId: string, y: number) => void
   className?: string
 }
 
@@ -44,6 +46,8 @@ export const TurnList = memo(
     activeSubagents = EMPTY_SUBAGENTS,
     recentTools = EMPTY_RECENT_TOOLS,
     subagentToolCalls,
+    highlightedMessageId,
+    onMessageLayout,
     className,
   }: TurnListProps) {
     const turns = useTurnGrouping(messages, isStreaming, subagentToolCalls)
@@ -51,13 +55,22 @@ export const TurnList = memo(
     return (
       <View className={cn("gap-4", className)}>
         {turns.map((turn, index) => (
-          <TurnGroup
+          <View
             key={turn.id}
-            turn={turn}
-            phase={phase}
-            activeSubagents={index === turns.length - 1 ? activeSubagents : EMPTY_SUBAGENTS}
-            recentTools={index === turns.length - 1 ? recentTools : EMPTY_RECENT_TOOLS}
-          />
+            onLayout={(event) => {
+              const y = event.nativeEvent.layout.y
+              if (turn.userMessage?.id) onMessageLayout?.(turn.userMessage.id, y)
+              if (turn.assistantMessage?.id) onMessageLayout?.(turn.assistantMessage.id, y)
+            }}
+          >
+            <TurnGroup
+              turn={turn}
+              phase={phase}
+              activeSubagents={index === turns.length - 1 ? activeSubagents : EMPTY_SUBAGENTS}
+              recentTools={index === turns.length - 1 ? recentTools : EMPTY_RECENT_TOOLS}
+              highlightedMessageId={highlightedMessageId}
+            />
+          </View>
         ))}
       </View>
     )
@@ -69,6 +82,8 @@ export const TurnList = memo(
     prev.activeSubagents === next.activeSubagents &&
     prev.recentTools === next.recentTools &&
     prev.subagentToolCalls === next.subagentToolCalls &&
+    prev.highlightedMessageId === next.highlightedMessageId &&
+    prev.onMessageLayout === next.onMessageLayout &&
     prev.className === next.className,
 )
 
