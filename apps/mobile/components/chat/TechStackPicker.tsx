@@ -16,7 +16,7 @@
  * reflects what the runtime would seed even before the user touches it.
  */
 import React, { useEffect, useMemo, useRef, useState } from "react"
-import { View, Text, Pressable, ScrollView, Platform } from "react-native"
+import { View, Text, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native"
 import { Layers, ChevronDown, Check } from "lucide-react-native"
 import {
   Popover,
@@ -50,6 +50,9 @@ export interface TechStackPickerProps {
 }
 
 export function TechStackPicker({ value, onChange, disabled }: TechStackPickerProps) {
+  const { width: windowWidth } = useWindowDimensions()
+  const isNativePhone = Platform.OS !== "web" && windowWidth < 600
+  const triggerMaxWidth = Math.max(84, Math.min(128, Math.floor(windowWidth * 0.32)))
   const [open, setOpen] = useState(false)
   const [stacks, setStacks] = useState<TechStackSummary[]>([])
   const fetchedRef = useRef(false)
@@ -93,13 +96,15 @@ export function TechStackPicker({ value, onChange, disabled }: TechStackPickerPr
             className={cn(
               "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
               "border border-border/60 bg-muted/40 active:opacity-80",
+              isNativePhone && "min-w-0",
               disabled && "opacity-60",
             )}
+            style={isNativePhone ? { maxWidth: triggerMaxWidth } : undefined}
             testID="tech-stack-picker-trigger"
           >
-            <Layers className="h-3 w-3 text-muted-foreground" size={12} />
-            <Text className="text-[11px] text-muted-foreground">{displayLabel}</Text>
-            <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
+            <Layers className="h-3 w-3 flex-shrink-0 text-muted-foreground" size={12} />
+            <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>{displayLabel}</Text>
+            <ChevronDown className="h-2 w-2 flex-shrink-0 text-muted-foreground/60" size={8} />
           </Pressable>
         </WebTooltip>
       )}

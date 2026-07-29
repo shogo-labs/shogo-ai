@@ -237,6 +237,7 @@ const HomeScreen = observer(function HomeScreen() {
   const isDark = useDarkMode()
   const { width: screenWidth } = useWindowDimensions()
   const isMobile = screenWidth < 640
+  const isNativePhone = Platform.OS !== 'web' && isMobile
 
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
@@ -856,7 +857,13 @@ const HomeScreen = observer(function HomeScreen() {
               // their flows immediately and route into the resulting
               // project.
               leadingControls={
-                <View className="flex-row items-center gap-1">
+                <View
+                  className={
+                    isNativePhone
+                      ? "min-w-0 flex-row flex-wrap items-center gap-1"
+                      : "flex-row items-center gap-1"
+                  }
+                >
                   <ProjectSourceMenu
                     workspaceId={currentWorkspace?.id}
                     variant="chip"
