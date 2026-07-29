@@ -6,11 +6,13 @@ import {
   Text,
   Platform,
   Alert,
+  StyleSheet,
   useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
+import { LinearGradient } from 'expo-linear-gradient'
 import Svg, { Defs, RadialGradient, Stop, Ellipse } from 'react-native-svg'
 import { Button } from '@shogo/shared-ui/primitives'
 import { usePostHogSafe } from '../../contexts/posthog'
@@ -118,32 +120,38 @@ function generateProjectNameFromPrompt(prompt: string): string {
 
 const LovableGradient = memo(function LovableGradient({ isDark }: { isDark: boolean }) {
   if (Platform.OS !== 'web') {
-    const o = isDark ? 0.35 : 1
     return (
-      <View className="absolute inset-0 overflow-hidden" style={{ pointerEvents: 'none' }}>
-        <Svg width="100%" height="100%" style={{ position: 'absolute' }}>
+      <View style={styles.gradientLayer} pointerEvents="none">
+        <LinearGradient
+          colors={['#101820', '#1e2027', '#3a2229', '#4a241f']}
+          locations={[0, 0.36, 0.68, 1]}
+          start={{ x: 0, y: 0.05 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <Svg width="100%" height="100%" style={StyleSheet.absoluteFill}>
           <Defs>
             <RadialGradient id="orb1" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor="rgb(96,165,250)" stopOpacity={0.55 * o} />
-              <Stop offset="40%" stopColor="rgb(147,197,253)" stopOpacity={0.35 * o} />
+              <Stop offset="0%" stopColor="rgb(96,165,250)" stopOpacity={0.34} />
+              <Stop offset="45%" stopColor="rgb(147,197,253)" stopOpacity={0.16} />
               <Stop offset="100%" stopColor="rgb(96,165,250)" stopOpacity={0} />
             </RadialGradient>
             <RadialGradient id="orb2" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor="rgb(244,114,182)" stopOpacity={0.55 * o} />
-              <Stop offset="30%" stopColor="rgb(251,113,133)" stopOpacity={0.4 * o} />
-              <Stop offset="60%" stopColor="rgb(249,115,22)" stopOpacity={0.2 * o} />
+              <Stop offset="0%" stopColor="rgb(244,114,182)" stopOpacity={0.38} />
+              <Stop offset="34%" stopColor="rgb(251,113,133)" stopOpacity={0.26} />
+              <Stop offset="65%" stopColor="rgb(249,115,22)" stopOpacity={0.16} />
               <Stop offset="100%" stopColor="rgb(244,114,182)" stopOpacity={0} />
             </RadialGradient>
             <RadialGradient id="orb3" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor="rgb(251,113,133)" stopOpacity={0.45 * o} />
-              <Stop offset="25%" stopColor="rgb(236,72,153)" stopOpacity={0.35 * o} />
-              <Stop offset="50%" stopColor="rgb(249,115,22)" stopOpacity={0.2 * o} />
+              <Stop offset="0%" stopColor="rgb(251,113,133)" stopOpacity={0.28} />
+              <Stop offset="35%" stopColor="rgb(236,72,153)" stopOpacity={0.18} />
+              <Stop offset="65%" stopColor="rgb(249,115,22)" stopOpacity={0.12} />
               <Stop offset="100%" stopColor="rgb(251,113,133)" stopOpacity={0} />
             </RadialGradient>
           </Defs>
-          <Ellipse cx="30%" cy="15%" rx="55%" ry="45%" fill="url(#orb1)" />
-          <Ellipse cx="80%" cy="35%" rx="50%" ry="55%" fill="url(#orb2)" />
-          <Ellipse cx="50%" cy="90%" rx="55%" ry="40%" fill="url(#orb3)" />
+          <Ellipse cx="10%" cy="8%" rx="78%" ry="55%" fill="url(#orb1)" />
+          <Ellipse cx="94%" cy="26%" rx="82%" ry="68%" fill="url(#orb2)" />
+          <Ellipse cx="62%" cy="92%" rx="76%" ry="45%" fill="url(#orb3)" />
         </Svg>
       </View>
     )
@@ -223,6 +231,13 @@ const COMPOSER_WRAPPER_WEB_DARK = {
   boxShadow:
     '0 4px 24px rgba(0,0,0,0.4), 0 1px 4px rgba(0,0,0,0.3)',
 } as const
+
+const styles = StyleSheet.create({
+  gradientLayer: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: 'hidden',
+  },
+})
 
 const HomeScreen = observer(function HomeScreen() {
   const router = useRouter()
