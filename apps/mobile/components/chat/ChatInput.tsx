@@ -2294,7 +2294,10 @@ function ChatInputImpl({
               )}
             >
               <PopoverBackdrop />
-              <PopoverContent className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none">
+              <PopoverContent
+                className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
+                style={isNativePhone ? { width: 136 } : undefined}
+              >
                 <ModelPickerMenu
                   currentModelId={currentModelId}
                   effectiveIsPro={effectiveIsPro}
