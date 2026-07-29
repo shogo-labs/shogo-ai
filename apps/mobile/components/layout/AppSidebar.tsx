@@ -1569,10 +1569,10 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const insets = useSafeAreaInsets()
   const isWide = width >= 768
   const isPhoneDrawer = Platform.OS !== 'web' && !isWide
-  const drawerTopInset = isPhoneDrawer ? Math.max(insets.top + 56, 112) : insets.top
-  const drawerBottomInset = isPhoneDrawer ? Math.max(insets.bottom + 24, 56) : insets.bottom
-  const drawerSideInset = isPhoneDrawer ? Math.max(insets.left, 22) : 0
-  const drawerPanelWidth = isPhoneDrawer ? Math.min(264, Math.max(240, width - 84)) : undefined
+  const drawerTopInset = isPhoneDrawer ? Math.max(insets.top, 56) : insets.top
+  const drawerBottomInset = isPhoneDrawer ? Math.max(insets.bottom, 18) : insets.bottom
+  const drawerSideInset = isPhoneDrawer ? Math.max(insets.left, 4) : 0
+  const drawerPanelWidth = isPhoneDrawer ? Math.min(288, Math.max(264, width - 48)) : undefined
   const { features, localMode } = usePlatformConfig()
 
   const { user, signOut } = useAuth()
@@ -1777,7 +1777,13 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const workspacePlan = currentWorkspace?.id ? (allPlans[currentWorkspace.id] ?? null) : null
   const isPaidPlan = billingData.hasActiveSubscription || (workspacePlan?.planId !== 'free' && workspacePlan?.status === 'active')
 
-  const toggleCollapse = useCallback(() => setCollapsed((c) => !c), [])
+  const toggleCollapse = useCallback(() => {
+    if (isPhoneDrawer) {
+      onClose?.()
+      return
+    }
+    setCollapsed((c) => !c)
+  }, [isPhoneDrawer, onClose])
 
   const handleSwitchWorkspace = useCallback(
     (workspaceId: string) => {
@@ -1851,7 +1857,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       role="navigation"
       accessibilityLabel="App sidebar"
       className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}
-      style={isPhoneDrawer ? { paddingLeft: drawerSideInset, paddingRight: 8 } : undefined}
+      style={isPhoneDrawer ? { paddingLeft: drawerSideInset, paddingRight: 4 } : undefined}
     >
       {isPhoneDrawer && <View style={{ height: drawerTopInset }} />}
       {/* ── Logo Row ── */}
@@ -2293,14 +2299,42 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   if (!isOpen) return null
 
+  if (isPhoneDrawer) {
+    return (
+      <Modal
+        visible={isOpen}
+        transparent
+        animationType="none"
+        statusBarTranslucent
+        onRequestClose={onClose}
+      >
+        <View
+          onStartShouldSetResponder={() => true}
+          onResponderRelease={onClose}
+          style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.5)' }}
+        >
+          <View
+            style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, flexDirection: 'row' }}
+          >
+            <View
+              onStartShouldSetResponder={() => true}
+              style={[
+                { height: '100%', zIndex: 10 },
+                drawerPanelWidth ? { width: drawerPanelWidth } : null,
+              ]}
+            >
+              {sidebarContent}
+            </View>
+          </View>
+        </View>
+      </Modal>
+    )
+  }
+
   return (
     <View
       className="absolute left-0 right-0 z-50 flex-row"
-      style={
-        isPhoneDrawer
-          ? { top: -insets.top, bottom: -insets.bottom }
-          : { top: 0, bottom: 0, paddingTop: insets.top }
-      }
+      style={{ top: 0, bottom: 0, paddingTop: insets.top }}
     >
       <Pressable onPress={onClose} className="absolute inset-0 bg-black/50" />
       <View
