@@ -55,6 +55,8 @@ function formatContextWindow(tokens?: number): string | null {
 
 /** Width of the detached web info card that floats beside the list on hover. */
 const INFO_PANEL_WIDTH = 232
+const NATIVE_MENU_WIDTH = 136
+const WEB_MENU_WIDTH = 280
 
 function ModelInfoPanel({ model }: { model: PickerModel }) {
   const context = formatContextWindow(model.contextWindow)
@@ -175,7 +177,7 @@ export function ModelPickerMenu({
   }
 
   const list = (
-    <View style={isWeb ? { width: 280 } : undefined}>
+    <View style={{ width: isWeb ? WEB_MENU_WIDTH : NATIVE_MENU_WIDTH }}>
       <ScrollView style={{ maxHeight: 340 }}>
         <AutoModelOption
           currentModelId={currentModelId}

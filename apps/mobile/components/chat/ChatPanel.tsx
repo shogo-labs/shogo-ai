@@ -4896,6 +4896,8 @@ export const ChatPanel = observer(function ChatPanel({
   )
 
   const errorMessage = error?.message ?? null
+  const nativePhonePanelWidth = isNativePhoneLayout ? Math.max(0, windowWidth) : undefined
+  const nativePhoneComposerWidth = isNativePhoneLayout ? Math.max(0, windowWidth - 24) : undefined
 
   // Memoizing the context value is the single biggest win for streaming
   // re-renders. Previously this was a fresh object literal on every
@@ -5019,6 +5021,7 @@ export const ChatPanel = observer(function ChatPanel({
               isNativePhoneLayout ? "px-2 pt-2 pb-36" : "p-2 pb-[40px]",
               "max-w-3xl w-full self-center",
             )}
+            contentContainerStyle={nativePhonePanelWidth ? { width: nativePhonePanelWidth } : undefined}
             keyboardShouldPersistTaps="handled"
             onScroll={isNative ? undefined : handleMessagesScrollWeb}
             onScrollBeginDrag={() => {
@@ -5403,7 +5406,10 @@ export const ChatPanel = observer(function ChatPanel({
           )}
 
           {/* Input */}
-          <View className="bg-transparent max-w-3xl w-full self-center mt-1">
+          <View
+            className="bg-transparent max-w-3xl w-full self-center mt-1"
+            style={nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined}
+          >
             <WorktreeBar
               agentUrl={resolvedAgentUrl}
               chatSessionId={currentSessionId}

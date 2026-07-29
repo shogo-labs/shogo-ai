@@ -1144,7 +1144,7 @@ export default observer(function ProjectLayout() {
             return
           }
           openTabsRestoredRef.current = true
-          setTabsHydration('restored-empty')
+          setTabsHydration(Platform.OS !== 'web' && nativePhone ? 'fresh' : 'restored-empty')
           return
         }
       } catch { /* ignore malformed data */ }
@@ -1155,7 +1155,7 @@ export default observer(function ProjectLayout() {
       openTabsRestoredRef.current = true
       setTabsHydration('fresh')
     })
-  }, [projectId])
+  }, [projectId, nativePhone])
 
   // Persist open tabs to AsyncStorage on every change, including `[]`.
   // Storing the explicit empty array is what lets the next mount distinguish
@@ -1417,6 +1417,13 @@ export default observer(function ProjectLayout() {
   const [attentionTab, setAttentionTab] = useState<string | null>(null)
   const effectiveTab = attentionTab ?? previewTab
 
+  useEffect(() => {
+    if (Platform.OS !== 'web' && nativePhone && !isWide) {
+      setActiveTab('chat')
+      setNarrowChatPickerOpen(false)
+    }
+  }, [projectId, nativePhone, isWide])
+
   // Close the narrow picker as soon as the layout shifts off the chat tab
   // (e.g. user switched to canvas, or the viewport widened into split mode).
   useEffect(() => {
@@ -1503,7 +1510,10 @@ export default observer(function ProjectLayout() {
       (requested !== 'canvas' &&
         requested !== 'chat-fullscreen' &&
         requested !== 'external-preview' &&
-        requested !== 'ide')
+        requested !== 'ide' &&
+        requested !== 'files' &&
+        requested !== 'plans' &&
+        requested !== 'settings')
     ) {
       return
     }
@@ -1512,12 +1522,20 @@ export default observer(function ProjectLayout() {
     appliedTabIntentRef.current = token
     previewTabInitForRef.current = projectId
     setPreviewTab(requested)
-  }, [projectId, params.tab, params.tabNonce])
+    if (Platform.OS !== 'web' && nativePhone && !isWide) {
+      setActiveTab(requested === 'chat-fullscreen' ? 'chat' : 'canvas')
+    }
+  }, [projectId, params.tab, params.tabNonce, nativePhone, isWide])
 
   useEffect(() => {
     if (!projectId || !project) return
     if (previewTabInitForRef.current === projectId) return
     previewTabInitForRef.current = projectId
+    if (Platform.OS !== 'web' && nativePhone && !isWide) {
+      setPreviewTab('chat-fullscreen')
+      AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
+      return
+    }
     AsyncStorage.getItem(`${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`).then((saved) => {
       // Legacy values written before the v1 dynamic-app -> canvas tab rename
       // (chore/remove-canvas-v1) get normalized on read so existing users don't
@@ -1537,7 +1555,7 @@ export default observer(function ProjectLayout() {
     }).catch(() => {})
     // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
     AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
-  }, [projectId, project, isExternalProject])
+  }, [projectId, project, isExternalProject, nativePhone, isWide])
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
@@ -2618,6 +2636,11 @@ export default observer(function ProjectLayout() {
     />
   )
 
+  const nativePhoneChatViewportHeight =
+    Platform.OS !== 'web' && nativePhone && !isWide
+      ? Math.max(0, height - insets.top - insets.bottom - 24)
+      : undefined
+
   const chatPanels = (
     <>
       {openChatTabIds.map((tabId) => {
@@ -2628,7 +2651,13 @@ export default observer(function ProjectLayout() {
           <View
             key={tabId}
             className="flex-1"
-            style={!isActive ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 } : undefined}
+            style={
+              !isActive
+                ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 }
+                : nativePhoneChatViewportHeight
+                  ? { height: nativePhoneChatViewportHeight }
+                  : undefined
+            }
             pointerEvents={isActive ? 'auto' : 'none'}
           >
             <PanelErrorBoundary panelName="Chat">
@@ -2694,6 +2723,9 @@ export default observer(function ProjectLayout() {
 
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
+  const nativePhoneCanvasFrame = Platform.OS !== 'web' && nativePhone && !isWide && activeTab === 'canvas'
+  const nativePhoneStandalonePanel = nativePhoneCanvasFrame && STANDALONE_PANELS.includes(effectiveTab)
+  const nativePhonePlansOverlay = nativePhoneCanvasFrame && effectiveTab === 'plans'
 
   // Defined after `chatHidden` so it can drive the canvas's `fullBleed`
   // prop — see comment on `fullBleed` for why the iframe's left margin
@@ -3093,7 +3125,9 @@ export default observer(function ProjectLayout() {
                           transitionDuration: '220ms',
                           transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
                         } as any
-                      : undefined
+                      : !isChatFullscreen && !isWide && chatHidden
+                        ? { display: 'none' }
+                        : undefined
                   }
                 >
                   {/* Chat content column. The recessed-under-canvas styling
@@ -3229,9 +3263,15 @@ export default observer(function ProjectLayout() {
         <View
           className={cn(
             'relative flex-1 overflow-hidden',
+            nativePhoneCanvasFrame && 'bg-background',
             canvasAreaHidden && 'hidden',
             Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
           )}
+          style={
+            nativePhoneCanvasFrame
+              ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%', alignSelf: 'stretch' }
+              : undefined
+          }
         >
           <DrawerHost
             projectId={projectId ?? null}
@@ -3242,35 +3282,15 @@ export default observer(function ProjectLayout() {
             isChatFullscreen={isChatFullscreen}
             folderPath={primaryFolderPath ?? undefined}
           >
-          {/* Floating chat button on native narrow canvas — above every canvas sub-tab (z-20 panels) */}
-          {showNativeNarrowChatFab && (
-            <SafeAreaView
-              edges={['bottom']}
-              className="absolute bottom-0 right-0 z-30 pr-4 pb-4"
-              pointerEvents="box-none"
+          {canvasEnabled && effectiveTab === 'canvas' && (
+            <View
+              className="absolute inset-0"
               style={
-                narrowCanvasKeyboardInset > 0
-                  ? { marginBottom: narrowCanvasKeyboardInset }
+                nativePhoneCanvasFrame
+                  ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%' }
                   : undefined
               }
             >
-              <Pressable
-                onPress={() => {
-                  // Explicit user navigation — drop any in-flight attention override.
-                  setAttentionTab(null)
-                  setActiveTab('chat')
-                  setPreviewTab('chat-fullscreen')
-                }}
-                className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
-              >
-                <MessageSquare size={16} className="text-primary-foreground" />
-                <Text className="text-sm font-semibold text-primary-foreground">Chat</Text>
-              </Pressable>
-            </SafeAreaView>
-          )}
-
-          {canvasEnabled && effectiveTab === 'canvas' && (
-            <View className="absolute inset-0">
               <PanelErrorBoundary panelName="Canvas">
                 {canvasPanel}
               </PanelErrorBoundary>
@@ -3293,6 +3313,11 @@ export default observer(function ProjectLayout() {
                 ? 'z-20 bg-background'
                 : 'pointer-events-none',
             )}
+            style={
+              nativePhoneStandalonePanel
+                ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%', alignSelf: 'stretch' }
+                : undefined
+            }
             pointerEvents={
               STANDALONE_PANELS.includes(effectiveTab)
                 ? 'auto'
@@ -3313,7 +3338,7 @@ export default observer(function ProjectLayout() {
               <FilesBrowserPanel visible={effectiveTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Plans">
-              <PlansPanel visible={effectiveTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
+              <PlansPanel visible={effectiveTab === 'plans' && !nativePhonePlansOverlay} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
             </PanelErrorBoundary>
             <PanelErrorBoundary panelName="Settings">
               {(() => {
@@ -3583,6 +3608,53 @@ export default observer(function ProjectLayout() {
           </View>
           </DrawerHost>
         </View>
+
+        {nativePhonePlansOverlay && (
+          <View
+            className="absolute inset-0 z-40 bg-background"
+            pointerEvents="auto"
+            style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%' }}
+          >
+            <PanelErrorBoundary panelName="Plans">
+              <PlansPanel
+                visible
+                projectId={projectId!}
+                agentUrl={agentUrl}
+                selectedModel={selectedModel}
+                requestedPlanPath={requestedPlanPath}
+                onBuildPlan={handleBuildPlan}
+              />
+            </PanelErrorBoundary>
+          </View>
+        )}
+
+        {/* Floating chat button on native narrow canvas — render after overlays so canvas/panels cannot cover it. */}
+        {showNativeNarrowChatFab && (
+          <SafeAreaView
+            edges={['bottom']}
+            className="absolute bottom-0 right-0 z-50 pr-4 pb-4"
+            pointerEvents="box-none"
+            style={[
+              { zIndex: 50, elevation: 50 },
+              narrowCanvasKeyboardInset > 0
+                ? { marginBottom: narrowCanvasKeyboardInset }
+                : null,
+            ]}
+          >
+            <Pressable
+              onPress={() => {
+                // Explicit user navigation — drop any in-flight attention override.
+                setAttentionTab(null)
+                setActiveTab('chat')
+                setPreviewTab('chat-fullscreen')
+              }}
+              className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
+            >
+              <MessageSquare size={16} className="text-primary-foreground" />
+              <Text className="text-sm font-semibold text-primary-foreground">Chat</Text>
+            </Pressable>
+          </SafeAreaView>
+        )}
 
         {/* Workspace trust prompt — first-mount only, dismissible. */}
         {isExternalProject ? (
@@ -4017,6 +4089,7 @@ function CanvasPanel({
   // or a sidecar that never reports healthy (crash loop, template without
   // `/health`) still shows the app within ~20s instead of hanging forever.
   const showCanvas = shouldShowCanvas({ baseReady, apiLatched, timedOut: apiWaitElapsed })
+  const nativeFullFrame = Platform.OS !== 'web' && fullBleed
 
   if (!showCanvas) {
     // `!baseReady` → runtime / dev server not up yet (show its phase, and the
@@ -4091,14 +4164,10 @@ function CanvasPanel({
   return (
     <View
       className={cn(
-        // The chat panel column on the left has a `rounded-tr-2xl` cut-out
-        // and inset shadow so the canvas reads as elevated against it; in
-        // that layout the iframe flushes flush against the chat panel's
-        // right edge (no left gutter). When the canvas is solo (`fullBleed`
-        // — chat fullscreen, chat collapsed, or narrow canvas tab) there's
-        // no chat seam to align with, so we restore the symmetric 8px gap.
-        'flex-1 overflow-hidden rounded-2xl mr-2 mb-2',
-        fullBleed && 'ml-2',
+        nativeFullFrame
+          ? 'flex-1 overflow-hidden bg-background'
+          : 'flex-1 overflow-hidden rounded-2xl mr-2 mb-2',
+        !nativeFullFrame && fullBleed && 'ml-2',
       )}
     >
       <CanvasWebView
