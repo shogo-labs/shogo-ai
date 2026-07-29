@@ -3269,7 +3269,7 @@ export default observer(function ProjectLayout() {
           )}
           style={
             nativePhoneCanvasFrame
-              ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }
+              ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%', alignSelf: 'stretch' }
               : undefined
           }
         >
@@ -3283,7 +3283,14 @@ export default observer(function ProjectLayout() {
             folderPath={primaryFolderPath ?? undefined}
           >
           {canvasEnabled && effectiveTab === 'canvas' && (
-            <View className="absolute inset-0">
+            <View
+              className="absolute inset-0"
+              style={
+                nativePhoneCanvasFrame
+                  ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%' }
+                  : undefined
+              }
+            >
               <PanelErrorBoundary panelName="Canvas">
                 {canvasPanel}
               </PanelErrorBoundary>
