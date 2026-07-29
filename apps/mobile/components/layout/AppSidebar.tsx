@@ -1568,6 +1568,11 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const isWide = width >= 768
+  const isPhoneDrawer = Platform.OS !== 'web' && !isWide
+  const drawerTopInset = isPhoneDrawer ? Math.max(insets.top + 56, 112) : insets.top
+  const drawerBottomInset = isPhoneDrawer ? Math.max(insets.bottom + 24, 56) : insets.bottom
+  const drawerSideInset = isPhoneDrawer ? Math.max(insets.left, 22) : 0
+  const drawerPanelWidth = isPhoneDrawer ? Math.min(264, Math.max(240, width - 84)) : undefined
   const { features, localMode } = usePlatformConfig()
 
   const { user, signOut } = useAuth()
@@ -1842,7 +1847,13 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const isMarketplacePage = pathname.startsWith('/marketplace') || pathname.startsWith('/(app)/marketplace')
 
   const sidebarContent = (
-    <View role="navigation" accessibilityLabel="App sidebar" className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}>
+    <View
+      role="navigation"
+      accessibilityLabel="App sidebar"
+      className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}
+      style={isPhoneDrawer ? { paddingLeft: drawerSideInset, paddingRight: 8 } : undefined}
+    >
+      {isPhoneDrawer && <View style={{ height: drawerTopInset }} />}
       {/* ── Logo Row ── */}
       <View
         className={cn(
@@ -1967,7 +1978,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                         <Pressable
                           key={opt.value}
                           onPress={() => updateProjectFilter({ sort: opt.value })}
-                          role="menuitemradio"
+                          accessibilityRole="radio"
                           accessibilityState={{ checked: projectFilter.sort === opt.value }}
                           className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                         >
@@ -1993,7 +2004,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                         <Pressable
                           key={opt.value}
                           onPress={() => updateProjectFilter({ scope: opt.value })}
-                          role="menuitemradio"
+                          accessibilityRole="radio"
                           accessibilityState={{ checked: projectFilter.scope === opt.value }}
                           className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                         >
@@ -2056,7 +2067,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       </ScrollView>
 
       {/* ── Bottom Section ── */}
-      <View className="border-t border-border" style={{ paddingBottom: insets.bottom }}>
+      <View className="border-t border-border" style={{ paddingBottom: drawerBottomInset }}>
         {/* Upgrade to Pro CTA */}
         {features.billing && !collapsed && !isPaidPlan && (
           <View className="px-2 pt-2">
@@ -2092,7 +2103,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               onNavigate={(href) => { if (!isWide) onClose?.(); router.push(href as any); onNavPress() }}
               isSuperAdmin={hasAdminAccess}
               isWide={isWide}
-              bottomInset={insets.bottom}
+              bottomInset={drawerBottomInset}
               collapsed={collapsed}
               workspaces={allWorkspaces}
               currentWorkspace={currentWorkspace}
@@ -2283,9 +2294,19 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   if (!isOpen) return null
 
   return (
-    <View className="absolute inset-0 z-50 flex-row" style={{ paddingTop: insets.top }}>
+    <View
+      className="absolute left-0 right-0 z-50 flex-row"
+      style={
+        isPhoneDrawer
+          ? { top: -insets.top, bottom: -insets.bottom }
+          : { top: 0, bottom: 0, paddingTop: insets.top }
+      }
+    >
       <Pressable onPress={onClose} className="absolute inset-0 bg-black/50" />
-      <View className="w-72 h-full z-10">
+      <View
+        className="w-72 h-full z-10"
+        style={drawerPanelWidth ? { width: drawerPanelWidth } : undefined}
+      >
         {sidebarContent}
       </View>
     </View>
