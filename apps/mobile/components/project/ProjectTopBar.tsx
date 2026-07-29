@@ -51,7 +51,6 @@ import {
   MessageSquare,
   LayoutDashboard,
   Code2,
-  FolderOpen,
   Sliders,
   Radio,
   Activity,
@@ -88,9 +87,9 @@ import { ProjectExportModal } from './ProjectExportModal'
 /** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
 const nativeNarrowTitleMaxWidth = 132
 
-/** Native narrow top bar only (not web): slimmer than 320px desktop popover, capped to screen width. */
+/** Native narrow top bar only (not web): keep the project menu wide enough for the account row and usage card. */
 function narrowProjectDropdownWidth(screenWidth: number): number {
-  return Math.max(232, Math.min(276, screenWidth - 20))
+  return Math.max(300, Math.min(320, screenWidth - 96))
 }
 
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
@@ -104,7 +103,7 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
   ...(Platform.OS === 'web'
     ? [{ id: 'ide', label: 'IDE', icon: Code2 }]
-    : [{ id: 'files', label: 'Files', icon: FolderOpen }]),
+    : [{ id: 'files', label: 'Files', icon: Code2 }]),
   { id: 'plans', label: 'Plans', icon: ClipboardList },
   // Folders, Capabilities, Channels, Agents, Monitor, Checkpoints all
   // live behind this Settings tab now (rendered by SettingsPanel with a
@@ -450,7 +449,7 @@ export function ProjectTopBar({
   const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [
     ...narrowOverflowTabs.map(t => ({ id: t.id, label: t.label })),
-    ...(!hasActiveSubscription ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
+    ...(!hasActiveSubscription && !(Platform.OS !== 'web' && isNativePhone) ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
   ]
 
   const handleTabPress = useCallback((tabId: string) => {
@@ -539,14 +538,14 @@ export function ProjectTopBar({
                   )}
                   style={[
                     (triggerProps as { style?: StyleProp<ViewStyle> }).style,
-                    isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth } : undefined,
+                    isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth, alignSelf: 'flex-start' } : undefined,
                   ]}
                   accessibilityLabel="Switch project"
                   testID="project-switcher-trigger"
                 >
                   <Text
                     className="text-xs font-semibold text-foreground"
-                    style={isNativePhone ? { flex: 1, minWidth: 0 } : undefined}
+                    style={isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth - 18 } : undefined}
                     numberOfLines={1}
                     ellipsizeMode="tail"
                   >
@@ -565,7 +564,7 @@ export function ProjectTopBar({
                 }
                 style={
                   narrowNativeMenuW != null
-                    ? { width: narrowNativeMenuW, maxWidth: narrowNativeMenuW }
+                    ? { width: narrowNativeMenuW, maxWidth: narrowNativeMenuW, left: 16 }
                     : undefined
                 }
               >

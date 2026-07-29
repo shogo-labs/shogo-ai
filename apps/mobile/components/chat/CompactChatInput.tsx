@@ -14,7 +14,7 @@
  */
 
 import React, { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
-import { View, Text, TextInput, Pressable, Image, ScrollView, Platform } from "react-native"
+import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, useWindowDimensions } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   Popover,
@@ -70,6 +70,17 @@ const MAX_FILES = 10
 
 const MIN_INPUT_HEIGHT = 80
 const MAX_INPUT_HEIGHT = 200
+
+function compactNativeModelLabel(modelId: string): string {
+  const label = resolveShortName(modelId)
+  const lower = label.toLowerCase()
+  if (lower.includes("haiku")) return "Haiku"
+  if (lower.includes("sonnet")) return "Sonnet"
+  if (lower.includes("opus")) return "Opus"
+  if (lower.includes("gemini")) return "Gemini"
+  if (lower.includes("gpt")) return "GPT"
+  return label.length > 12 ? `${label.slice(0, 9)}…` : label
+}
 
 /**
  * Show a native browser tooltip on hover (web only). Wraps children in a
@@ -166,7 +177,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     ref
   ) {
     const { features } = usePlatformConfig()
+    const { width: windowWidth } = useWindowDimensions()
     const effectiveIsPro = features.billing ? isPro : true
+    const isNativePhone = Platform.OS !== "web" && windowWidth < 600
+    const modelTriggerMaxWidth = Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
 
     const [internalValue, setInternalValue] = useState("")
     const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
@@ -639,9 +653,19 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           />
 
           {/* Bottom toolbar */}
-          <View className="flex-row items-center justify-between p-1.5">
+          <View
+            className={cn(
+              "flex-row items-center justify-between p-1.5",
+              isNativePhone && "items-end gap-y-1"
+            )}
+          >
             {/* Left side buttons */}
-            <View className="flex-row items-center gap-1">
+            <View
+              className={cn(
+                "flex-row items-center gap-1",
+                isNativePhone && "min-w-0 flex-1 flex-wrap"
+              )}
+            >
               {/* Caller-supplied leading slot (e.g. project-source menu
                   on the home composer). Rendered before built-in
                   controls so it reads as "what am I creating?" prior to
@@ -793,17 +817,27 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   <Pressable
                     {...triggerProps}
                     disabled={disabled}
-                    className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
+                    className={cn(
+                      "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                      isNativePhone && "min-w-0"
+                    )}
+                    style={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
                   >
-                    <Text className="text-xs text-muted-foreground">
-                      {resolveShortName(currentModelId)}
+                    <Text
+                      className="text-xs text-muted-foreground"
+                      numberOfLines={1}
+                    >
+                      {isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
                     </Text>
-                    <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
+                    <ChevronDown className="h-2 w-2 flex-shrink-0 text-muted-foreground/60" size={8} />
                   </Pressable>
                 )}
               >
                 <PopoverBackdrop />
-                <PopoverContent className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none">
+                <PopoverContent
+                  className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
+                  style={isNativePhone ? { width: 136 } : undefined}
+                >
                   <ModelPickerMenu
                     currentModelId={currentModelId}
                     effectiveIsPro={effectiveIsPro}
@@ -818,7 +852,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
             {/* Right side buttons */}
             {voiceInput.isRecording ? (
-              <View className="flex-row items-center gap-2">
+              <View className="flex-row flex-shrink-0 items-center gap-2">
                 <VoiceWaveform />
                 <Pressable
                   onPress={() => voiceInput.toggleRecording().catch(() => {})}
@@ -830,7 +864,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 </Pressable>
               </View>
             ) : (
-              <View className="flex-row items-center gap-1">
+              <View className="flex-row flex-shrink-0 items-center gap-1">
                 <Pressable
                   onPress={handleAttachClick}
                   disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}

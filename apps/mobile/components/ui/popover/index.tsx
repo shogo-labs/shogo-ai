@@ -173,7 +173,7 @@ const Popover = React.forwardRef<
 const PopoverContent = React.forwardRef<
   React.ComponentRef<typeof UIPopover.Content>,
   IPopoverContentProps
->(function PopoverContent({ className, size, children, ...props }, ref) {
+>(function PopoverContent({ className, size, children, style, ...props }, ref) {
   const { size: parentSize } = useStyleContext(SCOPE);
 
   return (
@@ -191,7 +191,7 @@ const PopoverContent = React.forwardRef<
         },
       }}
       {...props}
-      style={{ pointerEvents: 'auto' }}
+      style={[style, { pointerEvents: 'auto' }]}
     >
       <View
         className={popoverContentStyle({

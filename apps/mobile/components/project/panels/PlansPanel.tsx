@@ -137,6 +137,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const planStream = usePlanStreamSafe()
   const [plans, setPlans] = useState<AgentPlanSummary[]>([])
   const [loading, setLoading] = useState(false)
+  const [plansError, setPlansError] = useState<string | null>(null)
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null)
   const [planContent, setPlanContent] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -192,11 +193,14 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
   const fetchPlans = useCallback(async () => {
     setLoading(true)
+    setPlansError(null)
     try {
       const list = await agentClient.listPlans()
       setPlans(list)
-    } catch (err) {
-      console.error("[PlansPanel] Failed to fetch plans:", err)
+    } catch (err: any) {
+      const message = err?.message || "Unable to load plans right now"
+      setPlansError(message)
+      console.log("[PlansPanel] Failed to fetch plans:", err)
     } finally {
       setLoading(false)
     }
@@ -209,7 +213,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
         const data = await agentClient.getPlan(filename)
         setPlanContent(data.content)
       } catch (err) {
-        console.error("[PlansPanel] Failed to fetch plan detail:", err)
+        console.log("[PlansPanel] Failed to fetch plan detail:", err)
         setPlanContent(null)
       } finally {
         setDetailLoading(false)
@@ -228,7 +232,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           setPlanContent(null)
         }
       } catch (err) {
-        console.error("[PlansPanel] Failed to delete plan:", err)
+        console.log("[PlansPanel] Failed to delete plan:", err)
       }
     },
     [agentClient, selectedPlan]
@@ -277,7 +281,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       setActiveTab("summary")
     } catch (err: any) {
       const message = err?.message || "Failed to generate summary"
-      console.error("[PlansPanel] Summary generation failed:", err)
+      console.log("[PlansPanel] Summary generation failed:", err)
       setTranslateError(message)
     } finally {
       setTranslateLoading((cur) => (cur === selectedPlan ? null : cur))
@@ -369,7 +373,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       !isSummarizingThisPlan
 
     return (
-      <View className="flex-1 bg-background">
+      <View className="flex-1 bg-background" style={{ alignSelf: "stretch", width: "100%", height: "100%" }}>
         {/* Detail header */}
         <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border" style={{ zIndex: 10, overflow: "visible" as any }}>
           <Pressable
@@ -612,7 +616,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
   // List view
   return (
-    <View className="flex-1 bg-background">
+    <View className="flex-1 bg-background" style={{ alignSelf: "stretch", width: "100%", height: "100%" }}>
       {/* Header */}
       <View className="flex-row items-center justify-between px-4 py-3 border-b border-border">
         <View className="flex-row items-center gap-2">
@@ -674,7 +678,17 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       </View>
 
       {/* List */}
-      <ScrollView className="flex-1">
+      <ScrollView
+        className="flex-1"
+        style={{ flex: 1, alignSelf: "stretch", width: "100%" }}
+        contentContainerStyle={{
+          flexGrow: 1,
+          justifyContent:
+            filteredPlans.length === 0 && !planStream?.streamingPlan
+              ? "center"
+              : "flex-start",
+        }}
+      >
         {/* Streaming plan — clickable list entry that opens the detail view */}
         {planStream?.streamingPlan ? (
           <Pressable
@@ -695,7 +709,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             </View>
           </Pressable>
         ) : planStream?.isPlanStreaming && filteredPlans.length === 0 && !loading ? (
-          <View className="items-center justify-center py-12 px-4">
+          <View className="items-center justify-center px-4">
             <ActivityIndicator className="mb-3" />
             <Text className="text-sm text-muted-foreground text-center">
               Shogo is researching...
@@ -716,8 +730,21 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
         {loading && !planStream?.isPlanStreaming ? (
           <ActivityIndicator className="mt-8" />
+        ) : plansError && filteredPlans.length === 0 && !planStream?.isPlanStreaming && !planStream?.streamingPlan ? (
+          <View className="items-center justify-center px-4">
+            <ClipboardList className="h-8 w-8 text-muted-foreground/40 mb-3" size={32} />
+            <Text className="text-sm text-muted-foreground text-center">
+              Plans are unavailable
+            </Text>
+            <Text className="text-xs text-muted-foreground/70 text-center mt-1">
+              {plansError}
+            </Text>
+            <Pressable onPress={fetchPlans} className="mt-4 rounded-lg border border-border px-3 py-2 active:bg-accent">
+              <Text className="text-xs font-medium text-foreground">Try again</Text>
+            </Pressable>
+          </View>
         ) : filteredPlans.length === 0 && !planStream?.isPlanStreaming && !planStream?.streamingPlan ? (
-          <View className="items-center justify-center py-12 px-4">
+          <View className="items-center justify-center px-4">
             <ClipboardList className="h-8 w-8 text-muted-foreground/40 mb-3" size={32} />
             <Text className="text-sm text-muted-foreground text-center">
               {searchQuery ? "No plans match your search" : "No plans yet"}

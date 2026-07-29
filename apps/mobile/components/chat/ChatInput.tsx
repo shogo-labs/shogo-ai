@@ -23,6 +23,7 @@ import {
   Image,
   ScrollView,
   Platform,
+  useWindowDimensions,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -137,6 +138,17 @@ function WebTooltip({ label, children }: { label: string; children: React.ReactN
 
 const MIN_INPUT_HEIGHT = 60
 const MAX_INPUT_HEIGHT = 200
+
+function compactNativeModelLabel(modelId: string): string {
+  const label = resolveShortName(modelId)
+  const lower = label.toLowerCase()
+  if (lower.includes("haiku")) return "Haiku"
+  if (lower.includes("sonnet")) return "Sonnet"
+  if (lower.includes("opus")) return "Opus"
+  if (lower.includes("gemini")) return "Gemini"
+  if (lower.includes("gpt")) return "GPT"
+  return label.length > 12 ? `${label.slice(0, 9)}…` : label
+}
 
 interface AttachedFile {
   id: string
@@ -430,7 +442,10 @@ function ChatInputImpl({
   flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
+  const { width: windowWidth } = useWindowDimensions()
   const effectiveIsPro = features.billing ? isPro : true
+  const isNativePhone = Platform.OS !== "web" && windowWidth < 600
+  const modelTriggerMaxWidth = Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
 
   const bridge = useChatBridgeOptional()
   const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
@@ -2009,9 +2024,19 @@ function ChatInputImpl({
         </View>
 
         {/* Bottom toolbar */}
-        <View className="flex-row items-center justify-between p-1.5">
+        <View
+          className={cn(
+            "flex-row items-center justify-between p-1.5",
+            isNativePhone && "items-end gap-y-1"
+          )}
+        >
           {/* Left side buttons */}
-          <View className="flex-row items-center gap-1">
+          <View
+            className={cn(
+              "flex-row items-center gap-1",
+              isNativePhone && "min-w-0 flex-1 flex-wrap"
+            )}
+          >
             {/* Interaction mode selector (Agent / Plan / Ask) */}
             <Popover
               placement="top"
@@ -2258,17 +2283,27 @@ function ChatInputImpl({
                 <Pressable
                   {...triggerProps}
                   disabled={disabled}
-                  className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
+                  className={cn(
+                    "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                    isNativePhone && "min-w-0"
+                  )}
+                  style={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
                 >
-                  <Text className="text-xs text-muted-foreground">
-                    {resolveShortName(currentModelId)}
+                  <Text
+                    className="text-xs text-muted-foreground"
+                    numberOfLines={1}
+                  >
+                    {isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
                   </Text>
-                  <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
+                  <ChevronDown className="h-2 w-2 flex-shrink-0 text-muted-foreground/60" size={8} />
                 </Pressable>
               )}
             >
               <PopoverBackdrop />
-              <PopoverContent className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none">
+              <PopoverContent
+                className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
+                style={isNativePhone ? { width: 136 } : undefined}
+              >
                 <ModelPickerMenu
                   currentModelId={currentModelId}
                   effectiveIsPro={effectiveIsPro}
@@ -2284,7 +2319,7 @@ function ChatInputImpl({
 
           {/* Right side buttons */}
           {voiceInput.isRecording ? (
-            <View className="flex-row items-center gap-2">
+            <View className="flex-row flex-shrink-0 items-center gap-2">
               <VoiceWaveform />
               <Pressable
                 onPress={() => voiceInput.toggleRecording().catch(() => {})}
@@ -2296,7 +2331,7 @@ function ChatInputImpl({
               </Pressable>
             </View>
           ) : (
-          <View className="flex-row items-center gap-1">
+          <View className="flex-row flex-shrink-0 items-center gap-1">
             {contextUsage && (
               <ContextTracker
                 inputTokens={contextUsage.inputTokens}
