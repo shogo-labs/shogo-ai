@@ -1144,7 +1144,7 @@ export default observer(function ProjectLayout() {
             return
           }
           openTabsRestoredRef.current = true
-          setTabsHydration('restored-empty')
+          setTabsHydration(Platform.OS !== 'web' && nativePhone ? 'fresh' : 'restored-empty')
           return
         }
       } catch { /* ignore malformed data */ }
@@ -1155,7 +1155,7 @@ export default observer(function ProjectLayout() {
       openTabsRestoredRef.current = true
       setTabsHydration('fresh')
     })
-  }, [projectId])
+  }, [projectId, nativePhone])
 
   // Persist open tabs to AsyncStorage on every change, including `[]`.
   // Storing the explicit empty array is what lets the next mount distinguish
@@ -1417,6 +1417,13 @@ export default observer(function ProjectLayout() {
   const [attentionTab, setAttentionTab] = useState<string | null>(null)
   const effectiveTab = attentionTab ?? previewTab
 
+  useEffect(() => {
+    if (Platform.OS !== 'web' && nativePhone && !isWide) {
+      setActiveTab('chat')
+      setNarrowChatPickerOpen(false)
+    }
+  }, [projectId, nativePhone, isWide])
+
   // Close the narrow picker as soon as the layout shifts off the chat tab
   // (e.g. user switched to canvas, or the viewport widened into split mode).
   useEffect(() => {
@@ -1518,6 +1525,11 @@ export default observer(function ProjectLayout() {
     if (!projectId || !project) return
     if (previewTabInitForRef.current === projectId) return
     previewTabInitForRef.current = projectId
+    if (Platform.OS !== 'web' && nativePhone && !isWide) {
+      setPreviewTab('chat-fullscreen')
+      AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
+      return
+    }
     AsyncStorage.getItem(`${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`).then((saved) => {
       // Legacy values written before the v1 dynamic-app -> canvas tab rename
       // (chore/remove-canvas-v1) get normalized on read so existing users don't
@@ -1537,7 +1549,7 @@ export default observer(function ProjectLayout() {
     }).catch(() => {})
     // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
     AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
-  }, [projectId, project, isExternalProject])
+  }, [projectId, project, isExternalProject, nativePhone, isWide])
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
@@ -2618,6 +2630,11 @@ export default observer(function ProjectLayout() {
     />
   )
 
+  const nativePhoneChatViewportHeight =
+    Platform.OS !== 'web' && nativePhone && !isWide
+      ? Math.max(0, height - insets.top - insets.bottom - 24)
+      : undefined
+
   const chatPanels = (
     <>
       {openChatTabIds.map((tabId) => {
@@ -2628,7 +2645,13 @@ export default observer(function ProjectLayout() {
           <View
             key={tabId}
             className="flex-1"
-            style={!isActive ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 } : undefined}
+            style={
+              !isActive
+                ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 }
+                : nativePhoneChatViewportHeight
+                  ? { height: nativePhoneChatViewportHeight }
+                  : undefined
+            }
             pointerEvents={isActive ? 'auto' : 'none'}
           >
             <PanelErrorBoundary panelName="Chat">

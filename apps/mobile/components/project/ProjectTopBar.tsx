@@ -51,7 +51,6 @@ import {
   MessageSquare,
   LayoutDashboard,
   Code2,
-  FolderOpen,
   Sliders,
   Radio,
   Activity,
@@ -104,7 +103,7 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
   ...(Platform.OS === 'web'
     ? [{ id: 'ide', label: 'IDE', icon: Code2 }]
-    : [{ id: 'files', label: 'Files', icon: FolderOpen }]),
+    : [{ id: 'files', label: 'Files', icon: Code2 }]),
   { id: 'plans', label: 'Plans', icon: ClipboardList },
   // Folders, Capabilities, Channels, Agents, Monitor, Checkpoints all
   // live behind this Settings tab now (rendered by SettingsPanel with a
@@ -439,7 +438,7 @@ export function ProjectTopBar({
   const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [
     ...narrowOverflowTabs.map(t => ({ id: t.id, label: t.label })),
-    ...(!hasActiveSubscription ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
+    ...(!hasActiveSubscription && !(Platform.OS !== 'web' && isNativePhone) ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
   ]
 
   const handleTabPress = useCallback((tabId: string) => {
@@ -528,14 +527,14 @@ export function ProjectTopBar({
                   )}
                   style={[
                     (triggerProps as { style?: StyleProp<ViewStyle> }).style,
-                    isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth } : undefined,
+                    isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth, alignSelf: 'flex-start' } : undefined,
                   ]}
                   accessibilityLabel="Switch project"
                   testID="project-switcher-trigger"
                 >
                   <Text
                     className="text-xs font-semibold text-foreground"
-                    style={isNativePhone ? { flex: 1, minWidth: 0 } : undefined}
+                    style={isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth - 18 } : undefined}
                     numberOfLines={1}
                     ellipsizeMode="tail"
                   >
