@@ -87,9 +87,9 @@ import { ProjectExportModal } from './ProjectExportModal'
 /** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
 const nativeNarrowTitleMaxWidth = 132
 
-/** Native narrow top bar only (not web): slimmer than 320px desktop popover, capped to screen width. */
+/** Native narrow top bar only (not web): keep the project menu wide enough for the account row and usage card. */
 function narrowProjectDropdownWidth(screenWidth: number): number {
-  return Math.max(232, Math.min(276, screenWidth - 20))
+  return Math.max(300, Math.min(320, screenWidth - 96))
 }
 
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
@@ -553,7 +553,7 @@ export function ProjectTopBar({
                 }
                 style={
                   narrowNativeMenuW != null
-                    ? { width: narrowNativeMenuW, maxWidth: narrowNativeMenuW }
+                    ? { width: narrowNativeMenuW, maxWidth: narrowNativeMenuW, left: 16 }
                     : undefined
                 }
               >
