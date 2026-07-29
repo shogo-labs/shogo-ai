@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from 'react'
 import { Platform, View, StyleSheet, ActivityIndicator, Text, TouchableOpacity } from 'react-native'
 import { useCanvasThemeOptional } from './CanvasThemeContext'
+import type { CanvasThemeVariant } from './canvas-themes'
 
 interface CanvasCapabilities {
   supportsTheme: boolean
@@ -97,7 +98,7 @@ export function CanvasWebView({ agentUrl, canvasBaseUrl, onCanvasError, onCanvas
     return <CanvasIframe key={refreshKey} url={canvasUrl} agentUrl={agentUrl} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
   }
 
-  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
+  return <CanvasNativeWebView key={refreshKey} url={canvasUrl} agentUrl={agentUrl} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +107,7 @@ export function CanvasWebView({ agentUrl, canvasBaseUrl, onCanvasError, onCanvas
 
 interface ThemeMessage {
   type: 'canvas-theme'
-  variables: Record<string, string>
+  variables: CanvasThemeVariant
   isDark: boolean
 }
 
@@ -129,7 +130,7 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
   const [error, setError] = useState<{ phase: string; message: string } | null>(null)
   const [refreshCount, setRefreshCount] = useState(0)
 
-  const sendToIframe = useCallback((msg: Record<string, unknown>) => {
+  const sendToIframe = useCallback((msg: unknown) => {
     iframeRef.current?.contentWindow?.postMessage(msg, '*')
   }, [])
 
@@ -239,15 +240,30 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
   const WebView = require('react-native-webview').default
   const webViewRef = useRef<any>(null)
   const readyRef = useRef(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<{ phase: string; message: string } | null>(null)
 
-  const sendToWebView = useCallback((msg: Record<string, unknown>) => {
+  const sendToWebView = useCallback((msg: unknown) => {
     webViewRef.current?.postMessage(JSON.stringify(msg))
   }, [])
+
+  useEffect(() => {
+    readyRef.current = false
+    setLoading(true)
+    setError(null)
+  }, [url])
 
   // Send theme when it changes
   useEffect(() => {
     if (themeMessage && readyRef.current) sendToWebView(themeMessage)
   }, [themeMessage, sendToWebView])
+
+  const handleRetry = useCallback(() => {
+    readyRef.current = false
+    setError(null)
+    setLoading(true)
+    webViewRef.current?.reload?.()
+  }, [])
 
   const onMessage = useCallback((e: any) => {
     try {
@@ -255,6 +271,8 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
 
       if (msg.type === 'canvas-ready') {
         readyRef.current = true
+        setLoading(false)
+        setError(null)
         if (themeMessage) sendToWebView(themeMessage)
       } else if (msg.type === 'canvas-capabilities') {
         onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
@@ -263,20 +281,34 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
         const recentActions = Array.isArray(msg.recentActions)
           ? (msg.recentActions as CanvasErrorAction[])
           : undefined
+        const message = msg.error as string
         postCanvasError(agentUrl, {
           phase: msg.phase as string,
-          error: msg.error as string,
+          error: message,
           route,
           recentActions,
         })
+        setLoading(false)
+        setError({ phase: msg.phase as string, message })
         onCanvasError?.(
           msg.phase as 'compile' | 'runtime',
-          msg.error as string,
+          message,
           { route, recentActions },
         )
       }
     } catch {}
   }, [agentUrl, sendToWebView, themeMessage, onCanvasError, onCanvasCapabilities])
+
+  const onNativeLoadEnd = useCallback(() => {
+    // The canvas runtime normally sends `canvas-ready`. If that bridge message
+    // is delayed, keep the centered loading state instead of showing a blank WebView.
+  }, [])
+
+  const onNativeError = useCallback((e: any) => {
+    const message = e?.nativeEvent?.description || e?.nativeEvent?.domain || 'Unable to load preview'
+    setLoading(false)
+    setError({ phase: 'runtime', message })
+  }, [])
 
   return (
     <View style={styles.container}>
@@ -287,10 +319,32 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
         javaScriptEnabled={true}
         domStorageEnabled={true}
         onMessage={onMessage}
+        onLoadEnd={onNativeLoadEnd}
+        onError={onNativeError}
         originWhitelist={['*']}
         allowsInlineMediaPlayback={true}
         mediaPlaybackRequiresUserAction={false}
       />
+      {loading && !error && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#888" />
+          <Text style={styles.loadingText}>Loading preview…</Text>
+        </View>
+      )}
+      {error && (
+        <View style={styles.errorOverlay}>
+          <Text style={styles.errorIcon}>⚠️</Text>
+          <Text style={styles.errorTitle}>
+            {error.phase === 'compile' ? 'Build Error' : 'Runtime Error'}
+          </Text>
+          <Text style={styles.errorMessage} numberOfLines={4}>
+            {error.message}
+          </Text>
+          <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   )
 }
