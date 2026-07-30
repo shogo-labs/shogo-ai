@@ -3208,7 +3208,7 @@ export default observer(function ProjectLayout() {
                       )
                     )}
                     {!showEmptyChatState && narrowChatPickerOpen && !isWide && activeTab === 'chat' && (
-                      <View className="absolute inset-0 bg-background">
+                      <View className="absolute inset-0 bg-background" style={{ width: '100%' }}>
                         <ChatSessionSidebar
                           sessions={chatSessions}
                           currentSessionId={chatSessionId ?? undefined}
@@ -3233,6 +3233,7 @@ export default observer(function ProjectLayout() {
                           streamingSessionIds={streamingTabIds}
                           completedSessionIds={completedTabIds}
                           projectId={projectId ?? undefined}
+                          mobileFullscreen={enableNativePhoneChatPicker}
                         />
                       </View>
                     )}
