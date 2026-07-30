@@ -7,6 +7,8 @@ import {
   Platform,
   Alert,
   StyleSheet,
+  Keyboard,
+  TouchableWithoutFeedback,
   useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
@@ -828,7 +830,7 @@ const HomeScreen = observer(function HomeScreen() {
     )
   }
 
-  return (
+  const screen = (
     <View className="flex-1 bg-background">
       <View className="relative flex-1 items-center justify-center px-4">
         <LovableGradient isDark={isDark} />
@@ -898,6 +900,14 @@ const HomeScreen = observer(function HomeScreen() {
         </View>
       </View>
     </View>
+  )
+
+  if (Platform.OS === 'web') return screen
+
+  return (
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+      {screen}
+    </TouchableWithoutFeedback>
   )
 })
 

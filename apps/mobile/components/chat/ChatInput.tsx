@@ -1180,6 +1180,14 @@ function ChatInputImpl({
     textInputRef.current?.focus()
   }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush])
 
+  const handleSubmitEditing = useCallback(() => {
+    if (Platform.OS === "web") {
+      handleSubmit()
+      return
+    }
+    textInputRef.current?.blur()
+  }, [handleSubmit])
+
   // Applies a resolved "text" change's state commits. Shared by the fast
   // (synchronous) and slow (coalesced) paths in `handleChangeText`.
   const applyTextChange = useCallback(
@@ -1956,7 +1964,7 @@ function ChatInputImpl({
             // Keep the inline-mention overlay aligned once the box scrolls.
             setOverlayScrollY((e.nativeEvent as any)?.contentOffset?.y ?? 0)
           }}
-          onSubmitEditing={handleSubmit}
+          onSubmitEditing={handleSubmitEditing}
           onKeyPress={(e: any) => {
             // While the "@" menu is open, intercept navigation keys so they
             // drive the menu instead of the textarea / message submit.
@@ -2004,7 +2012,8 @@ function ChatInputImpl({
           accessibilityLabel="Chat message input"
           editable={!disabled && !voiceInput.isRecording}
           multiline
-          blurOnSubmit={false}
+          blurOnSubmit={Platform.OS !== "web"}
+          returnKeyType={Platform.OS === "web" ? undefined : "done"}
           onContentSizeChange={(e) => {
             const h = e.nativeEvent.contentSize.height
             const clamped = Math.min(MAX_INPUT_HEIGHT, Math.max(MIN_INPUT_HEIGHT, h))
