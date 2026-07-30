@@ -469,12 +469,14 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   onNavPress,
   isPinned,
   onTogglePin,
+  mobileProjectFirstTapShowsChats,
 }: {
   project: any
   collapsed?: boolean
   onNavPress?: () => void
   isPinned?: boolean
   onTogglePin?: (projectId: string, next: boolean) => void
+  mobileProjectFirstTapShowsChats?: boolean
 }) {
   const router = useRouter()
   const pathname = usePathname()
@@ -647,6 +649,15 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
     }
     onNavPress?.()
   }, [router, project, onNavPress, isActive])
+
+  const handleProjectPress = useCallback(() => {
+    if (mobileProjectFirstTapShowsChats && !isActive && !expanded) {
+      setExpanded(true)
+      void loadChats()
+      return
+    }
+    openProject()
+  }, [expanded, isActive, loadChats, mobileProjectFirstTapShowsChats, openProject])
 
   // Select a chat. If its project is already open, switch IN PLACE via the
   // event bus (no navigation / remount). Otherwise navigate to the project
@@ -850,12 +861,24 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
         >
 
           <Pressable
-            onPress={openProject}
+            onPress={handleProjectPress}
             role="link"
             accessibilityLabel={`Project: ${project.name || 'Untitled'}`}
+            accessibilityHint={
+              mobileProjectFirstTapShowsChats && !isActive && !expanded
+                ? 'Shows chats for this project. Tap again to open the project.'
+                : undefined
+            }
             className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70 min-w-0"
             {...(Platform.OS === 'web' ? ({ onContextMenu: handleContextMenu } as any) : {})}
           >
+            {mobileProjectFirstTapShowsChats && (
+              expanded ? (
+                <ChevronDown size={10} className="text-muted-foreground shrink-0" />
+              ) : (
+                <ChevronRight size={10} className="text-muted-foreground shrink-0" />
+              )
+            )}
             <Folder size={12} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
             <Text
               className={cn('text-xs flex-1', isActive ? 'text-foreground' : 'text-foreground')}
@@ -2136,6 +2159,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                   onNavPress={onNavPress}
                   isPinned={pinnedProjectIds.has(project.id)}
                   onTogglePin={handleToggleProjectPin}
+                  mobileProjectFirstTapShowsChats={isPhoneDrawer}
                 />
               ))}
               {!collapsed && workspaceProjects.length > MAX_VISIBLE_PROJECTS && (hiddenProjectCount > 0 || showAllProjects) && (

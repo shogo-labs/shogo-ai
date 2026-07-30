@@ -2743,6 +2743,7 @@ export default observer(function ProjectLayout() {
   const nativePhoneCanvasFrame = Platform.OS !== 'web' && nativePhone && !isWide && activeTab === 'canvas'
   const nativePhoneStandalonePanel = nativePhoneCanvasFrame && STANDALONE_PANELS.includes(effectiveTab)
   const nativePhonePlansOverlay = nativePhoneCanvasFrame && effectiveTab === 'plans'
+  const enableNativePhoneChatPicker = Platform.OS !== 'web' && nativePhone && !isWide
 
   // Defined after `chatHidden` so it can drive the canvas's `fullBleed`
   // prop — see comment on `fullBleed` for why the iframe's left margin
@@ -2801,12 +2802,22 @@ export default observer(function ProjectLayout() {
     onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
     chatPanelWidth: clampChatWidth(chatPanelWidth),
-    // Fullscreen no longer renders its own chat-history rail (the app sidebar
-    // owns chat browsing now), so the top bar's left zone drops back to a
-    // content-width project switcher and the in-bar chat search is gone.
-    // Narrow chat picker is disabled too — phones use the drawer sidebar.
-    onOpenChatSessions: undefined,
-    chatSessionsOpen: false,
+    // Web/desktop keep the app sidebar as the single chat browser. Native
+    // phones get a lightweight in-project chat picker so users can switch
+    // conversations without leaving the project screen.
+    onOpenChatSessions: enableNativePhoneChatPicker
+      ? () => {
+          setAttentionTab(null)
+          setActiveTab('chat')
+          setPreviewTab('chat-fullscreen')
+          setNarrowChatPickerOpen((open) => {
+            const next = !open
+            if (next) void refreshProjectChatSessions()
+            return next
+          })
+        }
+      : undefined,
+    chatSessionsOpen: enableNativePhoneChatPicker && narrowChatPickerOpen,
     onNewChat: isChatFullscreen ? handleCreateNewSession : undefined,
     onRenameChat: isChatFullscreen ? handleRenameChatSession : undefined,
     onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,
