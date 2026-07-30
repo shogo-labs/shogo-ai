@@ -486,6 +486,14 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       textInputRef.current?.focus()
     }, [value, disabled, isLoading, onSubmit, pendingFiles, pastedTexts, voiceInput.isBusy, setValue])
 
+    const handleSubmitEditing = useCallback(() => {
+      if (Platform.OS === "web") {
+        handleSubmit()
+        return
+      }
+      textInputRef.current?.blur()
+    }, [handleSubmit])
+
     // Fallback paste detection for platforms where the DOM paste listener
     // doesn't fire (native). If a large chunk was just inserted, pull it
     // out into a chip instead of keeping it in the TextInput.
@@ -626,7 +634,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             accessibilityLabel="Describe the agent you want to build"
             value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : value}
             onChangeText={handleChangeText}
-            onSubmitEditing={handleSubmit}
+            onSubmitEditing={handleSubmitEditing}
             onKeyPress={(e: any) => {
               if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
                 e.preventDefault()
@@ -635,7 +643,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             }}
             editable={!disabled && !isLoading && !voiceInput.isRecording}
             multiline
-            blurOnSubmit={false}
+            blurOnSubmit={Platform.OS !== "web"}
+            returnKeyType={Platform.OS === "web" ? undefined : "done"}
             onContentSizeChange={(e) => {
               const h = e.nativeEvent.contentSize.height
               const clamped = Math.min(MAX_INPUT_HEIGHT, Math.max(MIN_INPUT_HEIGHT, h))

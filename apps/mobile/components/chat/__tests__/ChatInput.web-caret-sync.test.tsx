@@ -37,6 +37,7 @@ mock.module("react-native", () => {
     ScrollView: RNW.ScrollView,
     Text: RNW.Text,
     TextInput: RNW.TextInput,
+    useWindowDimensions: RNW.useWindowDimensions,
     View: RNW.View,
   }
 })
@@ -99,7 +100,10 @@ mock.module("../../../lib/visible-models", () => ({
   resolveShortName: (modelId: string) => modelId,
   resolveTier: () => "economy",
 }))
-mock.module("../ModelPickerMenu", () => ({ ModelPickerMenu: () => null }))
+mock.module("../ModelPickerMenu", () => ({
+  ModelPickerMenu: () => null,
+  getNativeModelMenuWidth: () => 280,
+}))
 mock.module("../FileViewerModal", () => ({ FileViewerModal: () => null }))
 mock.module("../PastedTextChip", () => ({ PastedTextChip: () => null }))
 mock.module("../../voice-mode/ChatBridgeContext", () => ({
