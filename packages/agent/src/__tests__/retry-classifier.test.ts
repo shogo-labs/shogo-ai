@@ -46,6 +46,7 @@ describe('classifyRetryability — non-retryable failures', () => {
     ['401 auth', '401 Unauthorized'],
     ['403 auth', '403 {"error":{"message":"permission denied"}}'],
     ['invalid api key', 'Authentication error: invalid api key'],
+    ['provider not configured', '503 {"error":{"message":"OpenAI provider is not configured on this server."}}'],
     ['400 invalid_request', '400 {"type":"invalid_request_error","message":"bad params"}'],
     ['content policy', 'Your request was flagged by our content policy'],
     ['content_filter', 'stop_reason: content_filter'],
