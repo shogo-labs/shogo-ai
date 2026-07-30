@@ -22,7 +22,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
-import { ModelPickerMenu } from "./ModelPickerMenu"
+import { ModelPickerMenu, getNativeModelMenuWidth } from "./ModelPickerMenu"
 import {
   ArrowUp,
   Plus,
@@ -181,6 +181,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const effectiveIsPro = features.billing ? isPro : true
     const isNativePhone = Platform.OS !== "web" && windowWidth < 600
     const modelTriggerMaxWidth = Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
+    const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
 
     const [internalValue, setInternalValue] = useState("")
     const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
@@ -836,7 +837,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 <PopoverBackdrop />
                 <PopoverContent
                   className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
-                  style={isNativePhone ? { width: 136 } : undefined}
+                  style={isNativePhone ? { width: nativeModelMenuWidth } : undefined}
                 >
                   <ModelPickerMenu
                     currentModelId={currentModelId}

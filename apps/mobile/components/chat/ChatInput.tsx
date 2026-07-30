@@ -35,7 +35,7 @@ import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
 import { ContextTracker } from "./ContextTracker"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
-import { ModelPickerMenu } from "./ModelPickerMenu"
+import { ModelPickerMenu, getNativeModelMenuWidth } from "./ModelPickerMenu"
 import {
   ArrowUp,
   Plus,
@@ -446,6 +446,7 @@ function ChatInputImpl({
   const effectiveIsPro = features.billing ? isPro : true
   const isNativePhone = Platform.OS !== "web" && windowWidth < 600
   const modelTriggerMaxWidth = Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
+  const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
 
   const bridge = useChatBridgeOptional()
   const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
@@ -2302,7 +2303,7 @@ function ChatInputImpl({
               <PopoverBackdrop />
               <PopoverContent
                 className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
-                style={isNativePhone ? { width: 136 } : undefined}
+                style={isNativePhone ? { width: nativeModelMenuWidth } : undefined}
               >
                 <ModelPickerMenu
                   currentModelId={currentModelId}
