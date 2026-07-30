@@ -611,7 +611,7 @@ export function ProjectTopBar({
           />
         )}
 
-        {onOpenChatSessions && narrowActiveTab === 'chat' && (
+        {onOpenChatSessions && (
           <BarIconButton
             icon={History}
             onPress={onOpenChatSessions}

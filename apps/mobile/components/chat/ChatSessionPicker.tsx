@@ -35,7 +35,6 @@ import {
   Modal,
   ModalBackdrop,
   ModalContent,
-  ModalBody,
   ModalCloseButton,
 } from "@/components/ui/modal"
 import {
@@ -832,28 +831,30 @@ export function ChatSessionSidebar({
             </ModalCloseButton>
           </View>
 
-          <ModalBody className="mt-0 mb-0 p-0">
-            <Pressable
-              onPress={() => { onCreate(); setSearchOpen(false); setSearchQuery("") }}
-              className="flex-row items-center gap-3 px-4 py-3 bg-muted/50 hover:bg-muted"
-            >
-              <Plus className="text-primary shrink-0" size={16} />
-              <Text className="text-sm font-medium text-primary">New chat</Text>
-            </Pressable>
-
-            {filteredSessions.length === 0 && searchQuery ? (
-              <View className="py-8 items-center">
-                <Text className="text-sm text-muted-foreground">No chats found</Text>
-              </View>
-            ) : (
-              <FlatList
-                data={filteredSessions}
-                renderItem={renderSearchResult}
-                keyExtractor={(item) => item.id}
-                style={{ maxHeight: 400 }}
-              />
-            )}
-          </ModalBody>
+          <View className="mt-0 mb-0 p-0">
+            <FlatList
+              data={filteredSessions}
+              renderItem={renderSearchResult}
+              keyExtractor={(item) => item.id}
+              style={{ maxHeight: 400 }}
+              ListHeaderComponent={
+                <Pressable
+                  onPress={() => { onCreate(); setSearchOpen(false); setSearchQuery("") }}
+                  className="flex-row items-center gap-3 px-4 py-3 bg-muted/50 hover:bg-muted"
+                >
+                  <Plus className="text-primary shrink-0" size={16} />
+                  <Text className="text-sm font-medium text-primary">New chat</Text>
+                </Pressable>
+              }
+              ListEmptyComponent={
+                searchQuery ? (
+                  <View className="py-8 items-center">
+                    <Text className="text-sm text-muted-foreground">No chats found</Text>
+                  </View>
+                ) : null
+              }
+            />
+          </View>
         </ModalContent>
       </Modal>
     </View>
