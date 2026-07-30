@@ -973,11 +973,18 @@ async function resolveVisibleCatalogModels(
     // MODEL_CATALOG is a routing-only fallback, used here ONLY when the DB
     // has no models yet, so a fresh/unseeded instance is never empty.
     const dbEntries = getDbModelEntriesSync()
-    const source = dbEntries.length > 0 ? dbEntries : getMergedCatalogSync()
+    const usingStaticFallback = dbEntries.length === 0
+    const source = usingStaticFallback ? getMergedCatalogSync() : dbEntries
     return bySortOrder(
       source
         .filter((e) => e.generation === 'current')
-        .filter((e) => isModelProviderConfigured(e.provider))
+        // Provider-key gating is meaningful for admin-managed rows: if the
+        // admin has configured models but removed the backing provider key,
+        // those models should disappear from the picker. The static catalog is
+        // only a first-run fallback for an unseeded DB; gating it would make a
+        // fresh dev instance empty before the admin has had a chance to add
+        // keys or DB rows.
+        .filter((e) => usingStaticFallback || isModelProviderConfigured(e.provider))
         .map(toVisible),
     )
   }
@@ -9140,4 +9147,3 @@ if (isKubernetes()) {
     }
   })()
 }
-

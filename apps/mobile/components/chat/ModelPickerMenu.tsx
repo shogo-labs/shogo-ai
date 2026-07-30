@@ -14,7 +14,7 @@
  * reasoningEffort) served by `/api/platform/visible-models`.
  */
 import React, { useState } from "react"
-import { View, Text, Pressable, ScrollView, Platform } from "react-native"
+import { View, Text, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native"
 import { useRouter } from "expo-router"
 import { cn } from "@shogo/shared-ui/primitives"
 import { AUTO_MODEL_ID } from "@shogo/model-catalog"
@@ -55,8 +55,11 @@ function formatContextWindow(tokens?: number): string | null {
 
 /** Width of the detached web info card that floats beside the list on hover. */
 const INFO_PANEL_WIDTH = 232
-const NATIVE_MENU_WIDTH = 136
 const WEB_MENU_WIDTH = 280
+
+export function getNativeModelMenuWidth(windowWidth: number): number {
+  return Math.max(240, Math.min(WEB_MENU_WIDTH, Math.floor(windowWidth - 32)))
+}
 
 function ModelInfoPanel({ model }: { model: PickerModel }) {
   const context = formatContextWindow(model.contextWindow)
@@ -93,6 +96,8 @@ export function ModelPickerMenu({
   const models = useModelPickerList()
   const isAdmin = useIsSuperAdmin()
   const isWeb = Platform.OS === "web"
+  const { width: windowWidth } = useWindowDimensions()
+  const menuWidth = isWeb ? WEB_MENU_WIDTH : getNativeModelMenuWidth(windowWidth)
 
   // Web: which row is hovered (drives the side info panel). Native: which row
   // is expanded inline (tap the chevron to toggle).
@@ -177,7 +182,7 @@ export function ModelPickerMenu({
   }
 
   const list = (
-    <View style={{ width: isWeb ? WEB_MENU_WIDTH : NATIVE_MENU_WIDTH }}>
+    <View style={{ width: menuWidth }}>
       <ScrollView style={{ maxHeight: 340 }}>
         <AutoModelOption
           currentModelId={currentModelId}
