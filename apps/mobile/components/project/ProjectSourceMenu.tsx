@@ -29,7 +29,7 @@
  * this one element.
  */
 import React, { useCallback, useState } from 'react'
-import { Pressable, Text, View } from 'react-native'
+import { Platform, Pressable, Text, useWindowDimensions, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -56,6 +56,7 @@ export type ProjectSourceVariant = 'chip' | 'button'
 export interface ProjectSourceMenuProps {
   workspaceId: string | undefined
   variant?: ProjectSourceVariant
+  prominentMobile?: boolean
   /**
    * Handler invoked when the user picks "Blank project" from the menu.
    * On the home composer this is typically a no-op (the composer itself
@@ -76,10 +77,14 @@ export interface ProjectSourceMenuProps {
 export function ProjectSourceMenu({
   workspaceId,
   variant = 'chip',
+  prominentMobile = false,
   onSelectBlank,
   onProjectOpened,
 }: ProjectSourceMenuProps) {
   const router = useRouter()
+  const { width } = useWindowDimensions()
+  const isNativePhone = Platform.OS !== 'web' && width < 600
+  const useProminentChip = prominentMobile && isNativePhone
   const [open, setOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [cloudOpen, setCloudOpen] = useState(false)
@@ -147,15 +152,17 @@ export function ProjectSourceMenu({
         {...triggerProps}
         accessibilityLabel="Project source"
         className={cn(
-          'h-[22px] flex-row items-center gap-1 rounded-md px-1.5',
-          'border border-border/60 bg-muted/40 active:opacity-80',
+          useProminentChip
+            ? 'h-7 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-1.5'
+            : 'h-[22px] flex-row items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-1.5',
+          'active:opacity-80',
           isPicking && 'opacity-60',
         )}
         testID="project-source-menu-trigger"
       >
-        <Sparkles className="h-3 w-3 text-muted-foreground" size={12} />
-        <Text className="text-[11px] text-muted-foreground">New</Text>
-        <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
+        <Sparkles className="text-muted-foreground" size={12} />
+        <Text className={useProminentChip ? 'text-[11px] text-foreground/85' : 'text-[11px] text-muted-foreground'}>New</Text>
+        <ChevronDown className="text-muted-foreground/70" size={8} />
       </Pressable>
     ) : (
       <Pressable
