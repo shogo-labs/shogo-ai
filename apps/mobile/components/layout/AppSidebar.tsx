@@ -24,6 +24,8 @@ import {
   Linking,
   TextInput,
   Modal,
+  Animated,
+  Easing,
   useWindowDimensions,
   Platform,
   ActivityIndicator,
@@ -1670,19 +1672,23 @@ function CreateWorkspaceModal({
 interface AppSidebarProps {
   isOpen?: boolean
   onClose?: () => void
+  drawerProgress?: Animated.Value
 }
 
-export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
+export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawerProgress: externalDrawerProgress }: AppSidebarProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const router = useRouter()
   const insets = useSafeAreaInsets()
-  const isWide = width >= 768
-  const isPhoneDrawer = Platform.OS !== 'web' && !isWide
-  const drawerTopInset = isPhoneDrawer ? Math.max(insets.top, 56) : insets.top
-  const drawerBottomInset = isPhoneDrawer ? Math.max(insets.bottom, 18) : insets.bottom
-  const drawerSideInset = isPhoneDrawer ? Math.max(insets.left, 4) : 0
-  const drawerPanelWidth = isPhoneDrawer ? Math.min(288, Math.max(264, width - 48)) : undefined
+  const isWide = Platform.OS === 'web' && width >= 768
+  const isNativeDrawer = Platform.OS !== 'web' && !isWide
+  const drawerTopInset = isNativeDrawer ? Math.max(insets.top, 56) : insets.top
+  const drawerBottomInset = isNativeDrawer ? Math.max(insets.bottom, 18) : insets.bottom
+  const drawerSideInset = isNativeDrawer ? Math.max(insets.left, 4) : 0
+  const drawerPanelWidth = isNativeDrawer ? Math.min(288, Math.max(264, width - 48)) : undefined
+  const animatedDrawerWidth = drawerPanelWidth ?? 288
+  const internalDrawerProgress = useRef(new Animated.Value(0)).current
+  const drawerProgress = externalDrawerProgress ?? internalDrawerProgress
   const { features, localMode } = usePlatformConfig()
 
   const { user, signOut } = useAuth()
@@ -1887,13 +1893,39 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const workspacePlan = currentWorkspace?.id ? (allPlans[currentWorkspace.id] ?? null) : null
   const isPaidPlan = billingData.hasActiveSubscription || (workspacePlan?.planId !== 'free' && workspacePlan?.status === 'active')
 
-  const toggleCollapse = useCallback(() => {
-    if (isPhoneDrawer) {
+  useEffect(() => {
+    if (!isNativeDrawer || !isOpen) return
+    drawerProgress.setValue(0)
+    Animated.timing(drawerProgress, {
+      toValue: 1,
+      duration: 230,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start()
+  }, [drawerProgress, isNativeDrawer, isOpen])
+
+  const closeNativeDrawer = useCallback(() => {
+    if (!isNativeDrawer) {
       onClose?.()
       return
     }
+    Animated.timing(drawerProgress, {
+      toValue: 0,
+      duration: 170,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => {
+      onClose?.()
+    })
+  }, [drawerProgress, isNativeDrawer, onClose])
+
+  const toggleCollapse = useCallback(() => {
+    if (isNativeDrawer) {
+      closeNativeDrawer()
+      return
+    }
     setCollapsed((c) => !c)
-  }, [isPhoneDrawer, onClose])
+  }, [closeNativeDrawer, isNativeDrawer])
 
   const handleSwitchWorkspace = useCallback(
     (workspaceId: string) => {
@@ -1914,13 +1946,13 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
     () => {
       if (allWorkspaces.length >= 1) {
         router.push('/(app)/new-workspace' as any)
-        if (!isWide) onClose?.()
+        if (!isWide) closeNativeDrawer()
       } else {
         setCreateWorkspaceOpen(true)
-        if (!isWide) onClose?.()
+        if (!isWide) closeNativeDrawer()
       }
     },
-    [allWorkspaces.length, router, isWide, onClose]
+    [allWorkspaces.length, closeNativeDrawer, router, isWide]
   )
 
   const handleCreateWorkspaceSubmit = useCallback(
@@ -1951,8 +1983,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   }, [signOut, posthog])
 
   const onNavPress = useCallback(() => {
-    if (!isWide) onClose?.()
-  }, [isWide, onClose])
+    if (!isWide) closeNativeDrawer()
+  }, [closeNativeDrawer, isWide])
 
   const handleSearchPress = useCallback(() => {
     setCommandPaletteOpen(true)
@@ -1967,9 +1999,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       role="navigation"
       accessibilityLabel="App sidebar"
       className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}
-      style={isPhoneDrawer ? { paddingLeft: drawerSideInset, paddingRight: 4 } : undefined}
+      style={isNativeDrawer ? { paddingLeft: drawerSideInset, paddingRight: 4 } : undefined}
     >
-      {isPhoneDrawer && <View style={{ height: drawerTopInset }} />}
+      {isNativeDrawer && <View style={{ height: drawerTopInset }} />}
       {/* ── Logo Row ── */}
       <View
         className={cn(
@@ -2159,7 +2191,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                   onNavPress={onNavPress}
                   isPinned={pinnedProjectIds.has(project.id)}
                   onTogglePin={handleToggleProjectPin}
-                  mobileProjectFirstTapShowsChats={isPhoneDrawer}
+                  mobileProjectFirstTapShowsChats={isNativeDrawer}
                 />
               ))}
               {!collapsed && workspaceProjects.length > MAX_VISIBLE_PROJECTS && (hiddenProjectCount > 0 || showAllProjects) && (
@@ -2217,7 +2249,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             <AccountMenu
               user={user}
               onSignOut={handleSignOut}
-              onNavigate={(href) => { if (!isWide) onClose?.(); router.push(href as any); onNavPress() }}
+              onNavigate={(href) => { router.push(href as any); onNavPress() }}
               isSuperAdmin={hasAdminAccess}
               isWide={isWide}
               bottomInset={drawerBottomInset}
@@ -2410,33 +2442,45 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   if (!isOpen) return null
 
-  if (isPhoneDrawer) {
+  if (isNativeDrawer) {
+    const drawerTranslateX = drawerProgress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [-animatedDrawerWidth, 0],
+    })
+
     return (
       <Modal
         visible={isOpen}
         transparent
         animationType="none"
         statusBarTranslucent
-        onRequestClose={onClose}
+        onRequestClose={closeNativeDrawer}
       >
-        <View
-          onStartShouldSetResponder={() => true}
-          onResponderRelease={onClose}
-          style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.5)' }}
-        >
-          <View
-            style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, flexDirection: 'row' }}
+        <View style={{ flex: 1 }}>
+          <Pressable
+            onPress={closeNativeDrawer}
+            style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
           >
-            <View
-              onStartShouldSetResponder={() => true}
+            <Animated.View
+              pointerEvents="none"
               style={[
-                { height: '100%', zIndex: 10 },
-                drawerPanelWidth ? { width: drawerPanelWidth } : null,
+                { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(0,0,0,0.58)' },
+                { opacity: drawerProgress },
               ]}
-            >
-              {sidebarContent}
-            </View>
-          </View>
+            />
+          </Pressable>
+          <Animated.View
+            style={[
+              {
+                height: '100%',
+                zIndex: 10,
+                width: animatedDrawerWidth,
+                transform: [{ translateX: drawerTranslateX }],
+              },
+            ]}
+          >
+            {sidebarContent}
+          </Animated.View>
         </View>
       </Modal>
     )

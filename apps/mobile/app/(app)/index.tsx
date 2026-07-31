@@ -8,7 +8,11 @@ import {
   Alert,
   StyleSheet,
   Keyboard,
+  KeyboardAvoidingView,
+  Animated,
+  Easing,
   TouchableWithoutFeedback,
+  useColorScheme,
   useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
@@ -47,6 +51,7 @@ import { getPendingLicenseCode, clearPendingLicenseCode } from '../../lib/pendin
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 import { TechStackPicker } from '../../components/chat/TechStackPicker'
+import { useTheme } from '../../contexts/theme'
 
 /**
  * Default tech stack for blank projects created from the home composer.
@@ -64,12 +69,11 @@ const DEFAULT_TECH_STACK_ID = 'react-app'
  */
 type HomeListing = AgentTileListing & { description?: string }
 
-/**
- * Reads the dark class directly from the DOM and observes mutations.
- * Avoids relying on React context which MobX observer() can swallow.
- */
+/** Resolves the selected app theme on native and the active DOM theme on web. */
 function useDarkMode() {
-  const [isDark, setIsDark] = useState(() => {
+  const systemColorScheme = useColorScheme()
+  const { theme } = useTheme()
+  const [isWebDark, setIsWebDark] = useState(() => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
       return document.documentElement.classList.contains('dark')
     }
@@ -77,14 +81,15 @@ function useDarkMode() {
   })
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return
-    setIsDark(document.documentElement.classList.contains('dark'))
+    setIsWebDark(document.documentElement.classList.contains('dark'))
     const obs = new MutationObserver(() => {
-      setIsDark(document.documentElement.classList.contains('dark'))
+      setIsWebDark(document.documentElement.classList.contains('dark'))
     })
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
     return () => obs.disconnect()
   }, [])
-  return isDark
+  if (Platform.OS === 'web') return isWebDark
+  return theme === 'dark' || (theme === 'system' && systemColorScheme === 'dark')
 }
 
 const GRADIENT_CSS = `
@@ -122,10 +127,13 @@ function generateProjectNameFromPrompt(prompt: string): string {
 
 const LovableGradient = memo(function LovableGradient({ isDark }: { isDark: boolean }) {
   if (Platform.OS !== 'web') {
+    const baseColors: [string, string, string, string] = isDark
+      ? ['#101820', '#1e2027', '#3a2229', '#4a241f']
+      : ['#edf3f8', '#ebe8ed', '#f3e1e8', '#f5e1d8']
     return (
       <View style={styles.gradientLayer} pointerEvents="none">
         <LinearGradient
-          colors={['#101820', '#1e2027', '#3a2229', '#4a241f']}
+          colors={baseColors}
           locations={[0, 0.36, 0.68, 1]}
           start={{ x: 0, y: 0.05 }}
           end={{ x: 1, y: 1 }}
@@ -134,20 +142,20 @@ const LovableGradient = memo(function LovableGradient({ isDark }: { isDark: bool
         <Svg width="100%" height="100%" style={StyleSheet.absoluteFill}>
           <Defs>
             <RadialGradient id="orb1" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor="rgb(96,165,250)" stopOpacity={0.34} />
-              <Stop offset="45%" stopColor="rgb(147,197,253)" stopOpacity={0.16} />
+              <Stop offset="0%" stopColor="rgb(96,165,250)" stopOpacity={isDark ? 0.34 : 0.2} />
+              <Stop offset="45%" stopColor="rgb(147,197,253)" stopOpacity={isDark ? 0.16 : 0.1} />
               <Stop offset="100%" stopColor="rgb(96,165,250)" stopOpacity={0} />
             </RadialGradient>
             <RadialGradient id="orb2" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor="rgb(244,114,182)" stopOpacity={0.38} />
-              <Stop offset="34%" stopColor="rgb(251,113,133)" stopOpacity={0.26} />
-              <Stop offset="65%" stopColor="rgb(249,115,22)" stopOpacity={0.16} />
+              <Stop offset="0%" stopColor="rgb(244,114,182)" stopOpacity={isDark ? 0.38 : 0.2} />
+              <Stop offset="34%" stopColor="rgb(251,113,133)" stopOpacity={isDark ? 0.26 : 0.14} />
+              <Stop offset="65%" stopColor="rgb(249,115,22)" stopOpacity={isDark ? 0.16 : 0.08} />
               <Stop offset="100%" stopColor="rgb(244,114,182)" stopOpacity={0} />
             </RadialGradient>
             <RadialGradient id="orb3" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor="rgb(251,113,133)" stopOpacity={0.28} />
-              <Stop offset="35%" stopColor="rgb(236,72,153)" stopOpacity={0.18} />
-              <Stop offset="65%" stopColor="rgb(249,115,22)" stopOpacity={0.12} />
+              <Stop offset="0%" stopColor="rgb(251,113,133)" stopOpacity={isDark ? 0.28 : 0.15} />
+              <Stop offset="35%" stopColor="rgb(236,72,153)" stopOpacity={isDark ? 0.18 : 0.1} />
+              <Stop offset="65%" stopColor="rgb(249,115,22)" stopOpacity={isDark ? 0.12 : 0.06} />
               <Stop offset="100%" stopColor="rgb(251,113,133)" stopOpacity={0} />
             </RadialGradient>
           </Defs>
@@ -252,9 +260,11 @@ const HomeScreen = observer(function HomeScreen() {
   const http = useDomainHttp()
   const actions = useDomainActions()
   const isDark = useDarkMode()
-  const { width: screenWidth } = useWindowDimensions()
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions()
   const isMobile = screenWidth < 640
   const isNativePhone = Platform.OS !== 'web' && isMobile
+  const homeEntrance = useRef(new Animated.Value(Platform.OS === 'web' ? 1 : 0)).current
+  const homeKeyboardLift = useRef(new Animated.Value(0)).current
 
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
@@ -273,6 +283,58 @@ const HomeScreen = observer(function HomeScreen() {
   useEffect(() => {
     techStackIdRef.current = techStackId
   }, [techStackId])
+
+  useEffect(() => {
+    if (!isNativePhone) {
+      homeEntrance.setValue(1)
+      return
+    }
+    homeEntrance.setValue(0)
+    Animated.timing(homeEntrance, {
+      toValue: 1,
+      duration: 360,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start()
+  }, [homeEntrance, isNativePhone])
+
+  useEffect(() => {
+    if (!isNativePhone) {
+      homeKeyboardLift.setValue(0)
+      return
+    }
+
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
+
+    const showSub = Keyboard.addListener(showEvent, (event) => {
+      const keyboardHeight = event.endCoordinates?.height ?? Math.round(screenHeight * 0.38)
+      const lift = Math.min(
+        Math.round(screenHeight * 0.22),
+        Math.max(112, Math.round(keyboardHeight * 0.44)),
+      )
+      Animated.timing(homeKeyboardLift, {
+        toValue: -lift,
+        duration: event.duration ?? 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start()
+    })
+
+    const hideSub = Keyboard.addListener(hideEvent, (event) => {
+      Animated.timing(homeKeyboardLift, {
+        toValue: 0,
+        duration: event.duration ?? 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start()
+    })
+
+    return () => {
+      showSub.remove()
+      hideSub.remove()
+    }
+  }, [homeKeyboardLift, isNativePhone, screenHeight])
 
   /**
    * Draft project the homepage opens behind the scenes for a creation
@@ -781,11 +843,19 @@ const HomeScreen = observer(function HomeScreen() {
   // value, mobx ticks, etc.).
   const heroTitleStyle = useMemo(
     () => ({
-      fontSize: isMobile ? 26 : 36,
-      lineHeight: isMobile ? 34 : 44,
-      letterSpacing: -0.5,
+      fontSize: isNativePhone ? 28 : isMobile ? 26 : 36,
+      lineHeight: isNativePhone ? 35 : isMobile ? 34 : 44,
+      letterSpacing: isNativePhone ? -0.35 : -0.5,
+      ...(isNativePhone
+        ? {
+            color: isDark ? '#f8fafc' : '#273244',
+            textShadowColor: isDark ? 'rgba(0,0,0,0.28)' : 'rgba(255,255,255,0.5)',
+            textShadowOffset: { width: 0, height: 2 },
+            textShadowRadius: 12,
+          }
+        : {}),
     }),
-    [isMobile],
+    [isDark, isMobile, isNativePhone],
   )
   const heroSubtitleStyle = useMemo(
     () => ({ fontSize: isMobile ? 14 : 16 }),
@@ -835,12 +905,28 @@ const HomeScreen = observer(function HomeScreen() {
       <View className="relative flex-1 items-center justify-center px-4">
         <LovableGradient isDark={isDark} />
 
-        <View
+        <Animated.View
           className="relative w-full items-center justify-center"
-          style={CONTENT_MAX_WIDTH}
+          style={[
+            CONTENT_MAX_WIDTH,
+            isNativePhone
+              ? {
+                  opacity: homeEntrance,
+                  transform: [
+                    { translateY: homeKeyboardLift },
+                    {
+                      scale: homeEntrance.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0.985, 1],
+                      }),
+                    },
+                  ],
+                }
+              : null,
+          ]}
         >
           <Text
-            className="text-center font-bold mb-2 text-foreground"
+            className={`text-center font-bold text-foreground ${isNativePhone ? 'mb-3' : 'mb-2'}`}
             style={heroTitleStyle}
           >
             What's on your mind, {firstName}?
@@ -865,6 +951,8 @@ const HomeScreen = observer(function HomeScreen() {
                   ? handleStartVoiceProjectCreation
                   : undefined
               }
+              prominentMobile={isNativePhone}
+              prominentColorScheme={isDark ? 'dark' : 'light'}
               // Consolidated "where does this project come from?" entry
               // point. Sits at the leftmost edge of the toolbar so it
               // reads as "what am I creating?" before model + mode.
@@ -877,13 +965,14 @@ const HomeScreen = observer(function HomeScreen() {
                 <View
                   className={
                     isNativePhone
-                      ? "min-w-0 flex-row flex-wrap items-center gap-1"
+                      ? "min-w-0 flex-row items-center gap-1"
                       : "flex-row items-center gap-1"
                   }
                 >
                   <ProjectSourceMenu
                     workspaceId={currentWorkspace?.id}
                     variant="chip"
+                    prominentMobile={isNativePhone}
                   />
                   {/* Tech stack for the project this composer will create.
                       Persisted into settings.techStackId on Send so the
@@ -892,12 +981,13 @@ const HomeScreen = observer(function HomeScreen() {
                     value={techStackId}
                     onChange={handleTechStackChange}
                     disabled={isCreating}
+                    prominentMobile={isNativePhone}
                   />
                 </View>
               }
             />
           </View>
-        </View>
+        </Animated.View>
       </View>
     </View>
   )
@@ -906,7 +996,14 @@ const HomeScreen = observer(function HomeScreen() {
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-      {screen}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        enabled={!isNativePhone}
+        keyboardVerticalOffset={0}
+        style={{ flex: 1 }}
+      >
+        {screen}
+      </KeyboardAvoidingView>
     </TouchableWithoutFeedback>
   )
 })
