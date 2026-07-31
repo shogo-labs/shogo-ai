@@ -263,6 +263,55 @@ describe('resolveProjectPodUrl', () => {
       expect(calls).toBeGreaterThan(1) // retried at least once before giving up
       expect(k8sCalls).toBe(0)
     })
+
+    it('a DELETED project fails fast: no retries, no "starting" mask, no fallback', async () => {
+      // Regression: a project deleted mid-turn used to be retried for the whole
+      // wait budget and then wrapped in MetalOnlyUnavailableError, whose message
+      // says "starting" — which the chat route maps to a retryable 503. One
+      // delete therefore produced minutes of /assign attempts against every
+      // host. Waiting cannot bring the row back, so this must be terminal.
+      let calls = 0
+      let k8sCalls = 0
+      const notFound = () => {
+        const err = new Error('project gone-proj does not exist (deleted?)')
+        err.name = 'ProjectNotFoundError' // mirrors ProjectNotFoundError
+        return err
+      }
+      await expect(
+        resolveProjectPodUrl('gone-proj', {
+          _isMetalEnabled: () => true,
+          _isMetalEligible: () => true,
+          _isMetalOnly: () => true,
+          _metalResolver: async () => { calls++; throw notFound() },
+          _isKubernetes: () => true,
+          _k8sResolver: async () => { k8sCalls++; return 'http://pod.cluster/v1' },
+          metalWaitMs: 5000,
+          metalRetryDelayMs: 1,
+        }),
+      ).rejects.toThrow(/does not exist/)
+      expect(calls).toBe(1) // terminal on the first attempt
+      expect(k8sCalls).toBe(0)
+    })
+
+    it('does not mask a deleted project as a retryable "starting" error', async () => {
+      const err = new Error('project gone-2 does not exist (deleted?)')
+      err.name = 'ProjectNotFoundError'
+      let thrown: any
+      try {
+        await resolveProjectPodUrl('gone-2', {
+          _isMetalEnabled: () => true,
+          _isMetalEligible: () => true,
+          _isMetalOnly: () => true,
+          _metalResolver: async () => { throw err },
+          _isKubernetes: () => true,
+          _k8sResolver: async () => 'http://pod.cluster/v1',
+        })
+      } catch (e) {
+        thrown = e
+      }
+      expect(thrown?.name).toBe('ProjectNotFoundError')
+      expect(thrown?.message).not.toMatch(/starting/)
+    })
   })
 
   describe('host mode runtime reuse', () => {

@@ -217,6 +217,16 @@ export async function resolveProjectPodUrl(
         const url = await resolve(projectId)
         return { mode: 'metal', url }
       } catch (err: any) {
+        // A deleted project is terminal: waiting cannot bring the row back, and
+        // wrapping it in MetalOnlyUnavailableError would put "starting" in the
+        // message, which the chat/runtime routes map to a retryable
+        // `pod_starting` 503 — that is exactly how one project delete turned into
+        // minutes of /assign retries against every host. Fail fast and let the
+        // caller answer 404.
+        if (err?.name === 'ProjectNotFoundError') {
+          console.warn(`[${tag}] ${projectId} no longer exists — not retrying metal resolve`)
+          throw err
+        }
         // Wait-and-retry within the budget: re-calling rejoins the host's
         // in-flight wake (singleflight) and returns as soon as it's ready, so a
         // wake slower than one assign timeout degrades to a slower success.
