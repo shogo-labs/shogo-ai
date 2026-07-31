@@ -114,7 +114,17 @@ beforeEach(() => {
     delete process.env[k]
   }
   findUniqueProjectMock.mockReset()
-  findUniqueProjectMock.mockImplementation(async () => null)
+  // Default to a minimal EXISTING row: buildProjectEnv now throws
+  // ProjectNotFoundError when the lookup returns nothing, so `null` is an
+  // error case rather than a neutral default. Tests that exercise the
+  // not-found path opt in explicitly.
+  findUniqueProjectMock.mockImplementation(async () => ({
+    workspaceId: null,
+    name: null,
+    settings: null,
+    cloudSyncMode: null,
+    workspace: null,
+  }))
   generateProxyTokenMock.mockReset()
   generateProxyTokenMock.mockImplementation(async () => 'proxy-token-stub')
   deriveRuntimeTokenMock.mockReset()
@@ -318,16 +328,20 @@ describe('buildProjectEnv — PUBLIC_PREVIEW_URL', () => {
 // ─── project-derived fields (DB hit) ──────────────────────────────────────
 
 describe('buildProjectEnv — project-derived fields', () => {
-  test('omits WORKSPACE_ID / AGENT_NAME (and never sets TEMPLATE_ID) when the project row is missing', async () => {
+  test('throws ProjectNotFoundError when the project row is missing (deleted project)', async () => {
+    // Regression: this used to return a half-built env — no AI_PROXY_TOKEN but
+    // AI_PROXY_URL set anyway — which the guest rejects with an opaque
+    // "/pool/assign failed (400): Reconfigure failed" that the caller then
+    // retried against every metal host. A missing row must fail typed instead.
     findUniqueProjectMock.mockImplementation(async () => null)
-    const env = await buildProjectEnv('proj-missing')
-    expect(env.WORKSPACE_ID).toBeUndefined()
-    // TEMPLATE_ID was removed from the env contract by the marketplace
-    // consolidation (build-project-env.ts:48) — assert it stays unset
-    // on every path.
-    expect(env.TEMPLATE_ID).toBeUndefined()
-    expect(env.AGENT_NAME).toBeUndefined()
-    expect(env.AI_PROXY_TOKEN).toBeUndefined() // proxy token only set on hit
+    let caught: any
+    try {
+      await buildProjectEnv('proj-missing')
+    } catch (err) {
+      caught = err
+    }
+    expect(caught?.name).toBe('ProjectNotFoundError')
+    expect(caught?.projectId).toBe('proj-missing')
   })
 
   test('sets WORKSPACE_ID and AGENT_NAME when present on the row (TEMPLATE_ID is intentionally not exported)', async () => {
@@ -472,7 +486,10 @@ describe('buildProjectEnv — project-derived fields', () => {
     )
   })
 
-  test('catches proxy-token errors without blocking the rest of the env build', async () => {
+  test('refuses to build an env when the proxy token cannot be minted', async () => {
+    // The token failure is still logged, but we must NOT hand back an env
+    // carrying AI_PROXY_URL with no AI_PROXY_TOKEN: configureAIProxy() rejects
+    // that pair by design, so shipping it just moves the failure into the guest.
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-err',
       settings: {},
@@ -482,12 +499,21 @@ describe('buildProjectEnv — project-derived fields', () => {
     })
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
 
-    const env = await buildProjectEnv('proj-token-fail')
-    expect(env.PROJECT_ID).toBe('proj-token-fail')
-    expect(env.RUNTIME_AUTH_SECRET).toBe('runtime-token-stub') // later steps still run
-    expect(env.AI_PROXY_TOKEN).toBeUndefined()
+    let caught: any
+    try {
+      await buildProjectEnv('proj-token-fail')
+    } catch (err) {
+      caught = err
+    }
+    expect(caught?.message).toContain('AI proxy token unavailable')
     expect(errorSpy.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('signing key missing')
     errorSpy.mockRestore()
+  })
+
+  test('never emits AI_PROXY_URL without AI_PROXY_TOKEN on the happy path either', async () => {
+    const env = await buildProjectEnv('proj-invariant')
+    expect(env.AI_PROXY_URL).toBeTruthy()
+    expect(env.AI_PROXY_TOKEN).toBeTruthy()
   })
 })
 

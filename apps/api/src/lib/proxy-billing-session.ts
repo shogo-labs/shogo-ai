@@ -378,7 +378,15 @@ export async function closeSession(
       console.warn(`[BillingSession] Could not charge usage: ${result.error}`)
     }
   } catch (err) {
-    console.error(`[BillingSession] Failed to charge usage for ${key}:`, err)
+    // P2003 = FK violation on the UsageEvent insert, which here means the
+    // project (or workspace) was deleted before the session closed. There is
+    // nothing to charge and nothing to fix, so don't log it as an error with a
+    // full Prisma stack — that noise is what a single project delete produced.
+    if ((err as any)?.code === 'P2003') {
+      console.warn(`[BillingSession] Skipping usage charge for ${key}: project/workspace no longer exists`)
+    } else {
+      console.error(`[BillingSession] Failed to charge usage for ${key}:`, err)
+    }
   }
 
   return { billedUsd, rawUsd, totalTokens }

@@ -947,6 +947,18 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           }
         })
       } catch (err: any) {
+        // The project was deleted between the validateProject check above and
+        // the runtime resolve. Never report that as retryable: the client would
+        // poll a project that can never come back.
+        if (err?.name === 'ProjectNotFoundError') {
+          console.warn(`[ProjectChat] ${projectId} was deleted mid-request — returning 404`)
+          chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "project_not_found" })
+          chatSpan.end()
+          return c.json(
+            { error: { code: "project_not_found", message: "Project not found", retryable: false } },
+            404
+          )
+        }
         console.error(`[ProjectChat] Failed to get project URL:`, err)
         // Return a structured error that the frontend can handle gracefully
         // Include "starting" status so frontend knows to retry
