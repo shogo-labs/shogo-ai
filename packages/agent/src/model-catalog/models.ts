@@ -103,31 +103,33 @@ export interface ImageModelEntry {
 
 export const MODEL_CATALOG = {
   // Anthropic — current generation
-  'claude-opus-4-7': {
-    id: 'claude-opus-4-7',
+  'claude-opus-5': {
+    id: 'claude-opus-5',
     provider: 'anthropic',
-    apiModel: 'claude-opus-4-7',
-    displayName: 'Claude Opus 4.7',
-    shortDisplayName: 'Opus 4.7',
+    apiModel: 'claude-opus-5',
+    displayName: 'Claude Opus 5',
+    shortDisplayName: 'Opus 5',
     tier: 'premium',
     family: 'opus',
     generation: 'current',
     billingModel: 'opus',
     maxOutputTokens: 128_000,
-    capabilities: { subagentOrchestration: 'reliable' },
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
   },
-  'claude-sonnet-4-6': {
-    id: 'claude-sonnet-4-6',
+  'claude-sonnet-5': {
+    id: 'claude-sonnet-5',
     provider: 'anthropic',
-    apiModel: 'claude-sonnet-4-6',
-    displayName: 'Claude Sonnet 4.6',
-    shortDisplayName: 'Sonnet 4.6',
+    apiModel: 'claude-sonnet-5',
+    displayName: 'Claude Sonnet 5',
+    shortDisplayName: 'Sonnet 5',
     tier: 'standard',
     family: 'sonnet',
     generation: 'current',
     billingModel: 'sonnet',
-    maxOutputTokens: 64_000,
-    capabilities: { subagentOrchestration: 'reliable' },
+    maxOutputTokens: 128_000,
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
   },
   'claude-haiku-4-5-20251001': {
     id: 'claude-haiku-4-5-20251001',
@@ -144,6 +146,32 @@ export const MODEL_CATALOG = {
   },
 
   // Anthropic — legacy
+  'claude-opus-4-7': {
+    id: 'claude-opus-4-7',
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-7',
+    displayName: 'Claude Opus 4.7',
+    shortDisplayName: 'Opus 4.7',
+    tier: 'premium',
+    family: 'opus',
+    generation: 'legacy',
+    billingModel: 'opus',
+    maxOutputTokens: 128_000,
+    capabilities: { subagentOrchestration: 'reliable' },
+  },
+  'claude-sonnet-4-6': {
+    id: 'claude-sonnet-4-6',
+    provider: 'anthropic',
+    apiModel: 'claude-sonnet-4-6',
+    displayName: 'Claude Sonnet 4.6',
+    shortDisplayName: 'Sonnet 4.6',
+    tier: 'standard',
+    family: 'sonnet',
+    generation: 'legacy',
+    billingModel: 'sonnet',
+    maxOutputTokens: 64_000,
+    capabilities: { subagentOrchestration: 'reliable' },
+  },
   'claude-opus-4-6': {
     id: 'claude-opus-4-6',
     provider: 'anthropic',
