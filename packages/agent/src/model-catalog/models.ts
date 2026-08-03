@@ -123,7 +123,7 @@ export const MODEL_CATALOG = {
     apiModel: 'claude-sonnet-5',
     displayName: 'Claude Sonnet 5',
     shortDisplayName: 'Sonnet 5',
-    tier: 'standard',
+    tier: 'premium',
     family: 'sonnet',
     generation: 'current',
     billingModel: 'sonnet',
