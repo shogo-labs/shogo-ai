@@ -99,7 +99,7 @@
     "react-native-gifted-charts": "^1.4.74",
     "react-native-marked": "^8.0.0",
     "react-native-safe-area-context": "^5.6.1",
-    "react-native-screens": "~4.16.0",
+    "react-native-screens": "~4.17.0",
     "react-native-sse": "^1.2.1",
     "react-native-svg": "^15.13.0",
     "react-native-web": "~0.21.0",
