@@ -1846,7 +1846,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       {/* ── Logo Row ── */}
       <View
         className={cn(
-          'h-10 border-b border-border flex-row items-center',
+          'h-12 border-b border-border flex-row items-center',
           collapsed ? 'justify-center px-2' : 'justify-between px-3'
         )}
       >
