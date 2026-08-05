@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useColorScheme, View } from 'react-native'
+import { View } from 'react-native'
 import Svg, { Path } from 'react-native-svg'
 import { cn } from '@shogo/shared-ui/primitives'
+import { useResolvedTheme } from '../../contexts/theme'
 import { ShogoLogoMark } from './ShogoLogoMark'
 
 const SHOGO_WORDMARK_VIEW_BOX = '0 0 1740 412'
@@ -98,13 +99,13 @@ export interface ShogoWordmarkProps {
 }
 
 export function ShogoWordmark({ className, compact }: ShogoWordmarkProps) {
-  const colorScheme = useColorScheme()
+  const resolvedTheme = useResolvedTheme()
 
   if (compact) {
     return <ShogoLogoMark className={className ?? 'h-7 w-7'} />
   }
 
-  const paths = colorScheme === 'dark' ? SHOGO_WORDMARK_DARK_PATHS : SHOGO_WORDMARK_LIGHT_PATHS
+  const paths = resolvedTheme === 'dark' ? SHOGO_WORDMARK_DARK_PATHS : SHOGO_WORDMARK_LIGHT_PATHS
 
   return (
     <View
