@@ -1858,7 +1858,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               accessibilityLabel="Shogo Home"
               className="flex-row items-center"
             >
-              <ShogoWordmark className="h-6 w-28" />
+              <ShogoWordmark className="h-[22px] w-[94px]" />
             </Pressable>
             <Pressable onPress={toggleCollapse} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
               <PanelLeftClose size={12} className="text-muted-foreground" />
