@@ -45,7 +45,6 @@ mock.module("@monaco-editor/react", () => ({
 mock.module("../monaco/workspaceModels", () => ({ setMonacoRef: () => {} }));
 mock.module("../monaco/extraLibs", () => ({ setupExtraLibs: () => {} }));
 mock.module("../agentFixProvider", () => ({ setupAgentFix: () => {} }));
-mock.module("../terminal/pty-factory", () => ({ isDesktopRuntime: () => false }));
 mock.module("../monaco/themes", () => ({
   registerDesktopThemes: () => {},
   loadCustomThemes: () => {},

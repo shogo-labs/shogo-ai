@@ -140,6 +140,27 @@ mock.module('react-native', () => {
       TOUCH_TARGET_DEBUG: false,
       renderDebugView: () => null,
     },
+    // Same story as `Touchable` above: `react-native-svg` reads the key set of
+    // `PanResponder.create({}).panHandlers` at module load, so this has to
+    // return the real handler names rather than a bare object.
+    PanResponder: {
+      create: () => ({
+        panHandlers: {
+          onStartShouldSetResponder: () => false,
+          onMoveShouldSetResponder: () => false,
+          onResponderGrant: () => {},
+          onResponderMove: () => {},
+          onResponderRelease: () => {},
+          onResponderTerminate: () => {},
+          onResponderTerminationRequest: () => true,
+          onStartShouldSetResponderCapture: () => false,
+          onMoveShouldSetResponderCapture: () => false,
+          onResponderReject: () => {},
+          onResponderStart: () => {},
+          onResponderEnd: () => {},
+        },
+      }),
+    },
     StatusBar: passthroughHost('div'),
     // Misc named exports referenced by Expo / RN-svg / lucide
     // transitively at module-load time.
@@ -203,7 +224,21 @@ mock.module('react-native', () => {
 // every export for a tiny passthrough. Names are enumerated in the stub
 // so ESM static `import { X, Y } from 'lucide-react-native'` resolves.
 import * as lucideStub from './stubs/lucide-react-native'
+import * as svgStub from './stubs/react-native-svg'
 mock.module('lucide-react-native', () => lucideStub)
+// Also key the mock on the resolved file. A bare specifier only matches
+// importers that resolve it exactly as this preload does; anything reaching
+// the same package by another route (a workspace package with its own
+// node_modules link) would otherwise load the real CJS build, whose named
+// exports Bun's ESM interop cannot see — surfacing as a bogus
+// "Export named 'Plus' not found".
+mock.module(require.resolve('lucide-react-native'), () => lucideStub)
+
+// The real `react-native-svg` cannot be evaluated here: it imports Flow-typed
+// React Native internals that Bun's parser rejects. A dozen app components
+// import it directly, so an unstubbed copy failed suites that render no SVG at
+// all.
+mock.module('react-native-svg', () => svgStub)
 
 // `expo-secure-store` and the better-auth Expo plugin trigger native
 // module resolution at module-load time. Tests don't exercise auth, so

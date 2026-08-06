@@ -322,7 +322,13 @@ describe('Metro stacks: PreviewManager preconditions', () => {
 
   test('TECH_STACK_REGISTRY matches on-disk stack.json (no drift)', async () => {
     const { validateTechStackRegistry } = await import('../workspace-defaults')
+    // workspace-defaults-extra.test.ts mints throwaway `__wdtest_*` stacks
+    // inside the real tech-stacks/ tree (that is the only base path
+    // getTechStackPath resolves). Those are not shipped stacks, and because
+    // the suite runs files in parallel they can be on disk while this check
+    // runs — filter them out so we only assert on real registry drift.
     const mismatches = validateTechStackRegistry(TECH_STACK_REGISTRY)
+      .filter((m) => !m.stackId.startsWith('__wdtest_'))
     expect(mismatches).toEqual([])
   })
 })

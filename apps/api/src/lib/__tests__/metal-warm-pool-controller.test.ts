@@ -20,6 +20,21 @@ function fakeEnv() {
   return async () => ({ PROJECT_ID: 'p' })
 }
 
+/**
+ * Stub for the published env builder (5th ctor arg). MUST be injected by any
+ * test that exercises a published runtime: the real `buildPublishedProjectEnv`
+ * reads the project row and now throws `ProjectNotFoundError` when it's absent,
+ * so falling through to the default turns a unit test into a DB dependency.
+ */
+function fakePublishedEnv() {
+  return async (projectId: string, subdomain: string, opts?: { alwaysOn?: boolean }) => ({
+    PROJECT_ID: projectId,
+    SHOGO_PUBLISHED_MODE: 'true',
+    PUBLISHED_SUBDOMAIN: subdomain,
+    ...(opts?.alwaysOn ? { SHOGO_ALWAYS_ON: '1' } : {}),
+  })
+}
+
 describe('MetalWarmPoolController', () => {
   // Isolate the shared placement registry (lease/placement state) per test so
   // reused projectIds don't leak state between cases. In prod this is Redis-
@@ -280,7 +295,7 @@ describe('MetalWarmPoolController', () => {
       keys.push(JSON.parse(init.body).projectId)
       return new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })
     }) as any
-    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl, Date.now, undefined, fakePublishedEnv())
     c.registerHost(REG)
     await c.getMetalProjectUrl('p1')
     await c.getMetalPublishedUrl('p1', 'my-site')
@@ -293,7 +308,7 @@ describe('MetalWarmPoolController', () => {
       new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })) as any
     const reg = new MetalPlacementRegistry(() => null)
     _setMetalPlacementRegistry(reg)
-    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl, Date.now, reg)
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl, Date.now, reg, fakePublishedEnv())
     c.registerHost(REG)
 
     await c.getMetalPublishedUrl('p1', 'my-site')
