@@ -43,8 +43,8 @@
     "@aws-sdk/client-ses": { "optional": true }
   },
   "devDependencies": {
-    "@types/node": "^25.5.0",
-    "@types/nodemailer": "^7.0.11",
+    "@types/node": "^26.0.1",
+    "@types/nodemailer": "^8.0.1",
     "tsup": "^8.0.0",
     "typescript": "^6.0.2"
   },
