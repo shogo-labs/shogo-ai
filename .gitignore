@@ -234,3 +234,9 @@ apps/mobile/dist.stale-*/
 .github/pr-*.md
 
 load-tests/.venv*
+
+# Minted license-key exports. These hold plaintext redeemable codes (each worth
+# a paid plan), so the CSV that `scripts/mint-license-keys.ts` writes must never
+# be committed — only the sha-256 hash is meant to leave the minting machine.
+shogo-pro-*-codes*.csv
+license-keys-*.csv

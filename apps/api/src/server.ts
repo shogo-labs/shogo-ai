@@ -6892,6 +6892,14 @@ app.post('/api/billing/usage-based-pricing', async (c) => {
       overageAccumulatedUsd: wallet.overageAccumulatedUsd,
     })
   } catch (error: any) {
+    if (error?.message === billingService.OVERAGE_REQUIRES_SUBSCRIPTION) {
+      return c.json({
+        error: {
+          code: billingService.OVERAGE_REQUIRES_SUBSCRIPTION,
+          message: 'Usage-based pricing requires an active paid plan with a payment method on file.',
+        },
+      }, 409)
+    }
     console.error('[Billing] usage-based-pricing error:', error)
     return c.json({ error: { code: 'usage_based_pricing_failed', message: error.message } }, 500)
   }

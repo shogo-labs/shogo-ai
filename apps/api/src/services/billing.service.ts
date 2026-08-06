@@ -203,6 +203,22 @@ export async function allocateFreeWalletLocal(workspaceId: string) {
   if (existing) return existing;
 
   const grant = await getActiveGrantsForWorkspace(workspaceId, now)
+
+  // A workspace can reach here with an active *paid* grant (e.g. a redeemed
+  // license key) if this is the first wallet-touching call in this region
+  // and it races ahead of the post-redemption `applyGrantMonthlyAllocation`
+  // call (or that call landed in a different home region — see
+  // `routeWalletProvision`). Provisioning a free-tier wallet in that case
+  // would strand the workspace on free limits — sometimes permanently, since
+  // the monthly refill cron skips wallets whose `lastMonthlyReset` already
+  // falls in the current month. Delegate to the grant-aware path instead so
+  // the very first wallet ever created here is already shaped correctly
+  // (incident 2026-08-06).
+  const grantPlan = normalizePlanId(grant.planId)
+  if (grantPlan && PLAN_RANK[grantPlan] >= PLAN_RANK.basic) {
+    return applyGrantMonthlyAllocationLocal(workspaceId, now)
+  }
+
   const monthlyIncludedUsd = PLAN_INCLUDED_USD.free + grant.monthlyIncludedUsd
 
   return prisma.usageWallet.create({
@@ -265,6 +281,25 @@ export async function ensureSystemWorkspace(): Promise<void> {
 }
 
 /**
+ * Overage hard cap applied to paid plans conferred purely by a
+ * `WorkspaceGrant` (license key redemption, admin comp) with no active
+ * Stripe subscription backing them. There is no payment method on file
+ * for these workspaces — `chargeOverageBlocks` requires an active
+ * subscription's `stripeCustomerId` and silently defers otherwise (see
+ * that function) — so leaving `overageHardLimitUsd` uncapped lets a
+ * grant-only workspace run unbounded, uncollectable compute cost past
+ * its included window. Real paying subscribers (`allocateMonthlyIncluded`,
+ * driven by the Stripe webhook) are unaffected and stay uncapped by
+ * default, same as before.
+ *
+ * $5 is a small buffer past the window (matches roughly one Pro 5-hour
+ * window's worth of headroom) so a grant recipient isn't hard-blocked the
+ * instant their window fills, while capping worst-case exposure per
+ * grant-only workspace. Tune operationally if needed.
+ */
+export const GRANT_ONLY_OVERAGE_HARD_LIMIT_USD = 5
+
+/**
  * Refill a workspace's wallet from its active super-admin grants. Used by
  * the monthly-refill cron and by `consumeUsage` as a safety net for free
  * workspaces that wouldn't otherwise receive a Stripe invoice. Paid
@@ -283,7 +318,10 @@ export async function ensureSystemWorkspace(): Promise<void> {
  *   `overageBilledUsd` so the new period starts clean.
  * - Advances `lastMonthlyReset` to `now`. When a grant confers a paid
  *   plan we also turn `overageEnabled` on so trust-first overage applies
- *   the same as for paid Stripe plans.
+ *   the same as for paid Stripe plans — but capped at
+ *   `GRANT_ONLY_OVERAGE_HARD_LIMIT_USD` unless the workspace also has an
+ *   active paid Stripe subscription (which has a real payment method and
+ *   is left uncapped, matching `allocateMonthlyIncluded`).
  */
 export async function applyGrantMonthlyAllocation(
   workspaceId: string,
@@ -298,7 +336,13 @@ export async function applyGrantMonthlyAllocationLocal(
   workspaceId: string,
   now: Date = new Date(),
 ) {
-  const grant = await getActiveGrantsForWorkspace(workspaceId, now)
+  const [grant, activeSub] = await Promise.all([
+    getActiveGrantsForWorkspace(workspaceId, now),
+    prisma.subscription.findFirst({
+      where: { workspaceId, status: { in: ['active', 'trialing'] } },
+      select: { id: true },
+    }),
+  ])
   const plan = normalizePlanId(grant.planId) ?? 'free'
   // Grant-conferred seats count toward the plan's per-seat included USD.
   // Free seats default to 1 so a plan-only grant still allocates at
@@ -310,6 +354,9 @@ export async function applyGrantMonthlyAllocationLocal(
   // actually confer a paid tier. Pure additive credit grants on free
   // workspaces stay on the prior `overageEnabled` value (handled below).
   const isPaidGrant = PLAN_RANK[plan] >= PLAN_RANK.basic
+  // No Stripe subscription backing this grant -> no payment method on
+  // file -> cap overage instead of leaving it open-ended.
+  const grantOnlyOverageCap = isPaidGrant && !activeSub ? GRANT_ONLY_OVERAGE_HARD_LIMIT_USD : null
 
   return prisma.usageWallet.upsert({
     where: { workspaceId },
@@ -322,6 +369,7 @@ export async function applyGrantMonthlyAllocationLocal(
       lastDailyReset: now,
       lastMonthlyReset: now,
       overageEnabled: isPaidGrant,
+      overageHardLimitUsd: grantOnlyOverageCap,
     },
     update: {
       monthlyIncludedUsd,
@@ -331,6 +379,10 @@ export async function applyGrantMonthlyAllocationLocal(
       overageBilledUsd: 0,
       lastMonthlyReset: now,
       ...(isPaidGrant ? { overageEnabled: true } : {}),
+      // Only touch the hard limit for the grant-only case; leave it alone
+      // when a real subscription is present so an admin's manual
+      // `setUsageBasedPricing` override isn't clobbered here.
+      ...(isPaidGrant && !activeSub ? { overageHardLimitUsd: grantOnlyOverageCap } : {}),
     },
   })
 }
@@ -400,7 +452,13 @@ export async function allocateMonthlyIncludedLocal(
   seats: number = 1,
 ) {
   const now = new Date();
-  const grant = await getActiveGrantsForWorkspace(workspaceId, now)
+  const [grant, existing] = await Promise.all([
+    getActiveGrantsForWorkspace(workspaceId, now),
+    prisma.usageWallet.findUnique({
+      where: { workspaceId },
+      select: { overageHardLimitUsd: true },
+    }),
+  ])
   // Free seats from a grant get the same per-seat plan included USD.
   const totalSeats = Math.max(1, Math.floor(seats || 1)) + grant.freeSeats
   const monthlyIncludedUsd =
@@ -433,6 +491,14 @@ export async function allocateMonthlyIncludedLocal(
       // from the legacy default before the migration starts the next period
       // billed correctly.
       overageEnabled: true,
+      // A workspace that reached a paid plan via a grant/license key carries
+      // the grant-only overage cap (no card on file). Now that a real
+      // subscription is backing it, release that cap — but only when it is
+      // exactly the value we auto-applied, so a deliberate customer/admin
+      // spend limit is preserved.
+      ...(existing?.overageHardLimitUsd === GRANT_ONLY_OVERAGE_HARD_LIMIT_USD
+        ? { overageHardLimitUsd: null }
+        : {}),
       lastMonthlyReset: now,
     },
   });
@@ -578,7 +644,7 @@ export async function getUsageWindows(
   let wallet = await prisma.usageWallet.findUnique({ where: { workspaceId: billingWorkspaceId } })
   if (!wallet) wallet = await allocateFreeWallet(billingWorkspaceId)
 
-  const limits = await resolveWorkspaceWindowLimits(prisma, billingWorkspaceId, now)
+  const { limits } = await resolveEffectivePlan(prisma, billingWorkspaceId, now)
   const five = rollWindow(wallet?.fiveHourWindowStart, wallet?.fiveHourUsedUsd ?? 0, now, FIVE_HOUR_MS)
   const week = rollWindow(wallet?.weeklyWindowStart, wallet?.weeklyUsedUsd ?? 0, now, SEVEN_DAY_MS)
 
@@ -639,7 +705,7 @@ export async function hasBalance(
   if (!wallet) return false;
 
   const now = new Date();
-  const limits = await resolveWorkspaceWindowLimits(prisma, billingWorkspaceId, now);
+  const { limits, paidTier } = await resolveEffectivePlan(prisma, billingWorkspaceId, now);
 
   // Uncapped plan (enterprise): always has balance.
   if (limits == null) return true;
@@ -649,8 +715,9 @@ export async function hasBalance(
   const windowRoom = Math.min(limits.fiveHourUsd - five.used, limits.weeklyUsd - week.used);
   if (windowRoom >= minimumRequiredUsd) return true;
 
-  // Windows exhausted — overage is the fallback when enabled and uncapped.
-  if (!wallet.overageEnabled) return false;
+  // Windows exhausted — overage is the fallback when enabled and uncapped,
+  // and only while the paid entitlement behind it is still live.
+  if (!wallet.overageEnabled || !paidTier) return false;
   if (wallet.overageHardLimitUsd == null) return true;
   const overageRoom = Math.max(0, wallet.overageHardLimitUsd - wallet.overageAccumulatedUsd);
   return overageRoom >= minimumRequiredUsd;
@@ -1028,7 +1095,7 @@ async function _consumeUsageTransaction(
 
     // Resolve the workspace's rolling-window limits (plan + seats). `null`
     // means uncapped (enterprise): usage is unbounded within the windows.
-    const limits = await resolveWorkspaceWindowLimits(tx, billingWorkspaceId, now);
+    const { limits, paidTier } = await resolveEffectivePlan(tx, billingWorkspaceId, now);
 
     // Lazy window reset: a window "opens" on the first action and resets once
     // its full duration has elapsed (fixed-window-from-first-event).
@@ -1075,7 +1142,10 @@ async function _consumeUsageTransaction(
           week.start,
         );
 
-        if (wallet.overageEnabled) {
+        // Overage only applies while the paid entitlement behind it is live:
+        // an expired grant / lapsed subscription falls through to the hard
+        // "Usage limit reached" branch instead of metering unbillable usage.
+        if (wallet.overageEnabled && paidTier) {
           const overageRoom = wallet.overageHardLimitUsd == null
             ? Number.POSITIVE_INFINITY
             : Math.max(0, wallet.overageHardLimitUsd - overageAccumulatedUsd);
@@ -1198,32 +1268,57 @@ function blockingWindow(
   return { window: 'five_hour', resetsAt: fiveResetsAt }
 }
 
+interface EffectivePlan {
+  /** Rolling-window limits; `null` for uncapped (enterprise) plans. */
+  limits: WindowLimits | null
+  /**
+   * Whether the workspace is on a paid tier *as of `now`* — an active Stripe
+   * subscription, or an unexpired grant conferring a paid plan.
+   *
+   * Overage is gated on this rather than on `usage_wallets.overageEnabled`
+   * alone, because that column is a persisted snapshot that nothing walks
+   * back when the entitlement behind it goes away: a lapsed subscription or
+   * an expired license-key grant would otherwise keep metering usage into
+   * `overageAccumulatedUsd` forever, and with no payment method on file that
+   * balance can never be invoiced (`chargeOverageBlocks` defers it).
+   * Deriving it here means expiry takes effect the moment it happens,
+   * without a downgrade job to keep in sync (incident 2026-08-06).
+   */
+  paidTier: boolean
+}
+
 /**
- * Resolve a workspace's rolling-window limits from its effective plan and
- * seat count. Active Stripe subscription wins (seats from the sub); otherwise
- * the highest active grant's plan and free-seat count apply; otherwise free.
- * Returns `null` for uncapped (enterprise) plans.
+ * Resolve a workspace's effective plan: rolling-window limits from its plan
+ * and seat count, plus whether that plan is a paid tier. Active Stripe
+ * subscription wins (seats from the sub); otherwise the highest active
+ * grant's plan and free-seat count apply; otherwise free.
  *
  * Reads are issued through the surrounding transaction client where possible
  * to stay consistent with the wallet read.
  */
-async function resolveWorkspaceWindowLimits(
+async function resolveEffectivePlan(
   tx: { subscription: { findFirst: typeof prisma.subscription.findFirst } },
   workspaceId: string,
   now: Date,
-): Promise<WindowLimits | null> {
+): Promise<EffectivePlan> {
   const sub = await tx.subscription.findFirst({
     where: { workspaceId, status: { in: ['active', 'trialing'] } },
     select: { planId: true, seats: true },
   })
   if (sub) {
     const plan = normalizePlanId(sub.planId) ?? 'free'
-    return getWindowLimitsForPlan(plan, sub.seats)
+    return {
+      limits: getWindowLimitsForPlan(plan, sub.seats),
+      paidTier: PLAN_RANK[plan] >= PLAN_RANK.basic,
+    }
   }
   const grant = await getActiveGrantsForWorkspace(workspaceId, now)
   const plan = normalizePlanId(grant.planId) ?? 'free'
   const seats = Math.max(1, grant.freeSeats || 0)
-  return getWindowLimitsForPlan(plan, seats)
+  return {
+    limits: getWindowLimitsForPlan(plan, seats),
+    paidTier: PLAN_RANK[plan] >= PLAN_RANK.basic,
+  }
 }
 
 /**
@@ -1702,10 +1797,43 @@ export async function setUsageBasedPricing(
   return setUsageBasedPricingLocal(workspaceId, options)
 }
 
+/** Thrown when a workspace without a payment method tries to enable overage. */
+export const OVERAGE_REQUIRES_SUBSCRIPTION = 'overage_requires_subscription'
+
 export async function setUsageBasedPricingLocal(
   workspaceId: string,
   options: { overageEnabled: boolean; overageHardLimitUsd?: number | null },
 ) {
+  const now = new Date()
+  workspaceId = await resolveBillingWorkspaceId(workspaceId)
+
+  // Enabling overage commits the workspace to paying for usage beyond its
+  // included windows, so it requires something to bill against. Without an
+  // active subscription `chargeOverageBlocks` can only defer, so the balance
+  // accrues uncollectably — gate on the entitlement rather than trusting the
+  // caller (incident 2026-08-06).
+  let hardLimitUsd = options.overageHardLimitUsd ?? null
+  if (options.overageEnabled) {
+    const [activeSub, grant] = await Promise.all([
+      prisma.subscription.findFirst({
+        where: { workspaceId, status: { in: ['active', 'trialing'] } },
+        select: { id: true },
+      }),
+      getActiveGrantsForWorkspace(workspaceId, now),
+    ])
+    if (!activeSub) {
+      const grantPlan = normalizePlanId(grant.planId)
+      const hasPaidGrant = !!grantPlan && PLAN_RANK[grantPlan] >= PLAN_RANK.basic
+      if (!hasPaidGrant) throw new Error(OVERAGE_REQUIRES_SUBSCRIPTION)
+      // Grant-conferred paid plan with no card on file: the workspace may
+      // tighten the cap but never raise or remove it.
+      hardLimitUsd = Math.min(
+        hardLimitUsd ?? GRANT_ONLY_OVERAGE_HARD_LIMIT_USD,
+        GRANT_ONLY_OVERAGE_HARD_LIMIT_USD,
+      )
+    }
+  }
+
   return prisma.usageWallet.upsert({
     where: { workspaceId },
     create: {
@@ -1716,14 +1844,14 @@ export async function setUsageBasedPricingLocal(
       // workspaces (which run that path before they'd hit this one).
       dailyIncludedUsd: 0,
       overageEnabled: options.overageEnabled,
-      overageHardLimitUsd: options.overageHardLimitUsd ?? null,
-      anniversaryDay: new Date().getDate(),
-      lastDailyReset: new Date(),
-      lastMonthlyReset: new Date(),
+      overageHardLimitUsd: hardLimitUsd,
+      anniversaryDay: now.getDate(),
+      lastDailyReset: now,
+      lastMonthlyReset: now,
     },
     update: {
       overageEnabled: options.overageEnabled,
-      overageHardLimitUsd: options.overageHardLimitUsd ?? null,
+      overageHardLimitUsd: hardLimitUsd,
     },
   });
 }
