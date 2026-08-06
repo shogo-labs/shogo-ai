@@ -296,6 +296,27 @@ if (config.publishDataBucket && config.publishDataExportIntervalMs > 0) {
   }, config.publishDataExportIntervalMs)
 }
 
+// Writable-state exporter: periodically persist EVERY live microVM's database
+// and uploads to `{projectId}/project-data.tar.gz`. This is the durability that
+// makes a snapshot loss survivable — a golden-rootfs rebuild invalidates every
+// snapshot at once, and the cold boot that follows restores source only, so
+// without this the user's runtime data is destroyed. Host-side; best-effort;
+// unchanged databases are skipped by content hash.
+let projectDataExporter: ReturnType<typeof setInterval> | null = null
+if (config.projectDataExportIntervalMs > 0) {
+  console.log(
+    `[metal-agent] writable-state export on: interval=${config.projectDataExportIntervalMs}ms`,
+  )
+  projectDataExporter = setInterval(() => {
+    pool.exportAllProjectData().then(
+      (n) => {
+        if (n) console.log(`[metal-agent] exported writable state for ${n} project(s)`)
+      },
+      (err) => console.error('[metal-agent] writable-state exporter error:', err?.message ?? err),
+    )
+  }, config.projectDataExportIntervalMs)
+}
+
 // Graceful shutdown for rolling deploys. systemd is configured `KillMode=process`
 // so it signals ONLY this agent; the firecracker children keep running. We must
 // therefore NOT tear down the live data path: leave assigned VMs and their DNAT
@@ -309,6 +330,7 @@ process.on('SIGTERM', async () => {
   if (reaper) clearInterval(reaper)
   if (gc) clearInterval(gc)
   if (pubDataExporter) clearInterval(pubDataExporter)
+  if (projectDataExporter) clearInterval(projectDataExporter)
   await pool.prepareForRestart().catch(() => {})
   process.exit(0)
 })

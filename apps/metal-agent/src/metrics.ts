@@ -68,6 +68,17 @@ export const M = {
   backupConflict: 'metal_backup_conflict_total',
   backupTemplateSnapshotBlocked: 'metal_backup_template_snapshot_blocked_total',
   backupSizeRegression: 'metal_backup_size_regression_total',
+  // Writable-state durability (database + uploads; see
+  // pool.saveProjectDataToStore). `dataConflict` = an export quarantined rather
+  // than overwriting the durable archive; `dataCollapseBlocked` = the backstop
+  // stopped a near-empty export from replacing a populated archive, which is
+  // the shape of "cold-booted with a fresh database and tried to persist it";
+  // `dataTooLarge` = a project's writable state exceeded the durability limit
+  // and was NOT persisted, so it is only as durable as its VM snapshot. Any
+  // sustained rate on the last one needs a real storage backend for that app.
+  dataConflict: 'metal_data_conflict_total',
+  dataCollapseBlocked: 'metal_data_collapse_blocked_total',
+  dataTooLarge: 'metal_data_too_large_total',
   diskUsedPct: 'metal_disk_used_pct',
   diskFreeBytes: 'metal_disk_free_bytes',
   cacheLocalCount: 'metal_cache_local_count',

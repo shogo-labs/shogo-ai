@@ -226,6 +226,20 @@ export const config = {
   publishDataExportIntervalMs: parseInt(env('METAL_PUBLISH_DATA_EXPORT_INTERVAL_MS', '120000'), 10),
 
   /**
+   * How often to export EVERY live VM's writable state (SQLite DB + uploads) to
+   * `{projectId}/project-data.tar.gz` (0 = only on suspend).
+   *
+   * Suspend-time export alone leaves a hole: a host that panics or is
+   * power-cycled never suspends, and an always-on project may run for days
+   * between suspends. Unchanged databases are skipped by content hash, so the
+   * steady-state cost for idle projects is one export request per cycle.
+   */
+  projectDataExportIntervalMs: parseInt(
+    env('METAL_PROJECT_DATA_EXPORT_INTERVAL_MS', '120000'),
+    10,
+  ),
+
+  /**
    * Parallel ranged GET for large durable artifacts (the ~400 MiB compressed
    * mem image dominates an S3 hydration). A single stream to OCI's S3-compat
    * endpoint caps at ~27 MB/s (~15s for the mem); splitting the object into

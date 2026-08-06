@@ -63,6 +63,13 @@ export interface LiveVmEntry {
    */
   workspaceOrigin?: 'template' | 'backup' | 'snapshot'
   backupParentEtag?: string
+  /**
+   * ETag of the durable writable-state archive this VM's database descends
+   * from. Persisted for the same reason as `backupParentEtag`: after an agent
+   * restart, an adopted VM must keep the lineage that authorizes it to
+   * overwrite its data archive. See AssignedVm.dataParentEtag.
+   */
+  dataParentEtag?: string
   v: 1
 }
 

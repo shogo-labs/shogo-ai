@@ -46,6 +46,11 @@ import {
   type WorkspaceArchive,
 } from './workspace-archive'
 import { fetchPublishedDataArchive, uploadPublishedDataArchive } from './published-data-archive'
+import {
+  fetchProjectDataArchive,
+  uploadProjectDataGuarded,
+  type DataWriteOutcome,
+} from './project-data-archive'
 
 export interface PooledVm {
   handle: FcVmHandle
@@ -124,6 +129,15 @@ export interface AssignedVm {
    * backup write and persisted for adopt-on-restart.
    */
   backupParentEtag?: string
+  /**
+   * ETag of the durable WRITABLE-STATE archive (`project-data.tar.gz`) this
+   * workspace's database descends from. Same optimistic-concurrency role as
+   * `backupParentEtag`, but for runtime data: `saveProjectDataToStore` only
+   * overwrites the durable object when this still matches S3, so a VM that
+   * cold-booted with an empty database can never erase a populated one.
+   * Undefined = unknown lineage (see project-data-archive's guard).
+   */
+  dataParentEtag?: string
 }
 
 export interface SuspendedVm {
@@ -139,6 +153,12 @@ export interface SuspendedVm {
    * legacy snapshot taken before lineage stamping shipped.
    */
   backupEtag?: string
+  /**
+   * ETag of the durable writable-state archive current when this snapshot was
+   * taken. Carried back into AssignedVm.dataParentEtag on resume, so a resumed
+   * VM's next export can overwrite the data archive its database derives from.
+   */
+  dataEtag?: string
   /**
    * Golden-rootfs identity this snapshot was taken against. A Firecracker
    * resume restores the frozen guest RAM verbatim, so it only makes sense on a
@@ -214,6 +234,13 @@ export class MetalWarmPool {
   private openFlight = new Singleflight<OpenResult | null>()
   /** Collapses concurrent suspend calls for the same project. */
   private suspendFlight = new Singleflight<SuspendedVm>()
+  /**
+   * Last uploaded writable-state content hash per project. Lets the periodic
+   * exporter skip idle projects instead of re-uploading an unchanged (possibly
+   * very large) database every cycle. In-memory only — a restart just costs one
+   * redundant upload per project.
+   */
+  private dataHashes = new Map<string, string>()
   /** Caps concurrent heavy NVMe ops (snapshot / restore / store pull|push). */
   private heavy: Semaphore
   /** Single-flight guard for pool fills (see reconcile). */
@@ -468,6 +495,7 @@ export class MetalWarmPool {
         restoredFrom: e.restoredFrom,
         workspaceOrigin: e.workspaceOrigin,
         backupParentEtag: e.backupParentEtag,
+        dataParentEtag: e.dataParentEtag,
       })
       adoptedIds.add(e.vmId)
       adoptedProjects.push(e.projectId)
@@ -516,6 +544,7 @@ export class MetalWarmPool {
       publishedSubdomain: a.publishedSubdomain,
       workspaceOrigin: a.workspaceOrigin,
       backupParentEtag: a.backupParentEtag,
+      dataParentEtag: a.dataParentEtag,
       v: 1,
     })
   }
@@ -554,6 +583,7 @@ export class MetalWarmPool {
         lastAccessAt: e.lastAccessAt,
         rootfsIdentity: e.rootfsIdentity,
         backupEtag: e.backupEtag,
+        dataEtag: e.dataEtag,
       })
       n++
     }
@@ -718,10 +748,34 @@ export class MetalWarmPool {
       throw err
     }
 
+    // Overlay the project's durable WRITABLE STATE (database + uploads) on top
+    // of the source we just hydrated. Without this a cold boot restores code
+    // over an empty database — which is how a rootfs rebuild (invalidating every
+    // snapshot) silently destroyed a user's data. Runs for every project, not
+    // just published ones.
+    //
+    // Best-effort by design, but the failure is loud AND it leaves lineage
+    // unset — which the write-side guard reads as "unknown", so this VM's empty
+    // database can never overwrite the real archive on its next suspend.
+    try {
+      const d = await this.hydrateProjectData(projectId, vm.handle, env)
+      if (d.hydrated) {
+        a.dataParentEtag = d.parentEtag
+        this.writeLive(a)
+      }
+    } catch (err: any) {
+      console.error(
+        `[pool] writable-state hydrate failed for ${projectId} — booting with the source's ` +
+          `database; lineage left unknown so this VM cannot overwrite the durable archive:`,
+        err?.message ?? err,
+      )
+    }
+
     // Server-backed published VM: overlay the live site's writable state
     // ({subdomain}/data.tar.gz) on top of the git-restored source so the app
     // boots with accumulated end-user data (not a fresh DB). Host-side — the
     // guest holds no S3 creds. Best-effort: a fresh/first publish has no archive.
+    // Applied last so a published site's live data wins over the dev snapshot.
     if (publishedSubdomain) {
       await this.hydratePublishedData(publishedSubdomain, vm.handle, env).catch((err) =>
         console.error(`[pool] published-data hydrate failed for ${publishedSubdomain} (fresh DB):`, err?.message ?? err),
@@ -883,6 +937,154 @@ export class MetalWarmPool {
     }
   }
 
+  // --- per-project writable-state durability (database + uploads) ----------
+  // Source durability above persists code. This persists the runtime state that
+  // code operates on, for EVERY project, because a snapshot is not a backup: a
+  // rootfs rebuild invalidates every snapshot at once, and the cold boot that
+  // follows restores source over an empty database.
+
+  /**
+   * Pull the guest's packed writable state over the control channel. Returns
+   * null when the guest reports it has nothing writable yet (204) — a static app
+   * or a workspace whose database has not been created. `protected` so tests can
+   * inject bytes without a live guest.
+   */
+  protected async fetchDataExport(
+    handle: FcVmHandle,
+    token?: string,
+  ): Promise<Uint8Array | null> {
+    const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
+      method: 'POST',
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (res.status === 204) return null
+    if (!res.ok) throw new Error(`/pool/export-data failed (${res.status}): ${await res.text()}`)
+    const buf = await res.arrayBuffer()
+    return buf.byteLength ? new Uint8Array(buf) : null
+  }
+
+  /** Fetch a project's durable writable-state archive. `protected` for tests. */
+  protected fetchProjectData(projectId: string): Promise<{
+    bytes: Uint8Array
+    etag: string | null
+  } | null> {
+    return fetchProjectDataArchive(projectId, this.cfg)
+  }
+
+  /** Lineage-guarded upload of writable state. `protected` for tests. */
+  protected uploadDataGuarded(
+    projectId: string,
+    bytes: Uint8Array,
+    opts: { parentEtag?: string },
+  ): Promise<DataWriteOutcome> {
+    return uploadProjectDataGuarded(projectId, bytes, opts, this.cfg)
+  }
+
+  /**
+   * Cold-start hydration of writable state: pull `{projectId}/project-data.tar.gz`
+   * and stream it to the guest's `/pool/hydrate`, which extracts it over the
+   * source tree. The archive is rooted at the workspace dir (`prisma/dev.db`,
+   * `uploads/`), so it overlays cleanly on the source we hydrated first.
+   *
+   * Returns the archive's ETag so the caller can stamp lineage — that stamp is
+   * what later authorizes this VM to overwrite the archive.
+   */
+  private async hydrateProjectData(
+    projectId: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+  ): Promise<{ hydrated: boolean; parentEtag?: string }> {
+    const archive = await this.fetchProjectData(projectId)
+    if (!archive) {
+      console.log(`[pool] no durable writable state for ${projectId} — using the source's database`)
+      return { hydrated: false }
+    }
+    const token = env.RUNTIME_AUTH_SECRET
+    const res = await fetch(`${handle.agentUrl}/pool/hydrate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/gzip',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: archive.bytes,
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (!res.ok) {
+      throw new Error(`/pool/hydrate (project data) failed (${res.status}): ${await res.text()}`)
+    }
+    console.log(
+      `[pool] hydrated writable state for ${projectId} ` +
+        `(${archive.bytes.byteLength} bytes, etag=${archive.etag ?? 'none'})`,
+    )
+    return { hydrated: true, parentEtag: archive.etag ?? undefined }
+  }
+
+  /**
+   * Pull the guest's CURRENT writable state and upload it under the lineage
+   * guard. Best-effort and idempotent: unchanged content is skipped via a
+   * content hash so the periodic exporter does not re-upload an idle project's
+   * database every cycle.
+   *
+   * Returns true when something was written (used by the periodic loop's
+   * logging), false when skipped, refused, or there was nothing to persist.
+   */
+  async saveProjectDataToStore(a: AssignedVm): Promise<boolean> {
+    const bytes = await this.fetchDataExport(a.handle, a.runtimeToken)
+    if (!bytes) return false
+
+    // Content-addressed skip, so the periodic cadence stays affordable for idle
+    // projects. Cryptographic rather than a fast non-cryptographic hash on
+    // purpose: a collision here silently skips a real upload, which is the very
+    // data loss this whole mechanism exists to prevent.
+    const hash = new Bun.CryptoHasher('sha256').update(bytes).digest('hex')
+    if (this.dataHashes.get(a.projectId) === hash) return false
+
+    const outcome = await this.uploadDataGuarded(a.projectId, bytes, {
+      parentEtag: a.dataParentEtag,
+    })
+    switch (outcome.status) {
+      case 'created':
+      case 'written':
+      case 'adopted':
+        // Re-anchor lineage to what we just wrote so subsequent writes pass.
+        a.dataParentEtag = outcome.etag ?? a.dataParentEtag
+        this.writeLive(a)
+        this.dataHashes.set(a.projectId, hash)
+        console.log(
+          `[pool] saved writable state for ${a.projectId} ` +
+            `(${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
+        )
+        return true
+      case 'conflict': {
+        metrics.inc(M.dataConflict)
+        if (outcome.reason === 'collapse') metrics.inc(M.dataCollapseBlocked)
+        const why =
+          outcome.reason === 'collapse'
+            ? `COLLAPSE BACKSTOP tripped — this ${bytes.byteLength}-byte export would have replaced a ` +
+              `substantially larger populated archive from a workspace that cannot prove it descends ` +
+              `from it (likely an empty database after a failed hydrate)`
+            : `data lineage (parentEtag=${a.dataParentEtag ?? 'none'}) does not match the current ` +
+              `archive (etag=${outcome.currentEtag ?? 'none'})`
+        console.error(
+          `[pool] REFUSED to overwrite durable writable state for ${a.projectId} — ${why}. ` +
+            `Export quarantined at ${outcome.quarantineKey} — durable archive left intact.`,
+        )
+        return false
+      }
+      case 'too-large':
+        metrics.inc(M.dataTooLarge)
+        console.error(
+          `[pool] writable state for ${a.projectId} is ${outcome.bytes} bytes, over the ` +
+            `${outcome.limit}-byte durability limit — NOT persisted. This project's data is ` +
+            `only as durable as its VM snapshot; it needs a real storage backend.`,
+        )
+        return false
+      case 'skipped':
+        return false
+    }
+  }
+
   // --- server-backed published writable-state durability -------------------
   // The metal analog of the Knative runtime's PublishedDataSync, done host-side
   // because the guest holds no S3 creds. Hydrate on cold boot; export
@@ -963,6 +1165,28 @@ export class MetalWarmPool {
    * periodic exporter loop so long-running always-on sites persist end-user
    * writes without waiting for a suspend (which may never come). Best-effort.
    */
+  /**
+   * Export writable state for every live VM — driven by the same periodic
+   * exporter loop as published data. The suspend-time export alone is not
+   * enough: a host that panics, is power-cycled, or has its VMs killed never
+   * suspends, and a long-lived always-on project may go days without one.
+   * Best-effort; unchanged databases are skipped by content hash.
+   */
+  async exportAllProjectData(): Promise<number> {
+    let n = 0
+    for (const a of this.assigned.values()) {
+      const ok = await this.saveProjectDataToStore(a).catch((err) => {
+        console.error(
+          `[pool] periodic writable-state export for ${a.projectId} failed:`,
+          err?.message ?? err,
+        )
+        return false
+      })
+      if (ok) n++
+    }
+    return n
+  }
+
   async exportAllPublishedData(): Promise<number> {
     let n = 0
     for (const a of this.assigned.values()) {
@@ -996,6 +1220,14 @@ export class MetalWarmPool {
         console.error(`[pool] source backup for ${a.projectId} failed (snapshot still durable):`, err?.message ?? err),
       )
 
+      // Same for writable state (database + uploads), and for the same reason:
+      // the snapshot is not a backup. A rootfs rebuild invalidates every
+      // snapshot at once, and the cold boot that follows restores source only —
+      // so without this the user's data is gone.
+      await this.saveProjectDataToStore(a).catch((err) =>
+        console.error(`[pool] writable-state backup for ${a.projectId} failed:`, err?.message ?? err),
+      )
+
       // Server-backed published VM: also flush the live writable state to the
       // published-data bucket so a resume on a DIFFERENT host (snapshot miss)
       // — or a republish/data-push — sees the latest end-user data.
@@ -1021,6 +1253,7 @@ export class MetalWarmPool {
         lastAccessAt,
         rootfsIdentity: this.rootfsId,
         backupEtag: a.backupParentEtag,
+        dataEtag: a.dataParentEtag,
       }
       this.suspended.set(projectId, s)
       this.writeIndex(s)
@@ -1065,6 +1298,7 @@ export class MetalWarmPool {
           baseIdentity: this.rootfsId,
           rootfsIdentity: this.rootfsId,
           backupEtag: a.backupParentEtag,
+          dataEtag: a.dataParentEtag,
           v: 1,
         }
         await this.heavy
@@ -1100,6 +1334,7 @@ export class MetalWarmPool {
       lastAccessAt: s.lastAccessAt,
       rootfsIdentity: this.rootfsId,
       backupEtag: s.backupEtag,
+      dataEtag: s.dataEtag,
       v: 1,
     }
     this.index.put(e)
@@ -1183,6 +1418,7 @@ export class MetalWarmPool {
         suspendedAt: pulled.meta.createdAt,
         lastAccessAt: Date.now(),
         backupEtag: pulled.meta.backupEtag,
+        dataEtag: pulled.meta.dataEtag,
       }
       source = 'store'
     }
@@ -1227,6 +1463,9 @@ export class MetalWarmPool {
       // (saveBackupToStore's `adoptWhenUnknown` handles that migration case).
       workspaceOrigin: 'snapshot',
       backupParentEtag: s.backupEtag,
+      // The resumed guest's database is the one frozen in the snapshot, which
+      // descends from this archive — so its next export may overwrite it.
+      dataParentEtag: s.dataEtag,
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)

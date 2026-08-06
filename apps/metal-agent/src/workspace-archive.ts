@@ -77,8 +77,12 @@ export type BackupWriteOutcome =
     }
   | { status: 'skipped' }
 
-/** Bucket + credential resolution shared by fetch/upload. Null when S3 unusable. */
-function workspaceS3(cfg: MetalConfig): { client: import('bun').S3Client } | null {
+/**
+ * Bucket + credential resolution shared by fetch/upload. Null when S3 unusable.
+ * Exported so the sibling writable-state archive (`project-data-archive.ts`)
+ * resolves the same bucket and credentials rather than drifting its own copy.
+ */
+export function workspaceS3(cfg: MetalConfig): { client: import('bun').S3Client } | null {
   const bucket = process.env.S3_WORKSPACES_BUCKET || cfg.snapStoreBucket
   if (!bucket) return null
   if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) return null

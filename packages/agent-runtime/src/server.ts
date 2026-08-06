@@ -2566,6 +2566,29 @@ app.post('/preview/stop', (c) => {
 // RUNTIME_AUTH_SECRET it injected via `/pool/assign`. The archive is applied
 // only when it actually contains project source (guards against clobbering a
 // live workspace with an empty/partial upload).
+// A cold boot applies SEVERAL overlays back to back through this one endpoint:
+// project source, then writable state (database + uploads), then a published
+// site's live data. `PreviewManager.restart()` is `stop()` + `start()` with no
+// in-flight guard, so rebuilding per-overlay meant a later extraction tore down
+// a rebuild that was still running — wasted work on every cold boot and a
+// needlessly racy one. Coalesce instead: each hydrate (re)schedules the rebuild
+// a short quiet period out, so the last overlay wins and exactly one rebuild
+// runs over the fully-assembled workspace. Overlays spaced further apart than
+// the window simply degrade to the old behavior, which is still correct.
+const HYDRATE_REBUILD_DEBOUNCE_MS = 300
+let hydrateRebuildTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleHydrateRebuild(): void {
+  if (hydrateRebuildTimer) clearTimeout(hydrateRebuildTimer)
+  hydrateRebuildTimer = setTimeout(() => {
+    hydrateRebuildTimer = null
+    // Fire-and-forget: readiness is reported through the normal preview/gateway
+    // status, so the host's hydrate call never blocks on a full rebuild.
+    getPreviewManager()
+      .restart()
+      .catch((e: any) => console.error('[pool/hydrate] rebuild failed:', e?.message ?? e))
+  }, HYDRATE_REBUILD_DEBOUNCE_MS)
+}
+
 app.post('/pool/hydrate', async (c) => {
   const body = await c.req.arrayBuffer()
   if (!body || body.byteLength === 0) {
@@ -2575,11 +2598,9 @@ app.post('/pool/hydrate', async (c) => {
   try {
     writeFileSync(tmp, Buffer.from(body))
     await extractTarFastNonBlocking(tmp, WORKSPACE_DIR)
-    // Rebuild so the served dist reflects the hydrated source. Fire-and-forget:
-    // readiness is reported through the normal preview/gateway status.
-    getPreviewManager()
-      .restart()
-      .catch((e: any) => console.error('[pool/hydrate] rebuild failed:', e?.message ?? e))
+    // Rebuild so the served dist reflects everything that was hydrated —
+    // debounced, because more overlays are usually still arriving.
+    scheduleHydrateRebuild()
     console.log(`[pool/hydrate] hydrated workspace from durable backup (${body.byteLength} bytes)`)
     return c.json({ ok: true, bytes: body.byteLength })
   } catch (err: any) {
@@ -2622,6 +2643,74 @@ app.post('/pool/export', async (c) => {
     })
   } catch (err: any) {
     console.error('[pool/export] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'export failed' }, 500)
+  } finally {
+    try {
+      unlinkSync(tmp)
+    } catch {}
+  }
+})
+
+// Metal write-side durability for RUNTIME WRITABLE STATE (host-driven).
+//
+// `/pool/export` above packs project SOURCE. That is deliberately not enough:
+// a project's SQLite database and uploaded media are not source, and depending
+// on which writer last touched `project-src.tar.gz` they may be absent from it
+// entirely (the git_only shutdown path packs `git archive HEAD`, and templates
+// gitignore `prisma/dev.db`). Runtime state therefore used to survive only
+// inside the VM snapshot — so any cold boot that bypassed the snapshot (a
+// rootfs rebuild invalidating it, durable GC, a cross-host assign) silently
+// restored source over an empty database and destroyed the user's data.
+//
+// This is the symmetric counterpart of `/pool/hydrate` for writable state: the
+// metal-agent pulls this archive and uploads it to `{projectId}/project-data.tar.gz`,
+// then streams it back through `/pool/hydrate` on a cold boot. Scoped to the
+// same writable paths the published-app path has used in production, so the
+// layout is identical and the two mechanisms stay interchangeable.
+//
+// Returns 204 when the project has no writable state (a purely static app, or
+// a workspace whose DB has not been created yet) — the caller treats that as
+// "nothing to persist", NOT as an empty archive to write over a real one.
+//
+// Auth: under the `/pool` prefix, so it requires the runtime token.
+//
+// Shared with `/agent/published-data-archive`: both persist the same notion of
+// "writable runtime state", one per-project on metal and one per-subdomain for
+// published apps. Keeping a single list means an app whose data survives while
+// published also survives in development.
+const WRITABLE_STATE_PATHS = [
+  'prisma/dev.db',
+  'prisma/dev.db-wal',
+  'prisma/dev.db-shm',
+  'uploads',
+  'public/uploads',
+  'storage',
+]
+
+app.post('/pool/export-data', async (c) => {
+  const present = WRITABLE_STATE_PATHS.filter((p) => existsSync(join(WORKSPACE_DIR, p)))
+  if (present.length === 0) return c.body(null, 204)
+
+  const tmp = join('/tmp', `pool-export-data-${Date.now()}.tar.gz`)
+  try {
+    const tar = await import('tar')
+    // WAL/SHM siblings ride along with the DB so an archive taken while the
+    // app is mid-transaction still restores to a consistent on-disk state.
+    await tar.create({ gzip: true, file: tmp, cwd: WORKSPACE_DIR, portable: true }, present)
+    const bytes = readFileSync(tmp)
+    console.log(
+      `[pool/export-data] packed writable state for durable backup ` +
+        `(${bytes.length} bytes, paths: ${present.join(', ')})`,
+    )
+    return new Response(new Uint8Array(bytes), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/gzip',
+        'X-Shogo-Data-Paths': present.join(','),
+      },
+    })
+  } catch (err: any) {
+    console.error('[pool/export-data] failed:', err?.message ?? err)
     return c.json({ error: err?.message ?? 'export failed' }, 500)
   } finally {
     try {
@@ -4769,18 +4858,8 @@ app.get('/agent/dist-files', (c) => {
  * Lives under the runtime-owned `/agent/*` namespace (auth-gated by
  * `x-runtime-token`), same as `/agent/dist-files`.
  */
-const PUBLISHED_DATA_WRITABLE_PATHS = [
-  'prisma/dev.db',
-  'prisma/dev.db-wal',
-  'prisma/dev.db-shm',
-  'uploads',
-  'public/uploads',
-  'storage',
-]
 app.get('/agent/published-data-archive', async (c) => {
-  const present = PUBLISHED_DATA_WRITABLE_PATHS.filter((p) =>
-    existsSync(join(WORKSPACE_DIR, p)),
-  )
+  const present = WRITABLE_STATE_PATHS.filter((p) => existsSync(join(WORKSPACE_DIR, p)))
   if (present.length === 0) {
     return c.json(
       { error: 'no_writable_state', message: 'No prisma/dev.db or upload dirs to archive' },
