@@ -58,6 +58,7 @@ import {
   Mic,
   Sparkles,
   Languages,
+  Play,
 } from "lucide-react-native"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
@@ -71,6 +72,8 @@ import {
 } from "./long-text-utils"
 import { resolveChatInputTextChange, type ChatInputTextChange } from "./chat-input-text-change"
 import { FileViewerModal } from "./FileViewerModal"
+import { ImagePreviewModal } from "./ImagePreviewModal"
+import { VideoPreviewModal } from "./VideoPreviewModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
 import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
@@ -544,6 +547,8 @@ function ChatInputImpl({
   // chip).
   const [pastedTexts, setPastedTexts] = useState<PastedTextEntry[]>([])
   const [viewingPastedId, setViewingPastedId] = useState<string | null>(null)
+  const [previewVideoFile, setPreviewVideoFile] = useState<{ url: string; name: string } | null>(null)
+  const [previewImageFile, setPreviewImageFile] = useState<{ url: string; name: string } | null>(null)
   const lastRestoredDraftNonceRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -1359,67 +1364,6 @@ function ChatInputImpl({
         </View>
       )}
 
-      {/* File previews */}
-      {pendingFiles.length > 0 && (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerClassName="gap-2 mb-2"
-        >
-          {pendingFiles.map((file) => {
-            const isImage = file.type.startsWith("image/")
-            return (
-              <View
-                key={file.id}
-                className={cn(
-                  "relative rounded-lg border border-border bg-muted/50 p-2",
-                  isImage ? "w-[150px]" : "w-[180px]"
-                )}
-              >
-                {isImage ? (
-                  <Image
-                    source={{ uri: file.dataUrl }}
-                    className="h-[80px] rounded border border-border w-full"
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <View className="flex-row items-center gap-2">
-                    <View className="flex-shrink-0">
-                      {getFileIcon(file.type)}
-                    </View>
-                    <View className="flex-1 min-w-0">
-                      <Text
-                        className="text-xs font-medium text-foreground"
-                        numberOfLines={1}
-                      >
-                        {file.name}
-                      </Text>
-                      <Text className="text-xs text-muted-foreground">
-                        {formatFileSize(file.size)}
-                      </Text>
-                    </View>
-                  </View>
-                )}
-                <Pressable
-                  onPress={() => handleRemoveFile(file.id)}
-                  disabled={isProcessingFiles}
-                  className="absolute -right-2 -top-2 h-6 w-6 rounded-full bg-destructive items-center justify-center"
-                >
-                  <X className="h-4 w-4 text-destructive-foreground" size={16} />
-                </Pressable>
-              </View>
-            )
-          })}
-        </ScrollView>
-      )}
-
-      {/* Processing indicator */}
-      {isProcessingFiles && (
-        <Text className="text-xs text-muted-foreground mb-2">
-          Processing files...
-        </Text>
-      )}
-
       {/* Error message */}
       {fileError && (
         <Text className="text-sm text-destructive mb-2">{fileError}</Text>
@@ -1875,6 +1819,80 @@ function ChatInputImpl({
               />
             ))}
           </View>
+        )}
+
+        {/* File attachment previews — compact thumbnails inside the input box */}
+        {(pendingFiles.length > 0 || isProcessingFiles) && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 8, paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4, alignItems: 'flex-end' }}
+          >
+            {pendingFiles.map((file) => {
+              const isImage = file.type.startsWith("image/")
+              const isVideo = file.type.startsWith("video/")
+              return (
+                <View key={file.id} className="relative">
+                  {isImage ? (
+                    <Pressable
+                      onPress={() => setPreviewImageFile({ url: file.dataUrl, name: file.name })}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Preview image ${file.name}`}
+                    >
+                      <View className="rounded-lg overflow-hidden border border-border/60" style={{ width: 72, height: 72 }}>
+                        <Image
+                          source={{ uri: file.dataUrl }}
+                          style={{ width: 72, height: 72 }}
+                          resizeMode="cover"
+                        />
+                      </View>
+                    </Pressable>
+                  ) : isVideo ? (
+                    <Pressable
+                      onPress={() => setPreviewVideoFile({ url: file.dataUrl, name: file.name })}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Preview video ${file.name}`}
+                    >
+                      <View className="rounded-lg overflow-hidden border border-border/60 bg-black/80 items-center justify-center" style={{ width: 72, height: 72 }}>
+                        <View className="absolute inset-0 items-center justify-center">
+                          <View className="rounded-full bg-white/20 items-center justify-center" style={{ width: 32, height: 32 }}>
+                            <Play size={16} className="text-white" fill="white" />
+                          </View>
+                        </View>
+                        <Text className="text-[9px] text-white/50 absolute bottom-1.5 left-0 right-0 text-center" numberOfLines={1}>
+                          {file.name}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  ) : (
+                    <View
+                      className="flex-row items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2"
+                      style={{ height: 36, maxWidth: 160 }}
+                    >
+                      <View className="flex-shrink-0">{getFileIcon(file.type)}</View>
+                      <Text className="text-xs text-foreground flex-1 min-w-0" numberOfLines={1}>
+                        {file.name}
+                      </Text>
+                    </View>
+                  )}
+                  <Pressable
+                    onPress={() => handleRemoveFile(file.id)}
+                    disabled={isProcessingFiles}
+                    className="absolute -right-1.5 -top-1.5 h-5 w-5 rounded-full bg-background border border-border items-center justify-center"
+                    style={{ zIndex: 10 }}
+                  >
+                    <X className="text-foreground" size={10} />
+                  </Pressable>
+                </View>
+              )
+            })}
+            {isProcessingFiles && (
+              <View
+                className="rounded-lg overflow-hidden border border-border/60 bg-muted/30 animate-pulse"
+                style={{ width: 72, height: 72 }}
+              />
+            )}
+          </ScrollView>
         )}
 
         {/* Tagged files / projects now render INLINE as "@mention" pills via
@@ -2382,6 +2400,20 @@ function ChatInputImpl({
         </View>
         </View>
       </View>
+
+      <ImagePreviewModal
+        visible={previewImageFile !== null}
+        onClose={() => setPreviewImageFile(null)}
+        url={previewImageFile?.url ?? ""}
+        title={previewImageFile?.name}
+      />
+
+      <VideoPreviewModal
+        visible={previewVideoFile !== null}
+        onClose={() => setPreviewVideoFile(null)}
+        url={previewVideoFile?.url ?? ""}
+        title={previewVideoFile?.name ?? "Video preview"}
+      />
 
       {viewingPasted && (
         <FileViewerModal

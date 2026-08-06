@@ -51,7 +51,9 @@ import {
   Download,
   Bug,
   Monitor,
+  Paintbrush,
 } from 'lucide-react-native'
+import { AppearanceTab } from '../../components/settings/AppearanceTab'
 import { useAuth } from '../../contexts/auth'
 import {
   useDomain,
@@ -114,9 +116,9 @@ import { useDualPlan } from '../../lib/dual-plan-preference'
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'models' | 'integrations' | 'remote-control' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support'
+type TabId = 'workspace' | 'people' | 'models' | 'integrations' | 'remote-control' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support' | 'appearance'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'models', 'integrations', 'remote-control', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'models', 'integrations', 'remote-control', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support', 'appearance']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
@@ -135,6 +137,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'remote-control', label: 'Remote Control', icon: Monitor },
   { id: 'account', label: 'Account', icon: User },
+  { id: 'appearance', label: 'Appearance', icon: Paintbrush },
   ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [{ id: 'compute' as TabId, label: 'Compute', icon: Server }] : []),
   { id: 'billing', label: 'Billing', icon: CreditCard },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
@@ -146,6 +149,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'remote-control', label: 'Remote Control', icon: Monitor },
   { id: 'account', label: 'Account', icon: User },
+  { id: 'appearance', label: 'Appearance', icon: Paintbrush },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
   { id: 'costs', label: 'Costs', icon: Coins },
@@ -262,6 +266,7 @@ function SettingsSidebar({
       label: 'Account',
       items: [
         { id: 'account', label: userName || 'Account' },
+        { id: 'appearance' as TabId, label: 'Appearance' },
         ...(!showBilling ? [{ id: 'security' as TabId, label: 'Security' }] : []),
       ],
     },
@@ -3241,12 +3246,13 @@ function WorkspaceCostTab() {
 // MAIN SETTINGS PAGE
 // ============================================================================
 
-const SettingsContent = observer(function SettingsContent({ 
-  activeTab, 
-  localMode = false 
-}: { 
-  activeTab: TabId, 
-  localMode?: boolean 
+
+const SettingsContent = observer(function SettingsContent({
+  activeTab,
+  localMode = false
+}: {
+  activeTab: TabId,
+  localMode?: boolean
 }) {
   const isLocal = localMode
   return (
@@ -3257,6 +3263,7 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'integrations' && <IntegrationsTab />}
       {activeTab === 'remote-control' && <RemoteControlTab />}
       {activeTab === 'account' && <AccountTab />}
+      {activeTab === 'appearance' && <AppearanceTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
       {activeTab === 'compute' && !isLocal && !HIDE_COMPUTE_PURCHASES_ON_IOS && <ComputeTab />}
       {activeTab === 'billing' && !isLocal && <BillingTab />}
