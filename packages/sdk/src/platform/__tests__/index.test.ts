@@ -370,6 +370,7 @@ describe('PlatformApi.getAgentModelDefaults', () => {
     const { api } = mkApi()
     expect(await api.getAgentModelDefaults()).toEqual({
       basic: null, advanced: null, defaultMode: null,
+      autoEconomy: null, autoStandard: null, autoPremium: null,
     })
   })
 })

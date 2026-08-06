@@ -63,8 +63,11 @@ describe('smartTruncateJson', () => {
   })
 
   test('binary-searches array length when stripping is not enough', () => {
+    // Budget must exceed TRUNCATION_SIGNAL_BUDGET (600 chars reserved for the
+    // `_truncation`/`_meta` signal); below that the array-slicing result can
+    // never fit and the function drops to last-resort raw truncation.
     const items = Array.from({ length: 100 }, (_, i) => ({ id: i, name: `item-${i}` }))
-    const { result, truncated } = smartTruncateJson({ items }, 500)
+    const { result, truncated } = smartTruncateJson({ items }, 1200)
     expect(truncated).toBe(true)
     const parsed = JSON.parse(result)
     expect(parsed.items.length).toBeLessThan(100)
@@ -90,23 +93,25 @@ describe('smartTruncateJson', () => {
   })
 
   test('findLargestArray descends into nested objects (depth-bounded)', () => {
-    const nested = { meta: { count: 1 }, payload: { rows: Array.from({ length: 200 }, (_, i) => i) } }
-    const { result } = smartTruncateJson(nested, 200)
+    // Budget must exceed TRUNCATION_SIGNAL_BUDGET (600) for the array-slicing
+    // path to be reachable at all, so the payload is sized to overflow 1200.
+    const nested = { meta: { count: 1 }, payload: { rows: Array.from({ length: 2000 }, (_, i) => i) } }
+    const { result } = smartTruncateJson(nested, 1200)
     const parsed = JSON.parse(result)
     if (parsed.payload && Array.isArray(parsed.payload.rows)) {
-      expect(parsed.payload.rows.length).toBeLessThan(200)
+      expect(parsed.payload.rows.length).toBeLessThan(2000)
     } else {
       expect(result).toContain('truncated')
     }
   })
 
   test('handles arrays at root by treating the wrapping object as scope', () => {
-    const arr = Array.from({ length: 50 }, (_, i) => ({ x: i }))
+    const arr = Array.from({ length: 500 }, (_, i) => ({ x: i }))
     // Wrap so findLargestArray has a parent obj
-    const { result, truncated } = smartTruncateJson({ root: arr }, 200)
+    const { result, truncated } = smartTruncateJson({ root: arr }, 1200)
     expect(truncated).toBe(true)
     const parsed = JSON.parse(result)
-    expect(parsed.root.length).toBeLessThan(50)
+    expect(parsed.root.length).toBeLessThan(500)
   })
 
   test('stripLargeStrings recurses into arrays and does not crash on deep cycles', () => {

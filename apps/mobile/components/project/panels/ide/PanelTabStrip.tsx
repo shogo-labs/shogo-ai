@@ -276,17 +276,6 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
                 <Plus size={13} />
               </button>
             )}
-            {props.onHide && (
-              <button
-                type="button"
-                onClick={props.onHide}
-                title="Hide panel  (⌘J)"
-                aria-label="Hide panel"
-                className="flex items-center rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
-              >
-                <ChevronDown size={13} />
-              </button>
-            )}
             {onPanelActions && (
               <button
                 ref={moreButtonRef}
@@ -301,6 +290,23 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
             )}
             <span aria-hidden="true" className="mx-[3px] h-4 w-px bg-[#3c3c3c]" />
           </div>
+        )}
+        {/* Hide, maximize and close sit OUTSIDE the terminal-controls ternary:
+            each is a property of the panel, not of whichever tab is active.
+            Hide used to live in the non-terminal branch, which silently
+            removed the ⌘J chevron whenever the Terminal tab supplied its own
+            controls — the panel's primary dismiss affordance disappearing on
+            the panel's most-used tab. */}
+        {props.onHide && (
+          <button
+            type="button"
+            onClick={props.onHide}
+            title="Hide panel  (⌘J)"
+            aria-label="Hide panel"
+            className="rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+          >
+            <ChevronDown size={13} />
+          </button>
         )}
         {onMaximize && (
           <button

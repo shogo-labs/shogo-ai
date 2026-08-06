@@ -97,7 +97,10 @@ describe('filterDisabledCapabilityTools', () => {
   })
 
   test('returns the same array reference when nothing is disabled (no-op fast path)', () => {
-    const config = makeConfig()
+    // `gitWorktreesEnabled` is opt-in beta: leaving it unset gates `worktree_list`,
+    // which by itself defeats the fast path. Turn it on so genuinely nothing is
+    // disabled and the identity shortcut can fire.
+    const config = makeConfig({ gitWorktreesEnabled: true })
     const tools = createTools(makeCtx(config))
     expect(filterDisabledCapabilityTools(tools, config)).toBe(tools)
   })

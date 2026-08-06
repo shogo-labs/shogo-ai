@@ -28,6 +28,7 @@
 
 import { existsSync, readFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync } from 'fs'
 import { join, resolve } from 'path'
+import { Database } from 'bun:sqlite'
 import { spawnSync } from 'child_process'
 
 const REPO_ROOT = resolve(import.meta.dir, '..')
@@ -97,7 +98,7 @@ const IN_PROCESS_E2E_SUITES: readonly InProcessE2ESuite[] = [
   {
     name: 'apps/api in-process e2e',
     files: [
-      'e2e/shogo-persistence.test.ts',
+      'e2e/ez-mode-persistence.test.ts',
       'e2e/project-export-import.test.ts',
     ],
     env: {
@@ -198,6 +199,33 @@ function runPackage(pkg: string, withCoverage: boolean): PackageResult {
  * fresh checkouts (or CI without a DB step) don't false-fail. Returns
  * non-zero `exitCode` only when the bun test process itself fails.
  */
+/**
+ * Whether `dbPath` is a SQLite database that actually carries the app schema.
+ *
+ * Existence alone is not a usable signal: anything that opens a client against
+ * `DATABASE_URL=file:./shogo.db` creates a 0-byte file, and that empty database
+ * then fails every query with Prisma P2021 instead of being skipped. These
+ * suites are written against a developer's seeded local database, so an
+ * unprovisioned one means "skip", not "fail".
+ */
+function sqliteHasAppSchema(dbPath: string): boolean {
+  if (!existsSync(dbPath)) return false
+  try {
+    const db = new Database(dbPath, { readonly: true })
+    try {
+      return Boolean(
+        db
+          .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'")
+          .get(),
+      )
+    } finally {
+      db.close()
+    }
+  } catch {
+    return false
+  }
+}
+
 function runE2ESuite(
   suite: InProcessE2ESuite,
   withCoverage: boolean,
@@ -205,10 +233,10 @@ function runE2ESuite(
 ): E2EResult {
   const start = Date.now()
   const dbPath = resolve(REPO_ROOT, suite.env.DATABASE_URL?.replace(/^file:/, '') ?? '')
-  if (suite.env.DATABASE_URL?.startsWith('file:') && !existsSync(dbPath)) {
+  if (suite.env.DATABASE_URL?.startsWith('file:') && !sqliteHasAppSchema(dbPath)) {
     console.log(`\n=== ${suite.name}: SKIPPED ===`)
-    console.log(`  ${dbPath} does not exist — run \`bun run db:generate:all\` (or \`bun dev:all\` once) to create it`)
-    return { name: suite.name, exitCode: 0, durationMs: 0, skipped: 'sqlite db missing' }
+    console.log(`  ${dbPath} has no app schema — run \`bun run db:generate:all\` (or \`bun dev:all\` once) to create it`)
+    return { name: suite.name, exitCode: 0, durationMs: 0, skipped: 'sqlite db not provisioned' }
   }
 
   console.log(`\n=== ${suite.name}: bun test ${suite.files.join(' ')} ${withCoverage ? '--coverage' : ''} ===`)
