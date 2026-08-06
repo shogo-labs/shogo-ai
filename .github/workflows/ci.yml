@@ -15,6 +15,11 @@ on:
   # commit, instead of silently red-ing every downstream PR.
   push:
     branches: [main]
+  # Re-running a past run replays that run's workflow definition, so a fix to
+  # the job itself (a timeout, a step) cannot be verified by re-running the
+  # build that motivated it. Manual dispatch gives a fresh run against the
+  # current file without pushing a no-op commit to main.
+  workflow_dispatch:
 
 permissions: {}
 
