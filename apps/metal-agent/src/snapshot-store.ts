@@ -60,6 +60,14 @@ export interface SnapshotMeta {
    * snapshot taken before lineage stamping shipped.
    */
   backupEtag?: string
+  /**
+   * ETag of the durable writable-state archive (`{projectId}/project-data.tar.gz`)
+   * current when this snapshot was taken. Carried back into
+   * AssignedVm.dataParentEtag on resume so a resumed VM may overwrite exactly
+   * the data archive its database derives from. Absent for snapshots taken
+   * before writable-state durability shipped.
+   */
+  dataEtag?: string
   /** Store schema version, for forward-compat. */
   v: 1
   /**
