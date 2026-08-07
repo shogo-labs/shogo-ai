@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
- * Host-side fetch + LINEAGE-GUARDED write of a project's durable WRITABLE STATE
+ * Host-side fetch + GUARDED write of a project's durable WRITABLE STATE
  * (`{projectId}/project-data.tar.gz`) — the SQLite database and upload dirs.
  *
  * Why this exists separately from `workspace-archive.ts` (the incident):
@@ -24,15 +24,33 @@
  *   - A corrupt or oversized database can be skipped without also losing the
  *     ability to restore the project's code.
  *
- * The guard mirrors `workspace-archive.ts`: a workspace has a lineage (the ETag
- * of the data archive it hydrated from) and may only overwrite the object it
- * descends from. Anything else is diverted to quarantine rather than clobbering.
- * See {@link decideDataWrite} for why unknown lineage is handled by size and not
- * refused outright.
+ * ── How the guard works ──────────────────────────────────────────────────
+ *
+ * Every write is a CONDITIONAL write, so the guard is enforced by the storage
+ * layer rather than by a check we perform beforehand. The earlier design read
+ * the object's ETag and then wrote if it looked right, which is a
+ * time-of-check/time-of-use race: two writers could both read ETag `E`, both
+ * conclude they were safe, and the loser would silently destroy the winner's
+ * data. The periodic exporter and `suspend()` are exactly two such writers.
+ *
+ * A workspace is in one of three states, and each maps to a precondition the
+ * server enforces atomically (see {@link planDataWrite}):
+ *
+ *   descends(etag) → `If-Match: etag`     — may replace the archive it came from
+ *   create-only    → `If-None-Match: *`   — may create, can never overwrite
+ *   untrusted      → no write at all      — provenance is known to be bad
+ *
+ * Sizing heuristics used to stand in for the `untrusted` state, guessing from
+ * a shrink whether an empty database was about to erase a populated one. They
+ * are no longer part of the decision: the case they approximated is now stated
+ * outright by the caller, and a heuristic that can only produce false refusals
+ * is worse than one that is not consulted. {@link isDataCollapse} survives
+ * purely as an observability signal — see its doc comment.
  */
 
 import type { MetalConfig } from './config'
-import { etagEq, workspaceS3 } from './workspace-archive'
+import { conditionalPutObject, type S3Target } from './s3-conditional'
+import { workspaceS3 } from './workspace-archive'
 
 /** A durable writable-state archive plus the ETag that anchors its lineage. */
 export interface ProjectDataArchive {
@@ -42,28 +60,49 @@ export interface ProjectDataArchive {
 }
 
 /**
- * Outcome of a lineage-guarded writable-state write.
- *   created   — no archive existed; this is the project's first data backup.
- *   written   — the writer's lineage matched the object in S3; safe overwrite.
- *   adopted   — unknown lineage, but the write is not a collapse; see
- *               {@link decideDataWrite}.
- *   conflict  — the writer did not descend from the current object, or the
- *               write would have collapsed a populated database. Bytes were
- *               diverted to `quarantineKey`; the archive was UNTOUCHED.
- *   too-large — the archive exceeds {@link DATA_MAX_BYTES}; nothing was
- *               written. Surfaced (not swallowed) so it alerts.
+ * Where a workspace's database came from, stated by the caller rather than
+ * inferred. This is the whole safety argument, so the states are deliberately
+ * few and explicit.
+ */
+export type DataLineage =
+  /** Hydrated from exactly this archive; entitled to replace it. */
+  | { kind: 'descends'; etag: string }
+  /**
+   * Provenance is not known to be bad, but this workspace cannot prove it
+   * descends from anything: a brand-new project, or a VM adopted across an
+   * agent restart that predates lineage tracking. Allowed to CREATE the
+   * archive (there is nothing to lose if none exists) and nothing more.
+   */
+  | { kind: 'create-only' }
+  /**
+   * Provenance is known to be bad — the writable-state hydrate failed, so this
+   * VM booted on whatever database the source archive happened to contain.
+   * Its export must never reach the durable archive; that is precisely the
+   * empty-database-over-real-data shape of the original incident.
+   */
+  | { kind: 'untrusted'; reason: string }
+
+/**
+ * Outcome of a guarded writable-state write.
+ *   created   — the archive did not exist and this write created it.
+ *   written   — the writer's lineage matched; a safe compare-and-swap.
+ *   conflict  — the precondition failed, so the archive was NOT what this
+ *               writer descends from. The stored archive is UNTOUCHED. Bytes
+ *               go to `quarantineKey` when the caller asked to preserve them.
+ *   refused   — the caller declared the workspace untrusted; nothing written.
+ *   too-large — exceeds {@link DATA_MAX_BYTES}; surfaced (not swallowed) so it
+ *               alerts, because it means silent non-durability.
  *   skipped   — S3 is not configured.
  */
 export type DataWriteOutcome =
   | { status: 'created'; etag: string | null }
   | { status: 'written'; etag: string | null }
-  | { status: 'adopted'; etag: string | null }
   | {
       status: 'conflict'
-      quarantineKey: string
-      currentEtag: string | null
-      reason: 'lineage' | 'collapse'
+      quarantineKey: string | null
+      reason: 'lineage' | 'raced-create'
     }
+  | { status: 'refused'; reason: string; quarantineKey: string | null }
   | { status: 'too-large'; bytes: number; limit: number }
   | { status: 'skipped' }
 
@@ -93,22 +132,26 @@ export function dataQuarantineKey(projectId: string): string {
  */
 export const DATA_MAX_BYTES = 1024 * 1024 * 1024
 
-/** A current archive at or above this size holds enough state to be worth protecting. */
+/** A current archive at or above this size holds enough state to be worth noting. */
 export const DATA_REAL_MIN_BYTES = 1024 * 1024
 
-/**
- * Fraction of the current archive below which an unknown-lineage write is
- * treated as a collapse rather than an update. A freshly-created schema-only
- * SQLite database is a small fraction of a populated one, so a 75%+ shrink from
- * a writer that cannot prove its lineage is the signature of "empty DB about to
- * overwrite real data".
- */
+/** Shrink ratio below which an update looks less like an edit than an erasure. */
 export const COLLAPSE_RATIO = 0.25
 
 /**
- * True when an unknown-lineage write would collapse a populated archive down to
- * a near-empty one. Fails SAFE: unknown sizes return false and defer to the
- * lineage decision.
+ * True when a write shrinks a populated archive to a small fraction of itself.
+ *
+ * This NO LONGER blocks anything. It once stood in for the `untrusted` state,
+ * blocking unknown-lineage writes that looked like an empty database replacing
+ * a populated one. Now that untrusted workspaces are refused outright, the only
+ * writes that reach a populated archive are ones that provably descend from it
+ * — where a shrink is the user deleting their own data, and refusing it would
+ * strand their archive permanently.
+ *
+ * It is kept because the shape is still worth counting: a legitimate
+ * descends-write that collapses an archive is either a user wiping their
+ * database or a bug upstream of here, and we want to see which. Fails safe on
+ * unknown sizes.
  */
 export function isDataCollapse(
   currentSize: number | null,
@@ -119,43 +162,45 @@ export function isDataCollapse(
   return incomingSize <= currentSize * COLLAPSE_RATIO
 }
 
-/** The action the guard takes; the pure core of the write decision (S3-free). */
-export type DataWriteAction = 'create' | 'overwrite' | 'adopt' | 'quarantine'
+/**
+ * The precondition a given lineage earns. Pure, so the safety property is
+ * unit-testable without S3.
+ *
+ * The invariant to check against this table: NO lineage yields an
+ * unconditional write. A workspace may replace only the exact object it came
+ * from, or create one where none exists.
+ */
+export type DataWritePlan =
+  | { action: 'compare-and-swap'; ifMatch: string }
+  | { action: 'create-only' }
+  | { action: 'refuse'; reason: string }
+
+export function planDataWrite(lineage: DataLineage): DataWritePlan {
+  switch (lineage.kind) {
+    case 'descends':
+      return { action: 'compare-and-swap', ifMatch: lineage.etag }
+    case 'create-only':
+      return { action: 'create-only' }
+    case 'untrusted':
+      return { action: 'refuse', reason: lineage.reason }
+  }
+}
 
 /**
- * Pure decision core of {@link uploadProjectDataGuarded}, factored out so the
- * invariant is unit-testable without S3.
+ * Credentials/addressing for the workspaces bucket, or null when unconfigured.
  *
- *   - nothing in S3                 → 'create'
- *   - writer descends from current  → 'overwrite' (a shrink here is the user's
- *     own deletion — blocking it would strand their archive forever)
- *   - unknown lineage               → 'adopt', UNLESS the write collapses a
- *     populated archive → 'quarantine'
- *   - lineage mismatch              → 'quarantine' (NEVER clobber)
- *
- * Unknown lineage is adopted-when-not-a-collapse rather than always refused,
- * because refusing it outright has a worse failure mode during rollout: the
- * first VM to suspend after this ships has no lineage, and if an empty archive
- * were created first, the real workspace could never replace it. Sizing the
- * decision lets real data win over a small archive while still stopping an
- * empty database from erasing a populated one.
+ * Mirrors exactly what `workspaceS3` treats as configured, so the read path and
+ * the write path can never disagree about whether durability is on. An absent
+ * endpoint falls back to AWS rather than disabling writes, because a silent
+ * skip here reads as "backups are running" while nothing is being persisted.
  */
-export function decideDataWrite(input: {
-  exists: boolean
-  currentEtag: string | null
-  parentEtag?: string | null
-  currentSize?: number | null
-  incomingSize?: number | null
-}): DataWriteAction {
-  if (!input.exists) return 'create'
-  if (input.parentEtag && etagEq(input.parentEtag, input.currentEtag)) return 'overwrite'
-  if (!input.parentEtag) {
-    if (isDataCollapse(input.currentSize ?? null, input.incomingSize ?? null)) {
-      return 'quarantine'
-    }
-    return 'adopt'
-  }
-  return 'quarantine'
+export function dataS3Target(cfg: MetalConfig): S3Target | null {
+  const bucket = process.env.S3_WORKSPACES_BUCKET || cfg.snapStoreBucket
+  const accessKeyId = process.env.AWS_ACCESS_KEY_ID
+  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY
+  if (!bucket || !accessKeyId || !secretAccessKey) return null
+  const endpoint = cfg.s3Endpoint || `https://s3.${cfg.s3Region}.amazonaws.com`
+  return { bucket, accessKeyId, secretAccessKey, endpoint, region: cfg.s3Region }
 }
 
 /** Best-effort ETag + size of an object; nulls when absent or on any HEAD error. */
@@ -190,54 +235,82 @@ export async function fetchProjectDataArchive(
   return { bytes: new Uint8Array(buf), etag: meta.etag }
 }
 
+/** Park bytes we would not write, so an operator can still recover them. */
+async function quarantine(
+  projectId: string,
+  bytes: Uint8Array,
+  cfg: MetalConfig,
+): Promise<string | null> {
+  const s3 = workspaceS3(cfg)
+  if (!s3) return null
+  const key = dataQuarantineKey(projectId)
+  await s3.client.write(key, bytes, { type: 'application/gzip' })
+  return key
+}
+
 /**
- * Lineage-guarded upload of a project's writable state. See
- * {@link decideDataWrite} for the decision table and {@link DATA_MAX_BYTES} for
- * the size ceiling (checked before any S3 round-trip).
+ * Write a project's writable state under the lineage guard.
+ *
+ * `preserveOnRefusal` controls whether refused bytes are quarantined. Callers
+ * should set it for a FINAL export (suspend) and leave it off for periodic
+ * ones: an untrusted VM exports every cycle, and quarantining each one would
+ * accumulate thousands of copies of the same database while the single useful
+ * copy — the last one — is the only one anybody would ever restore.
  */
 export async function uploadProjectDataGuarded(
   projectId: string,
   bytes: Uint8Array,
-  opts: { parentEtag?: string | null },
+  opts: { lineage: DataLineage; preserveOnRefusal?: boolean },
   cfg: MetalConfig,
 ): Promise<DataWriteOutcome> {
   if (bytes.byteLength > DATA_MAX_BYTES) {
     return { status: 'too-large', bytes: bytes.byteLength, limit: DATA_MAX_BYTES }
   }
 
-  const s3 = workspaceS3(cfg)
-  if (!s3) return { status: 'skipped' }
+  const plan = planDataWrite(opts.lineage)
+  if (plan.action === 'refuse') {
+    const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+    return { status: 'refused', reason: plan.reason, quarantineKey: qkey }
+  }
 
-  const key = dataArchiveKey(projectId)
-  const file = s3.client.file(key)
+  const target = dataS3Target(cfg)
+  if (!target) return { status: 'skipped' }
 
-  const exists = await file.exists()
-  const cur = exists ? await statMeta(file) : { etag: null, size: null }
+  // Cheap pre-check, purely to avoid uploading a body we already know will be
+  // rejected: a create-only writer whose archive exists would otherwise push
+  // the whole database over the wire every cycle just to collect a 412. This
+  // is NOT the safety check — `If-None-Match` below still is, so a race
+  // between this HEAD and the PUT is harmless.
+  if (plan.action === 'create-only') {
+    const s3 = workspaceS3(cfg)
+    if (s3 && (await s3.client.file(dataArchiveKey(projectId)).exists())) {
+      const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+      return { status: 'conflict', quarantineKey: qkey, reason: 'raced-create' }
+    }
+  }
 
-  const action = decideDataWrite({
-    exists,
-    currentEtag: cur.etag,
-    parentEtag: opts.parentEtag,
-    currentSize: cur.size,
-    incomingSize: bytes.byteLength,
+  const result = await conditionalPutObject({
+    target,
+    key: dataArchiveKey(projectId),
+    body: bytes,
+    contentType: 'application/gzip',
+    precondition:
+      plan.action === 'compare-and-swap' ? { ifMatch: plan.ifMatch } : { ifNoneMatch: '*' },
   })
 
-  switch (action) {
-    case 'create':
-    case 'overwrite':
-    case 'adopt': {
-      await s3.client.write(key, bytes, { type: 'application/gzip' })
-      const etag = (await statMeta(file)).etag
-      const status = action === 'create' ? 'created' : action === 'overwrite' ? 'written' : 'adopted'
-      return { status, etag } as DataWriteOutcome
-    }
-    case 'quarantine': {
-      const qkey = dataQuarantineKey(projectId)
-      await s3.client.write(qkey, bytes, { type: 'application/gzip' })
-      const reason: 'lineage' | 'collapse' = isDataCollapse(cur.size, bytes.byteLength)
-        ? 'collapse'
-        : 'lineage'
-      return { status: 'conflict', quarantineKey: qkey, currentEtag: cur.etag, reason }
-    }
+  if (result.status === 'ok') {
+    return plan.action === 'create-only'
+      ? { status: 'created', etag: result.etag }
+      : { status: 'written', etag: result.etag }
+  }
+
+  // The server rejected the precondition, so the archive is not the one this
+  // writer descends from and was left alone. A create-only writer losing here
+  // simply means the archive now exists — normal during rollout.
+  const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+  return {
+    status: 'conflict',
+    quarantineKey: qkey,
+    reason: plan.action === 'create-only' ? 'raced-create' : 'lineage',
   }
 }

@@ -307,13 +307,31 @@ if (config.projectDataExportIntervalMs > 0) {
   console.log(
     `[metal-agent] writable-state export on: interval=${config.projectDataExportIntervalMs}ms`,
   )
+  // Re-entrancy guard. A sweep across every live VM can outlast the interval
+  // on a busy host (each project may snapshot a database and upload it), and
+  // overlapping sweeps would fight over the same per-project export — the
+  // second one waits on the singleflight, achieving nothing but a growing pile
+  // of stacked timers.
+  let exportInFlight = false
   projectDataExporter = setInterval(() => {
-    pool.exportAllProjectData().then(
-      (n) => {
-        if (n) console.log(`[metal-agent] exported writable state for ${n} project(s)`)
-      },
-      (err) => console.error('[metal-agent] writable-state exporter error:', err?.message ?? err),
-    )
+    if (exportInFlight) {
+      console.warn(
+        '[metal-agent] writable-state export still running from the previous tick — skipping',
+      )
+      return
+    }
+    exportInFlight = true
+    pool
+      .exportAllProjectData()
+      .then(
+        (n) => {
+          if (n) console.log(`[metal-agent] exported writable state for ${n} project(s)`)
+        },
+        (err) => console.error('[metal-agent] writable-state exporter error:', err?.message ?? err),
+      )
+      .finally(() => {
+        exportInFlight = false
+      })
   }, config.projectDataExportIntervalMs)
 }
 

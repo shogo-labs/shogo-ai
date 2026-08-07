@@ -69,16 +69,32 @@ export const M = {
   backupTemplateSnapshotBlocked: 'metal_backup_template_snapshot_blocked_total',
   backupSizeRegression: 'metal_backup_size_regression_total',
   // Writable-state durability (database + uploads; see
-  // pool.saveProjectDataToStore). `dataConflict` = an export quarantined rather
-  // than overwriting the durable archive; `dataCollapseBlocked` = the backstop
-  // stopped a near-empty export from replacing a populated archive, which is
-  // the shape of "cold-booted with a fresh database and tried to persist it";
-  // `dataTooLarge` = a project's writable state exceeded the durability limit
-  // and was NOT persisted, so it is only as durable as its VM snapshot. Any
-  // sustained rate on the last one needs a real storage backend for that app.
+  // pool.saveProjectDataToStore).
+  //   `dataConflict`  — a conditional write's precondition failed, so the
+  //                     durable archive was NOT the one this workspace
+  //                     descends from and was left untouched.
+  //   `dataRefused`   — the workspace was marked untrusted (its writable-state
+  //                     hydrate failed, so it is running on whatever database
+  //                     the source archive held) and was never allowed to
+  //                     write. Sustained non-zero means projects are running
+  //                     WITHOUT durability and needs investigating.
+  //   `dataCollapse`  — observational only: a permitted write shrank a
+  //                     populated archive to a fraction of its size. Either a
+  //                     user wiped their own database or something upstream is
+  //                     wrong; it no longer blocks the write (see
+  //                     project-data-archive.isDataCollapse).
+  //   `dataTooLarge`  — writable state exceeded the durability limit and was
+  //                     NOT persisted, so it is only as durable as its VM
+  //                     snapshot. Any sustained rate needs a real storage
+  //                     backend for that app.
   dataConflict: 'metal_data_conflict_total',
-  dataCollapseBlocked: 'metal_data_collapse_blocked_total',
+  dataRefused: 'metal_data_refused_untrusted_total',
+  dataCollapse: 'metal_data_collapse_observed_total',
   dataTooLarge: 'metal_data_too_large_total',
+  // Writable-state exports skipped because the guest reported nothing changed
+  // (HTTP 304 from /pool/export-data). The counterweight to the export
+  // interval: a high ratio here means the cadence is affordable.
+  dataUnchanged: 'metal_data_unchanged_total',
   diskUsedPct: 'metal_disk_used_pct',
   diskFreeBytes: 'metal_disk_free_bytes',
   cacheLocalCount: 'metal_cache_local_count',

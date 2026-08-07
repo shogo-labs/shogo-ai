@@ -11,10 +11,11 @@
  * destroy the durable copy too — turning a recoverable snapshot loss into
  * permanent data loss. A user lost a generated song library exactly this way.
  *
- * The guard is structural (lineage: the ETag of the archive a workspace's
- * database descends from), with a size backstop for the one case lineage
- * cannot decide — an unknown-lineage writer. These tests exercise the pure
- * decision core, so no S3 is involved.
+ * The guard is now structural in two senses. Lineage is stated by the caller
+ * rather than guessed from archive sizes, and the resulting precondition is
+ * enforced by the storage layer as part of the write itself, so there is no
+ * window between deciding and writing. The single most important test here is
+ * the exhaustive one: NO lineage may produce an unconditional write.
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -24,8 +25,9 @@ import {
   DATA_REAL_MIN_BYTES,
   dataArchiveKey,
   dataQuarantineKey,
-  decideDataWrite,
   isDataCollapse,
+  planDataWrite,
+  type DataLineage,
 } from './project-data-archive'
 
 /** A populated database archive. */
@@ -44,133 +46,88 @@ describe('dataArchiveKey / dataQuarantineKey', () => {
     expect(k.endsWith('-data.tar.gz')).toBe(true)
   })
 
-  test('quarantine keys do not collide across rapid successive conflicts', () => {
-    const keys = new Set(Array.from({ length: 50 }, () => dataQuarantineKey('proj-1')))
+  test('quarantine keys do not collide within the same millisecond', () => {
+    const keys = new Set(Array.from({ length: 50 }, () => dataQuarantineKey('p')))
     expect(keys.size).toBe(50)
   })
 })
 
-describe('isDataCollapse', () => {
-  test('an empty database replacing a populated one is a collapse', () => {
-    expect(isDataCollapse(POPULATED, EMPTY)).toBe(true)
+describe('planDataWrite', () => {
+  test('a workspace that descends from the archive may replace exactly that one', () => {
+    expect(planDataWrite({ kind: 'descends', etag: '"abc"' })).toEqual({
+      action: 'compare-and-swap',
+      ifMatch: '"abc"',
+    })
   })
 
-  test('normal churn on a populated database is not a collapse', () => {
-    expect(isDataCollapse(POPULATED, POPULATED + 1024)).toBe(false)
-    expect(isDataCollapse(POPULATED, POPULATED * 0.9)).toBe(false)
+  test('an unproven workspace may create but never overwrite', () => {
+    // A brand-new project, or a VM adopted across an agent restart. Letting it
+    // CREATE is what makes rollout work: the first writer seeds the archive.
+    // Letting it overwrite is what caused the incident.
+    expect(planDataWrite({ kind: 'create-only' })).toEqual({ action: 'create-only' })
   })
 
-  test('the boundary is exactly COLLAPSE_RATIO of the current archive', () => {
-    expect(isDataCollapse(POPULATED, POPULATED * COLLAPSE_RATIO)).toBe(true)
-    expect(isDataCollapse(POPULATED, POPULATED * COLLAPSE_RATIO + 1)).toBe(false)
+  test('a workspace with known-bad provenance writes nothing at all', () => {
+    expect(planDataWrite({ kind: 'untrusted', reason: 'hydrate failed' })).toEqual({
+      action: 'refuse',
+      reason: 'hydrate failed',
+    })
   })
 
-  test('a small current archive is not worth protecting (nothing meaningful to lose)', () => {
-    expect(isDataCollapse(DATA_REAL_MIN_BYTES - 1, 0)).toBe(false)
-    expect(isDataCollapse(DATA_REAL_MIN_BYTES, 0)).toBe(true)
+  test('NO lineage yields an unconditional write', () => {
+    // The load-bearing property. If a future state were added that produced a
+    // plain write, an empty database could erase a populated archive again —
+    // so this asserts over every state rather than over examples.
+    const lineages: DataLineage[] = [
+      { kind: 'descends', etag: '"e"' },
+      { kind: 'create-only' },
+      { kind: 'untrusted', reason: 'any' },
+    ]
+    for (const lineage of lineages) {
+      const plan = planDataWrite(lineage)
+      expect(['compare-and-swap', 'create-only', 'refuse']).toContain(plan.action)
+      if (plan.action === 'compare-and-swap') expect(plan.ifMatch).toBeTruthy()
+    }
   })
 
-  test('fails SAFE when either size is unknown — defers to the lineage decision', () => {
-    expect(isDataCollapse(null, EMPTY)).toBe(false)
-    expect(isDataCollapse(POPULATED, null)).toBe(false)
-    expect(isDataCollapse(null, null)).toBe(false)
+  test('the precondition carries the exact ETag, not a normalised one', () => {
+    // The quoting has to survive: `If-Match` is compared verbatim by the server.
+    expect(planDataWrite({ kind: 'descends', etag: 'W/"weak-tag"' })).toEqual({
+      action: 'compare-and-swap',
+      ifMatch: 'W/"weak-tag"',
+    })
   })
 })
 
-describe('decideDataWrite', () => {
-  test('no durable archive yet → create', () => {
-    expect(
-      decideDataWrite({ exists: false, currentEtag: null, incomingSize: EMPTY }),
-    ).toBe('create')
+describe('isDataCollapse (observational only)', () => {
+  test('flags an empty database replacing a populated archive', () => {
+    expect(isDataCollapse(POPULATED, EMPTY)).toBe(true)
   })
 
-  test('lineage matches the current archive → overwrite', () => {
-    expect(
-      decideDataWrite({
-        exists: true,
-        currentEtag: '"abc"',
-        parentEtag: '"abc"',
-        currentSize: POPULATED,
-        incomingSize: POPULATED,
-      }),
-    ).toBe('overwrite')
+  test('does not flag ordinary growth or a modest shrink', () => {
+    expect(isDataCollapse(POPULATED, POPULATED + 1024)).toBe(false)
+    expect(isDataCollapse(POPULATED, Math.floor(POPULATED * 0.9))).toBe(false)
   })
 
-  test('ETag quoting/weak-validator differences still count as matching lineage', () => {
-    expect(
-      decideDataWrite({ exists: true, currentEtag: 'W/"abc"', parentEtag: '"abc"' }),
-    ).toBe('overwrite')
+  test('ignores archives too small to be worth protecting', () => {
+    expect(isDataCollapse(DATA_REAL_MIN_BYTES - 1, 1)).toBe(false)
   })
 
-  test('a matching-lineage SHRINK is allowed — the user deleted their own data', () => {
-    // This must NOT be blocked: the workspace demonstrably descends from the
-    // archive, so the shrink is intentional. Refusing it would strand the
-    // archive and keep restoring data the user deliberately removed.
-    expect(
-      decideDataWrite({
-        exists: true,
-        currentEtag: '"abc"',
-        parentEtag: '"abc"',
-        currentSize: POPULATED,
-        incomingSize: EMPTY,
-      }),
-    ).toBe('overwrite')
+  test('fails safe when either size is unknown', () => {
+    expect(isDataCollapse(null, EMPTY)).toBe(false)
+    expect(isDataCollapse(POPULATED, null)).toBe(false)
   })
 
-  test('THE INCIDENT: unknown lineage + empty database over a populated archive → quarantine', () => {
-    // A VM that cold-booted after its snapshot was invalidated has no data
-    // lineage and a freshly-created database. Adopting it would erase the
-    // user's data permanently; quarantine keeps the bytes and the archive.
-    expect(
-      decideDataWrite({
-        exists: true,
-        currentEtag: '"real"',
-        parentEtag: undefined,
-        currentSize: POPULATED,
-        incomingSize: EMPTY,
-      }),
-    ).toBe('quarantine')
-  })
-
-  test('unknown lineage carrying real data adopts (so rollout can converge)', () => {
-    // The complement of the case above, and why unknown lineage is not refused
-    // outright: the first VM to export after this shipped has no lineage. If
-    // that always quarantined, a small archive written first could never be
-    // replaced by the real one.
-    expect(
-      decideDataWrite({
-        exists: true,
-        currentEtag: '"small"',
-        parentEtag: undefined,
-        currentSize: EMPTY,
-        incomingSize: POPULATED,
-      }),
-    ).toBe('adopt')
-  })
-
-  test('unknown lineage with unknown sizes adopts (fails safe toward persisting)', () => {
-    expect(
-      decideDataWrite({ exists: true, currentEtag: '"real"', parentEtag: undefined }),
-    ).toBe('adopt')
-  })
-
-  test('a MISMATCHED lineage always quarantines, whatever the sizes', () => {
-    // Unlike unknown lineage, a stale ETag is positive evidence the writer does
-    // not descend from what is in S3 — never adopt, even carrying more bytes.
-    expect(
-      decideDataWrite({
-        exists: true,
-        currentEtag: '"current"',
-        parentEtag: '"stale"',
-        currentSize: EMPTY,
-        incomingSize: POPULATED,
-      }),
-    ).toBe('quarantine')
+  test('sits exactly on the documented ratio', () => {
+    expect(isDataCollapse(POPULATED, POPULATED * COLLAPSE_RATIO)).toBe(true)
+    expect(isDataCollapse(POPULATED, POPULATED * COLLAPSE_RATIO + 1)).toBe(false)
   })
 })
 
 describe('DATA_MAX_BYTES', () => {
-  test('matches the guest hydrate request-body cap — an archive we cannot restore is useless', () => {
+  test('matches the guest hydrate body cap, so a stored archive is restorable', () => {
+    // An archive larger than the guest will accept would consume storage while
+    // still cold-booting empty — durability that is not.
     expect(DATA_MAX_BYTES).toBe(1024 * 1024 * 1024)
   })
 })

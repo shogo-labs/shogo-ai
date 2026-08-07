@@ -9,6 +9,11 @@
  * golden-rootfs rebuild invalidated every snapshot at once, the cold boot that
  * followed restored code over an empty database and the user's data was gone.
  *
+ * The property under test throughout is that a workspace may only write the
+ * durable archive it can prove it descends from. The guard itself lives in the
+ * storage layer (a conditional PUT); what these cover is the pool deciding
+ * WHICH lineage to claim, and never upgrading a bad one into a good one.
+ *
  * These drive the seams directly (`fetchDataExport` over a stubbed global
  * `fetch`, `uploadDataGuarded` recorded), so no real guest / S3 / Firecracker
  * is needed.
@@ -21,41 +26,61 @@ import { join } from 'path'
 import { config } from './config'
 import { MetalWarmPool, type AssignedVm } from './pool'
 import { M, metrics } from './metrics'
-import type { DataWriteOutcome } from './project-data-archive'
+import type { DataLineage, DataWriteOutcome } from './project-data-archive'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 
 const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.9' } as any
 
+interface RecordedUpload {
+  projectId: string
+  bytes: Uint8Array
+  opts: { lineage: DataLineage; preserveOnRefusal?: boolean }
+}
+
 class TestPool extends MetalWarmPool {
-  uploads: Array<{ projectId: string; bytes: Uint8Array; opts: { parentEtag?: string } }> = []
+  uploads: RecordedUpload[] = []
   outcome: DataWriteOutcome = { status: 'written', etag: '"new"' }
-  protected override uploadDataGuarded(
+  uploadDelayMs = 0
+
+  protected override async uploadDataGuarded(
     projectId: string,
     bytes: Uint8Array,
-    opts: { parentEtag?: string },
+    opts: { lineage: DataLineage; preserveOnRefusal?: boolean },
   ): Promise<DataWriteOutcome> {
     this.uploads.push({ projectId, bytes, opts })
-    return Promise.resolve(this.outcome)
+    if (this.uploadDelayMs) await Bun.sleep(this.uploadDelayMs)
+    return this.outcome
   }
-  exportData(token?: string) {
-    return (this as any).fetchDataExport(HANDLE, token) as Promise<Uint8Array | null>
+
+  exportData(token?: string, knownTag?: string) {
+    return (this as any).fetchDataExport(HANDLE, token, knownTag)
   }
-  save(projectId: string, runtimeToken?: string, extra: Partial<AssignedVm> = {}) {
-    if (!(this as any).assigned.has(projectId)) {
-      ;(this as any).assigned.set(projectId, {
-        projectId,
-        handle: HANDLE,
-        assignedAt: Date.now(),
-        lastTouchedAt: Date.now(),
-        runtimeToken,
-        ...extra,
-      })
-    }
-    return this.saveProjectDataToStore((this as any).assigned.get(projectId)) as Promise<boolean>
+
+  add(projectId: string, extra: Partial<AssignedVm> = {}, handle = HANDLE): AssignedVm {
+    const a = {
+      projectId,
+      handle,
+      assignedAt: Date.now(),
+      lastTouchedAt: Date.now(),
+      runtimeToken: 'tok',
+      ...extra,
+    } as AssignedVm
+    ;(this as any).assigned.set(projectId, a)
+    return a
   }
+
+  save(projectId: string, opts: { final?: boolean } = {}, extra: Partial<AssignedVm> = {}) {
+    if (!(this as any).assigned.has(projectId)) this.add(projectId, extra)
+    return this.saveProjectDataToStore((this as any).assigned.get(projectId), opts)
+  }
+
   assignedEntry(projectId: string): AssignedVm | undefined {
     return (this as any).assigned.get(projectId)
+  }
+
+  snapshotEtagFor(a: AssignedVm): string | undefined {
+    return (this as any).trustedDataEtag(a)
   }
 }
 
@@ -73,6 +98,14 @@ function makePool(dir: string): TestPool {
   return new TestPool(fakeMgr, cfg, { kind: 'none' } as unknown as SnapshotStore)
 }
 
+/** A guest that always has writable state to hand over. */
+function guestReturns(body: Uint8Array, etag?: string): void {
+  globalThis.fetch = mock(
+    async () =>
+      new Response(body, { status: 200, headers: etag ? { ETag: etag } : undefined }),
+  ) as any
+}
+
 describe('pool writable-state durability', () => {
   let dir: string
   const realFetch = globalThis.fetch
@@ -84,186 +117,282 @@ describe('pool writable-state durability', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('fetchDataExport POSTs to guest /pool/export-data with the runtime token', async () => {
-    const pool = makePool(dir)
-    const calls: Array<{ url: string; init: any }> = []
-    globalThis.fetch = mock(async (url: any, init: any) => {
-      calls.push({ url: String(url), init })
-      return new Response(new Uint8Array([1, 2, 3]), { status: 200 })
-    }) as any
+  describe('fetchDataExport', () => {
+    test('POSTs to the guest with the runtime token and returns bytes + tag', async () => {
+      const pool = makePool(dir)
+      const calls: Array<{ url: string; init: any }> = []
+      globalThis.fetch = mock(async (url: any, init: any) => {
+        calls.push({ url: String(url), init })
+        return new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { ETag: 'tag-1' },
+        })
+      }) as any
 
-    const bytes = await pool.exportData('secret-token')
-    expect(calls[0].url).toBe('http://10.0.0.9:8080/pool/export-data')
-    expect(calls[0].init.method).toBe('POST')
-    expect(calls[0].init.headers.Authorization).toBe('Bearer secret-token')
-    expect(bytes).toEqual(new Uint8Array([1, 2, 3]))
+      const out = await pool.exportData('secret-token')
+      expect(calls[0].url).toBe('http://10.0.0.9:8080/pool/export-data')
+      expect(calls[0].init.method).toBe('POST')
+      expect(calls[0].init.headers.Authorization).toBe('Bearer secret-token')
+      expect(out).toEqual({ bytes: new Uint8Array([1, 2, 3]), tag: 'tag-1' })
+    })
+
+    test('echoes a known tag back so the guest can answer 304', async () => {
+      const pool = makePool(dir)
+      const calls: Array<any> = []
+      globalThis.fetch = mock(async (_url: any, init: any) => {
+        calls.push(init)
+        return new Response(null, { status: 304 })
+      }) as any
+
+      expect(await pool.exportData('tok', 'tag-7')).toBe('unchanged')
+      expect(calls[0].headers['If-None-Match']).toBe('tag-7')
+    })
+
+    test('204 means the project has no writable state at all', async () => {
+      const pool = makePool(dir)
+      globalThis.fetch = mock(async () => new Response(null, { status: 204 })) as any
+      expect(await pool.exportData('tok')).toBeNull()
+    })
+
+    test('throws when the guest rejects', async () => {
+      const pool = makePool(dir)
+      globalThis.fetch = mock(async () => new Response('boom', { status: 500 })) as any
+      await expect(pool.exportData('tok')).rejects.toThrow(/\/pool\/export-data failed \(500\)/)
+    })
   })
 
-  test('fetchDataExport returns null on 204 (project has no writable state)', async () => {
-    const pool = makePool(dir)
-    globalThis.fetch = mock(async () => new Response(null, { status: 204 })) as any
-    expect(await pool.exportData('tok')).toBeNull()
-  })
+  describe('lineage claimed on write', () => {
+    test('a hydrated workspace claims descent from the archive it came from', async () => {
+      const pool = makePool(dir)
+      guestReturns(new Uint8Array([5, 6, 7, 8]))
 
-  test('fetchDataExport throws when the guest rejects', async () => {
-    const pool = makePool(dir)
-    globalThis.fetch = mock(async () => new Response('boom', { status: 500 })) as any
-    await expect(pool.exportData('tok')).rejects.toThrow(/\/pool\/export-data failed \(500\)/)
-  })
+      await pool.save('p1', {}, { dataParentEtag: '"parent"' })
+      expect(pool.uploads).toHaveLength(1)
+      expect(pool.uploads[0].bytes).toEqual(new Uint8Array([5, 6, 7, 8]))
+      expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'descends', etag: '"parent"' })
+    })
 
-  test('a project with no writable state uploads nothing', async () => {
-    const pool = makePool(dir)
-    globalThis.fetch = mock(async () => new Response(null, { status: 204 })) as any
+    test('a workspace with no lineage may only create, never overwrite', async () => {
+      // Covers both a brand-new project and a VM adopted across an agent
+      // restart from before lineage tracking. Neither can prove descent, so
+      // neither is allowed to replace an existing archive.
+      const pool = makePool(dir)
+      guestReturns(new Uint8Array([1]))
 
-    expect(await pool.save('p1', 'tok')).toBe(false)
-    expect(pool.uploads).toHaveLength(0)
-  })
+      await pool.save('p1')
+      expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'create-only' })
+    })
 
-  test('saveProjectDataToStore uploads the packed writable state with its lineage', async () => {
-    const pool = makePool(dir)
-    globalThis.fetch = mock(async () => new Response(new Uint8Array([5, 6, 7, 8]), { status: 200 })) as any
+    test('a failed hydrate makes the workspace untrusted, not merely unknown', async () => {
+      const pool = makePool(dir)
+      guestReturns(new Uint8Array([1]))
 
-    await pool.save('p1', 'tok', { dataParentEtag: '"parent"' })
-    expect(pool.uploads).toHaveLength(1)
-    expect(pool.uploads[0].projectId).toBe('p1')
-    expect(pool.uploads[0].bytes).toEqual(new Uint8Array([5, 6, 7, 8]))
-    expect(pool.uploads[0].opts).toEqual({ parentEtag: '"parent"' })
-  })
-
-  test('a successful write re-anchors lineage so later exports keep passing the guard', async () => {
-    const pool = makePool(dir)
-    pool.outcome = { status: 'written', etag: '"fresh"' }
-    globalThis.fetch = mock(async () => new Response(new Uint8Array([9]), { status: 200 })) as any
-
-    await pool.save('p1', 'tok', { dataParentEtag: '"old"' })
-    expect(pool.assignedEntry('p1')!.dataParentEtag).toBe('"fresh"')
-  })
-
-  test('unchanged writable state is skipped on the next cycle (periodic export stays cheap)', async () => {
-    const pool = makePool(dir)
-    globalThis.fetch = mock(async () => new Response(new Uint8Array([1, 1, 1]), { status: 200 })) as any
-
-    expect(await pool.save('p1', 'tok')).toBe(true)
-    expect(await pool.save('p1', 'tok')).toBe(false)
-    expect(pool.uploads).toHaveLength(1)
-  })
-
-  test('changed writable state uploads again', async () => {
-    const pool = makePool(dir)
-    let body = new Uint8Array([1, 1, 1])
-    globalThis.fetch = mock(async () => new Response(body, { status: 200 })) as any
-
-    await pool.save('p1', 'tok')
-    body = new Uint8Array([2, 2, 2])
-    expect(await pool.save('p1', 'tok')).toBe(true)
-    expect(pool.uploads).toHaveLength(2)
-  })
-
-  test('a collapse conflict bumps BOTH metrics and leaves lineage UNCHANGED (no clobber)', async () => {
-    const pool = makePool(dir)
-    pool.outcome = {
-      status: 'conflict',
-      quarantineKey: 'conflict/p1/123-abc-data.tar.gz',
-      currentEtag: '"real"',
-      reason: 'collapse',
-    }
-    globalThis.fetch = mock(async () => new Response(new Uint8Array([3, 3, 7]), { status: 200 })) as any
-
-    const conflictBefore = metrics.getCounter(M.dataConflict)
-    const collapseBefore = metrics.getCounter(M.dataCollapseBlocked)
-    // A VM that cold-booted with a fresh database and no data lineage — the
-    // exact shape of the loss this guard exists to stop.
-    expect(await pool.save('p1', 'tok')).toBe(false)
-    expect(metrics.getCounter(M.dataConflict)).toBe(conflictBefore + 1)
-    expect(metrics.getCounter(M.dataCollapseBlocked)).toBe(collapseBefore + 1)
-    expect(pool.assignedEntry('p1')!.dataParentEtag).toBeUndefined()
-  })
-
-  test('a lineage conflict bumps only the conflict metric', async () => {
-    const pool = makePool(dir)
-    pool.outcome = {
-      status: 'conflict',
-      quarantineKey: 'conflict/p1/456-def-data.tar.gz',
-      currentEtag: '"real"',
-      reason: 'lineage',
-    }
-    globalThis.fetch = mock(async () => new Response(new Uint8Array([4]), { status: 200 })) as any
-
-    const collapseBefore = metrics.getCounter(M.dataCollapseBlocked)
-    const conflictBefore = metrics.getCounter(M.dataConflict)
-    await pool.save('p1', 'tok', { dataParentEtag: '"stale"' })
-    expect(metrics.getCounter(M.dataConflict)).toBe(conflictBefore + 1)
-    expect(metrics.getCounter(M.dataCollapseBlocked)).toBe(collapseBefore)
-  })
-
-  test('a conflict does NOT mark the content as uploaded — the next cycle retries', async () => {
-    const pool = makePool(dir)
-    pool.outcome = {
-      status: 'conflict',
-      quarantineKey: 'conflict/p1/789-ghi-data.tar.gz',
-      currentEtag: '"real"',
-      reason: 'lineage',
-    }
-    globalThis.fetch = mock(async () => new Response(new Uint8Array([8]), { status: 200 })) as any
-
-    await pool.save('p1', 'tok')
-    await pool.save('p1', 'tok')
-    expect(pool.uploads).toHaveLength(2)
-  })
-
-  test('an oversized archive is metered and not persisted', async () => {
-    const pool = makePool(dir)
-    pool.outcome = { status: 'too-large', bytes: 2 * 1024 * 1024 * 1024, limit: 1024 * 1024 * 1024 }
-    globalThis.fetch = mock(async () => new Response(new Uint8Array([1]), { status: 200 })) as any
-
-    const before = metrics.getCounter(M.dataTooLarge)
-    expect(await pool.save('p1', 'tok')).toBe(false)
-    expect(metrics.getCounter(M.dataTooLarge)).toBe(before + 1)
-    expect(pool.assignedEntry('p1')!.dataParentEtag).toBeUndefined()
-  })
-
-  test('exportAllProjectData covers every live VM, not just published ones', async () => {
-    const pool = makePool(dir)
-    globalThis.fetch = mock(async () => new Response(new Uint8Array([7]), { status: 200 })) as any
-    for (const id of ['p1', 'p2', 'p3']) {
-      ;(pool as any).assigned.set(id, {
-        projectId: id,
-        handle: HANDLE,
-        assignedAt: Date.now(),
-        lastTouchedAt: Date.now(),
-        runtimeToken: 'tok',
+      await pool.save('p1', { final: true }, { dataUntrustedReason: 'hydrate failed' })
+      expect(pool.uploads[0].opts.lineage).toEqual({
+        kind: 'untrusted',
+        reason: 'hydrate failed',
       })
-    }
+    })
 
-    expect(await pool.exportAllProjectData()).toBe(3)
-    expect(pool.uploads.map((u) => u.projectId).sort()).toEqual(['p1', 'p2', 'p3'])
+    test('untrusted beats a stale ETag — a distrusted VM cannot claim descent', async () => {
+      const pool = makePool(dir)
+      guestReturns(new Uint8Array([1]))
+
+      await pool.save(
+        'p1',
+        { final: true },
+        { dataParentEtag: '"stale"', dataUntrustedReason: 'lineage diverged' },
+      )
+      expect(pool.uploads[0].opts.lineage.kind).toBe('untrusted')
+    })
   })
 
-  test('one project failing does not stop the rest of the periodic sweep', async () => {
-    const pool = makePool(dir)
-    // Route by guest address: p1 sits on a host that errors, p2 on a healthy one.
-    globalThis.fetch = mock(async (url: any) =>
-      String(url).includes('10.0.0.9')
-        ? new Response(new Uint8Array([7]), { status: 200 })
-        : new Response('boom', { status: 500 }),
-    ) as any
-    ;(pool as any).assigned.set('p1', {
-      projectId: 'p1',
-      handle: { ...HANDLE, agentUrl: 'http://10.0.0.1:8080' },
-      assignedAt: Date.now(),
-      lastTouchedAt: Date.now(),
-      runtimeToken: 'tok',
-    })
-    ;(pool as any).assigned.set('p2', {
-      projectId: 'p2',
-      handle: HANDLE,
-      assignedAt: Date.now(),
-      lastTouchedAt: Date.now(),
-      runtimeToken: 'tok',
+  describe('untrusted workspaces', () => {
+    test('are not even asked for an export on the periodic cycle', async () => {
+      // Packing and shipping a database we already know we will refuse is pure
+      // waste — and on a busy host it is waste repeated every interval.
+      const pool = makePool(dir)
+      const fetchMock = mock(async () => new Response(new Uint8Array([1]), { status: 200 }))
+      globalThis.fetch = fetchMock as any
+
+      const before = metrics.getCounter(M.dataRefused)
+      expect(await pool.save('p1', {}, { dataUntrustedReason: 'hydrate failed' })).toBe(false)
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(pool.uploads).toHaveLength(0)
+      expect(metrics.getCounter(M.dataRefused)).toBe(before + 1)
     })
 
-    // p1's guest errors; p2 still gets persisted.
-    expect(await pool.exportAllProjectData()).toBe(1)
-    expect(pool.uploads.map((u) => u.projectId)).toEqual(['p2'])
+    test('still export on suspend, so the bytes can be preserved for recovery', async () => {
+      // The final export is the only one worth keeping: it holds whatever the
+      // user actually did in this VM, which nothing else has a copy of.
+      const pool = makePool(dir)
+      pool.outcome = { status: 'refused', reason: 'hydrate failed', quarantineKey: 'conflict/p1/x' }
+      guestReturns(new Uint8Array([9, 9]))
+
+      expect(await pool.save('p1', { final: true }, { dataUntrustedReason: 'hydrate failed' })).toBe(
+        false,
+      )
+      expect(pool.uploads).toHaveLength(1)
+      expect(pool.uploads[0].opts.preserveOnRefusal).toBe(true)
+    })
+
+    test('periodic exports do not ask for the bytes to be preserved', async () => {
+      const pool = makePool(dir)
+      guestReturns(new Uint8Array([1]))
+      await pool.save('p1')
+      expect(pool.uploads[0].opts.preserveOnRefusal).toBe(false)
+    })
+  })
+
+  describe('outcomes', () => {
+    test('a successful write re-anchors lineage from the write itself', async () => {
+      // Taken from the PUT's own response rather than a follow-up HEAD, which
+      // would reintroduce the read-then-write window the guard exists to close.
+      const pool = makePool(dir)
+      pool.outcome = { status: 'written', etag: '"fresh"' }
+      guestReturns(new Uint8Array([9]))
+
+      await pool.save('p1', {}, { dataParentEtag: '"old"' })
+      expect(pool.assignedEntry('p1')!.dataParentEtag).toBe('"fresh"')
+    })
+
+    test('a conflict distrusts the VM so it stops trying every cycle', async () => {
+      const pool = makePool(dir)
+      pool.outcome = { status: 'conflict', quarantineKey: null, reason: 'lineage' }
+      guestReturns(new Uint8Array([3, 3, 7]))
+
+      const before = metrics.getCounter(M.dataConflict)
+      expect(await pool.save('p1', {}, { dataParentEtag: '"stale"' })).toBe(false)
+      expect(metrics.getCounter(M.dataConflict)).toBe(before + 1)
+      expect(pool.assignedEntry('p1')!.dataUntrustedReason).toBeTruthy()
+
+      // And the next cycle is a no-op rather than another failed upload.
+      const uploadsAfterFirst = pool.uploads.length
+      expect(await pool.save('p1')).toBe(false)
+      expect(pool.uploads).toHaveLength(uploadsAfterFirst)
+    })
+
+    test('a create-only writer that lost the race is distrusted, not retried', async () => {
+      const pool = makePool(dir)
+      pool.outcome = { status: 'conflict', quarantineKey: null, reason: 'raced-create' }
+      guestReturns(new Uint8Array([4]))
+
+      expect(await pool.save('p1')).toBe(false)
+      expect(pool.assignedEntry('p1')!.dataUntrustedReason).toContain('cannot prove it descends')
+    })
+
+    test('a refusal is metered and writes nothing', async () => {
+      const pool = makePool(dir)
+      pool.outcome = { status: 'refused', reason: 'hydrate failed', quarantineKey: null }
+      guestReturns(new Uint8Array([1]))
+
+      const before = metrics.getCounter(M.dataRefused)
+      expect(await pool.save('p1', { final: true }, { dataUntrustedReason: 'hydrate failed' })).toBe(
+        false,
+      )
+      expect(metrics.getCounter(M.dataRefused)).toBe(before + 1)
+      expect(pool.assignedEntry('p1')!.dataParentEtag).toBeUndefined()
+    })
+
+    test('an oversized archive is metered and not persisted', async () => {
+      const pool = makePool(dir)
+      pool.outcome = {
+        status: 'too-large',
+        bytes: 2 * 1024 * 1024 * 1024,
+        limit: 1024 * 1024 * 1024,
+      }
+      guestReturns(new Uint8Array([1]))
+
+      const before = metrics.getCounter(M.dataTooLarge)
+      expect(await pool.save('p1')).toBe(false)
+      expect(metrics.getCounter(M.dataTooLarge)).toBe(before + 1)
+      expect(pool.assignedEntry('p1')!.dataParentEtag).toBeUndefined()
+    })
+
+    test('a project with no writable state uploads nothing', async () => {
+      const pool = makePool(dir)
+      globalThis.fetch = mock(async () => new Response(null, { status: 204 })) as any
+      expect(await pool.save('p1')).toBe(false)
+      expect(pool.uploads).toHaveLength(0)
+    })
+  })
+
+  describe('unchanged state', () => {
+    test('is skipped without uploading, and metered', async () => {
+      const pool = makePool(dir)
+      guestReturns(new Uint8Array([1, 1, 1]), 'tag-a')
+      expect(await pool.save('p1')).toBe(true)
+
+      globalThis.fetch = mock(async () => new Response(null, { status: 304 })) as any
+      const before = metrics.getCounter(M.dataUnchanged)
+      expect(await pool.save('p1')).toBe(false)
+      expect(metrics.getCounter(M.dataUnchanged)).toBe(before + 1)
+      expect(pool.uploads).toHaveLength(1)
+    })
+
+    test('changed state uploads again', async () => {
+      const pool = makePool(dir)
+      guestReturns(new Uint8Array([1, 1, 1]), 'tag-a')
+      await pool.save('p1')
+      guestReturns(new Uint8Array([2, 2, 2]), 'tag-b')
+      expect(await pool.save('p1')).toBe(true)
+      expect(pool.uploads).toHaveLength(2)
+    })
+  })
+
+  describe('concurrency', () => {
+    test('the periodic exporter and suspend cannot export the same project at once', async () => {
+      // Both writers would carry the SAME lineage, so whichever landed second
+      // would fail its precondition and throw away the fresher database.
+      const pool = makePool(dir)
+      pool.uploadDelayMs = 30
+      guestReturns(new Uint8Array([1]))
+      pool.add('p1')
+
+      const [a, b] = await Promise.all([pool.save('p1'), pool.save('p1', { final: true })])
+      expect(pool.uploads).toHaveLength(1)
+      expect(a).toBe(b)
+    })
+  })
+
+  describe('snapshot lineage', () => {
+    test('a trusted VM freezes its ETag into the snapshot', () => {
+      const pool = makePool(dir)
+      const a = pool.add('p1', { dataParentEtag: '"good"' })
+      expect(pool.snapshotEtagFor(a)).toBe('"good"')
+    })
+
+    test('an untrusted VM freezes nothing, so a resume cannot inherit its claim', () => {
+      // Otherwise suspend/resume would launder a distrusted database back into
+      // a writer entitled to overwrite the archive.
+      const pool = makePool(dir)
+      const a = pool.add('p1', { dataParentEtag: '"stale"', dataUntrustedReason: 'diverged' })
+      expect(pool.snapshotEtagFor(a)).toBeUndefined()
+    })
+  })
+
+  describe('periodic sweep', () => {
+    test('covers every live VM, not just published ones', async () => {
+      const pool = makePool(dir)
+      guestReturns(new Uint8Array([7]))
+      for (const id of ['p1', 'p2', 'p3']) pool.add(id)
+
+      expect(await pool.exportAllProjectData()).toBe(3)
+      expect(pool.uploads.map((u) => u.projectId).sort()).toEqual(['p1', 'p2', 'p3'])
+    })
+
+    test('one project failing does not stop the rest', async () => {
+      const pool = makePool(dir)
+      globalThis.fetch = mock(async (url: any) =>
+        String(url).includes('10.0.0.9')
+          ? new Response(new Uint8Array([7]), { status: 200 })
+          : new Response('boom', { status: 500 }),
+      ) as any
+      pool.add('p1', {}, { ...HANDLE, agentUrl: 'http://10.0.0.1:8080' })
+      pool.add('p2')
+
+      expect(await pool.exportAllProjectData()).toBe(1)
+      expect(pool.uploads.map((u) => u.projectId)).toEqual(['p2'])
+    })
   })
 })
