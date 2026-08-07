@@ -394,5 +394,87 @@ describe('pool writable-state durability', () => {
       expect(await pool.exportAllProjectData()).toBe(1)
       expect(pool.uploads.map((u) => u.projectId)).toEqual(['p2'])
     })
+
+    // Observed on staging: the VMs already running when the new agent rolled
+    // out answer 404, and every one of them re-asked on every cycle — 1620
+    // identical failures in six hours, which is exactly how a real failure
+    // gets missed.
+    test('a guest that predates the endpoint is asked once, then never again', async () => {
+      const pool = makePool(dir)
+      let calls = 0
+      globalThis.fetch = mock(async () => {
+        calls++
+        return new Response('404 Not Found', { status: 404 })
+      }) as any
+      pool.add('old-vm')
+
+      const before = metrics.snapshot().counters[M.dataUnsupported] ?? 0
+      for (let i = 0; i < 5; i++) await pool.exportAllProjectData()
+
+      expect(calls).toBe(1)
+      expect(pool.assignedEntry('old-vm')!.dataExportUnsupported).toBe(true)
+      expect((metrics.snapshot().counters[M.dataUnsupported] ?? 0) - before).toBe(1)
+      expect(pool.uploads).toEqual([])
+    })
+
+    test('an unreachable guest backs off instead of retrying every cycle', async () => {
+      const pool = makePool(dir)
+      let calls = 0
+      globalThis.fetch = mock(async () => {
+        calls++
+        throw new Error('Unable to connect.')
+      }) as any
+      const a = pool.add('dead-vm')
+
+      await pool.exportAllProjectData()
+      expect(calls).toBe(1)
+      expect(a.dataExportFailures).toBe(1)
+      expect(a.dataExportRetryAfter).toBeGreaterThan(Date.now())
+
+      // Still inside the backoff window: skipped without touching the guest.
+      await pool.exportAllProjectData()
+      expect(calls).toBe(1)
+
+      // Once it elapses the retry happens, and the wait grows.
+      a.dataExportRetryAfter = Date.now() - 1
+      await pool.exportAllProjectData()
+      expect(calls).toBe(2)
+      expect(a.dataExportFailures).toBe(2)
+    })
+
+    test('a guest that recovers is taken off backoff immediately', async () => {
+      const pool = makePool(dir)
+      let fail = true
+      globalThis.fetch = mock(async () => {
+        if (fail) throw new Error('Unable to connect.')
+        return new Response(new Uint8Array([7]), { status: 200 })
+      }) as any
+      const a = pool.add('flaky')
+
+      await pool.exportAllProjectData()
+      expect(a.dataExportFailures).toBe(1)
+
+      fail = false
+      a.dataExportRetryAfter = Date.now() - 1
+      expect(await pool.exportAllProjectData()).toBe(1)
+      expect(a.dataExportFailures).toBe(0)
+      expect(a.dataExportRetryAfter).toBeUndefined()
+    })
+
+    // An idle project answers 304, which is success even though nothing was
+    // written. Treating it as a failure would slowly back off exactly the
+    // projects that are behaving.
+    test('an unchanged (304) project is not treated as a failure', async () => {
+      const pool = makePool(dir)
+      globalThis.fetch = mock(async () => new Response(null, { status: 304 })) as any
+      const a = pool.add('idle', { dataParentEtag: '"e"' })
+      ;(pool as any).dataTags.set('idle', 'tag-1')
+
+      await pool.exportAllProjectData()
+      await pool.exportAllProjectData()
+
+      expect(a.dataExportFailures).toBe(0)
+      expect(a.dataExportRetryAfter).toBeUndefined()
+    })
   })
 })
