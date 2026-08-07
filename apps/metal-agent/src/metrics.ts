@@ -95,6 +95,10 @@ export const M = {
   // (HTTP 304 from /pool/export-data). The counterweight to the export
   // interval: a high ratio here means the cadence is affordable.
   dataUnchanged: 'metal_data_unchanged_total',
+  // VMs whose guest predates /pool/export-data. Counted once per VM, and
+  // expected to be non-zero only while a rollout drains: a value that stays
+  // flat and high means projects whose writable state is NOT being persisted.
+  dataUnsupported: 'metal_data_unsupported_total',
   diskUsedPct: 'metal_disk_used_pct',
   diskFreeBytes: 'metal_disk_free_bytes',
   cacheLocalCount: 'metal_cache_local_count',

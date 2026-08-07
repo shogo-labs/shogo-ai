@@ -150,6 +150,19 @@ export interface AssignedVm {
    * the refusal log says what actually went wrong.
    */
   dataUntrustedReason?: string
+  /**
+   * The guest predates `/pool/export-data` and answers 404. A running VM never
+   * gains the endpoint — only a reboot onto a newer rootfs does, and that
+   * produces a different AssignedVm — so this is permanent for this VM's life
+   * and the periodic exporter skips it entirely. Without this, every VM alive
+   * at rollout re-requests (and re-logs) a 404 on every cycle until it is
+   * recycled, which on a full fleet buries real failures in noise.
+   */
+  dataExportUnsupported?: boolean
+  /** Consecutive transient export failures, for backoff. */
+  dataExportFailures?: number
+  /** Epoch ms before which the periodic exporter should not retry. */
+  dataExportRetryAfter?: number
 }
 
 export interface SuspendedVm {
@@ -985,7 +998,7 @@ export class MetalWarmPool {
     handle: FcVmHandle,
     token?: string,
     knownTag?: string,
-  ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | null> {
+  ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | null> {
     const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
       method: 'POST',
       headers: {
@@ -996,6 +1009,9 @@ export class MetalWarmPool {
     })
     if (res.status === 304) return 'unchanged'
     if (res.status === 204) return null
+    // A guest from before this endpoint existed. Distinguished from a real
+    // failure because it is permanent for this VM and must not be retried.
+    if (res.status === 404) return 'unsupported'
     if (!res.ok) throw new Error(`/pool/export-data failed (${res.status}): ${await res.text()}`)
     const buf = await res.arrayBuffer()
     if (!buf.byteLength) return null
@@ -1128,6 +1144,17 @@ export class MetalWarmPool {
     const exported = await this.fetchDataExport(a.handle, a.runtimeToken, known)
     if (exported === 'unchanged') {
       metrics.inc(M.dataUnchanged)
+      return false
+    }
+    if (exported === 'unsupported') {
+      if (!a.dataExportUnsupported) {
+        a.dataExportUnsupported = true
+        metrics.inc(M.dataUnsupported)
+        console.log(
+          `[pool] guest for ${a.projectId} predates /pool/export-data — ` +
+            `its writable state is not durable until the VM is recycled`,
+        )
+      }
       return false
     }
     if (!exported) return false
@@ -1282,17 +1309,45 @@ export class MetalWarmPool {
    */
   async exportAllProjectData(): Promise<number> {
     let n = 0
+    const now = Date.now()
     for (const a of this.assigned.values()) {
-      const ok = await this.saveProjectDataToStore(a).catch((err) => {
-        console.error(
-          `[pool] periodic writable-state export for ${a.projectId} failed:`,
-          err?.message ?? err,
-        )
-        return false
-      })
-      if (ok) n++
+      // Permanently unable, or backing off from a run of failures. Both are
+      // about not hammering — a guest whose agent is gone does not recover
+      // because we asked it again 120 seconds later.
+      if (a.dataExportUnsupported) continue
+      if (a.dataExportRetryAfter && now < a.dataExportRetryAfter) continue
+
+      try {
+        const wrote = await this.saveProjectDataToStore(a)
+        // Reaching here at all means the guest answered, so the project is
+        // healthy whether or not there was anything new to write.
+        a.dataExportFailures = 0
+        a.dataExportRetryAfter = undefined
+        if (wrote) n++
+      } catch (err: any) {
+        const fails = (a.dataExportFailures ?? 0) + 1
+        const wait = this.dataExportBackoffMs(fails)
+        a.dataExportFailures = fails
+        a.dataExportRetryAfter = now + wait
+        // Log the first few, then only on the (now sparse) retries, so a
+        // permanently broken guest costs a handful of lines instead of one
+        // per project per cycle for as long as it lives.
+        if (fails <= 3 || fails % 10 === 0) {
+          console.error(
+            `[pool] periodic writable-state export for ${a.projectId} failed ` +
+              `(attempt ${fails}, next in ${Math.round(wait / 1000)}s):`,
+            err?.message ?? err,
+          )
+        }
+      }
     }
     return n
+  }
+
+  /** Exponential backoff for a failing guest, capped at 30 minutes. */
+  private dataExportBackoffMs(failures: number): number {
+    const base = this.cfg.projectDataExportIntervalMs
+    return Math.min(base * 2 ** Math.min(failures, 8), 30 * 60_000)
   }
 
   async exportAllPublishedData(): Promise<number> {
