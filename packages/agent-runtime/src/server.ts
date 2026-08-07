@@ -80,6 +80,13 @@ import {
   getTechStackPath,
   workspaceUsesVite,
 } from './workspace-defaults'
+import {
+  archiveNeedsSidecarClear,
+  clearSqliteSidecars,
+  packWritableState,
+  writableStateTag,
+  WRITABLE_STATE_PATHS,
+} from './writable-state'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
@@ -2597,7 +2604,23 @@ app.post('/pool/hydrate', async (c) => {
   const tmp = join('/tmp', `pool-hydrate-${Date.now()}.tar.gz`)
   try {
     writeFileSync(tmp, Buffer.from(body))
+    const entries: string[] = []
+    const tarMod = await import('tar')
+    await tarMod.list({ file: tmp, onReadEntry: (e: { path: string }) => entries.push(e.path) })
     await extractTarFastNonBlocking(tmp, WORKSPACE_DIR)
+
+    // A database restored WITHOUT its WAL must not be opened next to someone
+    // else's. A `-wal` left over from the rootfs template still holds live
+    // frames, and SQLite replays them over the file we just installed: the
+    // result reads back as a healthy database containing the template's rows,
+    // with `integrity_check` reporting "ok". The restore is silently undone.
+    if (archiveNeedsSidecarClear(entries)) {
+      const removed = clearSqliteSidecars(WORKSPACE_DIR)
+      if (removed.length) {
+        console.log(`[pool/hydrate] cleared stale SQLite sidecars: ${removed.join(', ')}`)
+      }
+    }
+
     // Rebuild so the served dist reflects everything that was hydrated —
     // debounced, because more overlays are usually still arriving.
     scheduleHydrateRebuild()
@@ -2677,45 +2700,58 @@ app.post('/pool/export', async (c) => {
 // Shared with `/agent/published-data-archive`: both persist the same notion of
 // "writable runtime state", one per-project on metal and one per-subdomain for
 // published apps. Keeping a single list means an app whose data survives while
-// published also survives in development.
-const WRITABLE_STATE_PATHS = [
-  'prisma/dev.db',
-  'prisma/dev.db-wal',
-  'prisma/dev.db-shm',
-  'uploads',
-  'public/uploads',
-  'storage',
-]
+// published also survives in development. The list itself lives in
+// `writable-state.ts` alongside the snapshot logic that consumes it.
 
 app.post('/pool/export-data', async (c) => {
-  const present = WRITABLE_STATE_PATHS.filter((p) => existsSync(join(WORKSPACE_DIR, p)))
-  if (present.length === 0) return c.body(null, 204)
+  const tag = writableStateTag(WORKSPACE_DIR)
+  // 204 = "nothing to persist", which the host must NOT confuse with an empty
+  // archive to write over a real one.
+  if (tag === null) return c.body(null, 204)
 
-  const tmp = join('/tmp', `pool-export-data-${Date.now()}.tar.gz`)
+  // The host echoes back the tag it already holds. When nothing has changed we
+  // answer without snapshotting, packing or transferring anything, so an idle
+  // project costs a stat walk instead of a full database rewrite every cycle.
+  if (c.req.header('if-none-match') === tag) {
+    return new Response(null, { status: 304, headers: { ETag: tag } })
+  }
+
+  const fsp = await import('node:fs/promises')
+  const os = await import('node:os')
+  const stage = await fsp.mkdtemp(join(os.tmpdir(), 'shogo-data-export-'))
+  const out = join(stage, 'data.tar.gz')
   try {
-    const tar = await import('tar')
-    // WAL/SHM siblings ride along with the DB so an archive taken while the
-    // app is mid-transaction still restores to a consistent on-disk state.
-    await tar.create({ gzip: true, file: tmp, cwd: WORKSPACE_DIR, portable: true }, present)
-    const bytes = readFileSync(tmp)
+    const pack = await packWritableState({
+      workspaceDir: WORKSPACE_DIR,
+      stageDir: join(stage, 'db'),
+      outPath: out,
+      // Reuse the tag from the 304 check above: it was taken before any of the
+      // work below, which is the safe side of the ordering to err on.
+      tag,
+    })
+    if (!pack) return c.body(null, 204)
+
+    const bytes = readFileSync(out)
     console.log(
       `[pool/export-data] packed writable state for durable backup ` +
-        `(${bytes.length} bytes, paths: ${present.join(', ')})`,
+        `(${bytes.length} bytes, paths: ${pack.paths.join(', ')}, tag: ${pack.tag ?? 'none'})`,
     )
     return new Response(new Uint8Array(bytes), {
       status: 200,
       headers: {
         'Content-Type': 'application/gzip',
-        'X-Shogo-Data-Paths': present.join(','),
+        'X-Shogo-Data-Paths': pack.paths.join(','),
+        ...(pack.tag ? { ETag: pack.tag } : {}),
       },
     })
   } catch (err: any) {
+    // Deliberately NOT falling back to copying the database files: a torn copy
+    // restores as a healthy-looking database with wrong contents, which is
+    // worse than no new backup at all (the last good archive stays intact).
     console.error('[pool/export-data] failed:', err?.message ?? err)
     return c.json({ error: err?.message ?? 'export failed' }, 500)
   } finally {
-    try {
-      unlinkSync(tmp)
-    } catch {}
+    await fsp.rm(stage, { recursive: true, force: true }).catch(() => {})
   }
 })
 

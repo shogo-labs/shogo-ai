@@ -49,6 +49,7 @@ import { fetchPublishedDataArchive, uploadPublishedDataArchive } from './publish
 import {
   fetchProjectDataArchive,
   uploadProjectDataGuarded,
+  type DataLineage,
   type DataWriteOutcome,
 } from './project-data-archive'
 
@@ -131,13 +132,24 @@ export interface AssignedVm {
   backupParentEtag?: string
   /**
    * ETag of the durable WRITABLE-STATE archive (`project-data.tar.gz`) this
-   * workspace's database descends from. Same optimistic-concurrency role as
-   * `backupParentEtag`, but for runtime data: `saveProjectDataToStore` only
-   * overwrites the durable object when this still matches S3, so a VM that
-   * cold-booted with an empty database can never erase a populated one.
-   * Undefined = unknown lineage (see project-data-archive's guard).
+   * workspace's database descends from. Sent as the `If-Match` precondition,
+   * so the storage layer — not a check we perform first — enforces that this
+   * VM can only replace the exact archive it came from.
+   * Undefined = no proven descent; see `dataUntrustedReason`.
    */
   dataParentEtag?: string
+  /**
+   * Set when this workspace's database provenance is known to be BAD: the
+   * writable-state hydrate failed, so the VM is running on whatever database
+   * the source archive happened to contain (usually an empty one). Its exports
+   * are refused outright rather than being sized up and guessed about — an
+   * empty database overwriting a populated archive is the exact shape of the
+   * incident this subsystem exists to prevent.
+   *
+   * Takes precedence over `dataParentEtag`. Holds the human-readable reason so
+   * the refusal log says what actually went wrong.
+   */
+  dataUntrustedReason?: string
 }
 
 export interface SuspendedVm {
@@ -235,12 +247,18 @@ export class MetalWarmPool {
   /** Collapses concurrent suspend calls for the same project. */
   private suspendFlight = new Singleflight<SuspendedVm>()
   /**
-   * Last uploaded writable-state content hash per project. Lets the periodic
-   * exporter skip idle projects instead of re-uploading an unchanged (possibly
-   * very large) database every cycle. In-memory only — a restart just costs one
-   * redundant upload per project.
+   * Serializes writable-state exports per project. The periodic exporter and
+   * `suspend()` both export, and two concurrent exports carry the SAME lineage,
+   * so the one that lands second fails its precondition and throws away what is
+   * usually the fresher database.
    */
-  private dataHashes = new Map<string, string>()
+  private dataFlight = new Singleflight<boolean>()
+  /**
+   * Last writable-state change tag the guest reported, per project. Echoed back
+   * on the next export so an unchanged project answers 304 without snapshotting
+   * or packing. In-memory only — a restart just costs one redundant export.
+   */
+  private dataTags = new Map<string, string>()
   /** Caps concurrent heavy NVMe ops (snapshot / restore / store pull|push). */
   private heavy: Semaphore
   /** Single-flight guard for pool fills (see reconcile). */
@@ -496,6 +514,7 @@ export class MetalWarmPool {
         workspaceOrigin: e.workspaceOrigin,
         backupParentEtag: e.backupParentEtag,
         dataParentEtag: e.dataParentEtag,
+        dataUntrustedReason: e.dataUntrustedReason,
       })
       adoptedIds.add(e.vmId)
       adoptedProjects.push(e.projectId)
@@ -545,6 +564,7 @@ export class MetalWarmPool {
       workspaceOrigin: a.workspaceOrigin,
       backupParentEtag: a.backupParentEtag,
       dataParentEtag: a.dataParentEtag,
+      dataUntrustedReason: a.dataUntrustedReason,
       v: 1,
     })
   }
@@ -754,19 +774,25 @@ export class MetalWarmPool {
     // snapshot) silently destroyed a user's data. Runs for every project, not
     // just published ones.
     //
-    // Best-effort by design, but the failure is loud AND it leaves lineage
-    // unset — which the write-side guard reads as "unknown", so this VM's empty
-    // database can never overwrite the real archive on its next suspend.
+    // Best-effort by design, but a FAILURE is what makes this VM dangerous: it
+    // is now running on whatever database the source archive happened to carry
+    // (usually an empty one), while a real archive still sits in S3. Marking it
+    // untrusted is what stops that empty database from being exported over the
+    // user's data — the exact incident this subsystem exists to prevent.
     try {
       const d = await this.hydrateProjectData(projectId, vm.handle, env)
       if (d.hydrated) {
         a.dataParentEtag = d.parentEtag
         this.writeLive(a)
       }
+      // Not hydrated + no error = no durable archive exists yet. Nothing to
+      // lose, so the VM keeps create-only rights and can seed the first one.
     } catch (err: any) {
+      const reason = `writable-state hydrate failed at assign (${err?.message ?? err})`
+      this.distrustData(a, reason)
       console.error(
         `[pool] writable-state hydrate failed for ${projectId} — booting with the source's ` +
-          `database; lineage left unknown so this VM cannot overwrite the durable archive:`,
+          `database. This VM is marked UNTRUSTED and will NOT write to the durable archive:`,
         err?.message ?? err,
       )
     }
@@ -944,24 +970,36 @@ export class MetalWarmPool {
   // follows restores source over an empty database.
 
   /**
-   * Pull the guest's packed writable state over the control channel. Returns
-   * null when the guest reports it has nothing writable yet (204) — a static app
-   * or a workspace whose database has not been created. `protected` so tests can
-   * inject bytes without a live guest.
+   * Pull the guest's packed writable state over the control channel.
+   *
+   * `knownTag` is the guest's own change fingerprint from the previous export.
+   * Passing it back lets the guest answer 304 without snapshotting its
+   * database or packing anything, which is what makes a short export interval
+   * affordable for the many projects that are simply idle.
+   *
+   * Returns 'unchanged' for that 304, or null when the guest has nothing
+   * writable at all (204) — a static app, or a workspace whose database has not
+   * been created. `protected` so tests can inject bytes without a live guest.
    */
   protected async fetchDataExport(
     handle: FcVmHandle,
     token?: string,
-  ): Promise<Uint8Array | null> {
+    knownTag?: string,
+  ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | null> {
     const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
       method: 'POST',
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(knownTag ? { 'If-None-Match': knownTag } : {}),
+      },
       signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
     })
+    if (res.status === 304) return 'unchanged'
     if (res.status === 204) return null
     if (!res.ok) throw new Error(`/pool/export-data failed (${res.status}): ${await res.text()}`)
     const buf = await res.arrayBuffer()
-    return buf.byteLength ? new Uint8Array(buf) : null
+    if (!buf.byteLength) return null
+    return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
   }
 
   /** Fetch a project's durable writable-state archive. `protected` for tests. */
@@ -972,11 +1010,11 @@ export class MetalWarmPool {
     return fetchProjectDataArchive(projectId, this.cfg)
   }
 
-  /** Lineage-guarded upload of writable state. `protected` for tests. */
+  /** Guarded (conditional) upload of writable state. `protected` for tests. */
   protected uploadDataGuarded(
     projectId: string,
     bytes: Uint8Array,
-    opts: { parentEtag?: string },
+    opts: { lineage: DataLineage; preserveOnRefusal?: boolean },
   ): Promise<DataWriteOutcome> {
     return uploadProjectDataGuarded(projectId, bytes, opts, this.cfg)
   }
@@ -1021,54 +1059,124 @@ export class MetalWarmPool {
   }
 
   /**
-   * Pull the guest's CURRENT writable state and upload it under the lineage
-   * guard. Best-effort and idempotent: unchanged content is skipped via a
-   * content hash so the periodic exporter does not re-upload an idle project's
-   * database every cycle.
+   * The data ETag safe to freeze into a snapshot — none for an untrusted VM.
    *
-   * Returns true when something was written (used by the periodic loop's
-   * logging), false when skipped, refused, or there was nothing to persist.
+   * A VM distrusted after a failed precondition still holds the ETag it used
+   * to descend from. Stamping that into a snapshot would let the resumed VM
+   * claim a descent its database no longer has, laundering untrusted state
+   * back into a writer. A resume with no stamp is merely create-only, which
+   * cannot overwrite anything.
    */
-  async saveProjectDataToStore(a: AssignedVm): Promise<boolean> {
-    const bytes = await this.fetchDataExport(a.handle, a.runtimeToken)
-    if (!bytes) return false
+  private trustedDataEtag(a: AssignedVm): string | undefined {
+    return a.dataUntrustedReason ? undefined : a.dataParentEtag
+  }
 
-    // Content-addressed skip, so the periodic cadence stays affordable for idle
-    // projects. Cryptographic rather than a fast non-cryptographic hash on
-    // purpose: a collision here silently skips a real upload, which is the very
-    // data loss this whole mechanism exists to prevent.
-    const hash = new Bun.CryptoHasher('sha256').update(bytes).digest('hex')
-    if (this.dataHashes.get(a.projectId) === hash) return false
+  /** What this VM is entitled to do to the durable writable-state archive. */
+  protected dataLineageOf(a: AssignedVm): DataLineage {
+    if (a.dataUntrustedReason) return { kind: 'untrusted', reason: a.dataUntrustedReason }
+    if (a.dataParentEtag) return { kind: 'descends', etag: a.dataParentEtag }
+    return { kind: 'create-only' }
+  }
+
+  /**
+   * Mark a VM's database provenance as bad, so its exports stop reaching the
+   * durable archive. Sticky for the life of the assignment: once we cannot
+   * prove what this database descends from, no later export makes it provable.
+   */
+  private distrustData(a: AssignedVm, reason: string): void {
+    if (a.dataUntrustedReason === reason) return
+    a.dataUntrustedReason = reason
+    this.writeLive(a)
+  }
+
+  /**
+   * Pull the guest's CURRENT writable state and upload it under the guard.
+   *
+   * Serialized per project: the periodic exporter and `suspend()` both call
+   * this, and two concurrent exports of the same project would each carry the
+   * same lineage, so whichever landed second would fail its precondition and
+   * discard a perfectly good — and probably fresher — export.
+   *
+   * `final` marks the last export of an assignment (suspend). It is what
+   * decides whether refused bytes are worth quarantining; see
+   * `uploadProjectDataGuarded`.
+   *
+   * Returns true when something was written, false when skipped, unchanged,
+   * refused, or there was nothing to persist.
+   */
+  async saveProjectDataToStore(a: AssignedVm, opts: { final?: boolean } = {}): Promise<boolean> {
+    return this.dataFlight.run(a.projectId, () => this.saveProjectDataInner(a, opts))
+  }
+
+  private async saveProjectDataInner(
+    a: AssignedVm,
+    opts: { final?: boolean },
+  ): Promise<boolean> {
+    const lineage = this.dataLineageOf(a)
+
+    // An untrusted VM can never write, so there is no point packing a database
+    // and shipping it across the control channel to find that out. The only
+    // exception is the final export, whose bytes we keep for recovery.
+    if (lineage.kind === 'untrusted' && !opts.final) {
+      metrics.inc(M.dataRefused)
+      return false
+    }
+
+    // The guest short-circuits on an unchanged tag, so an idle project costs
+    // one round-trip with no snapshot, no packing and no transfer.
+    const known = this.dataTags.get(a.projectId)
+    const exported = await this.fetchDataExport(a.handle, a.runtimeToken, known)
+    if (exported === 'unchanged') {
+      metrics.inc(M.dataUnchanged)
+      return false
+    }
+    if (!exported) return false
+    const { bytes, tag } = exported
 
     const outcome = await this.uploadDataGuarded(a.projectId, bytes, {
-      parentEtag: a.dataParentEtag,
+      lineage,
+      preserveOnRefusal: opts.final === true,
     })
     switch (outcome.status) {
       case 'created':
-      case 'written':
-      case 'adopted':
-        // Re-anchor lineage to what we just wrote so subsequent writes pass.
+      case 'written': {
+        // Re-anchor lineage to what we just wrote, from the PUT's own response,
+        // so the next write's precondition matches without a second round-trip.
         a.dataParentEtag = outcome.etag ?? a.dataParentEtag
+        a.dataUntrustedReason = undefined
         this.writeLive(a)
-        this.dataHashes.set(a.projectId, hash)
+        if (tag) this.dataTags.set(a.projectId, tag)
         console.log(
           `[pool] saved writable state for ${a.projectId} ` +
             `(${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
         )
         return true
+      }
       case 'conflict': {
         metrics.inc(M.dataConflict)
-        if (outcome.reason === 'collapse') metrics.inc(M.dataCollapseBlocked)
+        // The archive is not the one this workspace descends from, so nothing
+        // it exports later will be safe to write either. Distrust it now and
+        // stop paying for an export every cycle.
         const why =
-          outcome.reason === 'collapse'
-            ? `COLLAPSE BACKSTOP tripped — this ${bytes.byteLength}-byte export would have replaced a ` +
-              `substantially larger populated archive from a workspace that cannot prove it descends ` +
-              `from it (likely an empty database after a failed hydrate)`
-            : `data lineage (parentEtag=${a.dataParentEtag ?? 'none'}) does not match the current ` +
-              `archive (etag=${outcome.currentEtag ?? 'none'})`
+          outcome.reason === 'raced-create'
+            ? `a durable archive already exists and this workspace cannot prove it descends from it`
+            : `its lineage (etag=${a.dataParentEtag ?? 'none'}) no longer matches the durable archive`
+        this.distrustData(a, why)
         console.error(
           `[pool] REFUSED to overwrite durable writable state for ${a.projectId} — ${why}. ` +
-            `Export quarantined at ${outcome.quarantineKey} — durable archive left intact.`,
+            `Durable archive left intact` +
+            (outcome.quarantineKey ? `; export preserved at ${outcome.quarantineKey}` : '') +
+            `.`,
+        )
+        return false
+      }
+      case 'refused': {
+        metrics.inc(M.dataRefused)
+        console.error(
+          `[pool] writable state for ${a.projectId} NOT persisted — ${outcome.reason}. ` +
+            `This project is running without durability` +
+            (outcome.quarantineKey ? `; final export preserved at ${outcome.quarantineKey}` : '') +
+            `.`,
         )
         return false
       }
@@ -1170,7 +1278,7 @@ export class MetalWarmPool {
    * exporter loop as published data. The suspend-time export alone is not
    * enough: a host that panics, is power-cycled, or has its VMs killed never
    * suspends, and a long-lived always-on project may go days without one.
-   * Best-effort; unchanged databases are skipped by content hash.
+   * Best-effort; unchanged databases are skipped by the guest's change tag.
    */
   async exportAllProjectData(): Promise<number> {
     let n = 0
@@ -1224,7 +1332,7 @@ export class MetalWarmPool {
       // the snapshot is not a backup. A rootfs rebuild invalidates every
       // snapshot at once, and the cold boot that follows restores source only —
       // so without this the user's data is gone.
-      await this.saveProjectDataToStore(a).catch((err) =>
+      await this.saveProjectDataToStore(a, { final: true }).catch((err) =>
         console.error(`[pool] writable-state backup for ${a.projectId} failed:`, err?.message ?? err),
       )
 
@@ -1253,7 +1361,7 @@ export class MetalWarmPool {
         lastAccessAt,
         rootfsIdentity: this.rootfsId,
         backupEtag: a.backupParentEtag,
-        dataEtag: a.dataParentEtag,
+        dataEtag: this.trustedDataEtag(a),
       }
       this.suspended.set(projectId, s)
       this.writeIndex(s)
@@ -1298,7 +1406,7 @@ export class MetalWarmPool {
           baseIdentity: this.rootfsId,
           rootfsIdentity: this.rootfsId,
           backupEtag: a.backupParentEtag,
-          dataEtag: a.dataParentEtag,
+          dataEtag: this.trustedDataEtag(a),
           v: 1,
         }
         await this.heavy
