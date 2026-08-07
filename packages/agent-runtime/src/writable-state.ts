@@ -124,7 +124,8 @@ function sqliteTag(dbPath: string): string | null {
   if (!handle) {
     try {
       const { Database } = require('bun:sqlite')
-      const db = new Database(dbPath, { readonly: true })
+      // `readwrite`, not `readonly` — see {@link openForSnapshot}.
+      const db = new Database(dbPath, { readwrite: true })
       handle = { db, ino: String(st.ino) }
       dbHandles.set(dbPath, handle)
     } catch {
@@ -198,15 +199,18 @@ export function writableStateTag(workspaceDir: string): string | null {
 
   // The WAL is not archived, but it holds committed data that the snapshot
   // WILL include, so it has to count as a change.
-  for (const rel of SQLITE_SIDECAR_RELS) {
-    try {
-      const st = statSync(join(workspaceDir, rel), { bigint: true }) as unknown as {
-        size: bigint
-        mtimeNs: bigint
-      }
-      parts.push(`${rel}:${st.size}:${st.mtimeNs}`)
-    } catch {}
-  }
+  //
+  // The `-shm` deliberately does NOT count. It is a rebuildable index holding
+  // no permanent data, and reading the database recreates it — so folding it
+  // in would let the tag change as a side effect of computing the tag, and an
+  // idle project would never register as unchanged.
+  try {
+    const st = statSync(join(workspaceDir, 'prisma/dev.db-wal'), { bigint: true }) as unknown as {
+      size: bigint
+      mtimeNs: bigint
+    }
+    parts.push(`wal:${st.size}:${st.mtimeNs}`)
+  } catch {}
 
   for (const rel of WRITABLE_DIR_RELS) {
     const t = treeTag(join(workspaceDir, rel))
@@ -215,6 +219,29 @@ export function writableStateTag(workspaceDir: string): string | null {
 
   if (parts.length === 0) return null
   return createHash('sha256').update(parts.join('\n')).digest('hex').slice(0, 32)
+}
+
+/**
+ * Open a database for reading in a way that also works on a cleanly-closed
+ * WAL database.
+ *
+ * Counter-intuitively this must NOT be `readonly`. A WAL database is read
+ * through its shared-memory index, and when the `-shm` file is absent SQLite
+ * has to rebuild it — which needs write access to the directory. A read-only
+ * handle therefore fails outright with SQLITE_CANTOPEN.
+ *
+ * That is not an exotic state: it is exactly what a workspace looks like
+ * immediately after a cold-boot hydrate, where the archive carries `dev.db`
+ * with no sidecars and {@link clearSqliteSidecars} removes any leftovers. A
+ * read-only handle would have failed the very first export after every cold
+ * boot — the projects that most need a backup.
+ *
+ * Nothing here writes to the database; the handle is read-write only so
+ * SQLite may materialise its index.
+ */
+function openForSnapshot(dbPath: string): { exec: Function; close: Function } {
+  const { Database } = require('bun:sqlite')
+  return new Database(dbPath, { readwrite: true })
 }
 
 /**
@@ -227,9 +254,8 @@ export function writableStateTag(workspaceDir: string): string | null {
  * to overwrite an existing file, so `destPath` must be a fresh path.
  */
 export function snapshotSqlite(dbPath: string, destPath: string): void {
-  const { Database } = require('bun:sqlite')
   mkdirSync(dirname(destPath), { recursive: true })
-  const src = new Database(dbPath, { readonly: true })
+  const src = openForSnapshot(dbPath)
   try {
     // Ride out a writer's short exclusive lock instead of failing the whole
     // export; a periodic exporter that gives up on the first busy database

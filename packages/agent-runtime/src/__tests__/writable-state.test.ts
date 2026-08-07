@@ -22,7 +22,6 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -35,6 +34,7 @@ import {
   packWritableState,
   snapshotSqlite,
   SQLITE_DB_REL,
+  SQLITE_SIDECAR_RELS,
   writableStateTag,
 } from '../writable-state'
 
@@ -88,6 +88,23 @@ describe('snapshotSqlite', () => {
     expect(restored.query('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
     restored.close()
     expect(ws).toBeTruthy()
+  })
+
+  test('works on a cleanly-closed WAL database with no sidecars', () => {
+    // The state a workspace is in right after a cold-boot hydrate: the archive
+    // carries `dev.db` alone and clearSqliteSidecars removes any leftovers.
+    // SQLite must rebuild the WAL index to read such a database, which needs
+    // write access — a read-only handle fails with SQLITE_CANTOPEN, so this
+    // would have broken the first export after EVERY cold boot.
+    const { dbPath } = workspaceWithDb(3)
+    for (const suffix of ['-wal', '-shm']) rmSync(`${dbPath}${suffix}`, { force: true })
+
+    const out = join(scratch(), 'snap.db')
+    snapshotSqlite(dbPath, out)
+
+    const restored = new Database(out, { readonly: true })
+    expect(restored.query('SELECT count(*) n FROM t').get()).toEqual({ n: 3 })
+    restored.close()
   })
 
   test('is transactionally consistent while another process commits', async () => {
@@ -153,6 +170,19 @@ describe('writableStateTag', () => {
   test('is stable while nothing changes', () => {
     const { ws } = workspaceWithDb()
     expect(writableStateTag(ws)).toBe(writableStateTag(ws) as string)
+  })
+
+  test('is stable even when reading the database recreates its sidecars', () => {
+    // Starting from a cleanly-closed database (what Linux leaves behind), the
+    // first read rebuilds the `-shm`. If that fed into the tag, computing the
+    // tag would change the tag and no project would ever look idle — silently
+    // costing a full database export every cycle.
+    const { ws, dbPath } = workspaceWithDb(2)
+    for (const suffix of ['-wal', '-shm']) rmSync(`${dbPath}${suffix}`, { force: true })
+
+    const first = writableStateTag(ws)
+    expect(first).toBe(writableStateTag(ws) as string)
+    expect(writableStateTag(ws)).toBe(first as string)
   })
 
   test('changes after a commit by another connection', () => {
@@ -236,22 +266,29 @@ describe('packWritableState', () => {
     const { ws } = workspaceWithDb(4)
     mkdirSync(join(ws, 'uploads'), { recursive: true })
     writeFileSync(join(ws, 'uploads', 'song.mp3'), 'audio')
-    // A live WAL exists in the workspace and must not be picked up.
+
+    // Hold the connection open for the duration: that is both the realistic
+    // case (the app is running) and the only way to guarantee a live WAL on
+    // every platform — Linux checkpoints and deletes it on close, macOS does
+    // not, so asserting on a closed database is a platform coin-flip.
     const live = new Database(join(ws, SQLITE_DB_REL))
-    live.exec("INSERT INTO t VALUES('uncheckpointed')")
-    live.close()
-    expect(existsSync(join(ws, 'prisma/dev.db-wal'))).toBe(true)
+    try {
+      live.exec("INSERT INTO t VALUES('uncheckpointed')")
+      expect(existsSync(join(ws, 'prisma/dev.db-wal'))).toBe(true)
 
-    const out = join(scratch(), 'out.tgz')
-    const pack = await packWritableState({ workspaceDir: ws, stageDir: scratch(), outPath: out })
+      const out = join(scratch(), 'out.tgz')
+      const pack = await packWritableState({ workspaceDir: ws, stageDir: scratch(), outPath: out })
 
-    expect(pack).not.toBeNull()
-    expect(pack!.paths).toEqual([SQLITE_DB_REL, 'uploads'])
+      expect(pack).not.toBeNull()
+      expect(pack!.paths).toEqual([SQLITE_DB_REL, 'uploads'])
 
-    const entries = await entriesOf(out)
-    expect(entries).toContain(SQLITE_DB_REL)
-    expect(entries).toContain('uploads/song.mp3')
-    expect(entries.some((e) => e.includes('-wal') || e.includes('-shm'))).toBe(false)
+      const entries = await entriesOf(out)
+      expect(entries).toContain(SQLITE_DB_REL)
+      expect(entries).toContain('uploads/song.mp3')
+      expect(entries.some((e) => e.includes('-wal') || e.includes('-shm'))).toBe(false)
+    } finally {
+      live.close()
+    }
   })
 
   test('captures data committed but still sitting in the WAL', async () => {
@@ -291,11 +328,13 @@ describe('packWritableState', () => {
     expect(writableStateTag(ws)).not.toBe(pack!.tag as string)
   })
 
-  test('writes no scratch files into the live workspace', async () => {
-    // Staging inside the workspace would trip the preview file watcher and
-    // trigger a rebuild on every export cycle.
+  test('leaves no export scratch in the live workspace', async () => {
+    // Staging a snapshot or a tarball inside the workspace would trip the
+    // preview file watcher and trigger a rebuild on every export cycle.
     const { ws } = workspaceWithDb(2)
-    const before = statSync(join(ws, 'prisma')).mtimeMs
+    // Normalise to a cleanly-closed database (no sidecars), which is what
+    // SQLite leaves behind on Linux but not on macOS.
+    for (const rel of SQLITE_SIDECAR_RELS) rmSync(join(ws, rel), { force: true })
     const listBefore = new Set(await Array.fromAsync(new Bun.Glob('**/*').scan({ cwd: ws })))
 
     await packWritableState({
@@ -305,8 +344,13 @@ describe('packWritableState', () => {
     })
 
     const listAfter = new Set(await Array.fromAsync(new Bun.Glob('**/*').scan({ cwd: ws })))
-    expect([...listAfter].filter((f) => !listBefore.has(f))).toEqual([])
-    expect(before).toBeGreaterThan(0)
+    const added = [...listAfter].filter((f) => !listBefore.has(f))
+
+    // Snapshotting means opening the database, and any WAL-mode reader
+    // recreates SQLite's own `-wal`/`-shm` — files the running app creates
+    // and removes constantly anyway. Everything else is export scratch and
+    // must not be here.
+    expect(added.filter((f) => !SQLITE_SIDECAR_RELS.includes(f as never))).toEqual([])
   })
 })
 
