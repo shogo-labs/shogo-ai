@@ -124,13 +124,16 @@ export function dataQuarantineKey(projectId: string): string {
 }
 
 /**
- * Hard ceiling on a writable-state archive (1 GiB). Matches the guest's
- * `/pool/hydrate` request-body cap — an archive we cannot hydrate is worse than
- * useless, since it would consume storage while still cold-booting empty.
+ * Hard ceiling on a writable-state archive (4 GiB). Deliberately the same
+ * number as the guest's `/pool/hydrate` request-body cap: storing an archive
+ * larger than we can hand back is worse than not storing it, because the
+ * project still cold-boots empty and now pays for the storage too. If that cap
+ * moves, move this with it.
+ *
  * Exceeding it is a loud, metered error rather than a silent skip: it means a
  * project has outgrown this durability mechanism and needs attention.
  */
-export const DATA_MAX_BYTES = 1024 * 1024 * 1024
+export const DATA_MAX_BYTES = 4 * 1024 * 1024 * 1024
 
 /** A current archive at or above this size holds enough state to be worth noting. */
 export const DATA_REAL_MIN_BYTES = 1024 * 1024

@@ -2597,13 +2597,31 @@ function scheduleHydrateRebuild(): void {
 }
 
 app.post('/pool/hydrate', async (c) => {
-  const body = await c.req.arrayBuffer()
-  if (!body || body.byteLength === 0) {
-    return c.json({ error: 'empty archive' }, 400)
-  }
   const tmp = join('/tmp', `pool-hydrate-${Date.now()}.tar.gz`)
+  let bytes = 0
   try {
-    writeFileSync(tmp, Buffer.from(body))
+    // Spool to disk as it arrives rather than buffering the whole archive.
+    // The largest production source archive is ~1.8 GB against a 4 GiB guest,
+    // so `arrayBuffer()` put the request body and the runtime's own heap into
+    // the same budget and made the ceiling a memory limit rather than a policy
+    // one. Streaming makes the cost O(chunk), so the only real bound left is
+    // guest disk — which is why the body cap above can be raised at all.
+    const stream = c.req.raw.body
+    if (!stream) return c.json({ error: 'empty archive' }, 400)
+    const sink = Bun.file(tmp).writer()
+    try {
+      for await (const chunk of stream as any as AsyncIterable<Uint8Array>) {
+        bytes += chunk.byteLength
+        sink.write(chunk)
+        // Bound the writer's own buffer; without this the spool is just a
+        // slower way of holding the whole archive in memory.
+        await sink.flush()
+      }
+    } finally {
+      await sink.end()
+    }
+    if (bytes === 0) return c.json({ error: 'empty archive' }, 400)
+
     const entries: string[] = []
     const tarMod = await import('tar')
     await tarMod.list({ file: tmp, onReadEntry: (e: { path: string }) => entries.push(e.path) })
@@ -2624,8 +2642,8 @@ app.post('/pool/hydrate', async (c) => {
     // Rebuild so the served dist reflects everything that was hydrated —
     // debounced, because more overlays are usually still arriving.
     scheduleHydrateRebuild()
-    console.log(`[pool/hydrate] hydrated workspace from durable backup (${body.byteLength} bytes)`)
-    return c.json({ ok: true, bytes: body.byteLength })
+    console.log(`[pool/hydrate] hydrated workspace from durable backup (${bytes} bytes)`)
+    return c.json({ ok: true, bytes })
   } catch (err: any) {
     console.error('[pool/hydrate] failed:', err?.message ?? err)
     return c.json({ error: err?.message ?? 'hydrate failed' }, 500)
@@ -6149,8 +6167,17 @@ export default {
   idleTimeout: 0,
   // Durable-backup hydration (`POST /pool/hydrate`) streams a full project
   // tarball — source + uploaded assets + built `dist/` — into the guest. Bun's
-  // default 128 MB request-body cap rejected large restored workspaces with a
-  // 413, leaving those projects unable to load. Raise the cap so realistic
-  // asset-heavy workspaces hydrate; 1 GiB stays well under the guest's 4 GB RAM.
-  maxRequestBodySize: 1024 * 1024 * 1024,
+  // default 128 MB cap rejected large restored workspaces with a 413, and
+  // hydrate failure is FAIL-CLOSED: the host destroys the VM and the project
+  // cannot open at all, so the cap is not a throttle but a hard eligibility
+  // line for being able to open your project.
+  //
+  // 1 GiB was chosen when the handler buffered the body in the guest's 4 GB of
+  // RAM. Two production projects are already past it (1.85 GB and 1.77 GB of
+  // generated video frames and downloaded stock footage) and survive only
+  // because a snapshot exists — a rootfs rebuild invalidates every snapshot and
+  // would strand them. The handler now spools to disk, so the constraint moved
+  // from guest RAM to guest disk (a 13.6 GB rootfs). 4 GiB clears today's
+  // largest archive with room to grow and still refuses something absurd.
+  maxRequestBodySize: 4 * 1024 * 1024 * 1024,
 }

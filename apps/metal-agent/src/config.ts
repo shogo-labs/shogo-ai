@@ -165,6 +165,20 @@ export const config = {
    * (the subsequent rebuild is async and not covered by this timeout).
    */
   hydrateTimeoutMs: parseInt(env('METAL_HYDRATE_TIMEOUT_MS', '60000'), 10),
+  /**
+   * Extra hydrate budget per MiB of archive, on top of `hydrateTimeoutMs`.
+   *
+   * A single flat timeout has to be either too tight for a large archive or
+   * uselessly slack for the p50 (0.7 MB). Measured on staging, a cold boot runs
+   * 12 s at 25 MB and 34 s at 900 MB — roughly 25 MB/s once the fixed costs are
+   * paid — so 120 ms/MiB is ~3x the observed marginal cost and absorbs a
+   * contended host. That headroom is the point: the one hydrate failure seen in
+   * testing was a 900 MB archive on a host still flushing a freshly written
+   * file, and a rootfs rebuild creates exactly that contention across the whole
+   * fleet at once. Since hydrate is fail-closed, an expired timeout is not a
+   * slow boot — it is a project that cannot open.
+   */
+  hydrateTimeoutPerMiBMs: parseInt(env('METAL_HYDRATE_TIMEOUT_PER_MIB_MS', '120'), 10),
 
   /**
    * Balloon-reclaim before snapshot. Firecracker's CreateSnapshot writes the
