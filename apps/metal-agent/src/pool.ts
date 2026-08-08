@@ -870,11 +870,27 @@ export class MetalWarmPool {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: archive.bytes,
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+      signal: AbortSignal.timeout(this.hydrateBudgetMs(archive.bytes.byteLength)),
     })
     if (!res.ok) throw new Error(`/pool/hydrate failed (${res.status}): ${await res.text()}`)
     console.log(`[pool] hydrated ${projectId} from durable backup (${archive.bytes.byteLength} bytes, etag=${archive.etag ?? 'none'})`)
     return { hydrated: true, parentEtag: archive.etag ?? undefined }
+  }
+
+  /**
+   * Hydrate deadline for an archive of `bytes`: a fixed allowance for the
+   * round trip plus a per-MiB term for actually moving and extracting it.
+   *
+   * A single flat timeout cannot serve both ends of this distribution — the
+   * median project is 0.7 MB and the largest is 1.8 GB. The flat 60 s was
+   * comfortable for the former and, on a busy host, not always enough for the
+   * latter; because hydrate is fail-closed, falling short does not produce a
+   * slow boot but a project that will not open.
+   */
+  protected hydrateBudgetMs(bytes: number): number {
+    const perMiB = this.cfg.hydrateTimeoutPerMiBMs
+    if (!perMiB || bytes <= 0) return this.cfg.hydrateTimeoutMs
+    return this.cfg.hydrateTimeoutMs + Math.ceil(bytes / (1024 * 1024)) * perMiB
   }
 
   /**
@@ -1062,7 +1078,7 @@ export class MetalWarmPool {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: archive.bytes,
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+      signal: AbortSignal.timeout(this.hydrateBudgetMs(archive.bytes.byteLength)),
     })
     if (!res.ok) {
       throw new Error(`/pool/hydrate (project data) failed (${res.status}): ${await res.text()}`)
@@ -1257,7 +1273,7 @@ export class MetalWarmPool {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: archive,
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+      signal: AbortSignal.timeout(this.hydrateBudgetMs(archive.byteLength)),
     })
     if (!res.ok) throw new Error(`/pool/hydrate (data) failed (${res.status}): ${await res.text()}`)
     console.log(`[pool] hydrated published-data for ${subdomain} (${archive.byteLength} bytes)`)

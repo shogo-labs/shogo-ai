@@ -40,15 +40,19 @@ class TestPool extends MetalWarmPool {
     // hydrateFromBackup is private; reach it through the instance.
     return (this as any).hydrateFromBackup(projectId, HANDLE, env) as Promise<{ hydrated: boolean; parentEtag?: string }>
   }
+  budget(bytes: number) {
+    return this.hydrateBudgetMs(bytes)
+  }
 }
 
-function makePool(dir: string): TestPool {
+function makePool(dir: string, over: Partial<typeof config> = {}): TestPool {
   const cfg = {
     ...config,
     work: dir,
     snapDir: join(dir, 'snap'),
     runDir: join(dir, 'run'),
     hydrateTimeoutMs: 5000,
+    ...over,
   } as typeof config
   mkdirSync(cfg.snapDir, { recursive: true })
   mkdirSync(cfg.runDir, { recursive: true })
@@ -126,5 +130,49 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
 
     await pool.hydrate('p3', {})
     expect(calls[0].headers.Authorization).toBeUndefined()
+  })
+})
+
+describe('pool.hydrateBudgetMs (the deadline scales with the archive)', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-budget-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('a small archive gets the flat allowance and nothing more', () => {
+    const pool = makePool(dir, { hydrateTimeoutPerMiBMs: 120 })
+    // The median project is well under a MiB; it should not be paying for a
+    // budget sized for the tail.
+    expect(pool.budget(0)).toBe(5000)
+    expect(pool.budget(700 * 1000)).toBe(5000 + 120)
+  })
+
+  test('the budget grows with size, so the tail is not judged by the median', () => {
+    const pool = makePool(dir, { hydrateTimeoutPerMiBMs: 120 })
+    const mib = 1024 * 1024
+    expect(pool.budget(100 * mib)).toBe(5000 + 100 * 120)
+    expect(pool.budget(900 * mib)).toBe(5000 + 900 * 120)
+    expect(pool.budget(900 * mib)).toBeGreaterThan(pool.budget(100 * mib))
+  })
+
+  test('the largest archive in production gets minutes, not the flat 60s', () => {
+    // 1.85 GB is a real project. Under the old flat timeout its hydrate had
+    // exactly the same deadline as a 0.7 MB one, and hydrate is fail-closed —
+    // so falling short means the project cannot open at all.
+    const pool = makePool(dir, { hydrateTimeoutMs: 60_000, hydrateTimeoutPerMiBMs: 120 })
+    const budget = pool.budget(1847 * 1024 * 1024)
+    expect(budget).toBeGreaterThan(4 * 60_000)
+    // Still bounded: a hung guest must not pin the assign indefinitely.
+    expect(budget).toBeLessThan(15 * 60_000)
+  })
+
+  test('setting the per-MiB term to zero restores the old flat behaviour', () => {
+    // The escape hatch has to actually work: an operator who sets
+    // METAL_HYDRATE_TIMEOUT_PER_MIB_MS=0 gets exactly the previous semantics.
+    const pool = makePool(dir, { hydrateTimeoutPerMiBMs: 0 })
+    expect(pool.budget(900 * 1024 * 1024)).toBe(5000)
   })
 })
