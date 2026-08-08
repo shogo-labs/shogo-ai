@@ -171,7 +171,7 @@ function appendSetupLog(workspacePath: string, message: string): void {
   fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`)
 }
 
-function setupCommandEnv(): NodeJS.ProcessEnv {
+export function setupCommandEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env }
   const pathKey = process.platform === 'win32' ? 'Path' : 'PATH'
   const pathSep = process.platform === 'win32' ? ';' : ':'
@@ -190,17 +190,64 @@ function setupCommandEnv(): NodeJS.ProcessEnv {
   return env
 }
 
-function resolveSetupCommand(command: string): string {
-  if (command !== 'bun') return command
-  const bunPath = getBunPath()
-  return path.isAbsolute(bunPath) && fs.existsSync(bunPath) ? bunPath : command
+function setupPathEntries(env: NodeJS.ProcessEnv): string[] {
+  const pathKey = process.platform === 'win32' ? 'Path' : 'PATH'
+  const pathSep = process.platform === 'win32' ? ';' : ':'
+  return (env[pathKey] || env.PATH || env.Path || '').split(pathSep).filter(Boolean)
+}
+
+function isExecutablePath(candidate: string): boolean {
+  try {
+    fs.accessSync(candidate, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function resolveExecutableFromEnv(command: string, env: NodeJS.ProcessEnv): string | null {
+  if (path.isAbsolute(command)) return isExecutablePath(command) ? command : null
+  const extensions = process.platform === 'win32'
+    ? (env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+    : ['']
+  for (const entry of setupPathEntries(env)) {
+    for (const extension of extensions) {
+      const candidate = path.join(entry, `${command}${extension}`)
+      if (isExecutablePath(candidate)) return candidate
+    }
+  }
+  return null
+}
+
+function setupCommandResolutionError(command: string, env: NodeJS.ProcessEnv): Error {
+  const searchedPath = setupPathEntries(env).join(path.delimiter) || '(empty PATH)'
+  return new Error([
+    `Could not prepare Shogo IDE because the required setup executable "${command}" was not found.`,
+    'Shogo will not spawn an unresolved executable from the production app PATH.',
+    'Install Node.js/npm or make the required tool available to the Shogo app, then reopen Shogo IDE.',
+    `Searched PATH: ${searchedPath}`,
+  ].join('\n'))
+}
+
+function resolveSetupCommand(command: string, env: NodeJS.ProcessEnv): string {
+  if (command === 'bun') {
+    const bunPath = getBunPath()
+    if (path.isAbsolute(bunPath) && fs.existsSync(bunPath)) return bunPath
+  }
+  if (command === 'bun' || command === 'npm' || command === 'npx') {
+    const resolved = resolveExecutableFromEnv(command, env)
+    if (!resolved) throw setupCommandResolutionError(command, env)
+    return resolved
+  }
+  return command
 }
 
 function runSetupCommand(workspacePath: string, command: string, args: string[], cwd: string): Promise<void> {
-  const resolvedCommand = resolveSetupCommand(command)
+  const env = setupCommandEnv()
+  const resolvedCommand = resolveSetupCommand(command, env)
   appendSetupLog(workspacePath, `$ ${[command, ...args].join(' ')}`)
   return new Promise((resolve, reject) => {
-    const child = spawn(resolvedCommand, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: setupCommandEnv() })
+    const child = spawn(resolvedCommand, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env })
     child.stdout.on('data', (chunk) => appendSetupLog(workspacePath, String(chunk).trimEnd()))
     child.stderr.on('data', (chunk) => appendSetupLog(workspacePath, String(chunk).trimEnd()))
     child.on('error', reject)
@@ -219,16 +266,18 @@ function isNpmCliPath(candidate: string | undefined): candidate is string {
 }
 
 function resolveNpmCliPath(): string | null {
-  const globalNpmRoot = spawnSync('npm', ['root', '-g'], {
+  const env = setupCommandEnv()
+  const npmCommand = resolveExecutableFromEnv('npm', env)
+  const globalNpmRoot = npmCommand ? spawnSync(npmCommand, ['root', '-g'], {
     encoding: 'utf8',
     timeout: 5_000,
-    env: setupCommandEnv(),
-  })
+    env,
+  }) : null
 
   const candidates = [
     process.env.SHOGO_CODE_OSS_NPM_CLI,
     process.env.npm_execpath,
-    globalNpmRoot.status === 0 ? path.join(globalNpmRoot.stdout.trim(), 'npm', 'bin', 'npm-cli.js') : undefined,
+    globalNpmRoot?.status === 0 ? path.join(globalNpmRoot.stdout.trim(), 'npm', 'bin', 'npm-cli.js') : undefined,
     '/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js',
     '/usr/local/lib/node_modules/npm/bin/npm-cli.js',
   ].filter(isNpmCliPath)

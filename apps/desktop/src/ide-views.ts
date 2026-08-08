@@ -8,7 +8,7 @@ import fs from 'fs'
 import path from 'path'
 import { getApiUrl } from './local-server'
 import { getWorkspacesDir } from './paths'
-import { ensureShogoIdeRuntimeProfile, ensureShogoIdeSetup, getShogoIdeStatus, SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS, syncShogoIdeProduct } from './shogo-ide'
+import { ensureShogoIdeRuntimeProfile, ensureShogoIdeSetup, getShogoIdeStatus, setupCommandEnv, SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS, syncShogoIdeProduct } from './shogo-ide'
 
 interface IdeServerRecord {
   key: string
@@ -97,9 +97,50 @@ function codeOssWebArgs(status: ReturnType<typeof getShogoIdeStatus>, workspaceP
   ]
 }
 
-function codeOssLaunchCommand(scriptPath: string, args: string[]): { command: string; args: string[] } {
+function pathEntriesFromEnv(env: NodeJS.ProcessEnv): string[] {
+  const pathKey = process.platform === 'win32' ? 'Path' : 'PATH'
+  const pathSep = process.platform === 'win32' ? ';' : ':'
+  return (env[pathKey] || env.PATH || env.Path || '').split(pathSep).filter(Boolean)
+}
+
+function isExecutablePath(candidate: string): boolean {
+  try {
+    fs.accessSync(candidate, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function resolveExecutableFromEnv(executable: string, env: NodeJS.ProcessEnv): string | null {
+  if (path.isAbsolute(executable)) return isExecutablePath(executable) ? executable : null
+  const extensions = process.platform === 'win32'
+    ? (env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+    : ['']
+  for (const entry of pathEntriesFromEnv(env)) {
+    for (const extension of extensions) {
+      const candidate = path.join(entry, `${executable}${extension}`)
+      if (isExecutablePath(candidate)) return candidate
+    }
+  }
+  return null
+}
+
+function launcherResolutionError(executable: string, env: NodeJS.ProcessEnv): Error {
+  const searchedPath = pathEntriesFromEnv(env).join(path.delimiter) || '(empty PATH)'
+  return new Error([
+    `Could not launch Shogo IDE because the required Code OSS launcher executable "${executable}" was not found.`,
+    'Shogo will not spawn an unresolved executable from the production app PATH.',
+    'Install Node.js/npm or make npx available to the Shogo app, then reopen Shogo IDE.',
+    `Searched PATH: ${searchedPath}`,
+  ].join('\n'))
+}
+
+function resolveCodeOssLauncher(scriptPath: string, args: string[], env: NodeJS.ProcessEnv): { command: string; args: string[] } {
   if (process.platform === 'win32') return { command: scriptPath, args }
-  return { command: 'npx', args: ['-y', '-p', 'node@24.15.0', 'bash', scriptPath, ...args] }
+  const npxPath = resolveExecutableFromEnv('npx', env)
+  if (!npxPath) throw launcherResolutionError('npx', env)
+  return { command: npxPath, args: ['-y', '-p', 'node@24.15.0', 'bash', scriptPath, ...args] }
 }
 
 function trimLaunchOutput(output: string[]): string {
@@ -125,21 +166,22 @@ async function startIdeServer(workspacePath: string, desktopChatUrl?: string): P
   }
 
   const args = codeOssWebArgs(status, workspacePath, desktopChatUrl)
-  const launch = codeOssLaunchCommand(scriptPath, args)
+  const env = {
+    ...setupCommandEnv(),
+    SHOGO_IDE_PHASE: 'same-app-window',
+    SHOGO_IDE_WORKSPACE: status.workspacePath,
+    SHOGO_AGENT_BRIDGE_URL: getApiUrl(),
+    ...(desktopChatUrl ? { SHOGO_DESKTOP_CHAT_URL: desktopChatUrl } : {}),
+    VSCODE_DEV: '1',
+  }
+  const launch = resolveCodeOssLauncher(scriptPath, args, env)
   const output: string[] = []
   let resolvedUrl: string | null = null
 
   const proc = spawn(launch.command, launch.args, {
     cwd: status.codeOssCheckoutPath,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      SHOGO_IDE_PHASE: 'same-app-window',
-      SHOGO_IDE_WORKSPACE: status.workspacePath,
-      SHOGO_AGENT_BRIDGE_URL: getApiUrl(),
-      ...(desktopChatUrl ? { SHOGO_DESKTOP_CHAT_URL: desktopChatUrl } : {}),
-      VSCODE_DEV: '1',
-    },
+    env,
   })
 
   const ready = new Promise<string>((resolve, reject) => {
