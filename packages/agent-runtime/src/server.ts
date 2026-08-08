@@ -86,8 +86,10 @@ import {
   packWritableState,
   writableStateTag,
   WRITABLE_STATE_PATHS,
+  SQLITE_SIDECAR_ENTRY,
 } from './writable-state'
 import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
+import { extractTarStream } from './tar-stream'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
@@ -2598,39 +2600,26 @@ function scheduleHydrateRebuild(): void {
 }
 
 app.post('/pool/hydrate', async (c) => {
+  const stream = c.req.raw.body
+  if (!stream) return c.json({ error: 'empty archive' }, 400)
   sweepSpool()
-  const tmp = spoolPath('pool-hydrate.tar.gz')
   let bytes = 0
   try {
-    // Spool to disk as it arrives rather than buffering the whole archive.
-    // The largest production source archive is ~1.8 GB against a 4 GiB guest,
-    // so `arrayBuffer()` put the request body and the runtime's own heap into
-    // the same budget and made the ceiling a memory limit rather than a policy
-    // one. Streaming makes the cost O(chunk), so the only real bound left is
-    // guest disk — which is why the body cap above can be raised at all.
+    // Extract straight from the request body — the archive is never written
+    // down as a whole, in memory or on disk.
     //
-    // `spoolPath`, not `/tmp`: the guest's `/tmp` is tmpfs, so spooling there
-    // is still spending RAM, just without it showing up as heap. See spool.ts.
-    const stream = c.req.raw.body
-    if (!stream) return c.json({ error: 'empty archive' }, 400)
-    const sink = Bun.file(tmp).writer()
-    try {
-      for await (const chunk of stream as any as AsyncIterable<Uint8Array>) {
-        bytes += chunk.byteLength
-        sink.write(chunk)
-        // Bound the writer's own buffer; without this the spool is just a
-        // slower way of holding the whole archive in memory.
-        await sink.flush()
-      }
-    } finally {
-      await sink.end()
-    }
+    // The two previous attempts each moved the cost rather than removing it:
+    // `arrayBuffer()` charged it to the guest's 4 GiB of RAM, and spooling to a
+    // file charged it to disk TWICE (the archive plus what comes out of it),
+    // against the ~3.8 GiB actually free on the rootfs. Piping into tar makes
+    // the peak the extracted tree alone, which is the irreducible cost of
+    // having the project on the machine.
+    // Only the database and its WAL affect the decision below, so the listing
+    // is filtered as it streams instead of being accumulated.
+    const result = await extractTarStream(stream, WORKSPACE_DIR, SQLITE_SIDECAR_ENTRY)
+    bytes = result.bytes
+    const entries = result.matched
     if (bytes === 0) return c.json({ error: 'empty archive' }, 400)
-
-    const entries: string[] = []
-    const tarMod = await import('tar')
-    await tarMod.list({ file: tmp, onReadEntry: (e: { path: string }) => entries.push(e.path) })
-    await extractTarFastNonBlocking(tmp, WORKSPACE_DIR)
 
     // A database restored WITHOUT its WAL must not be opened next to someone
     // else's. A `-wal` left over from the rootfs template still holds live
@@ -2652,10 +2641,6 @@ app.post('/pool/hydrate', async (c) => {
   } catch (err: any) {
     console.error('[pool/hydrate] failed:', err?.message ?? err)
     return c.json({ error: err?.message ?? 'hydrate failed' }, 500)
-  } finally {
-    try {
-      unlinkSync(tmp)
-    } catch {}
   }
 })
 
@@ -6193,8 +6178,14 @@ export default {
   // RAM. Two production projects are already past it (1.85 GB and 1.77 GB of
   // generated video frames and downloaded stock footage) and survive only
   // because a snapshot exists — a rootfs rebuild invalidates every snapshot and
-  // would strand them. The handler now spools to disk, so the constraint moved
-  // from guest RAM to guest disk (a 13.6 GB rootfs). 4 GiB clears today's
-  // largest archive with room to grow and still refuses something absurd.
+  // would strand them.
+  //
+  // The handler no longer holds the archive at all: it pipes the body into tar,
+  // so the cost is the extracted tree rather than the tree plus a copy of the
+  // archive. What that has to fit in is the rootfs free space — about 3.8 GiB,
+  // NOT the 13.6 GB image size, most of which is the runtime itself. This cap
+  // is therefore the looser of the two limits and exists to refuse something
+  // absurd; a project that genuinely cannot fit fails at extraction with a
+  // legible ENOSPC instead.
   maxRequestBodySize: 4 * 1024 * 1024 * 1024,
 }
