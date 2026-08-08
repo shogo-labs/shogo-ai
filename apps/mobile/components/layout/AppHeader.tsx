@@ -7,13 +7,18 @@
  * plus the current page title derived from the active route.
  */
 
-import { View, Text, Pressable, useWindowDimensions } from 'react-native'
+import { Platform, View, Text, Pressable, useWindowDimensions } from 'react-native'
 import { usePathname } from 'expo-router'
 import { Menu } from 'lucide-react-native'
+import { ShogoWordmark } from '../branding/ShogoWordmark'
 import { NotificationBell } from '../notifications/NotificationBell'
 
+function isHomePathname(pathname: string): boolean {
+  return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
+}
+
 function getTitleFromPathname(pathname: string): string {
-  if (pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index') {
+  if (isHomePathname(pathname)) {
     return 'Home'
   }
   if (pathname.startsWith('/(app)/projects/')) return 'Project'
@@ -36,7 +41,8 @@ interface AppHeaderProps {
 export function AppHeader({ onMenuPress }: AppHeaderProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
-  const isWide = width >= 768
+  const isWide = Platform.OS === 'web' && width >= 768
+  const showNativeHomeMark = Platform.OS !== 'web' && isHomePathname(pathname)
   const title = getTitleFromPathname(pathname)
 
   // On wide screens the sidebar is persistent, so no header needed
@@ -50,7 +56,11 @@ export function AppHeader({ onMenuPress }: AppHeaderProps) {
       >
         <Menu size={22} className="text-foreground" />
       </Pressable>
-      <Text className="text-base font-semibold text-foreground">{title}</Text>
+      {showNativeHomeMark ? (
+        <ShogoWordmark compact className="text-2xl" />
+      ) : (
+        <Text className="text-base font-semibold text-foreground">{title}</Text>
+      )}
       <View className="flex-1" />
       <NotificationBell />
     </View>

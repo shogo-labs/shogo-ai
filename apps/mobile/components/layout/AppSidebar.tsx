@@ -24,6 +24,8 @@ import {
   Linking,
   TextInput,
   Modal,
+  Animated,
+  Easing,
   useWindowDimensions,
   Platform,
   ActivityIndicator,
@@ -404,12 +406,14 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   onNavPress,
   isPinned,
   onTogglePin,
+  mobileProjectFirstTapShowsChats,
 }: {
   project: any
   collapsed?: boolean
   onNavPress?: () => void
   isPinned?: boolean
   onTogglePin?: (projectId: string, next: boolean) => void
+  mobileProjectFirstTapShowsChats?: boolean
 }) {
   const router = useRouter()
   const pathname = usePathname()
@@ -553,6 +557,15 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
     }
     onNavPress?.()
   }, [router, project, onNavPress, isActive])
+
+  const handleProjectPress = useCallback(() => {
+    if (mobileProjectFirstTapShowsChats && !isActive && !expanded) {
+      setExpanded(true)
+      void loadChats()
+      return
+    }
+    openProject()
+  }, [expanded, isActive, loadChats, mobileProjectFirstTapShowsChats, openProject])
 
   // Select a chat. If its project is already open, switch IN PLACE via the
   // event bus (no navigation / remount). Otherwise navigate to the project
@@ -756,12 +769,24 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
         >
 
           <Pressable
-            onPress={openProject}
+            onPress={handleProjectPress}
             role="link"
             accessibilityLabel={`Project: ${project.name || 'Untitled'}`}
+            accessibilityHint={
+              mobileProjectFirstTapShowsChats && !isActive && !expanded
+                ? 'Shows chats for this project. Tap again to open the project.'
+                : undefined
+            }
             className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70 min-w-0"
             {...(Platform.OS === 'web' ? ({ onContextMenu: handleContextMenu } as any) : {})}
           >
+            {mobileProjectFirstTapShowsChats && (
+              expanded ? (
+                <ChevronDown size={10} className="text-muted-foreground shrink-0" />
+              ) : (
+                <ChevronRight size={10} className="text-muted-foreground shrink-0" />
+              )
+            )}
             <Folder size={12} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
             <Text
               className={cn('text-xs flex-1', isActive ? 'text-foreground' : 'text-foreground')}
@@ -1560,14 +1585,23 @@ function CreateWorkspaceModal({
 interface AppSidebarProps {
   isOpen?: boolean
   onClose?: () => void
+  drawerProgress?: Animated.Value
 }
 
-export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
+export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawerProgress: externalDrawerProgress }: AppSidebarProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const router = useRouter()
   const insets = useSafeAreaInsets()
-  const isWide = width >= 768
+  const isWide = Platform.OS === 'web' && width >= 768
+  const isNativeDrawer = Platform.OS !== 'web' && !isWide
+  const drawerTopInset = isNativeDrawer ? Math.max(insets.top, 56) : insets.top
+  const drawerBottomInset = isNativeDrawer ? Math.max(insets.bottom, 18) : insets.bottom
+  const drawerSideInset = isNativeDrawer ? Math.max(insets.left, 4) : 0
+  const drawerPanelWidth = isNativeDrawer ? Math.min(288, Math.max(264, width - 48)) : undefined
+  const animatedDrawerWidth = drawerPanelWidth ?? 288
+  const internalDrawerProgress = useRef(new Animated.Value(0)).current
+  const drawerProgress = externalDrawerProgress ?? internalDrawerProgress
   const { features, localMode } = usePlatformConfig()
 
   const { user, signOut } = useAuth()
@@ -1772,7 +1806,39 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const workspacePlan = currentWorkspace?.id ? (allPlans[currentWorkspace.id] ?? null) : null
   const isPaidPlan = billingData.hasActiveSubscription || (workspacePlan?.planId !== 'free' && workspacePlan?.status === 'active')
 
-  const toggleCollapse = useCallback(() => setCollapsed((c) => !c), [])
+  useEffect(() => {
+    if (!isNativeDrawer || !isOpen) return
+    drawerProgress.setValue(0)
+    Animated.timing(drawerProgress, {
+      toValue: 1,
+      duration: 230,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start()
+  }, [drawerProgress, isNativeDrawer, isOpen])
+
+  const closeNativeDrawer = useCallback(() => {
+    if (!isNativeDrawer) {
+      onClose?.()
+      return
+    }
+    Animated.timing(drawerProgress, {
+      toValue: 0,
+      duration: 170,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => {
+      onClose?.()
+    })
+  }, [drawerProgress, isNativeDrawer, onClose])
+
+  const toggleCollapse = useCallback(() => {
+    if (isNativeDrawer) {
+      closeNativeDrawer()
+      return
+    }
+    setCollapsed((c) => !c)
+  }, [closeNativeDrawer, isNativeDrawer])
 
   const handleSwitchWorkspace = useCallback(
     (workspaceId: string) => {
@@ -1793,13 +1859,13 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
     () => {
       if (allWorkspaces.length >= 1) {
         router.push('/(app)/new-workspace' as any)
-        if (!isWide) onClose?.()
+        if (!isWide) closeNativeDrawer()
       } else {
         setCreateWorkspaceOpen(true)
-        if (!isWide) onClose?.()
+        if (!isWide) closeNativeDrawer()
       }
     },
-    [allWorkspaces.length, router, isWide, onClose]
+    [allWorkspaces.length, closeNativeDrawer, router, isWide]
   )
 
   const handleCreateWorkspaceSubmit = useCallback(
@@ -1830,8 +1896,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   }, [signOut, posthog])
 
   const onNavPress = useCallback(() => {
-    if (!isWide) onClose?.()
-  }, [isWide, onClose])
+    if (!isWide) closeNativeDrawer()
+  }, [closeNativeDrawer, isWide])
 
   const handleSearchPress = useCallback(() => {
     setCommandPaletteOpen(true)
@@ -1842,7 +1908,13 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const isMarketplacePage = pathname.startsWith('/marketplace') || pathname.startsWith('/(app)/marketplace')
 
   const sidebarContent = (
-    <View role="navigation" accessibilityLabel="App sidebar" className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}>
+    <View
+      role="navigation"
+      accessibilityLabel="App sidebar"
+      className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}
+      style={isNativeDrawer ? { paddingLeft: drawerSideInset, paddingRight: 4 } : undefined}
+    >
+      {isNativeDrawer && <View style={{ height: drawerTopInset }} />}
       {/* ── Logo Row ── */}
       <View
         className={cn(
@@ -1967,7 +2039,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                         <Pressable
                           key={opt.value}
                           onPress={() => updateProjectFilter({ sort: opt.value })}
-                          role="menuitemradio"
+                          accessibilityRole="radio"
                           accessibilityState={{ checked: projectFilter.sort === opt.value }}
                           className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                         >
@@ -1993,7 +2065,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                         <Pressable
                           key={opt.value}
                           onPress={() => updateProjectFilter({ scope: opt.value })}
-                          role="menuitemradio"
+                          accessibilityRole="radio"
                           accessibilityState={{ checked: projectFilter.scope === opt.value }}
                           className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                         >
@@ -2032,6 +2104,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                   onNavPress={onNavPress}
                   isPinned={pinnedProjectIds.has(project.id)}
                   onTogglePin={handleToggleProjectPin}
+                  mobileProjectFirstTapShowsChats={isNativeDrawer}
                 />
               ))}
               {!collapsed && workspaceProjects.length > MAX_VISIBLE_PROJECTS && (hiddenProjectCount > 0 || showAllProjects) && (
@@ -2056,7 +2129,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       </ScrollView>
 
       {/* ── Bottom Section ── */}
-      <View className="border-t border-border" style={{ paddingBottom: insets.bottom }}>
+      <View className="border-t border-border" style={{ paddingBottom: drawerBottomInset }}>
         {/* Upgrade to Pro CTA */}
         {features.billing && !collapsed && !isPaidPlan && (
           <View className="px-2 pt-2">
@@ -2089,10 +2162,10 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             <AccountMenu
               user={user}
               onSignOut={handleSignOut}
-              onNavigate={(href) => { if (!isWide) onClose?.(); router.push(href as any); onNavPress() }}
+              onNavigate={(href) => { router.push(href as any); onNavPress() }}
               isSuperAdmin={hasAdminAccess}
               isWide={isWide}
-              bottomInset={insets.bottom}
+              bottomInset={drawerBottomInset}
               collapsed={collapsed}
               workspaces={allWorkspaces}
               currentWorkspace={currentWorkspace}
@@ -2282,10 +2355,60 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   if (!isOpen) return null
 
+  if (isNativeDrawer) {
+    const drawerTranslateX = drawerProgress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [-animatedDrawerWidth, 0],
+    })
+
+    return (
+      <Modal
+        visible={isOpen}
+        transparent
+        animationType="none"
+        statusBarTranslucent
+        onRequestClose={closeNativeDrawer}
+      >
+        <View style={{ flex: 1 }}>
+          <Pressable
+            onPress={closeNativeDrawer}
+            style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
+          >
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(0,0,0,0.58)' },
+                { opacity: drawerProgress },
+              ]}
+            />
+          </Pressable>
+          <Animated.View
+            style={[
+              {
+                height: '100%',
+                zIndex: 10,
+                width: animatedDrawerWidth,
+                transform: [{ translateX: drawerTranslateX }],
+              },
+            ]}
+          >
+            {sidebarContent}
+          </Animated.View>
+        </View>
+      </Modal>
+    )
+  }
+
   return (
-    <View className="absolute inset-0 z-50 flex-row" style={{ paddingTop: insets.top }}>
+    <View
+      className="absolute left-0 right-0 z-50 flex-row"
+      style={{ top: 0, bottom: 0, paddingTop: insets.top }}
+    >
       <Pressable onPress={onClose} className="absolute inset-0 bg-black/50" />
-      <View className="w-72 h-full z-10">
+      <View
+        className="w-72 h-full z-10"
+        style={drawerPanelWidth ? { width: drawerPanelWidth } : undefined}
+      >
         {sidebarContent}
       </View>
     </View>
