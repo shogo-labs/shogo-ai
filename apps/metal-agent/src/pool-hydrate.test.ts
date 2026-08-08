@@ -43,6 +43,9 @@ class TestPool extends MetalWarmPool {
   budget(bytes: number) {
     return this.hydrateBudgetMs(bytes)
   }
+  bodyFor(bytes: Uint8Array) {
+    return this.archiveBody(bytes)
+  }
 }
 
 function makePool(dir: string, over: Partial<typeof config> = {}): TestPool {
@@ -76,9 +79,12 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
     pool.archive = new Uint8Array([1, 2, 3, 4])
     pool.etag = '"abc123"'
 
-    const calls: Array<{ url: string; init: any }> = []
+    const calls: Array<{ url: string; init: any; sent: Uint8Array }> = []
     globalThis.fetch = mock(async (url: any, init: any) => {
-      calls.push({ url: String(url), init })
+      // The body is a stream now (see the chunked-body suite below), so read it
+      // back to assert the guest receives the archive byte for byte.
+      const sent = new Uint8Array(await new Response(init.body).arrayBuffer())
+      calls.push({ url: String(url), init, sent })
       return new Response(JSON.stringify({ ok: true, bytes: 4 }), { status: 200 })
     }) as any
 
@@ -88,7 +94,7 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
     expect(calls[0].url).toBe('http://10.0.0.9:8080/pool/hydrate')
     expect(calls[0].init.method).toBe('POST')
     expect(calls[0].init.headers.Authorization).toBe('Bearer secret-token')
-    expect(calls[0].init.body).toEqual(pool.archive)
+    expect(calls[0].sent).toEqual(pool.archive!)
     // The returned lineage anchors the workspace to the backup we applied, so a
     // later suspend can safely overwrite exactly that object.
     expect(result).toEqual({ hydrated: true, parentEtag: '"abc123"' })
@@ -130,6 +136,82 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
 
     await pool.hydrate('p3', {})
     expect(calls[0].headers.Authorization).toBeUndefined()
+  })
+})
+
+describe('the archive is sent chunked, never as a sized body', () => {
+  let dir: string
+  const realFetch = globalThis.fetch
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-body-'))
+  })
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('hydrate sends a stream with duplex:half and no Content-Length', async () => {
+    // THE GUEST-OOM REGRESSION. Bun.serve buffers a request body whole when
+    // Content-Length is set, whatever the handler does with it: measured at
+    // +1978 MB of RSS for a 1 GB body versus +91 MB chunked. Passing a
+    // Uint8Array sets that header, and a 2 GB hydrate then panicked the guest
+    // kernel ("Out of memory and no killable processes") before its streaming
+    // handler saw a byte. Passing a Uint8Array here again would look perfectly
+    // reasonable in review, so it is pinned.
+    const pool = makePool(dir)
+    pool.archive = new Uint8Array(4 * 1024 * 1024)
+
+    let init: any
+    globalThis.fetch = mock(async (_url: any, i: any) => {
+      init = i
+      // Drain, or the producing stream never runs.
+      await new Response(i.body).arrayBuffer()
+      return new Response('{}', { status: 200 })
+    }) as any
+
+    await pool.hydrate('p-chunked', { RUNTIME_AUTH_SECRET: 'tok' })
+
+    expect(init.body).toBeInstanceOf(ReadableStream)
+    expect(init.duplex).toBe('half')
+    expect(ArrayBuffer.isView(init.body)).toBe(false)
+    expect(init.headers['Content-Length']).toBeUndefined()
+  })
+
+  test('the stream reproduces the archive exactly, in bounded pieces', async () => {
+    // Chunking is only safe if it is lossless and actually chunked — one
+    // enqueue of the whole buffer would pass the type check above while
+    // changing nothing about the memory behaviour.
+    const pool = makePool(dir)
+    const bytes = new Uint8Array(5 * 1024 * 1024 + 123)
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251
+
+    const { body } = pool.bodyFor(bytes)
+    const reader = body.getReader()
+    const chunks: Uint8Array[] = []
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value!)
+    }
+
+    expect(chunks.length).toBeGreaterThan(1)
+    expect(Math.max(...chunks.map((c) => c.byteLength))).toBeLessThanOrEqual(1024 * 1024)
+    const joined = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0))
+    let at = 0
+    for (const c of chunks) {
+      joined.set(c, at)
+      at += c.byteLength
+    }
+    expect(joined).toEqual(bytes)
+  })
+
+  test('an empty archive produces an immediately-closed stream', () => {
+    const pool = makePool(dir)
+    expect(async () => {
+      const { body } = pool.bodyFor(new Uint8Array(0))
+      const { done } = await body.getReader().read()
+      expect(done).toBe(true)
+    }).not.toThrow()
   })
 })
 
