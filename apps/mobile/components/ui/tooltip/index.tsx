@@ -3,7 +3,7 @@
 'use client';
 import React from 'react';
 import { createTooltip } from '@gluestack-ui/core/tooltip/creator';
-import { View, Text, ViewStyle } from 'react-native';
+import { Platform, View, Text, ViewStyle } from 'react-native';
 import type { VariantProps } from '@gluestack-ui/utils/nativewind-utils';
 import { tva } from '@gluestack-ui/utils/nativewind-utils';
 import { withStyleContext } from '@gluestack-ui/utils/nativewind-utils';
@@ -33,11 +33,11 @@ const tooltipStyle = tva({
 });
 
 const tooltipContentStyle = tva({
-  base: 'py-1 px-3 rounded-sm bg-foreground web:pointer-events-auto',
+  base: 'py-1 px-3 rounded-sm border border-border bg-popover shadow-md web:pointer-events-auto',
 });
 
 const tooltipTextStyle = tva({
-  base: 'font-normal tracking-normal web:select-none text-xs text-background',
+  base: 'font-normal tracking-normal web:select-none text-xs text-popover-foreground',
 
   variants: {
     isTruncated: {
@@ -126,8 +126,112 @@ const TooltipText = React.forwardRef<
   );
 });
 
+interface WebTooltipProps {
+  label: string;
+  children: React.ReactNode;
+  placement?: 'top' | 'bottom';
+}
+
+type TooltipTriggerProps = Record<string, any>;
+
+type PossibleRef<T> = React.Ref<T> | undefined;
+
+function assignRef<T>(ref: PossibleRef<T>, value: T) {
+  if (typeof ref === 'function') {
+    ref(value);
+  } else if (ref && typeof ref === 'object') {
+    (ref as React.MutableRefObject<T>).current = value;
+  }
+}
+
+function mergeRefs<T>(...refs: PossibleRef<T>[]) {
+  return (value: T) => refs.forEach((ref) => assignRef(ref, value));
+}
+
+function composeEventHandlers<T extends (...args: any[]) => void>(
+  childHandler?: T,
+  tooltipHandler?: T
+) {
+  return (...args: Parameters<T>) => {
+    childHandler?.(...args);
+    tooltipHandler?.(...args);
+  };
+}
+
+function mergeTriggerProps(
+  child: React.ReactElement,
+  triggerProps: TooltipTriggerProps,
+  label: string
+) {
+  const childProps = child.props as TooltipTriggerProps;
+  const mergedProps: TooltipTriggerProps = {
+    ...triggerProps,
+    ...childProps,
+    ref: mergeRefs((child as any).ref, triggerProps.ref),
+    'aria-label': childProps['aria-label'] ?? label,
+  };
+
+  for (const eventName of [
+    'onBlur',
+    'onFocus',
+    'onMouseEnter',
+    'onMouseLeave',
+    'onPointerEnter',
+    'onPointerLeave',
+  ]) {
+    if (childProps[eventName] || triggerProps[eventName]) {
+      mergedProps[eventName] = composeEventHandlers(
+        childProps[eventName],
+        triggerProps[eventName]
+      );
+    }
+  }
+
+  return mergedProps;
+}
+
+function WebTooltip({ label, children, placement = 'top' }: WebTooltipProps) {
+  if (Platform.OS !== 'web') return <>{children}</>;
+
+  return (
+    <Tooltip
+      placement={placement}
+      offset={8}
+      shouldFlip
+      openDelay={0}
+      closeDelay={0}
+      trigger={(triggerProps: TooltipTriggerProps) => {
+        const child = React.Children.only(children);
+
+        if (React.isValidElement(child)) {
+          return React.cloneElement(
+            child,
+            mergeTriggerProps(child, triggerProps, label)
+          );
+        }
+
+        return (
+          <span
+            {...triggerProps}
+            aria-label={label}
+            style={{ display: 'contents' }}
+          >
+            {child}
+          </span>
+        );
+      }}
+    >
+      <TooltipContent className="max-w-[260px] web:pointer-events-none">
+        <TooltipText className="text-xs font-normal leading-4">
+          {label}
+        </TooltipText>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 Tooltip.displayName = 'Tooltip';
 TooltipContent.displayName = 'TooltipContent';
 TooltipText.displayName = 'TooltipText';
 
-export { Tooltip, TooltipContent, TooltipText };
+export { Tooltip, TooltipContent, TooltipText, WebTooltip };

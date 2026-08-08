@@ -1,7 +1,7 @@
 {
   "id": "none",
-  "name": "None",
-  "description": "No preset tech stack. The agent has full freedom to choose tools, languages, and frameworks.",
+  "name": "Start from Scratch",
+  "description": "Begin with an empty project and build anything you have in mind.",
   "tags": ["blank", "custom"],
   "target": "none",
   "seedsOwnTemplate": true,

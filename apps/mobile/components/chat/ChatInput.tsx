@@ -84,6 +84,7 @@ export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
 
 import { EnvironmentPicker } from "./EnvironmentPicker"
+import { WebTooltip } from "../ui/tooltip"
 
 export type InteractionMode = "agent" | "plan" | "ask"
 
@@ -118,22 +119,6 @@ export const INTERACTION_MODES: InteractionModeConfig[] = [
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
 const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
-
-/**
- * Show a native browser tooltip on hover (web only). Wraps children in a
- * `display: contents` div with the `title` attribute so layout is unaffected
- * and the trigger's own ref (e.g. for popover positioning) isn't disturbed.
- * On native this is a transparent passthrough — the icon click opens the
- * popover menu which already shows the full label.
- */
-function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
-  if (Platform.OS !== "web") return <>{children}</>
-  return React.createElement(
-    "div",
-    { title: label, style: { display: "contents" } },
-    children,
-  )
-}
 
 const MIN_INPUT_HEIGHT = 60
 const MAX_INPUT_HEIGHT = 200
@@ -2014,7 +1999,7 @@ function ChatInputImpl({
               onOpen={() => setInteractionModeOpen(true)}
               onClose={() => setInteractionModeOpen(false)}
               trigger={(triggerProps) => (
-                <WebTooltip label={`Mode: ${currentInteractionConfig.label}`}>
+                <WebTooltip label={`Mode: ${currentInteractionConfig.label}`} placement="bottom">
                   <Pressable
                     {...triggerProps}
                     disabled={disabled}
@@ -2152,7 +2137,7 @@ function ChatInputImpl({
                 per-device preference: once on, every plan generated in Plan
                 mode also produces a stakeholder summary. */}
             {interactionMode === "plan" && (
-              <WebTooltip label="Also generate a stakeholder summary">
+              <WebTooltip label="Also generate a stakeholder summary" placement="bottom">
                 <Pressable
                   testID="dual-plan-toggle"
                   disabled={disabled}
@@ -2185,7 +2170,7 @@ function ChatInputImpl({
                 onOpen={() => setQuickActionsOpen(true)}
                 onClose={() => setQuickActionsOpen(false)}
                 trigger={(triggerProps) => (
-                  <WebTooltip label="Quick actions">
+                  <WebTooltip label="Quick actions" placement="bottom">
                     <Pressable
                       {...triggerProps}
                       disabled={disabled}
