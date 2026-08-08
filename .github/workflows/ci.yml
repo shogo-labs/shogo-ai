@@ -85,11 +85,19 @@ jobs:
         # the latest published `^X.Y.Z` first (GitHub runners have npm + net).
         # Plain `bun install` (not --frozen-lockfile): the rewrite makes the
         # template's checked-in bun.lock drift from its package.json.
+        #
+        # The rewrite is a BUILD-TIME transform, so undo it once dist/ exists.
+        # Leaving it applied edits tracked files under the tests' feet: the
+        # manifest no longer carries the `workspace:*` sentinel that
+        # materialize-runtime-template.test.ts exists to guard, and every test
+        # that copies the template (workspace-seeding, binary-ships-…) would
+        # silently assert against a manifest that is not the one we ship.
+        # node_modules/ and dist/ survive, so the later template-dist build is
+        # unaffected.
         run: |
           bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json
-          cd templates/runtime-template
-          bun install
-          bun run build
+          (cd templates/runtime-template && bun install && bun run build)
+          git checkout -- templates/runtime-template/package.json templates/runtime-template/bun.lock
 
       - name: Build one agent template (sales-bdr-pipeline) for overlay tests
         # `packages/agent-runtime/templates/<id>/dist/` is also gitignored.
