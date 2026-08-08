@@ -87,6 +87,7 @@ import {
   writableStateTag,
   WRITABLE_STATE_PATHS,
 } from './writable-state'
+import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
@@ -2597,7 +2598,8 @@ function scheduleHydrateRebuild(): void {
 }
 
 app.post('/pool/hydrate', async (c) => {
-  const tmp = join('/tmp', `pool-hydrate-${Date.now()}.tar.gz`)
+  sweepSpool()
+  const tmp = spoolPath('pool-hydrate.tar.gz')
   let bytes = 0
   try {
     // Spool to disk as it arrives rather than buffering the whole archive.
@@ -2606,6 +2608,9 @@ app.post('/pool/hydrate', async (c) => {
     // the same budget and made the ceiling a memory limit rather than a policy
     // one. Streaming makes the cost O(chunk), so the only real bound left is
     // guest disk — which is why the body cap above can be raised at all.
+    //
+    // `spoolPath`, not `/tmp`: the guest's `/tmp` is tmpfs, so spooling there
+    // is still spending RAM, just without it showing up as heap. See spool.ts.
     const stream = c.req.raw.body
     if (!stream) return c.json({ error: 'empty archive' }, 400)
     const sink = Bun.file(tmp).writer()
@@ -2664,7 +2669,9 @@ app.post('/pool/hydrate', async (c) => {
 // Auth: under the `/pool` prefix, so it requires the runtime token — the agent
 // presents the same RUNTIME_AUTH_SECRET it injected via `/pool/assign`.
 app.post('/pool/export', async (c) => {
-  const tmp = join('/tmp', `pool-export-${Date.now()}.tar.gz`)
+  sweepSpool()
+  const tmp = spoolPath('pool-export.tar.gz')
+  let handedOff = false
   try {
     const sync =
       s3SyncInstance ??
@@ -2676,19 +2683,26 @@ app.post('/pool/export', async (c) => {
     if (!sync) return c.json({ error: 's3 sync unavailable' }, 500)
     const packed = await sync.packProjectArchive(tmp)
     if (!packed) return c.body(null, 204) // empty/new workspace — nothing to back up
-    const bytes = readFileSync(tmp)
-    console.log(`[pool/export] packed workspace source for durable backup (${bytes.length} bytes)`)
-    return new Response(new Uint8Array(bytes), {
-      status: 200,
-      headers: { 'Content-Type': 'application/gzip' },
-    })
+    const size = statSync(tmp).size
+    console.log(`[pool/export] packed workspace source for durable backup (${size} bytes)`)
+    // Streamed, not read into a Buffer: the largest source archive in
+    // production is ~1.8 GB and the guest has 4 GiB, so materialising it to
+    // respond is most of the VM's memory for the length of the upload.
+    const res = await spooledFileResponse(tmp, { 'Content-Type': 'application/gzip' })
+    // Only now: if the call above threw before taking ownership, the `finally`
+    // still needs to clean up.
+    handedOff = true
+    return res
   } catch (err: any) {
     console.error('[pool/export] failed:', err?.message ?? err)
     return c.json({ error: err?.message ?? 'export failed' }, 500)
   } finally {
-    try {
-      unlinkSync(tmp)
-    } catch {}
+    // The streaming response already unlinked it and owns the descriptor.
+    if (!handedOff) {
+      try {
+        unlinkSync(tmp)
+      } catch {}
+    }
   }
 })
 
@@ -2735,8 +2749,11 @@ app.post('/pool/export-data', async (c) => {
   }
 
   const fsp = await import('node:fs/promises')
-  const os = await import('node:os')
-  const stage = await fsp.mkdtemp(join(os.tmpdir(), 'shogo-data-export-'))
+  sweepSpool()
+  // Under the spool, not os.tmpdir(): this stages a VACUUM INTO copy of the
+  // database AND the tar built from it, so in the guest it would be paying for
+  // the writable state twice over in RAM. See spool.ts.
+  const stage = await fsp.mkdtemp(join(spoolDir(), 'shogo-data-export-'))
   const out = join(stage, 'data.tar.gz')
   try {
     const pack = await packWritableState({
@@ -2749,18 +2766,18 @@ app.post('/pool/export-data', async (c) => {
     })
     if (!pack) return c.body(null, 204)
 
-    const bytes = readFileSync(out)
+    const size = statSync(out).size
     console.log(
       `[pool/export-data] packed writable state for durable backup ` +
-        `(${bytes.length} bytes, paths: ${pack.paths.join(', ')}, tag: ${pack.tag ?? 'none'})`,
+        `(${size} bytes, paths: ${pack.paths.join(', ')}, tag: ${pack.tag ?? 'none'})`,
     )
-    return new Response(new Uint8Array(bytes), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/gzip',
-        'X-Shogo-Data-Paths': pack.paths.join(','),
-        ...(pack.tag ? { ETag: pack.tag } : {}),
-      },
+    // Streams from an already-unlinked descriptor, so the `finally` below can
+    // remove the stage directory out from under it without truncating the
+    // response.
+    return await spooledFileResponse(out, {
+      'Content-Type': 'application/gzip',
+      'X-Shogo-Data-Paths': pack.paths.join(','),
+      ...(pack.tag ? { ETag: pack.tag } : {}),
     })
   } catch (err: any) {
     // Deliberately NOT falling back to copying the database files: a torn copy
