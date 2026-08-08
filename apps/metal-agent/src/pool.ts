@@ -869,12 +869,40 @@ export class MetalWarmPool {
         'Content-Type': 'application/gzip',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: archive.bytes,
+      ...this.archiveBody(archive.bytes),
       signal: AbortSignal.timeout(this.hydrateBudgetMs(archive.bytes.byteLength)),
-    })
+    } as any)
     if (!res.ok) throw new Error(`/pool/hydrate failed (${res.status}): ${await res.text()}`)
     console.log(`[pool] hydrated ${projectId} from durable backup (${archive.bytes.byteLength} bytes, etag=${archive.etag ?? 'none'})`)
     return { hydrated: true, parentEtag: archive.etag ?? undefined }
+  }
+
+  /**
+   * Send an archive to the guest as a CHUNKED body rather than a sized one.
+   *
+   * This is not a style choice. Bun.serve buffers a request body whole when
+   * Content-Length is set, no matter what the handler does with it — measured
+   * at +1978 MB of RSS for a 1 GB body against +91 MB for the same bytes sent
+   * chunked. Passing a Uint8Array sets that header, so a 2 GB hydrate filled
+   * the guest's 4 GiB and the kernel panicked ("Out of memory and no killable
+   * processes", with 3.7 GiB of anon in `bun`) before the guest's own streaming
+   * handler ever saw a byte. Sending the same archive without a Content-Length
+   * is what lets the guest stream it.
+   */
+  protected archiveBody(bytes: Uint8Array): { body: ReadableStream<Uint8Array>; duplex: 'half' } {
+    const CHUNK = 1024 * 1024
+    let offset = 0
+    return {
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (offset >= bytes.byteLength) return controller.close()
+          const end = Math.min(offset + CHUNK, bytes.byteLength)
+          controller.enqueue(bytes.subarray(offset, end))
+          offset = end
+        },
+      }),
+      duplex: 'half',
+    }
   }
 
   /**
@@ -1077,9 +1105,9 @@ export class MetalWarmPool {
         'Content-Type': 'application/gzip',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: archive.bytes,
+      ...this.archiveBody(archive.bytes),
       signal: AbortSignal.timeout(this.hydrateBudgetMs(archive.bytes.byteLength)),
-    })
+    } as any)
     if (!res.ok) {
       throw new Error(`/pool/hydrate (project data) failed (${res.status}): ${await res.text()}`)
     }
@@ -1272,9 +1300,9 @@ export class MetalWarmPool {
         'Content-Type': 'application/gzip',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: archive,
+      ...this.archiveBody(archive),
       signal: AbortSignal.timeout(this.hydrateBudgetMs(archive.byteLength)),
-    })
+    } as any)
     if (!res.ok) throw new Error(`/pool/hydrate (data) failed (${res.status}): ${await res.text()}`)
     console.log(`[pool] hydrated published-data for ${subdomain} (${archive.byteLength} bytes)`)
   }
