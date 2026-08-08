@@ -128,6 +128,11 @@ describe('DATA_MAX_BYTES', () => {
   test('matches the guest hydrate body cap, so a stored archive is restorable', () => {
     // An archive larger than the guest will accept would consume storage while
     // still cold-booting empty — durability that is not.
-    expect(DATA_MAX_BYTES).toBe(1024 * 1024 * 1024)
+    //
+    // Keep this in lockstep with `maxRequestBodySize` in
+    // packages/agent-runtime/src/server.ts. This assertion is the tripwire for
+    // the two drifting apart; if it fails because the guest cap moved, move
+    // this constant rather than relaxing the test.
+    expect(DATA_MAX_BYTES).toBe(4 * 1024 * 1024 * 1024)
   })
 })
