@@ -370,3 +370,13 @@ export function archiveNeedsSidecarClear(entries: Iterable<string>): boolean {
   }
   return hasDb && !hasWal
 }
+
+/**
+ * The archive entries {@link archiveNeedsSidecarClear} can act on.
+ *
+ * A caller reading a tar listing as it streams uses this to keep the handful of
+ * relevant paths and discard the rest — a large project lists hundreds of
+ * thousands of files, and holding all of them would defeat the point of
+ * streaming. Kept next to the decision it feeds so the two cannot drift.
+ */
+export const SQLITE_SIDECAR_ENTRY = /(^|\/)prisma\/dev\.db(-wal)?$/
