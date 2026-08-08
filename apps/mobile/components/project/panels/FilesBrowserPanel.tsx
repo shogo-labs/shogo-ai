@@ -15,7 +15,7 @@ import {
   Keyboard,
 } from 'react-native'
 import { AgentClient, type FileNode, type SearchResult } from '@shogo-ai/sdk/agent'
-import { agentFetch } from '../../../lib/agent-fetch'
+import { agentFetch, getNativeAgentAuthHeaders } from '../../../lib/agent-fetch'
 import { filterForFilesBrowser } from './files-browser-filter'
 import {
   FileText,
@@ -612,11 +612,10 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     if (isDownloadingZip) return
     setIsDownloadingZip(true)
     try {
-      const { blob, filename } = await api.exportProjectBlob(projectId, {
-        sourceOnly: true,
-      })
-
       if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const { blob, filename } = await api.exportProjectBlob(projectId, {
+          sourceOnly: true,
+        })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
@@ -626,17 +625,10 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
       } else if (Platform.OS !== 'web') {
-        const { documentDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
+        const { uri: fileUri } = await api.downloadProjectSourceZipFile(projectId, {
+          authCookie: getNativeAgentAuthHeaders().Cookie,
+        })
         const Sharing = await import('expo-sharing')
-        const dir = documentDirectory
-        if (!dir) throw new Error('Could not access app storage to save ZIP')
-        const fileUri = `${dir}${filename}`
-        const arrayBuf = await blob.arrayBuffer()
-        const bytes = new Uint8Array(arrayBuf)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-        const base64 = btoa(binary)
-        await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
 
         await new Promise<void>((resolve) => {
           InteractionManager.runAfterInteractions(() => resolve())
