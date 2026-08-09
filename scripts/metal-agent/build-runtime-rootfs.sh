@@ -71,17 +71,33 @@ SIZE_BYTES=$(( TAR_BYTES * 14 / 10 + 2 * 1024 * 1024 * 1024 ))
 MIN_BYTES=$(( 8 * 1024 * 1024 * 1024 ))
 [ "$SIZE_BYTES" -lt "$MIN_BYTES" ] && SIZE_BYTES="$MIN_BYTES"
 SIZE_MB=$(( SIZE_BYTES / 1024 / 1024 ))
-log "creating ${SIZE_MB} MB ext4 at $OUT ..."
 
-rm -f "$OUT"
-truncate -s "${SIZE_MB}M" "$OUT"
-mkfs.ext4 -q -F -L runtime "$OUT"
+# Build into a sibling temp file and rename it over $OUT at the very end.
+#
+# The image is the dm-snapshot origin for every VM on the host and the base for
+# every VM it will boot next, so it must never be observed half-built. Writing
+# in place (rm + mkfs + extract) left it absent or empty for the couple of
+# minutes the extract takes, and a host that is asked for a VM in that window
+# has nothing to boot from. A rename is atomic and, because it only swaps the
+# directory entry, VMs already running on the old image keep their inode and
+# are unaffected — they migrate at their next boot.
+STAGE="$OUT.new.$$"
+log "creating ${SIZE_MB} MB ext4 at $STAGE (will replace $OUT atomically) ..."
 
 MNT="$WORKDIR/mnt"
+cleanup() {
+  umount "$MNT" 2>/dev/null || true
+  rm -f "$STAGE"
+}
+trap cleanup EXIT
+
+rm -f "$STAGE"
+truncate -s "${SIZE_MB}M" "$STAGE"
+mkfs.ext4 -q -F -L runtime "$STAGE"
+
 mkdir -p "$MNT"
 umount "$MNT" 2>/dev/null || true
-mount -o loop "$OUT" "$MNT"
-trap 'umount "$MNT" 2>/dev/null || true' EXIT
+mount -o loop "$STAGE" "$MNT"
 
 log "extracting rootfs into ext4 ..."
 tar -C "$MNT" --numeric-owner -xf "$TAR"
@@ -138,6 +154,13 @@ mkdir -p "$MNT/app/workspace" "$MNT/proc" "$MNT/sys" "$MNT/dev" "$MNT/tmp"
 
 sync
 umount "$MNT"
+
+# Fully on disk before it becomes the live image: a rename is atomic with
+# respect to readers, but not with respect to losing power midway.
+sync "$STAGE" 2>/dev/null || sync
+mv -f "$STAGE" "$OUT"
+sync
+
 trap - EXIT
 rm -f "$TAR"
 
