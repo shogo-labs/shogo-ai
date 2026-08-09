@@ -279,6 +279,24 @@ export const config = {
   s3GetConcurrency: parseInt(env('METAL_S3_GET_CONCURRENCY', '8'), 10),
 
   /**
+   * The same trick applied to cold-boot hydrate, with the host fetching on the
+   * guest's behalf (see `hydrate-proxy`).
+   *
+   * Worth doing because the store's slow mode is per-connection, not per-host:
+   * on one 217 MB archive from a production host, a single stream measured
+   * 91 MB/s and then 4.0 MB/s minutes later, while eight-wide across the slow
+   * patch still held 49.6 MB/s. Guests, which pull single-stream, measured
+   * 1.5-10.6 MB/s — against a ~100 s budget before the edge gives up.
+   *
+   * `maxConcurrent` bounds the host's exposure: each transfer holds at most
+   * `partBytes * s3GetConcurrency` (8 MB * 8 = 64 MB), so twelve of them is
+   * ~768 MB. Past that, hydrates take the presigned URL as they do today rather
+   * than wait for a slot. Set to 0 to turn the proxy off entirely.
+   */
+  hydrateProxyPartBytes: parseInt(env('METAL_HYDRATE_PROXY_PART_MB', '8'), 10) * 1024 * 1024,
+  hydrateProxyMaxConcurrent: parseInt(env('METAL_HYDRATE_PROXY_MAX', '12'), 10),
+
+  /**
    * Slim durable snapshots. The naive push is ~10 GB/project (full rootfs +
    * uncompressed guest RAM); at 10k projects that is ~100 TB in S3 and a
    * multi-GB download per cache miss. Slim mode shrinks that to ~1-2 GB:

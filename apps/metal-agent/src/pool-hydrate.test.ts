@@ -28,7 +28,12 @@ import { MetalWarmPool } from './pool'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 
-const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.9' } as any
+const HANDLE = {
+  id: 'vm-1',
+  agentUrl: 'http://10.0.0.9:8080',
+  guestIp: '10.0.0.9',
+  net: { hostIp: '172.16.0.1' },
+} as any
 
 /** MetalWarmPool subclass exposing the private hydrate + an injectable archive. */
 class TestPool extends MetalWarmPool {
@@ -37,6 +42,9 @@ class TestPool extends MetalWarmPool {
   /** null → the store could not presign, so the host must push the bytes. */
   url: string | null = 'https://s3.example/p1/project-src.tar.gz?X-Amz-Signature=deadbeef'
   loads = 0
+  /** Ranged reads, so the host can serve the archive to the guest itself. */
+  ranged = false
+  rangeCalls = 0
   override sourceRef(_projectId: string): Promise<ArchiveRef | null> {
     if (!this.archive) return Promise.resolve(null)
     const bytes = this.archive
@@ -44,11 +52,20 @@ class TestPool extends MetalWarmPool {
       etag: this.etag,
       bytes: bytes.byteLength,
       url: this.url,
+      range: this.ranged
+        ? async (start: number, end: number) => {
+            this.rangeCalls++
+            return bytes.slice(start, end)
+          }
+        : undefined,
       load: async () => {
         this.loads++
         return bytes
       },
     })
+  }
+  serveGrant(url: string, fromIp = '10.0.0.9') {
+    return this.hydrateProxy.serve(new URL(url).pathname, fromIp)
   }
   hydrate(projectId: string, env: Record<string, string>) {
     // hydrateFromBackup is private; reach it through the instance.
@@ -251,6 +268,131 @@ describe('falling back to a push when the guest cannot pull', () => {
     await expect(pool.hydrate('p-pull-broke', { RUNTIME_AUTH_SECRET: 'tok' })).rejects.toThrow(/500/)
     expect(urls).toEqual(['http://10.0.0.9:8080/pool/hydrate-url'])
     expect(pool.loads).toBe(0)
+  })
+})
+
+describe('the host serves the archive itself when it can', () => {
+  // A guest pulls on one connection, and this object store's slow mode is
+  // per-connection: real cold boots measured 1.5-10.6 MB/s against an edge that
+  // gives up at ~100s. The host can fetch the same object several parts at a
+  // time — 49.6 MB/s eight-wide across a patch where one stream managed 4.0 —
+  // and hand it over the tap link. The guest is unchanged; only the URL differs.
+  let dir: string
+  const realFetch = globalThis.fetch
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-proxy-'))
+  })
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const bigEnough = () => Uint8Array.from({ length: 5000 }, (_, i) => i % 251)
+
+  test('hands the guest a URL on this host, and serving it yields the archive', async () => {
+    const pool = makePool(dir, { hydrateProxyPartBytes: 1000, hydrateProxyMaxConcurrent: 4 })
+    pool.archive = bigEnough()
+    pool.ranged = true
+
+    let sent: any
+    globalThis.fetch = mock(async (_url: any, init: any) => {
+      sent = JSON.parse(init.body)
+      return new Response('{}', { status: 200 })
+    }) as any
+
+    await pool.hydrate('p-proxy', { RUNTIME_AUTH_SECRET: 'tok' })
+
+    // The guest is pointed at its own gateway, not at the object store.
+    expect(sent.url).toMatch(/^http:\/\/172\.16\.0\.1:\d+\/hydrate-stream\/[0-9a-f]{64}$/)
+    expect(sent.bytes).toBe(5000)
+
+    const res = pool.serveGrant(sent.url)
+    expect(Buffer.from(await res.arrayBuffer()).equals(Buffer.from(pool.archive!))).toBe(true)
+    // Fetched in parts, which is the entire point — one part would be one
+    // connection and no better than what the guest was already doing.
+    expect(pool.rangeCalls).toBe(5)
+    // And the host still never materialises the archive.
+    expect(pool.loads).toBe(0)
+  })
+
+  test('falls back to the presigned URL when the host cannot serve it', async () => {
+    // Anything the proxy declines — no ranged reads here — has to leave the
+    // old path exactly as it was.
+    const pool = makePool(dir, { hydrateProxyPartBytes: 1000 })
+    pool.archive = bigEnough()
+    pool.ranged = false
+
+    let sent: any
+    globalThis.fetch = mock(async (_url: any, init: any) => {
+      sent = JSON.parse(init.body)
+      return new Response('{}', { status: 200 })
+    }) as any
+
+    await pool.hydrate('p-nofallback', { RUNTIME_AUTH_SECRET: 'tok' })
+    expect(sent.url).toBe(pool.url)
+  })
+
+  test('setting the limit to zero turns the proxy off', async () => {
+    // The kill switch has to work without a deploy, because this sits in front
+    // of every cold boot on the fleet.
+    const pool = makePool(dir, { hydrateProxyPartBytes: 1000, hydrateProxyMaxConcurrent: 0 })
+    pool.archive = bigEnough()
+    pool.ranged = true
+
+    let sent: any
+    globalThis.fetch = mock(async (_url: any, init: any) => {
+      sent = JSON.parse(init.body)
+      return new Response('{}', { status: 200 })
+    }) as any
+
+    await pool.hydrate('p-off', { RUNTIME_AUTH_SECRET: 'tok' })
+    expect(sent.url).toBe(pool.url)
+  })
+
+  test('a guest that fails on the host-served URL retries against the store', async () => {
+    // New code in front of every cold boot: if it is wrong, it must cost a
+    // retry rather than the boot. The path it replaces still works.
+    const pool = makePool(dir, { hydrateProxyPartBytes: 1000, hydrateProxyMaxConcurrent: 4 })
+    pool.archive = bigEnough()
+    pool.ranged = true
+
+    const tried: string[] = []
+    globalThis.fetch = mock(async (_url: any, init: any) => {
+      const url = JSON.parse(init.body).url as string
+      tried.push(url)
+      if (url.includes('/hydrate-stream/')) return new Response('curl exited 18', { status: 500 })
+      return new Response('{}', { status: 200 })
+    }) as any
+
+    const result = await pool.hydrate('p-retry', { RUNTIME_AUTH_SECRET: 'tok' })
+
+    expect(tried).toHaveLength(2)
+    expect(tried[0]).toContain('/hydrate-stream/')
+    expect(tried[1]).toBe(pool.url!)
+    expect(result.hydrated).toBe(true)
+  })
+
+  test('a guest running an old runtime still gets a push, without a second try', async () => {
+    // 404 is the guest saying it has no pull endpoint at all. Retrying another
+    // URL against it would be pointless, and pushing is the correct answer.
+    const pool = makePool(dir, { hydrateProxyPartBytes: 1000, hydrateProxyMaxConcurrent: 4 })
+    pool.archive = bigEnough()
+    pool.ranged = true
+
+    const urls: string[] = []
+    globalThis.fetch = mock(async (url: any) => {
+      urls.push(String(url))
+      return String(url).endsWith('/pool/hydrate-url')
+        ? new Response('not found', { status: 404 })
+        : new Response('{}', { status: 200 })
+    }) as any
+
+    await pool.hydrate('p-ancient', { RUNTIME_AUTH_SECRET: 'tok' })
+    expect(urls).toEqual([
+      'http://10.0.0.9:8080/pool/hydrate-url',
+      'http://10.0.0.9:8080/pool/hydrate',
+    ])
+    expect(pool.loads).toBe(1)
   })
 })
 

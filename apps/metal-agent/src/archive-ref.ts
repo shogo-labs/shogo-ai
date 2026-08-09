@@ -37,6 +37,16 @@ export interface ArchiveRef {
    * reason to skip hydrating.
    */
   url: string | null
+  /**
+   * Fetch a byte range `[start, end)`.
+   *
+   * Lets the host serve this archive to the guest itself, fetching it several
+   * parts at a time instead of leaving the guest to pull it down one
+   * connection — see `hydrate-proxy`. Carrying the fetcher rather than a bucket
+   * and key keeps the proxy from having to know which store an archive came
+   * from. Optional: a store without ranged reads simply does not get proxied.
+   */
+  range?: (start: number, end: number) => Promise<Uint8Array>
   /** Download the archive. Only the push fallback pays this. */
   load: () => Promise<Uint8Array>
 }
@@ -72,7 +82,13 @@ export async function describeObject(
     // failing a hydrate that can otherwise succeed.
   }
 
-  return { etag, bytes, url: presign(client, key, expiresInSec), load: () => download(file) }
+  return {
+    etag,
+    bytes,
+    url: presign(client, key, expiresInSec),
+    range: async (start, end) => new Uint8Array(await client.file(key).slice(start, end).arrayBuffer()),
+    load: () => download(file),
+  }
 }
 
 /**

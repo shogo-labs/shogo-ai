@@ -25,6 +25,7 @@ import { existsSync, readdirSync, rmSync, statSync } from 'fs'
 import { join } from 'path'
 import { CacheIndex, type CacheEntry } from './cache-index'
 import { Semaphore, Singleflight } from './concurrency'
+import { HydrateProxy } from './hydrate-proxy'
 import { config } from './config'
 import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
@@ -301,6 +302,11 @@ export class MetalWarmPool {
   private heavy: Semaphore
   /** Single-flight guard for pool fills (see reconcile). */
   private reconciling: Promise<void> | null = null
+  /**
+   * Serves durable archives to guests over the tap link, fetched several parts
+   * at a time. Public because the HTTP server routes redemptions to it.
+   */
+  readonly hydrateProxy: HydrateProxy
 
   constructor(
     private mgr = new FirecrackerVMManager(),
@@ -312,6 +318,19 @@ export class MetalWarmPool {
     this.index = new CacheIndex(cfg.snapDir)
     this.live = new LiveRegistry(cfg.runDir)
     this.heavy = new Semaphore(parseInt(process.env.METAL_HEAVY_CONCURRENCY ?? '2', 10))
+    this.hydrateProxy = new HydrateProxy({
+      partBytes: cfg.hydrateProxyPartBytes,
+      concurrency: cfg.s3GetConcurrency,
+      maxConcurrent: cfg.hydrateProxyMaxConcurrent,
+      // Only the window to REDEEM, which the guest does within a second of
+      // being handed the URL; the transfer itself is unbounded by this because
+      // redeeming consumes the grant. Deliberately far shorter than the
+      // presign TTL: an assign that dies before the guest pulls leaves the
+      // grant holding a slot, and at 30 minutes a dozen such failures would
+      // retire the proxy for the rest of the hour.
+      ttlSec: 120,
+      port: cfg.listenPort,
+    })
   }
 
   /**
@@ -901,6 +920,16 @@ export class MetalWarmPool {
    * through `curl` into `tar`, where a kernel pipe supplies the backpressure.
    * Neither side holds the archive, and the host no longer downloads it at all.
    *
+   * What the URL POINTS AT is then a separate question, and the answer is
+   * preferably this host. A guest pulls on one connection, and this object
+   * store's slow mode is per-connection — 1.5-10.6 MB/s measured on real cold
+   * boots, against an edge that gives up at ~100 s. The host can fetch the same
+   * object several parts at a time and serve it over the tap link as one
+   * ordinary stream, so the guest is unchanged and only the connections move.
+   * When the proxy declines — no ranged reads, a small archive, or the host
+   * already at its limit — this falls back to the presigned URL and behaves
+   * exactly as it did before.
+   *
    * The push remains for one case: a guest whose runtime predates the pull
    * endpoint answers 404, and during that rollout window the old path is still
    * the correct thing to do.
@@ -915,20 +944,42 @@ export class MetalWarmPool {
     const auth = token ? { Authorization: `Bearer ${token}` } : {}
     const budgetMs = this.hydrateBudgetMs(ref.bytes)
 
-    if (ref.url) {
+    const proxied = this.hydrateProxy.mint({
+      hostIp: handle.net?.hostIp,
+      guestIp: handle.guestIp,
+      size: ref.bytes,
+      label: what,
+      range: ref.range,
+    })
+    // Proxy first when we have one, then the presigned URL. Ordered rather
+    // than chosen, so anything the proxy gets wrong costs a retry instead of
+    // the boot: it is new code in front of every cold boot, and the path it
+    // replaces still works.
+    const candidates = [proxied, ref.url].filter((u): u is string => !!u)
+
+    for (const [i, url] of candidates.entries()) {
       const res = await fetch(`${handle.agentUrl}/pool/hydrate-url`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...auth },
-        body: JSON.stringify({ url: ref.url, bytes: ref.bytes, timeoutMs: budgetMs }),
+        body: JSON.stringify({ url, bytes: ref.bytes, timeoutMs: budgetMs }),
         // The guest holds the transfer open for the whole pull, so the host's
         // own deadline has to cover it with room to answer.
         signal: AbortSignal.timeout(budgetMs + 30_000),
       })
       if (res.ok) return
-      if (res.status !== 404) {
-        throw new Error(`/pool/hydrate-url (${what}) failed (${res.status}): ${await res.text()}`)
+
+      // 404 is the guest saying it has no pull endpoint at all, which no other
+      // URL will fix — stop and push.
+      if (res.status === 404) {
+        console.log(`[pool] guest has no pull endpoint — pushing ${what} instead`)
+        break
       }
-      console.log(`[pool] guest has no pull endpoint — pushing ${what} instead`)
+      const detail = await res.text()
+      const last = i === candidates.length - 1
+      if (last) throw new Error(`/pool/hydrate-url (${what}) failed (${res.status}): ${detail}`)
+      console.warn(
+        `[pool] host-served hydrate of ${what} failed (${res.status}): ${detail} — retrying direct from the store`,
+      )
     }
 
     const bytes = await ref.load()
