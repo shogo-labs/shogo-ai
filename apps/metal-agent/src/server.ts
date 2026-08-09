@@ -21,6 +21,7 @@
  */
 
 import { config } from './config'
+import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
 import { metrics } from './metrics'
 import { MetalWarmPool } from './pool'
 import { PortForward } from './port-forward'
@@ -44,13 +45,22 @@ async function json(req: Request): Promise<any> {
 const server = Bun.serve({
   hostname: config.listenHost,
   port: config.listenPort,
-  async fetch(req) {
+  async fetch(req, srv) {
     const url = new URL(req.url)
     const path = url.pathname
     try {
       if (path === '/healthz') return Response.json({ ok: true })
       if (path === '/vms') return Response.json(pool.status())
       if (path === '/metrics') return new Response(metrics.prometheus(), { headers: { 'Content-Type': 'text/plain; version=0.0.4' } })
+
+      // A guest redeeming a hydrate grant. Not part of the control-plane API:
+      // the caller is a local guest over its tap, and the bearer token this
+      // API is otherwise protected by lives inside the guest we are about to
+      // populate. The unguessable single-use token in the path, pinned to the
+      // guest it was minted for, is the credential — see `hydrate-proxy`.
+      if (path.startsWith(HYDRATE_STREAM_PREFIX) && req.method === 'GET') {
+        return pool.hydrateProxy.serve(path, srv.requestIP(req)?.address ?? null)
+      }
 
       if (path === '/assign' && req.method === 'POST') {
         const { projectId, env } = await json(req)
