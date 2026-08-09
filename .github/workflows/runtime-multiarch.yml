@@ -37,6 +37,11 @@ on:
         options:
           - staging
           - production
+      converge_fleet:
+        description: 'Roll the new image out to the prod metal fleet when the build finishes'
+        required: false
+        default: true
+        type: boolean
   push:
     branches: [main]
     paths:
@@ -233,11 +238,20 @@ jobs:
   # then rebuilds its rootfs from this exact image on the next heartbeat, even
   # when the agent code version is unchanged. Prod image builds stay deliberate;
   # the fleet convergence that follows no longer requires anyone to remember.
+  #
+  # Skipped when the caller says it will converge the fleet itself. deploy.yml
+  # does, and orders it properly — it waits for this build to succeed and for
+  # both regions' API deploys to land before rolling the fleet. Without the
+  # opt-out both paths fire, so each region gets two rebuildRootfs releases at
+  # once; on 2026-08-09 that raced a rebuild against its own retry on all four
+  # prod hosts simultaneously.
   # ---------------------------------------------------------------------------
   converge-fleet:
     name: Converge prod metal fleet on new image
     needs: [merge]
-    if: ${{ (inputs.environment || 'staging') == 'production' }}
+    # A boolean input arrives as a real boolean, but compare against the string
+    # too: a mistyped `-f converge_fleet=false` must not be read as "true".
+    if: ${{ (inputs.environment || 'staging') == 'production' && inputs.converge_fleet != false && inputs.converge_fleet != 'false' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
