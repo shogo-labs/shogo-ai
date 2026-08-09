@@ -158,6 +158,28 @@ export function classifyActivity(path: string): ActivityClass {
   return 'editor'
 }
 
+/**
+ * Is this request the host agent talking to the guest, rather than a user?
+ *
+ * Everything under `/pool` is the agent's control channel — assign, hydrate,
+ * env refresh, the activity poll itself, and the periodic writable-state
+ * export. None of it is a person using the project, and counting it as such
+ * makes the guest look permanently busy: the agent reads `lastRequestAt` back
+ * and will not idle-suspend a VM it believes is in use.
+ *
+ * This was a list of exact paths, which held only until an endpoint was added
+ * without being added here too. `/pool/export-data` arrived with the
+ * writable-state backups and runs against every guest every 120 seconds, so
+ * from then on no VM on the fleet could go idle: projects untouched for weeks
+ * stayed resident and hosts filled with guests nobody had asked for. A prefix
+ * cannot be forgotten by the next endpoint.
+ */
+export function isInternalRuntimePath(path: string, extra?: ReadonlySet<string>): boolean {
+  if (extra?.has(path)) return true
+  if (path === '/health' || path === '/ready') return true
+  return path === '/pool' || path.startsWith('/pool/')
+}
+
 export async function createRuntimeApp(config: RuntimeAppConfig): Promise<RuntimeApp> {
   // ---------------------------------------------------------------------------
   // OpenTelemetry
@@ -198,9 +220,11 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   let lastRequestAt: number = Date.now()
 
   const internalPaths = new Set([
-    '/health', '/ready', '/pool/activity', '/pool/assign',
+    '/health', '/ready',
     ...(config.internalPaths ?? []),
   ])
+
+  const isInternalRequest = (path: string): boolean => isInternalRuntimePath(path, internalPaths)
 
   // A workspace runtime (WORKSPACE_RUNTIME=true) serves several attached
   // projects mounted as subfolders and is identified by WORKSPACE_ID, not a
@@ -364,7 +388,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   // reaper still keys off it) — the per-class timestamps are additive.
   app.use('*', async (c, next) => {
     const path = c.req.path
-    if (!internalPaths.has(path)) {
+    if (!isInternalRequest(path)) {
       const now = Date.now()
       state.lastRequestAt = now
       const cls = classifyActivity(path)
