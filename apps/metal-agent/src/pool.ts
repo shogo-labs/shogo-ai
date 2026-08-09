@@ -284,6 +284,8 @@ export class MetalWarmPool {
    * or packing. In-memory only — a restart just costs one redundant export.
    */
   private dataTags = new Map<string, string>()
+  /** Invalidated CoW stores at the last gauge publish, so we log each new one once. */
+  private lastCowInvalid = 0
   /** Caps concurrent heavy NVMe ops (snapshot / restore / store pull|push). */
   private heavy: Semaphore
   /** Single-flight guard for pool fills (see reconcile). */
@@ -2158,6 +2160,24 @@ export class MetalWarmPool {
     metrics.gauge(M.assignedAppActive, cls.appActive)
     metrics.gauge(M.assignedAgentActive, cls.agentActive)
     metrics.gauge(M.assignedIdleTail, cls.idleTail)
+
+    // Only dm mode has exception stores to run out of; the other rootfs modes
+    // give each VM its own file and fail with an ordinary ENOSPC.
+    if (this.cfg.rootfsCow !== 'dm') return
+    const cow = this.mgr.sampleCowUsage()
+    metrics.gauge(M.cowInvalid, cow.invalid)
+    metrics.gauge(M.cowMaxUsedPct, +cow.maxUsedPct.toFixed(2))
+    metrics.gauge(M.cowNearLimit, cow.nearLimit)
+    if (cow.invalid > this.lastCowInvalid) {
+      // Worth a line in the journal as well as a gauge: by the time anyone
+      // reads the graph the VM is long gone, and this is the only record that
+      // its rootfs died rather than the guest crashing on its own.
+      console.error(
+        `[pool] ${cow.invalid} dm CoW store(s) invalidated by the kernel — those VMs cannot ` +
+          `write to their root device and must be recycled`,
+      )
+    }
+    this.lastCowInvalid = cow.invalid
   }
 
   /**

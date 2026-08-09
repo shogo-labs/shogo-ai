@@ -29,7 +29,17 @@
  *     LoadSnapshot (prepareRestore).
  */
 
-import { constants, copyFileSync, existsSync, mkdirSync, rmSync, statSync } from 'fs'
+import {
+  closeSync,
+  constants,
+  copyFileSync,
+  existsSync,
+  ftruncateSync,
+  mkdirSync,
+  openSync,
+  rmSync,
+  statSync,
+} from 'fs'
 import { execFileSync } from 'child_process'
 import { basename, join } from 'path'
 import type { MetalConfig } from './config'
@@ -50,8 +60,119 @@ export function parseSize(s: string): number {
   return Math.round(n * mult)
 }
 
+/**
+ * dm-snapshot chunk size, in 512-byte sectors. 8 → 4 KiB, matching the guest
+ * filesystem's block size so a single guest write never straddles two chunks.
+ */
+const DM_CHUNK_SECTORS = 8
+const DM_CHUNK_BYTES = DM_CHUNK_SECTORS * 512
+
+/** Bytes per exception record in the persistent store: two 64-bit chunk numbers. */
+const DM_EXCEPTION_RECORD_BYTES = 16
+
+/**
+ * The smallest CoW store that a snapshot over `originBytes` can never overflow.
+ *
+ * A persistent exception store interleaves metadata with data: one metadata
+ * chunk describes as many exceptions as it has room for 16-byte records, then
+ * come those exceptions' data chunks. So covering every chunk of the origin
+ * costs the origin's own size plus roughly one part in `chunk/16` for metadata
+ * (about 0.4% at 4 KiB chunks), plus a header chunk.
+ *
+ * Rounded up to a whole chunk and given a chunk of slack, because the cost of
+ * overestimating is zero — the file is sparse — and the cost of
+ * underestimating is a dead VM.
+ */
+export function safeCowBytes(originBytes: number): number {
+  const exceptionsPerMetadataChunk = DM_CHUNK_BYTES / DM_EXCEPTION_RECORD_BYTES
+  const metadata = Math.ceil(originBytes / exceptionsPerMetadataChunk)
+  const total = originBytes + metadata + 2 * DM_CHUNK_BYTES
+  return Math.ceil(total / DM_CHUNK_BYTES) * DM_CHUNK_BYTES
+}
+
+/**
+ * Resolve the configured CoW size against the size that is actually safe.
+ *
+ * `raisedFloor` reports that an explicit setting was overridden, so the caller
+ * can say so once rather than on every VM.
+ */
+export function cowTargetBytes(
+  originBytes: number,
+  configured: string,
+): { bytes: number; raisedFloor: boolean } {
+  const safe = safeCowBytes(originBytes)
+  const want = parseSize(configured)
+  if (want > safe) return { bytes: want, raisedFloor: false }
+  return { bytes: safe, raisedFloor: want > 0 }
+}
+
+/**
+ * Parse `dmsetup status` into a fleet view of CoW headroom.
+ *
+ * Split out from the call so the shapes dm actually emits — a healthy
+ * fraction, and the bare words it prints once a store is unusable — are
+ * pinned by tests rather than discovered during an incident.
+ */
+export function parseCowStatus(out: string, nearLimitPct = 80): CowUsage {
+  const usage: CowUsage = { measured: 0, invalid: 0, nearLimit: 0, maxUsedPct: 0 }
+  for (const line of out.split('\n')) {
+    const idx = line.indexOf(':')
+    if (idx < 0) continue
+    const name = line.slice(0, idx)
+    const rest = line.slice(idx + 1)
+    if (!name.startsWith('mvm-') || !rest.trim()) continue
+    usage.measured++
+    if (/\b(Invalid|Overflow|Merge failed)\b/.test(rest)) {
+      usage.invalid++
+      usage.maxUsedPct = 100
+      continue
+    }
+    const m = /\bsnapshot\s+(\d+)\/(\d+)\b/.exec(rest)
+    if (!m) continue
+    const total = Number(m[2])
+    if (!total) continue
+    const pct = (Number(m[1]) / total) * 100
+    if (pct > usage.maxUsedPct) usage.maxUsedPct = pct
+    if (pct >= nearLimitPct) usage.nearLimit++
+  }
+  return usage
+}
+
+/**
+ * Extend a sparse CoW store to `targetBytes`, creating it if absent.
+ *
+ * Only ever grows. Appending to a persistent exception store is safe — the
+ * existing areas keep their offsets and the new space is simply available for
+ * more — but shrinking would strand allocated exceptions past the end of the
+ * device, so a store that is already larger is left alone.
+ */
+export function ensureCowSize(path: string, targetBytes: number): 'created' | 'grown' | 'unchanged' {
+  const before = existsSync(path) ? statSync(path).size : -1
+  if (before >= targetBytes) return 'unchanged'
+  const fd = openSync(path, before < 0 ? 'w' : 'r+')
+  try {
+    ftruncateSync(fd, targetBytes)
+  } finally {
+    closeSync(fd)
+  }
+  return before < 0 ? 'created' : 'grown'
+}
+
+/** Fleet-wide view of how close per-VM CoW stores are to their ceiling. */
+export interface CowUsage {
+  /** Mapped `mvm-*` devices whose status could be read. */
+  measured: number
+  /** Devices the kernel has already invalidated. Each one is a broken VM. */
+  invalid: number
+  /** Devices at or above the near-limit threshold. */
+  nearLimit: number
+  /** Utilisation of the fullest store, 0–100. */
+  maxUsedPct: number
+}
+
 export class RootfsProvisioner {
   readonly mode: RootfsMode
+  private warnedCowFloor = false
   private warnedReflinkFallback = false
   private baseLoop: string | null = null // shared RO loop for the golden base (dm mode)
 
@@ -290,11 +411,35 @@ export class RootfsProvisioner {
     return Math.floor(statSync(this.cfg.baseRootfs).size / 512)
   }
 
+  /**
+   * Target size for a per-VM CoW store. Sparse, so this is a ceiling on what
+   * the VM may diverge rather than an allocation.
+   *
+   * An operator's explicit `METAL_DM_COW_SIZE` acts as a floor and is raised to
+   * the derived size when it is smaller, because a snapshot that runs out of
+   * exceptions does not degrade — the kernel invalidates it and every write on
+   * that device fails from then on.
+   */
+  private cowTargetBytes(): number {
+    const { bytes, raisedFloor } = cowTargetBytes(
+      statSync(this.cfg.baseRootfs).size,
+      this.cfg.dmCowSize,
+    )
+    if (raisedFloor && !this.warnedCowFloor) {
+      this.warnedCowFloor = true
+      console.warn(
+        `[rootfs] METAL_DM_COW_SIZE=${this.cfg.dmCowSize} is smaller than the ` +
+          `${(bytes / 1024 ** 3).toFixed(1)} GiB needed to cover the golden image; using the larger ` +
+          `figure. A CoW that fills does not slow a VM down, it kills it.`,
+      )
+    }
+    return bytes
+  }
+
   private provisionDm(vmId: string): string {
     const cow = this.cowFile(vmId)
     // Sparse CoW store: only written (diverged) blocks consume NVMe.
-    const bytes = parseSize(this.cfg.dmCowSize)
-    execFileSync('truncate', ['-s', String(bytes), cow])
+    ensureCowSize(cow, this.cowTargetBytes())
     this.attachDm(vmId, true)
     return this.dmPath(vmId)
   }
@@ -323,13 +468,45 @@ export class RootfsProvisioner {
     // Fresh mapping: clear any stale loop still bound to this CoW first so we
     // never accumulate orphaned loop devices across restore cycles.
     this.detachCowLoops(cow)
+    this.growCow(vmId, cow)
     const cowLoop = sh('losetup', ['--find', '--show', cow])
     const sectors = this.baseSectors()
     // snapshot target: <origin> <cow> <persistent> <chunksize(sectors)>
-    // 'P' = persistent (survives device removal so the diff is restorable); 8 = 4KiB chunks.
-    const table = `0 ${sectors} snapshot ${base} ${cowLoop} P 8`
+    // 'P' = persistent (survives device removal so the diff is restorable).
+    const table = `0 ${sectors} snapshot ${base} ${cowLoop} P ${DM_CHUNK_SECTORS}`
     execFileSync('dmsetup', ['create', this.dmName(vmId), '--table', table])
     void fresh
+  }
+
+  /**
+   * Extend an undersized CoW store before it is mapped.
+   *
+   * Every VM provisioned under the old fixed 2 GiB is carrying a store it can
+   * outgrow, and those VMs outlive a deploy: suspend keeps the CoW and resume
+   * maps it again. Growing here means each one picks up the headroom the next
+   * time it is attached, rather than only new VMs being safe.
+   *
+   * Only ever grows. Appending to a persistent exception store is safe — the
+   * existing areas keep their offsets and the extra space is simply available
+   * for new ones — but it must happen while the device is unmapped, which is
+   * exactly where this sits. Shrinking would strand allocated exceptions past
+   * the end of the device, so a store that is already larger is left alone.
+   */
+  private growCow(vmId: string, cow: string): void {
+    try {
+      const before = statSync(cow).size
+      const target = this.cowTargetBytes()
+      if (ensureCowSize(cow, target) === 'grown') {
+        console.log(
+          `[rootfs] grew CoW store for ${vmId} from ${(before / 1024 ** 3).toFixed(1)} to ` +
+            `${(target / 1024 ** 3).toFixed(1)} GiB (sparse)`,
+        )
+      }
+    } catch (err: any) {
+      // Not fatal: the VM still attaches at its old size, which is what it had
+      // before this existed. It is just still exposed to overflow.
+      console.warn(`[rootfs] could not grow CoW store for ${vmId}:`, err?.message ?? err)
+    }
   }
 
   /**
@@ -361,6 +538,28 @@ export class RootfsProvisioner {
       }
     } catch {
       /* best-effort */
+    }
+  }
+
+  /**
+   * Utilisation of every mapped CoW store, from one `dmsetup status` call.
+   *
+   * A snapshot that fills is not a slow VM, it is a dead one: the kernel logs
+   * "Invalidating snapshot: Unable to allocate exception" and every write on
+   * the device fails afterwards. Nothing in the agent notices, because the
+   * guest is still up and still answering — it just cannot write. So the fleet
+   * needs both halves: how close the worst store is to its ceiling, and how
+   * many have already gone over.
+   *
+   * dm reports a snapshot's status as `<allocated>/<total> <metadata>`, or a
+   * bare `Invalid` / `Overflow` / `Merge failed` once it is unusable.
+   */
+  sampleCowUsage(nearLimitPct = 80): CowUsage {
+    if (this.mode !== 'dm') return { measured: 0, invalid: 0, nearLimit: 0, maxUsedPct: 0 }
+    try {
+      return parseCowStatus(sh('dmsetup', ['status']), nearLimitPct)
+    } catch {
+      return { measured: 0, invalid: 0, nearLimit: 0, maxUsedPct: 0 }
     }
   }
 

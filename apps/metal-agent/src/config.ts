@@ -334,8 +334,23 @@ export const config = {
   rootfsCow: env('METAL_ROOTFS_COW', 'reflink') as 'full' | 'reflink' | 'dm',
   /** dm mode: directory for per-VM CoW store files (sparse). */
   dmCowDir: env('METAL_DM_COW_DIR', `${WORK}/cow`),
-  /** dm mode: per-VM CoW store size, sparse-allocated (e.g. "2G"). */
-  dmCowSize: env('METAL_DM_COW_SIZE', '2G'),
+  /**
+   * dm mode: per-VM CoW store size, sparse-allocated (e.g. "2G").
+   *
+   * `auto` (the default) sizes it from the golden image so the snapshot cannot
+   * run out of exceptions before the guest's own filesystem runs out of space.
+   * That distinction matters: a full filesystem is an `ENOSPC` the guest can
+   * report, whereas a full CoW makes the kernel invalidate the snapshot and
+   * fail every subsequent write — the root device dies underneath a running
+   * VM. This was a fixed 2 GiB, against a 13.4 GiB image, and VMs that wrote
+   * past it died. The stores are sparse, so the larger figure costs nothing
+   * until it is actually used.
+   *
+   * An explicit value is treated as a floor, not a cap: undersizing is never
+   * safe, so a smaller setting is raised to the derived size. To bound what a
+   * VM can consume, bound the filesystem, not the exception store.
+   */
+  dmCowSize: env('METAL_DM_COW_SIZE', 'auto'),
 
   /**
    * Poll each assigned guest's /pool/activity on the reap interval to fold real
