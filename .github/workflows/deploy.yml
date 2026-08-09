@@ -2572,10 +2572,15 @@ jobs:
         run: |
           set -euo pipefail
           echo "::notice::Dispatching runtime-multiarch (environment=production) @ $REF"
+          # converge_fleet=false: dispatch-metal-agent-release (below) rolls the
+          # fleet itself, after this image build has actually succeeded. Letting
+          # runtime-multiarch also converge would publish two rebuildRootfs
+          # releases per region for one tag.
           gh workflow run runtime-multiarch.yml \
             -R "$GITHUB_REPOSITORY" \
             --ref "$REF" \
-            -f environment=production
+            -f environment=production \
+            -f converge_fleet=false
 
   # ===========================================================================
   # Stage 8: Metal node-agent release (fold the bare-metal fleet into the tag
