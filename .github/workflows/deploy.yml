@@ -2608,11 +2608,75 @@ jobs:
       contents: read
       actions: write
     steps:
+      # Full history: the rebuild gate below diffs this commit against a baseline
+      # commit that can be many releases back, so a shallow clone will not do.
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the fleet needs a rootfs rebuild
+        id: gate
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Rebuilding the golden rootfs re-stamps its identity, which invalidates
+          # EVERY snapshot on every host: each project then cold-boots on its next
+          # open instead of resuming. On 2026-08-09 that was ~6,500 snapshots
+          # fleet-wide and a day of 524s. It is the right price when guests have
+          # new code to run, and pure loss when they do not — and "they do not" is
+          # the common case, because most releases only touch the API or the
+          # host-side agent, neither of which is inside the guest image.
+          #
+          # So rebuild only when something that actually composes the guest image
+          # changed since the image the fleet is running. The path list mirrors
+          # the push filter in runtime-multiarch.yml, which is the repo's existing
+          # definition of "the runtime chain changed"; keep the two in step.
+          RUNTIME_PATHS=(
+            'packages/agent-runtime'
+            'packages/shared-runtime'
+            'docker/workspace-deps/Dockerfile'
+            'templates/runtime-template'
+            'package.json'
+            'bun.lock'
+            '.github/workflows/runtime-multiarch.yml'
+          )
+
+          # The commit whose guest image the fleet is actually running. Tracked in
+          # a file rather than inferred from tags because an image can reach the
+          # fleet outside a tagged release, and then the tag history describes
+          # work already done. See the file for the update rules.
+          BASE=$(grep -v '^[[:space:]]*#' .github/runtime-image-baseline 2>/dev/null \
+                   | grep -v '^[[:space:]]*$' | head -1 | tr -d '[:space:]' || true)
+
+          # Default to rebuilding whenever the answer is not provably "no". A
+          # needless rebuild costs a cold-boot storm; a skipped one leaves guests
+          # running stale code indefinitely, which is how a runtime bug survives
+          # weeks of releases. Only certainty buys the skip.
+          if [ -z "$BASE" ]; then
+            REBUILD=true; WHY="no runtime-image baseline recorded"
+          elif ! git rev-parse -q --verify "${BASE}^{commit}" >/dev/null; then
+            REBUILD=true; WHY="baseline $BASE does not resolve here"
+          elif ! git diff --quiet "$BASE" "$SHA" -- "${RUNTIME_PATHS[@]}"; then
+            REBUILD=true; WHY="guest image changed since baseline $BASE"
+            git diff --name-only "$BASE" "$SHA" -- "${RUNTIME_PATHS[@]}" | sed 's/^/    /' | head -20
+          else
+            REBUILD=false; WHY="guest image unchanged since baseline $BASE"
+          fi
+
+          echo "rebuild=$REBUILD" >> "$GITHUB_OUTPUT"
+          echo "::notice::rootfs rebuild=$REBUILD — $WHY"
+          if [ "$REBUILD" = "true" ] && [ -n "$BASE" ]; then
+            echo "::warning::This release rebuilds the fleet rootfs, invalidating every snapshot. Once hosts have converged, set .github/runtime-image-baseline to $SHA."
+          fi
+
       - name: Wait for the prod runtime image, then publish stable to both regions
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
+          REBUILD_ROOTFS: ${{ steps.gate.outputs.rebuild }}
         run: |
           set -euo pipefail
           # dispatch-metal-runtime-image kicked off runtime-multiarch (production)
@@ -2630,6 +2694,13 @@ jobs:
           # incident). The `head_sha` query param is deterministic and the error is
           # no longer swallowed, so a real query failure is visible in the log.
           REPO="$GITHUB_REPOSITORY"
+          if [ "$REBUILD_ROOTFS" != "true" ]; then
+            # Nothing in the guest image changed, so no host will be asked to
+            # rebuild from the new image and its existence is not a precondition
+            # for anything here. Skipping the wait also removes the hour-long
+            # timeout that has failed tagged releases before.
+            echo "::notice::No rootfs rebuild in this release — not waiting on runtime-multiarch"
+          else
           echo "::notice::Waiting for runtime-multiarch (production) on $SHA before publishing metal-agent stable"
           deadline=$(( $(date +%s) + 3600 ))
           query() {
@@ -2659,17 +2730,19 @@ jobs:
             echo "  runtime-multiarch: status=$status (waiting)"
             sleep 30
           done
+          fi
 
           # Each production region is a distinct control plane (separate DB), so
-          # publish the pointer to both. rebuild_rootfs=true because a tag release
-          # may carry guest/runtime changes now baked into the new runtime image.
+          # publish the pointer to both. The agent bundle ships either way; only
+          # whether hosts also rebuild their rootfs from the new runtime image is
+          # conditional (see the gate step).
           for TARGET in production-us production-eu; do
-            echo "::notice::Publishing metal-agent stable (rebuildRootfs) to $TARGET @ $REF"
+            echo "::notice::Publishing metal-agent stable (rebuildRootfs=$REBUILD_ROOTFS) to $TARGET @ $REF"
             gh workflow run metal-agent-deploy.yml \
               -R "$GITHUB_REPOSITORY" \
               --ref "$REF" \
               -f environment="$TARGET" \
               -f channel=stable \
-              -f rebuild_rootfs=true
+              -f rebuild_rootfs="$REBUILD_ROOTFS"
           done
           echo "::notice::Metal-agent stable published to production-us + production-eu; hosts converge on next heartbeat."
