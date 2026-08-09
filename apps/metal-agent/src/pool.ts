@@ -40,18 +40,30 @@ import {
   type SnapshotStore,
 } from './snapshot-store'
 import {
-  fetchWorkspaceArchive,
+  describeWorkspaceArchive,
   uploadWorkspaceArchiveGuarded,
   type BackupWriteOutcome,
-  type WorkspaceArchive,
 } from './workspace-archive'
-import { fetchPublishedDataArchive, uploadPublishedDataArchive } from './published-data-archive'
 import {
-  fetchProjectDataArchive,
+  describePublishedDataArchive,
+  uploadPublishedDataArchive,
+} from './published-data-archive'
+import {
+  describeProjectDataArchive,
   uploadProjectDataGuarded,
   type DataLineage,
   type DataWriteOutcome,
 } from './project-data-archive'
+import type { ArchiveRef } from './archive-ref'
+
+/**
+ * How long a presigned hydrate URL stays valid.
+ *
+ * Matches the guest's own ceiling on a pull, so a URL never outlives the
+ * transfer it was minted for. It is a bearer capability for one object handed
+ * to guest code, so the bound matters more than the convenience.
+ */
+const PRESIGN_TTL_SEC = 30 * 60
 
 export interface PooledVm {
   handle: FcVmHandle
@@ -824,23 +836,6 @@ export class MetalWarmPool {
   }
 
   /**
-   * Cold-start hydration: pull the project's durable source backup from S3
-   * (host-side — the guest has no S3 creds) and stream it to the guest's
-   * `/pool/hydrate` control endpoint, which extracts it over the template and
-   * rebuilds. Authenticated with the same RUNTIME_AUTH_SECRET the API injected
-   * into the guest via `/pool/assign`. No durable backup (a brand-new project)
-   * is a no-op — the template is the correct initial state.
-   */
-  /**
-   * Fetch the durable source backup (bytes + lineage ETag) for a project. A
-   * `protected` seam so tests can inject a canned archive (or `null`) without
-   * touching S3 or module mocks.
-   */
-  protected fetchArchive(projectId: string): Promise<WorkspaceArchive | null> {
-    return fetchWorkspaceArchive(projectId, this.cfg)
-  }
-
-  /**
    * Cold-start hydration. Returns whether a durable backup was applied and, if
    * so, the ETag the resulting workspace descends from (its lineage anchor).
    *   - no durable backup (new project) → `{ hydrated: false }`; the template
@@ -857,37 +852,91 @@ export class MetalWarmPool {
     handle: FcVmHandle,
     env: Record<string, string>,
   ): Promise<{ hydrated: boolean; parentEtag?: string }> {
-    const archive = await this.fetchArchive(projectId)
-    if (!archive) {
+    const ref = await this.sourceRef(projectId)
+    if (!ref) {
       console.log(`[pool] no durable backup for ${projectId} — cold start keeps template`)
       return { hydrated: false }
     }
+    await this.applyArchive(handle, env, ref, `${projectId} source`)
+    console.log(
+      `[pool] hydrated ${projectId} from durable backup (${ref.bytes} bytes, etag=${ref.etag ?? 'none'})`,
+    )
+    return { hydrated: true, parentEtag: ref.etag ?? undefined }
+  }
+
+  /**
+   * Describe the durable source backup without downloading it. A `protected`
+   * seam so tests can supply a canned reference without touching S3.
+   */
+  protected sourceRef(projectId: string): Promise<ArchiveRef | null> {
+    return describeWorkspaceArchive(projectId, this.cfg, PRESIGN_TTL_SEC)
+  }
+
+
+  /**
+   * Get an archive into the guest's workspace, preferring the guest to PULL it.
+   *
+   * Pushing bytes cannot work at multi-gigabyte sizes: Bun.serve accumulates a
+   * request body in memory whenever the handler reads slower than the wire
+   * delivers it (+2423 MB of RSS for a 1 GB body against +94 MB when the reader
+   * keeps up), and `tar` never keeps up. That is what panicked the guest kernel
+   * on a 2 GB cold boot — "Out of memory and no killable processes" — with the
+   * host's careful chunking making no difference, because the accumulation
+   * happens below the guest's handler.
+   *
+   * So the host hands over a short-lived presigned URL and the guest pulls it
+   * through `curl` into `tar`, where a kernel pipe supplies the backpressure.
+   * Neither side holds the archive, and the host no longer downloads it at all.
+   *
+   * The push remains for one case: a guest whose runtime predates the pull
+   * endpoint answers 404, and during that rollout window the old path is still
+   * the correct thing to do.
+   */
+  private async applyArchive(
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    ref: ArchiveRef,
+    what: string,
+  ): Promise<void> {
     const token = env.RUNTIME_AUTH_SECRET
+    const auth = token ? { Authorization: `Bearer ${token}` } : {}
+    const budgetMs = this.hydrateBudgetMs(ref.bytes)
+
+    if (ref.url) {
+      const res = await fetch(`${handle.agentUrl}/pool/hydrate-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({ url: ref.url, bytes: ref.bytes, timeoutMs: budgetMs }),
+        // The guest holds the transfer open for the whole pull, so the host's
+        // own deadline has to cover it with room to answer.
+        signal: AbortSignal.timeout(budgetMs + 30_000),
+      })
+      if (res.ok) return
+      if (res.status !== 404) {
+        throw new Error(`/pool/hydrate-url (${what}) failed (${res.status}): ${await res.text()}`)
+      }
+      console.log(`[pool] guest has no pull endpoint — pushing ${what} instead`)
+    }
+
+    const bytes = await ref.load()
     const res = await fetch(`${handle.agentUrl}/pool/hydrate`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/gzip',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      ...this.archiveBody(archive.bytes),
-      signal: AbortSignal.timeout(this.hydrateBudgetMs(archive.bytes.byteLength)),
+      headers: { 'Content-Type': 'application/gzip', ...auth },
+      ...this.archiveBody(bytes),
+      signal: AbortSignal.timeout(this.hydrateBudgetMs(bytes.byteLength)),
     } as any)
-    if (!res.ok) throw new Error(`/pool/hydrate failed (${res.status}): ${await res.text()}`)
-    console.log(`[pool] hydrated ${projectId} from durable backup (${archive.bytes.byteLength} bytes, etag=${archive.etag ?? 'none'})`)
-    return { hydrated: true, parentEtag: archive.etag ?? undefined }
+    if (!res.ok) throw new Error(`/pool/hydrate (${what}) failed (${res.status}): ${await res.text()}`)
   }
 
   /**
    * Send an archive to the guest as a CHUNKED body rather than a sized one.
    *
-   * This is not a style choice. Bun.serve buffers a request body whole when
-   * Content-Length is set, no matter what the handler does with it — measured
-   * at +1978 MB of RSS for a 1 GB body against +91 MB for the same bytes sent
-   * chunked. Passing a Uint8Array sets that header, so a 2 GB hydrate filled
-   * the guest's 4 GiB and the kernel panicked ("Out of memory and no killable
-   * processes", with 3.7 GiB of anon in `bun`) before the guest's own streaming
-   * handler ever saw a byte. Sending the same archive without a Content-Length
-   * is what lets the guest stream it.
+   * Only the push fallback uses this. Bun.serve buffers a request body whole
+   * when Content-Length is set, no matter what the handler does with it —
+   * +1978 MB of RSS for a 1 GB body against +91 MB for the same bytes sent
+   * chunked — so passing a Uint8Array here would be strictly worse. It does not
+   * make the push safe at any size (see {@link applyArchive}); it makes the
+   * push as cheap as a push can be.
    */
   protected archiveBody(bytes: Uint8Array): { body: ReadableStream<Uint8Array>; duplex: 'half' } {
     const CHUNK = 1024 * 1024
@@ -1062,14 +1111,6 @@ export class MetalWarmPool {
     return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
   }
 
-  /** Fetch a project's durable writable-state archive. `protected` for tests. */
-  protected fetchProjectData(projectId: string): Promise<{
-    bytes: Uint8Array
-    etag: string | null
-  } | null> {
-    return fetchProjectDataArchive(projectId, this.cfg)
-  }
-
   /** Guarded (conditional) upload of writable state. `protected` for tests. */
   protected uploadDataGuarded(
     projectId: string,
@@ -1093,29 +1134,22 @@ export class MetalWarmPool {
     handle: FcVmHandle,
     env: Record<string, string>,
   ): Promise<{ hydrated: boolean; parentEtag?: string }> {
-    const archive = await this.fetchProjectData(projectId)
-    if (!archive) {
+    const ref = await this.projectDataRef(projectId)
+    if (!ref) {
       console.log(`[pool] no durable writable state for ${projectId} — using the source's database`)
       return { hydrated: false }
     }
-    const token = env.RUNTIME_AUTH_SECRET
-    const res = await fetch(`${handle.agentUrl}/pool/hydrate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/gzip',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      ...this.archiveBody(archive.bytes),
-      signal: AbortSignal.timeout(this.hydrateBudgetMs(archive.bytes.byteLength)),
-    } as any)
-    if (!res.ok) {
-      throw new Error(`/pool/hydrate (project data) failed (${res.status}): ${await res.text()}`)
-    }
+    await this.applyArchive(handle, env, ref, `${projectId} writable state`)
     console.log(
       `[pool] hydrated writable state for ${projectId} ` +
-        `(${archive.bytes.byteLength} bytes, etag=${archive.etag ?? 'none'})`,
+        `(${ref.bytes} bytes, etag=${ref.etag ?? 'none'})`,
     )
-    return { hydrated: true, parentEtag: archive.etag ?? undefined }
+    return { hydrated: true, parentEtag: ref.etag ?? undefined }
+  }
+
+  /** Describe the durable writable-state archive. `protected` for tests. */
+  protected projectDataRef(projectId: string): Promise<ArchiveRef | null> {
+    return describeProjectDataArchive(projectId, this.cfg, PRESIGN_TTL_SEC)
   }
 
   /**
@@ -1270,11 +1304,6 @@ export class MetalWarmPool {
   // periodically + on suspend. All best-effort — the site still serves without
   // durability, it just cold-boots a fresh DB.
 
-  /** Fetch a published subdomain's writable-state archive. `protected` for tests. */
-  protected fetchPublishedData(subdomain: string): Promise<Uint8Array | null> {
-    return fetchPublishedDataArchive(subdomain, this.cfg)
-  }
-
   /** Upload a published subdomain's writable-state archive. `protected` for tests. */
   protected uploadPublishedData(subdomain: string, bytes: Uint8Array): Promise<boolean> {
     return uploadPublishedDataArchive(subdomain, bytes, this.cfg)
@@ -1285,26 +1314,21 @@ export class MetalWarmPool {
     handle: FcVmHandle,
     env: Record<string, string>,
   ): Promise<void> {
-    const archive = await this.fetchPublishedData(subdomain)
-    if (!archive) {
+    const ref = await this.publishedDataRef(subdomain)
+    if (!ref) {
       console.log(`[pool] no published-data archive for ${subdomain} — booting fresh DB`)
       return
     }
-    const token = env.RUNTIME_AUTH_SECRET
-    // Reuse the guest's /pool/hydrate control endpoint: it extracts a tar over
-    // the workspace tree, so a data.tar.gz rooted at the writable paths
-    // (prisma/dev.db, uploads/) overlays cleanly on top of the git-restored source.
-    const res = await fetch(`${handle.agentUrl}/pool/hydrate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/gzip',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      ...this.archiveBody(archive),
-      signal: AbortSignal.timeout(this.hydrateBudgetMs(archive.byteLength)),
-    } as any)
-    if (!res.ok) throw new Error(`/pool/hydrate (data) failed (${res.status}): ${await res.text()}`)
-    console.log(`[pool] hydrated published-data for ${subdomain} (${archive.byteLength} bytes)`)
+    // Goes through the same hydrate path as the other overlays: it extracts a
+    // tar over the workspace tree, so a data.tar.gz rooted at the writable
+    // paths (prisma/dev.db, uploads/) lands cleanly on the restored source.
+    await this.applyArchive(handle, env, ref, `${subdomain} published data`)
+    console.log(`[pool] hydrated published-data for ${subdomain} (${ref.bytes} bytes)`)
+  }
+
+  /** Describe a published subdomain's writable-state archive. `protected` for tests. */
+  protected publishedDataRef(subdomain: string): Promise<ArchiveRef | null> {
+    return describePublishedDataArchive(subdomain, this.cfg, PRESIGN_TTL_SEC)
   }
 
   /**

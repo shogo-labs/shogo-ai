@@ -48,6 +48,7 @@
  * purely as an observability signal — see its doc comment.
  */
 
+import { describeObject, type ArchiveRef } from './archive-ref'
 import type { MetalConfig } from './config'
 import { conditionalPutObject, type S3Target } from './s3-conditional'
 import { workspaceS3 } from './workspace-archive'
@@ -236,6 +237,21 @@ export async function fetchProjectDataArchive(
   const meta = await statMeta(file)
   const buf = await file.arrayBuffer()
   return { bytes: new Uint8Array(buf), etag: meta.etag }
+}
+
+/**
+ * Describe `{projectId}/project-data.tar.gz` without downloading it, so the
+ * writable-state overlay can be pulled by the guest. Uploads can be large in
+ * their own right — this archive carries the database AND every user upload.
+ */
+export async function describeProjectDataArchive(
+  projectId: string,
+  cfg: MetalConfig,
+  expiresInSec: number,
+): Promise<ArchiveRef | null> {
+  const s3 = workspaceS3(cfg)
+  if (!s3) return null
+  return describeObject(s3.client, dataArchiveKey(projectId), expiresInSec)
 }
 
 /** Park bytes we would not write, so an operator can still recover them. */

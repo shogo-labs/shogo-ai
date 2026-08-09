@@ -23,6 +23,7 @@
  * between the Knative pod, the manual dev->live data push, and the metal VM.
  */
 
+import { describeObject, type ArchiveRef } from './archive-ref'
 import type { MetalConfig } from './config'
 
 /** Key holding a published subdomain's writable-state archive. */
@@ -63,6 +64,20 @@ export async function fetchPublishedDataArchive(
   if (!(await file.exists())) return null
   const buf = await file.arrayBuffer()
   return new Uint8Array(buf)
+}
+
+/**
+ * Describe `{subdomain}/data.tar.gz` without downloading it, so a published
+ * site's accumulated data can be pulled by the guest like the other archives.
+ */
+export async function describePublishedDataArchive(
+  subdomain: string,
+  cfg: MetalConfig,
+  expiresInSec: number,
+): Promise<ArchiveRef | null> {
+  const s3 = publishedDataS3(cfg)
+  if (!s3) return null
+  return describeObject(s3.client, dataKey(subdomain), expiresInSec)
 }
 
 /**

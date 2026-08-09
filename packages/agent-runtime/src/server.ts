@@ -89,7 +89,7 @@ import {
   SQLITE_SIDECAR_ENTRY,
 } from './writable-state'
 import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
-import { extractTarStream } from './tar-stream'
+import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
@@ -2599,6 +2599,81 @@ function scheduleHydrateRebuild(): void {
   }, HYDRATE_REBUILD_DEBOUNCE_MS)
 }
 
+/**
+ * Everything a hydrate does once the bytes have landed in the workspace,
+ * shared by the pull and push endpoints.
+ *
+ * `entries` is the filtered listing of what was extracted: a database restored
+ * WITHOUT its WAL must not be opened next to someone else's. A `-wal` left over
+ * from the rootfs template still holds live frames, and SQLite replays them
+ * over the file just installed — the result reads back as a healthy database
+ * containing the TEMPLATE's rows, with `integrity_check` reporting "ok". The
+ * restore is silently undone.
+ */
+function finishHydrate(entries: string[]): void {
+  if (archiveNeedsSidecarClear(entries)) {
+    const removed = clearSqliteSidecars(WORKSPACE_DIR)
+    if (removed.length) {
+      console.log(`[pool/hydrate] cleared stale SQLite sidecars: ${removed.join(', ')}`)
+    }
+  }
+  // Rebuild so the served dist reflects everything that was hydrated —
+  // debounced, because more overlays are usually still arriving.
+  scheduleHydrateRebuild()
+}
+
+/** Ceiling on a pull, however generous a deadline the host asks for. */
+const PULL_MAX_SECONDS = 30 * 60
+
+/**
+ * Pull-based hydrate: the host hands over a short-lived presigned URL and the
+ * guest fetches the archive itself.
+ *
+ * This is the endpoint that makes multi-gigabyte projects openable. Pushing the
+ * bytes cannot work at that size no matter how either side frames the request,
+ * because Bun.serve accumulates a request body in memory whenever the handler
+ * reads slower than the wire delivers it — and `tar` always does. Pulling puts
+ * a kernel pipe between the download and the extraction, which is the only part
+ * of this path that has ever applied real backpressure.
+ *
+ * A host that predates this endpoint gets a 404 and falls back to pushing, so
+ * the two sides can roll out in either order.
+ */
+app.post('/pool/hydrate-url', async (c) => {
+  let body: { url?: unknown; bytes?: unknown; timeoutMs?: unknown }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'expected a JSON body' }, 400)
+  }
+
+  const url = typeof body.url === 'string' ? body.url : ''
+  // The host is authenticated, but a URL is still an instruction to make an
+  // outbound request: keep it to the two schemes this can legitimately be.
+  if (!/^https?:\/\//.test(url)) return c.json({ error: 'url must be http(s)' }, 400)
+
+  const expected = typeof body.bytes === 'number' ? body.bytes : 0
+  const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : 0
+  const maxSeconds = Math.min(PULL_MAX_SECONDS, Math.max(30, Math.ceil(timeoutMs / 1000)))
+
+  sweepSpool()
+  try {
+    const { matched } = await extractTarFromUrl(url, WORKSPACE_DIR, SQLITE_SIDECAR_ENTRY, {
+      maxSeconds,
+    })
+    finishHydrate(matched)
+    // The URL carries a live read capability in its signature; log where it
+    // pointed, never how to get there again.
+    console.log(
+      `[pool/hydrate] pulled ${new URL(url).pathname} into the workspace (${expected} bytes)`,
+    )
+    return c.json({ ok: true, bytes: expected })
+  } catch (err: any) {
+    console.error('[pool/hydrate] pull failed:', redactUrls(String(err?.message ?? err)))
+    return c.json({ error: redactUrls(String(err?.message ?? 'hydrate failed')) }, 500)
+  }
+})
+
 app.post('/pool/hydrate', async (c) => {
   const stream = c.req.raw.body
   if (!stream) return c.json({ error: 'empty archive' }, 400)
@@ -2608,34 +2683,15 @@ app.post('/pool/hydrate', async (c) => {
     // Extract straight from the request body — the archive is never written
     // down as a whole, in memory or on disk.
     //
-    // The two previous attempts each moved the cost rather than removing it:
-    // `arrayBuffer()` charged it to the guest's 4 GiB of RAM, and spooling to a
-    // file charged it to disk TWICE (the archive plus what comes out of it),
-    // against the ~3.8 GiB actually free on the rootfs. Piping into tar makes
-    // the peak the extracted tree alone, which is the irreducible cost of
-    // having the project on the machine.
-    // Only the database and its WAL affect the decision below, so the listing
+    // Bounded only by what the SENDER chooses to have in flight; see
+    // `/pool/hydrate-url` for why that is not something this side can fix.
+    // Only the database and its WAL affect the sidecar decision, so the listing
     // is filtered as it streams instead of being accumulated.
     const result = await extractTarStream(stream, WORKSPACE_DIR, SQLITE_SIDECAR_ENTRY)
     bytes = result.bytes
-    const entries = result.matched
     if (bytes === 0) return c.json({ error: 'empty archive' }, 400)
 
-    // A database restored WITHOUT its WAL must not be opened next to someone
-    // else's. A `-wal` left over from the rootfs template still holds live
-    // frames, and SQLite replays them over the file we just installed: the
-    // result reads back as a healthy database containing the template's rows,
-    // with `integrity_check` reporting "ok". The restore is silently undone.
-    if (archiveNeedsSidecarClear(entries)) {
-      const removed = clearSqliteSidecars(WORKSPACE_DIR)
-      if (removed.length) {
-        console.log(`[pool/hydrate] cleared stale SQLite sidecars: ${removed.join(', ')}`)
-      }
-    }
-
-    // Rebuild so the served dist reflects everything that was hydrated —
-    // debounced, because more overlays are usually still arriving.
-    scheduleHydrateRebuild()
+    finishHydrate(result.matched)
     console.log(`[pool/hydrate] hydrated workspace from durable backup (${bytes} bytes)`)
     return c.json({ ok: true, bytes })
   } catch (err: any) {

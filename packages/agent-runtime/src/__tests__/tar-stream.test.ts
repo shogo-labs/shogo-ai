@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { extractTarStream, scanTarOutput } from '../tar-stream'
+import { extractTarFromUrl, extractTarStream, redactUrls, scanTarOutput } from '../tar-stream'
 import { archiveNeedsSidecarClear, SQLITE_SIDECAR_ENTRY } from '../writable-state'
 
 let dir: string
@@ -184,6 +184,137 @@ describe('extractTarStream', () => {
     // below 256 MB, not track GC timing.
     expect(grewMb).toBeLessThan(128)
   }, 120_000)
+})
+
+describe('extractTarFromUrl', () => {
+  /** Serve `body` once, so a pull can be pointed at something real. */
+  function serve(handler: (req: Request) => Response | Promise<Response>) {
+    const server = Bun.serve({ port: 0, fetch: handler })
+    return { url: `http://127.0.0.1:${server.port}/a.tar.gz`, stop: () => server.stop(true) }
+  }
+
+  async function tgzOf(files: Record<string, string>): Promise<string> {
+    const src = join(dir, `psrc-${Math.random().toString(36).slice(2)}`)
+    for (const [rel, content] of Object.entries(files)) {
+      mkdirSync(join(src, rel, '..'), { recursive: true })
+      writeFileSync(join(src, rel), content)
+    }
+    const tgz = join(dir, `p-${Math.random().toString(36).slice(2)}.tar.gz`)
+    await sh(['tar', '-czf', tgz, '-C', src, '.'])
+    return tgz
+  }
+
+  test('pulls the archive and extracts it, returning the filtered listing', async () => {
+    const tgz = await tgzOf({ 'prisma/dev.db': 'sqlite', 'src/a.ts': 'a' })
+    const s = serve(() => new Response(Bun.file(tgz)))
+    const out = outDir()
+    try {
+      const res = await extractTarFromUrl(s.url, out, SQLITE_SIDECAR_ENTRY, { maxSeconds: 30 })
+      expect(readFileSync(join(out, 'src/a.ts'), 'utf8')).toBe('a')
+      expect(res.matched.map((m) => m.replace(/^\.\//, ''))).toEqual(['prisma/dev.db'])
+    } finally {
+      s.stop()
+    }
+  }, 30_000)
+
+  test('a failed download fails the hydrate instead of passing as an empty one', async () => {
+    // THE pipefail CASE. Without it the exit status is tar's alone, and a curl
+    // that dies reads as success over a partial (or empty) tree — a project
+    // that silently opens as the template, which is the incident this whole
+    // subsystem exists to prevent.
+    const s = serve(() => new Response('nope', { status: 404 }))
+    const out = outDir()
+    try {
+      await expect(
+        extractTarFromUrl(s.url, out, /x/, { maxSeconds: 30 }),
+      ).rejects.toThrow(/pull-extract exited [1-9]/)
+    } finally {
+      s.stop()
+    }
+  }, 30_000)
+
+  test('a truncated transfer fails rather than leaving a plausible partial tree', async () => {
+    // gzip checks a CRC and length at the end of the stream, so a connection
+    // that dies mid-archive cannot be mistaken for a short project.
+    const tgz = await tgzOf({ 'a.txt': 'x'.repeat(200_000), 'b.txt': 'y'.repeat(200_000) })
+    const full = new Uint8Array(await Bun.file(tgz).arrayBuffer())
+    const s = serve(() => new Response(full.subarray(0, Math.floor(full.byteLength / 2))))
+    const out = outDir()
+    try {
+      await expect(extractTarFromUrl(s.url, out, /x/, { maxSeconds: 30 })).rejects.toThrow(
+        /pull-extract exited/,
+      )
+    } finally {
+      s.stop()
+    }
+  }, 30_000)
+
+  test('gives up on a stalled transfer at maxSeconds', async () => {
+    // A hung origin must not pin the hydrate open: the host is waiting on this
+    // call with a deadline of its own, and a cold boot that never resolves is
+    // a project that never opens.
+    const s = serve(
+      () =>
+        new Response(
+          new ReadableStream({
+            async pull(c) {
+              await Bun.sleep(10_000)
+              c.enqueue(new Uint8Array(1))
+            },
+          }),
+        ),
+    )
+    const out = outDir()
+    try {
+      const t0 = Date.now()
+      await expect(extractTarFromUrl(s.url, out, /x/, { maxSeconds: 2 })).rejects.toThrow()
+      expect(Date.now() - t0).toBeLessThan(20_000)
+    } finally {
+      s.stop()
+    }
+  }, 30_000)
+
+  test('memory stays flat across an archive far larger than any buffer', async () => {
+    // The whole reason this function exists. The push path accumulates the body
+    // in Bun's stream layer whenever the reader falls behind — +2423 MB of RSS
+    // for a 1 GB body — and tar always falls behind. Through a kernel pipe it
+    // does not.
+    const big = join(dir, 'pull-big.bin')
+    await sh(['dd', 'if=/dev/urandom', `of=${big}`, 'bs=1048576', 'count=256', 'status=none'])
+    const srcDir = join(dir, 'pullsrc')
+    mkdirSync(srcDir, { recursive: true })
+    await sh(['mv', big, join(srcDir, 'big.bin')])
+    const tgz = join(dir, 'pull-big.tar.gz')
+    await sh(['tar', '-czf', tgz, '-C', srcDir, '.'])
+
+    const s = serve(() => new Response(Bun.file(tgz)))
+    const out = outDir()
+    try {
+      Bun.gc(true)
+      const before = process.memoryUsage.rss()
+      await extractTarFromUrl(s.url, out, /nothing/, { maxSeconds: 120 })
+      Bun.gc(true)
+      const grewMb = (process.memoryUsage.rss() - before) / 1024 / 1024
+
+      expect(existsSync(join(out, 'big.bin'))).toBe(true)
+      expect(grewMb).toBeLessThan(128)
+    } finally {
+      s.stop()
+    }
+  }, 180_000)
+})
+
+describe('redactUrls', () => {
+  test('strips the query, which is where the signature lives', () => {
+    const line = 'curl: (22) failed on https://s3.example/p/src.tar.gz?X-Amz-Signature=deadbeef&e=1'
+    expect(redactUrls(line)).toBe('curl: (22) failed on https://s3.example/p/src.tar.gz?…')
+    expect(redactUrls(line)).not.toContain('deadbeef')
+  })
+
+  test('leaves text and unsigned URLs alone', () => {
+    expect(redactUrls('tar: ./prisma/dev.db: Cannot write')).toBe('tar: ./prisma/dev.db: Cannot write')
+    expect(redactUrls('see http://host/path')).toBe('see http://host/path')
+  })
 })
 
 describe('scanTarOutput', () => {

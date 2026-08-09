@@ -42,6 +42,7 @@
  * the snapshot bucket when `S3_WORKSPACES_BUCKET` is unset.
  */
 
+import { describeObject, type ArchiveRef } from './archive-ref'
 import type { MetalConfig } from './config'
 
 /** A durable source archive plus the S3 ETag that anchors its lineage. */
@@ -245,6 +246,23 @@ export async function fetchWorkspaceArchive(
   const etag = await statEtag(file)
   const buf = await file.arrayBuffer()
   return { bytes: new Uint8Array(buf), etag }
+}
+
+/**
+ * Describe `{projectId}/project-src.tar.gz` — lineage ETag, size, and a
+ * presigned GET — WITHOUT downloading it, so a cold boot can hand the guest a
+ * URL to pull instead of pushing gigabytes through the host. Null when there is
+ * no durable backup or S3 is not configured; transport errors propagate so the
+ * caller still fails closed.
+ */
+export async function describeWorkspaceArchive(
+  projectId: string,
+  cfg: MetalConfig,
+  expiresInSec: number,
+): Promise<ArchiveRef | null> {
+  const s3 = workspaceS3(cfg)
+  if (!s3) return null
+  return describeObject(s3.client, archiveKey(projectId), expiresInSec)
 }
 
 /**

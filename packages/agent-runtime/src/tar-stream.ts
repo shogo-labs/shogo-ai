@@ -118,6 +118,103 @@ export async function extractTarStream(
 }
 
 /**
+ * Extract a gzipped tar by PULLING it from `url`, straight into `cwd`.
+ *
+ * The push equivalent above cannot survive a multi-gigabyte archive, and not
+ * for want of streaming in the handler: Bun.serve queues a request body in
+ * memory whenever the handler reads slower than the wire delivers it, measured
+ * at +2423 MB of RSS for a 1 GB body against +94 MB when the reader keeps up.
+ * `tar` extracting gigabytes never keeps up, so the archive accumulated in the
+ * guest's 4 GiB and the kernel panicked. Reading the body more carefully cannot
+ * help, because the accumulation is below the handler.
+ *
+ * Pulling moves the transfer out of Bun's stream layer entirely: `curl | tar`
+ * is a kernel pipe, which blocks the writer when the reader falls behind. That
+ * is the backpressure the whole path was missing, and it costs one 64 KB pipe
+ * buffer rather than the archive.
+ *
+ * Integrity is gzip's: a truncated or corrupted transfer fails the CRC and
+ * ISIZE check at the end of the stream, so `tar` exits non-zero rather than
+ * leaving a plausible-looking partial workspace. Callers treat hydrate as
+ * fail-closed, so that is the correct outcome.
+ */
+export async function extractTarFromUrl(
+  url: string,
+  cwd: string,
+  keep: RegExp,
+  opts: { maxSeconds: number; spawn?: typeof Bun.spawn },
+): Promise<{ matched: string[] }> {
+  const spawn = opts.spawn ?? Bun.spawn
+  const listingPath = spoolPath('tar-listing.txt')
+  const fd = openSync(listingPath, 'w')
+  let fdOpen = true
+
+  try {
+    // No `--retry`: curl restarts a failed transfer from the beginning, and
+    // with the output already partly consumed by tar that produces a corrupt
+    // extraction rather than a clean failure. Hydrate is fail-closed and the
+    // control plane retries the whole assign, which is the safe granularity.
+    const proc = spawn(['bash', '-c', PULL_SCRIPT, 'hydrate', url, cwd, String(opts.maxSeconds)], {
+      stdout: fd,
+      stderr: fd,
+    })
+
+    const code = await proc.exited
+    closeSync(fd)
+    fdOpen = false
+
+    const { matched, tail } = await scanTarOutput(
+      Bun.file(listingPath).stream() as unknown as ReadableStream<Uint8Array>,
+      keep,
+      STDERR_TAIL_BYTES,
+    )
+    if (code !== 0) {
+      throw new Error(`pull-extract exited ${code}: ${redactUrls(tail).trim().slice(-400) || 'no output'}`)
+    }
+    return { matched }
+  } finally {
+    if (fdOpen) {
+      try {
+        closeSync(fd)
+      } catch {}
+    }
+    try {
+      unlinkSync(listingPath)
+    } catch {}
+  }
+}
+
+/**
+ * `$1` url, `$2` destination, `$3` max seconds.
+ *
+ * `pipefail` is what makes a failed download a failed hydrate. Without it the
+ * exit status is tar's alone, and a curl that dies mid-transfer reads as
+ * success on a partial tree — the silent-wrong-answer shape this path has
+ * already produced once.
+ */
+const PULL_SCRIPT = `set -o pipefail
+curl -fsS --max-time "$3" -- "$1" | tar ${TAR_ARGS.join(' ')} -C "$2"`
+
+/**
+ * Strip query strings from any URL in text bound for a log or an error.
+ *
+ * The pull URL carries its own credential in `X-Amz-Signature`. curl does not
+ * normally echo the URL, but "normally" is not a property worth relying on for
+ * something that would put a live, if short-lived, read capability into the log
+ * stream.
+ */
+export function redactUrls(text: string): string {
+  return text.replace(/\bhttps?:\/\/\S+/g, (m) => {
+    try {
+      const u = new URL(m)
+      return u.search ? `${u.origin}${u.pathname}?…` : m
+    } catch {
+      return m
+    }
+  })
+}
+
+/**
  * Scan a tar output stream line by line, keeping only what the caller asked
  * for plus (optionally) a bounded tail for error reporting.
  *
