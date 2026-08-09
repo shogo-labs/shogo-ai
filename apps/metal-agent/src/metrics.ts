@@ -101,6 +101,20 @@ export const M = {
   dataUnsupported: 'metal_data_unsupported_total',
   diskUsedPct: 'metal_disk_used_pct',
   diskFreeBytes: 'metal_disk_free_bytes',
+  // Per-VM dm-snapshot CoW stores (dm rootfs mode). A store that fills is not
+  // a slow VM but a dead one: the kernel invalidates the snapshot and every
+  // subsequent write on that root device fails, silently, under a guest that
+  // is still up and still answering health checks.
+  //   `cowInvalid`    — devices already invalidated. Should be flat zero; any
+  //                     value at all is that many broken VMs, and is worth
+  //                     paging on rather than graphing.
+  //   `cowMaxUsedPct` — utilisation of the fullest store on the host, the lead
+  //                     indicator for the above.
+  //   `cowNearLimit`  — how many stores are in the danger band, so a single
+  //                     outlier reads differently from a fleet-wide trend.
+  cowInvalid: 'metal_cow_invalid',
+  cowMaxUsedPct: 'metal_cow_max_used_pct',
+  cowNearLimit: 'metal_cow_near_limit',
   cacheLocalCount: 'metal_cache_local_count',
   cacheLocalBytes: 'metal_cache_local_bytes',
   // Per-class liveness of the assigned (running) set. These decompose the raw

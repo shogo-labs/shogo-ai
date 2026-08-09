@@ -26,7 +26,7 @@ import { allocatedBytes } from './disk'
 import { FcApi, computeReclaimMiB } from './fc-api'
 import { pidAlive } from './live-registry'
 import { deriveNet, setupTap, teardownTap, defaultUplink, existingTapIndices, tapCapacity, type VmNet } from './net'
-import { RootfsProvisioner } from './rootfs'
+import { RootfsProvisioner, type CowUsage } from './rootfs'
 import { digHoles } from './sparsify'
 
 export interface FcVmConfig {
@@ -460,6 +460,14 @@ export class FirecrackerVMManager {
    */
   reconcileOrphanRootfs(keepVmIds: Set<string>, graceMs: number, max = 200): number {
     return this.rootfs.reconcileOrphanDevices(keepVmIds, graceMs, max)
+  }
+
+  /**
+   * How close per-VM CoW stores are to overflowing, and how many already have
+   * (see RootfsProvisioner.sampleCowUsage). Empty in non-dm rootfs modes.
+   */
+  sampleCowUsage(): CowUsage {
+    return this.rootfs.sampleCowUsage()
   }
 
   // TAP networking → guest reachable directly; no host-port forwarding needed.
