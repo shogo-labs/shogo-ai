@@ -2,8 +2,12 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { MetalWarmPoolController, NoMetalHostError } from '../metal-warm-pool-controller'
-import { MetalPlacementRegistry, _setMetalPlacementRegistry } from '../metal-placement-registry'
+import { MetalWarmPoolController, NoMetalHostError, isAssignTimeout } from '../metal-warm-pool-controller'
+import {
+  MetalPlacementRegistry,
+  _setMetalPlacementRegistry,
+  getMetalPlacementRegistry,
+} from '../metal-placement-registry'
 import { isMetalEnabled, isMetalEligibleProject, rolloutBucket } from '../metal-eligibility'
 
 const REG = {
@@ -210,6 +214,65 @@ describe('MetalWarmPoolController', () => {
     expect(url).toBe('http://guest:8080')
     expect(calls).toBe(2) // first host threw, second succeeded
     expect(c.getStatus().stats.hostErrors).toBe(1)
+  })
+
+  it('does NOT fail over when the first host merely times out — that is how split brain starts', async () => {
+    // The agent keeps booting after we stop listening, so a timed-out assign
+    // most likely leaves a live VM on that host. Failing over would put the
+    // same project on a second host, with two divergent workspaces racing to
+    // write the same S3 keys. Cold boots after a runtime image change routinely
+    // outlast the assign timeout, so this is the common case, not the rare one.
+    let calls = 0
+    const hosts: string[] = []
+    const fetchImpl = (async (url: string) => {
+      calls++
+      hosts.push(new URL(url).host)
+      if (new URL(url).host === '10.8.0.2:9900') {
+        throw Object.assign(new Error('The operation timed out.'), { name: 'TimeoutError' })
+      }
+      return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+    c.registerHost({ ...REG, hostId: 'ash-1', meshIp: '10.8.0.2', load: { available: 1, assigned: 0, suspended: 0 } })
+    c.registerHost({ ...REG, hostId: 'ash-2', meshIp: '10.8.0.3', load: { available: 1, assigned: 5, suspended: 0 } })
+
+    await expect(c.getMetalProjectUrl('p-timeout')).rejects.toThrow()
+    expect(calls).toBe(1) // the second host was never asked
+    expect(hosts).toEqual(['10.8.0.2:9900'])
+
+    // And the timed-out host is remembered as the owner, so the retry lands
+    // back on the machine that is actually bringing the project up.
+    const placed = await getMetalPlacementRegistry().getPlacement('p-timeout')
+    expect(placed?.hostId).toBe('ash-1')
+  })
+
+  it('still fails over when a host genuinely refuses', async () => {
+    // The counterpart: a refusal means the host does not have the project, so
+    // moving on is correct and must keep working.
+    let calls = 0
+    const fetchImpl = (async (url: string) => {
+      calls++
+      if (new URL(url).host === '10.8.0.2:9900') throw new Error('conn refused')
+      return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+    c.registerHost({ ...REG, hostId: 'ash-1', meshIp: '10.8.0.2', load: { available: 1, assigned: 0, suspended: 0 } })
+    c.registerHost({ ...REG, hostId: 'ash-2', meshIp: '10.8.0.3', load: { available: 1, assigned: 5, suspended: 0 } })
+
+    expect(await c.getMetalProjectUrl('p-refused')).toBe('http://guest:8080')
+    expect(calls).toBe(2)
+  })
+
+  it('classifies the abort shapes a fetch can actually produce', () => {
+    // Matched by name/code rather than message, which differs across runtimes.
+    expect(isAssignTimeout(Object.assign(new Error('x'), { name: 'TimeoutError' }))).toBe(true)
+    expect(isAssignTimeout(Object.assign(new Error('x'), { name: 'AbortError' }))).toBe(true)
+    expect(isAssignTimeout(Object.assign(new Error('x'), { code: 'UND_ERR_HEADERS_TIMEOUT' }))).toBe(true)
+    expect(isAssignTimeout({ cause: { code: 'ETIMEDOUT' } })).toBe(true)
+    // A refusal is not a timeout, and must still trigger failover.
+    expect(isAssignTimeout(Object.assign(new Error('conn refused'), { code: 'ECONNREFUSED' }))).toBe(false)
+    expect(isAssignTimeout(new Error('boom'))).toBe(false)
+    expect(isAssignTimeout(null)).toBe(false)
   })
 
   it('treats hosts past the TTL as not live', async () => {
