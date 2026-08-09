@@ -217,6 +217,38 @@ interface HostEntry extends MetalHostRegistration {
 /** A host is considered live if it heartbeat within this window. */
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const ASSIGN_TIMEOUT_MS = parseInt(process.env.METAL_ASSIGN_TIMEOUT_MS || '30000', 10)
+
+/**
+ * Did this assign fail because we stopped waiting, rather than because the host
+ * refused us?
+ *
+ * The distinction decides whether the project may be placed elsewhere. A
+ * refusal (connection refused, 5xx, dead host) means this host does not have
+ * the project and another one should take it. A timeout means we do not know —
+ * and since the agent carries on booting regardless, assuming failure is how
+ * duplicates get created.
+ *
+ * `AbortSignal.timeout()` rejects with a DOMException named `TimeoutError`;
+ * an aborted fetch surfaces as `AbortError`; undici/node socket timeouts use
+ * the `ETIMEDOUT`/`UND_ERR_*` codes. Match on all of them rather than on
+ * message text, which varies by runtime.
+ */
+export function isAssignTimeout(err: unknown): boolean {
+  const e = err as { name?: string; code?: string; cause?: { name?: string; code?: string } } | null
+  if (!e) return false
+  const name = e.name ?? e.cause?.name
+  const code = e.code ?? e.cause?.code
+  return (
+    name === 'TimeoutError' ||
+    name === 'AbortError' ||
+    name === 'HeadersTimeoutError' ||
+    name === 'BodyTimeoutError' ||
+    code === 'ETIMEDOUT' ||
+    code === 'UND_ERR_HEADERS_TIMEOUT' ||
+    code === 'UND_ERR_BODY_TIMEOUT' ||
+    code === 'UND_ERR_CONNECT_TIMEOUT'
+  )
+}
 /** Hosts at/above this used% are de-prioritized for NEW cold placements (GC pressure). */
 const DISK_HIGH_PCT = parseInt(process.env.METAL_DISK_HIGH_PCT || '85', 10)
 /**
@@ -553,6 +585,36 @@ export class MetalWarmPoolController {
             lastErr = err
             this.stats.hostErrors++
             hostErrorCounter.add(1, { host: host.hostId })
+
+            // A timeout is not a failure, it is an unfinished boot.
+            //
+            // The agent does not abandon the assign when we stop listening — it
+            // finishes hydrating and ends up owning a live VM. Treating that as
+            // "this host is broken", clearing the placement and assigning the
+            // next host is precisely how one project comes to be assigned on
+            // two hosts at once, each accumulating a divergent workspace and
+            // racing to write the same S3 keys on suspend.
+            //
+            // It bites hardest exactly when it hurts most: a cold boot after a
+            // runtime image change has to pull the archive and rebuild, which
+            // routinely outlasts ASSIGN_TIMEOUT_MS, so the slowest projects are
+            // the ones that get duplicated. Record this host as the owner —
+            // it is the one bringing the project up — and let the caller retry
+            // into it rather than scattering the project across the fleet.
+            if (isAssignTimeout(err)) {
+              this.projectHost.set(projectId, host.hostId)
+              void this.registry.setPlacement(projectId, host.hostId, 'local').catch(() => {})
+              this.urlCache.delete(projectId)
+              if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
+              console.warn(
+                `[MetalPool] assign on host ${host.hostId} for ${projectId} did not answer within ` +
+                  `${ASSIGN_TIMEOUT_MS}ms — still booting there; keeping placement instead of failing over`,
+              )
+              span.setAttribute('resolve.method', 'assign_timeout')
+              span.setStatus({ code: SpanStatusCode.ERROR, message: 'assign timed out' })
+              throw err
+            }
+
             // Drop stickiness/placement/cache so we don't keep hammering a dead host.
             if (this.projectHost.get(projectId) === host.hostId) this.projectHost.delete(projectId)
             this.urlCache.delete(projectId)
