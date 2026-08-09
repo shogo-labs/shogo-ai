@@ -12,8 +12,8 @@
  * shipped because nothing asserted the cold-open path hydrates.
  *
  * We drive the private `hydrateFromBackup` directly with an injected archive
- * (via the `fetchArchive` seam) and a stubbed global `fetch`, so no real S3 /
- * Firecracker host is needed. The resume path is covered by construction:
+ * reference (via the `sourceRef` seam) and a stubbed global `fetch`, so no real
+ * S3 / Firecracker host is needed. The resume path is covered by construction:
  * `hydrateFromBackup` is only called from the cold `assign()` branch, never from
  * `resume()`.
  */
@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import type { ArchiveRef } from './archive-ref'
 import { config } from './config'
 import { MetalWarmPool } from './pool'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
@@ -33,8 +34,21 @@ const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.
 class TestPool extends MetalWarmPool {
   archive: Uint8Array | null = null
   etag: string | null = null
-  override fetchArchive(_projectId: string): Promise<import('./workspace-archive').WorkspaceArchive | null> {
-    return Promise.resolve(this.archive ? { bytes: this.archive, etag: this.etag } : null)
+  /** null → the store could not presign, so the host must push the bytes. */
+  url: string | null = 'https://s3.example/p1/project-src.tar.gz?X-Amz-Signature=deadbeef'
+  loads = 0
+  override sourceRef(_projectId: string): Promise<ArchiveRef | null> {
+    if (!this.archive) return Promise.resolve(null)
+    const bytes = this.archive
+    return Promise.resolve({
+      etag: this.etag,
+      bytes: bytes.byteLength,
+      url: this.url,
+      load: async () => {
+        this.loads++
+        return bytes
+      },
+    })
   }
   hydrate(projectId: string, env: Record<string, string>) {
     // hydrateFromBackup is private; reach it through the instance.
@@ -74,30 +88,53 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('streams the durable archive to the guest /pool/hydrate with the runtime token and returns its lineage etag', async () => {
+  test('hands the guest a URL to pull, and never downloads the archive itself', async () => {
+    // THE GUEST-OOM FIX. Pushing bytes cannot work at multi-gigabyte sizes:
+    // Bun.serve accumulates a request body in memory whenever the handler reads
+    // slower than the wire delivers it (+2423 MB of RSS for a 1 GB body against
+    // +94 MB when the reader keeps up), and tar never keeps up. Pulling puts a
+    // kernel pipe between download and extraction, which is the only part of
+    // this path that has ever applied backpressure.
     const pool = makePool(dir)
     pool.archive = new Uint8Array([1, 2, 3, 4])
     pool.etag = '"abc123"'
 
-    const calls: Array<{ url: string; init: any; sent: Uint8Array }> = []
+    const calls: Array<{ url: string; init: any }> = []
     globalThis.fetch = mock(async (url: any, init: any) => {
-      // The body is a stream now (see the chunked-body suite below), so read it
-      // back to assert the guest receives the archive byte for byte.
-      const sent = new Uint8Array(await new Response(init.body).arrayBuffer())
-      calls.push({ url: String(url), init, sent })
+      calls.push({ url: String(url), init })
       return new Response(JSON.stringify({ ok: true, bytes: 4 }), { status: 200 })
     }) as any
 
     const result = await pool.hydrate('p1', { RUNTIME_AUTH_SECRET: 'secret-token' })
 
     expect(calls).toHaveLength(1)
-    expect(calls[0].url).toBe('http://10.0.0.9:8080/pool/hydrate')
+    expect(calls[0].url).toBe('http://10.0.0.9:8080/pool/hydrate-url')
     expect(calls[0].init.method).toBe('POST')
     expect(calls[0].init.headers.Authorization).toBe('Bearer secret-token')
-    expect(calls[0].sent).toEqual(pool.archive!)
+    expect(JSON.parse(calls[0].init.body)).toMatchObject({ url: pool.url, bytes: 4 })
+    // The host downloading it anyway would defeat the entire point — it is the
+    // reason a 2 GB archive used to be resident on both sides at once.
+    expect(pool.loads).toBe(0)
     // The returned lineage anchors the workspace to the backup we applied, so a
     // later suspend can safely overwrite exactly that object.
     expect(result).toEqual({ hydrated: true, parentEtag: '"abc123"' })
+  })
+
+  test('gives the guest a deadline to pull within, and waits longer than it', async () => {
+    // The guest holds the transfer open for the whole pull, so the host must
+    // outlast the deadline it just handed out — otherwise the host aborts a
+    // hydrate that was about to succeed and the project fails to open.
+    const pool = makePool(dir, { hydrateTimeoutMs: 60_000, hydrateTimeoutPerMiBMs: 120 })
+    pool.archive = new Uint8Array(8 * 1024 * 1024)
+
+    let sent: any
+    globalThis.fetch = mock(async (_url: any, init: any) => {
+      sent = JSON.parse(init.body)
+      return new Response('{}', { status: 200 })
+    }) as any
+
+    await pool.hydrate('p-deadline', { RUNTIME_AUTH_SECRET: 'tok' })
+    expect(sent.timeoutMs).toBe(pool.budget(8 * 1024 * 1024))
   })
 
   test('is a no-op returning hydrated:false when the project has no durable backup (new project)', async () => {
@@ -121,7 +158,9 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
 
     globalThis.fetch = mock(async () => new Response('boom', { status: 500 })) as any
 
-    await expect(pool.hydrate('p2', { RUNTIME_AUTH_SECRET: 'tok' })).rejects.toThrow(/\/pool\/hydrate failed \(500\)/)
+    await expect(pool.hydrate('p2', { RUNTIME_AUTH_SECRET: 'tok' })).rejects.toThrow(
+      /\/pool\/hydrate-url .* failed \(500\)/,
+    )
   })
 
   test('omits the Authorization header when no runtime token is present', async () => {
@@ -139,6 +178,82 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
   })
 })
 
+describe('falling back to a push when the guest cannot pull', () => {
+  let dir: string
+  const realFetch = globalThis.fetch
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-fallback-'))
+  })
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('a 404 from /pool/hydrate-url means an older guest, so the bytes are pushed', async () => {
+    // The two sides deploy independently — the guest runtime ships in a rootfs
+    // image, the host in an agent bundle — so for a window the host is new and
+    // the guest is not. Without this the entire fleet fails to cold-boot during
+    // that window, and hydrate is fail-closed: projects simply do not open.
+    const pool = makePool(dir)
+    pool.archive = new Uint8Array([5, 6, 7])
+    pool.etag = '"e"'
+
+    const seen: Array<{ url: string; sent?: Uint8Array }> = []
+    globalThis.fetch = mock(async (url: any, init: any) => {
+      const u = String(url)
+      if (u.endsWith('/pool/hydrate-url')) {
+        seen.push({ url: u })
+        return new Response('not found', { status: 404 })
+      }
+      seen.push({ url: u, sent: new Uint8Array(await new Response(init.body).arrayBuffer()) })
+      return new Response('{}', { status: 200 })
+    }) as any
+
+    const result = await pool.hydrate('p-old-guest', { RUNTIME_AUTH_SECRET: 'tok' })
+
+    expect(seen.map((s) => s.url)).toEqual([
+      'http://10.0.0.9:8080/pool/hydrate-url',
+      'http://10.0.0.9:8080/pool/hydrate',
+    ])
+    expect(seen[1].sent).toEqual(pool.archive!)
+    expect(pool.loads).toBe(1)
+    expect(result).toEqual({ hydrated: true, parentEtag: '"e"' })
+  })
+
+  test('a store that cannot presign pushes without trying to pull first', async () => {
+    const pool = makePool(dir)
+    pool.archive = new Uint8Array([1])
+    pool.url = null
+
+    const urls: string[] = []
+    globalThis.fetch = mock(async (url: any, init: any) => {
+      urls.push(String(url))
+      await new Response(init.body).arrayBuffer()
+      return new Response('{}', { status: 200 })
+    }) as any
+
+    await pool.hydrate('p-nopresign', { RUNTIME_AUTH_SECRET: 'tok' })
+    expect(urls).toEqual(['http://10.0.0.9:8080/pool/hydrate'])
+  })
+
+  test('any other failure from the pull endpoint is an error, not a reason to push', async () => {
+    // A 500 means the guest TRIED and failed — pushing after it would turn a
+    // clean failure into the multi-gigabyte push this design exists to avoid.
+    const pool = makePool(dir)
+    pool.archive = new Uint8Array([1])
+
+    const urls: string[] = []
+    globalThis.fetch = mock(async (url: any) => {
+      urls.push(String(url))
+      return new Response('curl exited 22', { status: 500 })
+    }) as any
+
+    await expect(pool.hydrate('p-pull-broke', { RUNTIME_AUTH_SECRET: 'tok' })).rejects.toThrow(/500/)
+    expect(urls).toEqual(['http://10.0.0.9:8080/pool/hydrate-url'])
+    expect(pool.loads).toBe(0)
+  })
+})
+
 describe('the archive is sent chunked, never as a sized body', () => {
   let dir: string
   const realFetch = globalThis.fetch
@@ -150,16 +265,14 @@ describe('the archive is sent chunked, never as a sized body', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('hydrate sends a stream with duplex:half and no Content-Length', async () => {
-    // THE GUEST-OOM REGRESSION. Bun.serve buffers a request body whole when
-    // Content-Length is set, whatever the handler does with it: measured at
-    // +1978 MB of RSS for a 1 GB body versus +91 MB chunked. Passing a
-    // Uint8Array sets that header, and a 2 GB hydrate then panicked the guest
-    // kernel ("Out of memory and no killable processes") before its streaming
-    // handler saw a byte. Passing a Uint8Array here again would look perfectly
-    // reasonable in review, so it is pinned.
+  test('the push fallback sends a stream with duplex:half and no Content-Length', async () => {
+    // Bun.serve buffers a request body whole when Content-Length is set,
+    // whatever the handler does with it: +1978 MB of RSS for a 1 GB body versus
+    // +91 MB chunked. Passing a Uint8Array here would look perfectly reasonable
+    // in review while making the fallback strictly worse, so it is pinned.
     const pool = makePool(dir)
     pool.archive = new Uint8Array(4 * 1024 * 1024)
+    pool.url = null // force the push path
 
     let init: any
     globalThis.fetch = mock(async (_url: any, i: any) => {
