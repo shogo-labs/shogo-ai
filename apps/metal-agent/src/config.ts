@@ -169,16 +169,30 @@ export const config = {
    * Extra hydrate budget per MiB of archive, on top of `hydrateTimeoutMs`.
    *
    * A single flat timeout has to be either too tight for a large archive or
-   * uselessly slack for the p50 (0.7 MB). Measured on staging, a cold boot runs
-   * 12 s at 25 MB and 34 s at 900 MB — roughly 25 MB/s once the fixed costs are
-   * paid — so 120 ms/MiB is ~3x the observed marginal cost and absorbs a
-   * contended host. That headroom is the point: the one hydrate failure seen in
-   * testing was a 900 MB archive on a host still flushing a freshly written
-   * file, and a rootfs rebuild creates exactly that contention across the whole
-   * fleet at once. Since hydrate is fail-closed, an expired timeout is not a
-   * slow boot — it is a project that cannot open.
+   * uselessly slack for the p50 (0.7 MB). The typical cold boot is fast — a
+   * guest pulls from the bucket at 27–40 MB/s — but the rate is bimodal, not
+   * merely variable: repeated pulls of one object measured 28.7, 3.0, 3.0 and
+   * 32 MB/s, and on one of those the host reading the same object at the same
+   * moment saw the same collapse. So a slow patch is the object store or the
+   * path to it, and it arrives without warning.
+   *
+   * That makes the budget a bet on throughput we do not reliably have. At
+   * 120 ms/MiB it assumed 8.3 MiB/s, which a 3 MB/s patch misses for anything
+   * over ~280 MiB — and hydrate is fail-closed, so an expired budget is not a
+   * slow boot but a project that cannot open. 400 ms/MiB assumes ~2.5 MiB/s
+   * and covers the largest real project (1.9 GB) in about 14 minutes, inside
+   * the 30-minute ceiling the guest clamps to.
+   *
+   * The cost is that a genuinely stalled transfer now takes the full budget to
+   * fail, because the host cannot see byte progress and so cannot tell slow
+   * from stuck. Distinguishing them means stall detection in the guest's curl
+   * (`--speed-limit`/`--speed-time`), which lives in the runtime image and
+   * therefore needs a rootfs rebuild; waiting longer is the price of not
+   * forcing one. Better still is to stop the guest doing the long-haul fetch
+   * at all — the host reaches the bucket at 36–60 MB/s and the guest reaches
+   * the host at 72 MB/s.
    */
-  hydrateTimeoutPerMiBMs: parseInt(env('METAL_HYDRATE_TIMEOUT_PER_MIB_MS', '120'), 10),
+  hydrateTimeoutPerMiBMs: parseInt(env('METAL_HYDRATE_TIMEOUT_PER_MIB_MS', '400'), 10),
 
   /**
    * Balloon-reclaim before snapshot. Firecracker's CreateSnapshot writes the

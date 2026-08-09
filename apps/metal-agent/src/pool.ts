@@ -236,6 +236,17 @@ const ORPHAN_GRACE_MS = 180_000
 const APP_ACTIVE_WINDOW_MS = 120_000
 
 /**
+ * Hard ceiling on a hydrate deadline, whatever the per-MiB budget works out to.
+ *
+ * The guest clamps its own pull at 30 minutes (PULL_MAX_SECONDS in
+ * agent-runtime's hydrate-url handler), so a host budget beyond that buys
+ * nothing: the guest gives up first and the host spends the difference waiting
+ * for an answer it has already been told. Matching the two keeps the failure
+ * attributable to the side that actually decided it.
+ */
+const HYDRATE_BUDGET_CEILING_MS = 30 * 60_000
+
+/**
  * Extract the published subdomain from an assign env when the control plane
  * flagged this as a server-backed published microVM. Returns undefined for an
  * ordinary dev/preview VM (no PUBLISHED_SUBDOMAIN / SHOGO_PUBLISHED_MODE).
@@ -969,7 +980,8 @@ export class MetalWarmPool {
   protected hydrateBudgetMs(bytes: number): number {
     const perMiB = this.cfg.hydrateTimeoutPerMiBMs
     if (!perMiB || bytes <= 0) return this.cfg.hydrateTimeoutMs
-    return this.cfg.hydrateTimeoutMs + Math.ceil(bytes / (1024 * 1024)) * perMiB
+    const want = this.cfg.hydrateTimeoutMs + Math.ceil(bytes / (1024 * 1024)) * perMiB
+    return Math.min(want, HYDRATE_BUDGET_CEILING_MS)
   }
 
   /**

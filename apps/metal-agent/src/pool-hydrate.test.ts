@@ -370,4 +370,28 @@ describe('pool.hydrateBudgetMs (the deadline scales with the archive)', () => {
     const pool = makePool(dir, { hydrateTimeoutPerMiBMs: 0 })
     expect(pool.budget(900 * 1024 * 1024)).toBe(5000)
   })
+
+  test('the shipped budget survives the slow patches the object store actually has', () => {
+    // Pull throughput is bimodal, not merely variable: repeated pulls of one
+    // object measured 28.7, 3.0, 3.0 and 32 MB/s. The budget is only useful if
+    // it covers the slow mode, because hydrate is fail-closed — the old
+    // 120 ms/MiB assumed 8.3 MiB/s and turned a 3 MB/s patch into a project
+    // that would not open.
+    const pool = makePool(dir, { hydrateTimeoutMs: 60_000, hydrateTimeoutPerMiBMs: 400 })
+    const mib = 1024 * 1024
+    const atThreeMbPerSec = (bytes: number) => (bytes / (3 * 1000 * 1000)) * 1000
+
+    for (const sizeMib of [300, 700, 1200, 1847]) {
+      expect(pool.budget(sizeMib * mib)).toBeGreaterThan(atThreeMbPerSec(sizeMib * mib))
+    }
+  })
+
+  test('the budget never exceeds the ceiling the guest clamps itself to', () => {
+    // The guest gives up at 30 minutes regardless of what it is told, so a
+    // larger host deadline only means waiting past an answer already decided.
+    const pool = makePool(dir, { hydrateTimeoutMs: 60_000, hydrateTimeoutPerMiBMs: 400 })
+    expect(pool.budget(100 * 1024 * 1024 * 1024)).toBe(30 * 60_000)
+    // ...and the cap does not distort sizes below it.
+    expect(pool.budget(500 * 1024 * 1024)).toBe(60_000 + 500 * 400)
+  })
 })
