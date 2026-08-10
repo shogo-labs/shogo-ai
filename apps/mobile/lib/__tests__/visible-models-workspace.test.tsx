@@ -10,7 +10,7 @@
  */
 
 import { act, render } from '@testing-library/react'
-import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import { describe, test, expect, afterAll, beforeEach, mock } from 'bun:test'
 import * as React from 'react'
 
 // Control the active workspace id the module reads.
@@ -36,7 +36,14 @@ const WORKSPACE_PAYLOAD = {
   catalogModels: [{ id: 'ws-model', provider: 'anthropic', displayName: 'Workspace Model', tier: 'standard' }],
 }
 
+// `mock.module` is process-global and outlives this file, so stub only
+// PlatformApi over the real exports and put the real module back afterwards.
+// Replacing the module wholesale strands every later test file that imports a
+// genuine SDK export.
+const realSdk = { ...(await import('@shogo-ai/sdk')) }
+
 mock.module('@shogo-ai/sdk', () => ({
+  ...realSdk,
   PlatformApi: class {
     async getVisibleModels() {
       calls.push('platform')
@@ -48,6 +55,10 @@ mock.module('@shogo-ai/sdk', () => ({
     }
   },
 }))
+
+afterAll(() => {
+  mock.module('@shogo-ai/sdk', () => realSdk)
+})
 
 const { useVisibleModels } = await import('../visible-models')
 

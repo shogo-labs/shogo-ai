@@ -273,18 +273,23 @@ describe('WorkspaceGraph.getImpactRadius', () => {
   })
 
   test('truncates when frontier blows past maxNodes', async () => {
-    // Build a hub topology: zzz.ts (processed LAST) calls 20 other files
-    // so all its outgoing edges survive removeFileData rounds. Then BFS
-    // from zzz.ts will hit all 20 immediately, overflowing maxNodes=5.
+    // Build a hub topology: hub.ts calls 20 other qualified names, so BFS
+    // from it hits all 20 at depth 1 and overflows maxNodes=5.
+    //
+    // The call targets deliberately have no file of their own on disk.
+    // buildGraph walks indexed files in an unspecified order and
+    // removeFileData deletes every edge *pointing at* the file it is about
+    // to re-process, so a hub whose targets are themselves indexed files
+    // loses an arbitrary subset of its edges depending on scan order. Edges
+    // to names that are never processed are stable, which keeps this test
+    // about BFS truncation rather than about buildGraph ordering.
     let callsLine = ''
-    for (let i = 0; i < 20; i++) {
-      writeFile(b, `src/leaf${i}.ts`, `const leaf${i} = 1\n`)
-      callsLine += `// CALLS:leaf${i}\n`
-    }
-    writeFile(b, 'src/zzz.ts', `${callsLine}const hub = 1\n`)
+    for (let i = 0; i < 20; i++) callsLine += `// CALLS:ghost${i}\n`
+    writeFile(b, 'src/hub.ts', `${callsLine}const hub = 1\n`)
     await b.engine.reindex()
     await b.graph.buildGraph()
-    const r = b.graph.getImpactRadius(['src/zzz.ts'], 10, 5)
+    expect(b.graph.getEdgesBySource('code::src/hub.ts::funcHUB')).toHaveLength(20)
+    const r = b.graph.getImpactRadius(['src/hub.ts'], 10, 5)
     expect(r.truncated).toBe(true)
   })
 

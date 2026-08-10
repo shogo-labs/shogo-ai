@@ -465,6 +465,14 @@ describe('tech stack helpers', () => {
   const techStacksBase = join(__dirname, '..', '..', 'tech-stacks')
 
   beforeAll(() => {
+    // A run killed mid-test (Ctrl-C, CI timeout) leaves its scratch stack
+    // behind in the repo's tech-stacks/ tree, where it then shows up as
+    // registry drift for every later run. Sweep leftovers before adding ours.
+    for (const entry of readdirSync(techStacksBase)) {
+      if (entry.startsWith('__wdtest_')) {
+        try { rmSync(join(techStacksBase, entry), { recursive: true, force: true }) } catch {}
+      }
+    }
     stackId = `__wdtest_stack_${Date.now()}_${Math.floor(Math.random() * 1e6)}`
     stackDir = join(techStacksBase, stackId)
     mkdirSync(stackDir, { recursive: true })

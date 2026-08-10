@@ -25,8 +25,8 @@ import { config } from './config'
 import { allocatedBytes } from './disk'
 import { FcApi, computeReclaimMiB } from './fc-api'
 import { pidAlive } from './live-registry'
-import { deriveNet, setupTap, teardownTap, defaultUplink, existingTapIndices, type VmNet } from './net'
-import { RootfsProvisioner } from './rootfs'
+import { deriveNet, setupTap, teardownTap, defaultUplink, existingTapIndices, tapCapacity, type VmNet } from './net'
+import { RootfsProvisioner, type CowUsage } from './rootfs'
 import { digHoles } from './sparsify'
 
 export interface FcVmConfig {
@@ -262,7 +262,13 @@ export class FirecrackerVMManager {
    * so a freshly-spawned VM never collides with a live or persisted tap.
    */
   seedVmSeq(nextAtLeast: number): void {
-    if (Number.isFinite(nextAtLeast) && nextAtLeast > this.vmSeq) this.vmSeq = nextAtLeast
+    if (Number.isFinite(nextAtLeast) && nextAtLeast > this.vmSeq) {
+      // The seed is only a starting scan position — `nextVmIndex` wraps and
+      // skips occupied slots, so a seed at/above capacity is fine (it's taken
+      // mod capacity). Keep it in range so `peekNextTap` never derives an
+      // out-of-range IP.
+      this.vmSeq = nextAtLeast % tapCapacity(this.cfg.tapCidrBase)
+    }
   }
 
   /** Tap indices currently live on the host. Overridable seam for tests. */
@@ -283,10 +289,26 @@ export class FirecrackerVMManager {
    */
   private nextVmIndex(): number {
     const taken = this.hostTapIndices()
-    let n = this.vmSeq
-    while (taken.has(n)) n++
-    this.vmSeq = n + 1
-    return n
+    const cap = tapCapacity(this.cfg.tapCidrBase)
+    // Scan upward from the last position for locality, but WRAP within
+    // [0, cap) and skip every physically-present device. Both live and
+    // suspended VMs keep their `fctap<n>` on the host (suspend leaves the tap
+    // for cheap restore), so `ip link` is a complete "in use" set — wrapping
+    // can't collide with a running or resumable guest. This reclaims indices
+    // freed by teardown and, critically, never returns an index >= cap (which
+    // `deriveNet` would turn into an invalid IP, 500-ing every /assign — the
+    // prod incident where the monotonic counter climbed past 16383).
+    const start = ((this.vmSeq % cap) + cap) % cap
+    for (let i = 0; i < cap; i++) {
+      const n = (start + i) % cap
+      if (!taken.has(n)) {
+        this.vmSeq = (n + 1) % cap
+        return n
+      }
+    }
+    throw new Error(
+      `metal: TAP address space exhausted — all ${cap} /30 slots occupied on this host`,
+    )
   }
 
   /**
@@ -298,7 +320,9 @@ export class FirecrackerVMManager {
    * by the pool seeding tests.
    */
   peekNextTap(): { index: number; tap: string } {
-    return { index: this.vmSeq, tap: deriveNet(this.vmSeq, this.cfg.tapCidrBase).tap }
+    const cap = tapCapacity(this.cfg.tapCidrBase)
+    const index = ((this.vmSeq % cap) + cap) % cap
+    return { index, tap: deriveNet(index, this.cfg.tapCidrBase).tap }
   }
 
   async startVM(cfg: FcVmConfig = {}): Promise<FcVmHandle> {
@@ -438,6 +462,14 @@ export class FirecrackerVMManager {
     return this.rootfs.reconcileOrphanDevices(keepVmIds, graceMs, max)
   }
 
+  /**
+   * How close per-VM CoW stores are to overflowing, and how many already have
+   * (see RootfsProvisioner.sampleCowUsage). Empty in non-dm rootfs modes.
+   */
+  sampleCowUsage(): CowUsage {
+    return this.rootfs.sampleCowUsage()
+  }
+
   // TAP networking → guest reachable directly; no host-port forwarding needed.
   async forwardPort(): Promise<void> {}
   async removeForward(): Promise<void> {}
@@ -559,8 +591,13 @@ export class FirecrackerVMManager {
    */
   async restoreVM(snap: FcSnapshot): Promise<FcVmHandle> {
     // Bounded, short id — FC's --id is capped at 64 chars, so we must NOT
-    // chain the prior id across repeated restores.
-    const id = `fcr-${(this.vmSeq++).toString(36)}-${Date.now().toString(36).slice(-5)}`
+    // chain the prior id across repeated restores. Advance the scan cursor with
+    // a wrap so restores don't grow `vmSeq` unboundedly (the id keeps a unique
+    // Date suffix regardless); the restored VM re-takes its OWN persisted tap
+    // via setupTap(snap.net), so this counter only ever seeds fresh spawns.
+    const seq = this.vmSeq
+    this.vmSeq = (this.vmSeq + 1) % tapCapacity(this.cfg.tapCidrBase)
+    const id = `fcr-${seq.toString(36)}-${Date.now().toString(36).slice(-5)}`
     const socketPath = join(this.cfg.runDir, `${id}.sock`)
     const serialLog = join(this.cfg.runDir, `${id}.serial`)
 

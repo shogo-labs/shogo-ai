@@ -6,23 +6,6 @@ import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
 
-export interface VMIsolationConfig {
-  enabled: boolean | 'auto'
-  /** Maximum RAM ceiling for VMs in MB. Assigned VMs get inflated to this
-   *  ceiling on /pool/assign. */
-  memoryMB: number
-  /** Initial RAM target for warm-pool VMs in MB. Lower values let pool
-   *  VMs idle at a small footprint; the controller balloon-deflates back
-   *  to `memoryMB` on assignment. Set to the same value as `memoryMB` to
-   *  disable right-sizing. */
-  poolMemoryMB: number
-  cpus: number
-  /** Share the host workspace directory into the VM via 9p mount.
-   *  When true (default), the VM sees host project files via 9p.
-   *  When false, the VM uses an isolated overlay disk. */
-  mountWorkspace: boolean
-}
-
 export interface HostRuntimeConfig {
   /** Per-project RAM ceiling in MB for the host-spawned agent-runtime process
    *  group (bun + vite + preview sidecars). Enforced via cgroup v2 on Linux, a
@@ -55,7 +38,6 @@ export interface BugReportConfig {
 
 export interface DesktopConfig {
   mode: 'local' | 'cloud'
-  vmIsolation: VMIsolationConfig
   hostRuntime: HostRuntimeConfig
   meetings: MeetingConfig
   bugReport?: BugReportConfig
@@ -81,14 +63,6 @@ export function getCloudUrl(): string {
   return (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
 }
 
-const DEFAULT_VM_CONFIG: VMIsolationConfig = {
-  enabled: false,
-  memoryMB: 4096,
-  poolMemoryMB: 1536,
-  cpus: 0,  // 0 = auto (half physical cores)
-  mountWorkspace: true,
-}
-
 const DEFAULT_HOST_RUNTIME_CONFIG: HostRuntimeConfig = {
   memoryMB: 2048,
   cpuPercent: 0,  // 0 = no CPU cap
@@ -107,7 +81,6 @@ const DEFAULT_MEETING_CONFIG: MeetingConfig = {
 
 const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   mode: 'local',
-  vmIsolation: { ...DEFAULT_VM_CONFIG },
   hostRuntime: { ...DEFAULT_HOST_RUNTIME_CONFIG },
   meetings: { ...DEFAULT_MEETING_CONFIG },
 }
@@ -133,12 +106,6 @@ export function readConfig(): DesktopConfig {
 
   const config: DesktopConfig = {
     mode: parsed.mode === 'cloud' ? 'cloud' : 'local',
-    vmIsolation: {
-      ...DEFAULT_VM_CONFIG,
-      ...(typeof parsed.vmIsolation === 'object' && parsed.vmIsolation !== null
-        ? parsed.vmIsolation
-        : {}),
-    },
     hostRuntime: {
       ...DEFAULT_HOST_RUNTIME_CONFIG,
       ...(typeof parsed.hostRuntime === 'object' && parsed.hostRuntime !== null

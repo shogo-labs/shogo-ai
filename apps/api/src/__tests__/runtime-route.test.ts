@@ -9,7 +9,7 @@
  * Strategy:
  *  - Mock ../lib/prisma (project.findUnique)
  *  - Mock ../lib/resolve-pod-url (the dynamic import inside start /
- *    restart / sandbox handlers) to inject mode='host' | 'vm' | 'k8s'
+ *    restart / sandbox handlers) to inject mode='host' | 'k8s' | 'metal'
  *    behaviour deterministically
  *  - Mock 'fs' (existsSync) for the filesystem-fallback validateProject
  *    branch when DB lookup throws
@@ -79,7 +79,6 @@ const { runtimeRoutes } = await import('../routes/runtime')
 
 
 const SAVED_ENV = {
-  SHOGO_VM_ISOLATION: process.env.SHOGO_VM_ISOLATION,
   KUBERNETES_SERVICE_HOST: process.env.KUBERNETES_SERVICE_HOST,
   API_PORT: process.env.API_PORT,
   PORT: process.env.PORT,
@@ -117,13 +116,10 @@ beforeEach(() => {
   rmStopMock.mockReset()
   rmStopMock.mockImplementation(async () => {})
 
-  delete process.env.SHOGO_VM_ISOLATION
   delete process.env.KUBERNETES_SERVICE_HOST
 })
 
 afterEach(() => {
-  if (SAVED_ENV.SHOGO_VM_ISOLATION === undefined) delete process.env.SHOGO_VM_ISOLATION
-  else process.env.SHOGO_VM_ISOLATION = SAVED_ENV.SHOGO_VM_ISOLATION
   if (SAVED_ENV.KUBERNETES_SERVICE_HOST === undefined) delete process.env.KUBERNETES_SERVICE_HOST
   else process.env.KUBERNETES_SERVICE_HOST = SAVED_ENV.KUBERNETES_SERVICE_HOST
 })
@@ -220,24 +216,6 @@ describe('POST /projects/:projectId/runtime/start', () => {
     })
   })
 
-  test('vm mode: returns success + res.url + port=0', async () => {
-    resolveProjectPodUrlMock.mockImplementation(async () => ({
-      mode: 'vm' as const,
-      url: 'https://vm-proj-1.cluster.local',
-    }))
-    const res = await makeApp().request('/api/projects/proj-1/runtime/start', {
-      method: 'POST',
-    })
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({
-      success: true,
-      projectId: 'proj-1',
-      status: 'running',
-      url: 'https://vm-proj-1.cluster.local',
-      port: 0,
-    })
-  })
-
   test('k8s mode: returns success + res.url + port=0', async () => {
     resolveProjectPodUrlMock.mockImplementation(async () => ({
       mode: 'k8s' as const,
@@ -249,28 +227,15 @@ describe('POST /projects/:projectId/runtime/start', () => {
     expect((await res.json()).url).toBe('https://proj-1.shogo.app')
   })
 
-  test('forwards onVMPermanentlyDisabled: "throw" and logTag: "Runtime" to the helper', async () => {
+  test('forwards logTag: "Runtime" and runtimeManager to the helper', async () => {
     await makeApp().request('/api/projects/proj-1/runtime/start', { method: 'POST' })
     expect(resolveProjectPodUrlMock).toHaveBeenCalledWith('proj-1', {
       logTag: 'Runtime',
-      onVMPermanentlyDisabled: 'throw',
       runtimeManager,
     })
   })
 
-  test('VM isolation enabled + helper throws → 503 vm_pool_unavailable (no fallback)', async () => {
-    process.env.SHOGO_VM_ISOLATION = 'true'
-    resolveProjectPodUrlMock.mockImplementation(async () => {
-      throw new Error('warm pool exhausted')
-    })
-    const res = await makeApp().request('/api/projects/proj-1/runtime/start', {
-      method: 'POST',
-    })
-    expect(res.status).toBe(503)
-    expect((await res.json()).error.code).toBe('vm_pool_unavailable')
-  })
-
-  test('VM isolation NOT enabled + helper throws → 500 start_failed (default path)', async () => {
+  test('helper throws → 500 start_failed', async () => {
     resolveProjectPodUrlMock.mockImplementation(async () => {
       throw new Error('something else')
     })
@@ -487,20 +452,20 @@ describe('GET /projects/:projectId/sandbox/url', () => {
     delete process.env.API_PORT
   })
 
-  test('VM mode: url + canvasBaseUrl both point at res.url; message annotated', async () => {
+  test('Metal mode: url + canvasBaseUrl both point at res.url; message annotated', async () => {
     resolveProjectPodUrlMock.mockImplementation(async () => ({
-      mode: 'vm' as const,
-      url: 'https://vm-proj-1.cluster.local',
+      mode: 'metal' as const,
+      url: 'https://metal-proj-1.example',
     }))
     const res = await makeApp().request('/api/projects/proj-1/sandbox/url', {
       headers: { host: 'api.shogo.dev' },
     })
     const body = await res.json()
-    expect(body.url).toBe('https://vm-proj-1.cluster.local')
-    expect(body.directUrl).toBe('https://vm-proj-1.cluster.local')
-    expect(body.canvasBaseUrl).toBe('https://vm-proj-1.cluster.local')
+    expect(body.url).toBe('https://metal-proj-1.example')
+    expect(body.directUrl).toBe('https://metal-proj-1.example')
+    expect(body.canvasBaseUrl).toBe('https://metal-proj-1.example')
     expect(body.ready).toBe(true)
-    expect(body.message).toBe('Runtime ready (VM)')
+    expect(body.message).toBe('Runtime ready (Metal)')
   })
 
   test('K8s mode: message annotated with "(K8s)"', async () => {
@@ -512,22 +477,6 @@ describe('GET /projects/:projectId/sandbox/url', () => {
       headers: { host: 'api.shogo.dev' },
     })
     expect((await res.json()).message).toBe('Runtime ready (K8s)')
-  })
-
-  test('VM isolation enabled + helper throws → 503 with null url + vm_pool_unavailable', async () => {
-    process.env.SHOGO_VM_ISOLATION = 'true'
-    resolveProjectPodUrlMock.mockImplementation(async () => {
-      throw new Error('vm pool dead')
-    })
-    const res = await makeApp().request('/api/projects/proj-1/sandbox/url', {
-      headers: { host: 'api.shogo.dev' },
-    })
-    expect(res.status).toBe(503)
-    const body = await res.json()
-    expect(body.url).toBeNull()
-    expect(body.status).toBe('starting')
-    expect(body.ready).toBe(false)
-    expect(body.error.code).toBe('vm_pool_unavailable')
   })
 
   test('default catch path: 500 sandbox_failed with url:null + status:error', async () => {
@@ -576,7 +525,7 @@ describe('POST /projects/:projectId/runtime/restart', () => {
     expect(res.status).toBe(404)
   })
 
-  test('host mode (no VM, no K8s): calls stop() BEFORE re-resolving', async () => {
+  test('host mode (not K8s): calls stop() BEFORE re-resolving', async () => {
     // Sequence pin: stop must run before resolveProjectPodUrl so the
     // helper doesn\'t short-circuit on the already-running runtime.
     const calls: string[] = []
@@ -597,12 +546,6 @@ describe('POST /projects/:projectId/runtime/restart', () => {
     })
     await makeApp().request('/api/projects/proj-1/runtime/restart', { method: 'POST' })
     expect(calls).toEqual(['stop', 'resolve'])
-  })
-
-  test('VM isolation enabled: does NOT call stop()', async () => {
-    process.env.SHOGO_VM_ISOLATION = 'true'
-    await makeApp().request('/api/projects/proj-1/runtime/restart', { method: 'POST' })
-    expect(rmStopMock).not.toHaveBeenCalled()
   })
 
   test('K8s mode (KUBERNETES_SERVICE_HOST set): does NOT call stop()', async () => {
@@ -634,11 +577,10 @@ describe('POST /projects/:projectId/runtime/restart', () => {
     })
   })
 
-  test('VM mode: returns res.url + port=0', async () => {
-    process.env.SHOGO_VM_ISOLATION = 'true'
+  test('metal mode: returns res.url + port=0', async () => {
     resolveProjectPodUrlMock.mockImplementation(async () => ({
-      mode: 'vm' as const,
-      url: 'https://vm.cluster',
+      mode: 'metal' as const,
+      url: 'https://metal.example',
     }))
     const res = await makeApp().request('/api/projects/proj-1/runtime/restart', {
       method: 'POST',
@@ -647,21 +589,9 @@ describe('POST /projects/:projectId/runtime/restart', () => {
       success: true,
       projectId: 'proj-1',
       status: 'running',
-      url: 'https://vm.cluster',
+      url: 'https://metal.example',
       port: 0,
     })
-  })
-
-  test('VM isolation enabled + helper throws → 503 vm_pool_unavailable', async () => {
-    process.env.SHOGO_VM_ISOLATION = 'true'
-    resolveProjectPodUrlMock.mockImplementation(async () => {
-      throw new Error('pool exhausted')
-    })
-    const res = await makeApp().request('/api/projects/proj-1/runtime/restart', {
-      method: 'POST',
-    })
-    expect(res.status).toBe(503)
-    expect((await res.json()).error.code).toBe('vm_pool_unavailable')
   })
 
   test('default catch path: 500 restart_failed', async () => {

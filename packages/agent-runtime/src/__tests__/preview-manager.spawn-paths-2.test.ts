@@ -435,11 +435,27 @@ describe('PreviewManager.startCustomRoutesWatcher', () => {
     let restartCalled = false
     ;(pm as any).restartApiServerOnly = async () => { restartCalled = true }
     ;(pm as any).startCustomRoutesWatcher()
-    writeFileSync(join(projectDir, 'custom-routes.ts'), 'export {}')
-    await new Promise((r) => setTimeout(r, 800))
+    // fs.watch delivery latency varies a lot under a loaded parallel test
+    // runner, so poll past the 500ms debounce instead of sleeping a fixed
+    // amount and hoping the event already landed. Re-touch the file as we
+    // poll: on macOS a write issued before the watcher is fully armed can be
+    // dropped outright, and waiting longer for an event that will never
+    // arrive is what made this test flaky.
+    const routesFile = join(projectDir, 'custom-routes.ts')
+    const deadline = Date.now() + 5000
+    let nextTouch = 0
+    while (!restartCalled && Date.now() < deadline) {
+      if (Date.now() >= nextTouch) {
+        writeFileSync(routesFile, `export {} // ${Date.now()}`)
+        // Comfortably longer than the 500ms debounce: retouching faster than
+        // that would keep resetting the timer and the restart would never fire.
+        nextTouch = Date.now() + 1500
+      }
+      await new Promise((r) => setTimeout(r, 50))
+    }
     ;(pm as any).customRoutesWatcher?.close()
     expect(restartCalled).toBe(true)
-  })
+  }, 10000)
 
   test('regenerating short-circuits inside the watcher handler', async () => {
     const { root, projectDir } = makeWorkspace({})
