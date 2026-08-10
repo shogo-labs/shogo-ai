@@ -3,28 +3,17 @@
 import { getActiveWorkspaceId } from './workspace-store'
 
 /**
- * Upper bound on the workspace-scoped project list. Matches
- * `ProjectCollection.loadPage`'s default page size.
+ * Query params for `ProjectCollection.loadAll` scoped to the active workspace.
  *
- * Without a bound, `GET /api/projects` returns the entire workspace on every
- * app load — 155 KB for 55 rows in production, to render a sidebar that shows
- * five names before collapsing the rest behind a toggle.
+ * This list is workspace-wide, but callers narrow it to the current user
+ * (`AppSidebar`'s "mine" scope filters on `createdBy`). A `limit` here therefore
+ * cannot be a page of the workspace: in a 212-project shared workspace, capping
+ * to the 50 newest hid every project belonging to 11 of its 12 creators. Bound
+ * this only once the server can scope the page to the requesting user.
  */
-const PROJECT_LIST_LIMIT = 50
-
-/** Query params for `ProjectCollection.loadAll` scoped to the active workspace. */
 export function workspaceProjectFilter(
   workspaceId?: string | null,
-): { workspaceId: string; limit: string; orderBy: string } | undefined {
+): { workspaceId: string } | undefined {
   const id = workspaceId ?? getActiveWorkspaceId()
-  if (!id) return undefined
-  // `orderBy` has to travel with `limit`. The list route only honours an
-  // explicit `orderBy` query param and otherwise leaves ordering to the
-  // database, so a capped query without one returns an arbitrary slice rather
-  // than the newest projects.
-  return {
-    workspaceId: id,
-    limit: String(PROJECT_LIST_LIMIT),
-    orderBy: 'createdAt:desc',
-  }
+  return id ? { workspaceId: id } : undefined
 }
