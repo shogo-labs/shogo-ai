@@ -128,6 +128,37 @@ export function deriveWebhookToken(projectId: string): string {
     .digest('hex')
 }
 
+/**
+ * Derive a per-project thumbnail token.
+ *
+ * Gates `GET /api/projects/:projectId/thumbnail.png`, which serves a stored
+ * thumbnail as image bytes so the projects list can hand out a short URL
+ * instead of inlining a base64 data URI.
+ *
+ * The token in the query string IS the credential, because the consumer is an
+ * `<img>` / React Native `<Image>`: those requests carry no Authorization
+ * header, and on native no session cookie either (the Expo auth client adds
+ * `Cookie` from its own fetch, which the image loader doesn't use). That's the
+ * same capability-URL shape as the presigned S3 links this route stands in for.
+ *
+ * Bare hex for the same reason as `deriveWebhookToken`: the projectId is
+ * already in the path, so self-identification would be cosmetics.
+ */
+export function deriveThumbnailToken(projectId: string): string {
+  return createHmac('sha256', getSigningSecret())
+    .update(`thumbnail:${projectId}`)
+    .digest('hex')
+}
+
+/** Timing-safe check of a `deriveThumbnailToken` value against a projectId. */
+export function verifyThumbnailToken(
+  projectId: string | undefined | null,
+  token: string | undefined | null,
+): boolean {
+  if (!projectId || !token) return false
+  return safeTokenEqual(token, deriveThumbnailToken(projectId))
+}
+
 export type ParsedRuntimeToken =
   | { format: 'v1'; projectId: string; hmac: string }
   | { format: 'legacy'; hmac: string }
