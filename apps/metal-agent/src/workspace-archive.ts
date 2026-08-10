@@ -59,6 +59,10 @@ export interface WorkspaceArchive {
  *   adopted  — a legacy resume with unknown lineage overwrote (migration only;
  *              see `adoptWhenUnknown`). Self-heals: the returned etag becomes
  *              the lineage for subsequent writes.
+ *   promoted — real source replaced a template-shaped backup it could not prove
+ *              descent from (a project built inside a template-origin VM). The
+ *              replaced placeholder was preserved at `supersededKey` first, so
+ *              nothing is destroyed. Self-heals like `adopted`.
  *   conflict — the writer did NOT descend from the current object (template, a
  *              stale snapshot, or a losing racer), OR the write would have
  *              collapsed a real backup to a template-shaped one (`reason`). The
@@ -69,6 +73,7 @@ export type BackupWriteOutcome =
   | { status: 'created'; etag: string | null }
   | { status: 'written'; etag: string | null }
   | { status: 'adopted'; etag: string | null }
+  | { status: 'promoted'; etag: string | null; supersededKey: string }
   | {
       status: 'conflict'
       quarantineKey: string
@@ -131,7 +136,7 @@ export function etagEq(a: string | null | undefined, b: string | null | undefine
 }
 
 /** The action the guard takes; the pure core of the write decision (S3-free). */
-export type BackupWriteAction = 'create' | 'overwrite' | 'adopt' | 'quarantine'
+export type BackupWriteAction = 'create' | 'overwrite' | 'adopt' | 'promote' | 'quarantine'
 
 /**
  * Template exports (the "Project Ready" placeholder workspace) pack to ~337 KB;
@@ -142,6 +147,33 @@ export type BackupWriteAction = 'create' | 'overwrite' | 'adopt' | 'quarantine'
 export const TEMPLATE_MAX_BYTES = 512 * 1024
 /** A durable object at or above this size is unambiguously real user source. */
 export const REAL_MIN_BYTES = 1024 * 1024
+
+/**
+ * True when the object in S3 is template-shaped and the incoming write is
+ * unambiguously real — the exact inverse of {@link isTemplateRegression}.
+ *
+ * This is the case the lineage rule gets wrong. A project built entirely inside
+ * a template-origin VM has no lineage to prove: it never hydrated from a backup,
+ * so it carries no parent ETag and `adoptWhenUnknown` is (correctly) false for a
+ * template origin. Its export is therefore quarantined on every suspend, and the
+ * bare template stays the durable backup — so the user opens their project and
+ * gets "Project Ready" while their work sits under `conflict/`. Observed on
+ * cbead0b5 (0.37 MB template live, 2.02 MB of real source quarantined) and 242
+ * other projects.
+ *
+ * Promoting is safe in a way that adopting is not, because of WHAT is being
+ * replaced: the template placeholder holds no user work by definition, so there
+ * is nothing to lose. The clobber this whole guard exists to prevent runs the
+ * other way — real source collapsing to a template — and that remains refused.
+ * Fails SAFE: unknown sizes return false and defer to the lineage decision.
+ */
+export function isTemplatePromotion(
+  currentSize: number | null,
+  incomingSize: number | null,
+): boolean {
+  if (currentSize == null || incomingSize == null) return false
+  return currentSize <= TEMPLATE_MAX_BYTES && incomingSize >= REAL_MIN_BYTES
+}
 
 /**
  * True when replacing a `currentSize`-byte object with `incomingSize` bytes
@@ -197,6 +229,12 @@ export function decideBackupWrite(input: {
     }
     return 'adopt'
   }
+  // Real source arriving over a template placeholder. Quarantining here is what
+  // stranded 243 projects on a "Project Ready" backup while their work sat in
+  // `conflict/`: a workspace built inside a template VM has no lineage it could
+  // ever present. Take the write, but keep the object it replaces (see
+  // `uploadWorkspaceArchiveGuarded`) so the decision is reversible.
+  if (isTemplatePromotion(input.currentSize ?? null, input.incomingSize ?? null)) return 'promote'
   return 'quarantine'
 }
 
@@ -274,6 +312,7 @@ export async function describeWorkspaceArchive(
  *   - no object in S3            → write it (first backup): `created`
  *   - lineage matches current    → overwrite (safe): `written`
  *   - lineage unknown + adopt    → overwrite, trust a legacy resume: `adopted`
+ *   - real source over template  → overwrite, keeping the placeholder: `promoted`
  *   - otherwise                  → quarantine, never clobber: `conflict`
  *
  * `opts.adoptWhenUnknown` exists ONLY for the migration tail: a snapshot taken
@@ -322,6 +361,18 @@ export async function uploadWorkspaceArchiveGuarded(
     case 'adopt':
       await s3.client.write(key, bytes, { type: 'application/gzip' })
       return { status: 'adopted', etag: await statEtag(file) }
+    case 'promote': {
+      // Keep the placeholder we are about to replace. It should be worthless —
+      // that is the whole basis for allowing this write — but "template-shaped"
+      // is inferred from a size threshold, not proven, and a copy costs one PUT
+      // against permanently destroying a small project that tripped the
+      // heuristic. Stash first so a failure here refuses the write rather than
+      // taking the object with it.
+      const supersededKey = quarantineKey(projectId)
+      await s3.client.write(supersededKey, await file.arrayBuffer(), { type: 'application/gzip' })
+      await s3.client.write(key, bytes, { type: 'application/gzip' })
+      return { status: 'promoted', etag: await statEtag(file), supersededKey }
+    }
     case 'quarantine': {
       // The writer either does NOT descend from the current backup, or its
       // export would collapse a real backup to a template (size backstop).
