@@ -80,6 +80,16 @@ import {
   getTechStackPath,
   workspaceUsesVite,
 } from './workspace-defaults'
+import {
+  archiveNeedsSidecarClear,
+  clearSqliteSidecars,
+  packWritableState,
+  writableStateTag,
+  WRITABLE_STATE_PATHS,
+  SQLITE_SIDECAR_ENTRY,
+} from './writable-state'
+import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
+import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
@@ -2566,29 +2576,127 @@ app.post('/preview/stop', (c) => {
 // RUNTIME_AUTH_SECRET it injected via `/pool/assign`. The archive is applied
 // only when it actually contains project source (guards against clobbering a
 // live workspace with an empty/partial upload).
-app.post('/pool/hydrate', async (c) => {
-  const body = await c.req.arrayBuffer()
-  if (!body || body.byteLength === 0) {
-    return c.json({ error: 'empty archive' }, 400)
-  }
-  const tmp = join('/tmp', `pool-hydrate-${Date.now()}.tar.gz`)
-  try {
-    writeFileSync(tmp, Buffer.from(body))
-    await extractTarFastNonBlocking(tmp, WORKSPACE_DIR)
-    // Rebuild so the served dist reflects the hydrated source. Fire-and-forget:
-    // readiness is reported through the normal preview/gateway status.
+// A cold boot applies SEVERAL overlays back to back through this one endpoint:
+// project source, then writable state (database + uploads), then a published
+// site's live data. `PreviewManager.restart()` is `stop()` + `start()` with no
+// in-flight guard, so rebuilding per-overlay meant a later extraction tore down
+// a rebuild that was still running — wasted work on every cold boot and a
+// needlessly racy one. Coalesce instead: each hydrate (re)schedules the rebuild
+// a short quiet period out, so the last overlay wins and exactly one rebuild
+// runs over the fully-assembled workspace. Overlays spaced further apart than
+// the window simply degrade to the old behavior, which is still correct.
+const HYDRATE_REBUILD_DEBOUNCE_MS = 300
+let hydrateRebuildTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleHydrateRebuild(): void {
+  if (hydrateRebuildTimer) clearTimeout(hydrateRebuildTimer)
+  hydrateRebuildTimer = setTimeout(() => {
+    hydrateRebuildTimer = null
+    // Fire-and-forget: readiness is reported through the normal preview/gateway
+    // status, so the host's hydrate call never blocks on a full rebuild.
     getPreviewManager()
       .restart()
       .catch((e: any) => console.error('[pool/hydrate] rebuild failed:', e?.message ?? e))
-    console.log(`[pool/hydrate] hydrated workspace from durable backup (${body.byteLength} bytes)`)
-    return c.json({ ok: true, bytes: body.byteLength })
+  }, HYDRATE_REBUILD_DEBOUNCE_MS)
+}
+
+/**
+ * Everything a hydrate does once the bytes have landed in the workspace,
+ * shared by the pull and push endpoints.
+ *
+ * `entries` is the filtered listing of what was extracted: a database restored
+ * WITHOUT its WAL must not be opened next to someone else's. A `-wal` left over
+ * from the rootfs template still holds live frames, and SQLite replays them
+ * over the file just installed — the result reads back as a healthy database
+ * containing the TEMPLATE's rows, with `integrity_check` reporting "ok". The
+ * restore is silently undone.
+ */
+function finishHydrate(entries: string[]): void {
+  if (archiveNeedsSidecarClear(entries)) {
+    const removed = clearSqliteSidecars(WORKSPACE_DIR)
+    if (removed.length) {
+      console.log(`[pool/hydrate] cleared stale SQLite sidecars: ${removed.join(', ')}`)
+    }
+  }
+  // Rebuild so the served dist reflects everything that was hydrated —
+  // debounced, because more overlays are usually still arriving.
+  scheduleHydrateRebuild()
+}
+
+/** Ceiling on a pull, however generous a deadline the host asks for. */
+const PULL_MAX_SECONDS = 30 * 60
+
+/**
+ * Pull-based hydrate: the host hands over a short-lived presigned URL and the
+ * guest fetches the archive itself.
+ *
+ * This is the endpoint that makes multi-gigabyte projects openable. Pushing the
+ * bytes cannot work at that size no matter how either side frames the request,
+ * because Bun.serve accumulates a request body in memory whenever the handler
+ * reads slower than the wire delivers it — and `tar` always does. Pulling puts
+ * a kernel pipe between the download and the extraction, which is the only part
+ * of this path that has ever applied real backpressure.
+ *
+ * A host that predates this endpoint gets a 404 and falls back to pushing, so
+ * the two sides can roll out in either order.
+ */
+app.post('/pool/hydrate-url', async (c) => {
+  let body: { url?: unknown; bytes?: unknown; timeoutMs?: unknown }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'expected a JSON body' }, 400)
+  }
+
+  const url = typeof body.url === 'string' ? body.url : ''
+  // The host is authenticated, but a URL is still an instruction to make an
+  // outbound request: keep it to the two schemes this can legitimately be.
+  if (!/^https?:\/\//.test(url)) return c.json({ error: 'url must be http(s)' }, 400)
+
+  const expected = typeof body.bytes === 'number' ? body.bytes : 0
+  const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : 0
+  const maxSeconds = Math.min(PULL_MAX_SECONDS, Math.max(30, Math.ceil(timeoutMs / 1000)))
+
+  sweepSpool()
+  try {
+    const { matched } = await extractTarFromUrl(url, WORKSPACE_DIR, SQLITE_SIDECAR_ENTRY, {
+      maxSeconds,
+    })
+    finishHydrate(matched)
+    // The URL carries a live read capability in its signature; log where it
+    // pointed, never how to get there again.
+    console.log(
+      `[pool/hydrate] pulled ${new URL(url).pathname} into the workspace (${expected} bytes)`,
+    )
+    return c.json({ ok: true, bytes: expected })
+  } catch (err: any) {
+    console.error('[pool/hydrate] pull failed:', redactUrls(String(err?.message ?? err)))
+    return c.json({ error: redactUrls(String(err?.message ?? 'hydrate failed')) }, 500)
+  }
+})
+
+app.post('/pool/hydrate', async (c) => {
+  const stream = c.req.raw.body
+  if (!stream) return c.json({ error: 'empty archive' }, 400)
+  sweepSpool()
+  let bytes = 0
+  try {
+    // Extract straight from the request body — the archive is never written
+    // down as a whole, in memory or on disk.
+    //
+    // Bounded only by what the SENDER chooses to have in flight; see
+    // `/pool/hydrate-url` for why that is not something this side can fix.
+    // Only the database and its WAL affect the sidecar decision, so the listing
+    // is filtered as it streams instead of being accumulated.
+    const result = await extractTarStream(stream, WORKSPACE_DIR, SQLITE_SIDECAR_ENTRY)
+    bytes = result.bytes
+    if (bytes === 0) return c.json({ error: 'empty archive' }, 400)
+
+    finishHydrate(result.matched)
+    console.log(`[pool/hydrate] hydrated workspace from durable backup (${bytes} bytes)`)
+    return c.json({ ok: true, bytes })
   } catch (err: any) {
     console.error('[pool/hydrate] failed:', err?.message ?? err)
     return c.json({ error: err?.message ?? 'hydrate failed' }, 500)
-  } finally {
-    try {
-      unlinkSync(tmp)
-    } catch {}
   }
 })
 
@@ -2602,7 +2710,9 @@ app.post('/pool/hydrate', async (c) => {
 // Auth: under the `/pool` prefix, so it requires the runtime token — the agent
 // presents the same RUNTIME_AUTH_SECRET it injected via `/pool/assign`.
 app.post('/pool/export', async (c) => {
-  const tmp = join('/tmp', `pool-export-${Date.now()}.tar.gz`)
+  sweepSpool()
+  const tmp = spoolPath('pool-export.tar.gz')
+  let handedOff = false
   try {
     const sync =
       s3SyncInstance ??
@@ -2614,19 +2724,110 @@ app.post('/pool/export', async (c) => {
     if (!sync) return c.json({ error: 's3 sync unavailable' }, 500)
     const packed = await sync.packProjectArchive(tmp)
     if (!packed) return c.body(null, 204) // empty/new workspace — nothing to back up
-    const bytes = readFileSync(tmp)
-    console.log(`[pool/export] packed workspace source for durable backup (${bytes.length} bytes)`)
-    return new Response(new Uint8Array(bytes), {
-      status: 200,
-      headers: { 'Content-Type': 'application/gzip' },
-    })
+    const size = statSync(tmp).size
+    console.log(`[pool/export] packed workspace source for durable backup (${size} bytes)`)
+    // Streamed, not read into a Buffer: the largest source archive in
+    // production is ~1.8 GB and the guest has 4 GiB, so materialising it to
+    // respond is most of the VM's memory for the length of the upload.
+    const res = await spooledFileResponse(tmp, { 'Content-Type': 'application/gzip' })
+    // Only now: if the call above threw before taking ownership, the `finally`
+    // still needs to clean up.
+    handedOff = true
+    return res
   } catch (err: any) {
     console.error('[pool/export] failed:', err?.message ?? err)
     return c.json({ error: err?.message ?? 'export failed' }, 500)
   } finally {
-    try {
-      unlinkSync(tmp)
-    } catch {}
+    // The streaming response already unlinked it and owns the descriptor.
+    if (!handedOff) {
+      try {
+        unlinkSync(tmp)
+      } catch {}
+    }
+  }
+})
+
+// Metal write-side durability for RUNTIME WRITABLE STATE (host-driven).
+//
+// `/pool/export` above packs project SOURCE. That is deliberately not enough:
+// a project's SQLite database and uploaded media are not source, and depending
+// on which writer last touched `project-src.tar.gz` they may be absent from it
+// entirely (the git_only shutdown path packs `git archive HEAD`, and templates
+// gitignore `prisma/dev.db`). Runtime state therefore used to survive only
+// inside the VM snapshot — so any cold boot that bypassed the snapshot (a
+// rootfs rebuild invalidating it, durable GC, a cross-host assign) silently
+// restored source over an empty database and destroyed the user's data.
+//
+// This is the symmetric counterpart of `/pool/hydrate` for writable state: the
+// metal-agent pulls this archive and uploads it to `{projectId}/project-data.tar.gz`,
+// then streams it back through `/pool/hydrate` on a cold boot. Scoped to the
+// same writable paths the published-app path has used in production, so the
+// layout is identical and the two mechanisms stay interchangeable.
+//
+// Returns 204 when the project has no writable state (a purely static app, or
+// a workspace whose DB has not been created yet) — the caller treats that as
+// "nothing to persist", NOT as an empty archive to write over a real one.
+//
+// Auth: under the `/pool` prefix, so it requires the runtime token.
+//
+// Shared with `/agent/published-data-archive`: both persist the same notion of
+// "writable runtime state", one per-project on metal and one per-subdomain for
+// published apps. Keeping a single list means an app whose data survives while
+// published also survives in development. The list itself lives in
+// `writable-state.ts` alongside the snapshot logic that consumes it.
+
+app.post('/pool/export-data', async (c) => {
+  const tag = writableStateTag(WORKSPACE_DIR)
+  // 204 = "nothing to persist", which the host must NOT confuse with an empty
+  // archive to write over a real one.
+  if (tag === null) return c.body(null, 204)
+
+  // The host echoes back the tag it already holds. When nothing has changed we
+  // answer without snapshotting, packing or transferring anything, so an idle
+  // project costs a stat walk instead of a full database rewrite every cycle.
+  if (c.req.header('if-none-match') === tag) {
+    return new Response(null, { status: 304, headers: { ETag: tag } })
+  }
+
+  const fsp = await import('node:fs/promises')
+  sweepSpool()
+  // Under the spool, not os.tmpdir(): this stages a VACUUM INTO copy of the
+  // database AND the tar built from it, so in the guest it would be paying for
+  // the writable state twice over in RAM. See spool.ts.
+  const stage = await fsp.mkdtemp(join(spoolDir(), 'shogo-data-export-'))
+  const out = join(stage, 'data.tar.gz')
+  try {
+    const pack = await packWritableState({
+      workspaceDir: WORKSPACE_DIR,
+      stageDir: join(stage, 'db'),
+      outPath: out,
+      // Reuse the tag from the 304 check above: it was taken before any of the
+      // work below, which is the safe side of the ordering to err on.
+      tag,
+    })
+    if (!pack) return c.body(null, 204)
+
+    const size = statSync(out).size
+    console.log(
+      `[pool/export-data] packed writable state for durable backup ` +
+        `(${size} bytes, paths: ${pack.paths.join(', ')}, tag: ${pack.tag ?? 'none'})`,
+    )
+    // Streams from an already-unlinked descriptor, so the `finally` below can
+    // remove the stage directory out from under it without truncating the
+    // response.
+    return await spooledFileResponse(out, {
+      'Content-Type': 'application/gzip',
+      'X-Shogo-Data-Paths': pack.paths.join(','),
+      ...(pack.tag ? { ETag: pack.tag } : {}),
+    })
+  } catch (err: any) {
+    // Deliberately NOT falling back to copying the database files: a torn copy
+    // restores as a healthy-looking database with wrong contents, which is
+    // worse than no new backup at all (the last good archive stays intact).
+    console.error('[pool/export-data] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'export failed' }, 500)
+  } finally {
+    await fsp.rm(stage, { recursive: true, force: true }).catch(() => {})
   }
 })
 
@@ -4769,18 +4970,8 @@ app.get('/agent/dist-files', (c) => {
  * Lives under the runtime-owned `/agent/*` namespace (auth-gated by
  * `x-runtime-token`), same as `/agent/dist-files`.
  */
-const PUBLISHED_DATA_WRITABLE_PATHS = [
-  'prisma/dev.db',
-  'prisma/dev.db-wal',
-  'prisma/dev.db-shm',
-  'uploads',
-  'public/uploads',
-  'storage',
-]
 app.get('/agent/published-data-archive', async (c) => {
-  const present = PUBLISHED_DATA_WRITABLE_PATHS.filter((p) =>
-    existsSync(join(WORKSPACE_DIR, p)),
-  )
+  const present = WRITABLE_STATE_PATHS.filter((p) => existsSync(join(WORKSPACE_DIR, p)))
   if (present.length === 0) {
     return c.json(
       { error: 'no_writable_state', message: 'No prisma/dev.db or upload dirs to archive' },
@@ -5565,14 +5756,14 @@ async function startGateway(): Promise<void> {
   // Pool-mode invariant: the gateway starts the TypeScript + Pyright LSPs
   // (~450 MB combined RSS), prisma generate, and the canvas vite build
   // watcher. None of these should fire before /pool/assign, otherwise
-  // every warm pool VM would sit at ~3 GB RSS even when idle. The plan
-  // (vm-pool-oom-fix) tracks this property as part of the host-memory
-  // budget for desktop VMs.
+  // every warm pool instance would sit at ~3 GB RSS even when idle. The
+  // plan (vm-pool-oom-fix) tracks this property as part of the host-memory
+  // budget for pooled runtimes.
   if (state.isPoolMode && !state.poolAssigned) {
     console.warn(
       '[agent-runtime] startGateway() called in pool mode before /pool/assign — refusing. ' +
       'This would prematurely start the TS/Py LSPs and prisma engine, blowing the ' +
-      'idle pool VM memory budget. The caller likely forgot to await onAssign().',
+      'idle pool memory budget. The caller likely forgot to await onAssign().',
     )
     return
   }
@@ -5997,7 +6188,7 @@ export default {
       // they're safe in the hot path.
       const poolMode = state.isPoolMode && !state.poolAssigned
       // Mirror just enough of the slow-path `gateway` shape that the eval
-      // worker readiness checks (vm-worker / docker-worker / k8s-worker)
+      // worker readiness checks (docker-worker / k8s-worker / local-worker)
       // can detect a started gateway. We deliberately do NOT call
       // agentGateway.getStatus() here — that walks the memory dir and
       // would re-introduce the Windows JIT freeze this fast path exists
@@ -6034,8 +6225,23 @@ export default {
   idleTimeout: 0,
   // Durable-backup hydration (`POST /pool/hydrate`) streams a full project
   // tarball — source + uploaded assets + built `dist/` — into the guest. Bun's
-  // default 128 MB request-body cap rejected large restored workspaces with a
-  // 413, leaving those projects unable to load. Raise the cap so realistic
-  // asset-heavy workspaces hydrate; 1 GiB stays well under the guest's 4 GB RAM.
-  maxRequestBodySize: 1024 * 1024 * 1024,
+  // default 128 MB cap rejected large restored workspaces with a 413, and
+  // hydrate failure is FAIL-CLOSED: the host destroys the VM and the project
+  // cannot open at all, so the cap is not a throttle but a hard eligibility
+  // line for being able to open your project.
+  //
+  // 1 GiB was chosen when the handler buffered the body in the guest's 4 GB of
+  // RAM. Two production projects are already past it (1.85 GB and 1.77 GB of
+  // generated video frames and downloaded stock footage) and survive only
+  // because a snapshot exists — a rootfs rebuild invalidates every snapshot and
+  // would strand them.
+  //
+  // The handler no longer holds the archive at all: it pipes the body into tar,
+  // so the cost is the extracted tree rather than the tree plus a copy of the
+  // archive. What that has to fit in is the rootfs free space — about 3.8 GiB,
+  // NOT the 13.6 GB image size, most of which is the runtime itself. This cap
+  // is therefore the looser of the two limits and exists to refuse something
+  // absurd; a project that genuinely cannot fit fails at extraction with a
+  // legible ENOSPC instead.
+  maxRequestBodySize: 4 * 1024 * 1024 * 1024,
 }

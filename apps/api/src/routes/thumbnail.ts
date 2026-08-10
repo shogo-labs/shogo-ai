@@ -20,9 +20,48 @@
  */
 
 import { Hono } from 'hono'
+import { createHash } from 'crypto'
 import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from '../lib/prisma'
 import { validateOutboundUrl } from '../lib/url-validation'
+import { deriveThumbnailToken, verifyThumbnailToken } from '../lib/runtime-token'
+
+/**
+ * Path (relative to the API origin) that serves a project's thumbnail as image
+ * bytes. Used by the projects-list response to replace a stored base64 data URI
+ * with a short, cacheable URL — a 37 KB data URI per row was half the weight of
+ * the whole list.
+ */
+export function buildThumbnailImagePath(projectId: string): string {
+  return `/api/projects/${projectId}/thumbnail.png?t=${deriveThumbnailToken(projectId)}`
+}
+
+/**
+ * Replace inlined base64 thumbnails in a projects-list payload with URLs that
+ * serve the same bytes. Mutates `payload.items` in place and reports whether
+ * anything changed. Rows already holding a presigned S3 link are left alone.
+ */
+export function rewriteInlineThumbnails(payload: any, origin: string): boolean {
+  if (!Array.isArray(payload?.items)) return false
+  let changed = false
+  for (const item of payload.items) {
+    if (item?.id && typeof item.thumbnailUrl === 'string' && item.thumbnailUrl.startsWith('data:')) {
+      item.thumbnailUrl = `${origin}${buildThumbnailImagePath(item.id)}`
+      changed = true
+    }
+  }
+  return changed
+}
+
+/** Splits a `data:` URI into its media type and decoded bytes. */
+function decodeDataUri(uri: string): { contentType: string; bytes: Buffer } | null {
+  const comma = uri.indexOf(',')
+  if (comma < 0) return null
+  const meta = uri.slice('data:'.length, comma)
+  if (!meta.includes('base64')) return null
+  const contentType = meta.split(';')[0] || 'image/png'
+  return { contentType, bytes: Buffer.from(uri.slice(comma + 1), 'base64') }
+}
 
 async function saveThumbnail(projectId: string, pngBuffer: Buffer): Promise<string> {
   try {
@@ -220,6 +259,58 @@ export function thumbnailRoutes() {
       }
 
       return c.json({ ok: true, thumbnailUrl: project.thumbnailUrl })
+    } catch (error: any) {
+      return c.json({ error: { code: 'failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * Serve a project's thumbnail as image bytes, gated by the per-project token
+   * in `?t=` rather than by session auth — see `deriveThumbnailToken` for why an
+   * image request can't present ambient credentials.
+   */
+  router.get('/projects/:projectId/thumbnail.png', async (c) => {
+    const projectId = c.req.param('projectId')
+
+    if (!verifyThumbnailToken(projectId, c.req.query('t'))) {
+      return c.json({ error: { code: 'forbidden', message: 'Invalid thumbnail token' } }, 403)
+    }
+
+    try {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { thumbnailUrl: true },
+      })
+      const stored = project?.thumbnailUrl
+      if (!stored) {
+        return c.json({ error: { code: 'not_found', message: 'No thumbnail' } }, 404)
+      }
+
+      // S3-backed thumbnails are already a presigned URL. Hand the caller
+      // straight to the bucket instead of proxying the bytes through the API.
+      if (!stored.startsWith('data:')) {
+        return c.redirect(stored, 302)
+      }
+
+      const decoded = decodeDataUri(stored)
+      if (!decoded) {
+        return c.json({ error: { code: 'not_found', message: 'No thumbnail' } }, 404)
+      }
+
+      // The URL is stable but the image is re-captured over a project's life, so
+      // revalidate rather than serving a stale screenshot for an hour. `private`
+      // keeps a capability URL out of shared caches.
+      const etag = `"${createHash('sha1').update(decoded.bytes).digest('hex')}"`
+      if (c.req.header('if-none-match') === etag) {
+        return c.body(null, 304, { ETag: etag, 'Cache-Control': 'private, max-age=60' })
+      }
+
+      return c.body(decoded.bytes as any, 200, {
+        'Content-Type': decoded.contentType,
+        'Content-Length': String(decoded.bytes.byteLength),
+        'Cache-Control': 'private, max-age=60',
+        ETag: etag,
+      })
     } catch (error: any) {
       return c.json({ error: { code: 'failed', message: error.message } }, 500)
     }

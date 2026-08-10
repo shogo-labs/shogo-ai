@@ -74,9 +74,21 @@ afterEach(() => {
   globalThis.clearTimeout = origClearTimeout
 })
 
-function flushPromises() {
-  // Drain the microtask queue so awaited fetches resolve.
-  return new Promise((r) => origSetTimeout(r as any, 0))
+async function flushPromises() {
+  // Every assertion here waits on the same chain: the injected fetch resolves,
+  // the hook sets state, React re-renders. A bare `setTimeout(0)` only yields
+  // one macrotask, which is enough for the first two steps but not reliably for
+  // the render — so on a loaded machine a single test out of the file would
+  // fail, a different one each run. (Seen on CI four times across two runs and
+  // their serial retries; never locally.)
+  //
+  // `act` is the supported way to wait for that: it flushes effects and pending
+  // state updates and does not return until React is quiescent. The real
+  // `setTimeout` is used deliberately — `globalThis.setTimeout` is the fake this
+  // file installs to control the poller, and yielding through it would deadlock.
+  await act(async () => {
+    await new Promise((r) => origSetTimeout(r as any, 0))
+  })
 }
 
 function fireOneTimer() {

@@ -37,6 +37,7 @@ import {
   type ToolContext,
 } from '../gateway-tools'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
+import { enableSearchToolForTests, restoreSearchToolFlag } from './helpers/search-flag'
 
 const TEST_DIR = '/tmp/test-gw-v4'
 
@@ -146,7 +147,7 @@ describe('resolveToolNames', () => {
 
   test('dedupes across overlapping group + individual', () => {
     const r = resolveToolNames(['shell', 'exec', 'shell'])
-    expect(r.sort()).toEqual(['exec', 'exec_wait'])
+    expect(r.sort()).toEqual(['exec', 'exec_wait', 'terminal_exec', 'terminal_read'])
   })
 
   test('empty input returns empty list', () => {
@@ -451,11 +452,18 @@ describe('createTools', () => {
   })
 
   test('every entry in ALL_TOOL_NAMES that is not a workspace-only alias exists', () => {
-    const tools = createTools(makeCtx())
-    const toolNames = new Set(tools.map(t => t.name))
-    // Spot-check the load-bearing tools agents call most often
-    for (const name of ['exec', 'read_file', 'write_file', 'edit_file', 'web', 'todo_write', 'search']) {
-      expect(toolNames.has(name), `tool ${name} missing`).toBe(true)
+    // `search` is flag-gated (SHOGO_SEARCH_ENABLED) — opt in so the spot-check
+    // covers it too. See helpers/search-flag.ts.
+    enableSearchToolForTests()
+    try {
+      const tools = createTools(makeCtx())
+      const toolNames = new Set(tools.map(t => t.name))
+      // Spot-check the load-bearing tools agents call most often
+      for (const name of ['exec', 'read_file', 'write_file', 'edit_file', 'web', 'todo_write', 'search']) {
+        expect(toolNames.has(name), `tool ${name} missing`).toBe(true)
+      }
+    } finally {
+      restoreSearchToolFlag()
     }
   })
 

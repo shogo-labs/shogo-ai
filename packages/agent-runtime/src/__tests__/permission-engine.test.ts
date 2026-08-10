@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, test, expect, beforeEach, mock } from 'bun:test'
-import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -31,7 +31,10 @@ const {
 
 let workspaceDir: string
 beforeEach(() => {
-  workspaceDir = mkdtempSync(join(tmpdir(), 'shogo-perm-test-'))
+  // realpath the tmpdir: on macOS os.tmpdir() is under /var, a symlink to
+  // /private/var. assertWithinWorkspace compares resolved paths against
+  // realpath'd roots, so an un-resolved workspaceDir looks "outside" itself.
+  workspaceDir = realpathSync(mkdtempSync(join(tmpdir(), 'shogo-perm-test-')))
 })
 
 function newEngine(opts: any = {}): InstanceType<typeof PermissionEngine> {

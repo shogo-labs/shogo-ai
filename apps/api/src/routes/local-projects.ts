@@ -14,8 +14,7 @@
  *   `Project` row.
  *
  * These routes are mounted in `apps/api/src/server.ts` only when
- * `SHOGO_LOCAL_MODE=true` (next to `vmRoutes()`). They are not exposed in
- * the cloud build.
+ * `SHOGO_LOCAL_MODE=true`. They are not exposed in the cloud build.
  */
 
 import { Hono } from 'hono'

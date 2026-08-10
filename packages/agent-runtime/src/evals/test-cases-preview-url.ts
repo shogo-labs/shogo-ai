@@ -15,12 +15,12 @@
  *
  * How to run (the localhost bug needs a *public* URL to exist):
  *   EVAL_PUBLIC_PREVIEW_URL=https://preview--evalproj.shogo.dev \
- *     bun run src/evals/run-eval.ts --track preview-url --vm --workers 1
+ *     bun run src/evals/run-eval.ts --track preview-url --workers 1
  *
- * The runner threads EVAL_PUBLIC_PREVIEW_URL → PUBLIC_PREVIEW_URL inside the
- * VM (see run-eval.ts vmWorkerConfig.envOverrides). Pre-fix the agent answers
- * with localhost (RED); post-fix it returns the public preview URL and
- * verifies it before sharing (GREEN).
+ * The runner threads EVAL_PUBLIC_PREVIEW_URL → PUBLIC_PREVIEW_URL into the
+ * worker (see run-eval.ts dockerWorkerConfig.envOverrides). Pre-fix the agent
+ * answers with localhost (RED); post-fix it returns the public preview URL
+ * and verifies it before sharing (GREEN).
  *
  * Track: --track preview-url
  */

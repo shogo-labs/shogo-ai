@@ -21,6 +21,7 @@
  */
 
 import { config } from './config'
+import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
 import { metrics } from './metrics'
 import { MetalWarmPool } from './pool'
 import { PortForward } from './port-forward'
@@ -44,13 +45,22 @@ async function json(req: Request): Promise<any> {
 const server = Bun.serve({
   hostname: config.listenHost,
   port: config.listenPort,
-  async fetch(req) {
+  async fetch(req, srv) {
     const url = new URL(req.url)
     const path = url.pathname
     try {
       if (path === '/healthz') return Response.json({ ok: true })
       if (path === '/vms') return Response.json(pool.status())
       if (path === '/metrics') return new Response(metrics.prometheus(), { headers: { 'Content-Type': 'text/plain; version=0.0.4' } })
+
+      // A guest redeeming a hydrate grant. Not part of the control-plane API:
+      // the caller is a local guest over its tap, and the bearer token this
+      // API is otherwise protected by lives inside the guest we are about to
+      // populate. The unguessable single-use token in the path, pinned to the
+      // guest it was minted for, is the credential — see `hydrate-proxy`.
+      if (path.startsWith(HYDRATE_STREAM_PREFIX) && req.method === 'GET') {
+        return pool.hydrateProxy.serve(path, srv.requestIP(req)?.address ?? null)
+      }
 
       if (path === '/assign' && req.method === 'POST') {
         const { projectId, env } = await json(req)
@@ -296,6 +306,45 @@ if (config.publishDataBucket && config.publishDataExportIntervalMs > 0) {
   }, config.publishDataExportIntervalMs)
 }
 
+// Writable-state exporter: periodically persist EVERY live microVM's database
+// and uploads to `{projectId}/project-data.tar.gz`. This is the durability that
+// makes a snapshot loss survivable — a golden-rootfs rebuild invalidates every
+// snapshot at once, and the cold boot that follows restores source only, so
+// without this the user's runtime data is destroyed. Host-side; best-effort;
+// unchanged databases are skipped by content hash.
+let projectDataExporter: ReturnType<typeof setInterval> | null = null
+if (config.projectDataExportIntervalMs > 0) {
+  console.log(
+    `[metal-agent] writable-state export on: interval=${config.projectDataExportIntervalMs}ms`,
+  )
+  // Re-entrancy guard. A sweep across every live VM can outlast the interval
+  // on a busy host (each project may snapshot a database and upload it), and
+  // overlapping sweeps would fight over the same per-project export — the
+  // second one waits on the singleflight, achieving nothing but a growing pile
+  // of stacked timers.
+  let exportInFlight = false
+  projectDataExporter = setInterval(() => {
+    if (exportInFlight) {
+      console.warn(
+        '[metal-agent] writable-state export still running from the previous tick — skipping',
+      )
+      return
+    }
+    exportInFlight = true
+    pool
+      .exportAllProjectData()
+      .then(
+        (n) => {
+          if (n) console.log(`[metal-agent] exported writable state for ${n} project(s)`)
+        },
+        (err) => console.error('[metal-agent] writable-state exporter error:', err?.message ?? err),
+      )
+      .finally(() => {
+        exportInFlight = false
+      })
+  }, config.projectDataExportIntervalMs)
+}
+
 // Graceful shutdown for rolling deploys. systemd is configured `KillMode=process`
 // so it signals ONLY this agent; the firecracker children keep running. We must
 // therefore NOT tear down the live data path: leave assigned VMs and their DNAT
@@ -309,6 +358,7 @@ process.on('SIGTERM', async () => {
   if (reaper) clearInterval(reaper)
   if (gc) clearInterval(gc)
   if (pubDataExporter) clearInterval(pubDataExporter)
+  if (projectDataExporter) clearInterval(projectDataExporter)
   await pool.prepareForRestart().catch(() => {})
   process.exit(0)
 })

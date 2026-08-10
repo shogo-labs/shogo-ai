@@ -464,6 +464,23 @@ describe('allocateFreeWallet', () => {
     const w = await billing.allocateFreeWallet('w1')
     expect(w.monthlyIncludedUsd).toBe(250)
   })
+  // Regression for incident 2026-08-06: a workspace with an active *paid*
+  // grant (e.g. a redeemed license key) whose first wallet-touching call is
+  // the lazy `allocateFreeWallet` path (races ahead of, or never reaches,
+  // `applyGrantMonthlyAllocation`) must still come up paid-shaped instead of
+  // getting stuck on free-tier limits.
+  it('provisions the paid plan instead of a free wallet when an active grant confers a paid tier', async () => {
+    grants.set('w1', [{ id: 'g', workspaceId: 'w1', freeSeats: 1, monthlyIncludedUsd: 0, planId: 'pro', startsAt: today, expiresAt: null }])
+    const w = await billing.allocateFreeWallet('w1')
+    expect(w.overageEnabled).toBe(true)
+    expect(w.monthlyIncludedAllocationUsd).toBeGreaterThan(0)
+  })
+  it('still provisions a plain free wallet for additive credit-only grants (no paid tier)', async () => {
+    grants.set('w1', [{ id: 'g', workspaceId: 'w1', freeSeats: 0, monthlyIncludedUsd: 10, planId: null, startsAt: today, expiresAt: null }])
+    const w = await billing.allocateFreeWallet('w1')
+    expect(w.overageEnabled).toBe(false)
+    expect(w.monthlyIncludedUsd).toBe(10)
+  })
 })
 
 describe('applyGrantMonthlyAllocation', () => {
@@ -515,6 +532,18 @@ describe('allocateMonthlyIncluded', () => {
     const w = await billing.allocateMonthlyIncluded('w1', 'pro', 3)
     expect(w.monthlyIncludedUsd).toBe(60) // 20 * 3
     expect(w.overageEnabled).toBe(true)
+  })
+  // A license-key redeemer who later subscribes has a real payment method, so
+  // the grant-era cap must not keep throttling them (incident 2026-08-06).
+  it('releases the auto-applied grant overage cap once a subscription backs the plan', async () => {
+    wallets.set('w1', freshWallet({ overageHardLimitUsd: billing.GRANT_ONLY_OVERAGE_HARD_LIMIT_USD }))
+    const w = await billing.allocateMonthlyIncluded('w1', 'pro', 1)
+    expect(w.overageHardLimitUsd).toBeNull()
+  })
+  it('preserves a deliberate spend cap that is not the grant default', async () => {
+    wallets.set('w1', freshWallet({ overageHardLimitUsd: 250 }))
+    const w = await billing.allocateMonthlyIncluded('w1', 'pro', 1)
+    expect(w.overageHardLimitUsd).toBe(250)
   })
   it('basic single user ignores seats > 1', async () => {
     const w = await billing.allocateMonthlyIncluded('w1', 'basic', 5)
@@ -574,7 +603,7 @@ describe('plan helpers (no local mode)', () => {
 // ============================================================================
 // hasBalance
 // ============================================================================
-// Build a Sub row with the minimum fields resolveWorkspaceWindowLimits reads
+// Build a Sub row with the minimum fields resolveEffectivePlan reads
 // (planId + seats), so tests can pin a workspace to a specific plan tier.
 function setPlan(planId: string, seats = 1, workspaceId = 'w1') {
   const s: Sub = {
@@ -607,20 +636,46 @@ describe('hasBalance (rolling windows)', () => {
     expect(await billing.hasBalance('w1', 0.4)).toBe(false)
   })
   it('returns true via overage when window exhausted and overage uncapped', async () => {
+    setPlan('pro')
     wallets.set('w1', freshWallet({
       overageEnabled: true, overageHardLimitUsd: null,
-      fiveHourWindowStart: now0(), fiveHourUsedUsd: 0.5,
-      weeklyWindowStart: now0(), weeklyUsedUsd: 2,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 50,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 50,
     }))
     expect(await billing.hasBalance('w1', 9999)).toBe(true)
   })
   it('returns false when window exhausted and overage hard limit blocks', async () => {
+    setPlan('pro')
     wallets.set('w1', freshWallet({
       overageEnabled: true, overageHardLimitUsd: 10, overageAccumulatedUsd: 10,
-      fiveHourWindowStart: now0(), fiveHourUsedUsd: 0.5,
-      weeklyWindowStart: now0(), weeklyUsedUsd: 2,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 50,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 50,
     }))
     expect(await billing.hasBalance('w1', 5)).toBe(false)
+  })
+  // Regression for incident 2026-08-06: `overageEnabled` is a persisted
+  // snapshot and nothing walks it back when the entitlement behind it lapses,
+  // so overage has to be gated on the live plan. Otherwise an expired
+  // license-key grant keeps metering usage that can never be invoiced.
+  it('returns false via overage when the paid grant has expired', async () => {
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000)
+    const lastWeek = new Date(Date.now() - 8 * 24 * 3600 * 1000)
+    grants.set('w1', [{ id: 'g', workspaceId: 'w1', freeSeats: 1, monthlyIncludedUsd: 0, planId: 'pro', startsAt: lastWeek, expiresAt: yesterday }])
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: null,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 50,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 50,
+    }))
+    expect(await billing.hasBalance('w1', 1)).toBe(false)
+  })
+  it('still allows overage while the paid grant is live', async () => {
+    grants.set('w1', [{ id: 'g', workspaceId: 'w1', freeSeats: 1, monthlyIncludedUsd: 0, planId: 'pro', startsAt: today, expiresAt: new Date(Date.now() + 24 * 3600 * 1000) }])
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: null,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 50,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 50,
+    }))
+    expect(await billing.hasBalance('w1', 1)).toBe(true)
   })
   it('enterprise plan is always within balance (uncapped)', async () => {
     setPlan('enterprise')
@@ -715,11 +770,12 @@ describe('consumeUsage (rolling windows)', () => {
   })
 
   it('falls through to overage when window exhausted and overage enabled', async () => {
+    setPlan('pro') // overage needs a live paid entitlement behind it
     const start = now0()
     wallets.set('w1', freshWallet({
       overageEnabled: true, overageHardLimitUsd: 1000,
-      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5,
-      weeklyWindowStart: start, weeklyUsedUsd: 2,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 50,
+      weeklyWindowStart: start, weeklyUsedUsd: 50,
     }))
     const r = await billing.consumeUsage({ ...base, billedUsd: 5 })
     expect(r.success).toBe(true)
@@ -728,21 +784,42 @@ describe('consumeUsage (rolling windows)', () => {
     const w = wallets.get('w1')!
     expect(w.overageAccumulatedUsd).toBe(5)
     // Beyond-window usage does NOT accrue to the windows.
-    expect(w.weeklyUsedUsd).toBe(2)
-    expect(w.fiveHourUsedUsd).toBe(0.5)
+    expect(w.weeklyUsedUsd).toBe(50)
+    expect(w.fiveHourUsedUsd).toBe(50)
   })
 
   it('returns hard-limit error (with resetsAt) when overage room insufficient', async () => {
+    setPlan('pro')
     const start = now0()
     wallets.set('w1', freshWallet({
       overageEnabled: true, overageHardLimitUsd: 3, overageAccumulatedUsd: 0,
-      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5,
-      weeklyWindowStart: start, weeklyUsedUsd: 2,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 50,
+      weeklyWindowStart: start, weeklyUsedUsd: 50,
     }))
     const r = await billing.consumeUsage({ ...base, billedUsd: 5 })
     expect(r.success).toBe(false)
     expect(r.error).toMatch(/hard limit/)
     expect(r.resetsAt).toBeInstanceOf(Date)
+  })
+
+  // Regression for incident 2026-08-06: once the grant behind `overageEnabled`
+  // expires, usage must hard-stop rather than meter into an unbillable balance.
+  it('hard-stops instead of metering overage when the paid grant has expired', async () => {
+    const start = now0()
+    grants.set('w1', [{
+      id: 'g', workspaceId: 'w1', freeSeats: 1, monthlyIncludedUsd: 0, planId: 'pro',
+      startsAt: new Date(Date.now() - 40 * 24 * 3600 * 1000),
+      expiresAt: new Date(Date.now() - 24 * 3600 * 1000),
+    }])
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: 1000,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 50,
+      weeklyWindowStart: start, weeklyUsedUsd: 50,
+    }))
+    const r = await billing.consumeUsage({ ...base, billedUsd: 5 })
+    expect(r.success).toBe(false)
+    expect(r.error).toBe('Usage limit reached')
+    expect(wallets.get('w1')!.overageAccumulatedUsd).toBe(0)
   })
 
   it('scales window per seat (pro x3 seats → 3x the 5h cap)', async () => {
@@ -1121,19 +1198,49 @@ describe('syncSeatsFromMembership', () => {
 // ============================================================================
 describe('setUsageBasedPricing', () => {
   it('creates a wallet when none exists', async () => {
+    setPlan('pro')
     const w = await billing.setUsageBasedPricing('w1', { overageEnabled: true })
     expect(w.overageEnabled).toBe(true)
     expect(wallets.get('w1')?.overageEnabled).toBe(true)
   })
   it('updates existing wallet flags', async () => {
+    setPlan('pro')
     wallets.set('w1', freshWallet())
     await billing.setUsageBasedPricing('w1', { overageEnabled: true, overageHardLimitUsd: 500 })
     expect(wallets.get('w1')?.overageHardLimitUsd).toBe(500)
   })
   it('supports clearing the hard limit', async () => {
+    setPlan('pro')
     wallets.set('w1', freshWallet({ overageHardLimitUsd: 100 }))
     await billing.setUsageBasedPricing('w1', { overageEnabled: true, overageHardLimitUsd: null })
     expect(wallets.get('w1')?.overageHardLimitUsd).toBeNull()
+  })
+  // Regression for incident 2026-08-06: overage with nothing to bill against
+  // accrues a balance `chargeOverageBlocks` can only defer, so it must be
+  // refused rather than trusted from the request body.
+  it('refuses to enable overage with no subscription and no paid grant', async () => {
+    wallets.set('w1', freshWallet())
+    await expect(
+      billing.setUsageBasedPricing('w1', { overageEnabled: true }),
+    ).rejects.toThrow(billing.OVERAGE_REQUIRES_SUBSCRIPTION)
+    expect(wallets.get('w1')?.overageEnabled).toBe(false)
+  })
+  it('always allows turning overage off, even with no entitlement', async () => {
+    wallets.set('w1', freshWallet({ overageEnabled: true, overageHardLimitUsd: 5 }))
+    const w = await billing.setUsageBasedPricing('w1', { overageEnabled: false })
+    expect(w.overageEnabled).toBe(false)
+  })
+  it('clamps a grant-only workspace to the grant overage cap instead of uncapping', async () => {
+    grants.set('w1', [{ id: 'g', workspaceId: 'w1', freeSeats: 1, monthlyIncludedUsd: 0, planId: 'pro', startsAt: today, expiresAt: null }])
+    wallets.set('w1', freshWallet({ overageHardLimitUsd: billing.GRANT_ONLY_OVERAGE_HARD_LIMIT_USD }))
+    await billing.setUsageBasedPricing('w1', { overageEnabled: true, overageHardLimitUsd: null })
+    expect(wallets.get('w1')?.overageHardLimitUsd).toBe(billing.GRANT_ONLY_OVERAGE_HARD_LIMIT_USD)
+  })
+  it('lets a grant-only workspace tighten its cap below the grant ceiling', async () => {
+    grants.set('w1', [{ id: 'g', workspaceId: 'w1', freeSeats: 1, monthlyIncludedUsd: 0, planId: 'pro', startsAt: today, expiresAt: null }])
+    wallets.set('w1', freshWallet())
+    await billing.setUsageBasedPricing('w1', { overageEnabled: true, overageHardLimitUsd: 1 })
+    expect(wallets.get('w1')?.overageHardLimitUsd).toBe(1)
   })
 })
 
@@ -1324,12 +1431,13 @@ describe('consumeUsage — monthly boundary resets overage bookkeeping', () => {
     // Window is exhausted so the charge takes the overage path; the month
     // boundary should have already zeroed prior overage accumulation.
     const start = now0()
+    setPlan('pro')
     wallets.set('w1', freshWallet({
       overageEnabled: true, overageHardLimitUsd: 1000,
       overageAccumulatedUsd: 25, overageBilledUsd: 100,
       lastMonthlyReset: lastMonth,
-      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5,
-      weeklyWindowStart: start, weeklyUsedUsd: 2,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 50,
+      weeklyWindowStart: start, weeklyUsedUsd: 50,
     }))
     const r = await billing.consumeUsage({
       workspaceId: 'w1', projectId: null, memberId: 'u1',

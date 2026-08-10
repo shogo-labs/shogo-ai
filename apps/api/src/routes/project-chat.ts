@@ -33,7 +33,6 @@ const chatTracer = trace.getTracer("shogo-api-chat")
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
-const isVMIsolation = () => process.env.SHOGO_VM_ISOLATION === 'true'
 
 // How long a chat request will BLOCK waiting for a metal project's runtime to
 // wake (rejoining the host's in-flight resume/boot) before degrading to a
@@ -827,7 +826,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
    * - Waiting if runtime is already starting from another request
    */
   async function getProjectUrl(projectId: string): Promise<string> {
-    if (!isKubernetes() && !isVMIsolation() && !runtimeManager) {
+    if (!isKubernetes() && !runtimeManager) {
       throw new Error("No runtime manager available for local development")
     }
 
@@ -836,7 +835,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     // and waits), but in the chat path we'd rather block via
     // waitForRuntimeReady so progress logs land in the right log
     // file. Punch through here only when host mode is in flight.
-    if (runtimeManager && !isKubernetes() && !isVMIsolation()) {
+    if (runtimeManager && !isKubernetes()) {
       const existing = runtimeManager.status(projectId)
       if (existing?.status === 'starting') {
         console.log(`[ProjectChat] Runtime for ${projectId} is starting, waiting...`)
@@ -847,13 +846,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     const { resolveProjectPodUrl } = await import("../lib/resolve-pod-url")
     const res = await resolveProjectPodUrl(projectId, {
       logTag: 'ProjectChat',
-      // Chat traffic must keep flowing if the warm pool gives up
-      // entirely — without fallback the user is permanently stuck.
-      onVMPermanentlyDisabled: 'fallback-to-host',
-      // Preserves the historical 5×3s retry loop for transient
-      // warm-pool boot failures.
-      maxVMRetries: 5,
-      vmRetryDelayMs: 3000,
       // Metal: block the chat through a slow wake (rejoining the host's
       // in-flight resume/boot) instead of flashing a retryable 503 the moment a
       // cold boot outruns the 30s assign timeout. Bounded so a genuinely dead
@@ -955,6 +947,18 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           }
         })
       } catch (err: any) {
+        // The project was deleted between the validateProject check above and
+        // the runtime resolve. Never report that as retryable: the client would
+        // poll a project that can never come back.
+        if (err?.name === 'ProjectNotFoundError') {
+          console.warn(`[ProjectChat] ${projectId} was deleted mid-request — returning 404`)
+          chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "project_not_found" })
+          chatSpan.end()
+          return c.json(
+            { error: { code: "project_not_found", message: "Project not found", retryable: false } },
+            404
+          )
+        }
         console.error(`[ProjectChat] Failed to get project URL:`, err)
         // Return a structured error that the frontend can handle gracefully
         // Include "starting" status so frontend knows to retry

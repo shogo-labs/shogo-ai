@@ -2064,7 +2064,7 @@ export class WarmPoolController {
 
   /**
    * Build the environment variables needed for assigning a project to a warm pod.
-   * Delegates to the shared utility used by both K8s and VM warm pools.
+   * Delegates to the shared utility used by the K8s, metal, and host warm pools.
    */
   async buildProjectEnv(projectId: string): Promise<Record<string, string>> {
     const { buildProjectEnv } = await import('./runtime/build-project-env')

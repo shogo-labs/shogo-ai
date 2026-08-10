@@ -71,7 +71,7 @@ export default function AdminLogsPage() {
   const [totalLines, setTotalLines] = useState(0)
   const [paused, setPaused] = useState(false)
   const [autoScroll, setAutoScroll] = useState(true)
-  const [filter, setFilter] = useState<'all' | 'errors' | 'vm'>('all')
+  const [filter, setFilter] = useState<'all' | 'errors'>('all')
   const scrollRef = useRef<ScrollView>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
   const base = getApiBaseUrl()
@@ -80,7 +80,7 @@ export default function AdminLogsPage() {
     try {
       setLoading(true)
       setError(null)
-      const res = await fetch(`${base}/api/vm/logs?lines=1000`, {
+      const res = await fetch(`${base}/api/local/logs?lines=1000`, {
         credentials: 'include',
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -108,7 +108,7 @@ export default function AdminLogsPage() {
       return
     }
 
-    const es = new EventSource(`${base}/api/vm/logs/stream`)
+    const es = new EventSource(`${base}/api/local/logs/stream`)
     eventSourceRef.current = es
 
     es.onmessage = (event) => {
@@ -143,7 +143,6 @@ export default function AdminLogsPage() {
 
   const filteredLines = lines.filter(line => {
     if (filter === 'errors') return line.includes('[ERROR]') || line.includes('[WARN]')
-    if (filter === 'vm') return line.includes('[shogo-vm]') || line.includes('[VMWarmPool]') || line.includes('[VM')
     return true
   })
 
@@ -167,7 +166,7 @@ export default function AdminLogsPage() {
 
         {/* Filter buttons */}
         <View className="flex-row gap-1">
-          {(['all', 'errors', 'vm'] as const).map(f => (
+          {(['all', 'errors'] as const).map(f => (
             <Pressable
               key={f}
               onPress={() => setFilter(f)}

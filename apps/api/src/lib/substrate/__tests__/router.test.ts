@@ -138,7 +138,7 @@ describe('substrate router', () => {
       expect(knative.destroyed).toContain('p1')
     })
 
-    it('is a no-op off Kubernetes (desktop/VM teardown handled elsewhere)', async () => {
+    it('is a no-op off Kubernetes (desktop/host teardown handled elsewhere)', async () => {
       const metal = fakeSubstrate('metal')
       const knative = fakeSubstrate('knative')
       await destroyProjectRuntime('p1', {

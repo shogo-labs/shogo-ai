@@ -371,6 +371,35 @@ function parseParallel(argv: string[]): { parallel: number; rest: string[] } {
   return { parallel, rest }
 }
 
+/**
+ * Resolve the `--roots a,b,c` flag from argv. Each entry is a directory
+ * (relative to the package dir) to scan for test files.
+ *
+ * The default heuristic below probes for `src|tests|test|__tests__`, which
+ * suits a package whose sources sit under `src/`. It misfits an Expo app like
+ * apps/mobile, where tests live in `components/`, `lib/`, `app/` and `test/`
+ * holds preload helpers — the heuristic would match `test/` alone and silently
+ * run 2 files out of 136. Passing roots explicitly avoids that.
+ */
+function parseRoots(argv: string[]): { roots: string[]; rest: string[] } {
+  const rest: string[] = []
+  let roots: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '--roots' && argv[i + 1]) {
+      roots = argv[i + 1].split(',').map((s) => s.trim()).filter(Boolean)
+      i++
+      continue
+    }
+    if (a.startsWith('--roots=')) {
+      roots = (a.split('=')[1] ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+      continue
+    }
+    rest.push(a)
+  }
+  return { roots, rest }
+}
+
 async function main() {
   const argv = process.argv.slice(2)
   const dashIdx = argv.indexOf('--')
@@ -382,13 +411,14 @@ async function main() {
   // and end up with merged `coverage/lcov.info`.
   const wantCoverage = positionalRaw.includes('--coverage')
   const filteredRaw = positionalRaw.filter((a) => a !== '--coverage')
-  const { parallel: parallelFlag, rest: positional } = parseParallel(filteredRaw)
+  const { roots: explicitRoots, rest: afterRoots } = parseRoots(filteredRaw)
+  const { parallel: parallelFlag, rest: positional } = parseParallel(afterRoots)
   // Coverage forces serial — Bun writes lcov.info relative to cwd.
   const effectiveParallel = wantCoverage ? 1 : parallelFlag
 
   const target = positional[0]
   if (!target) {
-    console.error('usage: run-tests-isolated.ts <packageDir> [--coverage] [--parallel N] [-- ...extraBunTestArgs]')
+    console.error('usage: run-tests-isolated.ts <packageDir> [--roots a,b,c] [--coverage] [--parallel N] [-- ...extraBunTestArgs]')
     process.exit(2)
   }
 
@@ -412,7 +442,11 @@ async function main() {
     .map((d) => join(root, d))
     .filter((d) => existsSync(d))
 
-  const searchRoots = candidates.length ? candidates : [root]
+  const searchRoots = explicitRoots.length
+    ? explicitRoots.map((d) => join(root, d)).filter((d) => existsSync(d))
+    : candidates.length
+      ? candidates
+      : [root]
   const allFiles = searchRoots.flatMap(findTestFiles)
 
   if (!allFiles.length) {

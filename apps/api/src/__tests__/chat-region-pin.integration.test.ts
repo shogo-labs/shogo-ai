@@ -339,3 +339,38 @@ describe('client auto-resume + server region-pin, end to end (P0 + P1)', () => {
     }
   })
 })
+
+describe('a proxied request body never corrupts the NEXT proxied request', () => {
+  test('a peer that answers without reading the POST body leaves the connection usable', async () => {
+    // Regression for oven-sh/bun#32847. `proxyToPeer` forwards the request body
+    // as a stream; when the peer answers before reading it (here the SSE reply,
+    // in production any early reject — 401/404/413/validation), Bun stopped the
+    // upload but returned the socket to the keep-alive pool mid-request. The
+    // next proxied request to that peer was written INTO the abandoned body, so
+    // the peer's parser never saw a request line and answered a bare 400.
+    //
+    // The victim is the FOLLOWING request, so the assertion that matters is not
+    // that the POST worked — it always did — but that the GET after it reaches
+    // a route handler at all.
+    //
+    // Reproduces on Linux (and so on CI); on macOS it passes either way, so
+    // treat a local pass as no evidence.
+    homeSeen.length = 0
+    const big = JSON.stringify({ messages: [{ role: 'user', content: 'x'.repeat(512 * 1024) }] })
+
+    const post = await fetch(`${EDGE_URL}/api/projects/p_home/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: big,
+    })
+    expect(post.status).toBe(200)
+    await readAll(post.body)
+
+    const get = await fetch(`${EDGE_URL}/api/projects/p_home/chat/${SESSION_ID}/stream?fromSeq=5`)
+    expect(get.status).toBe(200)
+    expect(await readAll(get.body)).toContain('RESUMED_FROM_HOME')
+
+    // The decisive one: before the fix the peer's handler never ran for the GET.
+    expect(homeSeen.filter((s) => s.method === 'GET')).toHaveLength(1)
+  })
+})

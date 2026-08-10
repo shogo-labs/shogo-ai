@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-const source = () => readFileSync("apps/mobile/components/project/panels/ide/scm/SourceControlViewlet.tsx", "utf8");
+const source = () => readFileSync(new URL("../SourceControlViewlet.tsx", import.meta.url), "utf8");
 
 describe("SourceControlViewlet sync changes UX", () => {
   test("renders a VS Code-style Sync Changes button from ahead/behind counts", () => {

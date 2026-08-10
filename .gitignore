@@ -202,12 +202,6 @@ shogo.db
 .terminal-bench/
 .feature-bench/
 
-# VM overlay files
-apps/desktop/resources/vm/
-apps/desktop/native/shogo-vm/shogo-vm-arm64
-
-apps/desktop/resources/bin/shogo-vm-arm64
-
 dev.db
 
 apps/desktop/prisma/local.db
@@ -239,8 +233,10 @@ config.json
 apps/mobile/dist.stale-*/
 .github/pr-*.md
 
-apps/desktop/scripts/build-vm-image/.work/aarch64/
-
-apps/desktop/scripts/build-vm-image/output/aarch64/
-
 load-tests/.venv*
+
+# Minted license-key exports. These hold plaintext redeemable codes (each worth
+# a paid plan), so the CSV that `scripts/mint-license-keys.ts` writes must never
+# be committed — only the sha-256 hash is meant to leave the minting machine.
+shogo-pro-*-codes*.csv
+license-keys-*.csv

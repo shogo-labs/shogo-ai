@@ -5,8 +5,6 @@ import { View, ScrollView, Platform } from 'react-native'
 import { OnboardingMessage } from './OnboardingMessage'
 
 export type WidgetType =
-  | 'vm-progress'
-  | 'vm-setup'
   | 'name-input'
   | 'ai-config'
   | 'security'
@@ -26,20 +24,17 @@ interface ChatOnboardingProps {
   steps: OnboardingStep[]
   renderWidget: (widget: WidgetType, onComplete: () => void) => React.ReactNode
   context?: Record<string, string>
-  onVMDownloadNeeded?: () => void
 }
 
 export function ChatOnboarding({
   steps,
   renderWidget,
   context = {},
-  onVMDownloadNeeded,
 }: ChatOnboardingProps) {
   const [visibleCount, setVisibleCount] = useState(1)
   const [activeIndex, setActiveIndex] = useState(0)
   const [completedSteps, setCompletedSteps] = useState<Set<string>>(new Set())
   const scrollRef = useRef<ScrollView>(null)
-  const vmDownloadTriggered = useRef(false)
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
@@ -62,11 +57,6 @@ export function ChatOnboarding({
   const handleStreamComplete = useCallback((step: OnboardingStep) => {
     setCompletedSteps(prev => new Set(prev).add(step.id))
 
-    if (step.widget === 'vm-progress' && !vmDownloadTriggered.current) {
-      vmDownloadTriggered.current = true
-      onVMDownloadNeeded?.()
-    }
-
     if (step.autoAdvance) {
       const delay = step.advanceDelay ?? 800
       setTimeout(() => {
@@ -75,7 +65,7 @@ export function ChatOnboarding({
     }
 
     scrollToBottom()
-  }, [advanceToNext, scrollToBottom, onVMDownloadNeeded])
+  }, [advanceToNext, scrollToBottom])
 
   const handleWidgetComplete = useCallback(() => {
     advanceToNext()
