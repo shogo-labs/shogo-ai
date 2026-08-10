@@ -1846,7 +1846,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       {/* ── Logo Row ── */}
       <View
         className={cn(
-          'h-10 border-b border-border flex-row items-center',
+          'h-12 border-b border-border flex-row items-center',
           collapsed ? 'justify-center px-2' : 'justify-between px-3'
         )}
       >
@@ -1858,7 +1858,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               accessibilityLabel="Shogo Home"
               className="flex-row items-center"
             >
-              <ShogoWordmark className="text-xl" />
+              <ShogoWordmark className="h-[22px] w-[94px]" />
             </Pressable>
             <Pressable onPress={toggleCollapse} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
               <PanelLeftClose size={12} className="text-muted-foreground" />
@@ -1870,7 +1870,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             onPress={toggleCollapse}
             accessibilityLabel="Expand sidebar"
           >
-            <ShogoWordmark compact className="text-2xl" />
+            <ShogoWordmark compact className="h-7 w-7" />
           </Pressable>
         )}
       </View>

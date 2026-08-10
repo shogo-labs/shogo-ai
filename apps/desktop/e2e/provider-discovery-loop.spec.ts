@@ -71,7 +71,6 @@ async function installMockLocalApi(page: Page): Promise<{ getProviderCalls: () =
     if (pathname === '/api/auth/update-user') return json({ ok: true })
     if (pathname === '/api/me') return json({ data: { onboardingCompleted: false } })
     if (pathname === '/api/onboarding/complete') return json({ ok: true })
-    if (pathname === '/api/vm/image/status') return json({ imagesPresent: true })
 
     return json({ ok: true })
   })

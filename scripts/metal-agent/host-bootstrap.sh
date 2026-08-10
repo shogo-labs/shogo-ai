@@ -13,12 +13,13 @@
 # Usage (on host, as root):  bash host-bootstrap.sh
 # Env:
 #   WORK        artifact dir (default /opt/fc-spike)
-#   FC_VERSION  firecracker version (default 1.10.1)
+#   FC_VERSION  firecracker version (default 1.16.1; >=1.16 supports the
+#               clock_realtime restore flag we rely on to fix resume clock-skew)
 # =============================================================================
 set -euo pipefail
 
 WORK="${WORK:-/opt/fc-spike}"
-FC_VERSION="${FC_VERSION:-1.10.1}"
+FC_VERSION="${FC_VERSION:-1.16.1}"
 log() { echo "[host-bootstrap] $*"; }
 
 [ "$(id -u)" = "0" ] || { echo "must run as root"; exit 1; }
@@ -135,8 +136,22 @@ printf 'vm.swappiness=10\n' > /etc/sysctl.d/99-metal-swap.conf
 sysctl -w vm.swappiness=10 >/dev/null
 
 ARCH="$(uname -m)"  # x86_64 on Latitude s3-large-x86 / c3-large-x86
-if [ ! -x "$WORK/bin/firecracker" ]; then
+# Install OR upgrade firecracker. The binary is host infrastructure (not shipped
+# via the pull-based agent release), so re-running this script must converge an
+# already-provisioned host onto FC_VERSION — the old `[ ! -x ]` guard skipped
+# any host that already had *a* firecracker, which is how the fleet stayed on
+# 1.10.1. We compare the running binary's version and only (re)install on a
+# mismatch. After an upgrade, restart metal-agent so the warm pool re-warms on
+# the new FC.
+#
+# NOTE: Firecracker snapshots are NOT compatible across versions. After an
+# upgrade, existing suspended guests fail to resume and cold-boot instead
+# (pool.open catches the load failure and falls through) — a one-time,
+# self-healing cost, and cold boots come up with a correct wall-clock anyway.
+if ! { [ -x "$WORK/bin/firecracker" ] && "$WORK/bin/firecracker" --version 2>/dev/null | grep -qF "v${FC_VERSION}"; }; then
   log "installing firecracker v${FC_VERSION} ($ARCH)..."
+  # Preserve the current binary so a bad upgrade can be rolled back by hand.
+  [ -x "$WORK/bin/firecracker" ] && cp -a "$WORK/bin/firecracker" "$WORK/bin/firecracker.prev" || true
   curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/v${FC_VERSION}/firecracker-v${FC_VERSION}-${ARCH}.tgz" \
     -o /tmp/fc.tgz
   tar -xzf /tmp/fc.tgz -C /tmp

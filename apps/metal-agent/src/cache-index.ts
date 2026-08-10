@@ -38,6 +38,17 @@ export interface CacheEntry {
   suspendedAt: number
   lastAccessAt: number
   rootfsIdentity: string
+  /**
+   * ETag of the durable source backup this snapshot's workspace descends from,
+   * persisted so a local resume across a node-agent restart keeps the lineage
+   * that gates the write-side anti-clobber guard (see pool.saveBackupToStore).
+   */
+  backupEtag?: string
+  /**
+   * ETag of the durable writable-state archive current when this snapshot was
+   * taken. Same role as `backupEtag`, for the database + uploads.
+   */
+  dataEtag?: string
   v: 1
 }
 

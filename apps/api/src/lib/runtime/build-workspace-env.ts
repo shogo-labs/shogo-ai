@@ -38,6 +38,7 @@ import { getAgentModeOverrides } from '@shogo/model-catalog'
 import { buildAutoTierMapEnv } from './auto-tier-env'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 import { buildToolsProxyUrl } from '../cloud-urls'
+import { getSandboxExecOverride } from '../sandbox-exec-setting'
 
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
@@ -257,6 +258,12 @@ export async function buildWorkspaceEnv(
 
   const autoTierMapEnv = buildAutoTierMapEnv()
   if (autoTierMapEnv) env.AGENT_AUTO_TIER_MAP = autoTierMapEnv
+
+  // Super-admin sandbox-exec override (see sandbox-exec-setting.ts). `null` = no
+  // override, leave SANDBOX_EXEC_ENABLED unset so the runtime falls back to its
+  // own KUBERNETES_SERVICE_HOST heuristic.
+  const sandboxOverride = getSandboxExecOverride()
+  if (sandboxOverride !== null) env.SANDBOX_EXEC_ENABLED = String(sandboxOverride)
 
   // OTEL telemetry → SigNoz. Mirrors buildProjectEnv so metal-hosted workspace
   // runtimes emit traces/logs instead of going dark in observability. Endpoint

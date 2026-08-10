@@ -69,7 +69,7 @@ import {
   buildPastedAttachments,
   type PastedTextEntry,
 } from "./long-text-utils"
-import { resolveChatInputTextChange } from "./chat-input-text-change"
+import { resolveChatInputTextChange, type ChatInputTextChange } from "./chat-input-text-change"
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
@@ -443,8 +443,34 @@ function ChatInputImpl({
   // Guards against the DOM paste listener AND onChangeText both firing for
   // the same clipboard event, which would create duplicate chips.
   const pasteHandledRef = useRef(false)
+  // Coalesced-flush scaffolding for `handleChangeText` (declared here, ahead
+  // of `composerDisplayValue` below, so the rendered TextInput can always
+  // show the freshest typed text even on a render that fires BEFORE the
+  // buffered `setInputValue` flush — see `handleChangeText` for why this
+  // buffering exists at all.
+  const pendingTextChangeRef = useRef<Extract<
+    ChatInputTextChange,
+    { type: "text" }
+  > | null>(null)
+  const textChangeFlushHandleRef = useRef<number | null>(null)
+  // Counts consecutive SYNCHRONOUS text commits since the last settled
+  // animation frame — see `handleChangeText`'s "fast path vs. slow path"
+  // comment for why this exists.
+  const syncBurstCountRef = useRef(0)
 
   const [inputValue, setInputValue] = useState("")
+  // Cancels a pending coalesced text-change flush (see `handleChangeText`)
+  // before any DISCRETE, immediate write to `inputValue` (submit, mention
+  // insertion, skill insertion, draft restore, voice transcript append) so a
+  // stale buffered keystroke can never fire afterward and clobber it.
+  const cancelPendingTextChangeFlush = useCallback(() => {
+    pendingTextChangeRef.current = null
+    syncBurstCountRef.current = 0
+    if (textChangeFlushHandleRef.current != null) {
+      cancelAnimationFrame(textChangeFlushHandleRef.current)
+      textChangeFlushHandleRef.current = null
+    }
+  }, [])
   const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
   const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
@@ -525,6 +551,8 @@ function ChatInputImpl({
     if (restoreDraftRequest.nonce === lastRestoredDraftNonceRef.current) return
 
     lastRestoredDraftNonceRef.current = restoreDraftRequest.nonce
+    cancelPendingTextChangeFlush()
+    inputValueRef.current = restoreDraftRequest.content
     setInputValue(restoreDraftRequest.content)
     setPendingFiles(
       (restoreDraftRequest.files ?? []).map((file, index) => ({
@@ -539,7 +567,7 @@ function ChatInputImpl({
     setViewingPastedId(null)
     setFileError(null)
     setTimeout(() => textInputRef.current?.focus(), 0)
-  }, [restoreDraftRequest])
+  }, [restoreDraftRequest, cancelPendingTextChangeFlush])
 
   const addPastedText = useCallback((content: string) => {
     const info = analyzeContent(content)
@@ -813,6 +841,10 @@ function ChatInputImpl({
       // or appended at the caret-less end) so it renders as a pill where it
       // was typed — instead of stripping it into a chip above the box. Files
       // tag by basename, projects by slugified name (both whitespace-free).
+      // A mention is a discrete selection (click/Enter), not a keystroke —
+      // cancel any still-pending coalesced text flush so it can't fire
+      // afterward and overwrite the inline "@token" we're about to insert.
+      cancelPendingTextChangeFlush()
       const base = inputValueRef.current
       const token = mentionTokenRef.current
       const label = `@${item.kind === "project" ? slugifyMention(item.name) : item.name}`
@@ -849,7 +881,7 @@ function ChatInputImpl({
         setSelectionOverride(undefined)
       }, 0)
     },
-    [addReference, closeMentionMenu]
+    [addReference, closeMentionMenu, cancelPendingTextChangeFlush]
   )
 
   // Keep references in sync with what's actually visible: if the user edits or
@@ -1028,15 +1060,18 @@ function ChatInputImpl({
     const normalized = transcript.trim()
     if (!normalized) return
 
+    cancelPendingTextChangeFlush()
     setInputValue((current) => {
       const prefix =
         current.length === 0 || /\s$/.test(current) ? current : `${current} `
-      return `${prefix}${normalized}`
+      const next = `${prefix}${normalized}`
+      inputValueRef.current = next
+      return next
     })
     setShowSkillPicker(false)
     setFilterText("")
     setTimeout(() => textInputRef.current?.focus(), 0)
-  }, [])
+  }, [cancelPendingTextChangeFlush])
 
   const voiceInput = useVoiceInput({
     onTranscript: appendTranscriptToInput,
@@ -1044,11 +1079,14 @@ function ChatInputImpl({
 
   // Inline "@mention" highlight overlay. Mirror EXACTLY what the TextInput
   // shows (including the live voice transcript) so the pills line up with the
-  // real text painted on top.
+  // real text painted on top. Falls back to `pendingTextChangeRef` (read live
+  // at render time, not just on the coalesced-flush's own render) so a render
+  // triggered by something else while a flush is still pending never shows
+  // stale text — see `handleChangeText`'s coalescing comment.
   const composerDisplayValue =
     voiceInput.isRecording && voiceInput.liveTranscript
       ? voiceInput.liveTranscript
-      : inputValue
+      : pendingTextChangeRef.current?.text ?? inputValue
   const mentionLabels = useMemo(
     () => references.map((r) => r.label).filter((l): l is string => !!l),
     [references]
@@ -1060,17 +1098,31 @@ function ChatInputImpl({
 
   const selectSkill = useCallback(
     (skill: SkillOption) => {
-      const spaceIndex = inputValue.indexOf(" ")
-      const afterPrefix = spaceIndex === -1 ? "" : inputValue.slice(spaceIndex)
-      setInputValue(`/${skill.name}${afterPrefix || " "}`)
+      // Read the ref (not the `inputValue` state) so this reflects the
+      // freshest keystroke even if a coalesced flush (see `handleChangeText`)
+      // hasn't committed to state yet, then cancel it — this discrete
+      // selection should win over any buffered typing.
+      const current = inputValueRef.current
+      cancelPendingTextChangeFlush()
+      const spaceIndex = current.indexOf(" ")
+      const afterPrefix = spaceIndex === -1 ? "" : current.slice(spaceIndex)
+      const next = `/${skill.name}${afterPrefix || " "}`
+      inputValueRef.current = next
+      setInputValue(next)
       setShowSkillPicker(false)
       textInputRef.current?.focus()
     },
-    [inputValue]
+    [cancelPendingTextChangeFlush]
   )
 
   const handleSubmit = useCallback(() => {
-    const trimmedContent = inputValue.trim()
+    // Submit exactly what the composer is painting: same precedence as
+    // `composerDisplayValue`, minus the live voice transcript (voice has its own
+    // submit path and `voiceInput.isBusy` guards this one). Reading `inputValue`
+    // state here meant an Enter that landed inside a coalesced flush saw the
+    // pre-keystroke value — empty on the first word — tripped the guard below and
+    // silently did nothing while the text stayed on screen.
+    const trimmedContent = (pendingTextChangeRef.current?.text ?? inputValueRef.current).trim()
     if (
       (!trimmedContent &&
         pendingFiles.length === 0 &&
@@ -1095,6 +1147,10 @@ function ChatInputImpl({
     const refData = references.length > 0 ? references : undefined
 
     onSubmit(trimmedContent, fileData, currentModelId, refData)
+    // Drop any still-pending coalesced text-change flush (see
+    // `handleChangeText`) so it can't fire AFTER this clear and resurrect
+    // text the user already sent.
+    cancelPendingTextChangeFlush()
     inputValueRef.current = ""
     setInputValue("")
     setInputHeight(MIN_INPUT_HEIGHT)
@@ -1106,31 +1162,12 @@ function ChatInputImpl({
     closeMentionMenu()
 
     textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue, pastedTexts, references, voiceInput.isBusy, closeMentionMenu])
+  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush])
 
-  const handleChangeText = useCallback(
-    (text: string) => {
-      const change = resolveChatInputTextChange(
-        inputValueRef.current,
-        text,
-        pasteHandledRef.current,
-      )
-      pasteHandledRef.current = false
-
-      if (change.type === "paste-handled" || change.type === "unchanged") {
-        return
-      }
-
-      if (change.type === "long-paste") {
-        addPastedText(change.inserted)
-        inputValueRef.current = change.restored
-        setInputValue(change.restored)
-        setShowSkillPicker(false)
-        closeMentionMenu()
-        return
-      }
-
-      inputValueRef.current = change.text
+  // Applies a resolved "text" change's state commits. Shared by the fast
+  // (synchronous) and slow (coalesced) paths in `handleChangeText`.
+  const applyTextChange = useCallback(
+    (change: Extract<ChatInputTextChange, { type: "text" }>) => {
       setInputValue(change.text)
       if (change.resetHeight) {
         setInputHeight(MIN_INPUT_HEIGHT)
@@ -1146,7 +1183,105 @@ function ChatInputImpl({
 
       updateMentionState(change.text, change.mentionCaret)
     },
-    [addPastedText, closeMentionMenu, updateMentionState]
+    [updateMentionState]
+  )
+
+  // Settles the current animation frame for `handleChangeText`'s burst
+  // guard: resets the consecutive-synchronous-commit counter, and — only if
+  // a pathological burst forced some changes onto the buffered slow path —
+  // applies the latest one now. On ordinary typing `pendingTextChangeRef`
+  // is always null here (every change already committed synchronously), so
+  // this is just a counter reset.
+  const settleTextChangeFrame = useCallback(() => {
+    textChangeFlushHandleRef.current = null
+    syncBurstCountRef.current = 0
+    const change = pendingTextChangeRef.current
+    pendingTextChangeRef.current = null
+    if (change) applyTextChange(change)
+  }, [applyTextChange])
+
+  useEffect(() => {
+    return () => {
+      if (textChangeFlushHandleRef.current != null) {
+        cancelAnimationFrame(textChangeFlushHandleRef.current)
+      }
+    }
+  }, [])
+
+  // A controlled `TextInput`'s `value` echo landing even ONE frame later
+  // than its `onChangeText` event visibly breaks the caret: on native
+  // (iOS/Android) the view's own internal event-count bookkeeping desyncs
+  // and force-resets the selection to the end of the text; on web, once a
+  // real re-render is triggered by something else while a change is still
+  // "in flight" (e.g. streaming-driven prop updates re-rendering this
+  // memoized component), React can end up reconciling the controlled
+  // `value` against a DOM node whose native selection has already moved on,
+  // collapsing it the same way. Either way, deferring every keystroke's
+  // commit — which is what a flat "always coalesce" fix does — makes the
+  // input feel unusable: the cursor jumps to the end after every character,
+  // so you can only ever fix a typo one letter at a time.
+  //
+  // So most keystrokes now commit SYNCHRONOUSLY (`applyTextChange` runs
+  // directly in the same turn as `onChangeText`, matching pre-`bde7ecf7e`
+  // behavior) and the caret is never at risk. `SYNC_BURST_LIMIT` is a
+  // circuit breaker for the actual failure mode the coalescing was built
+  // for: if the browser's main thread falls behind (e.g. a big Streamdown
+  // re-render while a message streams in) it can buffer many native
+  // `input` events and fire them back-to-back with no yield in between —
+  // ordinary typing never produces anywhere near this many synchronous
+  // commits inside one unyielded JS turn. Once tripped, remaining changes
+  // in that burst buffer into `pendingTextChangeRef` and land on the next
+  // animation frame instead, capping how many nested commits can pile up
+  // in a single batch — that's what protects against React's "Maximum
+  // update depth exceeded" safety limit (Sentry JAVASCRIPT-REACT-3C; see
+  // `ChatInput.max-update-depth-repro.test.tsx`). The guard resets every
+  // settled frame, so it never trips during normal use.
+  const SYNC_BURST_LIMIT = 20
+
+  const handleChangeText = useCallback(
+    (text: string) => {
+      const change = resolveChatInputTextChange(
+        inputValueRef.current,
+        text,
+        pasteHandledRef.current,
+      )
+      pasteHandledRef.current = false
+
+      if (change.type === "paste-handled" || change.type === "unchanged") {
+        return
+      }
+
+      if (change.type === "long-paste") {
+        // Rare, one-shot event (a real paste) — never arrives in a burst,
+        // so it can flush immediately. Also drop any still-pending coalesced
+        // "text" change so a stale, smaller value doesn't clobber this one.
+        cancelPendingTextChangeFlush()
+        addPastedText(change.inserted)
+        inputValueRef.current = change.restored
+        setInputValue(change.restored)
+        setShowSkillPicker(false)
+        closeMentionMenu()
+        return
+      }
+
+      inputValueRef.current = change.text
+
+      if (pendingTextChangeRef.current == null && syncBurstCountRef.current < SYNC_BURST_LIMIT) {
+        // Fast path (the overwhelming majority of keystrokes): commit now.
+        syncBurstCountRef.current += 1
+        applyTextChange(change)
+      } else {
+        // Slow path: only reached once the burst guard has actually
+        // tripped within the current unyielded turn — buffer instead of
+        // committing synchronously.
+        pendingTextChangeRef.current = change
+      }
+
+      if (textChangeFlushHandleRef.current == null) {
+        textChangeFlushHandleRef.current = requestAnimationFrame(settleTextChangeFrame)
+      }
+    },
+    [addPastedText, applyTextChange, closeMentionMenu, settleTextChangeFrame, cancelPendingTextChangeFlush]
   )
 
   const removeReference = useCallback((key: string) => {
@@ -1793,7 +1928,7 @@ function ChatInputImpl({
 
         <TextInput
           ref={textInputRef}
-          value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : inputValue}
+          value={composerDisplayValue}
           selection={selectionOverride}
           onChangeText={handleChangeText}
           onSelectionChange={(e) => {

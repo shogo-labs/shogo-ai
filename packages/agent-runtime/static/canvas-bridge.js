@@ -445,10 +445,22 @@
     } catch (_err) { /* ignore */ }
   }
 
+  // Capture phase is required: a <script>/<link>/<img> that fails to fetch fires
+  // a non-bubbling error event on the element, so a listener registered without
+  // `true` never sees it. Without this, a main bundle that 404s or hangs leaves
+  // the frame silently blank — the bridge itself loads and reports healthy.
   window.addEventListener('error', function (e) {
+    var target = e.target
+    if (target && target !== window && target.tagName) {
+      var url = target.src || target.href || ''
+      reportErrorToParent(
+        'Failed to load ' + target.tagName.toLowerCase() + (url ? ': ' + url : ''),
+      )
+      return
+    }
     var stack = (e.error && e.error.stack) || ''
     reportErrorToParent((e.message + '\n' + stack).trim())
-  })
+  }, true)
 
   window.addEventListener('unhandledrejection', function (e) {
     var r = e.reason

@@ -783,26 +783,28 @@ export default observer(function BillingPage() {
 
       {/* Regional Currency Indicator */}
       {regionalPricing && (
-        <View className="flex-row items-center justify-center gap-2 mb-4">
-          <Text className="text-sm text-muted-foreground">
-            Prices shown in {regionalPricing.currency.name} ({regionalPricing.currency.code})
-          </Text>
+        <View className="items-center mb-4">
+          <View className="rounded-full border border-border bg-muted/60 px-3 py-1">
+            <Text className="text-xs font-medium text-muted-foreground">
+              Prices shown in {regionalPricing.currency.name} ({regionalPricing.currency.code})
+            </Text>
+          </View>
         </View>
       )}
 
       {/* Billing Interval Toggle */}
       <View className="items-center mb-6">
-        <View className="flex-row border border-border rounded-lg bg-muted/60 p-1">
+        <View className="flex-row rounded-full border border-border bg-muted/60 p-1">
           <Pressable
             onPress={() => setBillingInterval('monthly')}
             className={cn(
-              'px-4 py-2 rounded-md',
-              billingInterval === 'monthly' && 'bg-primary'
+              'px-5 py-2 rounded-full',
+              billingInterval === 'monthly' && 'bg-primary shadow-sm'
             )}
           >
             <Text className={cn(
               'text-sm font-medium',
-              billingInterval === 'monthly' ? 'text-primary-foreground' : 'text-foreground'
+              billingInterval === 'monthly' ? 'text-primary-foreground' : 'text-muted-foreground'
             )}>
               Monthly
             </Text>
@@ -810,13 +812,13 @@ export default observer(function BillingPage() {
           <Pressable
             onPress={() => setBillingInterval('annual')}
             className={cn(
-              'flex-row items-center gap-1.5 px-4 py-2 rounded-md',
-              billingInterval === 'annual' && 'bg-primary'
+              'flex-row items-center gap-1.5 px-5 py-2 rounded-full',
+              billingInterval === 'annual' && 'bg-primary shadow-sm'
             )}
           >
             <Text className={cn(
               'text-sm font-medium',
-              billingInterval === 'annual' ? 'text-primary-foreground' : 'text-foreground'
+              billingInterval === 'annual' ? 'text-primary-foreground' : 'text-muted-foreground'
             )}>
               Annual
             </Text>
@@ -832,22 +834,22 @@ export default observer(function BillingPage() {
         {/* Basic Plan */}
         <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-basic">
           <View className="hidden lg:block lg:min-h-8" />
-          <Card className="lg:flex-1 flex flex-col">
+          <Card className="lg:flex-1 flex flex-col rounded-xl shadow-md">
             <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
-              <View className="flex-row items-center gap-2">
-                <Sparkles size={20} className="text-green-500" />
+              <View className="flex-row items-center gap-2.5">
+                <View className="h-9 w-9 items-center justify-center rounded-full bg-green-500/10">
+                  <Sparkles size={18} className="text-green-500" />
+                </View>
                 <Text className="text-lg font-semibold text-foreground">Basic</Text>
               </View>
               <Text className="lg:min-h-[44px] text-sm text-muted-foreground">
                 More usage with the fast AI model for individuals getting started.
               </Text>
 
-              <View className="lg:min-h-[100px] gap-1">
-                <View className="gap-1">
-                  <Text className="text-3xl lg:text-4xl font-bold text-foreground">
-                    {fmtPlanPrice('basic', basicPricing.monthly, basicPricing.annual)}
-                  </Text>
-                </View>
+              <View className="lg:min-h-[100px] gap-0.5">
+                <Text className="text-3xl lg:text-4xl font-bold text-foreground tracking-tight">
+                  {fmtPlanPrice('basic', basicPricing.monthly, basicPricing.annual)}
+                </Text>
                 <Text className="text-sm text-muted-foreground">{billingPeriodLabel}</Text>
                 {billingInterval === 'annual' && (
                   <Text className="text-xs text-muted-foreground">
@@ -861,12 +863,10 @@ export default observer(function BillingPage() {
               <Pressable
                 onPress={() => handleCheckout('basic', 1)}
                 disabled={isCheckoutLoading}
-                className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
+                className="w-full items-center justify-center py-3 rounded-md border border-border bg-background active:bg-muted"
               >
-                <Text className="text-sm font-medium text-primary-foreground">
-                  {subscription?.planId === 'basic'
-                    ? 'Current Plan'
-                    : `Get Basic - ${fmtPlanPrice('basic', basicPricing.monthly, basicPricing.annual)}/${billingInterval === 'annual' ? 'year' : 'month'}`}
+                <Text className="text-sm font-medium text-foreground">
+                  {subscription?.planId === 'basic' ? 'Current Plan' : 'Get Basic'}
                 </Text>
               </Pressable>
 
@@ -886,46 +886,38 @@ export default observer(function BillingPage() {
         {/* Pro Plan */}
         <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-pro">
           <View className="hidden lg:block lg:min-h-8" />
-          <Card className="lg:flex-1 flex flex-col">
+          <Card className="lg:flex-1 flex flex-col rounded-xl shadow-md">
             <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
-              <View className="flex-row items-center gap-2">
-                <Zap size={20} className="text-blue-500" />
+              <View className="flex-row items-center gap-2.5">
+                <View className="h-9 w-9 items-center justify-center rounded-full bg-blue-500/10">
+                  <Zap size={18} className="text-blue-500" />
+                </View>
                 <Text className="text-lg font-semibold text-foreground">Pro</Text>
               </View>
               <Text className="lg:min-h-[44px] text-sm text-muted-foreground">
                 Designed for fast-moving teams building together in real time.
               </Text>
 
-              <View className="lg:min-h-[100px] gap-1">
-                <View className="gap-1">
-                  <Text className="text-3xl lg:text-4xl font-bold text-foreground">
-                    {fmtPlanPrice('pro', proPricing.monthly * proSeats, proPricing.annual * proSeats)}
-                  </Text>
-                </View>
+              <View className="lg:min-h-[100px] gap-0.5">
+                <Text className="text-3xl lg:text-4xl font-bold text-foreground tracking-tight">
+                  {fmtPlanPrice('pro', proPricing.monthly * proSeats, proPricing.annual * proSeats)}
+                </Text>
                 <Text className="text-sm text-muted-foreground">{billingPeriodLabel}</Text>
                 {billingInterval === 'annual' && (
                   <Text className="text-xs text-muted-foreground">
                     Equivalent to {fmtMonthlyEquivalent('pro', proPricing.annual * proSeats)}/month
                   </Text>
                 )}
-                {Platform.OS !== 'ios' && (
-                  <Text className="text-sm text-muted-foreground">
-                    {`$${proPricing.monthly}/seat × ${proSeats} seat${proSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
-                  </Text>
-                )}
               </View>
 
               {Platform.OS !== 'ios' && (
                 <View className="lg:min-h-[76px]">
-                  <Text className="text-sm font-medium text-foreground mb-2">
-                    Seats
-                  </Text>
                   <SeatCounter
                     value={proSeats}
                     onChange={setProSeats}
                     min={1}
                     max={500}
-                    label="Usage windows scale per seat"
+                    label="Seats"
                   />
                 </View>
               )}
@@ -933,12 +925,10 @@ export default observer(function BillingPage() {
               <Pressable
                 onPress={() => handleCheckout('pro', proSeats)}
                 disabled={isCheckoutLoading}
-                className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
+                className="w-full items-center justify-center py-3 rounded-md border border-border bg-background active:bg-muted"
               >
-                <Text className="text-sm font-medium text-primary-foreground">
-                  {subscription?.planId?.startsWith('pro')
-                    ? 'Change Plan'
-                    : `Upgrade to Pro - ${fmtPlanPrice('pro', proPricing.monthly * proSeats, proPricing.annual * proSeats)}/${billingInterval === 'annual' ? 'year' : 'month'}`}
+                <Text className="text-sm font-medium text-foreground">
+                  {subscription?.planId?.startsWith('pro') ? 'Change Plan' : 'Upgrade to Pro'}
                 </Text>
               </Pressable>
 
@@ -958,50 +948,42 @@ export default observer(function BillingPage() {
         {/* Business Plan */}
         <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-business">
           <View className="min-h-8 items-center justify-center px-1">
-            <Badge className="bg-primary">
-              <Text className="text-xs text-primary-foreground font-medium">Most Popular</Text>
+            <Badge className="bg-primary shadow-sm px-3 py-1 rounded-full">
+              <Text className="text-xs text-primary-foreground font-semibold">Most Popular</Text>
             </Badge>
           </View>
-          <Card className="lg:flex-1 flex flex-col border-primary">
+          <Card className="lg:flex-1 flex flex-col rounded-xl border-2 border-primary bg-primary/[0.03] shadow-lg">
             <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
-              <View className="flex-row items-center gap-2">
-                <Building2 size={20} className="text-purple-500" />
+              <View className="flex-row items-center gap-2.5">
+                <View className="h-9 w-9 items-center justify-center rounded-full bg-purple-500/10">
+                  <Building2 size={18} className="text-purple-500" />
+                </View>
                 <Text className="text-lg font-semibold text-foreground">Business</Text>
               </View>
               <Text className="lg:min-h-[44px] text-sm text-muted-foreground">
                 Advanced controls and power features for growing departments
               </Text>
 
-              <View className="lg:min-h-[100px] gap-1">
-                <View className="gap-1">
-                  <Text className="text-3xl lg:text-4xl font-bold text-foreground">
-                    {fmtPlanPrice('business', businessPricing.monthly * businessSeats, businessPricing.annual * businessSeats)}
-                  </Text>
-                </View>
+              <View className="lg:min-h-[100px] gap-0.5">
+                <Text className="text-3xl lg:text-4xl font-bold text-foreground tracking-tight">
+                  {fmtPlanPrice('business', businessPricing.monthly * businessSeats, businessPricing.annual * businessSeats)}
+                </Text>
                 <Text className="text-sm text-muted-foreground">{billingPeriodLabel}</Text>
                 {billingInterval === 'annual' && (
                   <Text className="text-xs text-muted-foreground">
                     Equivalent to {fmtMonthlyEquivalent('business', businessPricing.annual * businessSeats)}/month
                   </Text>
                 )}
-                {Platform.OS !== 'ios' && (
-                  <Text className="text-sm text-muted-foreground">
-                    {`$${businessPricing.monthly}/seat × ${businessSeats} seat${businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage`}
-                  </Text>
-                )}
               </View>
 
               {Platform.OS !== 'ios' && (
                 <View className="lg:min-h-[76px]">
-                  <Text className="text-sm font-medium text-foreground mb-2">
-                    Seats
-                  </Text>
                   <SeatCounter
                     value={businessSeats}
                     onChange={setBusinessSeats}
                     min={1}
                     max={500}
-                    label="Usage windows scale per seat"
+                    label="Seats"
                   />
                 </View>
               )}
@@ -1012,9 +994,7 @@ export default observer(function BillingPage() {
                 className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
               >
                 <Text className="text-sm font-medium text-primary-foreground">
-                  {subscription?.planId?.startsWith('business')
-                    ? 'Change Plan'
-                    : `Upgrade to Business - ${fmtPlanPrice('business', businessPricing.monthly * businessSeats, businessPricing.annual * businessSeats)}/${billingInterval === 'annual' ? 'year' : 'month'}`}
+                  {subscription?.planId?.startsWith('business') ? 'Change Plan' : 'Upgrade to Business'}
                 </Text>
               </Pressable>
 
@@ -1032,18 +1012,20 @@ export default observer(function BillingPage() {
         {Platform.OS !== 'ios' && (
         <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-enterprise">
           <View className="hidden lg:block lg:min-h-8" />
-          <Card className="lg:flex-1 flex flex-col">
+          <Card className="lg:flex-1 flex flex-col rounded-xl shadow-md">
             <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
-              <View className="flex-row items-center gap-2">
-                <Crown size={20} className="text-amber-500" />
+              <View className="flex-row items-center gap-2.5">
+                <View className="h-9 w-9 items-center justify-center rounded-full bg-amber-500/10">
+                  <Crown size={18} className="text-amber-500" />
+                </View>
                 <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
               </View>
               <Text className="lg:min-h-[44px] text-sm text-muted-foreground">
                 Built for large orgs needing flexibility, scale, and governance.
               </Text>
 
-              <View className="lg:min-h-[100px]">
-                <Text className="text-3xl lg:text-4xl font-bold text-foreground">Custom</Text>
+              <View className="lg:min-h-[100px] gap-0.5">
+                <Text className="text-3xl lg:text-4xl font-bold text-foreground tracking-tight">Custom</Text>
                 <Text className="text-sm text-muted-foreground">Flexible plans</Text>
               </View>
 

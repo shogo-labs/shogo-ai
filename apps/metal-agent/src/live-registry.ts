@@ -55,6 +55,28 @@ export interface LiveVmEntry {
   runtimeToken?: string
   /** Server-backed published subdomain — drives host-side writable-state export. */
   publishedSubdomain?: string
+  /**
+   * Workspace lineage, persisted so adopt-on-restart keeps the write-side
+   * anti-clobber guard armed: whether this VM's source came from the template,
+   * a durable backup, or a snapshot, and the ETag of the backup it descends
+   * from. See AssignedVm.workspaceOrigin / backupParentEtag.
+   */
+  workspaceOrigin?: 'template' | 'backup' | 'snapshot'
+  backupParentEtag?: string
+  /**
+   * ETag of the durable writable-state archive this VM's database descends
+   * from. Persisted for the same reason as `backupParentEtag`: after an agent
+   * restart, an adopted VM must keep the lineage that authorizes it to
+   * overwrite its data archive. See AssignedVm.dataParentEtag.
+   */
+  dataParentEtag?: string
+  /**
+   * Why this VM may not write its writable state at all. Persisted so an agent
+   * restart cannot launder a known-bad database into a trusted one — dropping
+   * it on adopt would turn an untrusted VM into a create-only one, which is
+   * allowed to seed an archive. See AssignedVm.dataUntrustedReason.
+   */
+  dataUntrustedReason?: string
   v: 1
 }
 

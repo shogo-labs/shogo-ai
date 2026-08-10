@@ -288,8 +288,12 @@ describe('skill action=run_script', () => {
     expect(parsed.script).toBe('compute.py')
     expect(parsed.runtime).toBe('python3')
     expect(parsed.exitCode).toBe(42)
-    expect(parsed.stdout?.length).toBe(8000)
-    expect(parsed.stderr?.length).toBe(4000)
+    // Truncation keeps the first N chars and appends a signpost describing
+    // how much was dropped, rather than silently cutting the tail.
+    expect(parsed.stdout.startsWith('a'.repeat(8000))).toBe(true)
+    expect(parsed.stdout.slice(8000)).toContain('2000 chars truncated')
+    expect(parsed.stderr.startsWith('b'.repeat(4000))).toBe(true)
+    expect(parsed.stderr.slice(4000)).toContain('1000 chars truncated')
   })
 
   test('infers runtime from extension when found.runtime is absent', async () => {

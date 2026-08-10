@@ -440,7 +440,9 @@ describe('gateway-tools', () => {
 
   describe('tool sets', () => {
     test('createTools returns expected tools', () => {
-      expect(createTools(createCtx())).toHaveLength(48)
+      // Base tool count with every feature flag at its production default
+      // (notably SHOGO_SEARCH_ENABLED unset, so `search` is not registered).
+      expect(createTools(createCtx())).toHaveLength(53)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()

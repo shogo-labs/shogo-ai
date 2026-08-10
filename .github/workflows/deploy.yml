@@ -1581,6 +1581,43 @@ jobs:
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
+      # Retire stale studio revisions. The `studio-direct` Service (see
+      # k8s/overlays/*/studio-ws-ingress.yaml) selects EVERY studio revision by
+      # `serving.knative.dev/service=studio`, and each revision keeps a warm pod
+      # (min-scale + studio-direct feeding its queue-proxy keeps the autoscaler
+      # from scaling it to zero). So without this, old revisions keep serving —
+      # historically 404ing hashed assets ~half the time, and even with the
+      # shared-asset CDN they still serve stale HTML. Once the new revision is
+      # Ready, delete every other studio revision so studio-direct converges to
+      # a single serving build. Guarded so a bad rollout (latest not Ready)
+      # never deletes the only working revision.
+      #
+      # This step previously only existed in the staging job — its absence
+      # here on US/EU is exactly what let studio-00323/00324/00325 all keep
+      # serving concurrently in EU on 2026-07-18, causing the CSS-404 incident
+      # (studio-direct round-robined requests across mismatched-hash builds).
+      - name: Retire stale studio revisions
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        run: |
+          set -euo pipefail
+          NS="${{ env.NS_SYSTEM }}"
+          echo "Waiting for studio ksvc to be Ready..."
+          kubectl wait --for=condition=Ready ksvc/studio -n "$NS" --timeout=300s
+          LATEST=$(kubectl get ksvc studio -n "$NS" -o jsonpath='{.status.latestReadyRevisionName}')
+          if [ -z "$LATEST" ]; then
+            echo "ERROR: studio has no latestReadyRevisionName; refusing to GC revisions." >&2
+            exit 1
+          fi
+          echo "Keeping latest-ready studio revision: $LATEST"
+          STALE=$(kubectl get revisions -n "$NS" -l serving.knative.dev/service=studio \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -v "^${LATEST}$" || true)
+          if [ -z "$STALE" ]; then
+            echo "No stale studio revisions to delete."
+          else
+            echo "Deleting stale studio revisions:"; echo "$STALE"
+            echo "$STALE" | xargs -r -n1 kubectl delete revision -n "$NS"
+          fi
+
       # The inline `python3 ... 2>/dev/null) || IDX="-1"` block that used
       # to live at the bottom of `Deploy Knative services` silently
       # skipped on every error path (the kubectl pipefail, the python
@@ -2384,6 +2421,43 @@ jobs:
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
+      # Retire stale studio revisions. The `studio-direct` Service (see
+      # k8s/overlays/*/studio-ws-ingress.yaml) selects EVERY studio revision by
+      # `serving.knative.dev/service=studio`, and each revision keeps a warm pod
+      # (min-scale + studio-direct feeding its queue-proxy keeps the autoscaler
+      # from scaling it to zero). So without this, old revisions keep serving —
+      # historically 404ing hashed assets ~half the time, and even with the
+      # shared-asset CDN they still serve stale HTML. Once the new revision is
+      # Ready, delete every other studio revision so studio-direct converges to
+      # a single serving build. Guarded so a bad rollout (latest not Ready)
+      # never deletes the only working revision.
+      #
+      # This step previously only existed in the staging job — its absence
+      # here on US/EU is exactly what let studio-00323/00324/00325 all keep
+      # serving concurrently in EU on 2026-07-18, causing the CSS-404 incident
+      # (studio-direct round-robined requests across mismatched-hash builds).
+      - name: Retire stale studio revisions
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        run: |
+          set -euo pipefail
+          NS="${{ env.NS_SYSTEM }}"
+          echo "Waiting for studio ksvc to be Ready..."
+          kubectl wait --for=condition=Ready ksvc/studio -n "$NS" --timeout=300s
+          LATEST=$(kubectl get ksvc studio -n "$NS" -o jsonpath='{.status.latestReadyRevisionName}')
+          if [ -z "$LATEST" ]; then
+            echo "ERROR: studio has no latestReadyRevisionName; refusing to GC revisions." >&2
+            exit 1
+          fi
+          echo "Keeping latest-ready studio revision: $LATEST"
+          STALE=$(kubectl get revisions -n "$NS" -l serving.knative.dev/service=studio \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -v "^${LATEST}$" || true)
+          if [ -z "$STALE" ]; then
+            echo "No stale studio revisions to delete."
+          else
+            echo "Deleting stale studio revisions:"; echo "$STALE"
+            echo "$STALE" | xargs -r -n1 kubectl delete revision -n "$NS"
+          fi
+
       # The inline `python3 ... 2>/dev/null) || IDX="-1"` block that used
       # to live at the bottom of `Deploy Knative services` silently
       # skipped on every error path (the kubectl pipefail, the python
@@ -2498,7 +2572,177 @@ jobs:
         run: |
           set -euo pipefail
           echo "::notice::Dispatching runtime-multiarch (environment=production) @ $REF"
+          # converge_fleet=false: dispatch-metal-agent-release (below) rolls the
+          # fleet itself, after this image build has actually succeeded. Letting
+          # runtime-multiarch also converge would publish two rebuildRootfs
+          # releases per region for one tag.
           gh workflow run runtime-multiarch.yml \
             -R "$GITHUB_REPOSITORY" \
             --ref "$REF" \
-            -f environment=production
+            -f environment=production \
+            -f converge_fleet=false
+
+  # ===========================================================================
+  # Stage 8: Metal node-agent release (fold the bare-metal fleet into the tag
+  # cycle). The metal fleet deploys PULL-based via metal-agent-deploy.yml; on a
+  # `v*` tag we publish the `stable` channel to BOTH production control planes so
+  # a release reaches the Firecracker hosts too — it is no longer a separate
+  # manual dispatch. Mirrors dispatch-metal-runtime-image (which handles the
+  # guest runtime image); this handles the host agent bundle + golden-rootfs
+  # rebuild. Hosts converge on their next heartbeat (apps/api metal-agent-release).
+  # ===========================================================================
+  dispatch-metal-agent-release:
+    name: Publish prod metal-agent release (stable)
+    runs-on: ubuntu-latest
+    needs: [resolve-config, deploy-us, deploy-eu, dispatch-metal-runtime-image]
+    # Production tag only, and only once both regional control-plane deploys AND
+    # the runtime-image dispatch succeeded (we're about to ask hosts to rebuild
+    # their rootfs from that image).
+    if: |
+      always() &&
+      needs.resolve-config.outputs.is_production == 'true' &&
+      needs.deploy-us.result == 'success' &&
+      needs.deploy-eu.result == 'success' &&
+      needs.dispatch-metal-runtime-image.result == 'success'
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      # Full history: the rebuild gate below diffs this commit against a baseline
+      # commit that can be many releases back, so a shallow clone will not do.
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the fleet needs a rootfs rebuild
+        id: gate
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Rebuilding the golden rootfs re-stamps its identity, which invalidates
+          # EVERY snapshot on every host: each project then cold-boots on its next
+          # open instead of resuming. On 2026-08-09 that was ~6,500 snapshots
+          # fleet-wide and a day of 524s. It is the right price when guests have
+          # new code to run, and pure loss when they do not — and "they do not" is
+          # the common case, because most releases only touch the API or the
+          # host-side agent, neither of which is inside the guest image.
+          #
+          # So rebuild only when something that actually composes the guest image
+          # changed since the image the fleet is running. The path list mirrors
+          # the push filter in runtime-multiarch.yml, which is the repo's existing
+          # definition of "the runtime chain changed"; keep the two in step.
+          RUNTIME_PATHS=(
+            'packages/agent-runtime'
+            'packages/shared-runtime'
+            'docker/workspace-deps/Dockerfile'
+            'templates/runtime-template'
+            'package.json'
+            'bun.lock'
+            '.github/workflows/runtime-multiarch.yml'
+          )
+
+          # The commit whose guest image the fleet is actually running. Tracked in
+          # a file rather than inferred from tags because an image can reach the
+          # fleet outside a tagged release, and then the tag history describes
+          # work already done. See the file for the update rules.
+          BASE=$(grep -v '^[[:space:]]*#' .github/runtime-image-baseline 2>/dev/null \
+                   | grep -v '^[[:space:]]*$' | head -1 | tr -d '[:space:]' || true)
+
+          # Default to rebuilding whenever the answer is not provably "no". A
+          # needless rebuild costs a cold-boot storm; a skipped one leaves guests
+          # running stale code indefinitely, which is how a runtime bug survives
+          # weeks of releases. Only certainty buys the skip.
+          if [ -z "$BASE" ]; then
+            REBUILD=true; WHY="no runtime-image baseline recorded"
+          elif ! git rev-parse -q --verify "${BASE}^{commit}" >/dev/null; then
+            REBUILD=true; WHY="baseline $BASE does not resolve here"
+          elif ! git diff --quiet "$BASE" "$SHA" -- "${RUNTIME_PATHS[@]}"; then
+            REBUILD=true; WHY="guest image changed since baseline $BASE"
+            git diff --name-only "$BASE" "$SHA" -- "${RUNTIME_PATHS[@]}" | sed 's/^/    /' | head -20
+          else
+            REBUILD=false; WHY="guest image unchanged since baseline $BASE"
+          fi
+
+          echo "rebuild=$REBUILD" >> "$GITHUB_OUTPUT"
+          echo "::notice::rootfs rebuild=$REBUILD — $WHY"
+          if [ "$REBUILD" = "true" ] && [ -n "$BASE" ]; then
+            echo "::warning::This release rebuilds the fleet rootfs, invalidating every snapshot. Once hosts have converged, set .github/runtime-image-baseline to $SHA."
+          fi
+
+      - name: Wait for the prod runtime image, then publish stable to both regions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          REBUILD_ROOTFS: ${{ steps.gate.outputs.rebuild }}
+        run: |
+          set -euo pipefail
+          # dispatch-metal-runtime-image kicked off runtime-multiarch (production)
+          # fire-and-forget. A `stable` release with rebuildRootfs=true tells every
+          # host to rebuild its golden rootfs from that freshly-published image, so
+          # the image MUST exist first — wait for that run (on THIS commit) to
+          # finish before flipping the channel.
+          #
+          # We query the workflow-runs REST endpoint filtered by head_sha directly
+          # via `gh api`, NOT `gh run list --workflow <file> --commit`. The latter
+          # errored on EVERY call under the Actions GITHUB_TOKEN, so the wait never
+          # observed the already-successful build and burned the full hour on every
+          # tagged release (v1.13.20/.21/.22 all failed here even though
+          # runtime-multiarch had succeeded in ~3 min — 2026-07 prod-release
+          # incident). The `head_sha` query param is deterministic and the error is
+          # no longer swallowed, so a real query failure is visible in the log.
+          REPO="$GITHUB_REPOSITORY"
+          if [ "$REBUILD_ROOTFS" != "true" ]; then
+            # Nothing in the guest image changed, so no host will be asked to
+            # rebuild from the new image and its existence is not a precondition
+            # for anything here. Skipping the wait also removes the hour-long
+            # timeout that has failed tagged releases before.
+            echo "::notice::No rootfs rebuild in this release — not waiting on runtime-multiarch"
+          else
+          echo "::notice::Waiting for runtime-multiarch (production) on $SHA before publishing metal-agent stable"
+          deadline=$(( $(date +%s) + 3600 ))
+          query() {
+            gh api \
+              "repos/$REPO/actions/workflows/runtime-multiarch.yml/runs?head_sha=$SHA&per_page=1" \
+              --jq '(.workflow_runs[0] // {}) | (.status // "missing") + " " + (.conclusion // "")'
+          }
+          while :; do
+            if ! line=$(query 2>&1); then
+              echo "  transient error querying runtime-multiarch run: $line" >&2
+              line="query-error "
+            fi
+            status=${line%% *}
+            concl=${line#* }
+            if [ "$status" = "completed" ]; then
+              if [ "$concl" = "success" ]; then
+                echo "runtime-multiarch (production) succeeded — proceeding."
+                break
+              fi
+              echo "::error::runtime-multiarch (production) concluded '$concl' for $SHA — refusing to publish a rootfs-rebuild release."
+              exit 1
+            fi
+            if [ "$(date +%s)" -gt "$deadline" ]; then
+              echo "::error::Timed out waiting for runtime-multiarch (production) on $SHA (last status='$status')."
+              exit 1
+            fi
+            echo "  runtime-multiarch: status=$status (waiting)"
+            sleep 30
+          done
+          fi
+
+          # Each production region is a distinct control plane (separate DB), so
+          # publish the pointer to both. The agent bundle ships either way; only
+          # whether hosts also rebuild their rootfs from the new runtime image is
+          # conditional (see the gate step).
+          for TARGET in production-us production-eu; do
+            echo "::notice::Publishing metal-agent stable (rebuildRootfs=$REBUILD_ROOTFS) to $TARGET @ $REF"
+            gh workflow run metal-agent-deploy.yml \
+              -R "$GITHUB_REPOSITORY" \
+              --ref "$REF" \
+              -f environment="$TARGET" \
+              -f channel=stable \
+              -f rebuild_rootfs="$REBUILD_ROOTFS"
+          done
+          echo "::notice::Metal-agent stable published to production-us + production-eu; hosts converge on next heartbeat."

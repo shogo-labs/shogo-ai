@@ -17,6 +17,7 @@ import { auth } from './auth'
 import { getPriceId, getInstancePriceId, type PaidInstanceSize } from './config/stripe-prices'
 import { getCurrencyForCountry, formatPrice, SUPPORTED_CURRENCIES } from './config/currencies'
 import { getExchangeRates, convertPrice } from './services/exchange-rate.service'
+import { buildRegionalPlans } from './config/regional-plan-pricing'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
 import * as appleIap from './services/apple-iap.service'
@@ -53,7 +54,7 @@ import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { gitHttpRoutes } from './routes/git-http'
 import { gitLfsRoutes } from './routes/git-lfs'
-import { thumbnailRoutes } from './routes/thumbnail'
+import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { publicApiRoutes } from './routes/public-api'
@@ -93,11 +94,12 @@ import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
 import { metalRoutes } from './routes/metal'
-import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { localProjectsRoutes } from './routes/local-projects'
+import { localLogsRoutes } from './routes/local-logs'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
+import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { normalizeAdminScopes } from './lib/admin-scopes'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
@@ -126,7 +128,6 @@ let runtimeManager: IRuntimeManager | null = null
 
 // Environment detection - check if running in Kubernetes
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
-const isVMIsolation = () => process.env.SHOGO_VM_ISOLATION === 'true'
 
 // Namespace for project runtime pods (configurable for staging/production)
 const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
@@ -662,6 +663,13 @@ function isAllowedUnauthWebchatProxyPath(path: string): boolean {
     relative.startsWith('/agent/channels/webchat/events/')
 }
 
+// Thumbnail image bytes, served to an <img> / RN <Image> that can present no
+// ambient credentials. The per-project token in `?t=` is the credential and is
+// verified in-route, so session gating must not run. See deriveThumbnailToken.
+function isTokenGatedThumbnailPath(path: string): boolean {
+  return /^\/api\/projects\/[^/]+\/thumbnail\.png$/.test(path)
+}
+
 // Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
 // always populated, then require authentication except for known public paths.
 app.use('/api/*', authMiddleware)
@@ -691,7 +699,6 @@ app.use(
       '/api/tech-stacks',
       '/api/instances/heartbeat',
       '/api/instances/ws',
-      '/api/vm/',
       // Native MLM affiliate program — public surfaces:
       //   /lookup  → marketing site validates a code before redirect
       //   /click   → Cloudflare Pages Function records the click using
@@ -710,6 +717,7 @@ app.use(
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
+    if (isTokenGatedThumbnailPath(path)) return next()
     // Heartbeat sync is called by the runtime with x-runtime-token auth
     if (path.endsWith('/heartbeat/sync')) return next()
     // Voice provider webhooks (signature-verified in-handler). These have
@@ -727,6 +735,9 @@ app.use(
 app.use('/api/projects/:projectId/*', async (c, next) => {
   const path = new URL(c.req.url).pathname
   if (isAllowedUnauthWebchatProxyPath(path)) {
+    return next()
+  }
+  if (isTokenGatedThumbnailPath(path)) {
     return next()
   }
   // Heartbeat sync uses runtime-token auth (called by the agent runtime)
@@ -1028,14 +1039,11 @@ app.get('/api/platform/visible-models', async (c) => {
   }
 })
 
-// ── Local mode: VM management endpoints ──────────────────────────────────────
+// ── Local mode: folder / cloud-project pickers ──────────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
-  app.route('/api/vm', vmRoutes())
-
   // External / IDE-style folder projects (see apps/api/src/routes/local-projects.ts).
-  // Mounted here, next to /api/vm, because they share the same "only
-  // makes sense in local mode" trait — the cloud build doesn't expose
-  // a folder picker.
+  // Mounted here because it shares the same "only makes sense in local mode"
+  // trait as the rest of this block — the cloud build doesn't expose a folder picker.
   app.route('/api/local/projects', localProjectsRoutes())
 
   // Cloud-project picker + content sync (see routes/cloud-projects.ts).
@@ -1043,12 +1051,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   // pulls its workspace files locally and watches for edits to push back.
   app.route('/api/local/cloud-projects', cloudProjectsRoutes())
 
-  // Auto-download VM images in the background if not present
-  setTimeout(() => {
-    triggerVMImageDownload().catch((err) =>
-      console.error('[VM] Background VM image download failed (non-fatal):', err.message)
-    )
-  }, 5000)
+  // Live-tail of the desktop's main.log, used by the mobile admin Logs page
+  // (see routes/local-logs.ts).
+  app.route('/api/local', localLogsRoutes())
 }
 
 // ── Local mode: auto-sign-in + API key management ───────────────────────────
@@ -2170,6 +2175,17 @@ app.post('/api/projects/:projectId/thumbnail/capture', async (c) => {
   return router.fetch(newReq)
 })
 
+app.get('/api/projects/:projectId/thumbnail.png', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail.png`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+  })
+  return router.fetch(newReq)
+})
+
 app.get('/api/projects/:projectId/thumbnail', async (c) => {
   const router = thumbnailRoutes()
   const url = new URL(c.req.url)
@@ -2314,21 +2330,7 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
       )
     }
   } else {
-    // Local development: Use RuntimeManager (host mode) and the VM warm
-    // pool (VM mode). Both are safe no-ops when not in use, so we stop
-    // both unconditionally — that's the only way `closeProject` from the
-    // renderer can reliably tear down whichever runtime the project is
-    // bound to without round-tripping for an extra status check.
-    try {
-      const mod = await import('./lib/vm-warm-pool-controller')
-      try {
-        mod.getVMWarmPoolController().evictProject(projectId)
-      } catch {
-        // VM pool not initialized — host mode, nothing to evict.
-      }
-    } catch {
-      // Module not available.
-    }
+    // Local development: Use RuntimeManager (host mode).
     const manager = getRuntimeManager()
     const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
     const url = new URL(c.req.url)
@@ -5180,12 +5182,11 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
 async function resolveAgentRuntimeUrl(projectId: string): Promise<string | null> {
   try {
     const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
-    // Tool-mocks installer is best-effort: if VM/K8s/host resolution
+    // Tool-mocks installer is best-effort: if K8s/host resolution
     // fails, return null and let the caller log and skip rather than
     // 503ing the (demo-mode-only) caller.
     const res = await resolveProjectPodUrl(projectId, {
       logTag: 'ToolMocks',
-      onVMPermanentlyDisabled: 'throw',
     })
     return res.url
   } catch (err: any) {
@@ -5867,6 +5868,42 @@ app.get('/api/admin/settings/agent-models', async (c) => {
       if (row.key === 'agent-model.auto-premium') overrides.autoPremium = row.value
     }
     return c.json(overrides)
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// GET /api/admin/settings/sandbox-exec - Read the super-admin sandbox-exec override
+app.get('/api/admin/settings/sandbox-exec', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: SANDBOX_EXEC_SETTING_KEY } })
+    return c.json({ enabled: row ? row.value === 'true' : null })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/sandbox-exec - Set/clear the super-admin sandbox-exec override.
+// `enabled: true/false` pins Docker sandbox-exec platform-wide; `null` clears the
+// override and falls back to the KUBERNETES_SERVICE_HOST heuristic in sandbox-exec.ts.
+app.put('/api/admin/settings/sandbox-exec', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+    const { enabled } = body as { enabled: boolean | null }
+
+    if (enabled === null) {
+      await prisma.platformSetting.deleteMany({ where: { key: SANDBOX_EXEC_SETTING_KEY } })
+    } else {
+      await prisma.platformSetting.upsert({
+        where: { key: SANDBOX_EXEC_SETTING_KEY },
+        create: { key: SANDBOX_EXEC_SETTING_KEY, value: String(enabled), updatedBy: userId },
+        update: { value: String(enabled), updatedBy: userId },
+      })
+    }
+    setSandboxExecOverride(enabled)
+    return c.json({ ok: true, enabled })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
@@ -6877,6 +6914,14 @@ app.post('/api/billing/usage-based-pricing', async (c) => {
       overageAccumulatedUsd: wallet.overageAccumulatedUsd,
     })
   } catch (error: any) {
+    if (error?.message === billingService.OVERAGE_REQUIRES_SUBSCRIPTION) {
+      return c.json({
+        error: {
+          code: billingService.OVERAGE_REQUIRES_SUBSCRIPTION,
+          message: 'Usage-based pricing requires an active paid plan with a payment method on file.',
+        },
+      }, 409)
+    }
     console.error('[Billing] usage-based-pricing error:', error)
     return c.json({ error: { code: 'usage_based_pricing_failed', message: error.message } }, 500)
   }
@@ -7010,31 +7055,7 @@ app.get('/api/billing/regional-pricing', async (c) => {
       return currency.decimalPlaces === 0 ? Math.round(converted) : Math.round(converted * 100) / 100
     }
 
-    const plans = {
-      free: { monthly: 0, annual: 0 },
-      basic: { monthly: convert(8), annual: convert(80) },
-      pro_100: { monthly: convert(12), annual: convert(120) },
-      pro_200: { monthly: convert(25), annual: convert(250) },
-      pro_400: { monthly: convert(50), annual: convert(500) },
-      pro_800: { monthly: convert(98), annual: convert(980) },
-      pro_1600: { monthly: convert(190), annual: convert(1900) },
-      pro_2400: { monthly: convert(280), annual: convert(2800) },
-      pro_4000: { monthly: convert(460), annual: convert(4600) },
-      pro_6000: { monthly: convert(680), annual: convert(6800) },
-      pro_10000: { monthly: convert(1100), annual: convert(11000) },
-      pro_15000: { monthly: convert(1650), annual: convert(16500) },
-      pro_20000: { monthly: convert(2200), annual: convert(22000) },
-      business_200: { monthly: convert(40), annual: convert(400) },
-      business_400: { monthly: convert(65), annual: convert(650) },
-      business_800: { monthly: convert(130), annual: convert(1300) },
-      business_1600: { monthly: convert(250), annual: convert(2500) },
-      business_2400: { monthly: convert(365), annual: convert(3650) },
-      business_4000: { monthly: convert(600), annual: convert(6000) },
-      business_6000: { monthly: convert(885), annual: convert(8850) },
-      business_10000: { monthly: convert(1430), annual: convert(14300) },
-      business_15000: { monthly: convert(2145), annual: convert(21450) },
-      business_20000: { monthly: convert(2860), annual: convert(28600) },
-    }
+    const plans = buildRegionalPlans(convert)
 
     return c.json({
       country,
@@ -8504,6 +8525,57 @@ app.get('/api/notifications/unread-count', async (c) => {
   return c.json({ ok: true, count }, 200)
 })
 
+// The projects list returns `thumbnailUrl` verbatim from the DB column, and for
+// deployments where the artifact bucket is unreachable that column holds a
+// base64 data URI (routes/thumbnail.ts falls back to one by design). At ~37 KB a
+// row those few projects were half the weight of the entire list response. Swap
+// them for a short token-gated URL that serves the same bytes; rows already
+// holding a presigned S3 link pass through untouched.
+//
+// This lives here rather than in the list route's `beforeList` hook because the
+// generated route only lets a hook shape `where`/`include`/`orderBy`, and
+// project.routes.ts is generated code that must not be edited.
+function publicApiOrigin(c: any): string {
+  // Prefer configured origin: for a cross-region proxied request the Host header
+  // is deliberately spoofed to a shared peer hostname, so the request URL is not
+  // a reliable public origin.
+  const configured = process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL
+  if (configured) return configured.replace(/\/+$/, '')
+  return new URL(c.req.url).origin
+}
+
+app.use('/api/projects', async (c, next) => {
+  await next()
+  if (c.req.method !== 'GET') return
+
+  const res = c.res
+  if (!res.ok) return
+  if (!res.headers.get('content-type')?.includes('application/json')) return
+
+  const text = await res.text()
+  const headers = new Headers(res.headers)
+  // Length changes with the rewrite, and the original value would now be a lie.
+  headers.delete('content-length')
+
+  // Cheap bail-out so the common (no inlined image) case skips parse + stringify.
+  if (!text.includes('"thumbnailUrl":"data:')) {
+    c.res = new Response(text, { status: res.status, headers })
+    return
+  }
+
+  let payload: any
+  try {
+    payload = JSON.parse(text)
+  } catch {
+    c.res = new Response(text, { status: res.status, headers })
+    return
+  }
+
+  rewriteInlineThumbnails(payload, publicApiOrigin(c))
+
+  c.res = new Response(JSON.stringify(payload), { status: res.status, headers })
+})
+
 // Mount generated routes at /api
 const generatedRoutes = createGeneratedRoutes({
   prisma,
@@ -8533,7 +8605,7 @@ async function gracefulShutdown(signal: string) {
     } catch (_) { /* may not be initialized */ }
   }
 
-  // In local dev mode, stop child-process runtimes and VM warm pool.
+  // In local dev mode, stop child-process runtimes.
   // In K8s mode the project runtimes are independent Knative services and must NOT be killed.
   if (!isKubernetes()) {
     if (runtimeManager) {
@@ -8545,12 +8617,6 @@ async function gracefulShutdown(signal: string) {
         console.error('[Server] Error stopping runtimes:', err.message)
       }
     }
-
-    try {
-      const { stopVMWarmPool } = await import('./lib/vm-warm-pool-controller')
-      await stopVMWarmPool()
-      console.log('[Server] VM warm pool stopped')
-    } catch (_) { /* may not be initialized */ }
 
     try {
       const { stopHostWarmPool } = await import('./lib/host-warm-pool-controller')
@@ -8716,6 +8782,9 @@ await (async () => {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
   }
 })()
+
+// Load the super-admin sandbox-exec override (see apps/api/src/lib/sandbox-exec-setting.ts).
+await loadSandboxExecOverride()
 
 // Self-provision in-process AI proxy credentials so the API server can reach
 // its own AI proxy for server-initiated LLM surfaces (title generation, in-app
@@ -8916,119 +8985,9 @@ if (isKubernetes()) {
   }, 2000)
 }
 
-// Start VM warm pool controller (desktop VM isolation mode)
-if (isVMIsolation() && !isKubernetes()) {
-  setTimeout(async () => {
-    try {
-      const { initVMWarmPool } = await import('./lib/vm-warm-pool-controller')
-      const vmModule = await import('../../desktop/src/vm/index')
-
-      const os = await import('os')
-      const path = await import('path')
-      const crypto = await import('crypto')
-      const home = process.env.HOME || process.env.USERPROFILE || os.homedir()
-      const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(import.meta.dir, '../../../workspaces')
-      const dataDir = process.env.SHOGO_DATA_DIR || path.join(home, '.shogo')
-
-      // VMs can't reach the host at localhost — expose the host IP for the AI proxy.
-      // macOS VZ: gateway is typically 192.168.64.1
-      // Windows QEMU SLIRP: gateway is always 10.0.2.2
-      if (!process.env.API_HOST) {
-        if (process.platform === 'win32') {
-          process.env.API_HOST = '10.0.2.2'
-        } else {
-          const nets = os.networkInterfaces()
-          const bridge = nets['bridge100'] || nets['en0'] || []
-          const hostIp = bridge.find((n: any) => n.family === 'IPv4' && !n.internal)?.address
-          if (hostIp) process.env.API_HOST = hostIp
-        }
-      }
-      const overlayDir = path.join(dataDir, 'vm-overlays')
-      const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(import.meta.dir, '../../desktop/resources/vm')
-      const bundleDir = process.env.SHOGO_VM_BUNDLE_DIR || ''
-
-      // Fire-and-forget: create a provisioned base image for instant cloning.
-      // This can take minutes on first run — must not block warm pool init.
-      if (bundleDir) {
-        (async () => {
-          try {
-            const provisionMgr = vmModule.createVMManager()
-            if ('ensureProvisionedBase' in provisionMgr) {
-              await (provisionMgr as any).ensureProvisionedBase(bundleDir)
-            }
-          } catch (err: any) {
-            console.error('[VMWarmPool] Provisioned base creation failed (non-fatal):', err.message)
-          }
-        })()
-      }
-
-      // Factory: each pool VM gets its own DarwinVMManager instance
-      const managerFactory = () => vmModule.createVMManager()
-
-      // Read persisted config.json (admin UI settings) as fallback for env vars
-      // Default raised from 1536 → 4096 to give vite build --watch / bun /
-      // LSPs / prisma headroom inside the Linux guest. The OOM killer was
-      // reaping `node` mid-build at 1.5 GB. See apps/desktop/src/vm/types.ts.
-      let configMemoryMB = 4096
-      let configPoolMemoryMB = 1536
-      let configCpus = 0
-      let configMountWorkspace = false
-      try {
-        const fs = await import('fs')
-        const configDir = process.platform === 'win32'
-          ? path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Shogo')
-          : process.platform === 'darwin'
-            ? path.join(home, 'Library', 'Application Support', 'Shogo')
-            : path.join(home, '.config', 'shogo')
-        const raw = fs.readFileSync(path.join(configDir, 'config.json'), 'utf-8')
-        const parsed = JSON.parse(raw)
-        if (parsed?.vmIsolation?.memoryMB > 0) configMemoryMB = parsed.vmIsolation.memoryMB
-        if (parsed?.vmIsolation?.poolMemoryMB > 0) configPoolMemoryMB = parsed.vmIsolation.poolMemoryMB
-        if (parsed?.vmIsolation?.cpus > 0) configCpus = parsed.vmIsolation.cpus
-        if (parsed?.vmIsolation?.mountWorkspace === true) configMountWorkspace = true
-      } catch {}
-
-      const memoryMB = parseInt(process.env.VM_MEMORY_MB || String(configMemoryMB), 10)
-      // Pool VMs idle at this size and balloon-deflate to `memoryMB` on
-      // assign. Clamp to ≤ memoryMB so misconfiguration can't inflate
-      // pool VMs above the assigned ceiling.
-      const poolMemoryMB = Math.min(
-        memoryMB,
-        parseInt(process.env.VM_POOL_MEMORY_MB || String(configPoolMemoryMB), 10),
-      )
-      const autoCpus = Math.max(2, Math.floor(os.cpus().length / 2))
-      const cpus = parseInt(process.env.VM_CPUS || String(configCpus > 0 ? configCpus : autoCpus), 10)
-
-      const mountWorkspace = process.env.VM_MOUNT_WORKSPACE === 'true' || configMountWorkspace
-
-      await initVMWarmPool(managerFactory, {
-        workspaceDir: workspacesDir,
-        credentialDirs: [
-          path.join(home, '.ssh'),
-          path.join(home, '.gitconfig'),
-          path.join(home, '.config', 'gh'),
-        ],
-        memoryMB,
-        poolMemoryMB,
-        cpus,
-        networkEnabled: true,
-        overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.qcow2`),
-        vmImageDir,
-        bundleDir: bundleDir || undefined,
-        mountWorkspace,
-        ...(mountWorkspace ? { workspaceMountPath: '/host-workspaces' } : {}),
-      })
-      console.log('[VMWarmPool] VM warm pool controller started')
-    } catch (err: any) {
-      console.error('[VMWarmPool] Failed to start VM warm pool controller (non-fatal):', err.message)
-    }
-  }, 2000)
-}
-
 // Start host warm pool controller (local host mode, opt-in via HOST_WARM_POOL_SIZE).
-// Pre-boots generic agent-runtimes so project opens skip the cold spawn. Kept
-// clear of VM isolation (which has its own pool) and Kubernetes.
-if (!isKubernetes() && !isVMIsolation()) {
+// Pre-boots generic agent-runtimes so project opens skip the cold spawn.
+if (!isKubernetes()) {
   setTimeout(async () => {
     try {
       const { initHostWarmPool, isHostWarmPoolEnabled } = await import('./lib/host-warm-pool-controller')

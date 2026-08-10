@@ -125,7 +125,7 @@ test.beforeAll(async () => {
     env: {
       ...process.env,
       // Skip heavy startup paths we don't need for recording: the local
-      // Bun API server, VM pool, etc.
+      // Bun API server, etc.
       SHOGO_SKIP_LOCAL_SERVER: 'true',
       SHOGO_E2E: 'true',
       ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',

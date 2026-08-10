@@ -26,7 +26,6 @@ import { Hono } from 'hono'
 
 process.env.AI_PROXY_SECRET = process.env.AI_PROXY_SECRET ?? 'test-secret'
 delete process.env.KUBERNETES_SERVICE_HOST
-delete process.env.SHOGO_VM_ISOLATION
 delete process.env.SHOGO_CLOUD_SYNC
 
 // =============================================================================
@@ -142,6 +141,7 @@ mock.module('../lib/proxy-billing-session', () => ({
   closeSession: async (...args: any[]) => { sessionCalls.push(['close', ...args]); return closeSessionImpl() },
   setQualitySignals: (...args: any[]) => { sessionCalls.push(['quality', ...args]); return false },
   hasSession: () => false,
+  hasActiveSession: () => false,
   accumulateUsage: () => {},
 }))
 

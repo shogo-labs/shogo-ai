@@ -128,7 +128,10 @@ test.describe("Billing & Upgrade Flow", () => {
     await expect(
       businessCard.getByText("$40").first().or(page.getByText("$40").first()),
     ).toBeVisible()
-    await expect(page.getByText(/\/seat/).first()).toBeVisible()
+    // Pro/Business scale per-seat — the seat counter itself (not price copy)
+    // is the source of truth for seat count on each card.
+    await expect(proCard.getByText("Seats").first()).toBeVisible()
+    await expect(businessCard.getByText("Seats").first()).toBeVisible()
   })
 
   // ── Phase 3: Stripe Checkout (Reach-Only) ────────────────────────

@@ -45,6 +45,13 @@ import {
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { OrchestrationOptions }
 export type { InferenceRetryOptions, InferenceRetryInfo }
+// Re-exported so callers surfacing a failed turn (e.g. the agent-runtime
+// gateway) classify inference errors with the SAME logic the loop used to
+// retry them — keeping the retry decision and the user-facing message
+// consistent (see retry-classifier.ts: "so the agent loop and any callers
+// stay consistent").
+export { classifyRetryability, stripStreamErrorMarker } from './retry-classifier'
+export type { RetryClassification, RetryReason } from './retry-classifier'
 
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 

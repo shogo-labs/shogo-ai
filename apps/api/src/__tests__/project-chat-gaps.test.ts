@@ -24,7 +24,6 @@ import { Hono } from 'hono'
 
 process.env.AI_PROXY_SECRET = process.env.AI_PROXY_SECRET ?? 'test-secret'
 delete process.env.KUBERNETES_SERVICE_HOST
-delete process.env.SHOGO_VM_ISOLATION
 
 // ─── Controllable fixtures ────────────────────────────────────────────────────
 
@@ -83,6 +82,7 @@ mock.module('../lib/proxy-billing-session', () => ({
   closeSession: async (...args: any[]) => closeSessionImpl(),
   setQualitySignals: () => {},
   hasSession: () => false,
+  hasActiveSession: () => false,
   accumulateUsage: () => {},
 }))
 

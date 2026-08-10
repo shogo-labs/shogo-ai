@@ -159,6 +159,15 @@ export class FcApi {
       mem_backend: { backend_path: memFilePath, backend_type: 'File' },
       enable_diff_snapshots: false,
       resume_vm: resume,
+      // Advance the guest wall-clock to the host's real time on restore.
+      // Without this, a restored guest resumes with the clock frozen at
+      // snapshot-creation time; after a suspend of more than a few minutes the
+      // guest clock is far enough in the past that outbound TLS handshakes fail
+      // with "certificate is not yet valid" (notBefore in the future relative
+      // to the stale clock), breaking every HTTPS call from the guest
+      // (AI proxy, Composio, etc.). Requires kvm-clock (the x86 KVM default;
+      // our guests set no `clocksource=`) and host kernel >= 5.16 (hosts run 6.8).
+      clock_realtime: true,
     })
   }
 

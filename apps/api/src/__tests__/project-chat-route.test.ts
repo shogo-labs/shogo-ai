@@ -37,7 +37,6 @@ mock.module('@shogo/model-catalog', () => ({
 
 process.env.AI_PROXY_SECRET = process.env.AI_PROXY_SECRET ?? 'test-secret'
 delete process.env.KUBERNETES_SERVICE_HOST
-delete process.env.SHOGO_VM_ISOLATION
 
 let projectFixture: { id: string; name: string; workspaceId: string } | null = {
   id: 'p-1', name: 'Test', workspaceId: 'w-1',
@@ -91,6 +90,7 @@ mock.module('../lib/proxy-billing-session', () => ({
   closeSession: async () => ({ done: true }),
   setQualitySignals: () => false,
   hasSession: () => false,
+  hasActiveSession: () => false,
   accumulateUsage: () => {},
 }))
 

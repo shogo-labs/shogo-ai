@@ -51,6 +51,23 @@ export interface SnapshotMeta {
   rootfsPath: string
   /** Host rootfs identity at snapshot time; restore is only valid on a match. */
   rootfsIdentity: string
+  /**
+   * ETag of the durable source backup (`{projectId}/project-src.tar.gz`) that
+   * was current when this snapshot was taken — the workspace frozen inside it
+   * descends from that backup. Carried back into AssignedVm.backupParentEtag on
+   * resume so a resumed VM's next suspend can safely overwrite exactly the
+   * backup it derives from (and quarantine otherwise). Absent for a legacy
+   * snapshot taken before lineage stamping shipped.
+   */
+  backupEtag?: string
+  /**
+   * ETag of the durable writable-state archive (`{projectId}/project-data.tar.gz`)
+   * current when this snapshot was taken. Carried back into
+   * AssignedVm.dataParentEtag on resume so a resumed VM may overwrite exactly
+   * the data archive its database derives from. Absent for snapshots taken
+   * before writable-state durability shipped.
+   */
+  dataEtag?: string
   /** Store schema version, for forward-compat. */
   v: 1
   /**

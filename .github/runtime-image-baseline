@@ -1,0 +1,26 @@
+# The commit whose guest runtime image the production metal fleet is running.
+#
+# Read by the `dispatch-metal-agent-release` gate in deploy.yml to decide whether
+# a production release must ask hosts to rebuild their golden rootfs. The rebuild
+# re-stamps the rootfs identity, which invalidates EVERY snapshot on every host —
+# ~6,500 fleet-wide — so each project cold-boots on its next open instead of
+# resuming. Worth it when guests have new code to run; a self-inflicted outage
+# when they do not. On 2026-08-09 an unconditional rebuild cost a day of 524s for
+# a release that changed nothing inside the guest.
+#
+# The tag history cannot answer this on its own. A guest image can reach the
+# fleet outside a tagged release — 8b4232bb did, hand-rolled that afternoon to
+# ship the idle-reaper fix — after which "changed since the last tag" reports
+# work the fleet has already done.
+#
+# UPDATE THIS ONLY AFTER THE FLEET HAS ACTUALLY REBUILT ON THE NEW IMAGE.
+# Getting it wrong in that direction is the harmful one: a baseline ahead of the
+# fleet silently skips rebuilds and leaves guests on stale code indefinitely,
+# which is how a runtime bug survives weeks of releases. A baseline left behind
+# the fleet only costs an unnecessary rebuild, which is why that is the default
+# whenever this file is missing or unreadable.
+#
+# Verify before changing it, don't assume. The image is greppable:
+#   ssh root@<host> "grep -ac -m1 <symbol-from-the-change> /opt/fc-spike/img/runtime.ext4"
+
+8b4232bb7
