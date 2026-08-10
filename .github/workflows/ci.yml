@@ -182,5 +182,22 @@ jobs:
         # then add `--strict` here.
         run: bun run check:desktop-schema-drift
 
+      - name: Desktop bundle + launcher assertions
+        # test-web-bundle.ts / test-sync-web.ts / test-forge-config.ts are
+        # hand-rolled assertion scripts rather than `bun test` files, so
+        # `bun run test` never picked them up and nothing ran them in CI —
+        # they only fired if someone remembered `bun run test:desktop-bundle`
+        # locally. That let the guards they encode rot silently: the
+        # shogo://app/ routing + integrity logic that fixed Monaco's stuck
+        # "Loading…", the sync-web.mjs contract that kept v1.8.12 from
+        # shipping without Monaco at all, and the forge prePackage hooks.
+        #
+        # Runs the `:ci` subset, which drops test:shogo-ide-bundle — that one
+        # shells out to sync-shogo-ide.mjs and requires
+        # extensions/shogo-core/dist/extension.js, a gitignored build artifact
+        # absent from a bare CI checkout. The other three are pure/tmpdir-only
+        # and finish in well under a second.
+        run: bun run --cwd apps/desktop test:desktop-bundle:ci
+
       - name: Test
         run: bun run test
