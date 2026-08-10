@@ -123,10 +123,17 @@ export async function proxyToPeer(
       // answers a bare 400 that never reaches a route handler. The victim is
       // the FOLLOWING request, which is what makes it so confusing: a chat POST
       // rejected upstream makes the unrelated resume GET after it fail.
-      // See oven-sh/bun#32847; unfixed as of Bun 1.3.14. Costs one connection
-      // setup per body-carrying proxy hop, which is cheap next to the SSE turn
-      // it precedes. Revisit once the runtime carries the upstream fix.
-      ...(hasBody ? { body: c.req.raw.body, duplex: 'half', keepalive: false } : {}),
+      // See oven-sh/bun#32847; unfixed as of Bun 1.3.14.
+      //
+      // It has to apply to EVERY hop, not just body-carrying ones. The victim
+      // is whatever request is written to the socket next, and proxied GETs —
+      // the SSE stream reads and the resume polls — draw from the same pool, so
+      // scoping this to `hasBody` left exactly the requests chat recovery
+      // depends on unprotected. Costs one connection setup per proxy hop, which
+      // is cheap next to the SSE turn it precedes. Revisit once the runtime
+      // carries the upstream fix.
+      keepalive: false,
+      ...(hasBody ? { body: c.req.raw.body, duplex: 'half' } : {}),
       // Peers terminate TLS behind the same cert; tolerate self-signed in-mesh.
       ...(typeof Bun !== 'undefined' ? { tls: { rejectUnauthorized: false } } : {}),
     } as any)
