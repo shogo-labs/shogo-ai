@@ -71,7 +71,6 @@ const SKIP_PREFIXES = [
   '/api/v1/',
   '/api/tools/',
   '/api/local/',
-  '/api/vm/',
   '/api/marketplace',
   '/api/cli/login/',
 ]

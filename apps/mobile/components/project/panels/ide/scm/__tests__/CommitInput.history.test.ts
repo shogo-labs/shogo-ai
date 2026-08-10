@@ -74,7 +74,7 @@ describe("commit history — loadHistory", () => {
 
 describe("commit split menu contract", () => {
   test("matches the VS Code four-action menu", () => {
-    const source = readFileSync("apps/mobile/components/project/panels/ide/scm/CommitInput.tsx", "utf8");
+    const source = readFileSync(new URL("../CommitInput.tsx", import.meta.url), "utf8");
     const labels = [...source.matchAll(/<MenuItem label=\"([^\"]+)\"/g)].map((match) => match[1]);
     expect(labels).toEqual(["Commit", "Commit (Amend)", "Commit & Push", "Commit & Sync"]);
     expect(source).not.toContain('label="Commit All"');
@@ -83,7 +83,7 @@ describe("commit split menu contract", () => {
   });
 
   test("enables primary commit from total committable changes, not staged changes only", () => {
-    const source = readFileSync("apps/mobile/components/project/panels/ide/scm/CommitInput.tsx", "utf8");
+    const source = readFileSync(new URL("../CommitInput.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("committableCount = stagedCount");
     expect(source).toContain("hasMessage && committableCount > 0");

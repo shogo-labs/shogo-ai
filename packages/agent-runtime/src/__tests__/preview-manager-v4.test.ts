@@ -71,7 +71,7 @@ describe('PreviewManager.getStatus (idle)', () => {
     expect(s.workspaceDir).toBe(ws)
     expect(s.phase).toBe('idle')
     expect(s.metroUrl).toBeNull()
-    expect(s.errors).toEqual({ install: null, generate: null })
+    expect(s.errors).toEqual({ install: null, generate: null, setup: null })
     expect(s.devServer === 'vite' || s.devServer === 'metro' || s.devServer === 'none').toBe(true)
   })
 

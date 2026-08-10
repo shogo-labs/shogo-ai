@@ -3,14 +3,16 @@
 //
 // Tests for the SERVER_BACKED Workers KV helper used by the publish flow to
 // flag / unflag server-backed subdomains. The *.shogo.one worker reads this
-// flag to decide whether to proxy /api/* to the Knative ingress, so the exact
-// CF KV REST shape (and the "best-effort no-op when unconfigured" contract)
-// matters.
+// flag to decide whether to proxy /api/* at all and, via the value, which
+// backend to send it to (`knative` = Kourier, `metal` = API published
+// endpoint), so the exact CF KV REST shape (and the "best-effort no-op when
+// unconfigured" contract) matters.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   getServerBackedKvConfig,
   setServerBackedFlag,
+  getServerBackedBackend,
   clearServerBackedFlag,
 } from '../lib/cloudflare-server-backed-kv'
 
@@ -25,7 +27,7 @@ let saved: Record<string, string | undefined> = {}
 const realFetch = globalThis.fetch
 let calls: Array<{ url: string; method: string; body: string | null; auth: string | null }> = []
 
-function installFetch(status = 200) {
+function installFetch(status = 200, responseBody = '{"success":true}') {
   calls = []
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.url
@@ -35,7 +37,7 @@ function installFetch(status = 200) {
       body: (init?.body as string) ?? null,
       auth: (init?.headers as Record<string, string>)?.['Authorization'] ?? null,
     })
-    return new Response('{"success":true}', { status })
+    return new Response(responseBody, { status })
   }) as typeof fetch
 }
 
@@ -87,7 +89,7 @@ describe('setServerBackedFlag', () => {
     expect(calls.length).toBe(0)
   })
 
-  test('PUTs `1` to the subdomain key with the bearer token', async () => {
+  test('PUTs the default `knative` backend to the subdomain key with the bearer token', async () => {
     configure()
     installFetch()
     const ok = await setServerBackedFlag('august-29th-celebration-portal')
@@ -97,14 +99,44 @@ describe('setServerBackedFlag', () => {
     expect(calls[0].url).toBe(
       'https://api.cloudflare.com/client/v4/accounts/acct-abc/storage/kv/namespaces/ns-xyz/values/august-29th-celebration-portal',
     )
-    expect(calls[0].body).toBe('1')
+    expect(calls[0].body).toBe('knative')
     expect(calls[0].auth).toBe('Bearer cf-token-123')
+  })
+
+  test('PUTs `metal` when the subdomain routes to the API published endpoint', async () => {
+    configure()
+    installFetch()
+    const ok = await setServerBackedFlag('my-app', 'metal')
+    expect(ok).toBe(true)
+    expect(calls.length).toBe(1)
+    expect(calls[0].method).toBe('PUT')
+    expect(calls[0].body).toBe('metal')
   })
 
   test('returns false (best-effort) when Cloudflare responds non-2xx', async () => {
     configure()
     installFetch(500)
     expect(await setServerBackedFlag('my-app')).toBe(false)
+  })
+})
+
+describe('getServerBackedBackend', () => {
+  test('normalizes the legacy `1` value to the knative backend', async () => {
+    configure()
+    installFetch(200, '1')
+    expect(await getServerBackedBackend('my-app')).toBe('knative')
+  })
+
+  test('reads `metal` back as the metal backend', async () => {
+    configure()
+    installFetch(200, 'metal')
+    expect(await getServerBackedBackend('my-app')).toBe('metal')
+  })
+
+  test('returns null for an unflagged (static, edge-only) subdomain', async () => {
+    configure()
+    installFetch(404, '')
+    expect(await getServerBackedBackend('my-app')).toBeNull()
   })
 })
 

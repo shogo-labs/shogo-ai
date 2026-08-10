@@ -16,10 +16,14 @@ import { MARKUP_MULTIPLIER } from '../lib/usage-cost'
 
 // Track calls to consumeUsage (new single-object-arg API)
 let consumeUsageCalls: any[] = []
+// When set, consumeUsage rejects with this — used to cover the deleted-project
+// (foreign-key violation) arm of closeSession's catch.
+let consumeUsageError: any = null
 
 mock.module('../services/billing.service', () => ({
   consumeUsage: async (args: any) => {
     consumeUsageCalls.push(args)
+    if (consumeUsageError) throw consumeUsageError
     return { success: true, remainingIncludedUsd: 99 }
   },
 }))
@@ -36,6 +40,7 @@ import {
 describe('Proxy Billing Session', () => {
   beforeEach(() => {
     consumeUsageCalls = []
+    consumeUsageError = null
   })
 
   test('openSession creates an active session', () => {
@@ -308,6 +313,69 @@ describe('Proxy Billing Session', () => {
       const args = consumeUsageCalls[0]
       expect(args.actionMetadata.imageGenerationCount).toBe(3)
       expect(args.actionMetadata.imageModels.sort()).toEqual(['gpt-image-1', 'imagen-4'])
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // Deleted project — a user can delete a project mid-turn, so the session
+  // outlives the row it bills against and the UsageEvent insert trips its FK
+  // (Prisma P2003). There is nothing to charge and nothing to fix, so it must
+  // not be logged as an error: one delete previously produced a stream of
+  // full Prisma stack traces in production logs.
+  // -------------------------------------------------------------------------
+  describe('closeSession when the project was deleted', () => {
+    function captureConsole() {
+      const warns: string[] = []
+      const errors: string[] = []
+      const origWarn = console.warn
+      const origError = console.error
+      console.warn = (...a: any[]) => { warns.push(a.join(' ')) }
+      console.error = (...a: any[]) => { errors.push(a.join(' ')) }
+      return {
+        warns,
+        errors,
+        restore: () => { console.warn = origWarn; console.error = origError },
+      }
+    }
+
+    test('a P2003 foreign-key violation is logged as a skip, not an error', async () => {
+      const fkErr: any = new Error('Foreign key constraint violated on UsageEvent')
+      fkErr.code = 'P2003'
+      consumeUsageError = fkErr
+
+      openSession('proj-deleted', 'ws-deleted', 'user-deleted')
+      accumulateUsage('proj-deleted', 'claude-sonnet-4-5', 1000, 500)
+
+      const cap = captureConsole()
+      try {
+        // closeSession must still resolve (never reject) so the caller's
+        // stream-teardown path is unaffected.
+        const result = await closeSession('proj-deleted')
+        expect(result.totalTokens).toBe(1500)
+      } finally {
+        cap.restore()
+      }
+
+      expect(cap.warns.join('\n')).toContain('Skipping usage charge')
+      expect(cap.errors.join('\n')).not.toContain('Failed to charge usage')
+      expect(hasSession('proj-deleted')).toBe(false)
+    })
+
+    test('any OTHER billing failure is still logged as a real error', async () => {
+      consumeUsageError = new Error('billing service exploded')
+
+      openSession('proj-billing-broken', 'ws-b', 'user-b')
+      accumulateUsage('proj-billing-broken', 'claude-sonnet-4-5', 1000, 500)
+
+      const cap = captureConsole()
+      try {
+        await closeSession('proj-billing-broken')
+      } finally {
+        cap.restore()
+      }
+
+      expect(cap.errors.join('\n')).toContain('Failed to charge usage')
+      expect(cap.warns.join('\n')).not.toContain('Skipping usage charge')
     })
   })
 })

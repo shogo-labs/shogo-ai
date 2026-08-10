@@ -21,9 +21,9 @@
     "eas-build-post-install": "cd ../../packages/sdk && bun run build",
     "bundle:monaco-types": "node scripts/bundle-monaco-types.mjs",
     "copy:monaco-vs": "node scripts/copy-monaco-vs.mjs",
-    "test": "bun --no-env-file test",
+    "test": "bun --no-env-file ../../scripts/run-tests-isolated.ts . --roots app,components,lib,stubs,test",
     "test:watch": "bun --no-env-file test --watch",
-    "test:coverage": "bun --no-env-file test --coverage",
+    "test:coverage": "bun --no-env-file ../../scripts/run-tests-isolated.ts . --roots app,components,lib,stubs,test --coverage",
     "devtools": "bunx react-devtools"
   },
   "dependencies": {

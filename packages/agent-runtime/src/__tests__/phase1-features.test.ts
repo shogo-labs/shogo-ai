@@ -231,16 +231,23 @@ describe('File State Cache — tool integration', () => {
     expect(record!.partial!.offset).toBe(5)
   })
 
-  test('write_file invalidates fileStateCache entry', async () => {
+  test('write_file refreshes fileStateCache with post-write content', async () => {
+    // write_file records the post-write state rather than invalidating: weak
+    // models routinely write_file then edit_file the same path, and dropping
+    // the entry produced a spurious "File has not been read yet".
     const ctx = createCtx()
     writeFileSync(join(tmpDir, 'data.txt'), 'original')
-    ctx.fileStateCache!.recordRead('data.txt', Date.now(), 1)
+    ctx.fileStateCache!.recordRead('data.txt', Date.now(), 1, undefined, 'original')
     expect(ctx.fileStateCache!.hasBeenRead('data.txt')).toBe(true)
 
     const tool = getTool(ctx, 'write_file')
     await tool.execute('t1', { path: 'data.txt', content: 'modified' })
 
-    expect(ctx.fileStateCache!.hasBeenRead('data.txt')).toBe(false)
+    expect(ctx.fileStateCache!.hasBeenRead('data.txt')).toBe(true)
+    expect(ctx.fileStateCache!.getRecord('data.txt')!.content).toBe('modified')
+    // The refreshed record must not look stale, or a follow-up edit_file
+    // would be rejected.
+    expect(ctx.fileStateCache!.isStale('data.txt', join(tmpDir, 'data.txt'))).toBe(false)
   })
 
   test('edit_file refreshes fileStateCache with post-edit content', async () => {

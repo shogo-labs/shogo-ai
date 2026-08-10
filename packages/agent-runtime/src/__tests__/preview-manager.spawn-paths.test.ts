@@ -274,7 +274,7 @@ describe('PreviewManager.getStatus (non-running)', () => {
     expect(s.phase).toBe('idle')
     expect(s.devServer).toBe('vite')
     expect(s.metroUrl).toBe(null)
-    expect(s.errors).toEqual({ install: null, generate: null })
+    expect(s.errors).toEqual({ install: null, generate: null, setup: null })
     // API sidecar hasn't been decided yet (startApiServer hasn't run): the
     // phase is the default 'idle' and the gate is closed so the client waits.
     expect(s.apiServerPhase).toBe('idle')

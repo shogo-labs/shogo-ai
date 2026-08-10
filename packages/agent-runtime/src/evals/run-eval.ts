@@ -5,13 +5,11 @@
  * Agent Runtime Eval Runner
  *
  * Spins up real agent-runtime instances and runs evals against them.
- * By default uses Docker containers; pass --local to spawn local bun processes,
- * or --vm to use VM isolation (macOS Virtualization.framework / Windows QEMU).
+ * By default uses Docker containers; pass --local to spawn local bun processes.
  *
  * Usage:
  *   bun run src/evals/run-eval.ts --track canvas --model haiku
  *   bun run src/evals/run-eval.ts --track canvas --model haiku --local
- *   bun run src/evals/run-eval.ts --track canvas --model haiku --vm
  *   bun run src/evals/run-eval.ts --track all --model sonnet --workers 2
  *   bun run src/evals/run-eval.ts --track canvas --filter weather
  *   bun run src/evals/run-eval.ts --track skill-server-advanced --save-workspaces
@@ -42,7 +40,6 @@ import {
   registerCleanupHandlers,
 } from './docker-worker'
 import { type LocalWorkerConfig, startLocalWorker, stopLocalWorker } from './local-worker'
-import { type VMWorkerConfig, startVMWorker, stopVMWorker } from './vm-worker'
 import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, stopK8sWorker, getK8sWorkerUrl } from './k8s-worker'
 
 loadEnvFromDisk(REPO_ROOT)
@@ -144,17 +141,15 @@ const timeoutMsArg = parseInt(getArg(args, 'timeout-ms', '1200000')!)
 const filterArg = getArg(args, 'filter')
 const tagsArg = getArg(args, 'tags')
 // --repeat N runs each selected eval N times (fresh session per trial) in a
-// single invocation — one bundle build + one VM boot handles all trials, which
-// is how we measure pass-rate for flaky/non-deterministic behaviors.
+// single invocation — one bundle build + one worker boot handles all trials,
+// which is how we measure pass-rate for flaky/non-deterministic behaviors.
 const repeatArg = Math.max(1, parseInt(getArg(args, 'repeat', '1')!) || 1)
 const agentModeArg = getArg(args, 'agent-mode') as 'basic' | 'advanced' | 'auto' | undefined
 const promptProfileArg = getArg(args, 'prompt-profile') as 'full' | 'swe' | 'general' | undefined
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
 const localFlag = args.includes('--local')
-const vmFlag = args.includes('--vm')
-const k8sFlag = args.includes('--k8s') || (!localFlag && !vmFlag && !args.includes('--docker') && !!process.env.KUBERNETES_SERVICE_HOST)
-const mountFlag = args.includes('--mount')
+const k8sFlag = args.includes('--k8s') || (!localFlag && !args.includes('--docker') && !!process.env.KUBERNETES_SERVICE_HOST)
 const saveWorkspacesFlag = args.includes('--save-workspaces')
 const noPipelineFlag = args.includes('--no-pipeline')
 const runIdArg = getArg(args, 'run-id')
@@ -227,10 +222,10 @@ async function postAgentEvalResult(body: {
   }
 }
 
-// Base ports + container/VM prefix can be shifted via env vars so two
+// Base ports + container prefix can be shifted via env vars so two
 // `run-eval.ts` invocations can run in parallel against the same
 // machine without colliding on port pools, tmp overlay files, or
-// container/VM names. Default values match the historical single-run
+// container names. Default values match the historical single-run
 // behavior. Used by parallel haiku/agentic eval chains.
 const BASE_PORT = parseInt(process.env.EVAL_BASE_PORT || '6400', 10)
 // Host-side base port for direct access to the in-container API server.
@@ -240,11 +235,9 @@ const BASE_PORT = parseInt(process.env.EVAL_BASE_PORT || '6400', 10)
 // callbacks; runtime-checks accepts both `apiServerPort` and the legacy
 // `skillServerPort` alias.
 const SKILL_SERVER_BASE_PORT = parseInt(process.env.EVAL_SKILL_BASE_PORT || '4100', 10)
-// Container / VM name prefix. Distinct prefixes prevent overlay file
-// collisions (`/tmp/shogo-vm-eval-overlays/<prefix>-<id>.qcow2`) and
-// docker container name clashes.
+// Container name prefix. Prevents docker container name clashes across
+// concurrent eval invocations.
 const EVAL_CONTAINER_PREFIX = process.env.EVAL_CONTAINER_PREFIX || 'eval-worker'
-const EVAL_VM_PREFIX = process.env.EVAL_VM_PREFIX || 'eval-vm'
 // In-container port the project's API server (`server.tsx`) listens on.
 // PreviewManager resolves its bind port from `API_SERVER_PORT` /
 // `SKILL_SERVER_PORT` per-instance (see preview-manager.ts::
@@ -758,13 +751,13 @@ async function runEvalOnWorker(
         writeFileSync(absPath, content, 'utf-8')
       }
 
-      // Workers that don't share a filesystem with the host — a VM without a
-      // 9p mount, or a K8s pod — can't see host-side writes to `worker.dir`.
-      // Push the overlay in over HTTP exactly like the full-setup branch seeds
-      // `workspaceFiles`. Without this, pipeline-phase fixtures are silently
-      // written host-only and never reach the guest, so phase 2+ evals run
-      // against a workspace missing their seeded state.
-      if ((vmFlag && !mountFlag) || k8sFlag) {
+      // Workers that don't share a filesystem with the host — a K8s pod —
+      // can't see host-side writes to `worker.dir`. Push the overlay in over
+      // HTTP exactly like the full-setup branch seeds `workspaceFiles`.
+      // Without this, pipeline-phase fixtures are silently written host-only
+      // and never reach the guest, so phase 2+ evals run against a workspace
+      // missing their seeded state.
+      if (k8sFlag) {
         const base = getWorkerBaseUrl(worker)
         try {
           const seedRes = await fetch(`${base}/agent/workspace/seed`, {
@@ -780,38 +773,6 @@ async function runEvalOnWorker(
         } catch (e: any) {
           console.warn(`[setup] Failed to seed pipeline overlay into guest: ${e.message}`)
         }
-      }
-    }
-  } else if (vmFlag && mountFlag) {
-    // 9p mount: the VM manages its own workspace defaults and .shogo is
-    // symlinked to a VM-internal path. Only clean non-essential files and
-    // write the eval's workspace files from the host; they're visible
-    // inside the VM immediately via 9p.
-    if (verboseFlag) console.log(`      [setup] Cleaning workspace (9p mount)...`)
-    if (existsSync(worker.dir)) {
-      const keepEntries = new Set([
-        'node_modules', '.shogo', '.virtfs_metadata',
-        'tsconfig.json', 'react-shim.d.ts', 'canvas-globals.d.ts', 'pyrightconfig.json',
-        'AGENTS.md', 'config.json', 'memory',
-      ])
-      try {
-        for (const entry of readdirSync(worker.dir, { withFileTypes: true })) {
-          if (keepEntries.has(entry.name)) continue
-          const fullPath = join(worker.dir, entry.name)
-          try { rmSync(fullPath, { recursive: true, force: true }) } catch {}
-        }
-      } catch {}
-    }
-
-    if (verboseFlag) console.log(`      [setup] Writing workspace files via 9p...`)
-    if (ev.workspaceFiles) {
-      for (const [relPath, content] of Object.entries(ev.workspaceFiles)) {
-        const absPath = join(worker.dir, relPath)
-        mkdirSync(dirname(absPath), { recursive: true })
-        writeFileSync(absPath, content, 'utf-8')
-      }
-      if (verboseFlag) {
-        console.log(`      [setup] Workspace files visible via 9p mount (${Object.keys(ev.workspaceFiles).length} file(s))`)
       }
     }
   } else if (k8sFlag) {
@@ -878,20 +839,6 @@ async function runEvalOnWorker(
         mkdirSync(dirname(absPath), { recursive: true })
         writeFileSync(absPath, content, 'utf-8')
       }
-
-      if (vmFlag) {
-        const base = getWorkerBaseUrl(worker)
-        const seedRes = await fetch(`${base}/agent/workspace/seed`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ files: ev.workspaceFiles }),
-        })
-        if (!seedRes.ok) {
-          console.warn(`[setup] Failed to seed workspace files into VM: ${seedRes.status}`)
-        } else if (verboseFlag) {
-          console.log(`      [setup] Seeded ${Object.keys(ev.workspaceFiles).length} file(s) into VM workspace`)
-        }
-      }
     }
   }
 
@@ -913,7 +860,7 @@ async function runEvalOnWorker(
   const startTime = Date.now()
   console.log(`[${evalLabel}] Worker ${worker.id}: ${ev.name}`)
 
-  const statsCollector = (!localFlag && !vmFlag && !k8sFlag) ? new DockerStatsCollector(worker.containerName) : null
+  const statsCollector = (!localFlag && !k8sFlag) ? new DockerStatsCollector(worker.containerName) : null
   statsCollector?.start()
 
   try {
@@ -978,12 +925,12 @@ async function runEvalOnWorker(
 
       let runtimeResults: RuntimeCheckResults | null = null
       // For workers where the workspace lives behind isolation (k8s
-      // pod, VM overlay), run the checks **inside** the worker via
-      // the agent-runtime's `/agent/runtime-checks` HTTP endpoint.
-      // The host's `worker.dir` is just the seed surface; node_modules
-      // / src/generated / @prisma/client only exist inside the
-      // container/VM, so on-host filesystem checks would always
-      // report "missing" and pollute the result with false positives.
+      // pod), run the checks **inside** the worker via the
+      // agent-runtime's `/agent/runtime-checks` HTTP endpoint. The
+      // host's `worker.dir` is just the seed surface; node_modules /
+      // src/generated / @prisma/client only exist inside the
+      // container, so on-host filesystem checks would always report
+      // "missing" and pollute the result with false positives.
       // Tenant-isolation probe is opt-in per eval via a `tenant-probe:<route>` tag.
       const tenantProbe = (() => {
         const tag = ev.tags?.find(t => t.startsWith('tenant-probe:'))
@@ -992,7 +939,7 @@ async function runEvalOnWorker(
         return route ? { route } : undefined
       })()
 
-      const useRemoteChecks = k8sFlag || vmFlag
+      const useRemoteChecks = k8sFlag
       if (useRemoteChecks) {
         try {
           const res = await fetch(`${getWorkerBaseUrl(worker)}/agent/runtime-checks`, {
@@ -1015,11 +962,10 @@ async function runEvalOnWorker(
         // hit /api/* (relative paths), so canvasExpectedPort is the same
         // port runtime-checks itself probes against.
         const hostSkillPort = localFlag ? CONTAINER_SKILL_PORT : SKILL_SERVER_BASE_PORT + worker.id
-        const canvasExpected = vmFlag ? SKILL_SERVER_BASE_PORT + worker.id : CONTAINER_SKILL_PORT
         runtimeResults = await runRuntimeChecks({
           workspaceDir: worker.dir,
           apiServerPort: hostSkillPort,
-          canvasExpectedPort: canvasExpected,
+          canvasExpectedPort: CONTAINER_SKILL_PORT,
           evalId: ev.id,
           verbose: verboseFlag,
           runtimePort: worker.port,
@@ -1204,7 +1150,7 @@ async function runEvalOnWorker(
 // ---------------------------------------------------------------------------
 
 let globalWorkers: DockerWorker[] = []
-const stopWorker = k8sFlag ? stopK8sWorkerSync : vmFlag ? stopVMWorker : localFlag ? stopLocalWorker : stopDockerWorker
+const stopWorker = k8sFlag ? stopK8sWorkerSync : localFlag ? stopLocalWorker : stopDockerWorker
 
 async function cleanupWorkers(workers: DockerWorker[]): Promise<void> {
   if (k8sFlag) {
@@ -1223,13 +1169,13 @@ registerCleanupHandlers(() => globalWorkers, 'agent-eval-crash.log', { stopWorke
 async function main() {
   console.log('')
   console.log('='.repeat(60))
-  console.log(`AGENT RUNTIME EVAL (${k8sFlag ? 'K8s' : vmFlag ? 'VM' : localFlag ? 'Local' : 'Docker'})`)
+  console.log(`AGENT RUNTIME EVAL (${k8sFlag ? 'K8s' : localFlag ? 'Local' : 'Docker'})`)
   console.log('='.repeat(60))
   console.log(`  Track:      ${trackArg}`)
   console.log(`  Model:      ${MODEL_MAP[modelArg] || modelArg}`)
   if (agentModeArg) console.log(`  Agent Mode: ${agentModeArg}`)
   console.log(`  Workers:    ${workersArg}`)
-  console.log(`  Mode:       ${k8sFlag ? 'K8s pod' : vmFlag ? (mountFlag ? 'VM instance (9p mount)' : 'VM instance') : localFlag ? 'local process' : 'docker container'}`)
+  console.log(`  Mode:       ${k8sFlag ? 'K8s pod' : localFlag ? 'local process' : 'docker container'}`)
   if (saveWorkspacesFlag) console.log(`  Save:    ON (template format)`)
   console.log('')
 
@@ -1270,10 +1216,9 @@ async function main() {
     process.exit(1)
   }
 
-  // Worker config setup — one of four backends
+  // Worker config setup — one of three backends
   let dockerWorkerConfig: DockerWorkerConfig | undefined
   let localWorkerConfig: LocalWorkerConfig | undefined
-  let vmWorkerConfig: VMWorkerConfig | undefined
   let k8sWorkerConfig: K8sWorkerConfig | undefined
 
   if (k8sFlag) {
@@ -1290,27 +1235,6 @@ async function main() {
       envOverrides: {
         AGENT_MAX_ITERATIONS: '100',
         WEB_CACHE_REDIS_URL: `redis://redis-master.${namespace}:6379`,
-      },
-    }
-  } else if (vmFlag) {
-    vmWorkerConfig = {
-      containerPrefix: EVAL_VM_PREFIX,
-      baseHostPort: BASE_PORT,
-      model: modelArg,
-      verbose: verboseFlag,
-      mount: mountFlag,
-      // When the user shifts SKILL_BASE_PORT for parallel runs, also use a
-      // matching dedicated overlay subdir so two invocations don't fight
-      // over the same `<prefix>-<id>.qcow2` filenames.
-      skillBasePort: SKILL_SERVER_BASE_PORT,
-      overlayDir: process.env.EVAL_OVERLAY_DIR,
-      // Per-track env overrides for hardening evals:
-      //  - EVAL_PUBLIC_PREVIEW_URL reproduces the cloud preview case (the VM
-      //    normally leaves PUBLIC_PREVIEW_URL unset → localhost).
-      //  - EVAL_AGENT_MAX_ITERATIONS lets the long-task eval force the ceiling.
-      envOverrides: {
-        ...(process.env.EVAL_PUBLIC_PREVIEW_URL ? { PUBLIC_PREVIEW_URL: process.env.EVAL_PUBLIC_PREVIEW_URL } : {}),
-        ...(process.env.EVAL_AGENT_MAX_ITERATIONS ? { AGENT_MAX_ITERATIONS: process.env.EVAL_AGENT_MAX_ITERATIONS } : {}),
       },
     }
   } else if (localFlag) {
@@ -1332,6 +1256,14 @@ async function main() {
       extraPortMappings: [{ hostBase: SKILL_SERVER_BASE_PORT, container: CONTAINER_SKILL_PORT }],
       model: modelArg,
       verbose: verboseFlag,
+      // Per-track env overrides for hardening evals:
+      //  - EVAL_PUBLIC_PREVIEW_URL reproduces the cloud preview case (the
+      //    container normally leaves PUBLIC_PREVIEW_URL unset → localhost).
+      //  - EVAL_AGENT_MAX_ITERATIONS lets the long-task eval force the ceiling.
+      envOverrides: {
+        ...(process.env.EVAL_PUBLIC_PREVIEW_URL ? { PUBLIC_PREVIEW_URL: process.env.EVAL_PUBLIC_PREVIEW_URL } : {}),
+        ...(process.env.EVAL_AGENT_MAX_ITERATIONS ? { AGENT_MAX_ITERATIONS: process.env.EVAL_AGENT_MAX_ITERATIONS } : {}),
+      },
     })
   }
 
@@ -1342,11 +1274,9 @@ async function main() {
     for (let i = 0; i < workersArg; i++) {
       const w = k8sFlag
         ? await startK8sWorker(i, k8sWorkerConfig!)
-        : vmFlag
-          ? await startVMWorker(i, vmWorkerConfig!)
-          : localFlag
-            ? await startLocalWorker(i, localWorkerConfig!)
-            : await startDockerWorker(i, dockerWorkerConfig!)
+        : localFlag
+          ? await startLocalWorker(i, localWorkerConfig!)
+          : await startDockerWorker(i, dockerWorkerConfig!)
       workers.push(w)
       globalWorkers.push(w)
       if (i < workersArg - 1) await Bun.sleep(1_000)
@@ -1357,38 +1287,6 @@ async function main() {
     globalWorkers = []
     if (!localFlag && !k8sFlag) cleanupDockerEnvFile()
     process.exit(1)
-  }
-
-  // VM preflight: verify workspace provisioning inside the VM
-  if (vmFlag) {
-    console.log('Running VM preflight checks...')
-    let preflightOk = true
-    for (const w of workers) {
-      try {
-        const res = await fetch(`${getWorkerBaseUrl(w)}/health`, { signal: AbortSignal.timeout(5_000) })
-        const body = await res.json() as any
-        const ws = body?.workspace
-        const tpl = ws?.templateSeeded
-        const deps = ws?.depsInstalled
-        const status = `templateSeeded=${tpl ?? 'n/a'}, depsInstalled=${deps ?? 'n/a'}`
-        if (tpl && deps) {
-          console.log(`  Worker ${w.id}: ${status} ✓`)
-        } else {
-          console.warn(`  Worker ${w.id}: ${status} ✗`)
-          preflightOk = false
-        }
-      } catch (err: any) {
-        console.warn(`  Worker ${w.id}: preflight failed — ${err.message}`)
-        preflightOk = false
-      }
-    }
-    if (!preflightOk) {
-      console.warn('\n⚠  VM preflight: workspace not fully provisioned. Template or deps may be missing.')
-      console.warn('   Evals with useRuntimeTemplate will likely fail. Rebuild the VM image.')
-      console.warn('')
-    } else {
-      console.log('  VM preflight passed.\n')
-    }
   }
 
   console.log('')
@@ -1444,19 +1342,12 @@ async function main() {
       if (verboseFlag) console.log(`      [lifecycle] Worker ${worker.id} unhealthy, restarting...`)
       stopWorker(worker)
       await Bun.sleep(500)
-      // Mirror the initial start branching (k8s → vm → local → docker). The VM
-      // branch was missing here, so a VM worker that went unhealthy fell through
-      // to startDockerWorker(dockerWorkerConfig!) — which is `undefined` in VM
-      // mode — and crashed with "config.baseHostPort is not an object", taking
-      // the whole run down (worst in single-worker runs where one bad restart
-      // poisons every remaining work item).
+      // Mirror the initial start branching (k8s → local → docker).
       const fresh = k8sFlag
         ? await startK8sWorker(worker.id, k8sWorkerConfig!)
-        : vmFlag
-          ? await startVMWorker(worker.id, vmWorkerConfig!, { workspaceDir: worker.dir })
-          : localFlag
-            ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
-            : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
+        : localFlag
+          ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
+          : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
       Object.assign(worker, fresh)
     }
   }
