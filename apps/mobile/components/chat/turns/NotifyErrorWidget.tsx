@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { View, Text } from "react-native"
+import { useState } from "react"
+import { Pressable, View, Text } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { AlertTriangle } from "lucide-react-native"
+import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
 
 export interface NotifyErrorWidgetProps {
@@ -11,29 +12,70 @@ export interface NotifyErrorWidgetProps {
   className?: string
 }
 
+type NotifyErrorArgs = { title?: unknown; message?: unknown }
+
+const COPY = {
+  label: "Error",
+  fallbackTitle: "Something went wrong",
+} as const
+
+function toDisplayString(value: unknown): string {
+  if (typeof value === "string") return value.trim()
+  if (value === null || value === undefined) return ""
+  return String(value).trim()
+}
+
+function getErrorContent(args: NotifyErrorArgs | undefined) {
+  const title = toDisplayString(args?.title) || COPY.fallbackTitle
+  const message = toDisplayString(args?.message)
+
+  return {
+    title,
+    details: message || title,
+  }
+}
+
 export function NotifyErrorWidget({ tool, className }: NotifyErrorWidgetProps) {
-  const rawTitle = (tool.args as { title?: unknown })?.title
-  const title = typeof rawTitle === "string" ? rawTitle : "Error"
-  const rawMessage = (tool.args as { message?: unknown })?.message
-  const message = typeof rawMessage === "string" ? rawMessage : rawMessage ? String(rawMessage) : ""
+  const [isExpanded, setIsExpanded] = useState(false)
+  const args = tool.args as NotifyErrorArgs | undefined
+  const { title, details } = getErrorContent(args)
+  const ChevronIcon = isExpanded ? ChevronDown : ChevronRight
 
   return (
     <View
       className={cn(
-        "rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-3 gap-2",
+        "overflow-hidden rounded-md border border-red-500/30 bg-red-500/5",
         className,
       )}
     >
-      <View className="flex-row items-center gap-2">
-        <AlertTriangle size={16} className="text-red-500 dark:text-red-400" />
-        <Text className="text-sm font-semibold text-red-700 dark:text-red-300 flex-1">
+      <Pressable
+        accessibilityLabel={`${COPY.label}: ${title}`}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: isExpanded }}
+        onPress={() => setIsExpanded((current) => !current)}
+        className="w-full flex-row items-center gap-1.5 px-2 py-1.5"
+      >
+        <ChevronIcon className="w-3 h-3 text-muted-foreground" />
+        <AlertTriangle className="w-3 h-3 text-red-500" />
+
+        <Text className="font-mono text-[10px] font-medium text-red-600 dark:text-red-400">
+          {COPY.label}
+        </Text>
+
+        <Text
+          className="flex-1 text-right text-[9px] text-muted-foreground"
+          numberOfLines={1}
+        >
           {title}
         </Text>
-      </View>
-      {message ? (
-        <Text className="text-xs text-red-600 dark:text-red-400 leading-5">
-          {message}
-        </Text>
+      </Pressable>
+
+      {isExpanded ? (
+        <View className="border-t border-red-500/20 px-2 py-1.5">
+          <Text className="text-xs leading-5 text-red-700 dark:text-red-300">
+            {details}
+          </Text>
+        </View>
       ) : null}
     </View>
   )
