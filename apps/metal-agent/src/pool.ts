@@ -1102,6 +1102,13 @@ export class MetalWarmPool {
       adoptWhenUnknown: a.workspaceOrigin === 'snapshot',
     })
     switch (outcome.status) {
+      case 'promoted':
+        metrics.inc(M.backupTemplatePromotion)
+        console.log(
+          `[pool] promoted real source over a template-shaped backup for ${a.projectId} ` +
+            `(${bytes.byteLength} bytes); replaced placeholder kept at ${outcome.supersededKey}`,
+        )
+      // falls through — a promotion anchors lineage exactly like a normal write
       case 'created':
       case 'written':
       case 'adopted':

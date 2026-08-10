@@ -68,6 +68,11 @@ export const M = {
   backupConflict: 'metal_backup_conflict_total',
   backupTemplateSnapshotBlocked: 'metal_backup_template_snapshot_blocked_total',
   backupSizeRegression: 'metal_backup_size_regression_total',
+  // `backupTemplatePromotion` = real source replaced a template-shaped backup it
+  // could not prove descent from. The counterpart to `backupSizeRegression`, and
+  // the case that used to quarantine: a project built inside a template-origin
+  // VM has no lineage to present, so its work never reached the durable backup.
+  backupTemplatePromotion: 'metal_backup_template_promotion_total',
   // Writable-state durability (database + uploads; see
   // pool.saveProjectDataToStore).
   //   `dataConflict`  — a conditional write's precondition failed, so the
