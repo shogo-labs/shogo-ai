@@ -32,8 +32,8 @@ const hasInstallGif = fs.existsSync('./resources/install-splash.gif')
 //    shipped without the Monaco bundle.
 //
 //  - OPTIONAL resources are platform-specific or feature-flagged
-//    (VM disk images, sherpa onnx blobs, sysaudio bundles, etc.) and
-//    silently dropping them is correct.
+//    (sherpa onnx blobs, sysaudio bundles, etc.) and silently dropping
+//    them is correct.
 const REQUIRED_RESOURCES = [
   './resources/bun',
   './resources/package.json',
@@ -43,7 +43,6 @@ const REQUIRED_RESOURCES = [
 
 const OPTIONAL_RESOURCES = [
   './resources/bundle',
-  './resources/vm-bundle',
   './resources/node_modules',
   './resources/templates',
   './resources/runtime-template',
@@ -53,8 +52,6 @@ const OPTIONAL_RESOURCES = [
   // "Update available — Refresh" toast never shows on Desktop.
   './resources/static',
   './resources/tree-sitter-wasm',
-  './resources/vm',
-  './resources/vm-helper',
   './resources/sherpa-onnx',
   './resources/shogo-sysaudio',
   './resources/seed.db',
@@ -64,10 +61,6 @@ const OPTIONAL_RESOURCES = [
   // directory is never shipped and install-sherpa 500s with "not found".
   './resources/scripts',
 ]
-
-// VM disk images are Linux-only and not usable on Windows. Exclude them
-// on win32 to keep the Squirrel installer under NuGet's size limits.
-const isWin32 = process.platform === 'win32'
 
 const missingRequired = REQUIRED_RESOURCES.filter((p) => !fs.existsSync(p))
 if (missingRequired.length > 0) {
@@ -99,14 +92,13 @@ if (missingRequired.length > 0) {
 // existence IS verified at config-load time by the check above.
 //
 // OPTIONAL_RESOURCES legitimately may be absent on some platforms
-// (vm/ is Linux-only inside the bundle, sherpa-onnx/ is opt-in, etc.)
-// so they're still filtered with `existsSync`.
+// (sherpa-onnx/ is opt-in, etc.) so they're still filtered with `existsSync`.
 const extraResource = [
   './resources/web',
   './resources/apps',
   ...REQUIRED_RESOURCES,
   ...OPTIONAL_RESOURCES.filter((p) => fs.existsSync(p)),
-].filter((p) => !(isWin32 && p === './resources/vm'))
+]
 
 // Windows code signing via DigiCert KeyLocker (cloud HSM). The cert's private
 // key is non-exportable, so we can't use the legacy

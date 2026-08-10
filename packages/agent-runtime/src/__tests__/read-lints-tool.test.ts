@@ -4,12 +4,13 @@
  * Unit tests for the read_lints tool in gateway-tools.ts.
  * Uses a mock LSP that returns controlled diagnostics.
  */
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { FileStateCache } from '../file-state-cache'
 import type { LSPDiagnostic, WorkspaceLSPManager } from '@shogo/shared-runtime'
+import { shortenReadLintsWaitForTests, restoreReadLintsWait } from './helpers/read-lints-wait'
 
 // Use realpathSync to resolve /tmp -> /private/tmp on macOS
 const TEST_DIR = realpathSync('/tmp') + '/test-read-lints'
@@ -74,6 +75,9 @@ async function execReadLints(ctx: ToolContext, params: Record<string, any> = {})
 }
 
 describe('read_lints tool', () => {
+  beforeAll(() => shortenReadLintsWaitForTests())
+  afterAll(() => restoreReadLintsWait())
+
   beforeEach(() => {
     rmSync(TEST_DIR, { recursive: true, force: true })
     mkdirSync(join(TEST_DIR, 'canvas'), { recursive: true })
@@ -87,7 +91,7 @@ describe('read_lints tool', () => {
     const ctx = createCtx(undefined)
     const result = await execReadLints(ctx)
     expect(result.ok).toBe(false)
-    expect(result.error).toContain('Language server not available')
+    expect(result.error).toContain('Language server still starting after waiting')
   })
 
   test('returns error when LSP is not running', async () => {
@@ -95,7 +99,7 @@ describe('read_lints tool', () => {
     const ctx = createCtx(deadLsp)
     const result = await execReadLints(ctx)
     expect(result.ok).toBe(false)
-    expect(result.error).toContain('Language server not available')
+    expect(result.error).toContain('Language server still starting after waiting')
   })
 
   test('returns ok when no diagnostics', async () => {

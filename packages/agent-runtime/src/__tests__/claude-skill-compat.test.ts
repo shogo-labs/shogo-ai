@@ -38,6 +38,7 @@ import {
   loadCustomAgents,
 } from '../subagent'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
+import { enableSearchToolForTests, restoreSearchToolFlag } from './helpers/search-flag'
 
 // Use realpathSync to resolve macOS /tmp → /private/tmp symlink,
 // which otherwise breaks assertWithinWorkspace's realpathSync check.
@@ -712,15 +713,23 @@ Old instructions.
     })
 
     test('explore agent is read-only with haiku model', () => {
-      const ctx = createCtx()
-      const tools = createTools(ctx)
-      const config = getBuiltinSubagentConfig('explore', ctx, tools)
-      expect(config).not.toBeNull()
-      expect(config!.model).toBe('claude-haiku-4-5')
-      expect(config!.maxTurns).toBe(5)
-      expect(config!.toolNames).toContain('read_file')
-      expect(config!.toolNames).toContain('search')
-      expect(config!.toolNames).not.toContain('write_file')
+      // `search` only joins the explore toolset when the flag is on — the
+      // prod-side (flag off) shape is asserted in
+      // search-advertisement-contract.test.ts.
+      enableSearchToolForTests()
+      try {
+        const ctx = createCtx()
+        const tools = createTools(ctx)
+        const config = getBuiltinSubagentConfig('explore', ctx, tools)
+        expect(config).not.toBeNull()
+        expect(config!.model).toBe('claude-haiku-4-5')
+        expect(config!.maxTurns).toBe(5)
+        expect(config!.toolNames).toContain('read_file')
+        expect(config!.toolNames).toContain('search')
+        expect(config!.toolNames).not.toContain('write_file')
+      } finally {
+        restoreSearchToolFlag()
+      }
     })
 
     test('general-purpose disallows recursive spawning and skill nesting', () => {
@@ -821,8 +830,10 @@ Missing description.
 
   describe('tool registration', () => {
     test('core developer + interaction tools are present in createTools()', () => {
+      enableSearchToolForTests()
       const ctx = createCtx()
       const tools = createTools(ctx)
+      restoreSearchToolFlag()
       const names = tools.map(t => t.name)
       for (const name of [
         'read_file',

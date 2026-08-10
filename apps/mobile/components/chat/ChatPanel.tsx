@@ -897,7 +897,7 @@ export const ChatPanel = observer(function ChatPanel({
    * auto-scrolls silently re-engage follow after the user scrolled away.
    */
   const programmaticScrollUntilRef = useRef(0)
-  const MESSAGE_PAGE_SIZE = 10
+  const MESSAGE_PAGE_SIZE = 50
   const isNative = Platform.OS !== "web"
   /** Native re-engage threshold: distance from bottom (px) on drag/momentum end
    * within which we treat the user as having returned to the bottom and resume
@@ -2220,8 +2220,8 @@ export const ChatPanel = observer(function ChatPanel({
               await new Promise((resolve) => setTimeout(resolve, RECONCILE_DELAY_MS))
               try {
                 await sessionMessages?.loadPage(
-                  { sessionId: sessionIdForReconcile },
-                  { limit: 10, offset: 0 }
+                  { sessionId: sessionIdForReconcile, agent: 'technical' },
+                  { limit: MESSAGE_PAGE_SIZE, offset: 0 }
                 )
               } catch (err) {
                 console.warn("[ChatPanel] Assistant reconcile refresh failed:", err)
@@ -3344,6 +3344,8 @@ export const ChatPanel = observer(function ChatPanel({
         return baseMessage
       })
 
+      cachedMessagesRef.current = aiMessages
+      sessionMessageCache.set(currentSessionId, aiMessages)
       setMessages(aiMessages)
       // NOTE: isLoadingOlderRef is intentionally NOT reset here.
       // It is reset in onContentSizeChange after scroll position is adjusted,

@@ -84,7 +84,8 @@ mock.module('../../lib/knative-project-manager', () => ({
   },
 }))
 
-const { thumbnailRoutes } = await import('../thumbnail')
+const { thumbnailRoutes, rewriteInlineThumbnails } = await import('../thumbnail')
+const { deriveThumbnailToken } = await import('../../lib/runtime-token')
 
 let logSpy: any
 let errorSpy: any
@@ -307,6 +308,106 @@ describe('POST /projects/:id/thumbnail/capture (Playwright)', () => {
     expect(res.status).toBe(500)
     const body = await res.json()
     expect(body.error.code).toBe('capture_failed')
+  })
+})
+
+describe('GET /projects/:id/thumbnail.png (image bytes)', () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+  const dataUri = `data:image/png;base64,${Buffer.from(PNG).toString('base64')}`
+
+  function pngReq(projectId = 'p-1', token?: string, headers?: Record<string, string>) {
+    const t = token ?? deriveThumbnailToken(projectId)
+    return new Request(`http://x/projects/${projectId}/thumbnail.png?t=${t}`, { headers })
+  }
+
+  it('rejects a missing token', async () => {
+    ps.project = { thumbnailUrl: dataUri }
+    const res = await makeApp().fetch(new Request('http://x/projects/p-1/thumbnail.png'))
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error.code).toBe('forbidden')
+  })
+
+  it("rejects another project's token", async () => {
+    ps.project = { thumbnailUrl: dataUri }
+    const res = await makeApp().fetch(pngReq('p-1', deriveThumbnailToken('p-2')))
+    expect(res.status).toBe(403)
+  })
+
+  it('serves decoded bytes with the data URI media type', async () => {
+    ps.project = { thumbnailUrl: dataUri }
+    const res = await makeApp().fetch(pngReq())
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('image/png')
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG)
+  })
+
+  it('revalidates with an ETag instead of caching a stale screenshot', async () => {
+    ps.project = { thumbnailUrl: dataUri }
+    const first = await makeApp().fetch(pngReq())
+    const etag = first.headers.get('etag')
+    expect(etag).toBeTruthy()
+    expect(first.headers.get('cache-control')).toBe('private, max-age=60')
+
+    const second = await makeApp().fetch(pngReq('p-1', undefined, { 'if-none-match': etag! }))
+    expect(second.status).toBe(304)
+  })
+
+  it('redirects to the bucket when the thumbnail is already on S3', async () => {
+    ps.project = { thumbnailUrl: 'https://artifacts.example.com/thumbnails/p-1.png?sig=abc' }
+    const res = await makeApp().fetch(pngReq())
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toBe(
+      'https://artifacts.example.com/thumbnails/p-1.png?sig=abc',
+    )
+  })
+
+  it('returns 404 when the project has no thumbnail', async () => {
+    ps.project = { thumbnailUrl: null }
+    const res = await makeApp().fetch(pngReq())
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 404 for a malformed data URI rather than serving garbage', async () => {
+    ps.project = { thumbnailUrl: 'data:image/png;base64' }
+    const res = await makeApp().fetch(pngReq())
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 500 when findUnique throws', async () => {
+    ps.findThrow = new Error('db down')
+    const res = await makeApp().fetch(pngReq())
+    expect(res.status).toBe(500)
+  })
+})
+
+describe('rewriteInlineThumbnails', () => {
+  it('replaces a base64 data URI with an absolute token-gated URL', () => {
+    const payload = {
+      items: [{ id: 'p-1', thumbnailUrl: 'data:image/png;base64,AAAA' }],
+    }
+    expect(rewriteInlineThumbnails(payload, 'https://studio.example.com')).toBe(true)
+    expect(payload.items[0].thumbnailUrl).toBe(
+      `https://studio.example.com/api/projects/p-1/thumbnail.png?t=${deriveThumbnailToken('p-1')}`,
+    )
+  })
+
+  it('leaves presigned S3 URLs and empty thumbnails untouched', () => {
+    const payload = {
+      items: [
+        { id: 'p-1', thumbnailUrl: 'https://artifacts.example.com/t.png?sig=a' },
+        { id: 'p-2', thumbnailUrl: null },
+        { id: 'p-3' },
+      ],
+    }
+    expect(rewriteInlineThumbnails(payload, 'https://studio.example.com')).toBe(false)
+    expect(payload.items[0].thumbnailUrl).toBe('https://artifacts.example.com/t.png?sig=a')
+    expect(payload.items[1].thumbnailUrl).toBeNull()
+  })
+
+  it('ignores payloads that are not a list response', () => {
+    expect(rewriteInlineThumbnails({ ok: true }, 'https://x')).toBe(false)
+    expect(rewriteInlineThumbnails(null, 'https://x')).toBe(false)
   })
 })
 

@@ -165,6 +165,34 @@ export const config = {
    * (the subsequent rebuild is async and not covered by this timeout).
    */
   hydrateTimeoutMs: parseInt(env('METAL_HYDRATE_TIMEOUT_MS', '60000'), 10),
+  /**
+   * Extra hydrate budget per MiB of archive, on top of `hydrateTimeoutMs`.
+   *
+   * A single flat timeout has to be either too tight for a large archive or
+   * uselessly slack for the p50 (0.7 MB). The typical cold boot is fast — a
+   * guest pulls from the bucket at 27–40 MB/s — but the rate is bimodal, not
+   * merely variable: repeated pulls of one object measured 28.7, 3.0, 3.0 and
+   * 32 MB/s, and on one of those the host reading the same object at the same
+   * moment saw the same collapse. So a slow patch is the object store or the
+   * path to it, and it arrives without warning.
+   *
+   * That makes the budget a bet on throughput we do not reliably have. At
+   * 120 ms/MiB it assumed 8.3 MiB/s, which a 3 MB/s patch misses for anything
+   * over ~280 MiB — and hydrate is fail-closed, so an expired budget is not a
+   * slow boot but a project that cannot open. 400 ms/MiB assumes ~2.5 MiB/s
+   * and covers the largest real project (1.9 GB) in about 14 minutes, inside
+   * the 30-minute ceiling the guest clamps to.
+   *
+   * The cost is that a genuinely stalled transfer now takes the full budget to
+   * fail, because the host cannot see byte progress and so cannot tell slow
+   * from stuck. Distinguishing them means stall detection in the guest's curl
+   * (`--speed-limit`/`--speed-time`), which lives in the runtime image and
+   * therefore needs a rootfs rebuild; waiting longer is the price of not
+   * forcing one. Better still is to stop the guest doing the long-haul fetch
+   * at all — the host reaches the bucket at 36–60 MB/s and the guest reaches
+   * the host at 72 MB/s.
+   */
+  hydrateTimeoutPerMiBMs: parseInt(env('METAL_HYDRATE_TIMEOUT_PER_MIB_MS', '400'), 10),
 
   /**
    * Balloon-reclaim before snapshot. Firecracker's CreateSnapshot writes the
@@ -226,6 +254,20 @@ export const config = {
   publishDataExportIntervalMs: parseInt(env('METAL_PUBLISH_DATA_EXPORT_INTERVAL_MS', '120000'), 10),
 
   /**
+   * How often to export EVERY live VM's writable state (SQLite DB + uploads) to
+   * `{projectId}/project-data.tar.gz` (0 = only on suspend).
+   *
+   * Suspend-time export alone leaves a hole: a host that panics or is
+   * power-cycled never suspends, and an always-on project may run for days
+   * between suspends. Unchanged databases are skipped by content hash, so the
+   * steady-state cost for idle projects is one export request per cycle.
+   */
+  projectDataExportIntervalMs: parseInt(
+    env('METAL_PROJECT_DATA_EXPORT_INTERVAL_MS', '120000'),
+    10,
+  ),
+
+  /**
    * Parallel ranged GET for large durable artifacts (the ~400 MiB compressed
    * mem image dominates an S3 hydration). A single stream to OCI's S3-compat
    * endpoint caps at ~27 MB/s (~15s for the mem); splitting the object into
@@ -235,6 +277,24 @@ export const config = {
    */
   s3GetPartBytes: parseInt(env('METAL_S3_GET_PART_MB', '16'), 10) * 1024 * 1024,
   s3GetConcurrency: parseInt(env('METAL_S3_GET_CONCURRENCY', '8'), 10),
+
+  /**
+   * The same trick applied to cold-boot hydrate, with the host fetching on the
+   * guest's behalf (see `hydrate-proxy`).
+   *
+   * Worth doing because the store's slow mode is per-connection, not per-host:
+   * on one 217 MB archive from a production host, a single stream measured
+   * 91 MB/s and then 4.0 MB/s minutes later, while eight-wide across the slow
+   * patch still held 49.6 MB/s. Guests, which pull single-stream, measured
+   * 1.5-10.6 MB/s — against a ~100 s budget before the edge gives up.
+   *
+   * `maxConcurrent` bounds the host's exposure: each transfer holds at most
+   * `partBytes * s3GetConcurrency` (8 MB * 8 = 64 MB), so twelve of them is
+   * ~768 MB. Past that, hydrates take the presigned URL as they do today rather
+   * than wait for a slot. Set to 0 to turn the proxy off entirely.
+   */
+  hydrateProxyPartBytes: parseInt(env('METAL_HYDRATE_PROXY_PART_MB', '8'), 10) * 1024 * 1024,
+  hydrateProxyMaxConcurrent: parseInt(env('METAL_HYDRATE_PROXY_MAX', '12'), 10),
 
   /**
    * Slim durable snapshots. The naive push is ~10 GB/project (full rootfs +
@@ -306,8 +366,23 @@ export const config = {
   rootfsCow: env('METAL_ROOTFS_COW', 'reflink') as 'full' | 'reflink' | 'dm',
   /** dm mode: directory for per-VM CoW store files (sparse). */
   dmCowDir: env('METAL_DM_COW_DIR', `${WORK}/cow`),
-  /** dm mode: per-VM CoW store size, sparse-allocated (e.g. "2G"). */
-  dmCowSize: env('METAL_DM_COW_SIZE', '2G'),
+  /**
+   * dm mode: per-VM CoW store size, sparse-allocated (e.g. "2G").
+   *
+   * `auto` (the default) sizes it from the golden image so the snapshot cannot
+   * run out of exceptions before the guest's own filesystem runs out of space.
+   * That distinction matters: a full filesystem is an `ENOSPC` the guest can
+   * report, whereas a full CoW makes the kernel invalidate the snapshot and
+   * fail every subsequent write — the root device dies underneath a running
+   * VM. This was a fixed 2 GiB, against a 13.4 GiB image, and VMs that wrote
+   * past it died. The stores are sparse, so the larger figure costs nothing
+   * until it is actually used.
+   *
+   * An explicit value is treated as a floor, not a cap: undersizing is never
+   * safe, so a smaller setting is raised to the derived size. To bound what a
+   * VM can consume, bound the filesystem, not the exception store.
+   */
+  dmCowSize: env('METAL_DM_COW_SIZE', 'auto'),
 
   /**
    * Poll each assigned guest's /pool/activity on the reap interval to fold real

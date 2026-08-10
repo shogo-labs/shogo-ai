@@ -792,6 +792,27 @@ export class PlatformApi {
   }
 
   // ===========================================================================
+  // Admin: Sandbox Exec (Docker isolation for the agent's exec tool)
+  // ===========================================================================
+
+  /** Get the super-admin sandbox-exec override. `enabled: null` means no
+   *  override — the runtime falls back to its own KUBERNETES_SERVICE_HOST
+   *  heuristic (see packages/agent-runtime/src/sandbox-exec.ts). */
+  async getSandboxExecSetting(): Promise<{ enabled: boolean | null }> {
+    const res = await this.http.get<{ enabled: boolean | null }>('/api/admin/settings/sandbox-exec')
+    return res.data ?? { enabled: null }
+  }
+
+  /** Pin (`true`/`false`) or clear (`null`) the platform-wide Docker
+   *  sandbox-exec override for the agent's exec tool. */
+  async putSandboxExecSetting(enabled: boolean | null): Promise<void> {
+    await this.http.request('/api/admin/settings/sandbox-exec', {
+      method: 'PUT',
+      body: { enabled },
+    })
+  }
+
+  // ===========================================================================
   // Admin: Visible Models (catalog allowlist + curated OpenRouter models)
   // ===========================================================================
 

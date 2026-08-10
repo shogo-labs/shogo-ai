@@ -31,6 +31,8 @@ import {
   type ToolContext,
 } from '../gateway-tools'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
+import { enableSearchToolForTests, restoreSearchToolFlag } from './helpers/search-flag'
+import { shortenReadLintsWaitForTests, restoreReadLintsWait } from './helpers/read-lints-wait'
 
 const TEST_DIR = '/tmp/test-gateway-tools-expanded'
 
@@ -749,6 +751,9 @@ describe('delete_file', () => {
 })
 
 describe('search', () => {
+  beforeAll(() => enableSearchToolForTests())
+  afterAll(() => restoreSearchToolFlag())
+
   test('returns gracefully when no index available', async () => {
     writeFileSync(join(TEST_DIR, 'a.ts'), 'export const helloMarker = 42')
     const d = await exec(makeCtx(), 'search', { query: 'helloMarker' })
@@ -847,13 +852,16 @@ describe('createTools shape', () => {
 // ---------------------------------------------------------------------------
 
 describe('read_lints', () => {
-  test('returns "Language server not available" when no LSP manager', async () => {
+  beforeAll(() => shortenReadLintsWaitForTests())
+  afterAll(() => restoreReadLintsWait())
+
+  test('reports type-checking unavailable when no LSP manager ever shows up', async () => {
     const d = await exec(makeCtx(), 'read_lints', {})
     expect(d.ok).toBe(false)
-    expect(d.error).toContain('Language server not available')
+    expect(d.error).toContain('Language server still starting after waiting')
   })
 
-  test('returns "Language server not available" with runtime errors merged', async () => {
+  test('surfaces canvas runtime errors when the LSP never comes up', async () => {
     const { pushCanvasRuntimeError } = await import('../canvas-runtime-errors')
     pushCanvasRuntimeError({ phase: 'render', error: 'boom', timestamp: Date.now() })
     const d = await exec(makeCtx(), 'read_lints', {})

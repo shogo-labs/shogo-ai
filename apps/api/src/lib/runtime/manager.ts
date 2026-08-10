@@ -24,6 +24,7 @@ import type {
   RuntimeStatus,
 } from './types'
 import { getShogoCloudUrl, buildAiProxyUrl, buildToolsProxyUrl } from '../cloud-urls'
+import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { buildWorkspaceEnv } from './build-workspace-env'
 import {
   isProjectCloudLinked,
@@ -2310,7 +2311,15 @@ export class ShogoErrorBoundary extends Component<Props, State> {
             console.warn(`[RuntimeManager] Failed to build security policy: ${err.message}`)
           }
         }
-        
+
+        // Super-admin sandbox-exec override (see ../sandbox-exec-setting.ts). `null` =
+        // no override, leave SANDBOX_EXEC_ENABLED unset so the runtime falls back to
+        // its own KUBERNETES_SERVICE_HOST heuristic.
+        const sandboxOverride = getSandboxExecOverride()
+        if (sandboxOverride !== null) {
+          runtimeEnv.SANDBOX_EXEC_ENABLED = String(sandboxOverride)
+        }
+
         // Hand off to the embedded WorkerRuntimeManager. It allocates
         // its own port (in the same 37100-37900 range — collisions
         // surface via its `isPortListening` probe), spawns the runtime
@@ -3026,7 +3035,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    *     while it is on screen.
    *
    * Safe no-op when the project has no running anchored runtime (cloud
-   * K8s/VM modes, or not yet started).
+   * K8s/metal modes, or not yet started).
    */
   markPreviewActive(projectId: string): void {
     if (!projectId || projectId === 'api-key') return
