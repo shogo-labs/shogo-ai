@@ -1116,7 +1116,13 @@ function ChatInputImpl({
   )
 
   const handleSubmit = useCallback(() => {
-    const trimmedContent = inputValue.trim()
+    // Submit exactly what the composer is painting: same precedence as
+    // `composerDisplayValue`, minus the live voice transcript (voice has its own
+    // submit path and `voiceInput.isBusy` guards this one). Reading `inputValue`
+    // state here meant an Enter that landed inside a coalesced flush saw the
+    // pre-keystroke value — empty on the first word — tripped the guard below and
+    // silently did nothing while the text stayed on screen.
+    const trimmedContent = (pendingTextChangeRef.current?.text ?? inputValueRef.current).trim()
     if (
       (!trimmedContent &&
         pendingFiles.length === 0 &&
@@ -1156,7 +1162,7 @@ function ChatInputImpl({
     closeMentionMenu()
 
     textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush])
+  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush])
 
   // Applies a resolved "text" change's state commits. Shared by the fast
   // (synchronous) and slow (coalesced) paths in `handleChangeText`.

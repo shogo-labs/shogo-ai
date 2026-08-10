@@ -135,32 +135,9 @@ mock.module("react-native", () => ({
   View: Host,
 }))
 
-const StubIcon = () => null
-mock.module("lucide-react-native", () => ({
-  __esModule: true,
-  ArrowUp: StubIcon,
-  Plus: StubIcon,
-  Square: StubIcon,
-  X: StubIcon,
-  Zap: StubIcon,
-  Lock: StubIcon,
-  File: StubIcon,
-  FileText: StubIcon,
-  FolderGit2: StubIcon,
-  Image: StubIcon,
-  ChevronDown: StubIcon,
-  ChevronUp: StubIcon,
-  Trash2: StubIcon,
-  Pencil: StubIcon,
-  SendHorizontal: StubIcon,
-  Bot: StubIcon,
-  ClipboardList: StubIcon,
-  MessageCircleQuestion: StubIcon,
-  Check: StubIcon,
-  Mic: StubIcon,
-  Sparkles: StubIcon,
-  Languages: StubIcon,
-}))
+// Icons come from the shared stub that `test/testing-library.ts` preloads.
+// A per-file `mock.module('lucide-react-native', …)` would narrow the module
+// process-wide and strip every icon it omits for later test files.
 
 mock.module("@shogo/shared-ui/primitives", () => ({
   cn: (...args: any[]) => args.filter(Boolean).join(" "),

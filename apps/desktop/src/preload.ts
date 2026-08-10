@@ -140,27 +140,6 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   pickFolders: (opts?: { multi?: boolean; defaultPath?: string }): Promise<
     { ok: true; paths: string[] } | { ok: false; error?: string }
   > => ipcRenderer.invoke('pick-folders', opts ?? {}),
-  getVMImageStatus: () => ipcRenderer.invoke('get-vm-image-status'),
-  downloadVMImages: () => ipcRenderer.invoke('download-vm-images'),
-  skipVMDownload: () => ipcRenderer.invoke('skip-vm-download'),
-  getVMStatus: () => ipcRenderer.invoke('get-vm-status'),
-  setVMConfig: (config: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number; mountWorkspace?: boolean }) =>
-    ipcRenderer.invoke('set-vm-config', config),
-  onVMImageNeeded: (callback: (data: { downloadUrl: string; imageDir: string }) => void) => {
-    ipcRenderer.on('vm-image-needed', (_event, data) => callback(data))
-  },
-  onVMImageDownloadProgress: (callback: (progress: { bytesDownloaded: number; totalBytes: number; percent: number; stage: string }) => void) => {
-    ipcRenderer.on('vm-image-download-progress', (_event, progress) => callback(progress))
-  },
-  checkVMImageUpdate: () => ipcRenderer.invoke('check-vm-image-update'),
-  onVMImageUpdateAvailable: (callback: (data: { currentVersion: string | null; latestVersion: string }) => void) => {
-    ipcRenderer.on('vm-image-update-available', (_event, data) => callback(data))
-  },
-  removeVMImageUpdateListener: () => {
-    ipcRenderer.removeAllListeners('vm-image-update-available')
-  },
-  recycleVMPool: () => ipcRenderer.invoke('recycle-vm-pool'),
-
   // Meeting recording — renderer owns the Web Audio pipeline, main owns the
   // file I/O + (on macOS) the shogo-sysaudio child process.
   startRecording: () => startRecording(),

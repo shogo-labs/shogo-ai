@@ -1,11 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Seed the DB-defined model catalog (ModelDefinition / ModelProvider) with the
- * first models we ship without a code release:
+ * Seed the DB-defined model catalog (ModelDefinition / ModelProvider) with
+ * models we ship (or backfill) without waiting on a full code release:
  *
  *   - Opus 4.8 (`claude-opus-4-8`) — native Anthropic, premium / opus /
  *     current, 128k output, opus-equivalent per-token pricing, alias `opus`.
+ *   - Opus 5 (`claude-opus-5`) / Sonnet 5 (`claude-sonnet-5`) — native
+ *     Anthropic, 128k output, opus/sonnet-equivalent per-token pricing.
+ *     Sonnet 5 is `premium` tier (it now sits alongside Opus, not the
+ *     older "standard" Sonnet bracket). These also landed in the static
+ *     `MODEL_CATALOG` (see packages/agent/src/model-catalog/models.ts);
+ *     the DB rows here let a deployment pick them up immediately, before
+ *     the next image rollout.
+ *   - Sonnet 4.6 (`claude-sonnet-4-6`) — explicit `legacy` row, mirroring
+ *     the Opus 4.8 row below, so it's visible/manageable in the DB-backed
+ *     admin model list rather than only existing implicitly via the
+ *     static catalog fallback.
  *   - MiMo v2.5 (`mimo-v2.5`) — a custom OpenAI-compatible provider
  *     (xiaomimimo). Only seeded when the staging key is provided via the
  *     `MIMO_API_KEY` env var AND `SECRETS_ENCRYPTION_KEY` is configured, so the
@@ -59,10 +70,14 @@ async function seedOpus48(): Promise<void> {
     shortDisplayName: 'Opus 4.8',
     tier: 'premium',
     family: 'opus',
-    generation: 'current',
+    // Superseded by Opus 5 as the current-gen flagship — kept addressable by
+    // its own id but no longer claims the shared `opus`/`claude-opus`
+    // aliases (see seedOpus5 below), since aliasToId is a last-write-wins
+    // map and those short aliases should point at the new flagship.
+    generation: 'legacy',
     maxOutputTokens: 128_000,
     enabled: true,
-    aliases: ['claude-opus-4-8', 'opus', 'claude-opus'],
+    aliases: ['claude-opus-4-8'],
     capabilities: { subagentOrchestration: 'reliable' },
     // opus-equivalent per-1M-token list prices (see MODEL_DOLLAR_COSTS.opus).
     inputPerMillion: 5.0,
@@ -77,6 +92,87 @@ async function seedOpus48(): Promise<void> {
     common,
   )
   console.log('[seed-db-models] Upserted Opus 4.8 (apiModel=claude-opus-4-8)')
+}
+
+async function seedOpus5(): Promise<void> {
+  const common = {
+    displayName: 'Claude Opus 5',
+    shortDisplayName: 'Opus 5',
+    tier: 'premium',
+    family: 'opus',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    aliases: ['claude-opus-5', 'opus', 'claude-opus'],
+    // Not yet run through the subagent-smoke eval — leave capabilities unset
+    // (unrated) until verified, per the ModelCapabilities doc comment.
+    capabilities: null,
+    // opus-equivalent per-1M-token list prices (see MODEL_DOLLAR_COSTS.opus).
+    inputPerMillion: 5.0,
+    cachedInputPerMillion: 0.5,
+    cacheWritePerMillion: 6.25,
+    outputPerMillion: 25.0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'anthropic', apiModel: 'claude-opus-5' },
+    { providerId: null, sortOrder: 0, ...common },
+    common,
+  )
+  console.log('[seed-db-models] Upserted Opus 5 (apiModel=claude-opus-5)')
+}
+
+async function seedSonnet5(): Promise<void> {
+  const common = {
+    displayName: 'Claude Sonnet 5',
+    shortDisplayName: 'Sonnet 5',
+    // Premium, not "standard" — Sonnet 5 sits alongside Opus 5 rather than
+    // the older cheaper Sonnet bracket.
+    tier: 'premium',
+    family: 'sonnet',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    aliases: ['claude-sonnet-5', 'sonnet', 'claude-sonnet'],
+    capabilities: null,
+    // sonnet-equivalent per-1M-token list prices (see MODEL_DOLLAR_COSTS.sonnet).
+    inputPerMillion: 3.0,
+    cachedInputPerMillion: 0.3,
+    cacheWritePerMillion: 3.75,
+    outputPerMillion: 15.0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'anthropic', apiModel: 'claude-sonnet-5' },
+    { providerId: null, sortOrder: 1, ...common },
+    common,
+  )
+  console.log('[seed-db-models] Upserted Sonnet 5 (apiModel=claude-sonnet-5)')
+}
+
+async function seedSonnet46(): Promise<void> {
+  const common = {
+    displayName: 'Claude Sonnet 4.6',
+    shortDisplayName: 'Sonnet 4.6',
+    tier: 'standard',
+    family: 'sonnet',
+    generation: 'legacy',
+    maxOutputTokens: 64_000,
+    enabled: true,
+    aliases: ['claude-sonnet-4-6'],
+    capabilities: { subagentOrchestration: 'reliable' },
+    inputPerMillion: 3.0,
+    cachedInputPerMillion: 0.3,
+    cacheWritePerMillion: 3.75,
+    outputPerMillion: 15.0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'anthropic', apiModel: 'claude-sonnet-4-6' },
+    { providerId: null, sortOrder: 2, ...common },
+    common,
+  )
+  console.log('[seed-db-models] Upserted Sonnet 4.6 (apiModel=claude-sonnet-4-6)')
 }
 
 async function seedMimo(): Promise<void> {
@@ -136,6 +232,9 @@ async function seedMimo(): Promise<void> {
 
 async function main(): Promise<void> {
   await seedOpus48()
+  await seedOpus5()
+  await seedSonnet5()
+  await seedSonnet46()
   await seedMimo()
   console.log('[seed-db-models] Done.')
 }

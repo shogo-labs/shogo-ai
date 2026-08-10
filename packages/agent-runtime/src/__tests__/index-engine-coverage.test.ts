@@ -33,6 +33,31 @@ import { join } from 'node:path'
 // path in embedAndStore.
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether this runtime can load the sqlite-vec extension.
+ *
+ * `IndexEngine` only turns embeddings on when the extension loads, so the
+ * cases below assert behaviour that is simply unreachable on a SQLite build
+ * compiled without dynamic extension loading (which is what Bun ships by
+ * default — `Database.setCustomSQLite` is the opt-in). Probing keeps the
+ * coverage wherever the extension is available instead of hard-failing
+ * everywhere it is not.
+ */
+const vecExtensionAvailable = (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Database } = require('bun:sqlite')
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    require('sqlite-vec').load(new Database(':memory:'))
+    return true
+  } catch {
+    return false
+  }
+})()
+
+/** `test`, unless the sqlite-vec extension cannot load here. */
+const vecTest = vecExtensionAvailable ? test : test.skip
+
 const oaiState = {
   calls: 0 as number,
   shouldFail: false as boolean,
@@ -226,7 +251,7 @@ describe('IndexEngine with embeddings (OpenAI mocked)', () => {
     delete process.env.AI_PROXY_TOKEN
   })
 
-  test('embeddingsEnabled flips when sqlite-vec loads + AI_PROXY_TOKEN is set', () => {
+  vecTest('embeddingsEnabled flips when sqlite-vec loads + AI_PROXY_TOKEN is set', () => {
     const engine = new IndexEngine({
       dbPath: join(b.dbDir, 'index.db'),
       sources: [createCodeSource(b.rootDir)],
@@ -235,7 +260,7 @@ describe('IndexEngine with embeddings (OpenAI mocked)', () => {
     expect((engine as unknown as { embeddingsEnabled: boolean }).embeddingsEnabled).toBe(true)
   })
 
-  test('reindex calls embedAndStore on indexed chunks', async () => {
+  vecTest('reindex calls embedAndStore on indexed chunks', async () => {
     const engine = new IndexEngine({
       dbPath: join(b.dbDir, 'index.db'),
       sources: [createCodeSource(b.rootDir)],
@@ -296,7 +321,7 @@ describe('IndexEngine with embeddings (OpenAI mocked)', () => {
     }
   })
 
-  test('vectorSearch caches query embedding across calls', async () => {
+  vecTest('vectorSearch caches query embedding across calls', async () => {
     const engine = new IndexEngine({
       dbPath: join(b.dbDir, 'index.db'),
       sources: [createCodeSource(b.rootDir)],

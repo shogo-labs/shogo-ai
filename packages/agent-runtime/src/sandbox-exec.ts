@@ -354,8 +354,27 @@ function isDockerAvailable(): boolean {
   return _dockerAvailable
 }
 
+/**
+ * Whether Docker sandboxing was *requested* (independent of whether Docker
+ * itself is actually available — see `isDockerAvailable()`).
+ *
+ * `SANDBOX_EXEC_ENABLED` is normally populated from the super-admin
+ * `runtime.sandbox_exec_enabled` platform setting (see
+ * apps/api/src/lib/sandbox-exec-setting.ts), which the API injects as a
+ * literal 'true'/'false' when it spawns this runtime. An explicit value
+ * always wins — including 'false' — so an admin (or a raw env override) can
+ * force native exec even when `KUBERNETES_SERVICE_HOST` is present. Only
+ * when the var is completely unset do we fall back to the K8s-presence
+ * heuristic.
+ */
+export function isSandboxRequested(): boolean {
+  const explicit = process.env.SANDBOX_EXEC_ENABLED
+  if (explicit === 'true' || explicit === 'false') return explicit === 'true'
+  return !!process.env.KUBERNETES_SERVICE_HOST
+}
+
 function defaultSandboxConfig(): SandboxConfig {
-  const requested = process.env.SANDBOX_EXEC_ENABLED === 'true' || !!process.env.KUBERNETES_SERVICE_HOST
+  const requested = isSandboxRequested()
   return {
     enabled: requested && isDockerAvailable(),
     mode: 'non-main',

@@ -50,16 +50,27 @@ function extractWorkerScript(): string {
   let body = tf.slice(bodyStart, bodyStart + endMatch.index!)
 
   // Substitute the Terraform interpolations the worker relies on. These are
-  // the ONLY `${...}` tokens in the script (ORIGIN_BASE + PUBLISH_DOMAIN).
+  // the only REAL interpolations in the script (ORIGIN_BASE + PUBLISH_DOMAIN);
+  // any other `${...}` the script wants to emit literally is escaped as `$${`.
   body = body
     .replaceAll("'${local.par_base_url}'", JSON.stringify(OCI_ORIGIN))
     .replaceAll("'${var.publish_domain}'", JSON.stringify(PUBLISH_DOMAIN))
 
-  if (body.includes('${')) {
-    const leftover = body.slice(body.indexOf('${'), body.indexOf('${') + 60)
-    throw new Error(`Unsubstituted Terraform interpolation in worker script near: ${leftover}`)
+  // A remaining UNESCAPED `${` is an interpolation this extractor doesn't know
+  // about — fail loudly rather than load a half-substituted module.
+  const leftoverAt = body.match(/(?:^|[^$])(\$\{)/)
+  if (leftoverAt) {
+    const at = leftoverAt.index! + leftoverAt[0].indexOf('${')
+    throw new Error(
+      `Unsubstituted Terraform interpolation in worker script near: ${body.slice(at, at + 60)}`,
+    )
   }
-  return body
+
+  // Terraform renders the escape `$${` as a literal `${`. The worker's JS
+  // comments document the metal wake/proxy URLs that way (see the
+  // `$${API_PUBLISHED_ORIGIN}` references in main.tf), so mirror the unescape
+  // to get the exact source Cloudflare runs.
+  return body.replaceAll('$${', '${')
 }
 
 let workerModule: { fetch: (req: Request, env: any) => Promise<Response> }

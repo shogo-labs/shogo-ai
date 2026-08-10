@@ -47,6 +47,11 @@ mock.module('../lib/prisma', () => ({
 }))
 
 mock.module('../services/billing.service', () => ({
+  // The cron writes through the home-region-local variant (it has already
+  // partitioned candidates by home region); the wrapper is stubbed too so the
+  // mocked module keeps the real module's export surface.
+  applyGrantMonthlyAllocationLocal: (workspaceId: string, now: Date) =>
+    applyImpl(workspaceId, now),
   applyGrantMonthlyAllocation: (workspaceId: string, now: Date) =>
     applyImpl(workspaceId, now),
 }))

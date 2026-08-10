@@ -600,7 +600,10 @@ describe('hasBalance', () => {
     expect(await billing.hasBalance('ws-1', 10)).toBe(false)
   })
 
+  // Overage is only reachable while a live paid entitlement backs it, so
+  // these cases pin an active subscription (see resolveEffectivePlan).
   test('allows overage spending under the hard cap', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
     seedWallet('ws-1', {
       dailyIncludedUsd: 0, dailyUsedThisMonthUsd: 30, overageAccumulatedUsd: 5,
       overageEnabled: true, overageHardLimitUsd: 50,
@@ -609,19 +612,36 @@ describe('hasBalance', () => {
   })
 
   test('blocks spending past the hard cap even with overage on', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
     seedWallet('ws-1', {
       dailyIncludedUsd: 0, dailyUsedThisMonthUsd: 30, overageAccumulatedUsd: 50,
       overageEnabled: true, overageHardLimitUsd: 50,
+      // Windows full, so the cap is what decides the outcome.
+      fiveHourWindowStart: new Date(), fiveHourUsedUsd: 500,
+      weeklyWindowStart: new Date(), weeklyUsedUsd: 500,
     })
     expect(await billing.hasBalance('ws-1', 1)).toBe(false)
   })
 
   test('returns true when overage hard limit is unset (unlimited)', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
     seedWallet('ws-1', {
       dailyIncludedUsd: 0, dailyUsedThisMonthUsd: 30, overageAccumulatedUsd: 999,
       overageEnabled: true, overageHardLimitUsd: null,
     })
     expect(await billing.hasBalance('ws-1', 1000)).toBe(true)
+  })
+
+  // Regression for incident 2026-08-06: `overageEnabled` outlives the
+  // entitlement that set it — an expired license-key grant or a lapsed
+  // subscription leaves it `true` with nothing to bill against, which is the
+  // state asserted here (no active sub, no active grant).
+  test('refuses overage for a workspace with no live paid entitlement', async () => {
+    seedWallet('ws-1', {
+      dailyIncludedUsd: 0, overageAccumulatedUsd: 0,
+      overageEnabled: true, overageHardLimitUsd: null,
+    })
+    expect(await billing.hasBalance('ws-1', 1000)).toBe(false)
   })
 
   test('allocates a free wallet if none exists', async () => {
@@ -704,8 +724,11 @@ describe('consumeUsage', () => {
     seedWallet('ws-1', {
       dailyIncludedUsd: 0.1, monthlyIncludedUsd: 1,
       overageEnabled: true, overageHardLimitUsd: 1000,
+      // Windows full so the charge has to fall through to overage.
+      fiveHourWindowStart: new Date(), fiveHourUsedUsd: 500,
+      weeklyWindowStart: new Date(), weeklyUsedUsd: 500,
     })
-    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1' }])
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1', planId: 'pro', seats: 1 }])
 
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
@@ -731,9 +754,13 @@ describe('consumeUsage', () => {
   })
 
   test('fails when overage enabled but hard limit reached', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
     seedWallet('ws-1', {
       dailyIncludedUsd: 0, monthlyIncludedUsd: 0,
       overageEnabled: true, overageHardLimitUsd: 10, overageAccumulatedUsd: 10,
+      // Windows must be full for the overage branch to be reached at all.
+      fiveHourWindowStart: new Date(), fiveHourUsedUsd: 500,
+      weeklyWindowStart: new Date(), weeklyUsedUsd: 500,
     })
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
@@ -835,13 +862,14 @@ describe('consumeUsage', () => {
     const lastMonth = new Date()
     lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 2)
     const start = new Date()
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
     seedWallet('ws-1', {
       overageEnabled: true, overageHardLimitUsd: 1000,
       overageAccumulatedUsd: 5, overageBilledUsd: 100,
       lastDailyReset: lastMonth,
       lastMonthlyReset: lastMonth,
-      fiveHourWindowStart: start, fiveHourUsedUsd: 0.5,
-      weeklyWindowStart: start, weeklyUsedUsd: 2,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 500,
+      weeklyWindowStart: start, weeklyUsedUsd: 500,
     })
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
@@ -1185,6 +1213,7 @@ describe('syncSeatsFromMembership', () => {
 
 describe('setUsageBasedPricing', () => {
   test('creates a wallet when missing, applying overage settings', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
     const w = await billing.setUsageBasedPricing('ws-1', { overageEnabled: true, overageHardLimitUsd: 250 })
     expect(w.overageEnabled).toBe(true)
     expect(w.overageHardLimitUsd).toBe(250)

@@ -26,7 +26,6 @@ afterEach(() => {
 
 function baseDeps(over: Partial<AgentProxyResolverDeps> = {}): AgentProxyResolverDeps {
   return {
-    isVMIsolation: () => false,
     isKubernetes: () => false,
     resolver: mock(async () => ({ url: 'http://10.0.0.5:3001' })) as any,
     loadProject: async () => null,
@@ -67,10 +66,9 @@ describe('preferredInstance — online tunnel wins over cloud + cluster routing'
     expect(resolver).not.toHaveBeenCalled()
   })
 
-  test('tunnel branch wins even when isVMIsolation + isKubernetes are both true', async () => {
+  test('tunnel branch wins even when isKubernetes is true', async () => {
     const resolver = mock(async () => ({ url: 'unreachable' }))
     const out = await resolveAgentProxyPodUrl('p', baseDeps({
-      isVMIsolation: () => true,
       isKubernetes: () => true,
       loadProject: async () => project(),
       isTunnelOnline: async () => true,
