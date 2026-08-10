@@ -54,7 +54,7 @@ import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { gitHttpRoutes } from './routes/git-http'
 import { gitLfsRoutes } from './routes/git-lfs'
-import { thumbnailRoutes } from './routes/thumbnail'
+import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { publicApiRoutes } from './routes/public-api'
@@ -663,6 +663,13 @@ function isAllowedUnauthWebchatProxyPath(path: string): boolean {
     relative.startsWith('/agent/channels/webchat/events/')
 }
 
+// Thumbnail image bytes, served to an <img> / RN <Image> that can present no
+// ambient credentials. The per-project token in `?t=` is the credential and is
+// verified in-route, so session gating must not run. See deriveThumbnailToken.
+function isTokenGatedThumbnailPath(path: string): boolean {
+  return /^\/api\/projects\/[^/]+\/thumbnail\.png$/.test(path)
+}
+
 // Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
 // always populated, then require authentication except for known public paths.
 app.use('/api/*', authMiddleware)
@@ -710,6 +717,7 @@ app.use(
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
+    if (isTokenGatedThumbnailPath(path)) return next()
     // Heartbeat sync is called by the runtime with x-runtime-token auth
     if (path.endsWith('/heartbeat/sync')) return next()
     // Voice provider webhooks (signature-verified in-handler). These have
@@ -727,6 +735,9 @@ app.use(
 app.use('/api/projects/:projectId/*', async (c, next) => {
   const path = new URL(c.req.url).pathname
   if (isAllowedUnauthWebchatProxyPath(path)) {
+    return next()
+  }
+  if (isTokenGatedThumbnailPath(path)) {
     return next()
   }
   // Heartbeat sync uses runtime-token auth (called by the agent runtime)
@@ -2160,6 +2171,17 @@ app.post('/api/projects/:projectId/thumbnail/capture', async (c) => {
     method: c.req.method,
     headers: c.req.raw.headers,
     body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.get('/api/projects/:projectId/thumbnail.png', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail.png`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
   })
   return router.fetch(newReq)
 })
@@ -8501,6 +8523,57 @@ app.get('/api/notifications/unread-count', async (c) => {
   }
   const count = await getUnreadNotificationCount(userId)
   return c.json({ ok: true, count }, 200)
+})
+
+// The projects list returns `thumbnailUrl` verbatim from the DB column, and for
+// deployments where the artifact bucket is unreachable that column holds a
+// base64 data URI (routes/thumbnail.ts falls back to one by design). At ~37 KB a
+// row those few projects were half the weight of the entire list response. Swap
+// them for a short token-gated URL that serves the same bytes; rows already
+// holding a presigned S3 link pass through untouched.
+//
+// This lives here rather than in the list route's `beforeList` hook because the
+// generated route only lets a hook shape `where`/`include`/`orderBy`, and
+// project.routes.ts is generated code that must not be edited.
+function publicApiOrigin(c: any): string {
+  // Prefer configured origin: for a cross-region proxied request the Host header
+  // is deliberately spoofed to a shared peer hostname, so the request URL is not
+  // a reliable public origin.
+  const configured = process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL
+  if (configured) return configured.replace(/\/+$/, '')
+  return new URL(c.req.url).origin
+}
+
+app.use('/api/projects', async (c, next) => {
+  await next()
+  if (c.req.method !== 'GET') return
+
+  const res = c.res
+  if (!res.ok) return
+  if (!res.headers.get('content-type')?.includes('application/json')) return
+
+  const text = await res.text()
+  const headers = new Headers(res.headers)
+  // Length changes with the rewrite, and the original value would now be a lie.
+  headers.delete('content-length')
+
+  // Cheap bail-out so the common (no inlined image) case skips parse + stringify.
+  if (!text.includes('"thumbnailUrl":"data:')) {
+    c.res = new Response(text, { status: res.status, headers })
+    return
+  }
+
+  let payload: any
+  try {
+    payload = JSON.parse(text)
+  } catch {
+    c.res = new Response(text, { status: res.status, headers })
+    return
+  }
+
+  rewriteInlineThumbnails(payload, publicApiOrigin(c))
+
+  c.res = new Response(JSON.stringify(payload), { status: res.status, headers })
 })
 
 // Mount generated routes at /api
