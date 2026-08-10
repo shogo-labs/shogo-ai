@@ -175,8 +175,9 @@ function safeLogRecord(level: DesktopLogLevel, body: string): SafeLogRecord | nu
 }
 
 /**
- * Initialize the exporter from env. The desktop build/release environment is
- * expected to provide `SIGNOZ_INGESTION_KEY`.
+ * Initialize the exporter from env. Requires `OTEL_EXPORTER_OTLP_ENDPOINT`;
+ * `SIGNOZ_INGESTION_KEY` authenticates against SigNoz Cloud and is optional so
+ * an unauthenticated self-hosted collector still works.
  * Safe to call once at startup; a second call is ignored. Returns whether the
  * exporter became active (useful for tests; callers may ignore it).
  */
@@ -184,7 +185,14 @@ export function initSignozLogExporter(opts: { serviceVersion?: string } = {}): b
   if (enabled) return true
   if (typeof fetch !== 'function') return false
 
-  const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'https://ingest.us.signoz.cloud:443'
+  // Telemetry is opt-in on an explicitly configured collector, matching
+  // packages/core/src/instrumentation.ts and apps/api/src/instrumentation.ts.
+  // Defaulting the endpoint here would make every desktop install — including
+  // community builds, which ship no ingestion key — POST to a third-party
+  // collector on a timer forever.
+  const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+  if (!endpoint) return false
+
   logsUrl = `${endpoint.replace(/\/+$/, '')}/v1/logs`
   ingestionKey = process.env.SIGNOZ_INGESTION_KEY
 
