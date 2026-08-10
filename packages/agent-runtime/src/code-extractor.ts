@@ -124,8 +124,7 @@ const _langCache = new Map<string, any>()
  * Candidate priority (first hit wins):
  *
  *   1. `TREE_SITTER_WASM_DIR` env var. Set by the desktop bundle (see
- *      `apps/desktop/src/local-server.ts`), the VM cloud-init image
- *      (`apps/desktop/src/vm/cloud-init.ts`), and the worker-spawn
+ *      `apps/desktop/src/local-server.ts`) and the worker-spawn
  *      env (`packages/shogo-worker/src/lib/runtime-manager.ts`). This
  *      stays first so explicit operator overrides keep working.
  *

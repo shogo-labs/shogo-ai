@@ -44,6 +44,11 @@ export interface CacheEntry {
    * that gates the write-side anti-clobber guard (see pool.saveBackupToStore).
    */
   backupEtag?: string
+  /**
+   * ETag of the durable writable-state archive current when this snapshot was
+   * taken. Same role as `backupEtag`, for the database + uploads.
+   */
+  dataEtag?: string
   v: 1
 }
 

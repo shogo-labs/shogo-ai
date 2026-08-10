@@ -106,12 +106,19 @@ describe('createEditFileTool', () => {
     expect(typeof r.details.hint).toBe('string')
   })
 
-  test('edit without prior read_file is blocked (must-read-first)', async () => {
+  test('edit without prior read_file auto-seeds the read record and applies', async () => {
+    // Read-before-edit is no longer a hard error: edit_file seeds the cache
+    // from disk and proceeds, because the exact-string match is itself the
+    // safety check. A wrong old_string still fails loudly (covered above).
     writeFileSync(join(TEST_DIR, 'k.txt'), 'data')
-    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR) })
+    const cache = new FileStateCache(TEST_DIR)
+    const ctx = makeCtx({ fileStateCache: cache })
     // intentionally skip seedRead
+    expect(cache.hasBeenRead('k.txt')).toBe(false)
     const r = await run(ctx, 'edit_file', { path: 'k.txt', old_string: 'data', new_string: 'DATA' })
-    expect(r.details.error).toContain('not been read yet')
+    expect(r.details.ok).toBe(true)
+    expect(readFileSync(join(TEST_DIR, 'k.txt'), 'utf8')).toBe('DATA')
+    expect(cache.hasBeenRead('k.txt')).toBe(true)
   })
 
   test('edit with empty old_string on a missing file creates the file', async () => {

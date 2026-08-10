@@ -27,6 +27,13 @@
  * would be a mass refill, so we never do it; free wallets are left alone
  * entirely.
  *
+ * Also checks `overageHardLimitUsd` for grant-only paid wallets (a plan
+ * grant/license key with no backing Stripe subscription): these have no
+ * payment method on file, so overage must be capped
+ * (`GRANT_ONLY_OVERAGE_HARD_LIMIT_USD`) rather than left open-ended —
+ * otherwise usage keeps flowing into `overageAccumulatedUsd` that can never
+ * actually be billed (incident 2026-08-06).
+ *
  * Repair reuses the authoritative provisioning functions the Stripe webhook /
  * grant refill already use (`allocateMonthlyIncluded` /
  * `applyGrantMonthlyAllocation`), so a repaired wallet is byte-for-byte what a
@@ -42,17 +49,34 @@
  *   REGION_ID=us-ashburn-1  DATABASE_URL=<us primary>  bun scripts/repair-usage-wallets.ts
  *   REGION_ID=eu-frankfurt-1 DATABASE_URL=<eu primary> bun scripts/repair-usage-wallets.ts
  *
+ * Shadow wallets (`--non-home`)
+ * -----------------------------
+ * Because a failed home-region RPC falls back to a local write, a workspace can
+ * also end up with a *second* wallet row in a region it is not homed in. Those
+ * rows are invisible to the default (home-region) pass, and a grant-only one
+ * with `overageHardLimitUsd = NULL` is a live financial exposure the moment
+ * routing falls back to it again.
+ *
+ * `--non-home` selects exactly those rows and writes only
+ * `overageHardLimitUsd`. It deliberately does NOT reprovision them: the
+ * provisioning functions also zero `overageAccumulatedUsd` /
+ * `dailyUsedThisMonthUsd` and advance `lastMonthlyReset`, which would hand the
+ * workspace a fresh billing period just for having a stray row. Capping is the
+ * whole point, so cap and nothing else.
+ *
  * Flags:
  *   (default)            dry run — print the diff, write nothing
  *   --apply              execute the reprovision
  *   --workspace <id>     restrict to a single workspace (debugging / validation)
  *   --force              apply even if REGION_ID is unset (single-region/dev)
+ *   --non-home           cap grant-only wallets homed in *another* region
  */
 
 import { prisma } from '../apps/api/src/lib/prisma'
 import {
   allocateMonthlyIncluded,
   applyGrantMonthlyAllocation,
+  GRANT_ONLY_OVERAGE_HARD_LIMIT_USD,
 } from '../apps/api/src/services/billing.service'
 import {
   getMonthlyIncludedForPlan,
@@ -66,6 +90,7 @@ const argv = process.argv.slice(2)
 const args = new Set(argv)
 const APPLY = args.has('--apply')
 const FORCE = args.has('--force')
+const NON_HOME = args.has('--non-home')
 function argVal(name: string): string | undefined {
   const i = argv.indexOf(`--${name}`)
   return i >= 0 ? argv[i + 1] : undefined
@@ -133,6 +158,83 @@ function expectedPaid(
   return null
 }
 
+/**
+ * Cap grant-only wallets that live in THIS database but belong to a workspace
+ * homed in another region (see the `--non-home` note in the file header).
+ * Writes `overageHardLimitUsd` and nothing else, directly against the local
+ * row — the routed helpers would send the write to the home region and leave
+ * the stray row exactly as exposed as before.
+ */
+async function capNonHomeWallets(now: Date, homeRegion: string) {
+  const strays = await prisma.workspace.findMany({
+    where: {
+      ...(ONLY_WORKSPACE ? { id: ONLY_WORKSPACE } : {}),
+      homeRegion: { not: null, notIn: [homeRegion] },
+      usageWallets: { some: {} },
+    },
+    select: { id: true, homeRegion: true },
+  })
+  const strayIds = strays.map((w) => w.id)
+  console.log(`\nwallets here but homed elsewhere: ${strayIds.length}`)
+  if (strayIds.length === 0) {
+    console.log('[repair-wallets] nothing to do.')
+    return
+  }
+
+  const [wallets, subs, grants] = await Promise.all([
+    prisma.usageWallet.findMany({
+      where: { workspaceId: { in: strayIds }, overageEnabled: true, overageHardLimitUsd: null },
+      select: { workspaceId: true, overageAccumulatedUsd: true },
+    }),
+    prisma.subscription.findMany({
+      where: { workspaceId: { in: strayIds }, status: { in: ['active', 'trialing'] } },
+      select: { workspaceId: true },
+    }),
+    prisma.workspaceGrant.findMany({
+      where: {
+        workspaceId: { in: strayIds },
+        startsAt: { lte: now },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      select: { workspaceId: true, planId: true },
+    }),
+  ])
+  const subbed = new Set(subs.map((s) => s.workspaceId))
+  const paidGrant = new Set(
+    grants
+      .filter((g) => {
+        const p = normalizePlanId(g.planId)
+        return !!p && PLAN_RANK[p] >= PLAN_RANK.basic
+      })
+      .map((g) => g.workspaceId),
+  )
+  const homeByWs = new Map(strays.map((w) => [w.id, w.homeRegion]))
+
+  // A stray wallet backed by a real subscription is legitimately uncapped
+  // (Stripe can bill it), so only the grant-only ones are in scope.
+  const toCap = wallets.filter((w) => paidGrant.has(w.workspaceId) && !subbed.has(w.workspaceId))
+
+  console.log(`\nuncapped grant-only shadow wallets: ${toCap.length}`)
+  for (const w of toCap) {
+    console.log(
+      `  ${w.workspaceId}  home=${homeByWs.get(w.workspaceId)}  accrued=${usd(w.overageAccumulatedUsd)}` +
+        `  overageHardLimitUsd (none) -> ${usd(GRANT_ONLY_OVERAGE_HARD_LIMIT_USD)}`,
+    )
+  }
+
+  if (!APPLY) {
+    console.log('\n[repair-wallets] dry run — re-run with --apply to cap these wallets.')
+    return
+  }
+  if (toCap.length === 0) return
+
+  const res = await prisma.usageWallet.updateMany({
+    where: { workspaceId: { in: toCap.map((w) => w.workspaceId) } },
+    data: { overageHardLimitUsd: GRANT_ONLY_OVERAGE_HARD_LIMIT_USD },
+  })
+  console.log(`\n[repair-wallets] applied. shadow wallets capped: ${res.count}`)
+}
+
 async function main() {
   const now = new Date()
 
@@ -149,8 +251,14 @@ async function main() {
   const homeRegion = REGION ?? PRIMARY_REGION
   console.log(`\n=== repair-usage-wallets @ ${now.toISOString()} ===`)
   console.log(`region:        ${REGION ?? '(unset -> treating as ' + PRIMARY_REGION + ')'}`)
-  console.log(`mode:          ${APPLY ? 'APPLY' : 'dry-run'}`)
+  console.log(`mode:          ${APPLY ? 'APPLY' : 'dry-run'}${NON_HOME ? ' (non-home cap pass)' : ''}`)
   if (ONLY_WORKSPACE) console.log(`workspace:     ${ONLY_WORKSPACE} (restricted)`)
+
+  if (NON_HOME) {
+    await capNonHomeWallets(now, homeRegion)
+    await prisma.$disconnect()
+    return
+  }
 
   const homeFilter =
     homeRegion === PRIMARY_REGION
@@ -181,6 +289,7 @@ async function main() {
         overageEnabled: true,
         monthlyIncludedAllocationUsd: true,
         monthlyIncludedUsd: true,
+        overageHardLimitUsd: true,
       },
     }),
     prisma.subscription.findMany({
@@ -225,6 +334,14 @@ async function main() {
     if (!approxEq(w.monthlyIncludedAllocationUsd, exp.allocationUsd)) {
       reasons.push(
         `monthlyIncludedAllocationUsd ${usd(w.monthlyIncludedAllocationUsd)} -> ${usd(exp.allocationUsd)}`,
+      )
+    }
+    // Grant-only paid wallets (no Stripe subscription -> no payment method on
+    // file) must have overage capped; subscription-backed wallets stay
+    // uncapped (billed through Stripe).
+    if (exp.source === 'grant' && w.overageHardLimitUsd !== GRANT_ONLY_OVERAGE_HARD_LIMIT_USD) {
+      reasons.push(
+        `overageHardLimitUsd ${usd(w.overageHardLimitUsd)} -> ${usd(GRANT_ONLY_OVERAGE_HARD_LIMIT_USD)}`,
       )
     }
     if (reasons.length === 0) continue // paid wallet already correct

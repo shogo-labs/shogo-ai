@@ -29,12 +29,12 @@
  * agent-proxy / project-chat / runtime routes) only reaches a workspace
  * runtime on the host path, where it calls `RuntimeManager.start` — which,
  * under the flag, anchors the project on its merged-root workspace runtime
- * (workspace token). In Kubernetes and VM-isolation that same resolver
- * returns a *project* pod / VM (`getProjectPodUrl` / `getVMProjectUrl`)
- * whose `RUNTIME_AUTH_SECRET` is still the PROJECT token, so the workspace
- * token would 401 there. (Workspace-scoped K8s traffic has its own path —
- * `resolve-workspace-runtime-url` + `deriveWorkspaceRuntimeToken` — and
- * never flows through this helper.) Hence the host-mode gate below.
+ * (workspace token). In Kubernetes that same resolver returns a *project*
+ * pod (`getProjectPodUrl`) whose `RUNTIME_AUTH_SECRET` is still the PROJECT
+ * token, so the workspace token would 401 there. (Workspace-scoped K8s
+ * traffic has its own path — `resolve-workspace-runtime-url` +
+ * `deriveWorkspaceRuntimeToken` — and never flows through this helper.)
+ * Hence the host-mode gate below.
  */
 
 import { deriveRuntimeToken } from './runtime-token'
@@ -42,13 +42,12 @@ import { deriveWorkspaceRuntimeToken } from './workspace-runtime-token'
 
 /**
  * True only when a *project* caller should present the WORKSPACE token:
- * the flag is on AND we're in host/desktop mode (not K8s, not VM). See the
- * module doc for why K8s/VM keep the project token even with the flag on.
+ * the flag is on AND we're in host/desktop mode (not K8s). See the module
+ * doc for why K8s keeps the project token even with the flag on.
  */
 function shouldUseWorkspaceToken(): boolean {
   if (process.env.SHOGO_WORKSPACE_RUNTIME !== 'true') return false
   if (process.env.KUBERNETES_SERVICE_HOST) return false
-  if (process.env.SHOGO_VM_ISOLATION === 'true') return false
   return true
 }
 

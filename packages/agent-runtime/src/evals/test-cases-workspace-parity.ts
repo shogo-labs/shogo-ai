@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Workspace Parity Evals — validate that the canvas environment is fully
- * functional across execution modes (local, VM, Docker/K8s).
+ * functional across execution modes (local, Docker/K8s).
  *
  * These evals require `useRuntimeTemplate: true` so the workspace is seeded
  * with the full Vite + React + Tailwind + shadcn/ui template. They exercise
@@ -14,7 +14,7 @@
  * - Workspace tree visibility (the agent can see package.json, vite.config, etc.)
  *
  * Run with: --track workspace-parity
- * Cross-mode: --track workspace-parity --local / --vm
+ * Cross-mode: --track workspace-parity --local / (default docker)
  */
 
 import type { AgentEval, EvalResult } from './types'

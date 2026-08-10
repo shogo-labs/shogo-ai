@@ -36,6 +36,7 @@ interface WalletRow {
 let grantRows: GrantRow[] = []
 let walletRows: WalletRow[] = []
 let applyCalls: Array<{ workspaceId: string; now: Date }> = []
+let routedApplyCalls: string[] = []
 
 mock.module('../lib/prisma', () => ({
   prisma: {
@@ -84,8 +85,18 @@ mock.module('../lib/prisma', () => ({
 }))
 
 mock.module('../services/billing.service', () => ({
-  applyGrantMonthlyAllocation: async (workspaceId: string, now: Date) => {
+  // The cron already partitions candidates by workspace home region, so it
+  // must write through the *Local* variant; the home-aware wrapper would
+  // just resolve back to this region. Both are stubbed separately so a
+  // regression back to the wrapper is visible rather than silent.
+  applyGrantMonthlyAllocationLocal: async (workspaceId: string, now: Date) => {
     applyCalls.push({ workspaceId, now })
+    const w = walletRows.find((w) => w.workspaceId === workspaceId)
+    if (w) w.lastMonthlyReset = now
+    return { workspaceId, monthlyIncludedUsd: 500 }
+  },
+  applyGrantMonthlyAllocation: async (workspaceId: string, now: Date) => {
+    routedApplyCalls.push(workspaceId)
     const w = walletRows.find((w) => w.workspaceId === workspaceId)
     if (w) w.lastMonthlyReset = now
     return { workspaceId, monthlyIncludedUsd: 500 }
@@ -99,6 +110,7 @@ describe('runGrantMonthlyRefill', () => {
     grantRows = []
     walletRows = []
     applyCalls = []
+    routedApplyCalls = []
   })
 
   test('refills workspaces that are eligible (active grant, free tier, stale wallet)', async () => {
@@ -135,6 +147,8 @@ describe('runGrantMonthlyRefill', () => {
     expect(summary.skipped).toBe(0)
     expect(summary.failed).toBe(0)
     expect(applyCalls.map((c) => c.workspaceId).sort()).toEqual(['ws_free_a', 'ws_free_b'])
+    // Home-region partitioned: never re-route through the home-aware wrapper.
+    expect(routedApplyCalls).toHaveLength(0)
   })
 
   test('re-running inside the same UTC month is a no-op once the wallet is current', async () => {

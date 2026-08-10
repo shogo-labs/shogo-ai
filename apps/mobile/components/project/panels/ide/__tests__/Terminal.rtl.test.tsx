@@ -8,12 +8,21 @@
  * for `pty-protocol`, `pty-session`, `pty-ws-handler`, `pty-client`, and
  * `pty-ws-e2e`. Here we exercise only the React layer:
  *
- *   - Tab strip behavior (multi-session, positional labels, close-last
- *     dismisses the panel, ⌘⇧` nonce opens a new tab).
- *   - Preset menu (loaded via `/terminal/commands`, dangerous-confirm
- *     dialog, sending the command into the active PTY's send()).
- *   - Toolbar Stop/Clear wiring to the active session's PtyClient and
- *     XtermView handle.
+ *   - Session lifecycle (open, add, kill, positional relabelling, and
+ *     closing the last one dismissing the panel).
+ *   - Stop/Clear wiring to the active session's PtyClient and XtermView
+ *     handle.
+ *
+ * These drive `onControlsChange` rather than clicking chrome. `remove tab
+ * strip, add instance panel` (740815da6) moved the terminal's toolbar into
+ * BottomPanel's header, so the props Terminal hands its parent — not a strip
+ * it no longer renders — are its real surface. The one piece of UI Terminal
+ * still owns is the "Terminal instances" panel, which VS Code only shows once
+ * a second terminal exists; that is asserted directly.
+ *
+ * NOT covered here: the preset-command menu. `runCommand` is reachable only
+ * from the deleted strip, so presets are currently unreachable from the UI —
+ * tests were removed rather than left asserting dead code.
  *
  * We mock `PtyClient` so REST POST → WS open → PTY data isn't actually
  * exercised, and we mock `XtermView` to a tiny div so happy-dom doesn't
@@ -37,6 +46,7 @@ import {
   restoreAgentFetch,
 } from '../../../../../test/helpers/mockAgentFetch'
 import { __resetSessionIdSeqForTest } from '../terminal/session-reducer'
+import type { TerminalToolbarControls } from '../Terminal'
 
 // ─── Mock createPtyClient: no real WebSocket; record calls + expose state.
 // We mock the *factory* (pty-factory) rather than the underlying PtyClient
@@ -115,6 +125,12 @@ mock.module(
       return createFakeClient(url)
     },
     chooseTransport: () => 'ws' as const,
+    // Terminal.tsx imports these two as well; the mock has to cover the
+    // module's whole surface or the import fails at module-eval time.
+    isDesktopRuntime: () => false,
+    createPtyClientSession: async () => {
+      throw new Error('createPtyClientSession: desktop runtime is required')
+    },
   }),
 )
 
@@ -229,151 +245,182 @@ async function waitForSessionsCreated(count: number): Promise<void> {
   })
 }
 
-describe('Terminal — multi-session tabs', () => {
-  test('renders one session tab labeled "Terminal 1" and provisions a PTY', async () => {
-    render(<Terminal projectId="p1" visible />)
+/**
+ * The visible "Terminal instances" panel.
+ *
+ * Terminal renders one panel per group and hides the inactive groups' copies,
+ * so a held reference goes stale the moment the active group changes. Re-query
+ * after anything that switches groups; the role query skips the hidden copies.
+ */
+async function visibleInstancePanel(): Promise<HTMLElement> {
+  return screen.findByRole('complementary', { name: 'Terminal instances' })
+}
+
+/**
+ * The rows of the "Terminal instances" panel. A row is the element carrying
+ * both `role="button"` and a `title`; the split/kill affordances inside it are
+ * plain buttons without one. Rows are identified structurally rather than by
+ * name because the label follows the resolved shell ("Terminal" before the
+ * profile is known, "zsh" after), which is not what these cases are about.
+ */
+function instanceRows(panel: HTMLElement): HTMLElement[] {
+  return Array.from(panel.querySelectorAll<HTMLElement>('[role="button"][title]'))
+}
+
+// Terminal publishes its toolbar to the parent instead of rendering one, so
+// tests reach the behaviour the same way BottomPanel does. `controls()` waits
+// for the first publish rather than reading a possibly-null ref.
+function renderTerminal(
+  props: Partial<React.ComponentProps<typeof Terminal>> = {},
+) {
+  let latest: TerminalToolbarControls | null = null
+  const utils = render(
+    <Terminal
+      projectId="p1"
+      visible
+      onControlsChange={(c) => {
+        latest = c
+      }}
+      {...props}
+    />,
+  )
+  const controls = async (): Promise<TerminalToolbarControls> => {
+    await waitFor(() => {
+      expect(latest).not.toBeNull()
+    })
+    return latest as unknown as TerminalToolbarControls
+  }
+  return { ...utils, controls }
+}
+
+describe('Terminal — sessions', () => {
+  test('provisions a PTY and shows no instance panel for a single terminal', async () => {
+    renderTerminal()
+    await waitForSessionsCreated(1)
+
+    // VS Code parity: the instance panel appears only once a second terminal
+    // exists, so a lone terminal is all viewport and no chrome.
     expect(
-      screen.getByRole('tab', { name: 'Terminal 1' }),
-    ).toHaveAttribute('aria-selected', 'true')
-    await waitForSessionsCreated(1)
+      screen.queryByRole('complementary', { name: 'Terminal instances' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Terminal viewport' })).toBeInTheDocument()
   })
 
-  test('"New Terminal" appends a session and provisions a second PTY', async () => {
-    const user = userEvent.setup()
-    render(<Terminal projectId="p1" visible />)
+  test('onNew provisions a second PTY and lists both in the instance panel', async () => {
+    const { controls } = renderTerminal()
     await waitForSessionsCreated(1)
 
-    await user.click(screen.getByRole('button', { name: /new terminal/i }))
-
-    const tab2 = await screen.findByRole('tab', { name: 'Terminal 2' })
-    expect(tab2).toHaveAttribute('aria-selected', 'true')
-    await waitForSessionsCreated(2)
-  })
-
-  test('closing the middle session leaves "Terminal 1, 2" without gaps', async () => {
-    const user = userEvent.setup()
-    render(<Terminal projectId="p1" visible />)
-    await waitForSessionsCreated(1)
-
-    await user.click(screen.getByRole('button', { name: /new terminal/i }))
-    await user.click(screen.getByRole('button', { name: /new terminal/i }))
-    expect(await screen.findByRole('tab', { name: 'Terminal 3' })).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: /close terminal 2/i }))
-
-    await waitFor(() => {
-      expect(screen.getAllByRole('tab')).toHaveLength(2)
+    await act(async () => {
+      (await controls()).onNew()
     })
-    expect(screen.getByRole('tab', { name: 'Terminal 1' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Terminal 2' })).toBeInTheDocument()
+
+    await waitForSessionsCreated(2)
+    const panel = await visibleInstancePanel()
+    expect(instanceRows(panel)).toHaveLength(2)
   })
 
-  test('closing the last session calls onRequestClose', async () => {
+  test('killing the middle terminal relabels the rest without gaps', async () => {
     const user = userEvent.setup()
-    const onRequestClose = mock(() => {})
-    render(<Terminal projectId="p1" visible onRequestClose={onRequestClose} />)
+    const { controls } = renderTerminal()
     await waitForSessionsCreated(1)
 
-    await user.click(screen.getByRole('button', { name: /close terminal 1/i }))
-    expect(onRequestClose).toHaveBeenCalledTimes(1)
-  })
+    await act(async () => {
+      (await controls()).onNew()
+    })
+    await waitForSessionsCreated(2)
+    await act(async () => {
+      (await controls()).onNew()
+    })
+    await waitForSessionsCreated(3)
 
-  test('bumping newSessionNonce creates a new session', async () => {
-    const { rerender } = render(
-      <Terminal projectId="p1" visible newSessionNonce={0} />,
+    expect(instanceRows(await visibleInstancePanel())).toHaveLength(3)
+
+    const middleLabel = instanceRows(await visibleInstancePanel())[1].getAttribute(
+      'title',
     )
+    // Split/kill render only on the active row, so select it before killing —
+    // the same two steps the UI requires of a user.
+    await user.click(instanceRows(await visibleInstancePanel())[1])
+
+    const middle = instanceRows(await visibleInstancePanel()).find(
+      (r) => r.getAttribute('title') === middleLabel,
+    )
+    expect(middle).toBeDefined()
+    await user.click(
+      await within(middle as HTMLElement).findByRole('button', {
+        name: 'Kill Terminal',
+      }),
+    )
+
+    await waitFor(async () => {
+      expect(instanceRows(await visibleInstancePanel())).toHaveLength(2)
+    })
+
+    // Labels are positional rather than identities, so the survivor slides up
+    // and takes the freed name. "No gaps" therefore means no stale third-slot
+    // suffix is left behind — not that the killed label disappears.
+    const remaining = instanceRows(await visibleInstancePanel()).map((r) =>
+      r.getAttribute('title'),
+    )
+    expect(remaining.some((label) => /\(3\)$/.test(label ?? ''))).toBe(false)
+  })
+
+  test('killing the only terminal asks the parent to close the panel', async () => {
+    const onRequestClose = mock(() => {})
+    const { controls } = renderTerminal({ onRequestClose })
     await waitForSessionsCreated(1)
+
+    await act(async () => {
+      (await controls()).onKillActive()
+    })
+
+    await waitFor(() => {
+      expect(onRequestClose).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  test('bumping newSessionNonce opens another terminal', async () => {
+    const { rerender } = renderTerminal({ newSessionNonce: 0 })
+    await waitForSessionsCreated(1)
+
     rerender(<Terminal projectId="p1" visible newSessionNonce={1} />)
-    expect(await screen.findByRole('tab', { name: 'Terminal 2' })).toBeInTheDocument()
+
     await waitForSessionsCreated(2)
+    const panel = await visibleInstancePanel()
+    expect(instanceRows(panel)).toHaveLength(2)
   })
 })
 
-describe('Terminal — preset menu', () => {
-  test('confirms dangerous presets before sending them to the active shell', async () => {
-    const user = userEvent.setup()
-    render(<Terminal projectId="p1" visible />)
+describe('Terminal — toolbar controls', () => {
+  test('onStop SIGINTs the active PTY once the shell is open', async () => {
+    const { controls } = renderTerminal()
     await waitForSessionsCreated(1)
     act(() => fakeClients[0].__fireOpen())
 
-    await user.click(screen.getByRole('button', { name: /preset commands/i }))
-    const menu = await screen.findByRole('menu')
-    await user.click(within(menu).getByRole('menuitem', { name: /reset database/i }))
-
-    const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText(/destructive command/i)).toBeInTheDocument()
-    expect(sendCalls).toHaveLength(0)
-
-    await user.click(within(dialog).getByRole('button', { name: /cancel/i }))
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(sendCalls).toHaveLength(0)
-
-    await user.click(screen.getByRole('button', { name: /preset commands/i }))
-    const reopened = await screen.findByRole('menu')
-    await user.click(within(reopened).getByRole('menuitem', { name: /reset database/i }))
-    const dialog2 = await screen.findByRole('dialog')
-    await user.click(within(dialog2).getByRole('button', { name: /run anyway/i }))
-
-    await waitFor(() => {
-      expect(sendCalls).toHaveLength(1)
+    await act(async () => {
+      (await controls()).onStop()
     })
-    expect(sendCalls[0].text).toBe('bun run db:reset\r')
-  })
-
-  test('non-dangerous presets type the command into the active shell', async () => {
-    const user = userEvent.setup()
-    render(<Terminal projectId="p1" visible />)
-    await waitForSessionsCreated(1)
-    act(() => fakeClients[0].__fireOpen())
-
-    await user.click(screen.getByRole('button', { name: /preset commands/i }))
-    const menu = await screen.findByRole('menu')
-    await user.click(within(menu).getByRole('menuitem', { name: /bun install/i }))
-
-    await waitFor(() => {
-      expect(sendCalls).toHaveLength(1)
-    })
-    expect(sendCalls[0].text).toBe('bun install\r')
-  })
-})
-
-describe('Terminal — toolbar', () => {
-  // Phase 3 chrome parity: "Stop" and "Clear" no longer live as visible toolbar
-  // buttons. They're inside the "Views and More Actions…" menu in the new
-  // TerminalHeader, matching VS Code's terminal panel. These tests open the
-  // menu first, then click the menu item.
-
-  test('Stop entry in the … menu SIGINTs the active PTY when the shell is open', async () => {
-    const user = userEvent.setup()
-    render(<Terminal projectId="p1" visible />)
-    await waitForSessionsCreated(1)
-    // Flip to "ready" so the Stop entry renders in the menu.
-    act(() => fakeClients[0].__fireOpen())
-
-    await user.click(screen.getByRole('button', { name: /views and more actions/i }))
-    const stopItem = await screen.findByRole('menuitem', { name: /stop running command/i })
-    await user.click(stopItem)
 
     expect(signalCalls).toHaveLength(1)
     expect(signalCalls[0].sig).toBe('INT')
   })
 
-  test('Clear entry in the … menu blanks the xterm buffer for the active session', async () => {
-    const user = userEvent.setup()
-    render(<Terminal projectId="p1" visible />)
+  test('onClear blanks the xterm buffer for the active session', async () => {
+    const { controls } = renderTerminal()
     await waitForSessionsCreated(1)
     act(() => fakeClients[0].__fireOpen())
 
-    await user.click(screen.getByRole('button', { name: /views and more actions/i }))
-    // Menu item label is "Clear" plus a "⌘K" shortcut hint, which
-    // becomes part of its accessible name. Match the label only.
-    const clearItem = await screen.findByRole('menuitem', { name: /^clear\b/i })
-    await user.click(clearItem)
+    await act(async () => {
+      (await controls()).onClear()
+    })
 
     expect(xtermClearCalls.length).toBeGreaterThanOrEqual(1)
   })
 })
 
-// Defer the SUT import until after `mock.module` registrations are
-// installed; otherwise Bun resolves the real module first.
-import { Terminal } from '../Terminal'
+// Defer the SUT import until after the `mock.module` registrations above are
+// installed; otherwise Bun resolves the real module first. This MUST be a
+// dynamic import: a static `import` is hoisted to the top of the module and
+// would bind the real `../Terminal` (and its real pty transport, which opens a
+// live WebSocket) before any mock is registered.
+const { Terminal } = await import('../Terminal')

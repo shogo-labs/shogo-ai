@@ -7,7 +7,7 @@
  * The workspace-scoped sibling of `resolve-pod-url.ts`. A workspace
  * runtime serves a merged tree of several attached projects rather than
  * one project, so resolution is keyed by `workspaceId` + the attached
- * project set. The k8s/vm/host cascade mirrors `resolveProjectPodUrl`
+ * project set. The k8s/host cascade mirrors `resolveProjectPodUrl`
  * exactly so the two stay in lockstep.
  *
  * ─── Rollout gate ──────────────────────────────────────────────────
@@ -24,8 +24,6 @@
  *           existing one (cheap re-resolution for spawn-lease losers).
  *   - host: spawns a merged-root agent-runtime via
  *           `RuntimeManager.startWorkspace` (desktop/local).
- *   - vm:   the workspace VM pool driver is not yet wired; the branch
- *           throws "not configured" until a VM resolver is injected.
  *
  * The branch-selection logic is fully unit-tested via the `_`-prefixed
  * injection seams.
@@ -35,11 +33,10 @@ import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
 import { withWorkspaceSpawnLease } from './runtime/workspace-spawn-lease'
 import { isMetalEnabled as defaultIsMetalEnabled } from './metal-eligibility'
 
-export type WorkspacePodMode = 'k8s' | 'vm' | 'metal' | 'host'
+export type WorkspacePodMode = 'k8s' | 'metal' | 'host'
 
 export type ResolvedWorkspacePod =
   | { mode: 'k8s'; url: string }
-  | { mode: 'vm'; url: string }
   | { mode: 'metal'; url: string }
   | { mode: 'host'; url: string; runtime: IProjectRuntime }
 
@@ -69,7 +66,7 @@ export interface ResolveWorkspaceRuntimeOpts {
    * anchor + attachments + linked folders, instead of the workspace-session
    * runtime keyed by workspaceId. Cloud (k8s) is anchor-aware too: the
    * Knative Service is keyed `workspace-proj-<anchor>` and the pod hydrates
-   * every member into its own subfolder (VM is not yet wired).
+   * every member into its own subfolder.
    */
   anchorProjectId?: string
   /** Linked local host folders to mount (project-anchored host path only). */
@@ -87,8 +84,6 @@ export interface ResolveWorkspaceRuntimeOpts {
   _isEnabled?: () => boolean
   /** Test-only override for the K8s mode probe. */
   _isKubernetes?: () => boolean
-  /** Test-only override for the VM-isolation mode probe. */
-  _isVMIsolation?: () => boolean
   /** Test-only override for the metal mode probe. */
   _isMetalEnabled?: () => boolean
 
@@ -98,12 +93,11 @@ export interface ResolveWorkspaceRuntimeOpts {
     attachedProjectIds: string[],
     opts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
   ) => Promise<string>
-  _vmResolver?: (workspaceId: string, attachedProjectIds: string[]) => Promise<string>
   /**
    * Metal workspace (merged-root microVM) resolver. Injected because the
-   * merged-root metal driver is not built yet (same status as `_vmResolver`).
-   * Without it the metal branch throws a clear "not configured" error instead of
-   * silently falling through to the Knative workspace driver in metal regions.
+   * merged-root metal driver is not built yet. Without it the metal branch
+   * throws a clear "not configured" error instead of silently falling
+   * through to the Knative workspace driver in metal regions.
    */
   _metalResolver?: (
     workspaceId: string,
@@ -129,7 +123,7 @@ export interface ResolveWorkspaceRuntimeOpts {
 
   /**
    * Test-only override for the cross-replica spawn lease wrapper used around
-   * the cloud (k8s/vm) branches. Defaults to `withWorkspaceSpawnLease`
+   * the cloud (k8s/metal) branches. Defaults to `withWorkspaceSpawnLease`
    * (PostgreSQL advisory lock keyed on workspaceId). Host mode never takes
    * the lease (single-process, SQLite-backed).
    */
@@ -142,10 +136,6 @@ function defaultIsEnabled(): boolean {
 
 function defaultIsKubernetes(): boolean {
   return !!process.env.KUBERNETES_SERVICE_HOST
-}
-
-function defaultIsVMIsolation(): boolean {
-  return process.env.SHOGO_VM_ISOLATION === 'true'
 }
 
 /**
@@ -198,7 +188,7 @@ async function defaultHostStartProject(
 
 /**
  * Resolve the agent-runtime URL for a workspace, honouring the
- * k8s/vm/host hierarchy. Throws `WorkspaceRuntimeNotEnabledError` when
+ * k8s/host hierarchy. Throws `WorkspaceRuntimeNotEnabledError` when
  * the feature flag is off.
  */
 export async function resolveWorkspaceRuntimeUrl(
@@ -208,7 +198,6 @@ export async function resolveWorkspaceRuntimeUrl(
   const tag = opts.logTag ?? 'WorkspaceRuntime'
   const isEnabled = opts._isEnabled ?? defaultIsEnabled
   const isKubernetes = opts._isKubernetes ?? defaultIsKubernetes
-  const isVMIsolation = opts._isVMIsolation ?? defaultIsVMIsolation
   const isMetalEnabled = opts._isMetalEnabled ?? defaultIsMetalEnabled
   const attachedProjectIds = opts.attachedProjectIds ?? []
   // Cloud branches serialize spawns across replicas with an advisory lease.
@@ -222,22 +211,12 @@ export async function resolveWorkspaceRuntimeUrl(
     throw new WorkspaceRuntimeNotEnabledError(workspaceId)
   }
 
-  // VM isolation is still keyed by workspaceId only and is not anchor-aware.
-  // Fail loudly rather than silently mounting the wrong tree there. (k8s IS
-  // anchor-aware now — see below.)
-  if (opts.anchorProjectId && isVMIsolation() && !isKubernetes()) {
-    throw new Error(
-      `[${tag}] project-anchored workspace runtime (anchor=${opts.anchorProjectId}) is not yet ` +
-        `supported in VM-isolation mode. It is currently host/desktop + k8s only.`,
-    )
-  }
-
   // Metal takes precedence over the k8s (Knative) branch: in metal regions the
   // API pod runs IN Kubernetes, so without this a workspace runtime would wrongly
   // create a Knative `workspace-{id}` Service instead of a metal merged-root VM.
-  // The merged-root metal driver isn't built yet (same status as the VM driver),
-  // so we resolve via an injected `_metalResolver` and otherwise throw a clear
-  // not-configured error — never a silent Knative fallthrough.
+  // The merged-root metal driver isn't built yet, so we resolve via an injected
+  // `_metalResolver` and otherwise throw a clear not-configured error — never a
+  // silent Knative fallthrough.
   if (isMetalEnabled()) {
     if (!opts._metalResolver) {
       throw new Error(
@@ -289,18 +268,6 @@ export async function resolveWorkspaceRuntimeUrl(
       }
     }
     return { mode: 'k8s', url }
-  }
-
-  if (isVMIsolation()) {
-    if (!opts._vmResolver) {
-      throw new Error(
-        `[${tag}] VM workspace runtime driver not configured (workspace VM pool assign ` +
-          `not yet wired). Inject _vmResolver — see resolve-workspace-runtime-url.ts.`,
-      )
-    }
-    const resolver = opts._vmResolver
-    const url = await spawnLease(workspaceId, () => resolver(workspaceId, attachedProjectIds))
-    return { mode: 'vm', url }
   }
 
   // Host mode.

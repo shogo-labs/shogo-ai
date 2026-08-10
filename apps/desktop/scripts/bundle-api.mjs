@@ -39,7 +39,6 @@ const REPO_ROOT = path.resolve(DESKTOP_DIR, '..', '..')
 
 const ITEMS_TO_CLEAN = [
   'bundle',
-  'vm-bundle',
   'apps',
   'packages',
   'node_modules',
@@ -502,20 +501,6 @@ function main() {
     } else {
       console.warn(`  ⚠ ${scriptName} not found at ${src}`)
     }
-  }
-
-  // --- Prepare VM bundle (server.js, shogo.js, tree-sitter.wasm for seed ISO) ---
-  // With pre-provisioned images, only JS bundles and wasm need to be in
-  // vm-bundle. Bun, templates, and deps are baked into rootfs-provisioned.qcow2.
-  logStep('Preparing VM bundle...')
-  try {
-    execSync(
-      `bun run "${path.join(DESKTOP_DIR, 'scripts', 'prepare-vm-bundle-cli.ts')}" --dest resources/vm-bundle --server-js resources/bundle/agent-runtime.js --light`,
-      { cwd: DESKTOP_DIR, stdio: 'inherit', timeout: 120_000 },
-    )
-    console.log('  ✓ VM bundle ready')
-  } catch (err) {
-    console.warn('  ⚠ VM bundle preparation failed (non-fatal):', err.message)
   }
 
   // --- Summary ---

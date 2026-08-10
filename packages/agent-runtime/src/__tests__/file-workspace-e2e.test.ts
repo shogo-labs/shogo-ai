@@ -16,6 +16,7 @@ import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync
 import { join } from 'path'
 import { IndexEngine, createFilesSource } from '../index-engine'
 import { createTools } from '../gateway-tools'
+import { enableSearchToolForTests, restoreSearchToolFlag } from './helpers/search-flag'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -257,9 +258,13 @@ describe('Workspace API Endpoints', () => {
 describe('File Management Agent Tools', () => {
   beforeAll(() => {
     setupWorkspace()
+    // The semantic `search` tool is flag-gated (SHOGO_SEARCH_ENABLED); opt in
+    // so the search cases below get a registered tool to drive.
+    enableSearchToolForTests()
   })
 
   afterAll(() => {
+    restoreSearchToolFlag()
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 

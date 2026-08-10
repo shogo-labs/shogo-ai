@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-const source = () => readFileSync("apps/mobile/components/project/panels/ide/Workbench.tsx", "utf8");
+const source = () => readFileSync(new URL("../Workbench.tsx", import.meta.url), "utf8");
 
 describe("Workbench save Git refresh", () => {
   test("requests Git status refresh immediately after saving a file", () => {

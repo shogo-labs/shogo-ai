@@ -902,14 +902,24 @@ describe('WarmPoolController', () => {
       expect(env.AI_PROXY_URL).toBe(`${env.SHOGO_API_URL}/api/ai/v1`)
     })
 
-    test('should handle missing project gracefully', async () => {
+    test('should throw ProjectNotFoundError when the project row is gone', async () => {
+      // This used to degrade gracefully into a half-built env (no
+      // AI_PROXY_TOKEN but AI_PROXY_URL set anyway). The guest rejects that
+      // pair, so deleting a project mid-turn produced an opaque
+      // "/pool/assign failed (400)" that got retried against every host. A
+      // missing row is authoritative and must fail typed so callers 404.
       const { prisma } = await import('../prisma')
       ;(prisma.project.findUnique as any).mockResolvedValueOnce(null)
 
-      const env = await controller.buildProjectEnv('non-existent-project')
+      let caught: any
+      try {
+        await controller.buildProjectEnv('non-existent-project')
+      } catch (err) {
+        caught = err
+      }
 
-      expect(env).toHaveProperty('PROJECT_ID', 'non-existent-project')
-      expect(env).not.toHaveProperty('AI_PROXY_TOKEN') // Should skip if project not found
+      expect(caught?.name).toBe('ProjectNotFoundError')
+      expect(caught?.projectId).toBe('non-existent-project')
     })
   })
 })

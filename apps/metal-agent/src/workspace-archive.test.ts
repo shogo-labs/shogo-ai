@@ -16,6 +16,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   decideBackupWrite,
   etagEq,
+  isTemplatePromotion,
   isTemplateRegression,
   quarantineKey,
   REAL_MIN_BYTES,
@@ -143,6 +144,97 @@ describe('isTemplateRegression (size backstop core)', () => {
     // Both hosts descended from "v1"; one wins and advances S3 to "v2". The
     // other still carries "v1" and must NOT clobber the winner's write.
     expect(decideBackupWrite({ exists: true, currentEtag: '"v2"', parentEtag: '"v1"' })).toBe('quarantine')
+  })
+})
+
+describe('isTemplatePromotion (the case lineage alone gets wrong)', () => {
+  test('real source arriving over a template-shaped backup is a promotion', () => {
+    expect(isTemplatePromotion(TEMPLATE_BYTES, REAL_BYTES)).toBe(true)
+  })
+
+  test('it is exactly the inverse of a regression, never both at once', () => {
+    expect(isTemplateRegression(TEMPLATE_BYTES, REAL_BYTES)).toBe(false)
+    expect(isTemplatePromotion(REAL_BYTES, TEMPLATE_BYTES)).toBe(false)
+  })
+
+  test('template over template is not a promotion — nothing is being rescued', () => {
+    expect(isTemplatePromotion(TEMPLATE_BYTES, TEMPLATE_BYTES)).toBe(false)
+  })
+
+  test('the gap between the thresholds is not a promotion', () => {
+    // Between TEMPLATE_MAX and REAL_MIN the incoming write is neither provably
+    // a template nor provably real, so it stays quarantined.
+    expect(isTemplatePromotion(TEMPLATE_BYTES, REAL_MIN_BYTES - 1)).toBe(false)
+  })
+
+  test('a current object above the template ceiling is never overwritten this way', () => {
+    expect(isTemplatePromotion(TEMPLATE_MAX_BYTES + 1, REAL_BYTES)).toBe(false)
+  })
+
+  test('unknown sizes fail safe to "not a promotion"', () => {
+    expect(isTemplatePromotion(null, REAL_BYTES)).toBe(false)
+    expect(isTemplatePromotion(TEMPLATE_BYTES, null)).toBe(false)
+  })
+
+  test('boundaries are inclusive on both thresholds', () => {
+    expect(isTemplatePromotion(TEMPLATE_MAX_BYTES, REAL_MIN_BYTES)).toBe(true)
+  })
+})
+
+describe('decideBackupWrite: a template-origin project can finally back itself up', () => {
+  // cbead0b5: the user built the whole project inside a template-origin VM, so
+  // there was no lineage to present and no adopt permitted. Every suspend
+  // quarantined the real source and left the 0.37 MB template as the backup, so
+  // the project opened as "Project Ready" with the work in conflict/.
+  const templateOriginVm = {
+    exists: true,
+    currentEtag: '"the-template"',
+    parentEtag: undefined,
+    adoptWhenUnknown: false,
+  } as const
+
+  test('real source over a template placeholder is promoted, not quarantined', () => {
+    expect(
+      decideBackupWrite({ ...templateOriginVm, currentSize: TEMPLATE_BYTES, incomingSize: REAL_BYTES }),
+    ).toBe('promote')
+  })
+
+  test('the clobber this guard exists for is still refused', () => {
+    // The inverse write — a template-shaped export over real source — is the
+    // original incident, and must stay quarantined no matter what else changed.
+    expect(
+      decideBackupWrite({ ...templateOriginVm, currentSize: REAL_BYTES, incomingSize: TEMPLATE_BYTES }),
+    ).toBe('quarantine')
+  })
+
+  test('a stale lineage against a real backup still quarantines', () => {
+    // A losing racer carries a parentEtag that does not match. Sizes must not
+    // rescue it: this is a genuine conflict between two real workspaces.
+    expect(
+      decideBackupWrite({
+        exists: true,
+        currentEtag: '"current"',
+        parentEtag: '"stale"',
+        currentSize: REAL_BYTES,
+        incomingSize: REAL_BYTES,
+      }),
+    ).toBe('quarantine')
+  })
+
+  test('a matching lineage is still a plain overwrite, not a promotion', () => {
+    expect(
+      decideBackupWrite({
+        exists: true,
+        currentEtag: '"v2"',
+        parentEtag: '"v2"',
+        currentSize: TEMPLATE_BYTES,
+        incomingSize: REAL_BYTES,
+      }),
+    ).toBe('overwrite')
+  })
+
+  test('without sizes the decision is unchanged — quarantine', () => {
+    expect(decideBackupWrite(templateOriginVm)).toBe('quarantine')
   })
 })
 
