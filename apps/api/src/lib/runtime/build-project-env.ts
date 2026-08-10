@@ -3,8 +3,8 @@
 /**
  * Shared environment builder for project runtime assignment.
  *
- * Used by both WarmPoolController (Kubernetes) and VMWarmPoolController (desktop VM)
- * to assemble the environment variables a runtime pod/VM needs when assigned to a project.
+ * Used by the K8s WarmPoolController, metal, and desktop/host runtime spawns
+ * to assemble the environment variables a runtime needs when assigned to a project.
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
@@ -12,6 +12,21 @@ import { getAgentModeOverrides } from '@shogo/model-catalog'
 import { buildAutoTierMapEnv } from './auto-tier-env'
 import { INSTANCE_SIZES } from '../../config/instance-sizes'
 import { buildToolsProxyUrl } from '../cloud-urls'
+import { getSandboxExecOverride } from '../sandbox-exec-setting'
+
+/**
+ * Thrown when the project row is gone (typically deleted while a session was
+ * still live). Authoritative and NOT retryable: there is no token to mint and no
+ * valid env to build, so callers should surface a 404 instead of treating it as
+ * a runtime that is still starting. See `resolve-pod-url.ts`, which deliberately
+ * skips its wait-and-retry budget for this error.
+ */
+export class ProjectNotFoundError extends Error {
+  constructor(public readonly projectId: string) {
+    super(`project ${projectId} does not exist (deleted?) — cannot build a runtime env`)
+    this.name = 'ProjectNotFoundError'
+  }
+}
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -28,6 +43,7 @@ export async function buildProjectEnv(
   }
 
   const tokenStart = Date.now()
+  let projectFound = false
   try {
     const { prisma } = await import('../prisma')
     const project = await prisma.project.findUnique({
@@ -47,6 +63,7 @@ export async function buildProjectEnv(
       workspace?: { composioScope?: string | null; instanceSize?: string | null } | null
     }) | null
     if (project) {
+      projectFound = true
       if (project.workspaceId) env.WORKSPACE_ID = project.workspaceId
       // TEMPLATE_ID intentionally not exported. The marketplace install
       // flow pre-seeds the workspace, so the runtime no longer needs a
@@ -121,6 +138,16 @@ export async function buildProjectEnv(
   }
   console.log(`[${prefix}] proxy token took ${Date.now() - tokenStart}ms`)
 
+  // A missing row is authoritative — the lookup succeeded and returned nothing.
+  // Previously this fell through the `if (project)` guard SILENTLY (no log at
+  // all) and still emitted AI_PROXY_URL below, so deleting a project mid-turn
+  // made the background auto-resume assign a microVM whose guest then rejected
+  // the tokenless env with an opaque `/pool/assign failed (400)`, retried across
+  // every host. Fail typed so callers can 404 instead.
+  if (!projectFound) {
+    throw new ProjectNotFoundError(projectId)
+  }
+
   // RUNTIME_AUTH_SECRET is the pod's project-scoped bearer capability for
   // calling the Shogo API (see `middleware/auth.ts` runtime-token branch).
   // Operator gotchas — secret rotation, synthetic userId, leak blast
@@ -161,6 +188,20 @@ export async function buildProjectEnv(
     const apiHost = process.env.API_HOST || 'localhost'
     apiBase = `http://${apiHost}:${apiPort}`
   }
+  // INVARIANT: never emit AI_PROXY_URL without AI_PROXY_TOKEN. The runtime's
+  // configureAIProxy() rejects that pair on purpose (it must not fall back to the
+  // raw platform API key), and on the metal path that rejection surfaces as a
+  // `/pool/assign failed (400): Reconfigure failed` 500 that says nothing about
+  // the real cause. Refuse to build a half-configured env instead: a transient
+  // token-mint failure is retryable by the caller's wake budget, a permanently
+  // broken one is now loud rather than a guest-side mystery.
+  if (!env.AI_PROXY_TOKEN) {
+    throw new Error(
+      `[${prefix}] refusing to build env for ${projectId}: AI proxy token unavailable ` +
+        `(would emit AI_PROXY_URL with no AI_PROXY_TOKEN, which the runtime rejects)`,
+    )
+  }
+
   env.AI_PROXY_URL = `${apiBase}/api/ai/v1`
   env.ANTHROPIC_PROXY_URL = `${apiBase}/api/ai/anthropic`
   env.OPENAI_PROXY_URL = `${apiBase}/api/ai/v1`
@@ -224,6 +265,12 @@ export async function buildProjectEnv(
   // to backing model ids) so the spawn router can route Auto to e.g. Hoshi.
   const autoTierMapEnv = buildAutoTierMapEnv()
   if (autoTierMapEnv) env.AGENT_AUTO_TIER_MAP = autoTierMapEnv
+
+  // Super-admin sandbox-exec override (see sandbox-exec-setting.ts). `null` = no
+  // override, leave SANDBOX_EXEC_ENABLED unset so the runtime falls back to its
+  // own KUBERNETES_SERVICE_HOST heuristic.
+  const sandboxOverride = getSandboxExecOverride()
+  if (sandboxOverride !== null) env.SANDBOX_EXEC_ENABLED = String(sandboxOverride)
 
   // OTEL telemetry → SigNoz. The k8s warm-pool / Knative pod templates inject
   // this at pod-creation (warm-pool-controller.ts), but metal microVMs are

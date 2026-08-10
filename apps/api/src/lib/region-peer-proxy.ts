@@ -113,6 +113,26 @@ export async function proxyToPeer(
       method,
       headers,
       // Stream the request body straight through (duplex required for streams).
+      //
+      // `keepalive: false` is load-bearing, not a tuning knob. When a peer
+      // answers before it has read the streamed body — any early reject: 401,
+      // 404, 413, a validation error — Bun stops the upload but still returns
+      // the socket to the keep-alive pool MID-REQUEST-MESSAGE. The next proxied
+      // request to that peer is then written INTO the abandoned request's
+      // chunked body, so the peer's HTTP parser never sees a request line and
+      // answers a bare 400 that never reaches a route handler. The victim is
+      // the FOLLOWING request, which is what makes it so confusing: a chat POST
+      // rejected upstream makes the unrelated resume GET after it fail.
+      // See oven-sh/bun#32847; unfixed as of Bun 1.3.14.
+      //
+      // It has to apply to EVERY hop, not just body-carrying ones. The victim
+      // is whatever request is written to the socket next, and proxied GETs —
+      // the SSE stream reads and the resume polls — draw from the same pool, so
+      // scoping this to `hasBody` left exactly the requests chat recovery
+      // depends on unprotected. Costs one connection setup per proxy hop, which
+      // is cheap next to the SSE turn it precedes. Revisit once the runtime
+      // carries the upstream fix.
+      keepalive: false,
       ...(hasBody ? { body: c.req.raw.body, duplex: 'half' } : {}),
       // Peers terminate TLS behind the same cert; tolerate self-signed in-mesh.
       ...(typeof Bun !== 'undefined' ? { tls: { rejectUnauthorized: false } } : {}),

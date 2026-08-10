@@ -560,3 +560,49 @@ html:not(.dark) .shogo-ide,
     monospace
   ) !important;
 }
+
+[data-sidebar-chat-scroll="true"] {
+  min-height: 0 !important;
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+[data-sidebar-chat-scroll="true"]:hover,
+[data-sidebar-chat-scroll="true"]:focus {
+  scrollbar-color: rgb(var(--color-muted-foreground) / 0.35) transparent;
+}
+
+[data-sidebar-chat-scroll="true"]:focus-visible {
+  outline: 2px solid rgb(var(--color-ring) / 0.45);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+[data-sidebar-chat-scroll="true"]::-webkit-scrollbar {
+  width: 6px;
+  height: 0;
+}
+
+[data-sidebar-chat-scroll="true"]::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[data-sidebar-chat-scroll="true"]::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+[data-sidebar-chat-scroll="true"]:hover::-webkit-scrollbar-thumb,
+[data-sidebar-chat-scroll="true"]:focus::-webkit-scrollbar-thumb {
+  background: rgb(var(--color-muted-foreground) / 0.28);
+}
+
+[data-sidebar-chat-scroll="true"]::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--color-muted-foreground) / 0.45);
+}

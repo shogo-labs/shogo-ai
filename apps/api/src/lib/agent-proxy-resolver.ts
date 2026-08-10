@@ -56,8 +56,7 @@ export type AgentProxyResolution =
 export interface AgentProxyResolverDeps {
   /** Override the pod helper for tests. Defaults to the production one. */
   resolver?: (projectId: string, opts: ResolvePodUrlOpts) => ReturnType<typeof resolveProjectPodUrl>
-  /** Test-only env probes; default to `process.env`. */
-  isVMIsolation?: () => boolean
+  /** Test-only env probe; defaults to `process.env`. */
   isKubernetes?: () => boolean
   /** Test-only RuntimeManager wiring (passed through to the helper). */
   runtimeManager?: IRuntimeManager
@@ -79,7 +78,6 @@ export interface AgentProxyResolverDeps {
   isTunnelOnline?: (instanceId: string) => Promise<boolean>
 }
 
-const defaultIsVMIsolation = () => process.env.SHOGO_VM_ISOLATION === 'true'
 const defaultIsKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
 const defaultLoadProject = async (projectId: string): Promise<ProjectRoutingRecord | null> => {
@@ -98,11 +96,9 @@ const defaultLoadProject = async (projectId: string): Promise<ProjectRoutingReco
  * Resolve where the agent proxy should forward a request for `projectId`.
  *
  * - Project pins an online Instance → 'tunnel' (instance routing wins
- *   over VM isolation and K8s — pinning is the user's explicit override).
+ *   over K8s — pinning is the user's explicit override).
  * - Project pins an offline Instance, policy 'pinned'  → 503 instance_offline.
  * - Project pins an offline Instance, policy 'prefer'  → fall through.
- * - VM permanently disabled → falls back to host.
- * - VM transiently unavailable → 503.
  * - K8s pod resolver throws → 502.
  * - Host start fails → 503.
  */
@@ -111,13 +107,12 @@ export async function resolveAgentProxyPodUrl(
   deps: AgentProxyResolverDeps = {},
 ): Promise<AgentProxyResolution> {
   const resolver = deps.resolver ?? resolveProjectPodUrl
-  const isVMIsolation = deps.isVMIsolation ?? defaultIsVMIsolation
   const isKubernetes = deps.isKubernetes ?? defaultIsKubernetes
   const loadProject = deps.loadProject ?? defaultLoadProject
   const isTunnelOnline = deps.isTunnelOnline ?? isTunnelConnectedAnywhere
   const logTag = deps.logTag ?? 'AgentProxy'
 
-  // ─── Instance pin (runs before VM/K8s on purpose) ────────────────────
+  // ─── Instance pin (runs before K8s on purpose) ────────────────────
   // The pin is an explicit user choice persisted on the Project row;
   // honor it before any cluster-side routing kicks in. A bad pin (e.g.
   // dangling instanceId after DB drift) returns 503 with policy='pinned'
@@ -184,29 +179,10 @@ export async function resolveAgentProxyPodUrl(
   try {
     const res = await resolver(projectId, {
       logTag,
-      onVMPermanentlyDisabled: 'fallback-to-host',
       runtimeManager: deps.runtimeManager,
     })
     return { ok: true, kind: 'pod', url: res.url }
   } catch (err: any) {
-    // The helper rethrows VMPoolPermanentlyDisabledError only when
-    // `onVMPermanentlyDisabled: 'throw'` is set — which we never do
-    // here. This branch exists as a guard for future signature
-    // changes; better a clear 503 than silently bringing up a host
-    // runtime without anyone asking for it.
-    const errName = err?.constructor?.name ?? ''
-    if (errName === 'VMPoolPermanentlyDisabledError') {
-      console.error(`[${logTag}] VM pool permanently disabled and host fallback failed:`, err.message)
-      return { ok: false, status: 503, body: { error: { code: 'vm_pool_unavailable', message: err.message || 'VM pool permanently disabled' } } }
-    }
-    if (isVMIsolation()) {
-      console.error(`[${logTag}] VM pool unavailable:`, err.message)
-      return {
-        ok: false,
-        status: 503,
-        body: { error: { code: 'vm_pool_unavailable', message: 'VM isolation is enabled but the pool is not ready. Retrying...' } },
-      }
-    }
     if (isKubernetes()) {
       console.error(`[${logTag}] K8s pod resolution error:`, err)
       return { ok: false, status: 502, body: { error: { code: 'proxy_error', message: err.message || 'Failed to resolve agent pod' } } }

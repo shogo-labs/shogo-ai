@@ -320,6 +320,10 @@ model Project {
   @@index([folderId])
   @@index([preferredInstanceId])
   @@index([createdAt])
+  /// Serves the workspace-scoped project list, which filters on `workspaceId`
+  /// and orders by `createdAt` desc. Neither single-column index above covers
+  /// both halves, so that query had to sort the whole workspace to return a page.
+  @@index([workspaceId, createdAt])
   @@map("projects")
 }
 

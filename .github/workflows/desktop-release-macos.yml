@@ -21,7 +21,6 @@ env:
   # until @electron-forge/@electron/packager ships a Node 24.16+-compatible
   # release. See the build-desktop "Package Electron app" step.
   NODE_VERSION: '24.15.0'
-  GO_VERSION: '1.22'
 
 jobs:
   preflight:
@@ -252,37 +251,6 @@ jobs:
           chmod +x bun bunx
           ls -la
 
-      - name: Bundle QEMU for VM isolation
-        if: matrix.arch == 'arm64'
-        run: |
-          brew install qemu dylibbundler
-          mkdir -p apps/desktop/resources/vm
-          QEMU_PREFIX=$(brew --prefix qemu)
-          cp "$QEMU_PREFIX/bin/qemu-system-aarch64" apps/desktop/resources/vm/
-          cp "$QEMU_PREFIX/bin/qemu-img" apps/desktop/resources/vm/
-          cd apps/desktop/resources/vm
-          dylibbundler -of -b -cd -x qemu-system-aarch64 -d lib/ -p @executable_path/lib/
-          dylibbundler -of -b -cd -x qemu-img -d lib/ -p @executable_path/lib/
-          echo "=== Verifying no absolute Homebrew paths remain ==="
-          ! otool -L qemu-system-aarch64 | grep /opt/homebrew
-          ! otool -L qemu-img | grep /opt/homebrew
-          echo "=== Bundled QEMU binaries ==="
-          ls -lhR .
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Build Go VM helper
-        working-directory: apps/desktop/native/shogo-vm
-        run: |
-          GO_ARCH=${{ matrix.arch == 'arm64' && 'arm64' || 'amd64' }}
-          CGO_ENABLED=1 GOOS=darwin GOARCH=$GO_ARCH go build -o shogo-vm-$GO_ARCH .
-          mkdir -p ../../resources/vm-helper
-          cp shogo-vm-$GO_ARCH ../../resources/vm-helper/
-          ls -la ../../resources/vm-helper/
-
       - name: Build shogo-sysaudio (macOS system audio helper)
         working-directory: apps/desktop/native/shogo-sysaudio
         run: |
@@ -484,20 +452,6 @@ jobs:
             echo "SIGNING_IDENTITY_NAME=$DEVELOPER_ID_NAME" >> "$GITHUB_ENV"
           else
             echo "No Developer ID Application certificate provided. Skipping macOS code signing."
-          fi
-
-      - name: Codesign Go VM helper
-        if: env.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 != ''
-        env:
-          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
-        run: |
-          GO_ARCH=${{ matrix.arch == 'arm64' && 'arm64' || 'amd64' }}
-          VM_HELPER="apps/desktop/resources/vm-helper/shogo-vm-$GO_ARCH"
-          if [ -f "$VM_HELPER" ]; then
-            codesign --force --options runtime \
-              --entitlements apps/desktop/entitlements.plist \
-              --sign - "$VM_HELPER"
-            echo "Go VM helper codesigned with virtualization entitlement"
           fi
 
       - name: Package Electron app (with retry on silent no-op)

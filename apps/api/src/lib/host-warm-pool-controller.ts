@@ -3,15 +3,14 @@
 /**
  * Host Warm Pool Controller
  *
- * Host-mode equivalent of the Knative WarmPoolController and the desktop
- * VMWarmPoolController: it keeps a small pool of pre-booted generic
- * agent-runtime processes (spawned with `PROJECT_ID=__POOL__`) so opening a
- * project can claim one and skip the cold `bun run agent-runtime` start (bun
- * boot + JIT + LSP init). Claim + assign uses the SAME substrate-agnostic
- * `/pool/assign` HTTP contract that K8s pods and VMs use
- * (packages/shared-runtime/src/server-framework.ts).
+ * Host-mode equivalent of the Knative WarmPoolController: it keeps a small
+ * pool of pre-booted generic agent-runtime processes (spawned with
+ * `PROJECT_ID=__POOL__`) so opening a project can claim one and skip the
+ * cold `bun run agent-runtime` start (bun boot + JIT + LSP init). Claim +
+ * assign uses the SAME substrate-agnostic `/pool/assign` HTTP contract that
+ * K8s pods use (packages/shared-runtime/src/server-framework.ts).
  *
- * Unlike the VM pool, the runtime runs directly on the host, so a project's
+ * Since the runtime runs directly on the host, a project's
  * on-disk workspace must be seeded + `bun install`ed before assignment. That is
  * the `RuntimeManager.prepareProjectWorkspace` step; the resolved directory is
  * injected as `WORKSPACE_DIR`/`PROJECT_DIR` in the assign env so the pooled

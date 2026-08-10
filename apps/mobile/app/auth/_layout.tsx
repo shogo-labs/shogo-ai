@@ -7,7 +7,7 @@
  * bridge pages that the desktop / CLI worker open in the system browser
  * to complete a poll-based device sign-in. They need
  * the SDK domain (HttpClient + MST store) to hit the cloud API — but they
- * must NOT inherit the `(app)` shell (sidebar, header, VM banner, etc.).
+ * must NOT inherit the `(app)` shell (sidebar, header, etc.).
  *
  * This layout therefore mounts `DomainProvider` and renders a bare `<Slot />`.
  * AuthProvider is already mounted at the root (`apps/mobile/app/_layout.tsx`),

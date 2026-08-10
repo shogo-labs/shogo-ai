@@ -237,27 +237,6 @@ Get-Process | Where-Object { $_.Name -match '^(Shogo|bun)$' } | Stop-Process -Fo
 #    remove project\, and drop in AGENTS.md
 ```
 
-**Windows: "trouble starting your project environment" / `VM warm pool disabled after N consecutive boot failures`**
-QEMU + WHPX cannot boot an agent VM on this host (the VM usually dies at
-iPXE after emitting `whpx: injection failed, MSI (0, 0) delivery: 0 …
-(c0350005)` — a known Hyper-V/WHPX interrupt-delivery quirk on some Windows
-installs). After `MAX_CONSECUTIVE_FAILURES` (3) failed VM boots the warm pool
-permanently disables itself for the session.
-
-Modern builds detect this and fall back to the host `RuntimeManager` (see
-`VMPoolPermanentlyDisabledError` in
-`apps/api/src/lib/vm-warm-pool-controller.ts`), so the user gets a working
-runtime instead of a cryptic `pod_unavailable`. To silence the warning and
-skip the wasted VM boot attempts on subsequent launches, write:
-
-```json
-{ "vmIsolation": { "enabled": false } }
-```
-
-into `%APPDATA%\Shogo\config.json`. See `apps/desktop/src/config.ts` for the
-full schema — the `'auto'` default still attempts VM isolation whenever QEMU +
-a provisioned rootfs are present.
-
 **Windows: "trouble starting your project environment" / `'npm.cmd' is not recognized`**
 Shogo Desktop on Windows requires **Node.js 20+** to be installed at the
 standard location (`C:\Program Files\nodejs\`). Bun 1.x has a hardlink bug on

@@ -5,7 +5,6 @@ import { createServer } from 'net'
 import { existsSync } from 'fs'
 import path from 'path'
 import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } from './paths'
-import { isVMAvailable } from './vm'
 import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
 
 // Shogo-reserved port range — chosen to avoid conflicts with common dev tools
@@ -222,38 +221,6 @@ function ensureRuntimeTemplate(): void {
   }
 }
 
-// --- VM isolation ---
-
-function getVMImageDir(): string {
-  const { app } = require('electron')
-  // Use `app.getAppPath()` (= `apps/desktop/` in dev) instead of
-  // `path.resolve(__dirname, '..')`. `bun build` inlines `__dirname` as a
-  // build-time absolute path into the desktop bundle, so any runtime use of
-  // `__dirname` from a bundled module points at the build machine's
-  // filesystem layout, not the user's. See `scripts/bundle-main.mjs`.
-  if (!app.isPackaged) return path.join(app.getAppPath(), 'resources', 'vm')
-  const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
-  return path.join(app.getPath('userData'), 'vm-images', arch)
-}
-
-function getVMBundleDir(projectRoot: string, isDev: boolean): string {
-  if (isDev) return ''
-  return path.join(projectRoot, 'vm-bundle')
-}
-
-function isVMIsolationEnabled(): boolean {
-  try {
-    const { readConfig } = require('./config') as typeof import('./config')
-    const config = readConfig()
-    const setting = config.vmIsolation?.enabled ?? 'auto'
-    if (setting === false) return false
-    if (setting === true) return true
-    return isVMAvailable()
-  } catch {
-    return isVMAvailable()
-  }
-}
-
 function readHostRuntimeConfig(): import('./config').HostRuntimeConfig {
   try {
     const { readConfig } = require('./config') as typeof import('./config')
@@ -284,14 +251,6 @@ export async function startLocalServer(): Promise<void> {
 
   // Ensure runtime-template is available in the workspaces dir for RuntimeManager's fallback
   ensureRuntimeTemplate()
-
-  // Detect VM isolation availability (the API server manages the VM pool itself)
-  const vmIsolationAvailable = isVMIsolationEnabled()
-  if (vmIsolationAvailable) {
-    console.log('[Desktop] VM isolation available — API will manage VM warm pool')
-  } else {
-    console.log('[Desktop] VM isolation not available, using host execution')
-  }
 
   // Host-runtime resource limits + warm pool config (see apps/desktop/src/config.ts).
   const hostRuntime = readHostRuntimeConfig()
@@ -372,11 +331,6 @@ export async function startLocalServer(): Promise<void> {
     }),
     SHOGO_DATA_DIR: getDataDir(),
     SHOGO_SHERPA_DIR: path.join(getDataDir(), 'sherpa-onnx'),
-    SHOGO_VM_IMAGE_DIR: getVMImageDir(),
-    ...(vmIsolationAvailable ? {
-      SHOGO_VM_ISOLATION: 'true',
-      SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, IS_DEV),
-    } : {}),
     // Host-mode per-project resource limits (enforced by WorkerRuntimeManager)
     // and warm-pool sizing (HostWarmPoolController). See config.ts defaults.
     RUNTIME_MEMORY_MB: String(hostRuntime.memoryMB),

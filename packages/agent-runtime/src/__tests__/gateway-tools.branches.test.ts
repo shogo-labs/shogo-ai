@@ -35,6 +35,8 @@ import {
 } from '../gateway-tools'
 import { MockChannel } from './helpers/mock-channel'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
+import { enableSearchToolForTests, restoreSearchToolFlag } from './helpers/search-flag'
+import { shortenReadLintsWaitForTests, restoreReadLintsWait } from './helpers/read-lints-wait'
 
 const TEST_DIR = '/tmp/test-gateway-tools-branches'
 
@@ -617,6 +619,9 @@ describe('impact_radius', () => {
 })
 
 describe('search', () => {
+  beforeAll(() => enableSearchToolForTests())
+  afterAll(() => restoreSearchToolFlag())
+
   test('returns an empty result set on an empty workspace', async () => {
     const result = await call(createCtx(), 'search', { query: 'anything', source: 'all', limit: 3 })
     expect(typeof result).toBe('object')
@@ -639,6 +644,9 @@ describe('search', () => {
 // ---------------------------------------------------------------------------
 
 describe('read_lints', () => {
+  beforeAll(() => shortenReadLintsWaitForTests())
+  afterAll(() => restoreReadLintsWait())
+
   test('returns empty diagnostics for a file that does not exist', async () => {
     const result = await call(createCtx(), 'read_lints', { paths: ['nonexistent.ts'] })
     expect(typeof result).toBe('object')

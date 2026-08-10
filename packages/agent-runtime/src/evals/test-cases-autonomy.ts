@@ -14,7 +14,8 @@
  * balance case confirms the agent STILL asks when the request is genuinely
  * ambiguous (guards against over-correcting into never asking).
  *
- * Track: --track autonomy   ([L] cases run --local; the VM case needs --vm)
+ * Track: --track autonomy   ([L] cases run --local; the heavier canvas case
+ * needs the default docker worker for a full runtime template)
  */
 
 import type { AgentEval, EvalResult } from './types'

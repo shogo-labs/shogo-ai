@@ -10,10 +10,11 @@
  *
  * Mocks globalThis.fetch + uses real fs in a sandboxed TEST_DIR. No network.
  */
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { createTools } from '../gateway-tools'
+import { shortenReadLintsWaitForTests, restoreReadLintsWait } from './helpers/read-lints-wait'
 
 const TEST_DIR = '/tmp/test-gateway-tools-final-cluster'
 
@@ -423,15 +424,18 @@ describe('gateway-tools final-cluster sweep', () => {
   // read_lints
   // ===================================================================
   describe('read_lints', () => {
+    beforeAll(() => shortenReadLintsWaitForTests())
+    afterAll(() => restoreReadLintsWait())
+
     test('returns error when lspManager missing', async () => {
       const r = await call(ctxWith(), 'read_lints', {})
-      expect(r.error).toContain('Language server not available')
+      expect(r.error).toContain('Language server still starting after waiting')
     })
 
     test('returns error when lspManager not running', async () => {
       const ctx = ctxWith({ lspManager: { isRunning: () => false } })
       const r = await call(ctx, 'read_lints', {})
-      expect(r.error).toContain('Language server not available')
+      expect(r.error).toContain('Language server still starting after waiting')
     })
 
     test('returns canvas runtime errors when LSP off', async () => {

@@ -39,11 +39,40 @@ export interface VmNet {
 }
 
 /**
+ * How many /30 VM slots fit below `base` before the address overflows the two
+ * host octets `deriveNet` varies (the 3rd + 4th). With the default
+ * `172.16.0.0` the 1st/2nd octets are fixed and only the 3rd/4th vary, so the
+ * usable space is a /16 = 65536 addresses = 16384 /30 blocks (indices
+ * 0..16383). A non-zero 3rd octet in `base` shrinks it accordingly.
+ *
+ * This is a HARD ceiling: index `n === capacity` makes `deriveNet` compute a
+ * 3rd octet of 256, i.e. an invalid IPv4 address (`172.16.256.x`) that
+ * `ip addr add` rejects with "any valid prefix is expected". The allocator
+ * MUST wrap within [0, capacity) and never hand out an index at/above it.
+ */
+export function tapCapacity(base = '172.16.0.0'): number {
+  const c = Number(base.split('.')[2] ?? 0)
+  return ((256 - c) * 256) / 4
+}
+
+/** Default /30 capacity for the standard `172.16.0.0` base (16384 slots). */
+export const TAP_NET_CAPACITY = tapCapacity()
+
+/**
  * Deterministically derive a /30 for VM index `n`. n=0 -> 172.16.0.0/30
  * (host .1, guest .2), n=1 -> 172.16.0.4/30, etc.
+ *
+ * Throws for an out-of-range `n` rather than silently emitting a malformed IP
+ * (e.g. `172.16.8282.225` for n=530104): a bad address only surfaces later as
+ * an opaque `ip addr add ... any valid prefix is expected` 500 from every
+ * /assign, wedging the whole host. Fail loud at the source instead.
  */
 export function deriveNet(n: number, base = '172.16.0.0'): VmNet {
   const [a, b, c] = base.split('.').map(Number)
+  const cap = tapCapacity(base)
+  if (!Number.isInteger(n) || n < 0 || n >= cap) {
+    throw new RangeError(`deriveNet: VM index ${n} out of range [0, ${cap}) for base ${base}`)
+  }
   const block = n * 4 // each VM consumes a /30 (4 addresses)
   const third = c + (block >> 8)
   const hostLast = (block & 0xff) + 1

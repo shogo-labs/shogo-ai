@@ -74,7 +74,9 @@ describe("GraphSplitter — height constraints", () => {
   });
 });
 
-// ── localStorage mock (bun test doesn't have browser localStorage) ──
+// ── localStorage mock ──
+// Bun now ships a native `globalThis.localStorage` defined as a non-writable
+// property, so it has to be swapped via defineProperty rather than assignment.
 const store = new Map<string, string>();
 const mockStorage = {
   getItem: (k: string) => store.get(k) ?? null,
@@ -86,15 +88,20 @@ const mockStorage = {
 };
 
 describe("GraphSplitter — localStorage", () => {
-  const origLS = (globalThis as any).localStorage;
+  const origLS = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 
   beforeEach(() => {
-    (globalThis as any).localStorage = mockStorage;
+    Object.defineProperty(globalThis, "localStorage", {
+      value: mockStorage,
+      configurable: true,
+      writable: true,
+    });
     store.clear();
   });
 
   afterEach(() => {
-    (globalThis as any).localStorage = origLS;
+    if (origLS) Object.defineProperty(globalThis, "localStorage", origLS);
+    else delete (globalThis as any).localStorage;
   });
 
   it("returns null when no preference exists", () => {

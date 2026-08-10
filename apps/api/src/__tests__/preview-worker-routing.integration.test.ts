@@ -95,11 +95,31 @@ afterEach(() => {
   calls = []
 })
 
-function makeEnv(opts: { apiWakeOrigin?: string; region?: string } = {}): any {
+// The Worker keeps two kinds of entry in the PREVIEW_REGIONS namespace: the
+// hosting region under the bare projectId, and a "this project is on metal"
+// marker under `mm:{projectId}`. The fake is key-aware so one can't answer for
+// the other, and writable so `setMetalMark` round-trips.
+function makeEnv(
+  opts: { apiWakeOrigin?: string; region?: string; metalProjects?: string[] } = {},
+): any {
+  const kv = new Map<string, string>()
+  for (const id of opts.metalProjects ?? []) kv.set(`mm:${id}`, '1')
   return {
-    PREVIEW_REGIONS: { get: async () => opts.region ?? 'us' },
+    PREVIEW_REGIONS: {
+      get: async (key: string) =>
+        key.startsWith('mm:') ? kv.get(key) ?? null : opts.region ?? 'us',
+      put: async (key: string, value: string) => {
+        kv.set(key, value)
+      },
+    },
     ...(opts.apiWakeOrigin ? { API_WAKE_ORIGIN: opts.apiWakeOrigin } : {}),
   }
+}
+
+// Calls to the API's substrate-discovery / render endpoints (i.e. not the
+// preview pod itself).
+function apiCalls(): RecordedCall[] {
+  return calls.filter((c) => c.url.includes('/api/preview/'))
 }
 
 describe('preview-router worker — wake-on-visit', () => {
@@ -242,8 +262,13 @@ describe('preview-router worker — never surface a raw 404/503', () => {
     const res = await workerModule.fetch(req, env)
     expect(res.status).toBe(404)
     expect(await res.text()).toBe('nope')
-    // Not a document → no wake call, no interstitial.
-    expect(calls.every((c) => !c.url.includes('/api/preview/'))).toBe(true)
+    // Not a document → no interstitial, and exactly one proxy attempt.
+    expect(proxyCalls().length).toBe(1)
+    // The worker does still ask the API once which substrate this project is on
+    // (a metal preview has no Knative route to fall back to), but that is a
+    // single discovery call — never a per-asset retry loop.
+    expect(apiCalls()).toHaveLength(1)
+    expect(apiCalls()[0].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/wake`)
   })
 
   test('non-GET request proxies straight through without retry or interstitial', async () => {
@@ -257,8 +282,59 @@ describe('preview-router worker — never surface a raw 404/503', () => {
 
     const res = await workerModule.fetch(req, env)
     expect(res.status).toBe(503)
-    // Single proxy attempt, no wake, no retry.
+    // Single proxy attempt and no interstitial — retrying or masking a mutation
+    // could duplicate or drop it.
     expect(proxyCalls().length).toBe(1)
-    expect(calls.every((c) => !c.url.includes('/api/preview/'))).toBe(true)
+    // Substrate discovery is a side-effect-free GET against the API and runs at
+    // most once, so it doesn't turn one POST into two.
+    expect(apiCalls()).toHaveLength(1)
+    expect(apiCalls()[0].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/wake`)
+  })
+})
+
+// Metal previews have no Knative route and Cloudflare can't fetch the box's raw
+// IP:port, so they're proxied through the API's render endpoint. A KV marker
+// caches the substrate so only the first request pays for discovery.
+describe('preview-router worker — metal previews via the API render proxy', () => {
+  test('a cached metal marker skips the wake and proxies via the render endpoint', async () => {
+    installFetch(() => ({ status: 200, body: 'console.log(1)' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, metalProjects: ['p1'] })
+    const req = new Request('https://p1.preview.shogo.ai/assets/app.js?v=2', {
+      headers: { Accept: '*/*' },
+    })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('console.log(1)')
+    // No per-asset wake round-trip; straight to render with path + query kept.
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/render/assets/app.js?v=2`)
+  })
+
+  test('a wake that reports a metal url records the marker so the reload is fast', async () => {
+    installFetch((url) =>
+      url.includes('/wake')
+        ? { status: 200, body: '{"ready":true,"url":"http://10.0.0.9:31234"}' }
+        : { status: 200, body: '<html>live</html>', headers: { 'x-shogo-runtime': '1' } },
+    )
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('<html>live</html>')
+    // Discovery, then the render proxy — never the regional Kourier anchor.
+    expect(calls).toHaveLength(2)
+    expect(calls[1].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/render/`)
+    expect(calls.some((c) => c.cf?.resolveOverride)).toBe(false)
+
+    // Marker persisted: a follow-up sub-resource goes straight to render.
+    calls = []
+    const asset = new Request('https://p1.preview.shogo.ai/assets/app.js', {
+      headers: { Accept: '*/*' },
+    })
+    await workerModule.fetch(asset, env)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/render/assets/app.js`)
   })
 })

@@ -10,7 +10,8 @@
  * pass (e.g. via replace_all or batched edits) and penalize the run-fix-run-fix
  * loop.
  *
- * Track: --track error-convergence  ([L] runs --local; the VM case needs --vm)
+ * Track: --track error-convergence  ([L] runs --local; the heavier case needs
+ * the default docker worker for a full runtime template)
  */
 
 import type { AgentEval, EvalResult, ToolCallRecord } from './types'

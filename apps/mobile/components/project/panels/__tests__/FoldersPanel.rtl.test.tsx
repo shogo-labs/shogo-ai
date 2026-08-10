@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as ReactNativeWeb from 'react-native-web'
+import * as apiStub from '../../../../test/stubs/api'
 
 // No Metro/webpack alias in the test runtime, so map the bare
 // 'react-native' specifier to react-native-web before importing the SUT.
@@ -29,20 +30,9 @@ mock.module('react-native', () => ReactNativeWeb)
 // lucide-react-native pulls in react-native-svg (which itself imports the
 // flow-typed `react-native` entry that bun can't parse). We don't assert
 // on icons, so stub the named exports FoldersPanel uses with no-ops.
-const StubIcon = () => null
-mock.module('lucide-react-native', () => ({
-  __esModule: true,
-  Folder: StubIcon,
-  FolderPlus: StubIcon,
-  FolderTree: StubIcon,
-  Globe: StubIcon,
-  Star: StubIcon,
-  StarOff: StubIcon,
-  Trash2: StubIcon,
-  ShieldAlert: StubIcon,
-  ShieldCheck: StubIcon,
-  PlaySquare: StubIcon,
-}))
+// Icons come from the shared stub that `test/testing-library.ts` preloads.
+// A per-file `mock.module('lucide-react-native', …)` would narrow the module
+// process-wide and strip every icon it omits for later test files.
 
 // shared-ui primitives only contributes `cn` here.
 mock.module('@shogo/shared-ui/primitives', () => ({
@@ -60,10 +50,28 @@ mock.module('../../../../contexts/domain', () => ({
     patch: httpPatch,
     get: mock(async () => ({ data: {} })),
   }),
+  // FoldersPanel reads `projectCollection.all` to resolve attachable projects.
+  // The mock has to carry it: omitting an export makes the SUT's import fail
+  // at module-eval time rather than just returning undefined.
+  useProjectCollection: () => ({ all: [] }),
 }))
 
+// Spread the shared stub: `mock.module` is process-global, and a mock that
+// omits an export strips it for the rest of the file's module graph.
 mock.module('../../../../lib/api', () => ({
+  ...apiStub,
   API_URL: 'http://test.local',
+  // FoldersPanel loads the project through this helper rather than raw
+  // `fetch`, so driving it here is what makes `currentProject` take effect.
+  // Envelope shape belongs to `lib/api` and is covered by its own tests; what
+  // these cases exercise is how the panel renders each trust state.
+  api: {
+    ...(apiStub.api as Record<string, unknown>),
+    getLocalProjectWithAttachments: async () => ({
+      project: currentProject,
+      attachments: [],
+    }),
+  },
 }))
 
 mock.module('../../useOpenLocalFolder', () => ({
@@ -171,7 +179,12 @@ describe('FoldersPanel — envelope parsing + trust toggle', () => {
     expect(screen.getByText(/Workspace trusted/i)).toBeInTheDocument()
   })
 
-  test('managed project renders the informational "Managed project" state', async () => {
+  // The panel used to dead-end a managed project on a "Managed project" card
+  // saying folder linking did not apply. `workspace aware` (b8eaa908a) removed
+  // that state: every project now gets the same folder UI, and only the
+  // trust/preview affordances stay external-only. What is still worth pinning
+  // is that a managed project is never offered Workspace Trust.
+  test('managed project renders the folder UI without any trust affordance', async () => {
     currentProject = {
       id: 'proj-managed',
       name: 'Sandbox',
@@ -183,7 +196,9 @@ describe('FoldersPanel — envelope parsing + trust toggle', () => {
 
     render(<FoldersPanel projectId="proj-managed" visible />)
 
-    expect(await screen.findByText('Managed project')).toBeInTheDocument()
+    expect(await screen.findByText('Folders & projects')).toBeInTheDocument()
     expect(screen.queryByText('Trust folder')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Workspace is restricted/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('External preview URL')).not.toBeInTheDocument()
   })
 })

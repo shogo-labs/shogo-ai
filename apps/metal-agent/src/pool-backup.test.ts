@@ -189,6 +189,28 @@ describe('pool write-side backup (save on stop)', () => {
     expect(a.backupParentEtag).toBeUndefined()
   })
 
+  test('a promotion re-anchors lineage, so the project stops re-quarantining every suspend', async () => {
+    const pool = makePool(dir)
+    pool.outcome = {
+      status: 'promoted',
+      etag: '"now-real"',
+      supersededKey: 'conflict/p1/789-ghi.tar.gz',
+    }
+    globalThis.fetch = mock(async () => new Response(new Uint8Array([4, 2]), { status: 200 })) as any
+
+    const before = metrics.getCounter(M.backupTemplatePromotion)
+    // A template-origin VM the user actually built in: no lineage to present,
+    // which is why every one of its suspends used to be quarantined.
+    await pool.save('p1', 'tok', { workspaceOrigin: 'template' })
+
+    expect(metrics.getCounter(M.backupTemplatePromotion)).toBe(before + 1)
+    // The point of the fix: it now owns the durable backup, so the NEXT suspend
+    // is an ordinary lineage-matching overwrite rather than another conflict.
+    const a = pool.assignedEntry('p1')!
+    expect(a.backupParentEtag).toBe('"now-real"')
+    expect(a.workspaceOrigin).toBe('backup')
+  })
+
   test('a size-regression conflict bumps BOTH the conflict and the size-regression metric', async () => {
     const pool = makePool(dir)
     pool.outcome = {

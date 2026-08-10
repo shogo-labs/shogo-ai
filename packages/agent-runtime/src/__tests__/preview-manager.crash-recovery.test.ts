@@ -153,7 +153,7 @@ describe('PreviewManager.start — vite (prebuilt vs cold)', () => {
     expect(m.isStarted).toBe(true)
   })
 
-  it('start() does NOT crash when backgroundSetup rejects', async () => {
+  it('start() does NOT crash when backgroundSetup rejects; it marks the phase failed', async () => {
     withPackageJson()
     const m = mk() as any
     m.backgroundSetup = async () => { throw new Error('install failed') }
@@ -162,7 +162,10 @@ describe('PreviewManager.start — vite (prebuilt vs cold)', () => {
     // Wait one microtask so the catch handler runs.
     await new Promise((r) => setImmediate(r))
     expect(r.mode).toBe('background-build')
-    expect(m.phase).toBe('building') // didn't auto-progress; just didn't crash
+    // A terminal cold-boot failure surfaces as phase=failed with a reason
+    // instead of a spinner wedged at "building" forever.
+    expect(m.phase).toBe('failed')
+    expect(m.getStatus().errors.setup).toBe('install failed')
   })
 })
 
