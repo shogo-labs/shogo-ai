@@ -274,6 +274,33 @@ reaper should prevent it; if it recurs:
 3. Recover: `systemctl restart metal-agent` — systemd kills the whole cgroup,
    clearing every orphan. Cache (suspended snapshots) survives the restart.
 
+### Tap / address-space exhaustion — `metal_tap_used_pct` climbing
+Each microVM takes a `/30` out of `172.16.0.0/16`, so a host has 16384 slots and
+each is held by an `fctap<n>` device. This is the 2026-07 US-region outage: taps
+leaked (removed VMs whose device was never deleted), the allocator ran off the end
+of the `/16`, and `deriveNet` produced `172.16.8282.225/30` — `ip addr add`
+rejected it, every `/assign` 500'd, and project runtimes hung on "starting up…".
+
+Two mechanisms now stand between a leak and that outage: the allocator wraps and
+skips devices present on the host (never returns an out-of-range index), and the
+GC sweep reclaims taps that belong to no VM. So this should only ever be a gauge
+to watch, not an incident. If it climbs anyway:
+
+1. `curl -s localhost:9900/metrics | grep metal_tap` — `metal_taps_in_use` should
+   sit near this host's VM count (warm + assigned + suspended), and
+   `metal_gc_taps_reclaimed_total` should be flat. In-use far above the VM count
+   with nothing being reclaimed means the sweep is being blocked, not that it is
+   missing work.
+2. Count the devices nothing has open — the sweep's own candidates:
+   `ip -o link show | grep -c 'fctap.*NO-CARRIER'`. Devices WITHOUT `NO-CARRIER`
+   have a live firecracker attached and are never touched.
+3. Reclaim is deliberately slow: two consecutive sweeps must agree, and each takes
+   at most 200. A large backlog drains over several `gcIntervalMs` periods.
+4. Only if you must reclaim by hand, and only for an index with no live VM:
+   `ip link del fctap<n>`. Deleting a device a running guest holds cuts its
+   networking (`Failed to write to tap: File descriptor in bad state`) and the
+   project must be recycled.
+
 ### `MetalHostDiskPressure` — NVMe > 85%
 GC evicting to S3 can't keep up. Cordon the hot host so it stops taking new cold
 placements; burst/siblings absorb; disk recovers as idle projects evict. If

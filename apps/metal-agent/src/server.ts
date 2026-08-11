@@ -329,6 +329,14 @@ if (config.gcIntervalMs > 0) {
     } catch (err: any) {
       console.error('[metal-agent] orphan-proc reap error:', err?.message ?? err)
     }
+    // Reclaim leaked tap devices, which each hold a /30 out of a finite space
+    // (16384 per host). Runs before the disk GC because exhausting it fails
+    // every new VM outright, and it fills silently.
+    try {
+      pool.reapOrphanTaps()
+    } catch (err: any) {
+      console.error('[metal-agent] orphan-tap reap error:', err?.message ?? err)
+    }
     // Reclaim leaked dm devices / loops / CoW files from teardown races (bounded
     // per sweep so a large backlog drains gradually without stalling the timer).
     try {

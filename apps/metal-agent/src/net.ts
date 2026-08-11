@@ -122,7 +122,66 @@ export function setupTap(net: VmNet, uplink?: string): void {
 }
 
 export function teardownTap(net: VmNet): void {
-  tryIp(['link', 'del', net.tap])
+  teardownTapByName(net.tap)
+}
+
+/**
+ * Delete a tap by device name. The GC sweep reclaims leaked devices it found on
+ * the host with no owning VM, so it has a name and no {@link VmNet}.
+ */
+export function teardownTapByName(tap: string): void {
+  tryIp(['link', 'del', tap])
+}
+
+export interface HostTap {
+  index: number
+  name: string
+  /**
+   * A process currently holds this tap's tun fd — i.e. a firecracker VM is
+   * attached to it right now.
+   */
+  attached: boolean
+}
+
+/**
+ * Every `fctap<n>` device on the host, with whether something is actually using
+ * it. A persistent tap created by `ip tuntap add` reports NO-CARRIER until a
+ * process opens its fd, and the flag comes back the moment that process dies —
+ * so `attached` is the kernel's own "in use" answer, the tap analogue of the dm
+ * Open count the rootfs reconciler relies on. That makes it a safe last guard
+ * for the orphan-tap GC: a device nothing has open cannot be carrying a live
+ * guest's traffic, whatever the pool's bookkeeping says.
+ *
+ * Deliberately separate from {@link existingTapIndices} rather than sharing its
+ * parse: that function is on the VM-allocation hot path and its whole-text match
+ * is intentionally over-inclusive (any mention of `fctap<n>` counts as taken).
+ * Here we need per-device flags, so we parse line by line — and an
+ * unparseable/flagless line is reported as attached, so ambiguity can only ever
+ * make the GC skip a device, never reap one.
+ */
+export function existingTaps(): HostTap[] {
+  try {
+    return parseTapLinks(execFileSync('ip', ['-o', 'link', 'show'], { encoding: 'utf8' }))
+  } catch {
+    return [] // no `ip`, not Linux → nothing to reclaim
+  }
+}
+
+/** Parse `ip -o link show` output. Split out from {@link existingTaps} to test. */
+export function parseTapLinks(txt: string): HostTap[] {
+  const taps: HostTap[] = []
+  for (const line of txt.split('\n')) {
+    // `7: fctap3: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc ...`
+    const m = /^\s*\d+:\s*(fctap(\d+))[:@]/.exec(line)
+    if (!m) continue
+    const flags = /<([^>]*)>/.exec(line)?.[1]
+    taps.push({
+      index: parseInt(m[2], 10),
+      name: m[1],
+      attached: flags ? !flags.split(',').includes('NO-CARRIER') : true,
+    })
+  }
+  return taps
 }
 
 /**
