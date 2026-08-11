@@ -21,6 +21,7 @@
  */
 
 import { config } from './config'
+import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
 import { metrics } from './metrics'
 import { MetalWarmPool } from './pool'
@@ -217,10 +218,14 @@ if (config.serialWatch) {
 
 // Idle reaper: fold real guest traffic into idleness (activity poll), then
 // quiesce + snapshot assigned VMs that have gone quiet (free host RAM).
-let reaper: ReturnType<typeof setInterval> | null = null
+let reaper: GuardedInterval | null = null
 if (config.idleSuspendMs > 0) {
   console.log(`[metal-agent] idle-suspend on: idleMs=${config.idleSuspendMs} scan=${config.reapIntervalMs}ms store=${config.snapStore}`)
-  reaper = setInterval(() => {
+  // Guarded: a pass is sequential and each suspend backs up source + writable
+  // state to S3, quiesces, then snapshots, so on a host holding ~130 VMs one pass
+  // runs far longer than the 15s scan. See `guardedInterval` for what overlapping
+  // passes did to production.
+  reaper = guardedInterval('idle reaper', config.reapIntervalMs, () =>
     // Liveness sweep FIRST: clear any assigned VM whose firecracker process has
     // died. A continuously wake-polled dead VM never goes idle (each poll bumps
     // lastTouchedAt), so the idle reaper below can't help — this is the only
@@ -239,17 +244,14 @@ if (config.idleSuspendMs > 0) {
       .catch((err) => console.error('[metal-agent] dead-vm reap error:', err?.message ?? err))
       .then(() => pool.pollActivity().catch(() => {}))
       .then(() => pool.reapIdle())
-      .then(
-        (ids) => {
-          for (const id of ids) {
-            fwd.remove(id)
-            reportPlacement('suspended', id)
-          }
-          if (ids.length) console.log(`[metal-agent] idle-suspended: ${ids.join(', ')}`)
-        },
-        (err) => console.error('[metal-agent] reaper error:', err?.message ?? err),
-      )
-  }, config.reapIntervalMs)
+      .then((ids) => {
+        for (const id of ids) {
+          fwd.remove(id)
+          reportPlacement('suspended', id)
+        }
+        if (ids.length) console.log(`[metal-agent] idle-suspended: ${ids.join(', ')}`)
+      }),
+  )
 }
 
 // GC sweep: reclaim orphans + evict LRU suspended snapshots under disk pressure
@@ -312,37 +314,21 @@ if (config.publishDataBucket && config.publishDataExportIntervalMs > 0) {
 // snapshot at once, and the cold boot that follows restores source only, so
 // without this the user's runtime data is destroyed. Host-side; best-effort;
 // unchanged databases are skipped by content hash.
-let projectDataExporter: ReturnType<typeof setInterval> | null = null
+let projectDataExporter: GuardedInterval | null = null
 if (config.projectDataExportIntervalMs > 0) {
   console.log(
     `[metal-agent] writable-state export on: interval=${config.projectDataExportIntervalMs}ms`,
   )
-  // Re-entrancy guard. A sweep across every live VM can outlast the interval
-  // on a busy host (each project may snapshot a database and upload it), and
-  // overlapping sweeps would fight over the same per-project export — the
-  // second one waits on the singleflight, achieving nothing but a growing pile
-  // of stacked timers.
-  let exportInFlight = false
-  projectDataExporter = setInterval(() => {
-    if (exportInFlight) {
-      console.warn(
-        '[metal-agent] writable-state export still running from the previous tick — skipping',
-      )
-      return
-    }
-    exportInFlight = true
-    pool
-      .exportAllProjectData()
-      .then(
-        (n) => {
-          if (n) console.log(`[metal-agent] exported writable state for ${n} project(s)`)
-        },
-        (err) => console.error('[metal-agent] writable-state exporter error:', err?.message ?? err),
-      )
-      .finally(() => {
-        exportInFlight = false
-      })
-  }, config.projectDataExportIntervalMs)
+  // Guarded: a sweep across every live VM can outlast the interval on a busy
+  // host (each project may snapshot a database and upload it).
+  projectDataExporter = guardedInterval(
+    'writable-state export',
+    config.projectDataExportIntervalMs,
+    () =>
+      pool.exportAllProjectData().then((n) => {
+        if (n) console.log(`[metal-agent] exported writable state for ${n} project(s)`)
+      }),
+  )
 }
 
 // Graceful shutdown for rolling deploys. systemd is configured `KillMode=process`
@@ -355,10 +341,10 @@ process.on('SIGTERM', async () => {
   console.log('[metal-agent] SIGTERM: graceful restart — keeping assigned microVMs + forwards alive')
   stopRegistration()
   serialWatcher?.stop()
-  if (reaper) clearInterval(reaper)
+  reaper?.stop()
   if (gc) clearInterval(gc)
   if (pubDataExporter) clearInterval(pubDataExporter)
-  if (projectDataExporter) clearInterval(projectDataExporter)
+  projectDataExporter?.stop()
   await pool.prepareForRestart().catch(() => {})
   process.exit(0)
 })
