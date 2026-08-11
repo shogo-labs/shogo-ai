@@ -214,6 +214,54 @@ that an allowlist entry is missing:
 ssh root@<host> 'iptables -L SHOGO-CTRL -n -v --line-numbers'
 ```
 
+### Production rollout (staging is already enforcing + filtered)
+
+Staging (`72.46.85.83`) runs `enforce` with the filter on. Production is still
+open: as of this writing all four hosts predate the auth code, and the
+production API sends no `Authorization` header at all, because `agentHeaders()`
+used to read only `METAL_REGISTER_TOKEN` and the pods set only
+`SHOGO_INTERNAL_SECRET`. Enforcing before the callers are fixed would 401 one
+hundred percent of control traffic, so the order below is not optional.
+
+1. **Agent code to production.** Run the `Metal node-agent release` workflow
+   with `environment=production-us`, then `production-eu` (each region has its
+   own control plane and channel pointer). Hosts self-update on heartbeat and
+   keep their microVMs across the restart. `METAL_AUTH_MODE` defaults to
+   `observe`, so this refuses nothing — it only starts counting.
+
+2. **Make the control plane send the token.** The code fix is already on `main`
+   and ships with the next release train. To start the soak sooner without one,
+   set `METAL_REGISTER_TOKEN` (to the same value as `SHOGO_INTERNAL_SECRET`) on
+   the production API pods: the currently deployed code reads that name and
+   will credential every control call except `/touch`, which hardcoded its
+   headers and needs the code change. Once the release lands the env var is
+   redundant and can be dropped.
+
+3. **Soak.** Watch the counter on every host until it reads zero for 24h. It
+   must cover the slow callers — a project delete fanning `/destroy` across
+   regions, an admin panel listing `/vms`. `/touch` staying non-zero means
+   step 2's code fix has not landed yet.
+
+   ```bash
+   for h in 152.236.12.71 67.213.118.79 103.219.171.29 109.94.96.189; do
+     echo "== $h"; ssh root@$h 'curl -s localhost:9900/metrics | grep control_unauthenticated'
+   done
+   ```
+
+4. **Enforce, one host at a time**, using the flip above. Verify a real project
+   open against that host before moving to the next.
+
+5. **Filter, one host at a time.** Both egress IPs on *every* host:
+
+   ```
+   METAL_CTRL_ALLOW_CIDR=129.80.99.116/32,92.5.64.210/32
+   ```
+
+   Then watch a real cold boot on that host before continuing. This is the one
+   thing staging could not prove: its cold boots have been failing since a
+   rootfs rebuild left every local snapshot stale, so no guest ever reached
+   `/hydrate-stream` there to exercise the guest-subnet rule end-to-end.
+
 ## Incident triage
 
 ### `MetalFcProcessLeak` — untracked firecracker processes climbing
