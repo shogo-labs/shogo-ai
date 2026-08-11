@@ -223,8 +223,10 @@ METAL_POOL_SIZE=0
 METAL_LISTEN_HOST=0.0.0.0
 METAL_LISTEN_PORT=9900
 # Phase 3 snapshot lifecycle (env file is overwritten on code deploy): idle
-# auto-suspend + durable snapshot store. Off by default; enable per-host once validated.
-METAL_IDLE_SUSPEND_MS=0
+# auto-suspend + durable snapshot store. 15m matches DEFAULT_IDLE_SUSPEND_MS in
+# apps/api/src/lib/metal-cloud-init.ts, so a bootstrapped baseline host and a
+# reconciler-provisioned burst host reclaim idle VMs on the same window.
+METAL_IDLE_SUSPEND_MS=900000
 METAL_SNAP_STORE=none
 METAL_SNAP_STORE_DIR=$WORK/durable-snapshots
 # Phase 5 NVMe garbage collection / cache. The GC loop runs by default and

@@ -33,14 +33,18 @@
 
 /**
  * Default idle-suspend window baked into a host's env when the caller doesn't
- * override it. 30 minutes: long enough that a project a user is actively
- * iterating on (edit → look → edit, with think time) stays hot on its microVM
- * across the whole session, so opens are instant same-host resumes instead of
- * the constant suspend/resume churn a short (e.g. 45s) window caused. The GC's
- * LRU eviction still reclaims genuinely-idle projects under disk pressure, so a
- * longer window trades a little idle RAM for far fewer cold wakes.
+ * override it. 15 minutes: long enough to absorb the think time in an
+ * edit → look → edit loop, so a project a user is actively iterating on stays
+ * hot on its microVM across the session instead of paying the suspend/resume
+ * churn a short (e.g. 45s) window caused.
+ *
+ * Do not lengthen this to buy fewer cold wakes. `reapIdle` measures
+ * `lastTouchedAt`, which a routing/status poll bumps just as readily as real
+ * work, so a long window does not expire: production ran 4h and only 3 VMs
+ * fleet-wide ever qualified, leaving ~320 resident whose apps had been idle for
+ * days. The GC's LRU eviction is what reclaims under disk pressure.
  */
-export const DEFAULT_IDLE_SUSPEND_MS = 30 * 60 * 1000
+export const DEFAULT_IDLE_SUSPEND_MS = 15 * 60 * 1000
 
 export interface BurstUserDataOpts {
   /** METAL_HOST_ID the agent registers with (matches the reconciler's record). */
