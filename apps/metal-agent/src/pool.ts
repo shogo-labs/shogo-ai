@@ -2335,9 +2335,14 @@ export class MetalWarmPool {
 
   /**
    * Tap indices this host legitimately owns: every warm and assigned VM (running,
-   * fd attached) plus every suspended one (no process, but the device is kept so
-   * a resume can restore onto it). A VM mid-cold-boot is absent from all three —
-   * the manager's own reservation window and the NO-CARRIER check cover that gap.
+   * fd attached) plus every suspended one. A suspended VM has no process, so only
+   * this set stands between its device and the sweep — and while `restoreVM` would
+   * recreate the device anyway, the index must stay claimed: hand it to a fresh VM
+   * and the resume's `setupTap` deletes-then-recreates the device underneath that
+   * live guest ("Failed to write to tap: File descriptor in bad state").
+   *
+   * A VM mid-cold-boot is absent from all three — the manager's own reservation
+   * window and the NO-CARRIER check cover that gap.
    */
   private ownedTapIndices(): Set<number> {
     const idx = new Set<number>()
