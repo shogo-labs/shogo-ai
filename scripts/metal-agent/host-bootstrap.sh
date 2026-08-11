@@ -222,6 +222,14 @@ METAL_VCPUS=2
 METAL_POOL_SIZE=0
 METAL_LISTEN_HOST=0.0.0.0
 METAL_LISTEN_PORT=9900
+# Control-plane auth. The listener above is on a public IP, so the API on :9900
+# is internet-reachable; `observe` counts uncredentialed calls without refusing
+# them, and a host is flipped to `enforce` only once that count is zero (see
+# docs/runbooks/metal-fleet.md). METAL_CTRL_ALLOW_CIDR adds a packet filter
+# under the bearer — the control plane's egress IPs, comma-separated; loopback
+# and the guest TAP supernet are always allowed. Empty = no filter.
+METAL_AUTH_MODE=observe
+METAL_CTRL_ALLOW_CIDR=
 # Phase 3 snapshot lifecycle (env file is overwritten on code deploy): idle
 # auto-suspend + durable snapshot store. 15m matches DEFAULT_IDLE_SUSPEND_MS in
 # apps/api/src/lib/metal-cloud-init.ts, so a bootstrapped baseline host and a

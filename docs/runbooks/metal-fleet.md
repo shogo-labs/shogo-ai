@@ -179,6 +179,41 @@ ssh root@<host> 'journalctl -u metal-agent -n 5 | grep "control auth"'
 curl -s -o /dev/null -w '%{http_code}\n' http://<host>:9900/vms   # 401 once enforcing
 ```
 
+### Packet filter (`METAL_CTRL_ALLOW_CIDR`)
+
+Underneath the bearer. Set it to the control-plane egress IPs, comma-separated,
+and the agent installs a `SHOGO-CTRL` chain on restart. Empty (the default)
+means no filter.
+
+```bash
+ssh root@<host> "sed -i '/^METAL_CTRL_ALLOW_CIDR=/d' /etc/metal-agent.env && \
+  echo 'METAL_CTRL_ALLOW_CIDR=129.80.99.116/32,92.5.64.210/32' >> /etc/metal-agent.env && \
+  systemctl restart metal-agent"
+ssh root@<host> 'iptables -L SHOGO-CTRL -n -v'
+```
+
+List **both** regions on every host: project deletion calls `/destroy` on every
+host holding the project, so a US-only rule on a Frankfurt host silently breaks
+cleanup. Loopback and the guest TAP supernet are added automatically and are
+not configurable — the guest rule is what keeps `/hydrate-stream` working, and
+omitting it breaks every cold boot on the host.
+
+Only port 9900 is filtered; SSH is untouched, so a bad allowlist is recoverable.
+Rollback is to clear the variable and restart, which removes the chain:
+
+```bash
+ssh root@<host> "sed -i 's|^METAL_CTRL_ALLOW_CIDR=.*|METAL_CTRL_ALLOW_CIDR=|' /etc/metal-agent.env && \
+  systemctl restart metal-agent"
+```
+
+Per-rule packet counts are the fastest way to see what the filter is doing —
+a climbing count on the final `DROP` with a legitimate source is the signal
+that an allowlist entry is missing:
+
+```bash
+ssh root@<host> 'iptables -L SHOGO-CTRL -n -v --line-numbers'
+```
+
 ## Incident triage
 
 ### `MetalFcProcessLeak` — untracked firecracker processes climbing

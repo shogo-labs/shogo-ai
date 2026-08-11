@@ -119,6 +119,17 @@ export const config = {
   /** Source CIDR(s) allowed to reach forwarded ports, comma-sep. Empty = any. */
   fwdAllowCidr: env('METAL_FWD_ALLOW_CIDR', ''),
 
+  /**
+   * Source CIDR(s) allowed to reach the agent's OWN control port, comma-sep.
+   * Empty = no packet filter (the METAL_AUTH_MODE bearer still applies).
+   *
+   * Defense in depth under the bearer, not a replacement for it: this is what
+   * still holds if a route is added without auth, or a host boots with an env
+   * file that predates the token. Loopback and the guest TAP supernet are
+   * always allowed regardless of this value — see control-firewall.ts.
+   */
+  ctrlAllowCidr: env('METAL_CTRL_ALLOW_CIDR', ''),
+
   // --- Phase 3: snapshot lifecycle ------------------------------------------
 
   /**

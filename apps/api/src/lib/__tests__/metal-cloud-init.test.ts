@@ -103,4 +103,30 @@ describe('buildBurstUserData', () => {
     expect(s).not.toContain('OTEL_EXPORTER_OTLP_ENDPOINT')
     expect(s).not.toContain('SIGNOZ_INGESTION_KEY')
   })
+
+  it('a new host comes up observing control auth, not enforcing it', () => {
+    // A burst host is provisioned mid-incident to absorb load. Enforcing on
+    // arrival would make a token problem look like a host that never came up.
+    const s = buildBurstUserData(BASE)
+    expect(s).toContain("METAL_AUTH_MODE='observe'")
+  })
+
+  it('honours an explicit auth mode once the fleet is enforcing', () => {
+    const s = buildBurstUserData({ ...BASE, authMode: 'enforce' })
+    expect(s).toContain("METAL_AUTH_MODE='enforce'")
+  })
+
+  it('leaves the control-port filter open unless a CIDR is given', () => {
+    const s = buildBurstUserData(BASE)
+    expect(s).toContain("METAL_CTRL_ALLOW_CIDR=''")
+  })
+
+  it('does NOT inherit the forwarded-port allowlist for the control port', () => {
+    // The forwarded ports serve previews to end-user browsers, so their
+    // allowlist cannot be narrowed to the control plane. Deriving one from the
+    // other would tie the control port to that constraint forever.
+    const s = buildBurstUserData({ ...BASE, ctrlAllowCidr: '129.80.99.116/32,92.5.64.210/32' })
+    expect(s).toContain("METAL_CTRL_ALLOW_CIDR='129.80.99.116/32,92.5.64.210/32'")
+    expect(s).toContain("METAL_FWD_ALLOW_CIDR='157.151.142.64/32'")
+  })
 })
