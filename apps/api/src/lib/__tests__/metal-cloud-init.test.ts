@@ -77,10 +77,10 @@ describe('buildBurstUserData', () => {
     expect(s).toContain("METAL_ROOTFS_COW='reflink'")
   })
 
-  it('defaults the idle-suspend window to 30 minutes (avoids suspend/resume churn)', () => {
-    expect(DEFAULT_IDLE_SUSPEND_MS).toBe(30 * 60 * 1000)
+  it('defaults the idle-suspend window to 15 minutes', () => {
+    expect(DEFAULT_IDLE_SUSPEND_MS).toBe(15 * 60 * 1000)
     const s = buildBurstUserData(BASE)
-    expect(s).toContain("METAL_IDLE_SUSPEND_MS='1800000'")
+    expect(s).toContain("METAL_IDLE_SUSPEND_MS='900000'")
   })
 
   it('honours an explicit idleSuspendMs override', () => {
