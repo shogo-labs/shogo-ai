@@ -1,0 +1,71 @@
+# SigNoz alert: metal host running out of tap devices / VM address space
+#
+# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
+# SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a `data` field).
+#
+# Why: each microVM takes a /30 out of 172.16.0.0/16, held by an `fctap<n>`
+# device, so a host has 16384 slots. Nothing degrades as they fill — and then the
+# last one goes and every /assign on that host fails. That is how the 2026-07
+# US-region outage started: taps leaked, the allocator walked past the end of the
+# /16 and derived `172.16.8282.225/30`, `ip addr add` rejected it, and project
+# runtimes hung on "starting up…". The allocator now refuses out-of-range indices
+# and the node-agent GC reclaims leaked devices, so this fires only if a leak is
+# outrunning the GC — early, while the fix is still "restart the agent" rather
+# than "the region is down".
+#
+# Threshold is deliberately far from the cliff: a host's legitimate usage is
+# available + assigned + suspended, which is O(100) — under 1% of capacity.
+# Sustained double-digit percent means devices are accumulating, not that the
+# host got busy.
+#
+# Metric names: OTel dots become underscores in SigNoz PromQL
+# (metal.host.tap_used_pct -> metal_host_tap_used_pct). Heartbeats round-robin
+# across API replicas, so aggregate with `max by (host_id)` to dedupe the same
+# host reported by multiple pods.
+
+alert: MetalTapExhaustion
+ruleType: threshold_rule
+condition:
+  compositeQuery:
+    queryType: promql
+    promQueries:
+      A:
+        query: |
+          max by (host_id) (metal_host_tap_used_pct)
+        legend: "{{host_id}} tap_used_pct"
+        disabled: false
+  op: ">"
+  target: 25
+  matchType: "3" # on-average-during
+  selectedQuery: A
+evalWindow: "30m0s"
+frequency: "5m0s"
+labels:
+  severity: warning
+  team: platform
+  incident_class: metal
+annotations:
+  summary: "Metal host has 25%+ of its VM address space (tap devices) in use"
+  description: |
+    A metal host is holding tap devices far beyond its live VM count, so leaked
+    /30 blocks are accumulating faster than the GC reclaims them. At 100% the
+    host cannot start another microVM and every /assign there fails — the
+    2026-07 US-region outage.
+
+    Triage:
+    1. On the host, compare occupancy against real usage:
+       `curl -s localhost:${METAL_AGENT_PORT}/metrics | grep metal_tap` and
+       `curl -s localhost:${METAL_AGENT_PORT}/vms | jq '.available, (.assigned|length), .cache.localCount'`.
+       In-use should be about available + assigned + suspended.
+    2. Check the GC is reclaiming: agent log lines `reclaimed N leaked tap
+       device(s)`, and `metal_gc_taps_reclaimed_total` rising. Reclaim is
+       bounded (200/sweep, two sweeps must agree), so a large backlog drains
+       over minutes — that is expected, not a stall.
+    3. If nothing is being reclaimed, the sweep is being blocked rather than
+       missing work: taps without `NO-CARRIER` have a live firecracker attached
+       and are deliberately never touched
+       (`ip -o link show | grep -c 'fctap.*NO-CARRIER'`).
+    4. Cordon the host from the super-admin fleet panel while you work; it keeps
+       serving live projects but takes no new placements.
+
+    Runbook: docs/runbooks/metal-fleet.md (tap / address-space exhaustion).
