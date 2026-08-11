@@ -175,8 +175,9 @@ describe('pool tap lifecycle', () => {
 
     pool.reapOrphanTaps()
 
-    // 4 is the load-bearing one: a suspended VM has no process, so without it
-    // the sweep would reclaim the device its next resume depends on.
+    // 4 is the load-bearing one: a suspended VM has no process, so nothing else
+    // vouches for its index — and handing that index to a fresh VM means the
+    // resume's setupTap yanks the device out from under a live guest.
     expect([...keep].sort((a, b) => a - b)).toEqual([1, 2, 4])
   })
 
