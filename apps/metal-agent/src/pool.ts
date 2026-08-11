@@ -82,6 +82,22 @@ export interface AssignedVm {
   /** Last activity counter seen from the guest (for the activity poll). */
   lastActivityAt?: number
   /**
+   * Wall-clock (ms) of the last activity the GUEST actually observed — a request
+   * it served, an agent turn, or a live stream. This is what `reapIdle` gates
+   * on, deliberately NOT `lastTouchedAt`.
+   *
+   * `lastTouchedAt` answers "did anything ask about this VM", which a control-
+   * plane routing/status poll satisfies, and which the activity poll also sets
+   * whenever it fails open. Both fire on the reaper's own interval, so a VM's
+   * `lastTouchedAt` idle age can never grow past one poll cycle and no
+   * idle-suspend window — 15m or 4h — ever expires. Production ran 4h and held
+   * ~320 VMs resident whose apps had been idle for days.
+   *
+   * Seeded at assign/resume/adopt so a freshly-placed VM gets a full window
+   * before its first request, and advanced only on real guest signals.
+   */
+  lastRealActivityAt?: number
+  /**
    * Active agent message streams the guest reported at the last activity poll.
    * `> 0` means a live generation is in flight, so the idle reaper must not
    * snapshot the VM away (it would kill the turn). Refreshed each pollActivity.
@@ -567,6 +583,11 @@ export class MetalWarmPool {
         handle,
         assignedAt: e.assignedAt,
         lastTouchedAt: Date.now(),
+        // Fresh idle window across the restart, like lastTouchedAt: the guest's
+        // real-activity history doesn't survive in the registry, and reaping an
+        // adopted VM on its original assignedAt would suspend the live set on
+        // every rolling deploy.
+        lastRealActivityAt: Date.now(),
         restoredFrom: e.restoredFrom,
         workspaceOrigin: e.workspaceOrigin,
         backupParentEtag: e.backupParentEtag,
@@ -788,6 +809,7 @@ export class MetalWarmPool {
       handle: vm.handle,
       assignedAt: now,
       lastTouchedAt: now,
+      lastRealActivityAt: now,
       runtimeToken: env.RUNTIME_AUTH_SECRET,
       publishedSubdomain,
       // Provisional: a warm VM boots from the template. Promoted to 'backup'
@@ -1753,6 +1775,7 @@ export class MetalWarmPool {
       handle,
       assignedAt: now,
       lastTouchedAt: now,
+      lastRealActivityAt: now,
       restoredFrom: { vmstate: s.snapshot.snapshotPath, mem: s.snapshot.memFilePath },
       // Carry the runtime token so /pool/export (source backup on suspend) and
       // adopt-on-restart keep working after a resume, not just after an assign.
@@ -1827,11 +1850,15 @@ export class MetalWarmPool {
           // Cache live-stream count so reapIdle can skip a project mid-generation
           // even when no new HTTP request has bumped lastRequestAt for a while.
           a.activeStreams = typeof body.activeStreams === 'number' ? body.activeStreams : 0
-          if (a.activeStreams > 0) a.lastTouchedAt = now // an active turn is activity
+          if (a.activeStreams > 0) {
+            a.lastTouchedAt = now // an active turn is activity
+            a.lastRealActivityAt = now
+          }
           if (a.lastActivityAt === undefined) a.lastActivityAt = last
           if (last > a.lastActivityAt) {
             a.lastActivityAt = last
             a.lastTouchedAt = now // real traffic since we last looked
+            a.lastRealActivityAt = now
           }
           // Per-class liveness (observability only — does NOT gate the reaper).
           // Fold the guest's app/agent classification into the assigned entry so
@@ -1881,8 +1908,11 @@ export class MetalWarmPool {
     // Always-on projects (paid tiers) are never idle-suspended — the parity for
     // Knative's min-scale=1. They still resume fine if the agent restarts, but
     // during normal operation they stay resident.
+    // Gate on guest-observed activity, not lastTouchedAt: see
+    // `AssignedVm.lastRealActivityAt`. Falling back to assignedAt keeps a VM
+    // that has never reported activity on a window measured from placement.
     const stale = [...this.assigned.values()].filter(
-      (a) => !a.alwaysOn && now - a.lastTouchedAt >= idleMs,
+      (a) => !a.alwaysOn && now - (a.lastRealActivityAt ?? a.assignedAt) >= idleMs,
     )
     const done: string[] = []
     for (const a of stale) {
@@ -2394,6 +2424,9 @@ export class MetalWarmPool {
         url: a.handle.agentUrl,
         vmId: a.handle.id,
         idleMs: now - a.lastTouchedAt,
+        // What reapIdle actually compares against idleSuspendMs. Diverges from
+        // idleMs by however much routing polls / fail-open have touched the VM.
+        realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
         // Per-class liveness (see AssignedVm). `*IdleMs: null` = no request of
         // that class observed yet; `activeStreams>0` = an agent turn in flight.
         activeStreams: a.activeStreams ?? 0,
