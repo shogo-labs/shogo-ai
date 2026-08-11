@@ -17,13 +17,16 @@
  * snapshots optionally persist to a durable store for cross-host mobility.
  *
  * This is the server behind the `metal` pod-mode added to resolveProjectPodUrl
- * in Phase 4. Auth (bearer over the WireGuard mesh) is added there.
+ * in Phase 4. Every route above except /healthz requires the control-plane
+ * bearer, gated by METAL_AUTH_MODE — see auth.ts for the decision table and why
+ * it ships defaulting to observe rather than enforcing on arrival.
  */
 
+import { type AuthMode, bucketPath, decideControlAuth, parseAuthMode } from './auth'
 import { config } from './config'
 import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
-import { metrics } from './metrics'
+import { M, metrics } from './metrics'
 import { MetalWarmPool } from './pool'
 import { PortForward } from './port-forward'
 import { reportPlacement, startRegistration } from './register'
@@ -43,6 +46,29 @@ async function json(req: Request): Promise<any> {
   }
 }
 
+const authMode: AuthMode = parseAuthMode(process.env.METAL_AUTH_MODE)
+
+/**
+ * Throttle for the uncredentialed-request log line, keyed by path+reason.
+ *
+ * :9900 faces the internet, so this line is reachable by anyone with a port
+ * scanner. Unthrottled it is a way to fill the host's disk through journald,
+ * and it would bury the message that matters — the control plane call that is
+ * still missing its token during a rollout. The counter is exact; the log only
+ * needs to be legible.
+ */
+const AUTH_LOG_INTERVAL_MS = 60_000
+const authLoggedAt = new Map<string, number>()
+function logUnauthenticated(pathLabel: string, reason: string, peerIp: string | null): void {
+  const key = `${pathLabel}|${reason}`
+  const now = Date.now()
+  const last = authLoggedAt.get(key) ?? 0
+  if (now - last < AUTH_LOG_INTERVAL_MS) return
+  authLoggedAt.set(key, now)
+  const verb = authMode === 'enforce' ? 'refused' : 'allowed (observe)'
+  console.warn(`[metal-agent] control auth ${verb}: path=${pathLabel} reason=${reason} peer=${peerIp ?? 'unknown'}`)
+}
+
 const server = Bun.serve({
   hostname: config.listenHost,
   port: config.listenPort,
@@ -50,6 +76,21 @@ const server = Bun.serve({
     const url = new URL(req.url)
     const path = url.pathname
     try {
+      const peerIp = srv.requestIP(req)?.address ?? null
+      const auth = decideControlAuth({
+        mode: authMode,
+        path,
+        authorization: req.headers.get('authorization'),
+        expectedToken: config.registerToken,
+        peerIp,
+      })
+      if (auth.suspicious) {
+        const pathLabel = bucketPath(path)
+        metrics.inc(`${M.controlUnauthenticated}{path="${pathLabel}",reason="${auth.reason}"}`)
+        logUnauthenticated(pathLabel, auth.reason, peerIp)
+      }
+      if (!auth.allow) return Response.json({ error: 'unauthorized' }, { status: 401 })
+
       if (path === '/healthz') return Response.json({ ok: true })
       if (path === '/vms') return Response.json(pool.status())
       if (path === '/metrics') return new Response(metrics.prometheus(), { headers: { 'Content-Type': 'text/plain; version=0.0.4' } })
@@ -161,6 +202,10 @@ const server = Bun.serve({
 })
 
 console.log(`[metal-agent] listening on http://${config.listenHost}:${server.port}`)
+console.log(
+  `[metal-agent] control auth: ${authMode}` +
+    (config.registerToken ? '' : ' (NO TOKEN CONFIGURED — enforce would refuse every non-loopback caller)'),
+)
 console.log('[metal-agent] warming pool...')
 pool.start().then(
   (adoption) => {

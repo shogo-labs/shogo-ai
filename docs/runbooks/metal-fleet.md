@@ -120,6 +120,65 @@ Baseline is a monthly commitment, so it's deliberate:
    `host-bootstrap.sh`) with `METAL_HOST_ID` set to the baseline id.
 3. Confirm it registers (admin panel drift clears; `metal.host.up` shows it).
 
+## Control-plane auth (`METAL_AUTH_MODE`)
+
+The agent API on `:9900` is bound to `0.0.0.0` on hosts with public IPs, so
+every control route is reachable from the internet. `METAL_AUTH_MODE` decides
+what happens to a request that does not present the control-plane bearer:
+
+| Mode | Behaviour |
+| --- | --- |
+| `observe` (default) | Serve it, but count it. Deploying this changes nothing. |
+| `enforce` | `401`. |
+| `off` | Do not check. Escape hatch only. |
+
+The token is `METAL_REGISTER_TOKEN` in `/etc/metal-agent.env` — the same value
+the agent already uses for its heartbeat, and the same value the API sends as
+`SHOGO_INTERNAL_SECRET`.
+
+**Loopback is exempt**, so everything in this runbook that runs on the host
+(`curl localhost:9900/...`) keeps working under `enforce`. Calling an agent
+across the network needs the header:
+
+```bash
+TOKEN=$(ssh root@<host> 'grep ^METAL_REGISTER_TOKEN= /etc/metal-agent.env | cut -d= -f2-')
+curl -s -H "Authorization: Bearer $TOKEN" http://<host>:9900/vms
+```
+
+`/healthz` is always open (it is the liveness probe), and guest hydrate pulls
+carry their own single-use token, so neither is affected.
+
+### Before flipping a host to `enforce`
+
+Check that nothing is still calling without a credential. Non-zero means a
+caller would start getting 401s — find it before enforcing, do not enforce and
+wait for the pager:
+
+```bash
+ssh root@<host> 'curl -s localhost:9900/metrics | grep metal_control_unauthenticated_total'
+```
+
+Expect no output at all once every caller is credentialed. The `reason` label
+separates the cases: `missing` (no header — most likely a caller we forgot),
+`mismatch` (wrong token — a version skew or a stale env file), `unconfigured`
+(this host has no token and would refuse everyone).
+
+### Flipping, and rolling back
+
+```bash
+ssh root@<host> "sed -i '/^METAL_AUTH_MODE=/d' /etc/metal-agent.env && \
+  echo 'METAL_AUTH_MODE=enforce' >> /etc/metal-agent.env && systemctl restart metal-agent"
+```
+
+Rollback is the same command with `observe`, and it is the first thing to try
+if control-plane calls start failing after a flip. A restart keeps assigned VMs
+alive (`KillMode=process`), so this costs no user-visible resumes. Verify:
+
+```bash
+ssh root@<host> 'journalctl -u metal-agent -n 5 | grep "control auth"'
+curl -s -o /dev/null -w '%{http_code}\n' http://<host>:9900/vms   # 401 once enforcing
+```
+
 ## Incident triage
 
 ### `MetalFcProcessLeak` — untracked firecracker processes climbing

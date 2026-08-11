@@ -138,6 +138,15 @@ export const M = {
   guestProviderError: 'metal_guest_provider_error_total',
   guestConnectionError: 'metal_guest_connection_error_total',
   guestInferenceRetry: 'metal_guest_inference_retry_total',
+  // Control-plane requests that arrived without a valid bearer, labelled by
+  // bucketed path and reason (see auth.ts). This is the gate on enforcement:
+  // `METAL_AUTH_MODE=observe` serves these anyway and counts them, so a host is
+  // only flipped to `enforce` once this has read zero long enough to cover the
+  // slow callers — a project delete fanning out `/destroy`, an admin panel
+  // listing `/vms`. Under `enforce` it keeps counting, and then it is the
+  // signal that something is being turned away: either an attacker, or a
+  // caller nobody remembered was there.
+  controlUnauthenticated: 'metal_control_unauthenticated_total',
 } as const
 
 export const metrics = new Metrics()

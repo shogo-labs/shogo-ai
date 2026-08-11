@@ -11,6 +11,18 @@ const BOX = process.env.PARITY_BOX || 'http://72.46.85.83:9900'
 const LTK = process.env.LOAD_TEST_SECRET || ''
 const base: Record<string, string> = { 'Content-Type': 'application/json', ...(LTK ? { 'X-Load-Test-Key': LTK } : {}) }
 
+// This script reaches the agent ACROSS the network, so it needs the control
+// token the host checks under METAL_AUTH_MODE=enforce. On-host tooling does
+// not: loopback is exempt (see apps/metal-agent/src/auth.ts). Pull it the same
+// way the host stores it:
+//   METAL_REGISTER_TOKEN=$(ssh root@<box> 'grep ^METAL_REGISTER_TOKEN= /etc/metal-agent.env | cut -d= -f2-')
+const BOX_TOKEN = process.env.METAL_REGISTER_TOKEN || process.env.SHOGO_INTERNAL_SECRET || ''
+if (!BOX_TOKEN) console.warn('warn: no METAL_REGISTER_TOKEN/SHOGO_INTERNAL_SECRET set — box calls will 401 on an enforcing host')
+const boxHeaders: Record<string, string> = {
+  'Content-Type': 'application/json',
+  ...(BOX_TOKEN ? { Authorization: `Bearer ${BOX_TOKEN}` } : {}),
+}
+
 let cookie = ''
 function H(origin = false): Record<string, string> {
   const h: Record<string, string> = { ...base }
@@ -24,7 +36,7 @@ const ms = (t: number) => (performance.now() - t).toFixed(0)
 // teardown check gives a false positive on a loaded box.
 async function boxHas(pid: string): Promise<'present' | 'absent' | 'error'> {
   try {
-    const vb: any = await (await fetch(`${BOX}/vms`, { signal: AbortSignal.timeout(6000) })).json()
+    const vb: any = await (await fetch(`${BOX}/vms`, { headers: boxHeaders, signal: AbortSignal.timeout(6000) })).json()
     const hit = [...(vb.assigned || []), ...(vb.suspended || [])].some((x: any) => x.projectId === pid)
     return hit ? 'present' : 'absent'
   } catch {
@@ -132,7 +144,7 @@ console.log(`7. teardown     goneFromBox=${gone} (last read: ${lastState}) time=
 // 8. box /status confirms none
 try {
   const st = await (
-    await fetch(`${BOX}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: pid }), signal: AbortSignal.timeout(8000) })
+    await fetch(`${BOX}/status`, { method: 'POST', headers: boxHeaders, body: JSON.stringify({ projectId: pid }), signal: AbortSignal.timeout(8000) })
   ).json()
   console.log(`8. box /status  ${JSON.stringify(st)}`)
 } catch (e: any) {
