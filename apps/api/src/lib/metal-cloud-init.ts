@@ -59,6 +59,29 @@ export interface BurstUserDataOpts {
   fwdAllowCidr: string
 
   /**
+   * Source CIDR(s) allowed to reach the agent's own control port (:9900).
+   *
+   * Deliberately NOT defaulted from `fwdAllowCidr`, though both describe
+   * "who may reach this host". They are different policies with different
+   * audiences: the forwarded VM ports serve project previews to END-USER
+   * BROWSERS, so that list cannot be narrowed to the control plane without
+   * taking previews down, while the control port has exactly one legitimate
+   * caller. Collapsing them would quietly pin one to the other's constraint.
+   *
+   * Empty (default) = no packet filter; the METAL_AUTH_MODE bearer still
+   * applies. Should list every region's egress, since project deletion fans
+   * `/destroy` out across regions.
+   */
+  ctrlAllowCidr?: string
+
+  /**
+   * How the agent treats an uncredentialed control call: `observe` (count it,
+   * serve it), `enforce` (401), or `off`. Defaults to `observe` so a new host
+   * reports what it would have refused before anyone relies on it refusing.
+   */
+  authMode?: string
+
+  /**
    * SigNoz OTLP endpoint + ingestion key for the host-local log shipper
    * (`otelcol-metal.service`: journald → SigNoz). Optional — when either is
    * absent the collector is installed but left stopped, so a host provisions
@@ -152,6 +175,8 @@ export function buildBurstUserData(o: BurstUserDataOpts): string {
     envLine('METAL_REGION', o.region),
     envLine('METAL_HOST_ID', o.hostId),
     envLine('METAL_FWD_ALLOW_CIDR', o.fwdAllowCidr),
+    envLine('METAL_CTRL_ALLOW_CIDR', o.ctrlAllowCidr ?? ''),
+    envLine('METAL_AUTH_MODE', o.authMode ?? 'observe'),
     // Host log shipper (otelcol-metal.service) reads these to ship metal-agent's
     // journald output to SigNoz. Emitted only when configured; when absent the
     // collector stays stopped (host-bootstrap gates `enable --now` on the

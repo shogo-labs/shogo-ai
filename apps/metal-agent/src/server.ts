@@ -24,6 +24,7 @@
 
 import { type AuthMode, bucketPath, decideControlAuth, parseAuthMode } from './auth'
 import { config } from './config'
+import { ControlFirewall } from './control-firewall'
 import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
 import { M, metrics } from './metrics'
@@ -37,6 +38,18 @@ const pool = new MetalWarmPool()
 // METAL_PUBLIC_HOST is set.
 const fwd = new PortForward()
 if (fwd.enabled) console.log(`[metal-agent] public port-forward on: ${config.publicHost}:${config.fwdPortBase}-${config.fwdPortBase + config.fwdPortSpan - 1} allow=${config.fwdAllowCidr || 'any'}`)
+
+// Packet filter on our own control port, under the METAL_AUTH_MODE bearer.
+// Applied before the pool starts so there is no window where the port is open
+// wider than intended, and never fatal: a host that cannot run iptables should
+// still serve its projects rather than fail to boot.
+const ctrlFirewall = new ControlFirewall()
+try {
+  ctrlFirewall.apply()
+  console.log(`[metal-agent] control firewall: ${ctrlFirewall.describe()}`)
+} catch (err: any) {
+  console.error(`[metal-agent] control firewall FAILED to apply (port stays open): ${err?.message ?? err}`)
+}
 
 async function json(req: Request): Promise<any> {
   try {
