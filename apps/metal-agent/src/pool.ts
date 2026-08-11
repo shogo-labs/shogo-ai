@@ -82,19 +82,26 @@ export interface AssignedVm {
   /** Last activity counter seen from the guest (for the activity poll). */
   lastActivityAt?: number
   /**
-   * Wall-clock (ms) of the last activity the GUEST actually observed — a request
-   * it served, an agent turn, or a live stream. This is what `reapIdle` gates
-   * on, deliberately NOT `lastTouchedAt`.
+   * Wall-clock (ms) of the last thing a USER did on this VM — an app request, an
+   * agent turn, or a live stream. This is what `reapIdle` gates on, deliberately
+   * NOT `lastTouchedAt` and NOT the guest's catch-all `lastRequestAt`.
    *
-   * `lastTouchedAt` answers "did anything ask about this VM", which a control-
-   * plane routing/status poll satisfies, and which the activity poll also sets
-   * whenever it fails open. Both fire on the reaper's own interval, so a VM's
-   * `lastTouchedAt` idle age can never grow past one poll cycle and no
-   * idle-suspend window — 15m or 4h — ever expires. Production ran 4h and held
-   * ~320 VMs resident whose apps had been idle for days.
+   * Both of those measure our own machinery, not a user:
+   *   - `lastTouchedAt` answers "did anything ask about this VM", which a
+   *     control-plane routing/status poll satisfies and which the activity poll
+   *     also sets whenever it fails open. Both fire on the reaper's interval, so
+   *     its idle age can never grow past one poll cycle.
+   *   - the guest's `lastRequestAt` counts every request it served, including
+   *     the writable-state and published-data export sweeps that call
+   *     `/pool/export-data` on EVERY assigned VM every 120s. Gating on it was
+   *     the same bug one layer down: production held 202 VMs resident, 67 of
+   *     them sharing `realIdleMs` to the millisecond because one sweep stamped
+   *     them all, while 93 had never served a single app or agent request.
    *
-   * Seeded at assign/resume/adopt so a freshly-placed VM gets a full window
-   * before its first request, and advanced only on real guest signals.
+   * So this advances only on the guest's own per-class user signals
+   * (`lastAppRequestAt`, `lastAgentRequestAt`, `activeStreams`). Seeded at
+   * assign/resume/adopt so a freshly-placed VM gets a full window before its
+   * first request.
    */
   lastRealActivityAt?: number
   /**
@@ -105,19 +112,29 @@ export interface AssignedVm {
   activeStreams?: number
   /**
    * Wall-clock (ms) of the last request the guest classified as *app usage* —
-   * an end-user hitting the built app's `/api/*` sidecar. Observability only:
-   * it does NOT gate the idle reaper (which stays on `lastTouchedAt`), but it
-   * lets the fleet distinguish "a live app with real users" from "an editor tab
-   * left open". Undefined until the first app request. Refreshed each poll.
+   * an end-user hitting the built app's `/api/*` sidecar. Together with
+   * `lastAgentRequestAt` this GATES the idle reaper (see `lastRealActivityAt`):
+   * unlike the guest's catch-all `lastRequestAt`, it excludes the host's own
+   * export/activity sweeps, so it means a person actually used the app.
+   * Undefined until the first app request. Refreshed each poll.
    */
   lastAppRequestAt?: number
   /** Guest-reported count of app-usage requests (monotonic). */
   appRequestCount?: number
   /**
    * Wall-clock (ms) of the last *agent chat* turn the guest served (someone
-   * talking to Shogo). Observability companion to `activeStreams`.
+   * talking to Shogo). Gates the reaper alongside `lastAppRequestAt`, and is the
+   * companion to `activeStreams` for a turn that is still in flight.
    */
   lastAgentRequestAt?: number
+  /**
+   * Whether the guest reports the per-class fields at all. An older runtime
+   * image omits them entirely (as opposed to sending `null`, which means
+   * "supported, but it has never happened"). For such a guest the only signal
+   * available is the catch-all `lastRequestAt`, so we fall back to it rather
+   * than suspend a VM that may well be serving real users invisibly.
+   */
+  perClassActivity?: boolean
   /**
    * Always-on (paid instance tier): the idle-suspend reaper must never suspend
    * this VM. Set from the control-plane's `SHOGO_ALWAYS_ON` assign env on every
@@ -1820,10 +1837,17 @@ export class MetalWarmPool {
   /**
    * Fold real user traffic into idle tracking. User requests reach the guest
    * over DNAT and never touch the node-agent, so without this the reaper/GC
-   * would suspend or evict busy projects. We poll each assigned guest's
-   * /pool/activity; a newer lastRequestAt (or a failed poll — fail open) bumps
-   * lastTouchedAt. Best-effort; a guest without the endpoint is treated as
-   * quietly active only when the poll times out, not on a clean 404.
+   * would suspend or evict busy projects. Best-effort; a guest without the
+   * endpoint is treated as quietly active only when the poll times out, not on a
+   * clean 404.
+   *
+   * Two clocks come out of this, and the difference is the whole point:
+   *   - `lastTouchedAt` moves on ANY sign of life, including a failed poll
+   *     (fail open) and the guest's catch-all `lastRequestAt`.
+   *   - `lastRealActivityAt` — what the reaper gates on — moves only on the
+   *     guest's per-class user signals. `lastRequestAt` cannot move it, because
+   *     the host's own export sweeps hit every assigned VM every 120s and would
+   *     hold the entire fleet resident forever.
    */
   async pollActivity(): Promise<void> {
     if (!this.cfg.activityPoll) return
@@ -1854,19 +1878,57 @@ export class MetalWarmPool {
             a.lastTouchedAt = now // an active turn is activity
             a.lastRealActivityAt = now
           }
-          if (a.lastActivityAt === undefined) a.lastActivityAt = last
-          if (last > a.lastActivityAt) {
-            a.lastActivityAt = last
-            a.lastTouchedAt = now // real traffic since we last looked
+          // Did the catch-all counter move since the previous poll? Captured
+          // before we overwrite it, because the legacy fallback below needs it.
+          const prevSeen = a.lastActivityAt
+          const catchAllAdvanced = prevSeen !== undefined && last > prevSeen
+          a.lastActivityAt = last
+          if (catchAllAdvanced) {
+            a.lastTouchedAt = now // something reached the guest since we last looked
+          }
+
+          // Per-class liveness. `lastRequestAt` above counts EVERY request the
+          // guest served, which includes our own export sweeps hitting every VM
+          // every 120s — so it can only move `lastTouchedAt`, never the reaper's
+          // clock. These two fields are the guest's own "a user did this"
+          // classification, and they are what gates suspension.
+          //
+          // `null` = supported but never happened; absent = an older runtime that
+          // cannot classify, in which case fall back to the catch-all so we never
+          // suspend a VM that might be serving users we cannot see.
+          const appAt = body.lastAppRequestAt
+          const agentAt = body.lastAgentRequestAt
+          const reportsPerClass = appAt !== undefined || agentAt !== undefined
+          // First look at this guest (fresh assign, or adopt after a restart):
+          // record the baseline WITHOUT counting it. A two-day-old app request is
+          // history, not activity, and treating it as the latter would hand every
+          // VM a fresh window on every agent restart.
+          const baselining = reportsPerClass && a.perClassActivity !== true
+          if (reportsPerClass) a.perClassActivity = true
+
+          if (typeof appAt === 'number') {
+            const advanced = appAt > (a.lastAppRequestAt ?? 0)
+            a.lastAppRequestAt = appAt
+            if (advanced && !baselining) {
+              a.lastTouchedAt = now
+              a.lastRealActivityAt = now // an end user hit the app
+            }
+          }
+          if (typeof agentAt === 'number') {
+            const advanced = agentAt > (a.lastAgentRequestAt ?? 0)
+            a.lastAgentRequestAt = agentAt
+            if (advanced && !baselining) {
+              a.lastTouchedAt = now
+              a.lastRealActivityAt = now // someone talked to the agent
+            }
+          }
+          if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
+
+          // Legacy runtime: no per-class signal exists, so the catch-all is the
+          // best available proxy for a user and must keep the VM alive.
+          if (!a.perClassActivity && catchAllAdvanced) {
             a.lastRealActivityAt = now
           }
-          // Per-class liveness (observability only — does NOT gate the reaper).
-          // Fold the guest's app/agent classification into the assigned entry so
-          // the fleet can distinguish a live app with real users from an idle
-          // editor tab. Null/absent means "no request of that class yet".
-          if (typeof body.lastAppRequestAt === 'number') a.lastAppRequestAt = body.lastAppRequestAt
-          if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
-          if (typeof body.lastAgentRequestAt === 'number') a.lastAgentRequestAt = body.lastAgentRequestAt
         } catch {
           a.lastTouchedAt = now // fail open: never evict on missing data
         }
