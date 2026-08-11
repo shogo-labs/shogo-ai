@@ -420,3 +420,98 @@ describe('metal eligibility', () => {
     expect(rolloutBucket('proj-x')).toBeLessThan(100)
   })
 })
+
+/**
+ * The control plane must actually SEND the credential the agents are about to
+ * start requiring. It did not: production API pods have no
+ * `METAL_REGISTER_TOKEN`, so every outbound control call went out bare, which
+ * is why :9900 could be left unauthenticated for as long as it was. These pin
+ * the header on so enforcement cannot be turned on into an outage.
+ */
+describe('control-plane auth headers', () => {
+  const orig = { ...process.env }
+  const captured: Array<{ url: string; headers: Record<string, string> }> = []
+
+  const capturingFetch = (async (url: string, init: any) => {
+    captured.push({ url, headers: { ...(init?.headers ?? {}) } })
+    return new Response(JSON.stringify({ url: 'http://10.8.0.2:8080', mode: 'assigned' }), { status: 200 })
+  }) as any
+
+  const headersFor = (suffix: string) => captured.find((c) => c.url.endsWith(suffix))?.headers ?? {}
+
+  beforeEach(() => {
+    captured.length = 0
+    _setMetalPlacementRegistry(new MetalPlacementRegistry(() => null))
+    delete process.env.METAL_REGISTER_TOKEN
+    delete process.env.SHOGO_INTERNAL_SECRET
+  })
+  afterEach(() => {
+    _setMetalPlacementRegistry(null)
+    process.env.METAL_REGISTER_TOKEN = orig.METAL_REGISTER_TOKEN
+    process.env.SHOGO_INTERNAL_SECRET = orig.SHOGO_INTERNAL_SECRET
+  })
+
+  it('falls back to SHOGO_INTERNAL_SECRET — the production shape, where the other name is unset', async () => {
+    process.env.SHOGO_INTERNAL_SECRET = 'shared-secret'
+    const c = new MetalWarmPoolController(fakeEnv(), capturingFetch)
+    c.registerHost(REG)
+
+    await c.getMetalProjectUrl('p1')
+
+    expect(headersFor('/assign').Authorization).toBe('Bearer shared-secret')
+  })
+
+  it('prefers METAL_REGISTER_TOKEN when both are set', async () => {
+    process.env.METAL_REGISTER_TOKEN = 'explicit-token'
+    process.env.SHOGO_INTERNAL_SECRET = 'shared-secret'
+    const c = new MetalWarmPoolController(fakeEnv(), capturingFetch)
+    c.registerHost(REG)
+
+    await c.getMetalProjectUrl('p1')
+
+    expect(headersFor('/assign').Authorization).toBe('Bearer explicit-token')
+  })
+
+  it('sends no header when neither is configured, rather than an empty bearer', async () => {
+    // An `Authorization: Bearer ` would read as a mismatch rather than a
+    // missing credential and muddy the observe-mode counter we gate on.
+    const c = new MetalWarmPoolController(fakeEnv(), capturingFetch)
+    c.registerHost(REG)
+
+    await c.getMetalProjectUrl('p1')
+
+    expect(headersFor('/assign').Authorization).toBeUndefined()
+  })
+
+  it('touch carries the bearer too — the call that used to hardcode its headers', async () => {
+    // /touch is the highest-frequency call in the system and bypassed
+    // agentHeaders() entirely, so under enforcement it would have been the
+    // loudest failure: every active project losing its keep-alive and being
+    // idle-suspended out from under the user.
+    process.env.SHOGO_INTERNAL_SECRET = 'shared-secret'
+    const c = new MetalWarmPoolController(fakeEnv(), capturingFetch)
+    c.registerHost(REG)
+    await c.getMetalProjectUrl('p1')
+
+    await c.touch('p1')
+
+    expect(headersFor('/touch').Authorization).toBe('Bearer shared-secret')
+    expect(headersFor('/touch')['Content-Type']).toBe('application/json')
+  })
+
+  it('every host call is credentialed, not just the ones with a test', async () => {
+    process.env.SHOGO_INTERNAL_SECRET = 'shared-secret'
+    const c = new MetalWarmPoolController(fakeEnv(), capturingFetch)
+    c.registerHost(REG)
+
+    await c.getMetalProjectUrl('p1')
+    await c.touch('p1')
+    await c.getProjectStatus('p1').catch(() => {})
+    await c.stopProject('p1').catch(() => {})
+    await c.listProjects().catch(() => {})
+
+    expect(captured.length).toBeGreaterThan(1)
+    const bare = captured.filter((c) => !c.headers.Authorization).map((c) => c.url)
+    expect(bare).toEqual([])
+  })
+})

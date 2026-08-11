@@ -653,11 +653,26 @@ export class MetalWarmPoolController {
     }
   }
 
-  /** Bearer-over-mesh headers for node-agent control calls. */
+  /**
+   * Bearer-over-mesh headers for node-agent control calls.
+   *
+   * The fallback to `SHOGO_INTERNAL_SECRET` is not a convenience: in production
+   * `METAL_REGISTER_TOKEN` is unset on the API pods, so reading only that name
+   * sent NO Authorization header at all, on every control call, in both regions.
+   * The agents never noticed because they did not check — which is exactly why
+   * :9900 sat open to the internet. Hosts do set `METAL_REGISTER_TOKEN`, and its
+   * value is byte-identical to the API's `SHOGO_INTERNAL_SECRET`, so reading
+   * both names here makes the header correct today with no secret to distribute.
+   *
+   * This mirrors the inbound direction, which has always accepted either name
+   * (`expectedToken()` in routes/metal.ts). Keep the two in step: they are the
+   * same trust relationship viewed from opposite ends.
+   */
   private agentHeaders(): Record<string, string> {
+    const token = process.env.METAL_REGISTER_TOKEN || process.env.SHOGO_INTERNAL_SECRET
     return {
       'Content-Type': 'application/json',
-      ...(process.env.METAL_REGISTER_TOKEN ? { Authorization: `Bearer ${process.env.METAL_REGISTER_TOKEN}` } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     }
   }
 
@@ -941,7 +956,7 @@ export class MetalWarmPoolController {
     try {
       await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/touch`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.agentHeaders(),
         body: JSON.stringify({ projectId }),
         signal: AbortSignal.timeout(5000),
       })
