@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { deriveNet, tapCapacity, TAP_NET_CAPACITY } from './net'
+import { deriveNet, parseTapLinks, tapCapacity, TAP_NET_CAPACITY } from './net'
 
 describe('tapCapacity', () => {
   test('default 172.16.0.0 base yields a /16 = 16384 /30 slots', () => {
@@ -77,5 +77,49 @@ describe('deriveNet', () => {
   test('rejects negative / non-integer indices', () => {
     expect(() => deriveNet(-1)).toThrow(RangeError)
     expect(() => deriveNet(1.5)).toThrow(RangeError)
+  })
+})
+
+/**
+ * The orphan-tap GC's last safety guard: NO-CARRIER means no process holds the
+ * tap's fd, so nothing can be using it. Getting `attached` wrong in the unsafe
+ * direction would cut a live guest's networking, so ambiguous input must read as
+ * attached (skip) rather than free (delete).
+ */
+describe('parseTapLinks', () => {
+  const line = (n: number, flags: string) =>
+    `${n + 4}: fctap${n}: <${flags}> mtu 1500 qdisc pfifo_fast state UP mode DEFAULT group default qlen 1000\\    link/ether 0a:1b:2c:3d:4e:5f`
+
+  test('NO-CARRIER → unattached; carrier present → attached', () => {
+    const taps = parseTapLinks(
+      [line(3, 'NO-CARRIER,BROADCAST,MULTICAST,UP'), line(4, 'BROADCAST,MULTICAST,UP,LOWER_UP')].join('\n'),
+    )
+    expect(taps).toEqual([
+      { index: 3, name: 'fctap3', attached: false },
+      { index: 4, name: 'fctap4', attached: true },
+    ])
+  })
+
+  test('ignores non-tap interfaces', () => {
+    const txt = [
+      '1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN',
+      '2: eno1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP',
+      line(9, 'NO-CARRIER,BROADCAST,MULTICAST,UP'),
+    ].join('\n')
+
+    expect(parseTapLinks(txt).map((t) => t.index)).toEqual([9])
+  })
+
+  test('a flagless / unparseable device reads as attached, never as reclaimable', () => {
+    const taps = parseTapLinks('12: fctap12: mtu 1500 qdisc pfifo_fast state UP')
+    expect(taps).toEqual([{ index: 12, name: 'fctap12', attached: true }])
+  })
+
+  test('handles @-suffixed device names', () => {
+    expect(parseTapLinks('8: fctap8@if2: <NO-CARRIER,UP> mtu 1500')[0]).toEqual({
+      index: 8,
+      name: 'fctap8',
+      attached: false,
+    })
   })
 })

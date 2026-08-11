@@ -25,7 +25,18 @@ import { config } from './config'
 import { allocatedBytes } from './disk'
 import { FcApi, computeReclaimMiB } from './fc-api'
 import { pidAlive } from './live-registry'
-import { deriveNet, setupTap, teardownTap, defaultUplink, existingTapIndices, tapCapacity, type VmNet } from './net'
+import {
+  deriveNet,
+  setupTap,
+  teardownTap,
+  teardownTapByName,
+  defaultUplink,
+  existingTapIndices,
+  existingTaps,
+  tapCapacity,
+  type HostTap,
+  type VmNet,
+} from './net'
 import { RootfsProvisioner, type CowUsage } from './rootfs'
 import { digHoles } from './sparsify'
 
@@ -105,6 +116,21 @@ export class FirecrackerVMManager {
    * index can't cause a collision.
    */
   private vmSeq = 0
+  /**
+   * index → when `nextVmIndex` handed it out. A VM between reservation and
+   * landing in one of the pool's maps owns a tap that no map can vouch for yet,
+   * so the orphan-tap GC must leave recently-reserved indices alone. This is the
+   * tap counterpart of `spawnedAt` for processes; entries age out of the window
+   * and are pruned on read.
+   */
+  private reservedAt = new Map<number, number>()
+  /**
+   * index → the sweep timestamp at which a tap first looked orphaned. Reclaim
+   * requires two consecutive sightings, so a tap can only be deleted after
+   * surviving a full GC interval of suspicion — a second, timing-independent
+   * guard behind the ownership and NO-CARRIER checks.
+   */
+  private tapOrphanStrikes = new Map<number, number>()
   private uplink = defaultUplink()
   private rootfs: RootfsProvisioner
 
@@ -276,6 +302,25 @@ export class FirecrackerVMManager {
     return existingTapIndices()
   }
 
+  /** Host taps with their in-use flag. Overridable seam for tests. */
+  protected hostTaps(): HostTap[] {
+    return existingTaps()
+  }
+
+  /** Delete one tap device by name. Overridable seam for tests. */
+  protected deleteTap(name: string): void {
+    teardownTapByName(name)
+  }
+
+  /**
+   * Release a VM's /30 device. The pool routes tap teardown through the manager
+   * for the same reason it routes rootfs teardown (`releaseRootfs`): host
+   * resources are owned here, so there is one path to fix and one to stub.
+   */
+  releaseTap(net: VmNet): void {
+    this.deleteTap(net.tap)
+  }
+
   /**
    * Reserve the next VM/tap index for a fresh spawn. Advances the monotonic
    * counter AND skips any `fctap<n>` device that physically exists on the host
@@ -303,6 +348,9 @@ export class FirecrackerVMManager {
       const n = (start + i) % cap
       if (!taken.has(n)) {
         this.vmSeq = (n + 1) % cap
+        // Claim it against the orphan-tap GC before `setupTap` has even run:
+        // for the next few seconds this index exists only here.
+        this.reservedAt.set(n, Date.now())
         return n
       }
     }
@@ -395,6 +443,10 @@ export class FirecrackerVMManager {
    * suspended VMs have no process (killed at snapshot). Age-gated so a VM still
    * booting/restoring/assigning (legitimately untracked for a few seconds) is
    * never killed. Returns the number reaped.
+   *
+   * Kills the process only — the /30 it held is reclaimed by
+   * {@link reconcileOrphanTaps}, which can identify the device from the host
+   * side (this path has no handle, so it has no `VmNet` to tear down).
    */
   reapOrphans(liveIds: Set<string>, graceMs = ORPHAN_PROC_GRACE_MS): number {
     const now = Date.now()
@@ -460,6 +512,76 @@ export class FirecrackerVMManager {
    */
   reconcileOrphanRootfs(keepVmIds: Set<string>, graceMs: number, max = 200): number {
     return this.rootfs.reconcileOrphanDevices(keepVmIds, graceMs, max)
+  }
+
+  /**
+   * Reclaim `fctap<n>` devices that belong to no VM the pool tracks — the leak
+   * that silently consumed this host's /30 space until the allocator ran out of
+   * indices and started deriving invalid addresses (the prod incident where
+   * every /assign died on `ip addr add 172.16.8282.225/30`).
+   *
+   * The leak is structural, not a single bug: a tap is only deleted by
+   * `stopVM`/`destroy`, while `snapshotVM` deliberately keeps it (a suspended VM
+   * restores onto the same device), and the process reapers kill firecracker
+   * without knowing which /30 it held. Anything that removed a VM without
+   * walking that one path left the device behind, holding its four addresses
+   * forever. Rather than add a teardown to each of those paths and hope the next
+   * one remembers, this reconciles the host against the pool: a tap no VM claims
+   * is by definition reclaimable.
+   *
+   * Three independent guards, any one of which is enough to spare a device, so a
+   * bug in the ownership bookkeeping cannot cut a live guest's networking:
+   *   - `keepIndices` — every warm, assigned, in-flight and SUSPENDED VM's index
+   *     (suspended ones keep their tap for a cheap restore);
+   *   - recently reserved — an index handed out by `nextVmIndex` within
+   *     `graceMs`, i.e. a VM mid-boot that no map references yet;
+   *   - NO-CARRIER — nothing holds the tap's fd, the kernel's own answer to "is
+   *     a firecracker attached", which an unparseable `ip link` line answers
+   *     conservatively (see {@link existingTaps}).
+   * On top of that, reclaim needs two consecutive sweeps to agree.
+   *
+   * Bounded per call (following `reconcileOrphanDevices`) so a host that has
+   * accumulated thousands drains over several sweeps instead of stalling the GC
+   * timer inside a burst of netlink calls. Returns what it removed and how many
+   * taps are currently in use, for the capacity gauge.
+   */
+  reconcileOrphanTaps(
+    keepIndices: Set<number>,
+    graceMs: number,
+    max = 200,
+  ): { removed: number; suspected: number; inUse: number } {
+    const now = Date.now()
+    const cutoff = now - graceMs
+    for (const [n, at] of [...this.reservedAt]) if (at < cutoff) this.reservedAt.delete(n)
+
+    const taps = this.hostTaps()
+    const suspects: number[] = []
+    for (const t of taps) {
+      if (keepIndices.has(t.index)) continue
+      if (this.reservedAt.has(t.index)) continue
+      if (t.attached) continue
+      suspects.push(t.index)
+    }
+
+    const suspected = new Set(suspects)
+    // Drop strikes against taps that no longer look orphaned (an index reused by
+    // a new VM, or a suspended entry the pool has since re-registered), so a tap
+    // never carries a stale strike into a later sweep.
+    for (const n of [...this.tapOrphanStrikes.keys()]) if (!suspected.has(n)) this.tapOrphanStrikes.delete(n)
+
+    let removed = 0
+    for (const n of suspects) {
+      if (!this.tapOrphanStrikes.has(n)) {
+        this.tapOrphanStrikes.set(n, now) // first sighting — decide next sweep
+        continue
+      }
+      if (removed >= max) break // the rest keep their strike for the next sweep
+      this.deleteTap(`fctap${n}`)
+      this.tapOrphanStrikes.delete(n)
+      this.reservedAt.delete(n)
+      removed++
+    }
+    return { removed, suspected: suspects.length, inUse: taps.length - removed }
   }
 
   /**

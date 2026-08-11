@@ -32,7 +32,7 @@ import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecr
 import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { LiveRegistry, pidAlive } from './live-registry'
 import { M, metrics } from './metrics'
-import { tapIndex, existingTapIndices } from './net'
+import { tapIndex, existingTapIndices, TAP_NET_CAPACITY, type VmNet } from './net'
 import {
   assertArtifacts,
   computeRootfsIdentity,
@@ -2178,6 +2178,28 @@ export class MetalWarmPool {
     } catch {
       /* ignore */
     }
+    // Release the /30 as well. A suspended VM keeps its tap so it can restore
+    // onto the same device cheaply, which means dropping the snapshot is the
+    // moment that device stops being wanted — and every caller here (eviction,
+    // stale reclaim, destroy) previously leaked it. Guarded because a resumed
+    // project can still carry a `suspended` entry pointing at the net its LIVE
+    // VM restored onto; tearing that down would cut a running guest's network.
+    if (!this.tapHeldByRunningVm(snap.net)) {
+      try {
+        this.mgr.releaseTap(snap.net)
+      } catch {
+        /* best-effort; the GC sweep retries from the host side */
+      }
+    }
+  }
+
+  /** Is a warm/assigned (running) VM currently attached to this /30's device? */
+  private tapHeldByRunningVm(net: VmNet): boolean {
+    const n = tapIndex(net)
+    if (n === null) return false
+    for (const vm of this.available) if (tapIndex(vm.handle.net) === n) return true
+    for (const a of this.assigned.values()) if (tapIndex(a.handle.net) === n) return true
+    return false
   }
 
   /**
@@ -2309,6 +2331,54 @@ export class MetalWarmPool {
   reconcileOrphanDevices(): number {
     if (this.cfg.rootfsCow !== 'dm') return 0
     return this.mgr.reconcileOrphanRootfs(this.ownedRootfsVmIds(), ORPHAN_GRACE_MS)
+  }
+
+  /**
+   * Tap indices this host legitimately owns: every warm and assigned VM (running,
+   * fd attached) plus every suspended one (no process, but the device is kept so
+   * a resume can restore onto it). A VM mid-cold-boot is absent from all three —
+   * the manager's own reservation window and the NO-CARRIER check cover that gap.
+   */
+  private ownedTapIndices(): Set<number> {
+    const idx = new Set<number>()
+    const add = (net?: VmNet): void => {
+      const n = net ? tapIndex(net) : null
+      if (n !== null) idx.add(n)
+    }
+    for (const vm of this.available) add(vm.handle.net)
+    for (const a of this.assigned.values()) add(a.handle.net)
+    for (const s of this.suspended.values()) add(s.snapshot.net)
+    return idx
+  }
+
+  /**
+   * Reclaim leaked `fctap<n>` devices (see
+   * FirecrackerVMManager.reconcileOrphanTaps). Driven by the GC timer. Returns
+   * the number reclaimed.
+   *
+   * This is the counterpart to the allocator's wrap-and-skip fix: that stopped a
+   * full address space from producing invalid IPs, this stops it from filling up
+   * in the first place. Without it a host degrades invisibly — every removed VM
+   * that didn't go through `stopVM` keeps its four addresses, and the only
+   * symptom is that spawns get slower to find a free index until there are none.
+   */
+  reapOrphanTaps(): number {
+    const { removed, suspected, inUse } = this.mgr.reconcileOrphanTaps(this.ownedTapIndices(), ORPHAN_GRACE_MS)
+    if (removed) {
+      metrics.inc(M.gcTapsReclaimed, removed)
+      console.warn(`[pool] reclaimed ${removed} leaked tap device(s) (${suspected} suspected this sweep)`)
+    }
+    metrics.gauge(M.tapsInUse, inUse)
+    metrics.gauge(M.tapCapacity, TAP_NET_CAPACITY)
+    metrics.gauge(M.tapUsedPct, +((inUse / TAP_NET_CAPACITY) * 100).toFixed(2))
+    // The address space filling up is what took production down, and it does so
+    // silently: nothing fails until the very last /30 is gone. Say so early.
+    if (inUse > TAP_NET_CAPACITY * 0.8) {
+      console.error(
+        `[pool] tap address space ${inUse}/${TAP_NET_CAPACITY} in use — new VMs will fail to get a /30 when full`,
+      )
+    }
+    return removed
   }
 
   private publishGauges(): void {

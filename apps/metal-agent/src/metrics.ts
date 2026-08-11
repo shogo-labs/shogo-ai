@@ -52,6 +52,16 @@ export const M = {
   gcBytesReclaimed: 'metal_gc_bytes_reclaimed_total',
   gcOrphansRemoved: 'metal_gc_orphans_removed_total',
   gcDurableRemoved: 'metal_gc_durable_removed_total',
+  // Leaked `fctap<n>` devices reclaimed by the GC, and how much of the host's
+  // /30 space is occupied. `tapUsedPct` is the leading indicator for the outage
+  // where a host exhausted its indices: it climbs monotonically while taps leak
+  // and nothing else misbehaves until every /30 is gone, at which point every
+  // /assign on that host fails. A healthy host sits near its VM count with
+  // `gcTapsReclaimed` flat.
+  gcTapsReclaimed: 'metal_gc_taps_reclaimed_total',
+  tapsInUse: 'metal_taps_in_use',
+  tapCapacity: 'metal_tap_capacity',
+  tapUsedPct: 'metal_tap_used_pct',
   resumeLocalHits: 'metal_resume_local_hits_total',
   resumeStoreHits: 'metal_resume_store_hits_total',
   resumeColdMiss: 'metal_resume_cold_miss_total',
