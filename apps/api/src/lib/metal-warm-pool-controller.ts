@@ -103,6 +103,17 @@ const hostDiskFreeGauge = meter.createObservableGauge('metal.host.disk_free_byte
 const hostCacheCountGauge = meter.createObservableGauge('metal.host.cache_local_count', {
   description: 'Locally cached suspended-project snapshots on a metal host',
 })
+// Per-VM /30 consumption. A host has 16384 tap slots and nothing degrades as they
+// fill — until the last one goes and every /assign there fails, which is how the
+// July US-region outage started. The node-agent GC reclaims leaked devices, so
+// this only climbs if the leak outruns it: the one leading indicator for that
+// failure, and it exists nowhere else (the agent's local /metrics needs SSH).
+const hostTapsInUseGauge = meter.createObservableGauge('metal.host.taps_in_use', {
+  description: 'Tap devices (one /30 each) occupied on a metal host',
+})
+const hostTapUsedPctGauge = meter.createObservableGauge('metal.host.tap_used_pct', {
+  description: 'Percent of a metal host tap/address-space capacity in use (100% = no new VMs)',
+})
 // Assigned-set decomposition by liveness class (see MetalHostRegistration.load.
 // liveness). These sum to metal.host.assigned and answer "of the N running VMs,
 // how many have real users vs an agent turn vs are just in the idle tail" — the
@@ -148,6 +159,13 @@ function ensureFleetGauges(): void {
           obs.observe(hostDiskFreeGauge, h.disk.freeBytes, attrs)
           obs.observe(hostCacheCountGauge, h.disk.localCount, attrs)
         }
+        // Absent on agents predating tap reporting; a zero would read as a
+        // pristine host rather than "no data", which is the wrong way to be
+        // wrong about an address space filling up.
+        if (h.load?.taps && h.load.taps.capacity > 0) {
+          obs.observe(hostTapsInUseGauge, h.load.taps.inUse, attrs)
+          obs.observe(hostTapUsedPctGauge, (h.load.taps.inUse / h.load.taps.capacity) * 100, attrs)
+        }
         // Only emit the liveness decomposition when the host actually reported
         // it — a zero would otherwise be indistinguishable from "old agent not
         // reporting", masking rollout progress on the dashboard.
@@ -169,6 +187,8 @@ function ensureFleetGauges(): void {
       hostDiskUsedGauge,
       hostDiskFreeGauge,
       hostCacheCountGauge,
+      hostTapsInUseGauge,
+      hostTapUsedPctGauge,
       hostAppActiveGauge,
       hostAgentActiveGauge,
       hostIdleTailGauge,
@@ -202,6 +222,13 @@ export interface MetalHostRegistration {
      * report no per-class activity, so the agent buckets them as idleTail).
      */
     liveness?: { appActive: number; agentActive: number; idleTail: number }
+    /**
+     * Per-VM /30 consumption: `inUse` tap devices out of `capacity` (16384 on the
+     * standard 172.16.0.0/16 base). Absent on agents predating tap reporting.
+     * Watch the ratio — a host at 100% cannot start another VM, and it gets there
+     * silently unless leaked devices are being reclaimed faster than they appear.
+     */
+    taps?: { inUse: number; capacity: number }
   }
   /** NVMe cache scalars (Phase 5). Absent on older agents → treated as headroom. */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }

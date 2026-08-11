@@ -47,6 +47,12 @@ function payload(pool: MetalWarmPool) {
       // turns vs the idle-suspend tail. Lets the control plane report "N running
       // = X app-users + Y agent-turns + Z idle" instead of one opaque number.
       liveness: s.liveness,
+      // How much of this host's finite /30 space (16384 blocks, one per tap) is
+      // occupied. Reported because tap exhaustion is invisible from anywhere
+      // else: nothing degrades until the last block is gone, and then every
+      // /assign here fails. The GC reclaims leaked devices, so a number far
+      // above available+assigned+suspended means the leak is outrunning it.
+      taps: pool.tapUsage(),
     },
     // NVMe cache scalars so the control plane can route disk- and cache-aware
     // (Phase 2) without shipping per-project cache manifests in the heartbeat.

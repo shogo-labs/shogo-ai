@@ -2357,6 +2357,15 @@ export class MetalWarmPool {
   }
 
   /**
+   * How much of the host's /30 space is occupied, straight from `ip link` rather
+   * than the GC's last sweep — so it is still the truth on a host with the GC
+   * turned off, which is exactly where a leak would run unchecked.
+   */
+  tapUsage(): { inUse: number; capacity: number } {
+    return { inUse: existingTapIndices().size, capacity: TAP_NET_CAPACITY }
+  }
+
+  /**
    * Reclaim leaked `fctap<n>` devices (see
    * FirecrackerVMManager.reconcileOrphanTaps). Driven by the GC timer. Returns
    * the number reclaimed.

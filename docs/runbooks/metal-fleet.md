@@ -274,7 +274,7 @@ reaper should prevent it; if it recurs:
 3. Recover: `systemctl restart metal-agent` — systemd kills the whole cgroup,
    clearing every orphan. Cache (suspended snapshots) survives the restart.
 
-### Tap / address-space exhaustion — `metal_tap_used_pct` climbing
+### `MetalTapExhaustion` — a host's /30 space filling up
 Each microVM takes a `/30` out of `172.16.0.0/16`, so a host has 16384 slots and
 each is held by an `fctap<n>` device. This is the 2026-07 US-region outage: taps
 leaked (removed VMs whose device was never deleted), the allocator ran off the end
@@ -283,11 +283,13 @@ rejected it, every `/assign` 500'd, and project runtimes hung on "starting up…
 
 Two mechanisms now stand between a leak and that outage: the allocator wraps and
 skips devices present on the host (never returns an out-of-range index), and the
-GC sweep reclaims taps that belong to no VM. So this should only ever be a gauge
+GC sweep reclaims taps that belong to no VM. So this should only ever be a graph
 to watch, not an incident. If it climbs anyway:
 
-1. `curl -s localhost:9900/metrics | grep metal_tap` — `metal_taps_in_use` should
-   sit near this host's VM count (warm + assigned + suspended), and
+1. Fleet-wide, `metal.host.tap_used_pct` (heartbeat, per `host_id`) says which
+   hosts and how fast. On the host itself,
+   `curl -s localhost:9900/metrics | grep metal_tap` — `metal_taps_in_use` should
+   sit near its VM count (warm + assigned + suspended), and
    `metal_gc_taps_reclaimed_total` should be flat. In-use far above the VM count
    with nothing being reclaimed means the sweep is being blocked, not that it is
    missing work.
