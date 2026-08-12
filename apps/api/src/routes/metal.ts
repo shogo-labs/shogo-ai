@@ -81,6 +81,14 @@ export function metalRoutes(): Hono {
                 idleTail: Number(body.load.liveness.idleTail ?? 0),
               }
             : undefined,
+        // Tap/address-space occupancy. Same treatment as liveness: forwarded only
+        // when reported, since a 0 here would read as a pristine host rather than
+        // an agent too old to know, and this gauge exists to show a host filling
+        // up before it can no longer start VMs at all.
+        taps:
+          body.load?.taps && typeof body.load.taps === 'object'
+            ? { inUse: Number(body.load.taps.inUse ?? 0), capacity: Number(body.load.taps.capacity ?? 0) }
+            : undefined,
       },
       disk: body.disk
         ? {

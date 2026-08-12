@@ -274,7 +274,7 @@ reaper should prevent it; if it recurs:
 3. Recover: `systemctl restart metal-agent` — systemd kills the whole cgroup,
    clearing every orphan. Cache (suspended snapshots) survives the restart.
 
-### `MetalTapExhaustion` — a host's /30 space filling up
+### `MetalTapLeak` / `MetalTapExhaustion` — a host's /30 space filling up
 Each microVM takes a `/30` out of `172.16.0.0/16`, so a host has 16384 slots and
 each is held by an `fctap<n>` device. This is the 2026-07 US-region outage: taps
 leaked (removed VMs whose device was never deleted), the allocator ran off the end
@@ -286,13 +286,15 @@ skips devices present on the host (never returns an out-of-range index), and the
 GC sweep reclaims taps that belong to no VM. So this should only ever be a graph
 to watch, not an incident. If it climbs anyway:
 
-1. Fleet-wide, `metal.host.tap_used_pct` (heartbeat, per `host_id`) says which
-   hosts and how fast. On the host itself,
-   `curl -s localhost:9900/metrics | grep metal_tap` — `metal_taps_in_use` should
-   sit near its VM count (warm + assigned + suspended), and
-   `metal_gc_taps_reclaimed_total` should be flat. In-use far above the VM count
-   with nothing being reclaimed means the sweep is being blocked, not that it is
-   missing work.
+1. Separate a leak from legitimate growth first, because both end at the same
+   cliff. Fleet-wide, `metal.host.taps_in_use` minus
+   (`available` + `assigned` + `suspended`) is the leaked count (`MetalTapLeak`),
+   while `metal.host.tap_used_pct` is how close the host is to having no blocks
+   left at all (`MetalTapExhaustion`). Note that a big local snapshot cache is
+   not a leak: suspended VMs keep their tap on purpose, and a DAL host healthily
+   carries ~3500 of them. On the host itself,
+   `curl -s localhost:9900/metrics | grep metal_tap` plus a rising
+   `metal_gc_taps_reclaimed_total` tells you whether the GC is keeping up.
 2. Count the devices nothing has open — the sweep's own candidates:
    `ip -o link show | grep -c 'fctap.*NO-CARRIER'`. Devices WITHOUT `NO-CARRIER`
    have a live firecracker attached and are never touched.

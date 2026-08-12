@@ -61,10 +61,12 @@ they're managed separately as YAML/JSON files under this directory:
 - `alerts/metal-fc-process-leak.yaml` — pages when a metal host carries
   20+ firecracker processes beyond its tracked warm+assigned VMs for
   10+ minutes (the churn process-leak fingerprint; 2026-07 incident).
-- `alerts/metal-tap-exhaustion.yaml` — warns when a metal host holds 25%+
-  of its 16384 tap devices (/30 blocks) on average for 30 minutes, i.e.
-  leaked devices are outrunning the GC. At 100% the host cannot start a
-  microVM and every /assign there fails (2026-07 US-region outage).
+- `alerts/metal-tap-leak.yaml` — warns when a metal host sustains 250+ tap
+  devices beyond its warm+assigned+suspended VMs, i.e. leaked /30 blocks are
+  outrunning the node-agent GC (2026-07 US-region outage).
+- `alerts/metal-tap-exhaustion.yaml` — pages when a metal host passes 80% of
+  its 16384 /30 blocks for any reason, leak or legitimate cache growth. At
+  100% the host cannot start a microVM and every /assign there fails.
 - `alerts/metal-wake-latency-high.yaml` — warns when metal wake p95
   exceeds 15s for 10+ minutes (sleep/wake degraded to cold-start feel).
 - `alerts/metal-host-disk-pressure.yaml` — warns when a metal host's
