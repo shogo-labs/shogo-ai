@@ -177,7 +177,7 @@ export default function SignInScreen() {
 
   return (
     <SafeAreaView
-      className={Platform.OS === 'web' ? 'flex-1 bg-transparent' : 'flex-1 bg-background'}
+      className={Platform.OS === 'web' ? 'flex-1 bg-transparent' : 'flex-1 bg-black'}
     >
       <LoginScreen
         loginHeroImage={LOGIN_HERO_LIGHT}
