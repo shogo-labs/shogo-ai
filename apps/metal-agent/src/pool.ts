@@ -275,6 +275,15 @@ const ORPHAN_GRACE_MS = 180_000
 const STALE_RECLAIM_PER_SWEEP = 100
 
 /**
+ * Hand the event loop back so the agent can serve requests between two pieces
+ * of blocking filesystem work. `setImmediate` runs after pending I/O callbacks,
+ * which is what makes it a real yield rather than a busy tick.
+ */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+/**
  * How recently a VM must have served end-user *app* traffic to count as
  * "app-active" in the fleet gauges. Generous enough to bridge the gaps between
  * a real user's requests (page loads, API calls) without flapping the bucket,
@@ -318,6 +327,8 @@ export class MetalWarmPool {
   private available: PooledVm[] = []
   private assigned = new Map<string, AssignedVm>()
   private suspended = new Map<string, SuspendedVm>()
+  /** One stale-snapshot drain at a time (see reclaimStaleSnapshots). */
+  private staleReclaimRunning = false
   private store: SnapshotStore
   private rootfsId: string
   private index: CacheIndex
@@ -2091,7 +2102,7 @@ export class MetalWarmPool {
   async gcSweep(opts: { force?: boolean } = {}): Promise<GcReport> {
     metrics.inc(M.gcRuns)
     const orphansRemoved = this.reclaimOrphans()
-    const staleReclaim = this.reclaimStaleSnapshots()
+    const staleReclaim = await this.reclaimStaleSnapshots()
 
     const disk = this.disk()
     const evict: string[] = []
@@ -2178,26 +2189,47 @@ export class MetalWarmPool {
    * `pull()`, and dropping S3 objects is a different decision with a different
    * blast radius (`durableActiveWindowMs` owns that one).
    *
-   * Bounded per sweep, following `reconcileOrphanDevices`: on a host holding
-   * thousands of these, unlinking every multi-gigabyte memory file in one pass
-   * would stall the GC timer behind a burst of I/O. The backlog drains over a
-   * few minutes of sweeps instead.
+   * Bounded per sweep, following `reconcileOrphanDevices`, AND yielding between
+   * entries. Dropping one entry is expensive and entirely synchronous — a
+   * multi-gigabyte memory file to unlink, then `dmsetup remove --retry`, the
+   * loop detach and the tap teardown, each a subprocess — which measured around
+   * 180ms on a production host. Taking a batch of 100 straight through therefore
+   * pinned the single-threaded agent for up to 18 SECONDS, past every timeout
+   * the control plane uses (5s), so opens and heartbeats had to wait behind a
+   * disk cleanup. Yielding turns that into ~180ms of latency at worst while
+   * draining at the same overall rate.
+   *
+   * The guard keeps one drain in flight: the sweep timer keeps firing during a
+   * long drain, and a second pass over the same entries would be wasted work.
    */
-  private reclaimStaleSnapshots(max = STALE_RECLAIM_PER_SWEEP): { projectIds: string[]; bytes: number } {
+  private async reclaimStaleSnapshots(
+    max = STALE_RECLAIM_PER_SWEEP,
+  ): Promise<{ projectIds: string[]; bytes: number }> {
     const projectIds: string[] = []
     let bytes = 0
-    for (const s of this.suspended.values()) {
-      if (projectIds.length >= max) break
-      if (!this.localSnapshotIsStale(s)) continue
-      const id = s.projectId
-      // Never race the paths that own the entry: a running VM is not suspended
-      // at all, and an in-flight open is already deciding this snapshot's fate.
-      if (this.assigned.has(id)) continue
-      if (this.openFlight.has(id) || this.suspendFlight.has(id)) continue
-      const b = this.entryBytes(s)
-      if (!this.evictLocal(id)) continue
-      projectIds.push(id)
-      bytes += b
+    if (this.staleReclaimRunning) return { projectIds, bytes }
+    this.staleReclaimRunning = true
+    try {
+      // Snapshot the ids: we await inside the loop, so the live map may gain a
+      // freshly-suspended entry underneath us. Anything new is next sweep's.
+      for (const id of [...this.suspended.keys()]) {
+        if (projectIds.length >= max) break
+        // Re-read rather than trust the snapshot — during the awaits this
+        // project may have woken and re-suspended onto the CURRENT rootfs.
+        const s = this.suspended.get(id)
+        if (!s || !this.localSnapshotIsStale(s)) continue
+        // Never race the paths that own the entry: a running VM is not suspended
+        // at all, and an in-flight open is already deciding this snapshot's fate.
+        if (this.assigned.has(id)) continue
+        if (this.openFlight.has(id) || this.suspendFlight.has(id)) continue
+        const b = this.entryBytes(s)
+        if (!this.evictLocal(id)) continue
+        projectIds.push(id)
+        bytes += b
+        await yieldToEventLoop()
+      }
+    } finally {
+      this.staleReclaimRunning = false
     }
     return { projectIds, bytes }
   }
