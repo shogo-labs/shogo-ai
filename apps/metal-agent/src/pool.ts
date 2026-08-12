@@ -246,6 +246,13 @@ export interface GcReport {
   triggered: boolean
   evicted: string[]
   durableRemoved: string[]
+  /**
+   * Projects whose local snapshot was dropped because it was taken against a
+   * different golden rootfs and can therefore never be restored here. Reported
+   * separately from `evicted` because it is not a capacity decision — these
+   * were already dead, whatever the disk looked like.
+   */
+  staleReclaimed: string[]
   orphansRemoved: number
   bytesReclaimed: number
   disk: DiskUsage
@@ -259,6 +266,13 @@ export interface GcReport {
  * a re-suspend are still reclaimed promptly.
  */
 const ORPHAN_GRACE_MS = 180_000
+
+/**
+ * How many unresumable (wrong-rootfs) snapshots one GC sweep may unlink. Lower
+ * than the orphan-device bound because each of these is gigabytes of memory
+ * file rather than a device node.
+ */
+const STALE_RECLAIM_PER_SWEEP = 100
 
 /**
  * How recently a VM must have served end-user *app* traffic to count as
@@ -2077,6 +2091,7 @@ export class MetalWarmPool {
   async gcSweep(opts: { force?: boolean } = {}): Promise<GcReport> {
     metrics.inc(M.gcRuns)
     const orphansRemoved = this.reclaimOrphans()
+    const staleReclaim = this.reclaimStaleSnapshots()
 
     const disk = this.disk()
     const evict: string[] = []
@@ -2119,20 +2134,72 @@ export class MetalWarmPool {
       if (stale && this.store.kind !== 'none') durableRemoved.push(projectId)
     }
 
+    bytesReclaimed += staleReclaim.bytes
+
     metrics.inc(M.gcEvicted, evict.length)
     metrics.inc(M.gcBytesReclaimed, bytesReclaimed)
     metrics.inc(M.gcOrphansRemoved, orphansRemoved)
     metrics.inc(M.gcDurableRemoved, durableRemoved.length)
+    metrics.inc(M.gcStaleReclaimed, staleReclaim.projectIds.length)
     this.publishGauges()
 
     const after = this.disk()
-    if (evict.length || orphansRemoved) {
+    if (evict.length || orphansRemoved || staleReclaim.projectIds.length) {
       console.log(
         `[pool] gc: evicted=${evict.length} durableDropped=${durableRemoved.length} orphans=${orphansRemoved} ` +
-          `reclaimed=${(bytesReclaimed / 1e9).toFixed(2)}GB used=${after.usedPct.toFixed(1)}%`,
+          `staleReclaimed=${staleReclaim.projectIds.length} reclaimed=${(bytesReclaimed / 1e9).toFixed(2)}GB used=${after.usedPct.toFixed(1)}%`,
       )
     }
-    return { triggered: decision.triggered, evicted: evict, durableRemoved, orphansRemoved, bytesReclaimed, disk: after }
+    return {
+      triggered: decision.triggered,
+      evicted: evict,
+      durableRemoved,
+      staleReclaimed: staleReclaim.projectIds,
+      orphansRemoved,
+      bytesReclaimed,
+      disk: after,
+    }
+  }
+
+  /**
+   * Drop locally-cached snapshots that this host can never restore, because
+   * they were taken against a different golden rootfs.
+   *
+   * `resume()` already refuses these one at a time, so nothing here changes
+   * what a project does on open — it only stops the corpse from occupying the
+   * disk until someone happens to open that particular project. Until now the
+   * only other path out was the LRU sweep, which ranks them by last access
+   * alongside snapshots that still work: a rootfs rebuild therefore stranded
+   * the entire cache, and it drained a project at a time as users returned.
+   * Measured across the four production hosts, roughly 90% of every cache was
+   * in this state — about 15.9 TB that could not have served a single wake.
+   *
+   * Only the LOCAL copy goes. The durable store keeps its own identity gate in
+   * `pull()`, and dropping S3 objects is a different decision with a different
+   * blast radius (`durableActiveWindowMs` owns that one).
+   *
+   * Bounded per sweep, following `reconcileOrphanDevices`: on a host holding
+   * thousands of these, unlinking every multi-gigabyte memory file in one pass
+   * would stall the GC timer behind a burst of I/O. The backlog drains over a
+   * few minutes of sweeps instead.
+   */
+  private reclaimStaleSnapshots(max = STALE_RECLAIM_PER_SWEEP): { projectIds: string[]; bytes: number } {
+    const projectIds: string[] = []
+    let bytes = 0
+    for (const s of this.suspended.values()) {
+      if (projectIds.length >= max) break
+      if (!this.localSnapshotIsStale(s)) continue
+      const id = s.projectId
+      // Never race the paths that own the entry: a running VM is not suspended
+      // at all, and an in-flight open is already deciding this snapshot's fate.
+      if (this.assigned.has(id)) continue
+      if (this.openFlight.has(id) || this.suspendFlight.has(id)) continue
+      const b = this.entryBytes(s)
+      if (!this.evictLocal(id)) continue
+      projectIds.push(id)
+      bytes += b
+    }
+    return { projectIds, bytes }
   }
 
   /**

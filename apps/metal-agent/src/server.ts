@@ -348,6 +348,10 @@ if (config.gcIntervalMs > 0) {
     pool.gcSweep().then(
       (report) => {
         for (const id of report.evicted) reportPlacement(report.durableRemoved.includes(id) ? 'cold' : 'evicted', id)
+        // Same shape as an LRU eviction from the registry's point of view: the
+        // local copy is gone, the durable one is not. Told promptly so routing
+        // stops preferring this host for a snapshot it can no longer restore.
+        for (const id of report.staleReclaimed) reportPlacement('evicted', id)
       },
       (err) => console.error('[metal-agent] gc error:', err?.message ?? err),
     )
