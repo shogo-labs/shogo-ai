@@ -454,6 +454,61 @@ describe('pool resume rootfs-identity gate', () => {
     expect(third.staleReclaimed).toEqual([])
   })
 
+  test('the drain yields between entries instead of pinning the event loop', async () => {
+    // Dropping one snapshot is ~180ms of synchronous unlink + dmsetup + losetup
+    // + tap teardown. Taken straight through, a 100-entry batch pinned the agent
+    // for up to 18s on a production host — past the control plane's 5s timeouts,
+    // so opens queued behind a disk cleanup. Anything else waiting on the loop
+    // must get a turn WHILE the drain is in progress.
+    const order: string[] = []
+    const { pool, cfg } = makePool(
+      dir,
+      new FakeStore('NEW'),
+      { rootfsIdentity: 'NEW', ...noPressure },
+      {
+        releaseRootfs: (p: string) => {
+          order.push('del')
+          rmSync(p, { force: true })
+        },
+      },
+    )
+    for (let i = 0; i < 4; i++) seedWithIdentity(cfg, `p${i}`, 'OLD')
+    pool.rehydrate()
+
+    // Stand in for the HTTP server: work queued on the loop, re-arming itself.
+    let stop = false
+    const beat = () => {
+      if (stop) return
+      order.push('beat')
+      setImmediate(beat)
+    }
+    setImmediate(beat)
+
+    const report = await pool.gcSweep()
+    stop = true
+
+    expect(report.staleReclaimed.length).toBe(4)
+    // The decisive assertion: at least one beat landed BETWEEN two deletions.
+    // A blocking drain emits every 'del' back-to-back with no 'beat' among them.
+    const between = order.slice(order.indexOf('del'), order.lastIndexOf('del'))
+    expect(between.filter((o) => o === 'beat').length).toBeGreaterThan(0)
+  })
+
+  test('a sweep firing during a long drain does not start a second one', async () => {
+    // The GC timer keeps firing while a big backlog drains; a second concurrent
+    // pass over the same entries is wasted work at best.
+    const { pool, cfg } = makePool(dir, new FakeStore('NEW'), { rootfsIdentity: 'NEW', ...noPressure })
+    for (let i = 0; i < 150; i++) seedWithIdentity(cfg, `p${i}`, 'OLD')
+    pool.rehydrate()
+
+    const [first, second] = await Promise.all([pool.gcSweep(), pool.gcSweep()])
+
+    // Exactly one batch total — the overlapping sweep reclaimed nothing.
+    expect(first.staleReclaimed.length + second.staleReclaimed.length).toBe(100)
+    expect(Math.min(first.staleReclaimed.length, second.staleReclaimed.length)).toBe(0)
+    expect(pool.status().suspended.length).toBe(50)
+  })
+
   test('a stale entry the pool still considers live is left for the open path to settle', async () => {
     // Belt-and-braces against the sweep racing an open: whoever holds the
     // project decides its snapshot's fate, not the GC timer.
