@@ -154,6 +154,7 @@ function NavItem({
   onNavPress,
 }: NavItemProps) {
   const router = useRouter()
+  const isNative = Platform.OS !== 'web'
 
   const handlePress = useCallback(() => {
     if (onPress) {
@@ -176,7 +177,8 @@ function NavItem({
       role={href || externalHref ? 'link' : 'button'}
       accessibilityLabel={label}
       className={cn(
-        'flex-row items-center gap-2 rounded-md px-2 py-1',
+        'flex-row items-center rounded-md',
+        isNative ? 'min-h-11 gap-3 px-3 py-2' : 'gap-2 px-2 py-1',
         active
           ? 'bg-accent'
           : 'active:bg-accent/50',
@@ -184,7 +186,7 @@ function NavItem({
       )}
     >
       <Icon
-        size={12}
+        size={isNative ? 20 : 12}
         className={cn(
           active ? 'text-foreground' : 'text-muted-foreground'
         )}
@@ -192,7 +194,7 @@ function NavItem({
       {!collapsed && (
         <Text
           className={cn(
-            'text-xs flex-1',
+            isNative ? 'text-base flex-1' : 'text-xs flex-1',
             active ? 'text-foreground' : 'text-muted-foreground'
           )}
           numberOfLines={1}
@@ -242,6 +244,7 @@ function ChatTreeItem({
   onRequestDelete: (sessionId: string) => void
   onMeasureHeight?: (height: number) => void
 }) {
+  const isNative = Platform.OS !== 'web'
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
   // Web-only right-click menu anchor (viewport coords).
@@ -308,20 +311,20 @@ function ChatTreeItem({
 
   if (editing) {
     return (
-      <View className="flex-row items-center gap-1 rounded-md px-1 py-1">
+      <View className={cn('flex-row items-center rounded-md', isNative ? 'min-h-11 gap-2 px-2 py-1.5' : 'gap-1 px-1 py-1')}>
         <TextInput
           value={editValue}
           onChangeText={setEditValue}
           onSubmitEditing={saveEdit}
           onBlur={saveEdit}
           autoFocus
-          className="flex-1 h-6 px-1 text-xs rounded border border-border bg-background text-foreground"
+          className={cn('flex-1 px-2 rounded border border-border bg-background text-foreground', isNative ? 'h-9 text-base' : 'h-6 text-xs')}
         />
         <Pressable onPress={saveEdit} className="p-0.5" accessibilityLabel="Save name">
-          <Check size={12} className="text-primary" />
+          <Check size={isNative ? 18 : 12} className="text-primary" />
         </Pressable>
         <Pressable onPress={() => setEditing(false)} className="p-0.5" accessibilityLabel="Cancel rename">
-          <X size={12} className="text-muted-foreground" />
+          <X size={isNative ? 18 : 12} className="text-muted-foreground" />
         </Pressable>
       </View>
     )
@@ -336,20 +339,21 @@ function ChatTreeItem({
       accessibilityLabel={`Chat: ${chatLabel(session)}`}
       aria-current={active ? 'page' : undefined}
       className={cn(
-        'group flex-row items-center gap-1 rounded-md px-1 py-1.5',
+        'group flex-row items-center rounded-md',
+        isNative ? 'min-h-11 gap-2 px-2 py-2' : 'gap-1 px-1 py-1.5',
         active ? 'bg-accent' : 'active:bg-accent/50',
       )}
       {...(Platform.OS === 'web' ? ({ onContextMenu: handleContextMenu } as any) : {})}
     >
       {isStreaming ? (
-        <Loader2 size={11} className="text-primary animate-spin shrink-0" accessibilityLabel="Chat running" />
+        <Loader2 size={isNative ? 17 : 11} className="text-primary animate-spin shrink-0" accessibilityLabel="Chat running" />
       ) : isCompleted ? (
         <View className="h-1.5 w-1.5 rounded-full bg-primary shrink-0" accessibilityLabel="Chat has new activity" />
       ) : session.isPinned ? (
-        <Pin size={10} className="text-muted-foreground shrink-0" />
+        <Pin size={isNative ? 16 : 10} className="text-muted-foreground shrink-0" />
       ) : null}
       <Text
-        className={cn('text-xs flex-1', active ? 'text-foreground' : 'text-muted-foreground')}
+        className={cn(isNative ? 'text-base flex-1' : 'text-xs flex-1', active ? 'text-foreground' : 'text-muted-foreground')}
         numberOfLines={1}
       >
         {chatLabel(session)}
@@ -481,6 +485,7 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   mobileProjectFirstTapShowsChats?: boolean
 }) {
   const router = useRouter()
+  const isNative = Platform.OS !== 'web'
   const pathname = usePathname()
   const params = useLocalSearchParams<{ chatSessionId?: string }>()
   const http = useDomainHttp()
@@ -836,8 +841,8 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   return (
     <View>
       {editing ? (
-        <View className="flex-row items-center gap-1.5 rounded-md px-2 py-1.5">
-          <Folder size={12} className="text-muted-foreground" />
+        <View className={cn('flex-row items-center rounded-md px-2', isNative ? 'min-h-11 gap-2 py-1.5' : 'gap-1.5 py-1.5')}>
+          <Folder size={isNative ? 18 : 12} className="text-muted-foreground" />
           <TextInput
             value={editValue}
             onChangeText={setEditValue}
@@ -845,19 +850,20 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
             onBlur={saveEditProject}
             autoFocus
             selectTextOnFocus
-            className="flex-1 h-6 px-1 text-xs rounded border border-border bg-background text-foreground"
+            className={cn('flex-1 px-2 rounded border border-border bg-background text-foreground', isNative ? 'h-9 text-base' : 'h-6 text-xs')}
           />
           <Pressable onPress={saveEditProject} className="p-0.5" accessibilityLabel="Save name">
-            <Check size={12} className="text-primary" />
+            <Check size={isNative ? 18 : 12} className="text-primary" />
           </Pressable>
           <Pressable onPress={() => setEditing(false)} className="p-0.5" accessibilityLabel="Cancel rename">
-            <X size={12} className="text-muted-foreground" />
+            <X size={isNative ? 18 : 12} className="text-muted-foreground" />
           </Pressable>
         </View>
       ) : (
         <View
           className={cn(
-            'group flex-row items-center gap-1.5 rounded-md pr-1 py-1.5',
+            'group flex-row items-center rounded-md pr-1',
+            isNative ? 'min-h-11 gap-2 py-2' : 'gap-1.5 py-1.5',
             isActive ? 'bg-accent' : 'active:bg-accent/50',
           )}
         >
@@ -876,14 +882,14 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
           >
             {mobileProjectFirstTapShowsChats && (
               expanded ? (
-                <ChevronDown size={10} className="text-muted-foreground shrink-0" />
+                <ChevronDown size={isNative ? 16 : 10} className="text-muted-foreground shrink-0" />
               ) : (
-                <ChevronRight size={10} className="text-muted-foreground shrink-0" />
+                <ChevronRight size={isNative ? 16 : 10} className="text-muted-foreground shrink-0" />
               )
             )}
-            <Folder size={12} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
+            <Folder size={isNative ? 18 : 12} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
             <Text
-              className={cn('text-xs flex-1', isActive ? 'text-foreground' : 'text-foreground')}
+              className={cn(isNative ? 'text-base flex-1' : 'text-xs flex-1', isActive ? 'text-foreground' : 'text-foreground')}
               numberOfLines={1}
             >
               {project.name || 'Untitled'}
@@ -1446,25 +1452,26 @@ function AccountMenu({
 }: AccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
   const close = useCallback(() => setIsOpen(false), [])
+  const isNative = Platform.OS !== 'web'
 
   const triggerInner = (
     <>
-      <View className="h-7 w-7 rounded bg-primary/20 items-center justify-center">
-        <Text className="text-[11px] font-bold text-primary">
+      <View className={cn('rounded bg-primary/20 items-center justify-center', isNative ? 'h-10 w-10' : 'h-7 w-7')}>
+        <Text className={cn('font-bold text-primary', isNative ? 'text-sm' : 'text-[11px]')}>
           {currentWorkspace?.name?.[0]?.toUpperCase() || 'W'}
         </Text>
       </View>
       {!collapsed && (
         <View className="flex-1 min-w-0">
-          <Text className="text-sm text-foreground" numberOfLines={1} ellipsizeMode="tail">
+          <Text className={cn('text-foreground', isNative ? 'text-base font-medium' : 'text-sm')} numberOfLines={1} ellipsizeMode="tail">
             {currentWorkspace?.name || 'Workspace'}
           </Text>
-          <Text className="text-xs text-muted-foreground" numberOfLines={1} ellipsizeMode="tail">
+          <Text className={cn('text-muted-foreground', isNative ? 'text-sm' : 'text-xs')} numberOfLines={1} ellipsizeMode="tail">
             {user?.name || 'User'}
           </Text>
         </View>
       )}
-      {!collapsed && (
+      {!collapsed && !isNative && (
         <Avatar fallback={getInitials(user?.name)} src={user?.image} size="sm" />
       )}
     </>
@@ -1553,7 +1560,8 @@ function AccountMenu({
         accessibilityHint="Opens menu to switch workspace, navigate, and manage your account"
         accessibilityState={{ expanded: isOpen }}
         className={cn(
-          'flex-row items-center gap-2 active:opacity-80 flex-1 min-w-0',
+          'flex-row items-center active:opacity-80 flex-1 min-w-0',
+          isNative ? 'min-h-12 gap-3' : 'gap-2',
           collapsed && 'justify-center',
         )}
       >
@@ -2005,7 +2013,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
       {/* ── Logo Row ── */}
       <View
         className={cn(
-          'h-12 border-b border-border flex-row items-center',
+          'border-b border-border flex-row items-center',
+          isNativeDrawer ? 'h-16' : 'h-12',
           collapsed ? 'justify-center px-2' : 'justify-between px-3'
         )}
       >
@@ -2017,10 +2026,10 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
               accessibilityLabel="Shogo Home"
               className="flex-row items-center"
             >
-              <ShogoWordmark className="h-[22px] w-[94px]" />
+              <ShogoWordmark className={isNativeDrawer ? 'h-7 w-[120px]' : 'h-[22px] w-[94px]'} />
             </Pressable>
-            <Pressable onPress={toggleCollapse} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
-              <PanelLeftClose size={12} className="text-muted-foreground" />
+            <Pressable onPress={toggleCollapse} className={cn('items-center justify-center rounded-md active:bg-muted', isNativeDrawer ? 'h-11 w-11' : 'h-8 w-8')}>
+              <PanelLeftClose size={isNativeDrawer ? 20 : 12} className="text-muted-foreground" />
             </Pressable>
           </>
         )}
@@ -2047,7 +2056,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
       )}
 
       {/* ── Main Navigation (scrollable) ── */}
-      <ScrollView className="flex-1 pt-2" showsVerticalScrollIndicator={false}>
+      <ScrollView className={cn('flex-1', isNativeDrawer ? 'pt-3' : 'pt-2')} showsVerticalScrollIndicator={false}>
         {/* Primary nav */}
         <View className="px-2">
           <NavItem
@@ -2088,10 +2097,10 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
         </View>
 
         {/* PROJECTS tree — each project expands to show its chats */}
-        <View className="mt-4 px-2">
+        <View className={cn('px-2', isNativeDrawer ? 'mt-5' : 'mt-4')}>
           {!collapsed && (
-            <View className="flex-row items-center justify-between px-1 pb-1">
-              <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <View className={cn('flex-row items-center justify-between px-1', isNativeDrawer ? 'pb-2' : 'pb-1')}>
+              <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground', isNativeDrawer ? 'text-sm' : 'text-[11px]')}>
                 Projects
               </Text>
               <Popover
@@ -2106,9 +2115,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
                     role="button"
                     accessibilityLabel="Filter and sort projects"
                     accessibilityState={{ expanded: filterMenuOpen }}
-                    className="h-6 w-6 items-center justify-center rounded-md active:bg-muted"
+                    className={cn('items-center justify-center rounded-md active:bg-muted', isNativeDrawer ? 'h-11 w-11' : 'h-6 w-6')}
                   >
-                    <SlidersHorizontal size={13} className="text-muted-foreground" />
+                    <SlidersHorizontal size={isNativeDrawer ? 20 : 13} className="text-muted-foreground" />
                   </Pressable>
                 )}
               >
@@ -2198,14 +2207,14 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
                 <Pressable
                   onPress={() => setShowAllProjects((v) => !v)}
                   accessibilityLabel={showAllProjects ? 'Show fewer projects' : 'Show all projects'}
-                  className="flex-row items-center gap-1.5 rounded-md px-2 py-1.5 active:bg-accent/50"
+                  className={cn('flex-row items-center rounded-md px-2 active:bg-accent/50', isNativeDrawer ? 'min-h-11 gap-2.5 py-2' : 'gap-1.5 py-1.5')}
                 >
                   {showAllProjects ? (
-                    <ChevronDown size={12} className="text-muted-foreground shrink-0" />
+                    <ChevronDown size={isNativeDrawer ? 16 : 12} className="text-muted-foreground shrink-0" />
                   ) : (
-                    <ChevronRight size={12} className="text-muted-foreground shrink-0" />
+                    <ChevronRight size={isNativeDrawer ? 16 : 12} className="text-muted-foreground shrink-0" />
                   )}
-                  <Text className="text-xs text-muted-foreground flex-1">
+                  <Text className={cn('text-muted-foreground flex-1', isNativeDrawer ? 'text-base' : 'text-xs')}>
                     {showAllProjects ? 'Show less' : `${hiddenProjectCount} more`}
                   </Text>
                 </Pressable>
@@ -2219,21 +2228,21 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
       <View className="border-t border-border" style={{ paddingBottom: drawerBottomInset }}>
         {/* Upgrade to Pro CTA */}
         {features.billing && !collapsed && !isPaidPlan && (
-          <View className="px-2 pt-2">
+          <View className={cn('px-2', isNativeDrawer ? 'pt-3' : 'pt-2')}>
             <Pressable
               onPress={() => { router.push('/(app)/billing' as any); onNavPress() }}
-              className="flex-row items-center gap-2 px-3 py-2 rounded-md"
+              className={cn('flex-row items-center rounded-md', isNativeDrawer ? 'min-h-[72px] gap-3 px-4 py-3' : 'gap-2 px-3 py-2')}
               style={Platform.OS === 'web'
                 ? { backgroundImage: 'linear-gradient(to right, rgba(59,130,246,0.1), rgba(168,85,247,0.1))' } as any
                 : { backgroundColor: 'rgba(59,130,246,0.1)' }}
             >
               <View className="flex-1">
-                <Text className="text-sm font-medium text-foreground">Upgrade to Pro</Text>
-                <Text className="text-xs text-muted-foreground">
+                <Text className={cn('font-medium text-foreground', isNativeDrawer ? 'text-base' : 'text-sm')}>Upgrade to Pro</Text>
+                <Text className={cn('text-muted-foreground', isNativeDrawer ? 'text-sm' : 'text-xs')}>
                   Unlock more benefits
                 </Text>
               </View>
-              <Plus size={16} className="text-primary" />
+              <Plus size={isNativeDrawer ? 22 : 16} className="text-primary" />
             </Pressable>
           </View>
         )}
@@ -2241,7 +2250,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
         {/* Consolidated workspace + user row */}
         <View
           className={cn(
-            'flex-row items-center gap-2 p-2 border-t border-border',
+            'flex-row items-center border-t border-border',
+            isNativeDrawer ? 'min-h-[76px] gap-3 p-3' : 'gap-2 p-2',
             collapsed ? 'justify-center' : 'px-3'
           )}
         >
@@ -2266,14 +2276,14 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
             />
           </View>
 
-          {!collapsed && <NotificationBell size={18} />}
+          {!collapsed && <NotificationBell size={isNativeDrawer ? 22 : 18} />}
 
           {!collapsed && (
             <Pressable
               onPress={() => setInboxOpen(true)}
-              className="relative shrink-0 p-1.5 rounded-md active:bg-muted"
+              className={cn('relative shrink-0 rounded-md active:bg-muted', isNativeDrawer ? 'h-11 w-11 items-center justify-center' : 'p-1.5')}
             >
-              <Inbox size={18} className="text-muted-foreground" />
+              <Inbox size={isNativeDrawer ? 22 : 18} className="text-muted-foreground" />
               {pendingInvites.length > 0 && (
                 <View className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-destructive items-center justify-center">
                   <Text className="text-[9px] font-bold text-white">{pendingInvites.length}</Text>

@@ -84,7 +84,7 @@ export function ProjectSourceMenu({
   const router = useRouter()
   const { width } = useWindowDimensions()
   const isNativePhone = Platform.OS !== 'web' && width < 600
-  const useProminentChip = prominentMobile && isNativePhone
+  const useProminentChip = prominentMobile && Platform.OS !== 'web'
   const [open, setOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [cloudOpen, setCloudOpen] = useState(false)
@@ -151,18 +151,19 @@ export function ProjectSourceMenu({
       <Pressable
         {...triggerProps}
         accessibilityLabel="Project source"
+        hitSlop={useProminentChip ? 6 : undefined}
         className={cn(
           useProminentChip
-            ? 'h-7 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-1.5'
+            ? 'h-8 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-2'
             : 'h-[22px] flex-row items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-1.5',
           'active:opacity-80',
           isPicking && 'opacity-60',
         )}
         testID="project-source-menu-trigger"
       >
-        <Sparkles className="text-muted-foreground" size={12} />
-        <Text className={useProminentChip ? 'text-[11px] text-foreground/85' : 'text-[11px] text-muted-foreground'}>New</Text>
-        <ChevronDown className="text-muted-foreground/70" size={8} />
+        <Sparkles className="text-muted-foreground" size={useProminentChip ? 14 : 12} />
+        <Text className={useProminentChip ? 'text-[13px] text-foreground/85' : 'text-[11px] text-muted-foreground'}>New</Text>
+        <ChevronDown className="text-muted-foreground/70" size={useProminentChip ? 10 : 8} />
       </Pressable>
     ) : (
       <Pressable

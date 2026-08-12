@@ -57,7 +57,7 @@ export function AppHeader({ onMenuPress }: AppHeaderProps) {
         <Menu size={22} className="text-foreground" />
       </Pressable>
       {showNativeHomeMark ? (
-        <ShogoWordmark compact className="text-2xl" />
+        <ShogoWordmark compact className="h-6 w-6" />
       ) : (
         <Text className="text-base font-semibold text-foreground">{title}</Text>
       )}

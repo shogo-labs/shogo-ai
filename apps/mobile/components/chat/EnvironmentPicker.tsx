@@ -20,7 +20,7 @@
  * so the chat + canvas + SSE streams all follow automatically.
  */
 import React, { useState, useMemo } from "react"
-import { View, Text, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native"
+import { View, Text, Pressable, ScrollView, Platform } from "react-native"
 import { Cloud, Laptop, Check, RefreshCw } from "lucide-react-native"
 import {
   Popover,
@@ -71,9 +71,7 @@ export interface EnvironmentPickerProps {
 }
 
 export function EnvironmentPicker({ disabled, prominentMobile = false }: EnvironmentPickerProps) {
-  const { width } = useWindowDimensions()
-  const isNativePhone = Platform.OS !== "web" && width < 600
-  const useProminentTrigger = prominentMobile && isNativePhone
+  const useProminentTrigger = prominentMobile && Platform.OS !== "web"
   const [open, setOpen] = useState(false)
   const workspace = useActiveWorkspace()
   const { instance: activeInstance, setInstance, clearInstance } = useActiveInstance()
@@ -97,8 +95,8 @@ export function EnvironmentPicker({ disabled, prominentMobile = false }: Environ
 
   const displayLabel = activeInstance ? activeInstance.name : "Cloud"
   const triggerIcon = activeInstance
-    ? <Laptop className="text-emerald-500" size={useProminentTrigger ? 13 : 14} />
-    : <Cloud className="text-muted-foreground" size={useProminentTrigger ? 13 : 14} />
+    ? <Laptop className="text-emerald-500" size={useProminentTrigger ? 16 : 14} />
+    : <Cloud className="text-muted-foreground" size={useProminentTrigger ? 16 : 14} />
 
   return (
     <Popover
@@ -112,10 +110,11 @@ export function EnvironmentPicker({ disabled, prominentMobile = false }: Environ
           <Pressable
             {...triggerProps}
             disabled={disabled}
+            hitSlop={useProminentTrigger ? 6 : undefined}
             accessibilityLabel={`Environment: ${displayLabel}`}
             className={cn(
               useProminentTrigger
-                ? "h-7 w-7 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
+                ? "h-8 w-8 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
                 : "h-[22px] w-[22px] items-center justify-center rounded-md",
               activeInstance && "bg-emerald-500/10",
             )}
