@@ -1,22 +1,20 @@
-# SigNoz alert: metal host running out of tap devices / VM address space
+# SigNoz alert: metal host approaching its VM address-space limit
 #
 # Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
 # SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a `data` field).
 #
-# Why: each microVM takes a /30 out of 172.16.0.0/16, held by an `fctap<n>`
-# device, so a host has 16384 slots. Nothing degrades as they fill — and then the
-# last one goes and every /assign on that host fails. That is how the 2026-07
-# US-region outage started: taps leaked, the allocator walked past the end of the
-# /16 and derived `172.16.8282.225/30`, `ip addr add` rejected it, and project
-# runtimes hung on "starting up…". The allocator now refuses out-of-range indices
-# and the node-agent GC reclaims leaked devices, so this fires only if a leak is
-# outrunning the GC — early, while the fix is still "restart the agent" rather
-# than "the region is down".
+# Why: a host's microVMs each take a /30 out of 172.16.0.0/16 — 16384 in total —
+# and at 100% it simply cannot start another VM (every /assign there fails, the
+# 2026-07 US-region failure mode). MetalTapLeak covers devices leaking; this
+# covers the space running out for ANY reason, including an entirely legitimate
+# one: suspended snapshots keep their tap so they can restore cheaply, and a
+# production DAL host already sits at ~3500 of them (~22%) with nothing wrong.
+# Cache growth alone can therefore reach the ceiling, and it would arrive with no
+# other warning sign.
 #
-# Threshold is deliberately far from the cliff: a host's legitimate usage is
-# available + assigned + suspended, which is O(100) — under 1% of capacity.
-# Sustained double-digit percent means devices are accumulating, not that the
-# host got busy.
+# 80% leaves several thousand free blocks — hours of headroom at any realistic
+# fill rate — so this is a warning to act on, not a page in the middle of the
+# outage it predicts.
 #
 # Metric names: OTel dots become underscores in SigNoz PromQL
 # (metal.host.tap_used_pct -> metal_host_tap_used_pct). Heartbeats round-robin
@@ -35,37 +33,30 @@ condition:
         legend: "{{host_id}} tap_used_pct"
         disabled: false
   op: ">"
-  target: 25
+  target: 80
   matchType: "3" # on-average-during
   selectedQuery: A
-evalWindow: "30m0s"
+evalWindow: "15m0s"
 frequency: "5m0s"
 labels:
-  severity: warning
+  severity: critical
   team: platform
   incident_class: metal
 annotations:
-  summary: "Metal host has 25%+ of its VM address space (tap devices) in use"
+  summary: "Metal host has 80%+ of its 16384 VM address slots (tap devices) in use"
   description: |
-    A metal host is holding tap devices far beyond its live VM count, so leaked
-    /30 blocks are accumulating faster than the GC reclaims them. At 100% the
-    host cannot start another microVM and every /assign there fails — the
-    2026-07 US-region outage.
+    A metal host is running out of /30 blocks for microVMs. At 100% it cannot
+    start another VM and every /assign routed there fails.
 
     Triage:
-    1. On the host, compare occupancy against real usage:
-       `curl -s localhost:${METAL_AGENT_PORT}/metrics | grep metal_tap` and
+    1. Split leak from legitimate growth:
        `curl -s localhost:${METAL_AGENT_PORT}/vms | jq '.available, (.assigned|length), .cache.localCount'`.
-       In-use should be about available + assigned + suspended.
-    2. Check the GC is reclaiming: agent log lines `reclaimed N leaked tap
-       device(s)`, and `metal_gc_taps_reclaimed_total` rising. Reclaim is
-       bounded (200/sweep, two sweeps must agree), so a large backlog drains
-       over minutes — that is expected, not a stall.
-    3. If nothing is being reclaimed, the sweep is being blocked rather than
-       missing work: taps without `NO-CARRIER` have a live firecracker attached
-       and are deliberately never touched
-       (`ip -o link show | grep -c 'fctap.*NO-CARRIER'`).
-    4. Cordon the host from the super-admin fleet panel while you work; it keeps
-       serving live projects but takes no new placements.
+       If in-use is close to warm + assigned + suspended, the space is genuinely
+       occupied (usually a very large local snapshot cache) — reclaim it by
+       tightening GC/eviction (cacheMaxBytes, durable tiering) rather than
+       hunting a leak.
+    2. If in-use far exceeds that sum, this is a leak: see MetalTapLeak.
+    3. Cordon the host from the super-admin fleet panel so it stops taking new
+       placements while it drains; siblings absorb.
 
     Runbook: docs/runbooks/metal-fleet.md (tap / address-space exhaustion).

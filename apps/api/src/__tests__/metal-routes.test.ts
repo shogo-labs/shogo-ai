@@ -99,4 +99,20 @@ describe('metalRoutes', () => {
     const detail = ((await status.json()) as any).hosts.detail[0]
     expect(detail.load.liveness).toBeUndefined()
   })
+
+  // This route rebuilds `load` field by field, so a field the agent sends but
+  // nobody copies here is dropped in silence — which is what happened to `taps`
+  // and would have shipped a permanently empty tap_used_pct gauge, the one
+  // leading indicator for a host exhausting its VM address space.
+  it('ingests tap occupancy from the heartbeat, and leaves it undefined for an older agent', async () => {
+    const body = { ...REG, load: { available: 1, assigned: 2, suspended: 0, taps: { inUse: 119, capacity: 16384 } } }
+    expect((await req('/register', { method: 'POST', body, token: 'secret-tok' })).status).toBe(200)
+
+    const status = await req('/status', { token: 'secret-tok' })
+    expect(((await status.json()) as any).hosts.detail[0].load.taps).toEqual({ inUse: 119, capacity: 16384 })
+
+    await req('/register', { method: 'POST', body: REG, token: 'secret-tok' })
+    const after = await req('/status', { token: 'secret-tok' })
+    expect(((await after.json()) as any).hosts.detail[0].load.taps).toBeUndefined()
+  })
 })
