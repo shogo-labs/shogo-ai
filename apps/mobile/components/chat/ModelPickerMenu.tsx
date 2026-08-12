@@ -122,23 +122,24 @@ export function ModelPickerMenu({
           onHoverIn={isWeb ? () => setHoveredId(model.id) : undefined}
           onHoverOut={isWeb ? () => setHoveredId((id) => (id === model.id ? null : id)) : undefined}
           className={cn(
-            "flex-row items-center gap-2.5 px-3 py-2",
+            "flex-row items-center gap-2.5 px-3",
+            isWeb ? "py-2" : "min-h-12 py-2.5",
             isSelected && "bg-accent",
             isLocked && "opacity-50",
           )}
         >
           <View className="flex-1 flex-row items-baseline gap-1.5">
-            <Text className={cn("text-sm", isLocked ? "text-muted-foreground" : "text-foreground")}>
+            <Text className={cn(isWeb ? "text-sm" : "text-base", isLocked ? "text-muted-foreground" : "text-foreground")}>
               {model.shortDisplayName ?? model.displayName}
             </Text>
             {effort ? (
-              <Text className="text-[11px] text-muted-foreground">{EFFORT_SHORT[effort]}</Text>
+              <Text className={isWeb ? "text-[11px] text-muted-foreground" : "text-xs text-muted-foreground"}>{EFFORT_SHORT[effort]}</Text>
             ) : null}
           </View>
           {isLocked ? (
-            <Lock className="h-3 w-3 text-muted-foreground" size={12} />
+            <Lock className="text-muted-foreground" size={isWeb ? 12 : 17} />
           ) : isSelected ? (
-            <Check className="h-3.5 w-3.5 text-primary" size={14} />
+            <Check className="text-primary" size={isWeb ? 14 : 18} />
           ) : null}
           {/* Native-only inline details toggle. */}
           {!isWeb && hasDetails ? (
@@ -155,7 +156,7 @@ export function ModelPickerMenu({
                   "h-3.5 w-3.5 text-muted-foreground/60",
                   isExpanded && "rotate-90",
                 )}
-                size={14}
+                size={18}
               />
             </Pressable>
           ) : null}
@@ -163,15 +164,15 @@ export function ModelPickerMenu({
         {!isWeb && isExpanded ? (
           <View className="px-3 pb-2.5 -mt-1 gap-1">
             {model.description ? (
-              <Text className="text-[11px] text-muted-foreground leading-4">{model.description}</Text>
+              <Text className="text-[13px] text-muted-foreground leading-5">{model.description}</Text>
             ) : null}
             {formatContextWindow(model.contextWindow) ? (
-              <Text className="text-[11px] text-muted-foreground">
+              <Text className="text-[13px] text-muted-foreground">
                 {formatContextWindow(model.contextWindow)}
               </Text>
             ) : null}
             {effort ? (
-              <Text className="text-[11px] italic text-muted-foreground">
+              <Text className="text-[13px] italic text-muted-foreground">
                 Reasoning: {EFFORT_WORD[effort]} effort
               </Text>
             ) : null}
@@ -183,7 +184,13 @@ export function ModelPickerMenu({
 
   const list = (
     <View style={{ width: menuWidth }}>
-      <ScrollView style={{ maxHeight: 340 }}>
+      <ScrollView
+        style={{ maxHeight: 340 }}
+        showsVerticalScrollIndicator={!isWeb}
+        nestedScrollEnabled={!isWeb}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={!isWeb ? { paddingBottom: 8 } : undefined}
+      >
         <AutoModelOption
           currentModelId={currentModelId}
           onSelect={() => onSelect(AUTO_MODEL_ID)}

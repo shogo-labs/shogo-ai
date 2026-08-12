@@ -4180,13 +4180,13 @@ function CanvasPanel({
         ) : (
           <>
             <ActivityIndicator size="large" className="mb-4" />
-            <Text className="text-foreground font-medium text-base mb-1">
+            <Text className={cn('text-foreground font-medium mb-1', nativeFullFrame ? 'text-lg' : 'text-base')}>
               {phaseLabel}
             </Text>
-            <Text className="text-muted-foreground text-xs text-center">
+            <Text className={cn('text-muted-foreground text-center', nativeFullFrame ? 'text-sm' : 'text-xs')}>
               This usually takes 20-40 seconds
             </Text>
-            <Text className="text-muted-foreground/70 text-[11px] text-center mt-2 max-w-xs">
+            <Text className={cn('text-muted-foreground/70 text-center mt-2 max-w-xs', nativeFullFrame ? 'text-xs leading-5' : 'text-[11px]')}>
               This is a live builder preview that sleeps when idle. Publish to get a permanent, shareable link.
             </Text>
           </>

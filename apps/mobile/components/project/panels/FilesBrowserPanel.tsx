@@ -104,6 +104,7 @@ function FileTreeItem({
   onNewFolderInDir: (dirPath: string) => void
   onUploadToDir: (dirPath: string) => void
 }) {
+  const isNative = Platform.OS !== 'web'
   const isDir = entry.type === 'directory'
   const isExpanded = expandedDirs.has(entry.path)
   const isSelected = selectedPath === entry.path
@@ -115,30 +116,32 @@ function FileTreeItem({
       <>
         <View
           className={cn(
-            'flex-row items-center gap-0.5 py-1 pr-2 rounded-md',
+            'flex-row items-center gap-0.5 pr-2 rounded-md',
+            isNative ? 'min-h-10 py-1.5' : 'py-1',
             treeIndentClass(depth),
           )}
         >
           <Pressable
             onPress={() => onToggleDir(entry.path)}
             className={cn(
-              'flex-row flex-1 min-w-0 items-center gap-1.5 py-0.5 pl-0 pr-1 rounded-md',
+              'flex-row flex-1 min-w-0 items-center gap-1.5 pl-0 pr-1 rounded-md',
+              isNative ? 'min-h-9 py-1' : 'py-0.5',
               isSelected ? 'bg-primary/10' : 'active:bg-muted',
             )}
           >
             {isExpanded ? (
-              <ChevronDown size={10} className="text-muted-foreground shrink-0" />
+              <ChevronDown size={isNative ? 14 : 10} className="text-muted-foreground shrink-0" />
             ) : (
-              <ChevronRight size={10} className="text-muted-foreground shrink-0" />
+              <ChevronRight size={isNative ? 14 : 10} className="text-muted-foreground shrink-0" />
             )}
             {isExpanded ? (
-              <FolderOpen size={12} className="text-amber-500 shrink-0" />
+              <FolderOpen size={isNative ? 16 : 12} className="text-amber-500 shrink-0" />
             ) : (
-              <Folder size={12} className="text-amber-500 shrink-0" />
+              <Folder size={isNative ? 16 : 12} className="text-amber-500 shrink-0" />
             )}
             <Text
               className={cn(
-                'text-xs flex-1 min-w-0',
+                isNative ? 'text-sm flex-1 min-w-0' : 'text-xs flex-1 min-w-0',
                 isSelected ? 'text-primary font-medium' : 'text-foreground',
               )}
               numberOfLines={1}
@@ -150,24 +153,24 @@ function FileTreeItem({
             <View className="flex-row items-center shrink-0 gap-0.5">
               <Pressable
                 onPress={() => onNewFileInDir(entry.path)}
-                className="p-1 rounded-md active:bg-muted"
+                className={cn('rounded-md active:bg-muted', isNative ? 'h-8 w-8 items-center justify-center' : 'p-1')}
                 accessibilityLabel={`New file in ${entry.name}`}
               >
-                <FilePlus size={11} className="text-muted-foreground" />
+                <FilePlus size={isNative ? 15 : 11} className="text-muted-foreground" />
               </Pressable>
               <Pressable
                 onPress={() => onNewFolderInDir(entry.path)}
-                className="p-1 rounded-md active:bg-muted"
+                className={cn('rounded-md active:bg-muted', isNative ? 'h-8 w-8 items-center justify-center' : 'p-1')}
                 accessibilityLabel={`New folder in ${entry.name}`}
               >
-                <FolderPlus size={11} className="text-muted-foreground" />
+                <FolderPlus size={isNative ? 15 : 11} className="text-muted-foreground" />
               </Pressable>
               <Pressable
                 onPress={() => onUploadToDir(entry.path)}
-                className="p-1 rounded-md active:bg-muted"
+                className={cn('rounded-md active:bg-muted', isNative ? 'h-8 w-8 items-center justify-center' : 'p-1')}
                 accessibilityLabel={`Upload into ${entry.name}`}
               >
-                <Upload size={11} className="text-muted-foreground" />
+                <Upload size={isNative ? 15 : 11} className="text-muted-foreground" />
               </Pressable>
             </View>
           ) : null}
@@ -195,14 +198,15 @@ function FileTreeItem({
       <Pressable
         onPress={() => onSelect(entry.path)}
         className={cn(
-          'flex-row items-center gap-1.5 py-1 pr-2 rounded-md active:bg-muted',
+          'flex-row items-center gap-1.5 pr-2 rounded-md active:bg-muted',
+          isNative ? 'min-h-10 py-1.5' : 'py-1',
           treeIndentClass(depth),
           isSelected ? 'bg-primary/10' : '',
         )}
       >
-        <View className="w-2.5 shrink-0" />
+        <View className={isNative ? 'w-3.5 shrink-0' : 'w-2.5 shrink-0'} />
         <FileText
-          size={12}
+          size={isNative ? 16 : 12}
           className={cn(
             'shrink-0',
             ext === 'md' ? 'text-blue-500' :
@@ -212,7 +216,7 @@ function FileTreeItem({
         />
         <Text
           className={cn(
-            'text-xs flex-1 min-w-0',
+            isNative ? 'text-sm flex-1 min-w-0' : 'text-xs flex-1 min-w-0',
             isSelected ? 'text-primary font-medium' : 'text-foreground',
           )}
           numberOfLines={1}
@@ -220,7 +224,7 @@ function FileTreeItem({
           {entry.name}
         </Text>
         {entry.size != null && (
-          <Text className="text-[10px] text-muted-foreground shrink-0">
+          <Text className={isNative ? 'text-xs text-muted-foreground shrink-0' : 'text-[10px] text-muted-foreground shrink-0'}>
             {formatSize(entry.size)}
           </Text>
         )}
@@ -258,6 +262,7 @@ const NARROW_BREAKPOINT = 600
 export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowserPanelProps) {
   const { width } = useWindowDimensions()
   const isNarrow = width < NARROW_BREAKPOINT
+  const isNative = Platform.OS !== 'web'
   const [showEditorOnNarrow, setShowEditorOnNarrow] = useState(false)
 
   const client = useMemo(
@@ -752,21 +757,21 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         )}
       >
         {/* Search bar */}
-        <View className="p-2 border-b border-border">
-          <View className="flex-row items-center bg-background border border-border rounded-md px-2">
-            <Search size={12} className="text-muted-foreground" />
+        <View className={cn('border-b border-border', isNative ? 'p-3' : 'p-2')}>
+          <View className={cn('flex-row items-center bg-background border border-border rounded-md', isNative ? 'min-h-11 px-3' : 'px-2')}>
+            <Search size={isNative ? 18 : 12} className="text-muted-foreground" />
             <TextInput
               value={searchQuery}
               onChangeText={setSearchQuery}
               onSubmitEditing={handleSearch}
               placeholder="Search files..."
-              className="flex-1 text-xs py-1.5 px-1.5 text-foreground placeholder:text-muted-foreground"
+              className={cn('flex-1 px-2 text-foreground placeholder:text-muted-foreground', isNative ? 'text-base py-2' : 'text-xs py-1.5')}
               autoCapitalize="none"
               returnKeyType="search"
             />
             {searchQuery ? (
               <Pressable onPress={() => { setSearchQuery(''); setSearchResults(null) }}>
-                <X size={12} className="text-muted-foreground" />
+                <X size={isNative ? 18 : 12} className="text-muted-foreground" />
               </Pressable>
             ) : null}
           </View>
@@ -816,11 +821,11 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
           ) : (
             <View className="p-1">
               {/* General file tree */}
-              <Text className="text-[10px] font-medium text-muted-foreground px-2 py-1 mt-2">
+              <Text className={cn('font-medium text-muted-foreground px-2 py-1 mt-2', isNative ? 'text-xs' : 'text-[10px]')}>
                 PROJECT FILES
               </Text>
               {tree.length === 0 ? (
-                <Text className="text-xs text-muted-foreground px-2 py-2 italic">
+                <Text className={cn('text-muted-foreground px-2 py-2 italic', isNative ? 'text-sm' : 'text-xs')}>
                   No files yet. Upload or create one.
                 </Text>
               ) : (
@@ -854,18 +859,18 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         </ScrollView>
 
         {/* Bottom actions */}
-        <View className="p-2 border-t border-border gap-1">
-          <View className="flex-row gap-1">
+        <View className={cn('border-t border-border', isNative ? 'p-3 gap-2' : 'p-2 gap-1')}>
+          <View className={cn('flex-row', isNative ? 'gap-2' : 'gap-1')}>
             <Pressable
               onPress={() => {
                 setNewItemParentDir(null)
                 setShowNewDialog('file')
                 setNewName('')
               }}
-              className="flex-1 flex-row items-center justify-center gap-1 px-2 py-1.5 rounded-md active:bg-muted border border-border"
+              className={cn('flex-1 flex-row items-center justify-center gap-1 px-2 rounded-md active:bg-muted border border-border', isNative ? 'min-h-11 py-2' : 'py-1.5')}
             >
-              <FilePlus size={12} className="text-muted-foreground" />
-              <Text className="text-[10px] text-muted-foreground">New File</Text>
+              <FilePlus size={isNative ? 18 : 12} className="text-muted-foreground" />
+              <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-[10px] text-muted-foreground'}>New File</Text>
             </Pressable>
             <Pressable
               onPress={() => {
@@ -873,46 +878,46 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
                 setShowNewDialog('folder')
                 setNewName('')
               }}
-              className="flex-1 flex-row items-center justify-center gap-1 px-2 py-1.5 rounded-md active:bg-muted border border-border"
+              className={cn('flex-1 flex-row items-center justify-center gap-1 px-2 rounded-md active:bg-muted border border-border', isNative ? 'min-h-11 py-2' : 'py-1.5')}
             >
-              <FolderPlus size={12} className="text-muted-foreground" />
-              <Text className="text-[10px] text-muted-foreground">New Folder</Text>
+              <FolderPlus size={isNative ? 18 : 12} className="text-muted-foreground" />
+              <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-[10px] text-muted-foreground'}>New Folder</Text>
             </Pressable>
           </View>
           <Pressable
             onPress={() => handleUpload(null)}
-            className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
+            className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
           >
-            <Upload size={12} className="text-muted-foreground" />
-            <Text className="text-xs text-muted-foreground">Upload Files</Text>
+            <Upload size={isNative ? 18 : 12} className="text-muted-foreground" />
+            <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-xs text-muted-foreground'}>Upload Files</Text>
           </Pressable>
           <View className="border-t border-border mt-1 pt-1 gap-1">
             <Pressable
               onPress={handleDownloadProjectZip}
               disabled={isDownloadingZip}
-              className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
+              className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
             >
-              <FolderArchive size={12} className="text-muted-foreground" />
-              <Text className="text-xs text-muted-foreground">
+              <FolderArchive size={isNative ? 18 : 12} className="text-muted-foreground" />
+              <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-xs text-muted-foreground'}>
                 {isDownloadingZip ? 'Preparing ZIP...' : 'Download project (ZIP)'}
               </Text>
             </Pressable>
             <Pressable
               onPress={handleExport}
               disabled={isExporting}
-              className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
+              className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
             >
-              <Upload size={12} className="text-muted-foreground" />
-              <Text className="text-xs text-muted-foreground">
+              <Upload size={isNative ? 18 : 12} className="text-muted-foreground" />
+              <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-xs text-muted-foreground'}>
                 {isExporting ? 'Exporting...' : 'Export Agent'}
               </Text>
             </Pressable>
             <Pressable
               onPress={handleImport}
-              className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
+              className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
             >
-              <Download size={12} className="text-muted-foreground" />
-              <Text className="text-xs text-muted-foreground">Import Agent</Text>
+              <Download size={isNative ? 18 : 12} className="text-muted-foreground" />
+              <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-xs text-muted-foreground'}>Import Agent</Text>
             </Pressable>
           </View>
         </View>

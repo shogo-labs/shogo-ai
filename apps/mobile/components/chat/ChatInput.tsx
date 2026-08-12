@@ -1338,7 +1338,9 @@ function ChatInputImpl({
     // We keep the bottom padding either way — it separates the
     // composer from whatever sits beneath it (file previews,
     // toolbar dropdowns, etc.).
-    <View className={cn(flush ? "pb-3" : "p-3 pt-0")}>
+    <View className={cn(
+      flush ? "pb-3" : isNative ? "px-2 pb-4 pt-0" : "p-3 pt-0",
+    )}>
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
           {ideContext?.activeFile && (
@@ -2336,12 +2338,12 @@ function ChatInputImpl({
                   style={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
                 >
                   <Text
-                    className={isNative ? "text-[13px] text-muted-foreground" : "text-xs text-muted-foreground"}
+                    className={isNative ? "text-sm text-muted-foreground" : "text-xs text-muted-foreground"}
                     numberOfLines={1}
                   >
                     {isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
                   </Text>
-                  <ChevronDown className="h-2 w-2 flex-shrink-0 text-muted-foreground/60" size={isNative ? 10 : 8} />
+                  <ChevronDown className="h-2 w-2 flex-shrink-0 text-muted-foreground/60" size={isNative ? 12 : 8} />
                 </Pressable>
               )}
             >

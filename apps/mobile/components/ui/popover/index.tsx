@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 'use client';
 import React from 'react';
-import { View, Pressable, ScrollView, ViewStyle } from 'react-native';
+import { View, Pressable, ScrollView, ViewStyle, Platform } from 'react-native';
 import {
   Motion,
   createMotionAnimatedComponent,
@@ -175,19 +175,26 @@ const PopoverContent = React.forwardRef<
   IPopoverContentProps
 >(function PopoverContent({ className, size, children, style, ...props }, ref) {
   const { size: parentSize } = useStyleContext(SCOPE);
+  const nativeMotion = Platform.OS === 'web'
+    ? {}
+    : {
+        initial: { opacity: 0, scale: 0.96, y: 10 },
+        animate: { opacity: 1, scale: 1, y: 0 },
+        exit: { opacity: 0, scale: 0.97, y: 8 },
+      };
 
   return (
     <UIPopover.Content
       ref={ref}
+      {...nativeMotion}
       transition={{
         type: 'spring',
-        damping: 18,
-        stiffness: 250,
+        damping: 22,
+        stiffness: 280,
         mass: 0.9,
         opacity: {
           type: 'timing',
-          duration: 50,
-          delay: 50,
+          duration: 160,
         },
       }}
       {...props}
@@ -264,14 +271,11 @@ const PopoverBackdrop = React.forwardRef<
         opacity: 0,
       }}
       transition={{
-        type: 'spring',
-        damping: 18,
-        stiffness: 450,
-        mass: 0.9,
+        type: 'timing',
+        duration: 180,
         opacity: {
           type: 'timing',
-          duration: 50,
-          delay: 50,
+          duration: 180,
         },
       }}
       className={popoverBackdropStyle({

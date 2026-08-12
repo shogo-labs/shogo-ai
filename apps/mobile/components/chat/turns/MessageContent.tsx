@@ -342,7 +342,7 @@ export function MessageContent({
           isLongText ? (
             <LongTextPreviewCard text={content} title="Your Message" />
           ) : (
-            <Text className="text-xs text-foreground" selectable>
+            <Text className={Platform.OS !== "web" ? "text-base leading-6 text-foreground" : "text-xs text-foreground"} selectable>
               {content}
             </Text>
           )
@@ -355,7 +355,7 @@ export function MessageContent({
     <View className={cn(baseClasses, "gap-2")}>
       {content ? (
           <MarkdownText
-            className="text-xs text-foreground prose-sm"
+            className={Platform.OS !== "web" ? "text-base text-foreground" : "text-xs text-foreground prose-sm"}
             isStreaming={isStreaming}
           >
             {content}

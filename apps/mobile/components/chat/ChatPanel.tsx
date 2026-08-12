@@ -4899,7 +4899,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const errorMessage = error?.message ?? null
   const nativePhonePanelWidth = isNativePhoneLayout ? Math.max(0, windowWidth) : undefined
-  const nativePhoneComposerWidth = isNativePhoneLayout ? Math.max(0, windowWidth - 24) : undefined
+  const nativePhoneComposerWidth = isNativePhoneLayout ? Math.max(0, windowWidth) : undefined
 
   // Memoizing the context value is the single biggest win for streaming
   // re-renders. Previously this was a fresh object literal on every
