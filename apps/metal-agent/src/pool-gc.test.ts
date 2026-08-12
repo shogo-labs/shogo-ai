@@ -362,6 +362,12 @@ describe('pool GC', () => {
 
 describe('pool resume rootfs-identity gate', () => {
   let dir: string
+  /**
+   * Pin the capacity knobs open so nothing in these tests moves because the
+   * machine running them happens to have a full disk — the only thing under
+   * test is the rootfs-identity decision.
+   */
+  const noPressure = { diskHighPct: 100, diskLowPct: 100, cacheMaxBytes: Number.MAX_SAFE_INTEGER }
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'metal-pool-rootfs-'))
   })
@@ -388,6 +394,78 @@ describe('pool resume rootfs-identity gate', () => {
     expect(new CacheIndex(cfg.snapDir).get('proj')).toBeNull()
     // ...but the durable copy is left intact (we only evicted the local hot copy).
     expect(store.removed).toEqual([])
+  })
+
+  test('gc reclaims wrong-rootfs snapshots with no disk pressure, and spares resumable ones', async () => {
+    // The gap this closes: `resume()` refused a stale snapshot but only when
+    // someone opened that project, so a rootfs rebuild left the whole cache on
+    // disk indefinitely — ~90% of every production host, ~15.9 TB that could
+    // not have served a single wake. They are garbage, not cache, so the sweep
+    // must take them without waiting for the disk to fill up.
+    const store = new FakeStore('NEW')
+    const { pool, cfg } = makePool(dir, store, { rootfsIdentity: 'NEW', ...noPressure })
+    const stale = seedWithIdentity(cfg, 'stale', 'OLD')
+    const match = seedWithIdentity(cfg, 'match', 'NEW')
+    const legacy = seedWithIdentity(cfg, 'legacy', '') // pre-identity entry
+    pool.rehydrate()
+
+    const report = await pool.gcSweep()
+
+    // Not a capacity decision: the LRU planner declined to run at all.
+    expect(report.triggered).toBe(false)
+    expect(report.evicted).toEqual([])
+    expect(report.staleReclaimed).toEqual(['stale'])
+    expect(report.bytesReclaimed).toBe(6100) // mem 1000 + state 100 + rootfs 5000
+
+    // Every artifact of the dead snapshot is gone, index entry included.
+    expect(existsSync(stale.snapshotPath)).toBe(false)
+    expect(existsSync(stale.memFilePath)).toBe(false)
+    expect(existsSync(stale.rootfs)).toBe(false)
+    expect(new CacheIndex(cfg.snapDir).get('stale')).toBeNull()
+
+    // The resumable snapshot and the legacy (unstamped, treated as compatible)
+    // one survive — this must not become a mass cold-boot.
+    expect(pool.status().suspended.map((s) => s.projectId).sort()).toEqual(['legacy', 'match'])
+    expect(existsSync(match.snapshotPath)).toBe(true)
+    expect(existsSync(legacy.snapshotPath)).toBe(true)
+
+    // Only the local copy is ours to drop; the durable tier has its own gate.
+    expect(store.removed).toEqual([])
+  })
+
+  test('the reclaim is bounded per sweep, and the backlog drains over later sweeps', async () => {
+    // A rebuilt host holds thousands of these. Unlinking every multi-gigabyte
+    // memory file in one pass would stall the GC timer, so the backlog has to
+    // drain across sweeps the way the orphan-device reconcile does.
+    const { pool, cfg } = makePool(dir, new FakeStore('NEW'), { rootfsIdentity: 'NEW', ...noPressure })
+    for (let i = 0; i < 105; i++) seedWithIdentity(cfg, `p${i}`, 'OLD')
+    pool.rehydrate()
+    expect(pool.status().suspended.length).toBe(105)
+
+    const first = await pool.gcSweep()
+    expect(first.staleReclaimed.length).toBe(100)
+    expect(pool.status().suspended.length).toBe(5)
+
+    const second = await pool.gcSweep()
+    expect(second.staleReclaimed.length).toBe(5)
+    expect(pool.status().suspended).toEqual([])
+
+    const third = await pool.gcSweep()
+    expect(third.staleReclaimed).toEqual([])
+  })
+
+  test('a stale entry the pool still considers live is left for the open path to settle', async () => {
+    // Belt-and-braces against the sweep racing an open: whoever holds the
+    // project decides its snapshot's fate, not the GC timer.
+    const { pool, cfg } = makePool(dir, new FakeStore('NEW'), { rootfsIdentity: 'NEW', ...noPressure })
+    const a = seedWithIdentity(cfg, 'busy', 'OLD')
+    pool.rehydrate()
+    ;(pool as any).assigned.set('busy', { projectId: 'busy', handle: { rootfs: a.rootfs } })
+
+    const report = await pool.gcSweep()
+
+    expect(report.staleReclaimed).toEqual([])
+    expect(existsSync(a.snapshotPath)).toBe(true)
   })
 
   test('localSnapshotIsStale: mismatch=stale, match=fresh, missing identity=compatible', () => {

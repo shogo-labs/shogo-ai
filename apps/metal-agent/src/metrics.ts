@@ -62,6 +62,7 @@ export const M = {
   tapsInUse: 'metal_taps_in_use',
   tapCapacity: 'metal_tap_capacity',
   tapUsedPct: 'metal_tap_used_pct',
+  gcStaleReclaimed: 'metal_gc_stale_reclaimed_total',
   resumeLocalHits: 'metal_resume_local_hits_total',
   resumeStoreHits: 'metal_resume_store_hits_total',
   resumeColdMiss: 'metal_resume_cold_miss_total',
