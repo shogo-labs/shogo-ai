@@ -22,5 +22,11 @@
 #
 # Verify before changing it, don't assume. The image is greppable:
 #   ssh root@<host> "grep -ac -m1 <symbol-from-the-change> /opt/fc-spike/img/runtime.ext4"
+#
+# be0c37c (v1.13.26) verified on all four production hosts 2026-08-13: ROOTFS_SHA
+# reads be0c37c and the image contains `reportErrorToParent`, the symbol d6be7e2e
+# added to canvas-bridge.js — a commit that is inside v1.13.26 and absent from the
+# previous baseline. So the fleet has rebuilt, and leaving the baseline behind it
+# would have had the next release rebuild for a guest change already shipped.
 
-8b4232bb7
+be0c37c22
