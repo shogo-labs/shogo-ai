@@ -262,8 +262,7 @@ const HomeScreen = observer(function HomeScreen() {
   const isDark = useDarkMode()
   const { width: screenWidth, height: screenHeight } = useWindowDimensions()
   const isMobile = screenWidth < 640
-  const isNative = Platform.OS !== 'web'
-  const isNativePhone = isNative && isMobile
+  const isNativePhone = Platform.OS !== 'web' && isMobile
   const homeEntrance = useRef(new Animated.Value(Platform.OS === 'web' ? 1 : 0)).current
   const homeKeyboardLift = useRef(new Animated.Value(0)).current
 
@@ -952,7 +951,7 @@ const HomeScreen = observer(function HomeScreen() {
                   ? handleStartVoiceProjectCreation
                   : undefined
               }
-              prominentMobile={isNative}
+              prominentMobile={isNativePhone}
               prominentColorScheme={isDark ? 'dark' : 'light'}
               // Consolidated "where does this project come from?" entry
               // point. Sits at the leftmost edge of the toolbar so it
@@ -973,7 +972,7 @@ const HomeScreen = observer(function HomeScreen() {
                   <ProjectSourceMenu
                     workspaceId={currentWorkspace?.id}
                     variant="chip"
-                    prominentMobile={isNative}
+                    prominentMobile={isNativePhone}
                   />
                   {/* Tech stack for the project this composer will create.
                       Persisted into settings.techStackId on Send so the
@@ -982,7 +981,7 @@ const HomeScreen = observer(function HomeScreen() {
                     value={techStackId}
                     onChange={handleTechStackChange}
                     disabled={isCreating}
-                    prominentMobile={isNative}
+                    prominentMobile={isNativePhone}
                   />
                 </View>
               }

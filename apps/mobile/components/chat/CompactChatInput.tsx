@@ -73,7 +73,6 @@ const MAX_INPUT_HEIGHT = 200
 const PROMINENT_MIN_INPUT_HEIGHT = 92
 const PROMINENT_MAX_INPUT_HEIGHT = 210
 const NATIVE_MIN_INPUT_HEIGHT = 48
-const NATIVE_PROMINENT_MIN_INPUT_HEIGHT = 72
 const NATIVE_MAX_INPUT_HEIGHT = 144
 
 function compactNativeModelLabel(modelId: string): string {
@@ -194,15 +193,20 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const isNativePhone = Platform.OS !== "web" && windowWidth < 600
     const useProminentComposer = prominentMobile && isNativePhone
     const useLightProminentComposer = useProminentComposer && prominentColorScheme === "light"
-    const inputMinHeight = isNative
-      ? (useProminentComposer ? NATIVE_PROMINENT_MIN_INPUT_HEIGHT : NATIVE_MIN_INPUT_HEIGHT)
-      : (useProminentComposer ? PROMINENT_MIN_INPUT_HEIGHT : MIN_INPUT_HEIGHT)
-    const inputMaxHeight = isNative
-      ? NATIVE_MAX_INPUT_HEIGHT
-      : (useProminentComposer ? PROMINENT_MAX_INPUT_HEIGHT : MAX_INPUT_HEIGHT)
-    const modelTriggerMaxWidth = isNativePhone
-      ? Math.max(50, Math.min(62, Math.floor(windowWidth * 0.16)))
-      : Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
+    const useCurrentNativeSizing = isNative && !useProminentComposer
+    const inputMinHeight = useProminentComposer
+      ? PROMINENT_MIN_INPUT_HEIGHT
+      : useCurrentNativeSizing
+        ? NATIVE_MIN_INPUT_HEIGHT
+        : MIN_INPUT_HEIGHT
+    const inputMaxHeight = useProminentComposer
+      ? PROMINENT_MAX_INPUT_HEIGHT
+      : useCurrentNativeSizing
+        ? NATIVE_MAX_INPUT_HEIGHT
+        : MAX_INPUT_HEIGHT
+    const modelTriggerMaxWidth = useProminentComposer
+      ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
+      : Math.max(50, Math.min(62, Math.floor(windowWidth * 0.16)))
     const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
 
     const [internalValue, setInternalValue] = useState("")
@@ -746,24 +750,22 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             }}
             style={[
               { height: inputHeight },
-              isNative
+              useProminentComposer
                 ? {
-                    ...(useProminentComposer
-                      ? { color: useLightProminentComposer ? "#202938" : "#f8fafc" }
-                      : {}),
-                    fontSize: 16,
-                    lineHeight: 22,
+                    color: useLightProminentComposer ? "#202938" : "#f8fafc",
+                    fontSize: 14,
+                    lineHeight: 21,
                   }
-                : null,
+                : useCurrentNativeSizing
+                  ? { fontSize: 16, lineHeight: 22 }
+                  : null,
             ]}
             className={cn(
-              isNative
-                ? (useProminentComposer
-                    ? "min-h-[72px] max-h-[144px] w-full px-4 pt-3 text-base text-foreground"
-                    : "min-h-[48px] max-h-[144px] w-full px-4 pt-3 text-base text-foreground")
-                : (useProminentComposer
-                    ? "min-h-[92px] max-h-[210px] w-full px-4 pt-4 text-sm text-foreground"
-                    : "min-h-[80px] max-h-[200px] w-full px-4 pt-4 text-xs text-foreground"),
+              useProminentComposer
+                ? "min-h-[92px] max-h-[210px] w-full px-4 pt-4 text-sm text-foreground"
+                : useCurrentNativeSizing
+                  ? "min-h-[48px] max-h-[144px] w-full px-4 pt-3 text-base text-foreground"
+                  : "min-h-[80px] max-h-[200px] w-full px-4 pt-4 text-xs text-foreground",
               disabled && dimWhenDisabled && "opacity-50",
               Platform.OS === "web" && "outline-none no-focus-ring"
             )}
@@ -774,9 +776,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           <View
             className={cn(
               "flex-row items-center justify-between",
-              isNative
-                ? "min-h-12 px-2 py-1"
-                : (useProminentComposer ? "px-2 pb-2.5 pt-1.5" : "p-1.5"),
+              useProminentComposer
+                ? "px-2 pb-2.5 pt-1.5"
+                : useCurrentNativeSizing
+                  ? "min-h-12 px-2 py-1"
+                  : "p-1.5",
               isNativePhone && "items-end gap-y-1"
             )}
           >
@@ -784,7 +788,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             <View
               className={cn(
                 "flex-row items-center",
-                isNative ? "min-w-0 flex-1 gap-1" : "gap-1",
+                useProminentComposer
+                  ? "min-w-0 flex-1 gap-1.5"
+                  : useCurrentNativeSizing
+                    ? "min-w-0 flex-1 gap-1"
+                    : "gap-1",
                 isNativePhone && !useProminentComposer && "min-w-0 flex-1 flex-wrap"
               )}
             >
@@ -804,12 +812,14 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   <WebTooltip label={`Mode: ${currentInteractionConfig.label}`}>
                     <Pressable
                       {...triggerProps}
-                      hitSlop={isNative ? 6 : undefined}
+                      hitSlop={useCurrentNativeSizing ? 6 : undefined}
                       disabled={disabled}
                       accessibilityLabel={`Mode: ${currentInteractionConfig.label}`}
                       className={cn(
-                        isNative
-                          ? "h-8 w-8 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
+                        useProminentComposer
+                          ? "h-7 w-7 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
+                          : useCurrentNativeSizing
+                            ? "h-8 w-8 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
                           : "h-[22px] w-[22px] items-center justify-center rounded-md",
                         interactionMode === "agent" && "bg-muted/50",
                         interactionMode === "plan" &&
@@ -826,7 +836,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                           interactionMode === "plan" && "text-amber-400",
                           interactionMode === "ask" && "text-emerald-400"
                         )}
-                        size={isNative ? 16 : 14}
+                        size={useProminentComposer ? 13 : useCurrentNativeSizing ? 16 : 14}
                       />
                     </Pressable>
                   </WebTooltip>
@@ -907,13 +917,15 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 <WebTooltip label="Also generate a stakeholder summary">
                   <Pressable
                     testID="home-dual-plan-toggle"
-                    hitSlop={isNative ? 6 : undefined}
+                    hitSlop={useCurrentNativeSizing ? 6 : undefined}
                     disabled={disabled}
                     onPress={() => onDualPlanChange?.(!dualPlan)}
                     accessibilityLabel="Also generate a stakeholder summary"
                     className={cn(
-                      isNative
-                        ? "h-8 w-8 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
+                      useProminentComposer
+                        ? "h-7 w-7 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
+                        : useCurrentNativeSizing
+                          ? "h-8 w-8 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
                         : "h-[22px] w-[22px] items-center justify-center rounded-md",
                       dualPlan
                         ? "border border-sky-500/45 bg-sky-500/12"
@@ -925,14 +937,18 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                         useProminentComposer ? "h-3.5 w-3.5" : "h-3.5 w-3.5",
                         dualPlan ? "text-sky-400" : "text-muted-foreground"
                       )}
-                      size={isNative ? 16 : 14}
+                      size={useProminentComposer ? 13 : useCurrentNativeSizing ? 16 : 14}
                     />
                   </Pressable>
                 </WebTooltip>
               )}
 
               {/* Environment selector — pick Cloud or a paired machine */}
-              <EnvironmentPicker disabled={disabled || isLoading} prominentMobile={isNative} />
+              <EnvironmentPicker
+                disabled={disabled || isLoading}
+                prominentMobile={isNative}
+                compactMobile={useProminentComposer}
+              />
 
               {/* Model selector */}
               <Popover
@@ -944,23 +960,29 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
-                    hitSlop={isNative ? 6 : undefined}
+                    hitSlop={useCurrentNativeSizing ? 6 : undefined}
                     disabled={disabled}
                     className={cn(
-                      isNative
-                        ? "h-8 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-2"
+                      useProminentComposer
+                        ? "h-7 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-1.5"
+                        : useCurrentNativeSizing
+                          ? "h-8 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-2"
                         : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
                       isNativePhone && "min-w-0"
                     )}
                     style={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
                   >
                     <Text
-                      className={isNative ? "text-[13px] text-foreground/85" : "text-xs text-muted-foreground"}
+                      className={useProminentComposer
+                        ? "text-[11px] text-foreground/85"
+                        : useCurrentNativeSizing
+                          ? "text-[13px] text-foreground/85"
+                          : "text-xs text-muted-foreground"}
                       numberOfLines={1}
                     >
                       {isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
                     </Text>
-                    <ChevronDown className="flex-shrink-0 text-muted-foreground/70" size={isNative ? 10 : 8} />
+                    <ChevronDown className="flex-shrink-0 text-muted-foreground/70" size={useCurrentNativeSizing ? 10 : 8} />
                   </Pressable>
                 )}
               >
@@ -983,32 +1005,36 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
             {/* Right side buttons */}
             {voiceInput.isRecording ? (
-              <View className={cn("flex-row flex-shrink-0 items-center", isNative ? "gap-1.5" : "gap-2")}>
+              <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "gap-1.5" : useCurrentNativeSizing ? "gap-1.5" : "gap-2")}>
                 <VoiceWaveform />
                 <Pressable
                   onPress={() => voiceInput.toggleRecording().catch(() => {})}
-                  hitSlop={isNative ? 4 : undefined}
+                  hitSlop={useCurrentNativeSizing ? 4 : undefined}
                   role="button"
                   accessibilityLabel="Stop voice recording"
                   className={cn(
                     "rounded-full bg-foreground/90 items-center justify-center active:opacity-70",
-                    isNative ? "h-9 w-9" : "h-6 w-6",
+                    useProminentComposer ? "h-7 w-7" : useCurrentNativeSizing ? "h-9 w-9" : "h-6 w-6",
                   )}
                 >
-                  <Square className="text-background" size={isNative ? 14 : 10} fill="currentColor" />
+                  <Square className="text-background" size={useProminentComposer ? 11 : useCurrentNativeSizing ? 14 : 10} fill="currentColor" />
                 </Pressable>
               </View>
             ) : (
-              <View className={cn("flex-row flex-shrink-0 items-center", isNative ? "ml-1 gap-1" : "gap-1")}>
+              <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "ml-2 gap-1.5" : useCurrentNativeSizing ? "ml-1 gap-1" : "gap-1")}>
                 <Pressable
                   onPress={handleAttachClick}
-                  hitSlop={isNative ? 4 : undefined}
+                  hitSlop={useCurrentNativeSizing ? 4 : undefined}
                   disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
                   role="button"
                   accessibilityLabel="Attach file"
                   className={cn(
                     "rounded-full items-center justify-center active:opacity-70",
-                    isNative ? "h-9 w-9 border border-border/45 bg-muted/30" : "min-h-5 min-w-5",
+                    useProminentComposer
+                      ? "h-7 w-7 border border-border/45 bg-muted/30"
+                      : useCurrentNativeSizing
+                        ? "h-9 w-9 border border-border/45 bg-muted/30"
+                        : "min-h-5 min-w-5",
                   )}
                   android_ripple={{ color: "rgba(128,128,128,0.25)" }}
                 >
@@ -1019,28 +1045,28 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                         ? "text-muted-foreground/40"
                         : "text-muted-foreground"
                     )}
-                    size={isNative ? 18 : 12}
+                    size={useProminentComposer ? 13 : useCurrentNativeSizing ? 18 : 12}
                   />
                 </Pressable>
 
                 {isLoading ? (
-                  <View className={cn("rounded-full items-center justify-center bg-primary opacity-50", isNative ? "h-9 w-9" : "h-5 w-5")}>
-                    <Loader2 className="h-3.5 w-3.5 text-primary-foreground animate-spin" size={isNative ? 18 : 12} />
+                  <View className={cn("rounded-full items-center justify-center bg-primary opacity-50", useProminentComposer ? "h-7 w-7" : useCurrentNativeSizing ? "h-9 w-9" : "h-5 w-5")}>
+                    <Loader2 className="h-3.5 w-3.5 text-primary-foreground animate-spin" size={useProminentComposer ? 14 : useCurrentNativeSizing ? 18 : 12} />
                   </View>
                 ) : (value.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) ? (
                   <Pressable
                     onPress={handleSubmit}
-                    hitSlop={isNative ? 4 : undefined}
+                    hitSlop={useCurrentNativeSizing ? 4 : undefined}
                     disabled={disabled}
                     role="button"
                     accessibilityLabel="Send message"
                     className={cn(
                       "rounded-full items-center justify-center bg-primary",
-                      isNative ? "h-9 w-9" : "h-5 w-5",
+                      useProminentComposer ? "h-7 w-7" : useCurrentNativeSizing ? "h-9 w-9" : "h-5 w-5",
                       disabled && "opacity-50"
                     )}
                   >
-                    <ArrowUp className="h-3.5 w-3.5 text-primary-foreground" size={isNative ? 18 : 12} />
+                    <ArrowUp className="h-3.5 w-3.5 text-primary-foreground" size={useProminentComposer ? 14 : useCurrentNativeSizing ? 18 : 12} />
                   </Pressable>
                 ) : onStartVoiceProjectCreation ? (
                   <Pressable
@@ -1048,13 +1074,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                       voiceInput.clearError()
                       void Promise.resolve(onStartVoiceProjectCreation()).catch(() => {})
                     }}
-                    hitSlop={isNative ? 4 : undefined}
+                    hitSlop={useCurrentNativeSizing ? 4 : undefined}
                     disabled={disabled}
                     role="button"
                     accessibilityLabel="Start voice project creation"
                     className={cn(
                       "rounded-full items-center justify-center active:opacity-70",
-                      isNative ? "h-9 w-9 border border-border/45 bg-muted/30" : "h-5 w-5",
+                      useProminentComposer
+                        ? "h-7 w-7 border border-border/45 bg-muted/30"
+                        : useCurrentNativeSizing
+                          ? "h-9 w-9 border border-border/45 bg-muted/30"
+                          : "h-5 w-5",
                     )}
                   >
                     <Mic
@@ -1064,7 +1094,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                           ? "text-muted-foreground/40"
                           : "text-muted-foreground"
                       )}
-                      size={isNative ? 18 : 14}
+                      size={useProminentComposer ? 13 : useCurrentNativeSizing ? 18 : 14}
                     />
                   </Pressable>
                 ) : voiceInput.canRecord ? (
@@ -1073,13 +1103,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                       voiceInput.clearError()
                       voiceInput.toggleRecording().catch(() => {})
                     }}
-                    hitSlop={isNative ? 4 : undefined}
+                    hitSlop={useCurrentNativeSizing ? 4 : undefined}
                     disabled={disabled}
                     role="button"
                     accessibilityLabel="Start voice recording"
                     className={cn(
                       "rounded-full items-center justify-center active:opacity-70",
-                      isNative ? "h-9 w-9 border border-border/45 bg-muted/30" : "h-5 w-5",
+                      useProminentComposer
+                        ? "h-7 w-7 border border-border/45 bg-muted/30"
+                        : useCurrentNativeSizing
+                          ? "h-9 w-9 border border-border/45 bg-muted/30"
+                          : "h-5 w-5",
                     )}
                   >
                     <Mic
@@ -1089,7 +1123,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                           ? "text-muted-foreground/40"
                           : "text-muted-foreground"
                       )}
-                      size={isNative ? 18 : 14}
+                      size={useProminentComposer ? 13 : useCurrentNativeSizing ? 18 : 14}
                     />
                   </Pressable>
                 ) : null}
