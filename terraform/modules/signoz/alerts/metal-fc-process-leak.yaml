@@ -1,7 +1,8 @@
 # SigNoz alert: metal firecracker process leak (recurrence guard)
 #
-# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
-# SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a `data` field).
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes live in the
+# module README — the short version is dotted metric names, builder queries (not
+# PromQL), v2alpha1, and a channel that exists.
 #
 # Why: under heavy churn, partial boot/restore/assign failures used to orphan
 # live `firecracker` children the pool no longer tracked. They accumulated until
@@ -9,36 +10,96 @@
 # incident. The fix (kill-on-failure + age-gated orphan reaper) is in, but the
 # whole point of shipping `metal.host.fc_procs` in the heartbeat is to catch a
 # RECURRENCE fleet-wide instead of by SSH. A healthy host keeps
-# fc_procs == available + assigned (suspended VMs have no process). A sustained
-# gap means processes are leaking again.
-#
-# Metric names: OTel dots become underscores in SigNoz PromQL
-# (metal.host.fc_procs -> metal_host_fc_procs). Heartbeats round-robin across
-# API replicas, so aggregate with `max by (host_id)` to dedupe the same host
-# reported by multiple pods.
+# fc_procs == available + assigned (suspended VMs have no process), which the
+# fleet currently does exactly: the formula below reads 0 on all four hosts.
 
 alert: MetalFcProcessLeak
+alertType: METRIC_BASED_ALERT
 ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
 condition:
   compositeQuery:
-    queryType: promql
-    promQueries:
-      A:
-        query: |
-          max by (host_id) (metal_host_fc_procs)
-          - max by (host_id) (metal_host_available + metal_host_assigned)
-        legend: "{{host_id}} orphan_procs"
-        disabled: false
-  op: ">"
-  target: 20
-  matchType: "1" # at-least-once-during
-  selectedQuery: A
-evalWindow: "10m0s"
-frequency: "1m0s"
+    panelType: graph
+    queryType: builder
+    queries:
+      # A–C are raw gauges, all disabled: only the formula is evaluated.
+      # Heartbeats round-robin across API replicas, so max collapses the
+      # duplicate reports of one host to a single value.
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: metal.host.fc_procs
+              spaceAggregation: max
+              timeAggregation: max
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          stepInterval: 60s
+      - type: builder_query
+        spec:
+          name: B
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: metal.host.available
+              spaceAggregation: max
+              timeAggregation: max
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          stepInterval: 60s
+      - type: builder_query
+        spec:
+          name: C
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: metal.host.assigned
+              spaceAggregation: max
+              timeAggregation: max
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          stepInterval: 60s
+      - type: builder_formula
+        spec:
+          name: F1
+          expression: A - (B + C)
+          legend: "{{host_id}} orphan_procs"
+  selectedQueryName: F1
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        # The original file paired "for 10+ minutes" prose with an
+        # at-least-once match, so a single scrape could page. Sustained is what
+        # the prose (and the incident) describes.
+        matchType: on_average
+        target: 20
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 10m
+    frequency: 1m
 labels:
   severity: critical
   team: platform
   incident_class: metal
+notificationSettings:
+  groupBy: [host_id]
+  renotify:
+    enabled: true
+    interval: 4h
+    alertStates: [firing]
 annotations:
   summary: "Metal host has 20+ untracked firecracker processes for 10+ minutes (process leak)"
   description: |
@@ -58,4 +119,4 @@ annotations:
        you work: it keeps serving live projects but takes no new placements.
     4. Capture `/vms` + a `ps` snapshot before the restart for root-cause.
 
-    Runbook: docs/runbooks/deploy-prod.md (metal section).
+    Runbook: docs/runbooks/metal-fleet.md

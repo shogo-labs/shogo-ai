@@ -52,10 +52,10 @@ The Terraform module deploys the **collector** only — alert rules and
 dashboards are content that lives in SigNoz, not in the Helm chart, so
 they're managed separately as YAML/JSON files under this directory:
 
-- `alerts/publish-failure-rate.yaml` — pages on-call when publish
-  failures sustain >1/min for 5 minutes.
-- `alerts/prod-node-count-low.yaml` — pages when prod-us drops below
-  the terraform-declared `system_pool_min`.
+- `alerts/publish-failure-rate.yaml` — pages on-call on 3+ fatal
+  (error-level) publish failures within 5 minutes.
+- `alerts/prod-node-count-low.yaml` — pages when prod-us has fewer ready
+  nodes than the terraform-declared `system_pool_min`.
 - `alerts/warm-pool-starvation.yaml` — pages when warm-pool depth
   stays below 3 for 10+ minutes (every new project hitting cold start).
 - `alerts/metal-fc-process-leak.yaml` — pages when a metal host carries
@@ -92,11 +92,70 @@ they're managed separately as YAML/JSON files under this directory:
   host-error/no-host rates. Feeds off the `metal.*` OTel series from the
   API plus the per-host gauges folded from each agent heartbeat.
 
-To apply, either import via the SigNoz UI (`Alert Rules` /
-`Dashboards` → `Import`, or `Logs` → `Pipelines` → `New Pipeline` for
-the pipeline) or POST the file body to `POST /api/v1/rules` /
-`POST /api/v1/dashboards` / `POST /api/v1/logs/pipelines`. Re-run after
-every change to a YAML/JSON file in this directory.
+### Applying alerts
+
+```bash
+export SIGNOZ_URL=https://<workspace>.us.signoz.cloud
+export SIGNOZ_API_KEY=...            # an API key, NOT the ingestion key
+bun run scripts/signoz-apply-alerts.ts             # dry run: create/update plan
+bun run scripts/signoz-apply-alerts.ts --validate   # server-check every file
+bun run scripts/signoz-apply-alerts.ts --apply
+```
+
+The script matches on alert name, so re-running updates in place. Dashboards and
+the log pipeline are still manual (`Dashboards` → `Import`, `Logs` → `Pipelines`
+→ `New Pipeline`, or `POST /api/v1/dashboards` / `POST /api/v1/logs/pipelines`).
+
+`--validate` POSTs each rule with its channels stripped, which SigNoz rejects
+after validating everything else, so it type-checks the whole directory against
+the live API without creating anything. Run it after editing any file here.
+
+### None of these alerts had ever been applied
+
+A `GET /api/v2/rules` on the production workspace returned **zero rules**:
+Terraform never reads this directory, so every file here was documentation, and
+"import it by hand" is what let all twelve rot unnoticed. They were rewritten in
+2026-08 against the live v0.137 API; each query below was checked with
+`/api/v5/query_range` before being wired up. The traps, if you add or edit one:
+
+- **Metric names keep their dots.** SigNoz stores OTel names verbatim:
+  `metal.host.fc_procs`, not `metal_host_fc_procs`. The underscored names these
+  files used had never matched a series.
+- **PromQL cannot read these metrics on this version at all** — not even
+  `{__name__="metal.host.fc_procs"}`. Use `queryType: builder` with the dotted
+  name; multi-series math goes in a `builder_formula` query.
+- **There is no kube-state-metrics on these clusters**, only the OTel k8s-infra
+  collector, so `kube_pod_status_phase`, `kube_node_info`,
+  `kube_daemonset_status_number_ready` and `kube_cronjob_status_last_successful_time`
+  do not exist. Five alerts were querying them. Use the `k8s.*` series the
+  collector does emit (`k8s.daemonset.ready_nodes`, `k8s.node.condition_ready`),
+  or better, the app's own gauge — `WarmPoolStarvation` now reads
+  `warm_pool.available` instead of joining two kube-state series.
+- **Job/CronJob freshness has no metric.** `k8s.job.successful_pods` keeps
+  reporting `1` for as long as a completed Job is retained, so it stays green
+  after a CronJob stops running. `ReplicationMonitorFailing` and
+  `ConflictWatchdogFailing` therefore count each script's own success marker in
+  the logs; see those files for why the watchdog needs two markers.
+- **Use `POST /api/v2/rules` with `schemaVersion: v2alpha1`** (SigNoz ≥ v0.133):
+  a `queries` **array** of `{type, spec}` envelopes rather than a `builderQueries`
+  map, `thresholds`/`evaluation` as `kind` + `spec` envelopes, durations with
+  units (`60s`, not `60`), and a required `notificationSettings`. `thresholds`
+  and `selectedQueryName` sit on `condition`, NOT inside `compositeQuery`.
+  `matchType` is one of `at_least_once`/`all_the_times`/`on_average`/`in_total`/
+  `last`, and `op` one of `above`/`below`/`equal`/`not_equal`/`above_or_equal`/
+  `below_or_equal`. Unknown fields are silently ignored, so a typo'd key is
+  dropped rather than reported — `--validate` won't catch that.
+- **A "below" threshold never fires on a series that disappears.** For anything
+  where "stopped reporting" is the failure (the log agent being deleted, a
+  region's CronJob not running), set `alertOnAbsent: true` and `absentFor: <minutes>`
+  on `condition`.
+- **Every threshold needs a real notification channel.** An empty `channels` list
+  fails with "at least one channel is required", and the name must match a
+  channel configured under `Settings` → `Alert Channels` — so an alert cannot be
+  created before its destination exists. **This workspace currently has no
+  channels at all**, which is the one thing still standing between these files
+  and live alerts; the applier checks it up front and names what's missing. The
+  files all reference `platform-oncall`.
 
 These were introduced in the post-2026-05-20 publish-pipeline-hardening
 PR; see `docs/runbooks/deploy-prod.md` for triage steps each one

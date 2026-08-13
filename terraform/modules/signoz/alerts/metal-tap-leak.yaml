@@ -1,76 +1,147 @@
-# SigNoz alert: metal tap-device leak (recurrence guard)
+# SigNoz alert: metal host is leaking tap devices
 #
-# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
-# SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a `data` field).
+# Apply with `bun scripts/signoz-apply-alerts.ts` (POST /api/v2/rules). The schema
+# notes in metal-tap-exhaustion.yaml apply here too — dotted metric names, builder
+# queries only (PromQL sees nothing), v2alpha1, and a channel that really exists.
 #
-# Why: each microVM holds a /30 out of 172.16.0.0/16 via an `fctap<n>` device, so
-# a host has 16384 slots. Taps used to be deleted only by stopVM/destroy, so any
-# VM removed off that path leaked four addresses permanently — invisibly, since
-# nothing degrades until the last block is gone. That is how the 2026-07
-# US-region outage started. The node-agent GC now reclaims unowned devices; this
-# alert catches the GC LOSING, early, while the fix is still "restart the agent"
-# rather than "the region is down".
+# Why: every microVM holds a /30 out of 172.16.0.0/16, so a host has 16384 slots.
+# A tap that outlives its VM is never reused, and in 2026-07 that slow drip walked
+# the allocator index past the end of the space and produced addresses like
+# 172.16.8282.225 — `ip addr add` rejected them and every /assign on the two US
+# hosts failed. v1.13.27 fixes the known leaks (snapshot eviction now tears the
+# tap down, plus a periodic orphan sweep) and the allocator now refuses to derive
+# an out-of-range address instead of emitting a broken one. This alert is here to
+# catch the NEXT leak path, which is why it measures the discrepancy rather than
+# the raw count.
 #
-# Measured as excess devices over real VMs rather than as a percentage of
-# capacity: legitimate occupancy is available + assigned + suspended, and that is
-# NOT a small number on a production host (a DAL host carries ~3500 suspended
-# snapshots, each keeping its tap for a cheap restore — 22% of capacity while
-# perfectly healthy). A percentage threshold would therefore be both noisy there
-# and blind on a lightly-loaded host. The difference is scale-free: it is ~0 on a
-# healthy host of any size.
+# The signal is in-use minus accounted-for: taps the host holds that no warm,
+# assigned, or suspended VM claims. That is leak-specific by construction, so it
+# stays near zero on a healthy host no matter how busy it is — unlike raw
+# utilisation, which is legitimately high when the snapshot cache is large (a
+# production DAL host sat at 22% with ~3500 valid suspended VMs).
 #
-# Averaged, not at-least-once: a restarted agent legitimately shows a large
-# backlog for a minute or two (reclaim is bounded at 200 per sweep, so ~800/min —
-# one production host drained 1439 in about two minutes). A 30m average rides
-# over that drain and only fires if the backlog persists.
-#
-# Metric names: OTel dots become underscores in SigNoz PromQL
-# (metal.host.taps_in_use -> metal_host_taps_in_use). Heartbeats round-robin
-# across API replicas, so aggregate with `max by (host_id)` to dedupe the same
-# host reported by multiple pods.
+# 250 over 30m tolerates the transient overlap of a boot that has created its tap
+# but not yet registered its VM, while still firing about a day before a leak of
+# the observed 2026-07 rate could exhaust the space.
 
 alert: MetalTapLeak
+alertType: METRIC_BASED_ALERT
 ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
 condition:
   compositeQuery:
-    queryType: promql
-    promQueries:
-      A:
-        query: |
-          max by (host_id) (metal_host_taps_in_use)
-          - max by (host_id) (metal_host_available + metal_host_assigned + metal_host_suspended)
-        legend: "{{host_id}} leaked_taps"
-        disabled: false
-  op: ">"
-  target: 250
-  matchType: "3" # on-average-during
-  selectedQuery: A
-evalWindow: "30m0s"
-frequency: "5m0s"
+    panelType: graph
+    queryType: builder
+    queries:
+      # A–D are the raw gauges, all disabled: only the formula is evaluated.
+      # Heartbeats round-robin across API replicas, so max collapses the
+      # duplicate reports of one host to a single value.
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: metal.host.taps_in_use
+              spaceAggregation: max
+              timeAggregation: max
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          stepInterval: 60s
+      - type: builder_query
+        spec:
+          name: B
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: metal.host.available
+              spaceAggregation: max
+              timeAggregation: max
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          stepInterval: 60s
+      - type: builder_query
+        spec:
+          name: C
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: metal.host.assigned
+              spaceAggregation: max
+              timeAggregation: max
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          stepInterval: 60s
+      - type: builder_query
+        spec:
+          name: D
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: metal.host.suspended
+              spaceAggregation: max
+              timeAggregation: max
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          stepInterval: 60s
+      - type: builder_formula
+        spec:
+          name: F1
+          expression: A - (B + C + D)
+          legend: "{{host_id}} leaked_taps"
+  selectedQueryName: F1
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: on_average
+        target: 250
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 30m
+    frequency: 5m
 labels:
-  severity: warning
+  severity: critical
   team: platform
   incident_class: metal
+notificationSettings:
+  groupBy: [host_id]
+  renotify:
+    enabled: true
+    interval: 4h
+    alertStates: [firing]
 annotations:
-  summary: "Metal host is holding 250+ tap devices beyond its live+cached VMs (leak outrunning the GC)"
+  summary: "Metal host holds 250+ tap devices that no VM claims (leak)"
   description: |
-    A metal host has sustained tap devices well beyond its warm + assigned +
-    suspended VMs, so leaked /30 blocks are accumulating faster than the GC
-    reclaims them. Unchecked this ends at 100% of the 16384 blocks, where the
-    host cannot start another microVM and every /assign there fails.
+    A metal host holds far more tap devices than its warm + assigned + suspended
+    VMs account for. Left alone this walks the allocator out of 172.16.0.0/16 and
+    every /assign on the host starts failing.
 
     Triage:
-    1. On the host, compare occupancy against real usage:
-       `curl -s localhost:${METAL_AGENT_PORT}/metrics | grep metal_tap` and
-       `curl -s localhost:${METAL_AGENT_PORT}/vms | jq '.available, (.assigned|length), .cache.localCount'`.
-    2. Check the GC is reclaiming: agent log lines `reclaimed N leaked tap
-       device(s)` and a rising `metal_gc_taps_reclaimed_total`. A backlog
-       draining at 200/sweep is working as intended — wait it out.
-    3. If nothing is being reclaimed, the sweep is being blocked rather than
-       missing work: devices without `NO-CARRIER` have a live firecracker
-       attached and are deliberately never touched
-       (`ip -o link show | grep -c 'fctap.*NO-CARRIER'`).
-    4. Cordon the host from the super-admin fleet panel while you work; it keeps
-       serving live projects but takes no new placements.
+    1. Confirm on the host:
+       `ip -o link show | grep -c '^.*fctap'` versus
+       `curl -s localhost:${METAL_AGENT_PORT}/vms | jq '.available + (.assigned|length) + (.cache.localCount // 0)'`.
+    2. Count the safely-reclaimable ones — no process holds a NO-CARRIER tap:
+       `ip -o link show | grep fctap | grep -c NO-CARRIER`.
+    3. The agent's own sweep should already be doing this; check whether it is
+       running and what it decided:
+       `journalctl -u metal-agent -n 200 | grep -i 'tap.*reap'`.
+       If the sweep is disabled or wedged, that is the bug — the leak is
+       secondary.
+    4. Only if the sweep cannot run, drain manually, NO-CARRIER devices first,
+       and never touch a tap that carries traffic:
+       `ip link del fctapN`.
 
     Runbook: docs/runbooks/metal-fleet.md (tap / address-space exhaustion).

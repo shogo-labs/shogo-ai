@@ -1,47 +1,90 @@
 # SigNoz alert: metal host approaching its VM address-space limit
 #
-# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
-# SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a `data` field).
+# Apply with `bun scripts/signoz-apply-alerts.ts` (POST /api/v2/rules). See the
+# schema notes at the bottom of this comment before editing.
 #
 # Why: a host's microVMs each take a /30 out of 172.16.0.0/16 — 16384 in total —
 # and at 100% it simply cannot start another VM (every /assign there fails, the
 # 2026-07 US-region failure mode). MetalTapLeak covers devices leaking; this
 # covers the space running out for ANY reason, including an entirely legitimate
 # one: suspended snapshots keep their tap so they can restore cheaply, and a
-# production DAL host already sits at ~3500 of them (~22%) with nothing wrong.
-# Cache growth alone can therefore reach the ceiling, and it would arrive with no
-# other warning sign.
+# production DAL host carried ~3500 of them (~22%) with nothing wrong. Cache
+# growth alone can therefore reach the ceiling, and it would arrive with no other
+# warning sign.
 #
 # 80% leaves several thousand free blocks — hours of headroom at any realistic
 # fill rate — so this is a warning to act on, not a page in the middle of the
-# outage it predicts.
+# outage it predicts. For scale, after the v1.13.27 reclaim the four production
+# hosts sit at 0.5–2.4%.
 #
-# Metric names: OTel dots become underscores in SigNoz PromQL
-# (metal.host.tap_used_pct -> metal_host_tap_used_pct). Heartbeats round-robin
-# across API replicas, so aggregate with `max by (host_id)` to dedupe the same
-# host reported by multiple pods.
+# SCHEMA (verified against SigNoz v0.137 on 2026-08-13, error-by-error):
+#   * The metric name keeps its dots. SigNoz stores OTel names verbatim, so it is
+#     `metal.host.tap_used_pct`, NOT `metal_host_tap_used_pct`. Nothing by the
+#     underscored name has ever existed.
+#   * PromQL cannot see these metrics at all on this version — neither the
+#     underscored name nor `{__name__="metal.host.tap_used_pct"}` returns a single
+#     point, while the builder query below returns all four hosts. Every alert in
+#     this directory used to be PromQL, which is one of two reasons none of them
+#     ever fired.
+#   * schemaVersion v2alpha1 (SigNoz >= v0.133) is the only accepted shape: a
+#     `queries` ARRAY of typed envelopes, `thresholds`/`evaluation` as
+#     kind+spec envelopes, and `notificationSettings` required.
+#   * `channels` must name a channel that exists in SigNoz. An empty list is
+#     rejected outright ("at least one channel is required") — the second reason
+#     this directory never produced a live alert, since the instance had no
+#     channels configured at all.
 
 alert: MetalTapExhaustion
+alertType: METRIC_BASED_ALERT
 ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
 condition:
   compositeQuery:
-    queryType: promql
-    promQueries:
-      A:
-        query: |
-          max by (host_id) (metal_host_tap_used_pct)
-        legend: "{{host_id}} tap_used_pct"
-        disabled: false
-  op: ">"
-  target: 80
-  matchType: "3" # on-average-during
-  selectedQuery: A
-evalWindow: "15m0s"
-frequency: "5m0s"
+    panelType: graph
+    queryType: builder
+    unit: percent
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.host.tap_used_pct
+              # Heartbeats round-robin across API replicas, so the same host is
+              # reported by several pods; max collapses them to one value.
+              spaceAggregation: max
+              timeAggregation: max
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          legend: "{{host_id}} tap_used_pct"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: on_average
+        target: 80
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 15m
+    frequency: 5m
 labels:
   severity: critical
   team: platform
   incident_class: metal
+notificationSettings:
+  groupBy: [host_id]
+  renotify:
+    enabled: true
+    interval: 4h
+    alertStates: [firing]
 annotations:
   summary: "Metal host has 80%+ of its 16384 VM address slots (tap devices) in use"
   description: |
