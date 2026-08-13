@@ -1,47 +1,88 @@
 # SigNoz alert: warm-pool starvation
 #
-# Why: when warm-pool depth drops to <3, every new project request
-# eats a 5-minute cold start (the b11c65dd-shaped tail latency). The
-# warm-pool controller is supposed to refill, but it can't if the
-# system pool is out of memory or if the runtime image fails to pull.
-# Either way: page on-call.
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (dotted metric names, builder queries not PromQL, v2alpha1, real
+# channel).
 #
-# Threshold is "running, available, not yet claimed" pods only — a
-# warm pod that's mid-handoff to a project still serves its role
-# but doesn't count toward future cold-start avoidance.
+# Why: when warm-pool depth drops below 3, every new project request eats a
+# 5-minute cold start (the b11c65dd-shaped tail latency). The warm-pool
+# controller is supposed to refill, but it can't if the system pool is out of
+# memory or if the runtime image fails to pull. Either way: page on-call.
+#
+# SIGNAL CHANGE: this used to be a PromQL join of kube_pod_status_phase against
+# kube_pod_labels{label_shogo_io_pool_status="available"}. Neither series exists
+# — kube-state-metrics is not deployed on these clusters, only the OTel
+# k8s-infra collector — so the rule could never have evaluated. It now reads
+# `warm_pool.available`, the controller's own gauge, which is both the actual
+# source of truth for "running, available, not yet claimed" and immune to label
+# drift. Both production regions currently report 5.
+#
+# The gauge is per-region (cloud.region us-ashburn-1 / eu-frankfurt-1), so
+# grouping by region pages for the starved region rather than hiding it behind a
+# fleet-wide aggregate.
 
 alert: WarmPoolStarvation
+alertType: METRIC_BASED_ALERT
 ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
 condition:
   compositeQuery:
-    queryType: promql
-    promQueries:
-      A:
-        query: |
-          sum(kube_pod_status_phase{
-            namespace="shogo-production-workspaces",
-            phase="Running",
-            pod=~"warm-pool-.*"
-          }
-          * on(pod) group_left()
-          kube_pod_labels{label_shogo_io_pool_status="available"})
-        legend: warm_available
-        disabled: false
-  op: "<"
-  target: 3
-  matchType: "1" # at-least-once-during
-  selectedQuery: A
-evalWindow: "10m0s"
-frequency: "1m0s"
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: warm_pool.available
+              # Several API replicas report the same pool; min is the pessimistic
+              # read, and min-over-time means a dip inside the step still counts.
+              timeAggregation: min
+              spaceAggregation: min
+          filter:
+            expression: "deployment.environment.name = 'production'"
+          groupBy:
+            - name: cloud.region
+              fieldContext: attribute
+              fieldDataType: string
+          legend: "{{cloud.region}} warm_available"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: warning
+        op: below
+        matchType: all_the_times
+        target: 3
+        channels: [platform-oncall]
+  # If the API stops publishing the gauge entirely (crash, or the controller
+  # never starting) that is at least as bad as a low reading, and a "below"
+  # threshold alone would sit silent on an absent series.
+  alertOnAbsent: true
+  absentFor: 10
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 10m
+    frequency: 1m
 labels:
   severity: warning
   team: platform
   incident_class: warm_pool
+notificationSettings:
+  groupBy: [cloud.region]
+  renotify:
+    enabled: true
+    interval: 6h
+    alertStates: [firing]
 annotations:
   summary: "Warm pool has fewer than 3 available pods for 10+ minutes"
   description: |
-    Warm-pool depth has been below 3 for 10+ minutes. This means
-    most new project starts are hitting the 5-minute cold-start path
+    Warm-pool depth has been below 3 for 10+ minutes in a production region.
+    This means most new project starts are hitting the 5-minute cold-start path
     instead of the sub-second warm-pool handoff.
 
     Triage:
@@ -53,5 +94,7 @@ annotations:
        - Runtime image pull failing -> `kubectl describe pod` on the
          most recently-stuck warm pod for ImagePullBackoff events
        - Warm-pool controller crashed -> restart the API pod
+    4. Compare against warm_pool.target: if target itself dropped, the
+       controller scaled the pool down deliberately (config change).
 
     Runbook: docs/runbooks/deploy-prod.md

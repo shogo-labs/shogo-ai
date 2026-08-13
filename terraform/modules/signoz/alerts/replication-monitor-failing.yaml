@@ -1,58 +1,94 @@
 # SigNoz alert: cross-region replication monitor failing / not reporting
 #
-# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
-# SigNoz HTTP API (POST /api/v1/rules with this body). These YAMLs are the
-# source of truth for the alert definitions but are NOT applied by
-# `terraform apply` — importing is a manual step (same as the other files in
-# this directory).
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (builder queries not PromQL, v2alpha1, real channel).
 #
 # Why: `k8s/cnpg/logical-replication/replication-monitor.yaml` is a per-region
 # CronJob (every 5 min) that exits NON-ZERO on any replication-health failure
 # class — stopped apply worker, disabled subscription, inactive/bloated slot,
-# unpublished table, stale subscription, or a missing _prisma_migrations
-# REPLICA trigger. It correctly turns the K8s Job red on those conditions.
+# unpublished table, stale subscription, or a missing _prisma_migrations REPLICA
+# trigger. It correctly turns the K8s Job red on those conditions.
 #
-# BUT until this alert existed, nothing paged on that red Job. The deploy.yml
-# and warm-pool-monitor comments referred to "the existing kube_job_status_failed
-# alert" that was never actually created, so during the 2026-06/07 mesh incident
-# the replication-monitor Jobs sat in `Failed` for 8 days / 35h / 23h across the
+# BUT nothing paged on that red Job. The deploy.yml and warm-pool-monitor
+# comments referred to "the existing kube_job_status_failed alert" that was never
+# actually created, so during the 2026-06/07 mesh incident the
+# replication-monitor Jobs sat in `Failed` for 8 days / 35h / 23h across the
 # three regions without paging anyone — the exact "ran 15 hours undetected"
 # failure the monitor was built to prevent (incident 2026-05-26).
 #
-# Signal: page when a region's replication-monitor CronJob has had no SUCCESSFUL
-# completion for 3 polling intervals (15 min). This catches (a) the Job failing
-# repeatedly, (b) the Job not being scheduled at all, and (c) a stuck Job — and
-# it auto-clears the moment a green run lands, unlike alerting on
-# kube_job_status_failed (whose failed Jobs linger under failedJobsHistoryLimit
-# and would leave the alert stuck firing after recovery).
+# Signal: page when a region has had no SUCCESSFUL run for 3 polling intervals
+# (15 min). This catches (a) the Job failing repeatedly, (b) the Job not being
+# scheduled at all, and (c) a stuck Job — and it auto-clears the moment a green
+# run lands, unlike alerting on failed Jobs (which linger under
+# failedJobsHistoryLimit and would leave the alert stuck firing after recovery).
+#
+# WHY A LOG QUERY AND NOT A CRONJOB METRIC: "time since last success" needs
+# kube_cronjob_status_last_successful_time, and kube-state-metrics is not
+# deployed here — the OTel k8s-infra collector emits no equivalent. The available
+# k8s.job.successful_pods is unusable for freshness because completed Jobs keep
+# reporting 1 for as long as successfulJobsHistoryLimit retains them, so the
+# signal stays green after the CronJob stops running. The script's own terminal
+# line is the honest freshness signal: a green run prints
+# `=== Monitor complete (exit=0) ===` exactly once, and both prod regions emit it
+# once per 5-minute bucket today (288/day each).
+#
+# The pod-name filter matters: k8s/base/warm-pool-monitor.yaml prints the
+# byte-identical completion line, so matching on the body alone would stay green
+# on warm-pool-monitor runs while replication-monitor was dead.
 
 alert: ReplicationMonitorFailing
+alertType: LOGS_BASED_ALERT
 ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
 condition:
   compositeQuery:
-    queryType: promql
-    promQueries:
-      A:
-        query: |
-          min by (cluster) (
-            time()
-            - kube_cronjob_status_last_successful_time{
-                namespace="shogo-production-system",
-                cronjob="replication-monitor"
-              }
-          )
-        legend: "{{cluster}}"
-        disabled: false
-  op: ">"
-  target: 900 # 15m = 3 missed 5-minute intervals
-  matchType: "1" # at-least-once-during
-  selectedQuery: A
-evalWindow: "5m0s"
-frequency: "1m0s"
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: logs
+          aggregations:
+            - expression: count()
+          filter:
+            expression: "k8s.pod.name LIKE 'replication-monitor%' AND body LIKE '%Monitor complete (exit=0)%'"
+          groupBy:
+            - name: k8s.cluster.name
+              fieldContext: resource
+              fieldDataType: string
+          legend: "{{k8s.cluster.name}} green_runs"
+          # One bucket per scheduled run, so 3 empty buckets == 3 missed runs.
+          stepInterval: 300s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: below
+        matchType: all_the_times
+        target: 1
+        channels: [platform-oncall]
+  # A region whose Jobs stop running (or stop logging) produces no series at all
+  # rather than a zero, and that is the case this alert exists for.
+  alertOnAbsent: true
+  absentFor: 15
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 15m
+    frequency: 1m
 labels:
   severity: critical
   team: platform
   incident_class: logical_replication
+notificationSettings:
+  groupBy: [k8s.cluster.name]
+  renotify:
+    enabled: true
+    interval: 4h
+    alertStates: [firing]
 annotations:
   summary: "replication-monitor has not succeeded in 15+ min (a region's mesh may be broken)"
   description: |
@@ -62,8 +98,7 @@ annotations:
     slot, a public table missing from the publication, a subscription trailing
     the local publication (missing REFRESH), or the _prisma_migrations REPLICA
     trigger being absent. A failing/absent monitor means one of those is
-    happening OR the monitor itself isn't running — either way the mesh is
-    unobserved.
+    happening OR the monitor isn't running — either way the mesh is unobserved.
 
     Triage:
     1. Find the failing region + read the last run:
@@ -77,9 +112,9 @@ annotations:
          "SELECT subname, subenabled FROM pg_subscription ORDER BY subname;"
     4. For a disabled sub / poison-pill conflict, follow
        k8s/cnpg/logical-replication/RUNBOOK.md step 9 (skip the LSN or fix the
-       duplicate row). The conflict watchdog
-       (prod-investigation/recovery/recon/91_conflict_watchdog.sh) automates the
-       known-safe skips.
+       duplicate row). The conflict watchdog automates the known-safe skips.
+    5. If the Jobs are green but this fired, suspect log collection itself —
+       check LogCollectionAgentDown before chasing the mesh.
 
     Runbook: k8s/cnpg/logical-replication/RUNBOOK.md
     Plan: docs/runbooks/mesh-durably-healthy-plan.md

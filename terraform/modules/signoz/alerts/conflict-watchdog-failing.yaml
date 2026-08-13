@@ -1,58 +1,90 @@
 # SigNoz alert: conflict watchdog failing (needs human intervention)
 #
-# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
-# SigNoz HTTP API (POST /api/v1/rules). NOT applied by `terraform apply`.
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (builder queries not PromQL, v2alpha1, real channel).
 #
 # Why: `k8s/cnpg/logical-replication/conflict-watchdog.yaml` self-heals the
 # occasional escaped active-active conflict by skipping the known-safe classes
-# (insert_exists / update_exists / multiple_unique_conflicts) and re-enabling
-# the subscription. A SUCCESSFUL heal exits 0 and does NOT page — that's the
-# point. The watchdog exits NON-ZERO (and this alert fires) only when it needs a
-# human:
+# (insert_exists / update_exists / multiple_unique_conflicts) and re-enabling the
+# subscription. A SUCCESSFUL heal exits 0 and does NOT page — that's the point.
+# The watchdog exits NON-ZERO (and this alert fires) only when it needs a human:
 #   * a subscription disabled with NO known-safe conflict in the log window
 #     (unknown cause — do not blind-skip), or
 #   * the per-run SKIP_BUDGET was exhausted (conflict storm or a real bug
 #     producing unbounded distinct conflicts).
 # Either way the mesh is stuck in a way the watchdog deliberately won't paper
-# over.
+# over. Same "no successful run in 15 min" shape as ReplicationMonitorFailing, so
+# it also catches the watchdog not running at all, and it auto-clears on the next
+# green run.
 #
-# Same "no successful run in 15 min" shape as ReplicationMonitorFailing — it also
-# catches the watchdog not running at all. Auto-clears on the next green run.
+# WHY A LOG QUERY: identical reasoning to ReplicationMonitorFailing — there is no
+# kube_cronjob_status_last_successful_time (no kube-state-metrics), and
+# k8s.job.successful_pods keeps reporting 1 for retained Jobs, so it cannot
+# express freshness. See that file for the full argument.
 #
-# NOTE (skip review): every skip the watchdog performs prints a `WATCHDOG_SKIP
-# sub=... relation=... lsn=...` line. A skip is a data-loss event and MUST be
-# reviewed even though it does not page here. Add a SigNoz *logs* alert on the
-# `WATCHDOG_SKIP` marker (body contains "WATCHDOG_SKIP") at warning severity so
-# skips are triaged — that alert is log-based (different schema) and is tracked
-# in docs/runbooks/mesh-durably-healthy-plan.md.
+# WHY TWO MARKERS: the watchdog has two green exits, and the common one does NOT
+# reach its completion line. When no subscription is disabled — nearly always —
+# it prints `all local subscriptions enabled — nothing to do` and `exit 0`s at
+# conflict-watchdog.yaml:141, well before the
+# `=== Watchdog complete (skips=N exit=0) ===` line at :188. Matching only the
+# completion line would therefore fire continuously against a perfectly healthy
+# watchdog; matching only "nothing to do" would go silent exactly when the
+# watchdog is doing real work. Both prod regions currently emit one marker per
+# 5-minute bucket (288/day each).
 
 alert: ConflictWatchdogFailing
+alertType: LOGS_BASED_ALERT
 ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
 condition:
   compositeQuery:
-    queryType: promql
-    promQueries:
-      A:
-        query: |
-          min by (cluster) (
-            time()
-            - kube_cronjob_status_last_successful_time{
-                namespace="shogo-production-system",
-                cronjob="conflict-watchdog"
-              }
-          )
-        legend: "{{cluster}}"
-        disabled: false
-  op: ">"
-  target: 900 # 15m = 3 missed 5-minute intervals
-  matchType: "1" # at-least-once-during
-  selectedQuery: A
-evalWindow: "5m0s"
-frequency: "1m0s"
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: logs
+          aggregations:
+            - expression: count()
+          filter:
+            expression: "k8s.pod.name LIKE 'conflict-watchdog%' AND (body LIKE '%nothing to do%' OR body LIKE '%Watchdog complete%exit=0)%')"
+          groupBy:
+            - name: k8s.cluster.name
+              fieldContext: resource
+              fieldDataType: string
+          legend: "{{k8s.cluster.name}} green_runs"
+          # One bucket per scheduled run, so 3 empty buckets == 3 missed runs.
+          stepInterval: 300s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: below
+        matchType: all_the_times
+        target: 1
+        channels: [platform-oncall]
+  # A region whose Jobs stop running (or stop logging) produces no series at all
+  # rather than a zero, and that is the case this alert exists for.
+  alertOnAbsent: true
+  absentFor: 15
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 15m
+    frequency: 1m
 labels:
   severity: critical
   team: platform
   incident_class: logical_replication
+notificationSettings:
+  groupBy: [k8s.cluster.name]
+  renotify:
+    enabled: true
+    interval: 4h
+    alertStates: [firing]
 annotations:
   summary: "conflict-watchdog is failing/not running — the mesh may be stuck with no safe auto-heal"
   description: |
@@ -73,6 +105,14 @@ annotations:
        row per k8s/cnpg/logical-replication/RUNBOOK.md step 9.
     4. If it's a conflict storm, find the multi-writer source (a write path that
        bypassed home-region routing) before re-enabling.
+    5. If the Jobs are green but this fired, suspect log collection itself —
+       check LogCollectionAgentDown before chasing the mesh.
+
+    NOTE (skip review): every skip the watchdog performs prints a
+    `WATCHDOG_SKIP sub=... relation=... lsn=...` line. A skip is a data-loss
+    event and MUST be reviewed even though it does not page here — add a
+    warning-severity logs alert on that marker (tracked in
+    docs/runbooks/mesh-durably-healthy-plan.md).
 
     Runbook: k8s/cnpg/logical-replication/RUNBOOK.md
     Plan: docs/runbooks/mesh-durably-healthy-plan.md

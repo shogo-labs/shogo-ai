@@ -1,46 +1,84 @@
 # SigNoz alert: log-collection agent down (logs silently stop reaching SigNoz)
 #
-# Why: the k8s-infra `otelAgent` DaemonSet tails every pod's stdout/stderr and
-# is the *app-independent* path that gets logs into SigNoz — the fallback the
-# README calls out as "keeps working even when the app-level pipeline is off".
-# The app-level OTLP log export from the Bun API is unreliable under event-loop
-# pressure (its wall-clock export deadline elapses before the response is
-# processed and batches are dropped), so this DaemonSet is effectively the
-# authoritative log path.
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (dotted metric names, builder queries not PromQL, v2alpha1, real
+# channel).
+#
+# Why: the k8s-infra `otelAgent` DaemonSet tails every pod's stdout/stderr and is
+# the *app-independent* path that gets logs into SigNoz. The app-level OTLP log
+# export from the Bun API is unreliable under event-loop pressure (its wall-clock
+# export deadline elapses before the response is processed and batches are
+# dropped), so this DaemonSet is effectively the authoritative log path.
 #
 # On 2026-07 the DaemonSet was silently parked in staging via an out-of-band
 # `nodeSelector: non-existing=true` patch (drift from Terraform, which declares
-# it enabled on every node). With the app-OTLP path also failing, ALL API logs
-# — including [MetalPool]/[metal-fleet] — vanished from SigNoz with nothing to
-# signal it. This alert makes that failure loud: if the agent has zero ready
-# pods, logs are not being collected on that cluster.
+# it enabled on every node). With the app-OTLP path also failing, ALL API logs —
+# including [MetalPool]/[metal-fleet] — vanished from SigNoz with nothing to
+# signal it. This alert makes that failure loud.
 #
 # Catches: manual parking (nodeSelector/`kubectl scale`), crash-loop, eviction,
-# or the whole DaemonSet being deleted.
+# or the whole DaemonSet being deleted (via alertOnAbsent — a deleted DaemonSet
+# stops reporting rather than reporting zero, so the threshold alone would sit
+# silent on exactly the drift that motivated this rule).
+#
+# SIGNAL CHANGE: was kube_daemonset_status_number_ready, which does not exist —
+# kube-state-metrics is not deployed, only the OTel k8s-infra collector. The
+# equivalent OTel series is k8s.daemonset.ready_nodes. Grouping by cluster pages
+# for the specific cluster that went dark; ready counts today are prod-us 4,
+# prod-eu 8, staging 3.
 
 alert: LogCollectionAgentDown
+alertType: METRIC_BASED_ALERT
 ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
 condition:
   compositeQuery:
-    queryType: promql
-    promQueries:
-      A:
-        query: |
-          min(kube_daemonset_status_number_ready{
-            daemonset="signoz-k8s-infra-otel-agent"
-          })
-        legend: agent_ready
-        disabled: false
-  op: "<"
-  target: 1
-  matchType: "1" # at-least-once-during
-  selectedQuery: A
-evalWindow: "15m0s"
-frequency: "1m0s"
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: k8s.daemonset.ready_nodes
+              timeAggregation: min
+              spaceAggregation: min
+          filter:
+            expression: "k8s.daemonset.name = 'signoz-k8s-infra-otel-agent'"
+          groupBy:
+            - name: k8s.cluster.name
+              fieldContext: attribute
+              fieldDataType: string
+          legend: "{{k8s.cluster.name}} agent_ready"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: below
+        matchType: all_the_times
+        target: 1
+        channels: [platform-oncall]
+  alertOnAbsent: true
+  absentFor: 15
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 15m
+    frequency: 1m
 labels:
   severity: critical
   team: platform
   incident_class: observability
+notificationSettings:
+  groupBy: [k8s.cluster.name]
+  renotify:
+    enabled: true
+    interval: 4h
+    alertStates: [firing]
 annotations:
   summary: "SigNoz log-collection agent has no ready pods — logs are not reaching SigNoz"
   description: |

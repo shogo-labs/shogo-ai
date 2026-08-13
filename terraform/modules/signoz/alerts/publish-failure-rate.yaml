@@ -1,66 +1,88 @@
 # SigNoz alert: publish failure rate
 #
-# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or
-# the SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a
-# `data` field).
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (builder queries not PromQL, v2alpha1, real channel).
 #
-# Why: the b11c65dd publish silently failed for 4+ minutes before the
-# user manually retried. We had no signal in the dashboards. This rule
-# pages on-call within 5 minutes of any sustained publish failure rate
-# above 1/min.
+# Why: the b11c65dd publish silently failed for 4+ minutes before the user
+# manually retried, and we had no signal in the dashboards. This rule pages
+# on-call within ~5 minutes of a real publish failure burst.
 #
-# Tuning notes:
-# - "failed" is the new Project.publishStatus terminal state added in
-#   the Phase 1 commit; pre-Phase-1 logs use the literal "[Publish]"
-#   prefix so we match both forms.
-# - Threshold is per-minute, evaluated over a 5-minute window. A
-#   one-off retry isn't worth a page; sustained failure is.
+# FILTER: match `[Publish]` lines the API logged at ERROR level. The previous
+# filter matched any [Publish] line containing error/failed/timeout, which is
+# dominated by benign warnings — apps/api/src/routes/publish.ts logs a dozen
+# "(continuing)" / "(non-fatal)" paths at warn (custom-domain KV sync, status
+# writes, git flush, archive backup...), 92 of them in the last 7 days. Error
+# level is reserved for the genuinely fatal set (build timeout, build error,
+# dist download/upload failure, cloud-proxy failure), which fired twice in that
+# same week. So this filter is both quieter and strictly more faithful to "a
+# publish is failing".
+#
+# Reading `"level":"error"` out of the body is deliberate: the API writes
+# structured JSON to stdout and SigNoz's `severity_text` comes back empty for
+# these records, so the level only exists inside the body until the
+# pipelines/api-trace-correlation.yaml pipeline is applied. Matching the body
+# works either way.
+#
+# THRESHOLD: more than 2 fatal publish errors inside 5 minutes. The original
+# ">1/min sustained for 5m" phrasing can't be met by a bursty failure (a wedged
+# build logs once, not once per minute), and against a baseline of ~2 error lines
+# per WEEK a 5-minute total is both sensitive and quiet.
 
 alert: PublishFailureRateHigh
+alertType: LOGS_BASED_ALERT
 ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
 condition:
   compositeQuery:
+    panelType: graph
     queryType: builder
-    builderQueries:
-      A:
-        queryName: A
-        dataSource: logs
-        aggregateOperator: rate
-        aggregateAttribute:
-          key: "@timestamp"
-        timeAggregation: rate
-        spaceAggregation: sum
-        filters:
-          op: AND
-          items:
-            - key: { key: "service.name", type: "tag" }
-              op: "="
-              value: "api"
-            - key: { key: "body", type: "" }
-              op: "contains"
-              value: "[Publish]"
-            - key: { key: "body", type: "" }
-              op: "regex"
-              value: "(error|failed|timeout)"
-        expression: A
-        legend: failures
-        disabled: false
-  op: ">"
-  target: 1
-  matchType: "1" # at-least-once-during
-  selectedQuery: A
-evalWindow: "5m0s"
-frequency: "1m0s"
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: logs
+          aggregations:
+            - expression: count()
+          filter:
+            expression: "body LIKE '%[Publish]%' AND body LIKE '%\"level\":\"error\"%'"
+          groupBy:
+            - name: k8s.cluster.name
+              fieldContext: resource
+              fieldDataType: string
+          legend: "{{k8s.cluster.name}} publish_errors"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: in_total
+        target: 2
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 5m
+    frequency: 1m
 labels:
   severity: critical
   team: platform
   incident_class: publish
+notificationSettings:
+  groupBy: [k8s.cluster.name]
+  renotify:
+    enabled: true
+    interval: 2h
+    alertStates: [firing]
 annotations:
-  summary: "Publish failure rate above 1/min for 5+ minutes"
+  summary: "3+ fatal publish errors in 5 minutes"
   description: |
-    Publish failures are sustained at >1/min. Triage:
+    The API is logging fatal [Publish] errors. Triage:
 
-    1. `kubectl logs -n shogo-production-system deployment/api -c api | grep '\\[Publish\\]'`
+    1. Find them: SigNoz logs, `body CONTAINS '[Publish]'` at error level, or
+       `kubectl logs -n shogo-production-system deployment/api -c api | grep '\[Publish\]'`
     2. `SELECT id, "publishStatus", "publishError" FROM projects
         WHERE "publishStatusAt" > NOW() - INTERVAL '15 minutes'
           AND "publishStatus" = 'failed';`

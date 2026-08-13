@@ -1,7 +1,8 @@
 # SigNoz alert: metal no-live-host fallback
 #
-# Apply via SigNoz UI ("Alert Rules" -> "New Alert Rule" -> Import) or the
-# SigNoz HTTP API (POST /api/v1/rules with this body wrapped in a `data` field).
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (dotted metric names, builder queries not PromQL, v2alpha1, real
+# channel).
 #
 # Why: getMetalProjectUrl increments metal.no_host every time it finds NO live
 # metal host for a metal-eligible project. In fallback mode this silently routes
@@ -10,29 +11,59 @@
 # heartbeats not landing, the mesh is broken, or every host is cordoned. This is
 # the earliest fleet-health signal that doesn't need per-host inspection.
 #
-# Metric: counter metal.no_host -> metal_no_host in SigNoz PromQL.
+# NOTE ON "NO DATA": metal.no_host has recorded nothing in the last 30 days —
+# the counter instrument only materialises once something increments it, so the
+# healthy state is an absent series, not a zero. That is why this rule must NOT
+# set alertOnAbsent: absence is the good case here. It also means the first real
+# fallback both creates the series and trips the rule.
 
 alert: MetalNoHostFallback
+alertType: METRIC_BASED_ALERT
 ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
 condition:
   compositeQuery:
-    queryType: promql
-    promQueries:
-      A:
-        query: |
-          sum(increase(metal_no_host[5m]))
-        legend: no_host_fallbacks
-        disabled: false
-  op: ">"
-  target: 5
-  matchType: "1" # at-least-once-during
-  selectedQuery: A
-evalWindow: "5m0s"
-frequency: "1m0s"
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.no_host
+              # increase == delta over each step; sum across replicas, since any
+              # API pod can be the one that failed to place.
+              timeAggregation: increase
+              spaceAggregation: sum
+          legend: no_host_fallbacks
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        # 5 fallbacks anywhere in the window, not a sustained rate: a handful of
+        # unplaceable projects already means the fleet is partly unreachable.
+        matchType: in_total
+        target: 5
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 5m
+    frequency: 1m
 labels:
   severity: critical
   team: platform
   incident_class: metal
+notificationSettings:
+  renotify:
+    enabled: true
+    interval: 1h
+    alertStates: [firing]
 annotations:
   summary: "Metal routing found no live host (5+ fallbacks in 5m)"
   description: |
@@ -42,7 +73,7 @@ annotations:
 
     Triage:
     1. Super-admin fleet panel: how many hosts are live vs desired? Any drift?
-       Cross-check `metal_host_up` count per region on the dashboard.
+       Cross-check the metal.host.up count per region on the dashboard.
     2. If hosts are up but not registering: the heartbeat POST
        /api/internal/metal/register is failing (token mismatch, mesh down, API
        unreachable). Check agent logs for `register` warnings and the WireGuard
@@ -50,4 +81,4 @@ annotations:
     3. If every host is cordoned (e.g. a botched drain), uncordon at least one.
     4. If agents genuinely crashed, `systemctl status metal-agent` on the hosts.
 
-    Runbook: docs/runbooks/deploy-prod.md (metal section).
+    Runbook: docs/runbooks/metal-fleet.md
