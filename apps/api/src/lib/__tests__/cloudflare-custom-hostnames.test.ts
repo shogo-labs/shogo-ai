@@ -376,3 +376,83 @@ describe('KV hostname map', () => {
     }
   })
 })
+
+/**
+ * Regression: production logged 1,481 `null is not an object (evaluating
+ * 'env.success')` TypeErrors in 48h (60% of all error records) across 94 domains
+ * because Cloudflare answered with a body of literal `null` and cfFetch cast the
+ * parse result straight to an envelope. Bun's res.json() throws on every other
+ * malformed body, so `null` is the one shape that reaches `env.success`.
+ *
+ * The crash mattered beyond the noise: it aborted refreshCustomDomain before it
+ * could persist a status, so those rows never reached a terminal state and were
+ * re-polled forever, and it replaced the HTTP status we needed to diagnose it.
+ */
+describe('malformed Cloudflare responses', () => {
+  beforeEach(() => setEnv())
+  afterEach(() => clearEnv())
+
+  /** Fake fetch that returns a raw body verbatim, not JSON.stringify'd. */
+  function installRawFetch(status: number, body: string) {
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => new Response(body, { status })) as any
+    return { restore: () => { globalThis.fetch = original } }
+  }
+
+  test('a literal null body is a miss, not a TypeError', async () => {
+    const fetched = installRawFetch(200, 'null')
+    try {
+      expect(await getCustomHostname('ch-1')).toBeNull()
+      expect(await findCustomHostnameByName('app.acme.com')).toBeNull()
+    } finally {
+      fetched.restore()
+    }
+  })
+
+  test.each([
+    ['empty body', 502, ''],
+    ['html error page', 502, '<html>bad gateway</html>'],
+    ['json that is not an envelope', 200, '{"unexpected":true}'],
+  ])('%s is a miss, not a TypeError', async (_label, status, body) => {
+    const fetched = installRawFetch(status, body)
+    try {
+      expect(await getCustomHostname('ch-1')).toBeNull()
+    } finally {
+      fetched.restore()
+    }
+  })
+
+  test('write paths report the HTTP status instead of crashing', async () => {
+    const fetched = installRawFetch(429, 'null')
+    try {
+      // The message must name the status: a bare TypeError is what made the
+      // production occurrences undiagnosable.
+      await expect(createCustomHostname('app.acme.com')).rejects.toThrow('429')
+      await expect(retriggerCustomHostname('ch-1')).rejects.toThrow('429')
+    } finally {
+      fetched.restore()
+    }
+  })
+
+  test('best-effort delete still swallows a malformed response', async () => {
+    const fetched = installRawFetch(200, 'null')
+    try {
+      expect(await deleteCustomHostname('ch-1')).toBe(false)
+    } finally {
+      fetched.restore()
+    }
+  })
+
+  test('a well-formed envelope is passed through untouched', async () => {
+    const fetched = installRawFetch(
+      200,
+      JSON.stringify({ success: true, errors: [], result: PENDING_RESULT }),
+    )
+    try {
+      const state = await getCustomHostname('ch-1')
+      expect(state?.hostname).toBe('app.acme.com')
+    } finally {
+      fetched.restore()
+    }
+  })
+})

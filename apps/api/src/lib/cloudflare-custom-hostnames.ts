@@ -54,6 +54,8 @@
  *       DNS and is unaffected by the Worker.
  */
 
+import { readCfEnvelope, type CfEnvelope } from './cloudflare-envelope'
+
 const CF_API_BASE = 'https://api.cloudflare.com/client/v4'
 
 export interface CustomHostnamesConfig {
@@ -157,12 +159,6 @@ export function _resetCustomHostnamesConfigForTest(): void {
   cachedConfig = undefined
 }
 
-interface CfEnvelope<T> {
-  success: boolean
-  errors: Array<{ code: number; message: string }>
-  result: T | null
-}
-
 interface CfValidationRecord {
   txt_name?: string
   txt_value?: string
@@ -201,7 +197,7 @@ async function cfFetch<T>(
       ...(init?.headers || {}),
     },
   })
-  return (await res.json()) as CfEnvelope<T>
+  return readCfEnvelope<T>(res, `${init?.method ?? 'GET'} ${path}`)
 }
 
 function envelopeError(env: CfEnvelope<unknown>): string {

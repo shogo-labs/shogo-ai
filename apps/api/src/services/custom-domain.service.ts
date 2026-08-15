@@ -383,7 +383,18 @@ export async function refreshCustomDomain(opts: {
 
   const state = await getCustomHostname(row.cfCustomHostnameId)
   if (!state) {
-    return { row, state: null, dns: null, becameActive: false }
+    // Cloudflare has no hostname for this id — deleted upstream, or the call
+    // failed. Stamp the attempt anyway: `isDueForPoll` backs off on
+    // `lastCheckedAt`, which this early return used to skip, so a row whose
+    // hostname had vanished stayed due on every 60s tick forever rather than
+    // dropping to the slow cadence. Production had 94 such rows (Cloudflare
+    // answering 1436 "custom hostname not found" for each), so the reconciler
+    // spent most of its budget re-asking about domains that cannot resolve.
+    const updated = await prisma.customDomain.update({
+      where: { id: row.id },
+      data: { lastCheckedAt: new Date() },
+    })
+    return { row: updated as CustomDomainRowLike, state: null, dns: null, becameActive: false }
   }
 
   const status = cfStateToStatus(state)

@@ -29,6 +29,7 @@
  */
 
 import { discoverKourierLbIp as defaultDiscoverer } from './kourier-lb-discovery'
+import { readCfEnvelope, type CfEnvelope } from './cloudflare-envelope'
 
 const CF_API_BASE = 'https://api.cloudflare.com/client/v4'
 
@@ -114,12 +115,6 @@ export function _setKourierDiscovererForTest(
   kourierDiscoverer = fn ?? defaultDiscoverer
 }
 
-interface CfEnvelope<T> {
-  success: boolean
-  errors: Array<{ code: number; message: string }>
-  result: T | null
-}
-
 interface CfRecord {
   id: string
   name: string
@@ -142,8 +137,7 @@ async function cfFetch<T>(
       ...(init?.headers || {}),
     },
   })
-  const body = (await res.json()) as CfEnvelope<T>
-  return body
+  return readCfEnvelope<T>(res, `${init?.method ?? 'GET'} ${path}`)
 }
 
 async function findRecord(
