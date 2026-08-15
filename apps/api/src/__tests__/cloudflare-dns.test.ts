@@ -66,13 +66,17 @@ function makeFakeFetch(responder: (call: FakeCall) => Resp) {
     const call: FakeCall = { url, method: init.method ?? 'GET', headers, body }
     calls.push(call)
     const r = responder(call)
-    return {
-      json: async () => ({
+    // A real Response, not a `{ json }` stand-in: the helper reads the body as
+    // text so it can report what Cloudflare actually sent when the payload
+    // isn't an envelope, and a partial double would hide that path.
+    return new Response(
+      JSON.stringify({
         success: r.ok ?? true,
         errors: r.errors ?? [],
         result: r.result ?? null,
       }),
-    } as any
+      { status: r.ok === false ? 400 : 200 },
+    ) as any
   }) as unknown as typeof globalThis.fetch
   return { fetchImpl, calls }
 }
