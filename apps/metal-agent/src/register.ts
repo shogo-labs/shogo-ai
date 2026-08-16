@@ -20,7 +20,7 @@
 import { config } from './config'
 import { metrics } from './metrics'
 import type { MetalWarmPool } from './pool'
-import { maybeRebuildRootfs, maybeSelfUpdate, type DesiredAgent } from './self-update'
+import { getRootfsSha, maybeRebuildRootfs, maybeSelfUpdate, type DesiredAgent } from './self-update'
 
 function payload(pool: MetalWarmPool) {
   const s = pool.status()
@@ -34,6 +34,12 @@ function payload(pool: MetalWarmPool) {
     // Running version, so the control plane sees fleet skew and resolves the
     // desired version to send back for a pull-based self-update.
     agentVersion: config.agentVersion,
+    // The OTHER version dimension: which release's runtime image the guest
+    // rootfs was last rebuilt from. Agent code and guest rootfs update on
+    // independent triggers (see self-update.ts), so a host can be current on
+    // one and stale on the other — reporting both is what makes that skew
+    // visible without SSHing in to cat ROOTFS_SHA.
+    rootfsSha: getRootfsSha() ?? undefined,
     capacity: { poolSize: config.poolSize, memMiB: config.memMiB, vcpus: config.vcpus },
     load: {
       available: s.available,

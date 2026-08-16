@@ -58,6 +58,7 @@ export function parseAuthMode(raw: string | null | undefined): AuthMode {
 /** Every control path this agent serves. Anything else buckets to `other`. */
 const KNOWN_PATHS = new Set([
   '/healthz',
+  '/version',
   '/vms',
   '/metrics',
   '/assign',

@@ -60,6 +60,10 @@ export function metalRoutes(): Hono {
       agentPort: Number(body.agentPort),
       region: String(body.region ?? 'unknown'),
       arch: String(body.arch ?? 'unknown'),
+      // Absent (not '') on older agents, so the fleet view can distinguish
+      // "never reported" from an empty string rather than showing a blank.
+      agentVersion: body.agentVersion ? String(body.agentVersion) : undefined,
+      rootfsSha: body.rootfsSha ? String(body.rootfsSha) : undefined,
       capacity: {
         poolSize: Number(body.capacity?.poolSize ?? 0),
         memMiB: Number(body.capacity?.memMiB ?? 0),

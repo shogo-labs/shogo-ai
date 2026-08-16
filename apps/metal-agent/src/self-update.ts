@@ -76,6 +76,19 @@ function readRootfsMarker(): string | null {
   }
 }
 
+/**
+ * The release version whose runtime image this host's golden rootfs was last
+ * built from (the `ROOTFS_SHA` marker) — the other half of "what code is this
+ * host running" alongside `config.agentVersion` (the node-agent's own code).
+ * Exposed over `/version` and the heartbeat so fleet-wide rootfs skew is
+ * visible from the admin panel instead of requiring `ssh root@<host> cat
+ * /opt/metal-agent/ROOTFS_SHA`. `null` on a host that has never rebuilt (or
+ * predates this marker).
+ */
+export function getRootfsSha(): string | null {
+  return readRootfsMarker()
+}
+
 function writeRootfsMarker(version: string): void {
   try {
     mkdirSync(config.agentDir, { recursive: true })

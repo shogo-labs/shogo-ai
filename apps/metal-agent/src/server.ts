@@ -6,6 +6,7 @@
  * MetalWarmPool so the shogo control plane (apps/api, over the mesh) can:
  *
  *   GET  /healthz                      liveness
+ *   GET  /version                      running code identity (agent + rootfs)
  *   GET  /vms                          pool status
  *   POST /assign      {projectId,env}  claim+assign OR resume-if-suspended;
  *                                      returns the in-guest agent URL
@@ -31,6 +32,7 @@ import { M, metrics } from './metrics'
 import { MetalWarmPool } from './pool'
 import { PortForward } from './port-forward'
 import { reportPlacement, startRegistration } from './register'
+import { getRootfsSha } from './self-update'
 import { SerialWatcher } from './serial-watcher'
 const pool = new MetalWarmPool()
 // Pre-mesh data path: DNAT a public host port to each assigned guest and hand
@@ -105,6 +107,19 @@ const server = Bun.serve({
       if (!auth.allow) return Response.json({ error: 'unauthorized' }, { status: 401 })
 
       if (path === '/healthz') return Response.json({ ok: true })
+      // What code this host is actually running, in one curl — the two
+      // independent version axes (self-update.ts): the node-agent's own code
+      // (DEPLOYED_SHA) and the release the guest rootfs was last rebuilt from
+      // (ROOTFS_SHA). Previously this required SSHing in to cat both files (or
+      // grep a rebuild log). Same auth tier as /vms — not liveness, so it's
+      // gated by the control-plane bearer under METAL_AUTH_MODE.
+      if (path === '/version') {
+        return Response.json({
+          hostId: config.hostId,
+          agentVersion: config.agentVersion,
+          rootfsSha: getRootfsSha(),
+        })
+      }
       if (path === '/vms') return Response.json(pool.status())
       if (path === '/metrics') return new Response(metrics.prometheus(), { headers: { 'Content-Type': 'text/plain; version=0.0.4' } })
 
