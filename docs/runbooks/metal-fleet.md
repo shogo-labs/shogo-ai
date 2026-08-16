@@ -34,7 +34,22 @@ Copyright (C) 2026 Shogo Technologies, Inc.
   `/etc/metal-agent.env` and re-run `host-bootstrap.sh`. Verify with
   `systemctl status otelcol-metal` and `journalctl -u otelcol-metal`.
 - **Admin panel**: super-admin → Infrastructure → Metal Fleet (view drift,
-  cordon/drain hosts).
+  cordon/drain hosts). Each live host row now shows `agent <sha>` / `rootfs
+  <sha>` — the node-agent code version (`DEPLOYED_SHA`) and the release the
+  guest rootfs was last rebuilt from (`ROOTFS_SHA`), both carried on the
+  heartbeat (`register.ts` → `POST /api/internal/metal/register`). These are
+  two independent axes (see self-update.ts): a host can self-update its own
+  code without rebuilding the guest rootfs, and vice versa. Before this, the
+  only way to check either was `ssh root@<host> cat /opt/metal-agent/DEPLOYED_SHA
+  /opt/metal-agent/ROOTFS_SHA` one host at a time.
+- **Per-host version check**: `curl -H "Authorization: Bearer $TOKEN"
+  http://<host>:9900/version` returns `{hostId, agentVersion, rootfsSha}`
+  directly from the host, for when you don't want to wait for the next
+  heartbeat (up to `METAL_REGISTER_INTERVAL_MS`, default 30s) or the control
+  plane is down. Still needs a symbol-level check if you need to confirm a
+  *specific* commit landed inside the guest rootfs (a version string only
+  proves which release was requested, not that the rebuild succeeded) — see
+  `.github/runtime-image-baseline` for that verification method.
 
 ## Auto-scaling (burst) — how it works
 

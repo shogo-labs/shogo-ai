@@ -203,6 +203,13 @@ export interface MetalHostRegistration {
   agentPort: number
   region: string
   arch: string
+  /** Node-agent code version (DEPLOYED_SHA). Absent on agents predating this field. */
+  agentVersion?: string
+  /** Release whose runtime image this host's golden rootfs was last rebuilt
+   * from (ROOTFS_SHA) — independent of `agentVersion`, see self-update.ts on
+   * the node-agent. Absent on a host that has never rebuilt, or an agent
+   * predating this field. */
+  rootfsSha?: string
   capacity: { poolSize: number; memMiB: number; vcpus: number }
   load: {
     available: number
@@ -1005,6 +1012,8 @@ export class MetalWarmPoolController {
           hostId: h.hostId,
           region: h.region,
           arch: h.arch,
+          agentVersion: h.agentVersion,
+          rootfsSha: h.rootfsSha,
           meshIp: h.meshIp,
           agentPort: h.agentPort,
           capacity: h.capacity,
@@ -1047,6 +1056,8 @@ export class MetalWarmPoolController {
           hostId: h.hostId,
           region: h.region,
           arch: h.arch,
+          agentVersion: h.agentVersion,
+          rootfsSha: h.rootfsSha,
           meshIp: h.meshIp,
           agentPort: h.agentPort,
           capacity: h.capacity,

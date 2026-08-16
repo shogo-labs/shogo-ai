@@ -235,6 +235,10 @@ interface MetalHostLive {
   hostId: string
   region: string
   arch: string
+  /** Node-agent code version (DEPLOYED_SHA). Absent on agents predating this field. */
+  agentVersion?: string
+  /** Release whose runtime image this host's guest rootfs was last rebuilt from. */
+  rootfsSha?: string
   meshIp: string
   agentPort: number
   capacity: { poolSize: number; memMiB: number; vcpus: number }
@@ -274,6 +278,12 @@ interface MetalFleetData {
   stats: { assigned: number; resumed: number; coldMiss: number; hostErrors: number; noHost: number; snapshotHitRate: number | null }
   config: { hostTtlMs: number; assignTimeoutMs: number; diskHighPct: number }
   drift: { missing: string[]; unmanaged: string[] }
+}
+
+/** Trim a version/SHA string to a readable length for the fleet row (full
+ * value is a git SHA or a release tag; 12 chars is enough to disambiguate). */
+function shortSha(v: string | undefined): string | undefined {
+  return v ? v.slice(0, 12) : undefined
 }
 
 async function fetchMetalFleet(apiBase: string): Promise<MetalFleetData | null> {
@@ -703,6 +713,11 @@ function MetalFleetPanel({
                     <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
                       {h.region.toUpperCase()}{h.site ? `·${h.site}` : ''} · {live?.meshIp ?? h.publicIp ?? 'no ip'} · {h.serverId ?? 'not provisioned'} · {live?.arch ?? ''}
                     </Text>
+                    {live && (live.agentVersion || live.rootfsSha) && (
+                      <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+                        agent {shortSha(live.agentVersion) ?? 'unknown'} · rootfs {shortSha(live.rootfsSha) ?? 'unknown'}
+                      </Text>
+                    )}
                     {h.enabled === false && (
                       <Text className="text-[9px] text-red-400">disabled (excluded from drift)</Text>
                     )}
