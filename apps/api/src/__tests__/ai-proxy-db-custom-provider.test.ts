@@ -39,6 +39,10 @@ const MIMO_KEY = 'sk-mimo-staging-routing-key-abcdef'
 // UUID → apiModel rewrite that actually 404s upstream.
 const OPUS_UUID = '11111111-2222-3333-4444-555555555555'
 const GPT_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+// Claude Opus 5, addressed by its DB UUID exactly as production does — this is
+// the id/apiModel pairing from the 2026-08-16 incident (86b8db4c-78fa-4594-
+// 95ea-35058748a986 in prod, apiModel `claude-opus-5`).
+const OPUS5_UUID = '22222222-3333-4444-5555-666666666666'
 
 // ─── Mutable DB rows the registry loads through the mocked prisma ──────────
 let MODELS: any[] = []
@@ -113,6 +117,28 @@ function seed() {
       maxOutputTokens: 128000,
       enabled: true,
       sortOrder: 2,
+      aliases: [],
+      capabilities: null,
+      inputPerMillion: 5,
+      cachedInputPerMillion: 0.5,
+      cacheWritePerMillion: 6.25,
+      outputPerMillion: 25,
+    },
+    // UUID-addressed Opus 5 — the exact addressing that broke in production
+    // (2026-08-16): apiModel supports adaptive thinking but the id does not.
+    {
+      id: OPUS5_UUID,
+      provider: 'anthropic',
+      providerId: null,
+      apiModel: 'claude-opus-5',
+      displayName: 'Claude Opus 5 (DB)',
+      shortDisplayName: 'Opus 5',
+      tier: 'premium',
+      family: 'opus',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 4,
       aliases: [],
       capabilities: null,
       inputPerMillion: 5,
@@ -400,6 +426,28 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(res.status).toBe(200)
     const body = lastForwardedBody()
     expect(body.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
+  })
+
+  // ── The 2026-08-16 production incident ─────────────────────────────────────
+  // `claude-opus-5`/`claude-sonnet-5` support adaptive thinking (added to the
+  // model catalog and pi-ai's allowlist in 1395fd620) but the proxy's OWN
+  // mirrored allowlist (apiModelSupportsAdaptiveThinking) was never updated to
+  // match, so a UUID-addressed Opus 5 turn kept the legacy budget-based
+  // `thinking.type: "enabled"` block all the way to Anthropic, which 400'd it
+  // ("thinking.type.enabled is not supported for this model") before
+  // generating a single token. Regression coverage for that specific model,
+  // not just the older Opus 4.8 already covered above.
+
+  test('rewrites budget-based thinking to adaptive for a UUID-addressed Opus 5', async () => {
+    const res = await postAnthropic(buildApp(), OPUS5_UUID, {
+      thinking: { type: 'enabled', budget_tokens: 20000 },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.model).toBe('claude-opus-5')
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.thinking.budget_tokens).toBeUndefined()
+    expect(body.output_config?.effort).toBe('high')
   })
 
   test('Responses API rewrites a UUID-addressed GPT to its apiModel', async () => {

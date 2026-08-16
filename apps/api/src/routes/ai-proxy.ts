@@ -1676,7 +1676,14 @@ function splitSystemBlocksForCaching(parsed: any): void {
  * Anthropic model ids (with or without a date suffix) that require the
  * *adaptive* thinking API (`thinking.type: "adaptive"` + `output_config.effort`)
  * and reject the legacy budget-based `thinking.type: "enabled"` shape. Mirrors
- * pi-ai's `supportsAdaptiveThinking`.
+ * pi-ai's `supportsAdaptiveThinking` (patches/@mariozechner%2Fpi-ai@0.73.1.patch)
+ * — a model landing in ONE of these lists without the other is exactly the
+ * 2026-08-16 production incident: `claude-opus-5`/`claude-sonnet-5` were added
+ * to pi-ai's list (and the model catalog) but not here, so a UUID-addressed
+ * Opus 5/Sonnet 5 turn kept the legacy `thinking.type: "enabled"` block and
+ * Anthropic 400'd it before any tokens were generated. When adding a new
+ * "current"-generation Anthropic model that supports adaptive thinking, add it
+ * to BOTH lists.
  */
 function apiModelSupportsAdaptiveThinking(apiModel: string): boolean {
   return (
@@ -1686,8 +1693,10 @@ function apiModelSupportsAdaptiveThinking(apiModel: string): boolean {
     apiModel.includes('opus-4.7') ||
     apiModel.includes('opus-4-8') ||
     apiModel.includes('opus-4.8') ||
+    apiModel.includes('opus-5') ||
     apiModel.includes('sonnet-4-6') ||
-    apiModel.includes('sonnet-4.6')
+    apiModel.includes('sonnet-4.6') ||
+    apiModel.includes('sonnet-5')
   )
 }
 
