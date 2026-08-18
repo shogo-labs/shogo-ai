@@ -1984,6 +1984,56 @@ app.get('/api/preview/:projectId/wake', async (c) => {
 })
 
 // -----------------------------------------------------------------------------
+// Preview loader — the warm-hostname landing page for a preview link.
+// -----------------------------------------------------------------------------
+// Sending a browser straight to `{projectId}.preview.<base>` makes the FIRST
+// navigation depend on a hostname that is unique to one project: its DNS record,
+// its wildcard cert, its Worker route, its DomainMapping. When any of those
+// isn't ready the browser paints its own error page ("server IP address could
+// not be found") and the Worker's waking interstitial — which lives behind all
+// of them — never gets to run.
+//
+// This page moves that first navigation onto the API origin, which the client
+// has already resolved and every app request keeps warm. It shows the waking
+// state immediately, polls the wake endpoint above, and hands off only once the
+// browser has proven it can reach the preview origin. Anonymous for the same
+// reason as the wake endpoints (preview links are public, keyed by a UUID).
+const previewOpenHandler = async (c: any) => {
+  const projectId = c.req.param('projectId')
+  const { renderPreviewLoaderPage, renderPreviewMissingPage } = await import('./lib/preview-loader-page')
+  const page = (body: string, status: 200 | 404) =>
+    c.html(body, status, { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' })
+  try {
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } })
+    if (!project) return page(renderPreviewMissingPage(), 404)
+
+    const { getPreviewUrl } = await import('./lib/knative-project-manager')
+    const previewOrigin = getPreviewUrl(projectId)
+    // Carry any sub-path and query (e.g. `?__preview_token=…`) through the
+    // hand-off so a deep link survives the detour.
+    const prefix = `/api/preview/${projectId}/open`
+    const path = (c.req.path.startsWith(prefix) ? c.req.path.slice(prefix.length) : '') || '/'
+    const search = new URL(c.req.url).search
+    return page(
+      renderPreviewLoaderPage({
+        targetUrl: `${previewOrigin}${path}${search}`,
+        // Same-origin, so it needs no host juggling and inherits this page's
+        // scheme/port in local dev.
+        wakeUrl: `/api/preview/${projectId}/wake`,
+        probeUrl: `${previewOrigin}/__shogo/wake`,
+        label: new URL(previewOrigin).host,
+      }),
+      200,
+    )
+  } catch (err: any) {
+    console.error(`[preview/open] ${projectId} failed:`, err?.message || err)
+    return page(renderPreviewMissingPage(), 404)
+  }
+}
+app.get('/api/preview/:projectId/open', previewOpenHandler)
+app.get('/api/preview/:projectId/open/*', previewOpenHandler)
+
+// -----------------------------------------------------------------------------
 // Preview render proxy — serves a project's preview subdomain via the API.
 // -----------------------------------------------------------------------------
 // The preview-router Worker proxies `{id}.preview.<base>/<path>` here rather than
@@ -2631,12 +2681,19 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         legacyProxyUrl = previewUrl
       }
       const canvasBaseUrl = previewMode === 'subdomain' ? getPreviewUrl(projectId) : agentUrl
+      // Where to send a BROWSER for a top-level visit. The preview subdomain is
+      // per-project and only routable once its pod, DomainMapping and edge
+      // records are all live, so a cold link there can fail before any of our
+      // code runs; the loader page on this origin waits that out instead.
+      const loaderUrl =
+        previewMode === 'subdomain' ? `${protocol}://${host}/api/preview/${projectId}/open` : null
       const metalBody = (ready: boolean) => ({
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
         directUrl: agentUrl,
         agentUrl,
         canvasBaseUrl,
+        ...(loaderUrl && { loaderUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: ready ? 'running' : 'starting',
         ready,
@@ -2734,6 +2791,14 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       ? getPreviewUrl(projectId)
       : `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
 
+    // Where to send a BROWSER for a top-level visit (new tab, shared link) —
+    // see the loader route above. The subdomain stays the iframe/canvas origin;
+    // only the standalone navigation detours through this origin so a cold or
+    // not-yet-routable preview hostname can't hand the user a browser error.
+    const loaderUrl = previewMode === 'subdomain'
+      ? `${protocol}://${host}/api/preview/${projectId}/open`
+      : null
+
     // A Knative Service reports Ready=True even when scaled to zero
     // (actualReplicas=0). Returning ready:true for a cold service sends the
     // user to a URL that may show "site can't be reached" until the pod cold-
@@ -2774,6 +2839,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
         ...(canvasBaseUrl && { canvasBaseUrl }),
+        ...(loaderUrl && { loaderUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
         ready: true,
@@ -2804,6 +2870,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
         ...(canvasBaseUrl && { canvasBaseUrl }),
+        ...(loaderUrl && { loaderUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: status.exists ? 'starting' : 'creating',
         ready: false,
@@ -2830,6 +2897,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
         ...(canvasBaseUrl && { canvasBaseUrl }),
+        ...(loaderUrl && { loaderUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
         ready: true,
@@ -2844,6 +2912,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
           directUrl: resolvedDirectUrl,
           ...(agentUrl && { agentUrl }),
         ...(canvasBaseUrl && { canvasBaseUrl }),
+        ...(loaderUrl && { loaderUrl }),
           sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
           status: 'starting',
           ready: false,
