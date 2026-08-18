@@ -779,6 +779,7 @@ export default observer(function ProjectLayout() {
     agentUrl: resolvedAgentUrl,
     previewUrl,
     canvasBaseUrl,
+    loaderUrl: previewLoaderUrl,
     ready: runtimeReady,
     error: runtimeError,
     stalled: runtimeStalled,
@@ -788,6 +789,22 @@ export default observer(function ProjectLayout() {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
   })
+
+  // Pre-warm on intent: reaching for "open preview in new tab" is a strong
+  // signal a top-level visit is coming, so nudge the pod awake now instead of
+  // when the loader page finally loads. The wake endpoint is anonymous and
+  // deduped server-side; throttled here so a cursor crossing the toolbar can't
+  // fan out requests.
+  const lastPreviewPrewarmRef = useRef(0)
+  const handlePreviewPrewarm = useCallback(() => {
+    if (Platform.OS !== 'web' || !projectId || !API_URL) return
+    const now = Date.now()
+    if (now - lastPreviewPrewarmRef.current < 30_000) return
+    lastPreviewPrewarmRef.current = now
+    void fetch(`${API_URL}/api/preview/${encodeURIComponent(projectId)}/wake`, {
+      cache: 'no-store',
+    }).catch(() => {})
+  }, [projectId])
 
   // When a remote instance is active, route project runtime traffic through
   // the instance tunnel and back into the desktop API's project agent-proxy.
@@ -2767,12 +2784,17 @@ export default observer(function ProjectLayout() {
     canvasThemeSupported,
     onCanvasRefresh: () => setIframeRefreshKey(k => k + 1),
     onCanvasOpenInNewTab:
-      Platform.OS === 'web' && (canvasBaseUrl || agentUrl)
+      Platform.OS === 'web' && (previewLoaderUrl || canvasBaseUrl || agentUrl)
         ? () => {
-            const base = canvasBaseUrl || agentUrl
-            if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
+            // Prefer the loader page: a new tab is a top-level navigation, so a
+            // preview hostname that isn't routable yet would show the browser's
+            // own error page instead of a waking state. The loader holds that
+            // state on this origin and hands off when the preview answers.
+            const target = previewLoaderUrl ?? `${canvasBaseUrl || agentUrl}/`
+            window.open(target, '_blank', 'noopener,noreferrer')
           }
         : undefined,
+    onCanvasPrewarm: handlePreviewPrewarm,
     onOpenCodeWorkbench:
       Platform.OS === 'web' && typeof window !== 'undefined' && !!(window as any).shogoDesktop?.isDesktop
         ? handleOpenCodeWorkbench

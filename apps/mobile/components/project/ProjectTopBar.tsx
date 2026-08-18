@@ -192,6 +192,11 @@ export interface ProjectTopBarProps {
   canvasThemeSupported?: boolean | null
   onCanvasRefresh?: () => void
   onCanvasOpenInNewTab?: () => void
+  /**
+   * Fired when the user reaches for "open in new tab" (hover / press-in) so the
+   * preview backend can start waking before the click lands.
+   */
+  onCanvasPrewarm?: () => void
   onOpenCodeWorkbench?: () => void
   ideEmbed?: boolean
 }
@@ -210,6 +215,7 @@ function useWebTitle(title?: string) {
 function BarIconButton({
   icon: Icon,
   onPress,
+  onHoverIn,
   active,
   title,
   size = 12,
@@ -217,6 +223,8 @@ function BarIconButton({
 }: {
   icon: React.ElementType
   onPress: () => void
+  /** Intent signal — fires on hover (web) and on press-in (touch). */
+  onHoverIn?: () => void
   active?: boolean
   title?: string
   size?: number
@@ -228,6 +236,8 @@ function BarIconButton({
     <Pressable
       ref={tipRef}
       onPress={onPress}
+      onHoverIn={onHoverIn}
+      onPressIn={onHoverIn}
       testID={testID}
       className={cn(
         'h-6 w-6 items-center justify-center rounded-md',
@@ -365,6 +375,7 @@ export function ProjectTopBar({
   canvasThemeSupported,
   onCanvasRefresh,
   onCanvasOpenInNewTab,
+  onCanvasPrewarm,
   onOpenCodeWorkbench,
   ideEmbed = false,
 }: ProjectTopBarProps) {
@@ -920,7 +931,12 @@ export function ProjectTopBar({
           <BarIconButton icon={RefreshCw} onPress={onCanvasRefresh} title="Refresh preview" />
         )}
         {isCanvasActive && onCanvasOpenInNewTab && (
-          <BarIconButton icon={ExternalLink} onPress={onCanvasOpenInNewTab} title="Open preview in new tab" />
+          <BarIconButton
+            icon={ExternalLink}
+            onPress={onCanvasOpenInNewTab}
+            onHoverIn={onCanvasPrewarm}
+            title="Open preview in new tab"
+          />
         )}
 
         {/* Right actions */}

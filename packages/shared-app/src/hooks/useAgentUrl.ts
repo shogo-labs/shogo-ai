@@ -4,11 +4,17 @@
  * useAgentUrl
  *
  * Resolves the agent runtime URL and preview URL for a project by calling
- * the sandbox/url endpoint. Returns four values:
+ * the sandbox/url endpoint. Returns five values:
  *   agentUrl      – proxied agent runtime (for chat, SSE stream, capabilities)
  *   previewUrl    – Vite dev server or published app URL (for APP project iframe)
  *   canvasBaseUrl – direct runtime URL for the canvas iframe; fetch('/api/...')
  *                   resolves same-origin so no proxy rewriting is needed.
+ *   loaderUrl     – where to send a BROWSER for a standalone visit (new tab,
+ *                   shared link). Points at the API-origin loader page, which
+ *                   holds a "waking up" state until the per-project preview
+ *                   hostname is actually reachable, instead of letting the
+ *                   browser fail on a cold one. Null outside subdomain mode
+ *                   (local/desktop previews are already directly reachable).
  *   ready         – true once the API reports `ready: true`. The URL state
  *                   is held back until the runtime is fully `running`, so
  *                   consumers can simply gate their UI on `agentUrl != null`
@@ -101,6 +107,7 @@ type ResolvedUrls = {
   agentUrl: string | null
   previewUrl: string | null
   canvasBaseUrl: string | null
+  loaderUrl: string | null
 }
 const warmResolutionCache = new Map<string, ResolvedUrls>()
 function warmCacheKey(apiBaseUrl: string, projectId: string): string {
@@ -129,6 +136,7 @@ export function useAgentUrl(
   const [agentUrl, setAgentUrl] = useState<string | null>(localAgentUrl ?? initialWarm?.agentUrl ?? null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(initialWarm?.previewUrl ?? null)
   const [canvasBaseUrl, setCanvasBaseUrl] = useState<string | null>(initialWarm?.canvasBaseUrl ?? null)
+  const [loaderUrl, setLoaderUrl] = useState<string | null>(initialWarm?.loaderUrl ?? null)
   const [error, setError] = useState<string | null>(null)
   const [stalled, setStalled] = useState<boolean>(false)
   const [lastStatus, setLastStatus] = useState<string | null>(initialWarm ? 'ready' : null)
@@ -176,6 +184,7 @@ export function useAgentUrl(
       setAgentUrl(warm.agentUrl)
       setPreviewUrl(warm.previewUrl)
       setCanvasBaseUrl(warm.canvasBaseUrl)
+      setLoaderUrl(warm.loaderUrl)
       setReady(true)
       setError(null)
       setStalled(false)
@@ -185,6 +194,7 @@ export function useAgentUrl(
       setAgentUrl(null)
       setPreviewUrl(null)
       setCanvasBaseUrl(null)
+      setLoaderUrl(null)
       setError(null)
       setStalled(false)
       setLastStatus(null)
@@ -265,6 +275,7 @@ export function useAgentUrl(
             setAgentUrl(null)
             setPreviewUrl(null)
             setCanvasBaseUrl(null)
+            setLoaderUrl(null)
             setReady(false)
             setError(`Failed to get sandbox URL (HTTP ${res.status})`)
             setLastStatus(`http_${res.status}`)
@@ -287,6 +298,7 @@ export function useAgentUrl(
             setAgentUrl(null)
             setPreviewUrl(null)
             setCanvasBaseUrl(null)
+            setLoaderUrl(null)
             setReady(false)
             setError(null)
             setLastStatus(typeof data?.status === 'string' ? data.status : 'pending')
@@ -299,6 +311,9 @@ export function useAgentUrl(
         let resolvedAgent = data.agentUrl || data.url || null
         let resolvedPreview = data.url || null
         let resolvedCanvas = data.canvasBaseUrl || resolvedAgent || null
+        // Absent outside subdomain mode — consumers fall back to opening the
+        // runtime url directly, which is already reachable there.
+        let resolvedLoader = data.loaderUrl || null
 
         if (resolvedAgent) {
           resolvedAgent = rewriteLocalhostUrl(resolvedAgent, apiBaseUrl)
@@ -309,6 +324,9 @@ export function useAgentUrl(
         if (resolvedCanvas) {
           resolvedCanvas = rewriteLocalhostUrl(resolvedCanvas, apiBaseUrl)
         }
+        if (resolvedLoader) {
+          resolvedLoader = rewriteLocalhostUrl(resolvedLoader, apiBaseUrl)
+        }
 
         // Cache the warm resolution so a later remount (switch-back) seeds
         // ready immediately instead of re-running the loading gate.
@@ -316,12 +334,14 @@ export function useAgentUrl(
           agentUrl: resolvedAgent,
           previewUrl: resolvedPreview,
           canvasBaseUrl: resolvedCanvas,
+          loaderUrl: resolvedLoader,
         })
 
         if (!controller.signal.aborted) {
           setAgentUrl(resolvedAgent)
           setPreviewUrl(resolvedPreview)
           setCanvasBaseUrl(resolvedCanvas)
+          setLoaderUrl(resolvedLoader)
           setReady(true)
           setStalled(false)
           setLastStatus('ready')
@@ -347,5 +367,5 @@ export function useAgentUrl(
     return cleanup
   }, [apiBaseUrl, projectId, options?.localAgentUrl, options?.credentials, retryNonce])
 
-  return { agentUrl, previewUrl, canvasBaseUrl, ready, error, stalled, lastStatus, retry }
+  return { agentUrl, previewUrl, canvasBaseUrl, loaderUrl, ready, error, stalled, lastStatus, retry }
 }
