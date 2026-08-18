@@ -32,6 +32,7 @@ import {
   getLocalPortObserver,
   type AttributedPort,
 } from '../lib/port-observer/local-port-observer'
+import { parseProjectSettings } from '../lib/project-settings'
 
 interface ExternalPreviewSettings {
   savedUrl?: string | null
@@ -77,9 +78,8 @@ function validateUrl(
 }
 
 function readSavedUrl(settings: unknown): string | null {
-  if (!settings || typeof settings !== 'object') return null
-  const s = settings as ProjectSettingsLike
-  const v = s.externalPreview?.savedUrl
+  const s = parseProjectSettings(settings) as ProjectSettingsLike | null
+  const v = s?.externalPreview?.savedUrl
   return typeof v === 'string' && v ? v : null
 }
 
@@ -233,10 +233,14 @@ export function externalPreviewRoutes() {
       )
     }
 
+    // Parse rather than cast: a legacy row can hold a JSON *string*, and
+    // spreading a string yields character-indexed keys — it would overwrite
+    // the whole settings document with garbage.
+    const current = (parseProjectSettings(project.settings) as ProjectSettingsLike | null) ?? {}
     const merged: ProjectSettingsLike = {
-      ...((project.settings as ProjectSettingsLike) ?? {}),
+      ...current,
       externalPreview: {
-        ...(((project.settings as ProjectSettingsLike)?.externalPreview) ?? {}),
+        ...(current.externalPreview ?? {}),
         savedUrl: validated.url,
       },
     }
@@ -260,7 +264,7 @@ export function externalPreviewRoutes() {
     })
     if (!project) return c.json({ error: 'project_not_found' }, 404)
 
-    const current = (project.settings as ProjectSettingsLike) ?? {}
+    const current = (parseProjectSettings(project.settings) as ProjectSettingsLike | null) ?? {}
     const nextSettings: ProjectSettingsLike = { ...current }
     if (nextSettings.externalPreview) {
       nextSettings.externalPreview = { ...nextSettings.externalPreview, savedUrl: null }

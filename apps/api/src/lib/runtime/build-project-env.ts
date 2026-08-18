@@ -13,6 +13,7 @@ import { buildAutoTierMapEnv } from './auto-tier-env'
 import { INSTANCE_SIZES } from '../../config/instance-sizes'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
+import { parseProjectSettings } from '../project-settings'
 
 /**
  * Thrown when the project row is gone (typically deleted while a session was
@@ -99,7 +100,7 @@ export async function buildProjectEnv(
         env.SHOGO_ALWAYS_ON = '1'
       }
 
-      const settings = project.settings as Record<string, unknown> | null
+      const settings = parseProjectSettings(project.settings)
 
       // Per-project workspace mount override (default: true = mounted)
       if (settings?.mountWorkspace === false) {
@@ -114,11 +115,10 @@ export async function buildProjectEnv(
       }
 
       // Tech stack is sourced exclusively from project.settings.techStackId
-      // now that templateId is gone. Marketplace installs (the only flow
-      // that creates new projects) populate this field directly from the
-      // listing's source project at install time. Pre-existing workspaces
-      // already had it copied across by the one-shot templates→marketplace
-      // migration that ran before this seed path was removed.
+      // now that templateId is gone. Populated by the marketplace installer
+      // and by the home composer's stack picker. When absent the runtime
+      // falls back to `react-app`, so a misread here silently downgrades an
+      // Expo project to a Vite/React one.
       const techStackFromSettings = settings?.techStackId as string | undefined
       if (techStackFromSettings) {
         env.TECH_STACK_ID = techStackFromSettings

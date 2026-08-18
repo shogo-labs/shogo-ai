@@ -118,6 +118,27 @@ describe('RuntimeManager.getProjectInfo', () => {
     })
   })
 
+  test('reads the tech stack when Postgres returns settings as a JSON string', async () => {
+    // Regression: clients POST/PATCH `settings` as JSON.stringify(...), which
+    // Postgres stores as a jsonb string scalar and returns as a string. A raw
+    // `settings?.techStackId` read yielded undefined, so TECH_STACK_ID never
+    // reached the pod and Expo projects booted as the react-app default.
+    // SQLite dev hid this — wrapForSqlite parses these columns on read.
+    projectResult = {
+      templateId: null,
+      name: 'Composer Project',
+      settings: JSON.stringify({ activeMode: 'canvas', techStackId: 'expo-app' }),
+      workingMode: 'managed',
+      runtimeEnabled: true,
+      trustLevel: 'trusted',
+      projectFolders: [],
+    }
+
+    const info = await managerWithPrivateGetInfo().getProjectInfo('project-string-settings')
+
+    expect(info.techStackId).toBe('expo-app')
+  })
+
   test('external projects default runtimeEnabled to false when the column is absent', async () => {
     projectResult = {
       templateId: null,

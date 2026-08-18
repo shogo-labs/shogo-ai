@@ -30,6 +30,7 @@ import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 import type { InstanceSizeName } from '../config/instance-sizes'
 import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
 import { fnv1a64 } from './advisory-lock'
+import { parseProjectSettings } from './project-settings'
 
 const knativeTracer = trace.getTracer('shogo-knative-manager')
 
@@ -1168,8 +1169,8 @@ export class KnativeProjectManager {
       return value === 'project' || value === 'workspace' ? value : 'workspace'
     })()
     const projectTechStackId = (() => {
-      const s = projectRecord?.settings as { techStackId?: string } | null | undefined
-      return s?.techStackId ?? null
+      const s = parseProjectSettings(projectRecord?.settings)
+      return (s?.techStackId as string | undefined) ?? null
     })()
     // Single unified runtime image. The base image pre-warms Bun's tarball
     // cache with the Expo + RN dependency tree, so mobile and web projects

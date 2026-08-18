@@ -33,6 +33,7 @@ import { cpSync } from 'fs'
 import { dirname, isAbsolute, join, resolve, sep } from 'path'
 import os from 'os'
 import { prisma } from '../lib/prisma'
+import { parseProjectSettings } from '../lib/project-settings'
 import {
   attachProjectToProject,
   createProjectWorkspaceSession,
@@ -626,14 +627,9 @@ export function localProjectsRoutes(): Hono {
       // defaults for any project that was created before they were the
       // default (so reopening an older folder project doesn't surface a
       // "Connection timed out" canvas / drag along a stale tech stack).
-      const existingSettings: Record<string, unknown> = (() => {
-        const raw = existingProject.settings as any
-        if (raw && typeof raw === 'object' && !Array.isArray(raw)) return { ...raw }
-        if (typeof raw === 'string') {
-          try { return JSON.parse(raw) } catch { return {} }
-        }
-        return {}
-      })()
+      const existingSettings: Record<string, unknown> = {
+        ...(parseProjectSettings(existingProject.settings) ?? {}),
+      }
       const mergedSettings = {
         ...existingSettings,
         workingMode: 'external',

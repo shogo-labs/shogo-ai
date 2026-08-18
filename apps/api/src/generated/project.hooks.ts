@@ -10,6 +10,7 @@ import { getAgentTemplateById } from '../../../../packages/agent-runtime/src/age
 import * as billingService from '../services/billing.service'
 import { getModelTier } from '@shogo/model-catalog'
 import { getRuntimeManager } from '../lib/runtime/manager'
+import { normalizeProjectSettings } from '../lib/project-settings'
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -256,10 +257,12 @@ export const projectHooks: ProjectHooks = {
     if (!input.createdBy && userId) input.createdBy = userId
 
     if (!input.settings) {
-      input.settings = JSON.stringify({
+      input.settings = {
         activeMode: 'none',
         canvasEnabled: false,
-      })
+      }
+    } else {
+      input.settings = normalizeProjectSettings(input.settings)
     }
 
     return { ok: true, data: input }
@@ -329,6 +332,12 @@ export const projectHooks: ProjectHooks = {
    * Super admins can update any project.
    */
   beforeUpdate: async (id, input, ctx) => {
+    // Mutate in place: the access-control branches below return `{ ok: true }`
+    // without `data`, and the route keeps its own `body` reference in that case.
+    if (input?.settings !== undefined) {
+      input.settings = normalizeProjectSettings(input.settings)
+    }
+
     const userId = ctx.userId
     if (!userId) {
       return {

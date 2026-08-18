@@ -28,6 +28,7 @@ import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
 import { enrichWorkspaceReferences, enrichProjectReferences } from "../lib/chat-references"
 import { trackEvent } from "../services/loops.service"
+import { parseProjectSettings } from "../lib/project-settings"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -744,9 +745,7 @@ export async function trackUsageFromStream(
   let worktreesEnabled = false
   try {
     const p = await prisma.project.findUnique({ where: { id: project.id }, select: { settings: true } as any }) as { settings?: unknown } | null
-    const raw = p?.settings
-    const settings = typeof raw === 'string' ? (() => { try { return JSON.parse(raw) } catch { return null } })() : raw
-    worktreesEnabled = !!(settings && typeof settings === 'object' && (settings as Record<string, unknown>).gitWorktreesEnabled === true)
+    worktreesEnabled = parseProjectSettings(p?.settings)?.gitWorktreesEnabled === true
   } catch { /* default false */ }
   if (
     !workerOwnsSync &&
