@@ -25,6 +25,7 @@ import type {
 } from './types'
 import { getShogoCloudUrl, buildAiProxyUrl, buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
+import { parseProjectSettings } from '../project-settings'
 import { buildWorkspaceEnv } from './build-workspace-env'
 import {
   isProjectCloudLinked,
@@ -1185,11 +1186,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           },
         } as any,
       })) as any
-      const settings = project?.settings as Record<string, unknown> | null
+      const settings = parseProjectSettings(project?.settings)
       // Tech stack is sourced exclusively from settings.techStackId now.
       // The legacy templateId fallback was removed during the templates →
-      // marketplace consolidation; marketplace installs persist
-      // techStackId at install time so every new project carries it.
+      // marketplace consolidation; marketplace installs and the home
+      // composer's stack picker both persist techStackId at create time.
       const techStackId = settings?.techStackId as string | undefined
       const workingMode = (project?.workingMode as 'managed' | 'external' | undefined) ?? 'managed'
       const runtimeEnabled =
@@ -1274,9 +1275,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           where: { id: projectId },
           select: { settings: true },
         })
-        const settings = typeof project?.settings === 'string'
-          ? JSON.parse(project.settings)
-          : project?.settings
+        const settings = parseProjectSettings(project?.settings)
         if (settings?.security) {
           projectOverride = settings.security
         }

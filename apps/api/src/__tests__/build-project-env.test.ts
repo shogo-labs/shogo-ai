@@ -433,6 +433,29 @@ describe('buildProjectEnv — project-derived fields', () => {
     expect(getAgentTemplateByIdMock).not.toHaveBeenCalled()
   })
 
+  test('sets TECH_STACK_ID when Postgres returns settings as a JSON string', async () => {
+    // Regression: the home composer sends settings as JSON.stringify(...),
+    // Postgres keeps it as a jsonb string scalar, and the raw property read
+    // here returned undefined — so the pod never got TECH_STACK_ID and the
+    // runtime seeded its `react-app` default over the user's Expo choice.
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: JSON.stringify({ activeMode: 'canvas', techStackId: 'expo-app' }),
+    }))
+    const env = await buildProjectEnv('proj-ts-string-settings')
+    expect(env.TECH_STACK_ID).toBe('expo-app')
+  })
+
+  test('reads boolean settings flags through the same string-encoded path', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: JSON.stringify({ mountWorkspace: false, gitWorktreesEnabled: true }),
+    }))
+    const env = await buildProjectEnv('proj-flags-string-settings')
+    expect(env.MOUNT_WORKSPACE).toBe('false')
+    expect(env.SHOGO_GIT_WORKTREES).toBe('1')
+  })
+
   test('injects SHOGO_CLOUD_SYNC_MODE for an explicit "s3" project (pod default is git_only)', async () => {
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
