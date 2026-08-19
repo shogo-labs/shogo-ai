@@ -133,6 +133,16 @@ const CANVAS_AUTO_CLOSE_THRESHOLD = 200
 const DRAG_FLOOR = 100
 const DRAG_CEILING_OFFSET = 100
 
+/**
+ * React Native Web forwards extra CSS properties (like `transition`)
+ * that aren't part of RN's `ViewStyle` type. This narrows the `any` to
+ * a single, documented spot instead of casting inline at every call
+ * site, and is a no-op on native since those keys are simply absent.
+ */
+function withWebTransition<T extends object>(style: T, transition: string): T & { transition?: string } {
+  return Platform.OS === 'web' ? { ...style, transition } : style
+}
+
 /** Suppress duplicate "[canvas-error]" toasts within this many ms. */
 const CANVAS_ERROR_DEDUP_MS = 10_000
 /** How many recent runtime log entries to attach to a debug-with-Shogo prompt. */
@@ -1737,11 +1747,13 @@ export default observer(function ProjectLayout() {
                       : 'relative flex-1',
                   !isChatFullscreen && chatHidden && 'hidden',
                 )}
-                style={!isChatFullscreen && isWide && !chatHidden ? {
-                  width: clampChatWidth(chatPanelWidth),
-                  opacity: autoCloseHint === 'chat' ? 0.4 : 1,
-                  transition: 'opacity 150ms',
-                } as any : undefined}
+                style={!isChatFullscreen && isWide && !chatHidden ? withWebTransition(
+                  {
+                    width: clampChatWidth(chatPanelWidth),
+                    opacity: autoCloseHint === 'chat' ? 0.4 : 1,
+                  },
+                  'opacity 150ms',
+                ) : undefined}
               >
                 {isChatFullscreen && (
                   <View className="w-[280px] bg-muted/50 dark:bg-black/30">
@@ -1865,10 +1877,7 @@ export default observer(function ProjectLayout() {
               canvasAreaHidden && 'hidden',
               Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
             )}
-            style={autoCloseHint === 'canvas' ? {
-              opacity: 0.4,
-              transition: 'opacity 150ms',
-            } as any : undefined}
+            style={autoCloseHint === 'canvas' ? withWebTransition({ opacity: 0.4 }, 'opacity 150ms') : undefined}
           >
             <DrawerHost
               projectId={projectId ?? null}
