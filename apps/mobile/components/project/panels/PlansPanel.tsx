@@ -37,6 +37,10 @@ import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
 import { useDualPlan } from "../../../lib/dual-plan-preference"
 
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback
+}
+
 const TIER_LABELS: Record<ModelTier, string> = {
   premium: "Premium",
   standard: "Standard",
@@ -218,8 +222,8 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       try {
         const data = await agentClient.getPlan(filename)
         setPlanContent(data.content)
-      } catch (err: any) {
-        setDetailError(err?.message || "Failed to load plan")
+      } catch (err) {
+        setDetailError(errorMessage(err, "Failed to load plan"))
         setPlanContent(null)
       } finally {
         setDetailLoading(false)
@@ -238,8 +242,8 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           setSelectedPlan(null)
           setPlanContent(null)
         }
-      } catch (err: any) {
-        setDeleteError(err?.message || "Failed to delete plan")
+      } catch (err) {
+        setDeleteError(errorMessage(err, "Failed to delete plan"))
       }
     },
     [agentClient, selectedPlan]
