@@ -9,6 +9,24 @@ import { Skeleton } from '@shogo/shared-ui/primitives'
  * sees a stable shape while data loads (no layout shift).
  */
 
+/**
+ * A single skeleton "line" whose width is a fraction of `percent`.
+ * Shared by the skeleton variants that render a stack of varied-width
+ * bars (file tree, file content, logs) so the width-list -> bar mapping
+ * only needs to be written once.
+ */
+function SkeletonBar({
+  widthFraction,
+  percent = 60,
+  className = 'h-3 rounded-sm',
+}: {
+  widthFraction: number
+  percent?: number
+  className?: string
+}) {
+  return <Skeleton className={className} style={{ width: `${widthFraction * percent}%` }} />
+}
+
 export function ProjectShellSkeleton() {
   return (
     <View className="flex-1 bg-background">
@@ -52,7 +70,7 @@ export function FileTreeSkeleton() {
       {[1, 0.85, 0.7, 0.9, 0.6, 0.75, 0.8].map((w, i) => (
         <View key={i} className="flex-row items-center gap-2 py-1 pl-2">
           <Skeleton className="h-3 w-3 rounded-sm" />
-          <Skeleton className="h-3 rounded-sm" style={{ width: `${w * 60}%` }} />
+          <SkeletonBar widthFraction={w} />
         </View>
       ))}
     </View>
@@ -63,7 +81,7 @@ export function FileContentSkeleton() {
   return (
     <View className="flex-1 p-4 gap-2">
       {[0.9, 0.7, 0.85, 0.6, 0.95, 0.5, 0.8, 0.65, 0.75, 0.4].map((w, i) => (
-        <Skeleton key={i} className="h-3.5 rounded-sm" style={{ width: `${w * 100}%` }} />
+        <SkeletonBar key={i} widthFraction={w} percent={100} className="h-3.5 rounded-sm" />
       ))}
     </View>
   )
@@ -200,7 +218,7 @@ export function LogsSkeleton() {
         <View key={i} className="flex-row items-center gap-2 px-2 py-1">
           <Skeleton className="h-3 w-14 rounded-sm" />
           <Skeleton className="h-2.5 w-8 rounded-sm" />
-          <Skeleton className="h-3 rounded-sm" style={{ width: `${w * 60}%` }} />
+          <SkeletonBar widthFraction={w} />
         </View>
       ))}
     </View>
