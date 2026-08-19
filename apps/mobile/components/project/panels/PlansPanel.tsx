@@ -121,6 +121,52 @@ function stripBusinessFromContent(content: string): string {
   return content.replace(BUSINESS_SECTION_RE, "").trimEnd()
 }
 
+type DiffLine = { type: "same" | "added" | "removed"; text: string }
+
+/**
+ * Line-level diff via longest-common-subsequence backtracking (the same
+ * approach classic line-oriented `diff` tools use). Unlike a naive
+ * index-by-index comparison, this correctly handles inserted/removed
+ * lines: a single added/removed line does not cause every following
+ * line to be misreported as changed.
+ */
+function diffLines(a: string[], b: string[]): DiffLine[] {
+  const n = a.length
+  const m = b.length
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1])
+    }
+  }
+
+  const result: DiffLine[] = []
+  let i = 0
+  let j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      result.push({ type: "same", text: a[i] })
+      i++
+      j++
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      result.push({ type: "removed", text: a[i] })
+      i++
+    } else {
+      result.push({ type: "added", text: b[j] })
+      j++
+    }
+  }
+  while (i < n) {
+    result.push({ type: "removed", text: a[i] })
+    i++
+  }
+  while (j < m) {
+    result.push({ type: "added", text: b[j] })
+    j++
+  }
+  return result
+}
+
 function extractPlanBody(content: string): string {
   const stripped = stripBusinessFromContent(content)
   const fmEnd = stripped.indexOf("---", 4)
@@ -653,18 +699,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
     const linesA = bodyA.split("\n")
     const linesB = bodyB.split("\n")
-    const maxLen = Math.max(linesA.length, linesB.length)
-    const diffLines: Array<{ type: "same" | "added" | "removed"; text: string }> = []
-    for (let i = 0; i < maxLen; i++) {
-      const la = linesA[i] ?? ""
-      const lb = linesB[i] ?? ""
-      if (la === lb) {
-        diffLines.push({ type: "same", text: la })
-      } else {
-        if (la) diffLines.push({ type: "removed", text: la })
-        if (lb) diffLines.push({ type: "added", text: lb })
-      }
-    }
+    const computedDiffLines = diffLines(linesA, linesB)
 
     return (
       <View className="flex-1 bg-background">
@@ -683,7 +718,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           </View>
         </View>
         <ScrollView className="flex-1 px-4 py-3">
-          {diffLines.map((line, idx) => (
+          {computedDiffLines.map((line, idx) => (
             <View
               key={idx}
               className={cn(
