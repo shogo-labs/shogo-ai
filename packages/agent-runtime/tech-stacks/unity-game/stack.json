@@ -1,7 +1,7 @@
 {
   "id": "unity-game",
-  "name": "Unity Game Builder",
-  "description": "Build games with Unity and C#. Requires .NET SDK (future runtime layer).",
+  "name": "Advanced Game Project",
+  "description": "Build a larger 2D or 3D game for desktop or mobile. Best for full game-engine projects.",
   "tags": ["unity", "csharp", "3d", "2d", "games", "gamedev"],
   "target": "native",
   "seedsOwnTemplate": true,
