@@ -27,6 +27,7 @@ import {
   ChevronDown,
   Check,
   Languages,
+  AlertTriangle,
 } from "lucide-react-native"
 import { MarkdownText } from "../../chat/MarkdownText"
 import { AgentClient, type AgentPlanSummary } from "@shogo-ai/sdk/agent"
@@ -35,6 +36,10 @@ import { API_URL } from "../../../lib/api"
 import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
 import { useDualPlan } from "../../../lib/dual-plan-preference"
+
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback
+}
 
 const TIER_LABELS: Record<ModelTier, string> = {
   premium: "Premium",
@@ -156,6 +161,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   // filename so navigating between plans doesn't show a stale spinner.
   const [translateLoading, setTranslateLoading] = useState<string | null>(null)
   const [translateError, setTranslateError] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const prevSelectedPlanRef = useRef<string | null>(null)
 
   const handleDualPlanToggle = useCallback(() => {
@@ -207,14 +213,17 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
     }
   }, [agentClient])
 
+  const [detailError, setDetailError] = useState<string | null>(null)
+
   const fetchPlanDetail = useCallback(
     async (filename: string) => {
       setDetailLoading(true)
+      setDetailError(null)
       try {
         const data = await agentClient.getPlan(filename)
         setPlanContent(data.content)
       } catch (err) {
-        console.error("[PlansPanel] Failed to fetch plan detail:", err)
+        setDetailError(errorMessage(err, "Failed to load plan"))
         setPlanContent(null)
       } finally {
         setDetailLoading(false)
@@ -225,6 +234,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
   const handleDelete = useCallback(
     async (filename: string) => {
+      setDeleteError(null)
       try {
         await agentClient.deletePlan(filename)
         setPlans((prev) => prev.filter((p) => p.filename !== filename))
@@ -233,7 +243,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           setPlanContent(null)
         }
       } catch (err) {
-        console.error("[PlansPanel] Failed to delete plan:", err)
+        setDeleteError(errorMessage(err, "Failed to delete plan"))
       }
     },
     [agentClient, selectedPlan]
@@ -553,10 +563,37 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           </View>
         )}
 
+        {/* Delete error banner */}
+        {deleteError && (
+          <View className="px-4 py-2 bg-destructive/10 flex-row items-center gap-2">
+            <AlertTriangle className="text-destructive" size={14} />
+            <Text className="text-xs text-destructive flex-1">{deleteError}</Text>
+            <Pressable onPress={() => setDeleteError(null)} className="p-1">
+              <Text className="text-xs text-destructive font-medium">Dismiss</Text>
+            </Pressable>
+          </View>
+        )}
+
         {/* Detail body */}
         <ScrollView className="flex-1 px-4 py-3" onScrollBeginDrag={() => setShowModelPicker(false)}>
           {!isStreamingDetail && detailLoading ? (
             <ActivityIndicator className="mt-8" />
+          ) : !isStreamingDetail && detailError ? (
+            <View className="items-center justify-center py-12 px-4">
+              <AlertTriangle className="h-8 w-8 text-destructive/60 mb-3" size={32} />
+              <Text className="text-sm text-foreground text-center font-medium">
+                Couldn't load plan
+              </Text>
+              <Text className="text-xs text-muted-foreground text-center mt-1">
+                {detailError}
+              </Text>
+              <Pressable
+                onPress={() => fetchPlanDetail(selectedPlan!)}
+                className="mt-4 px-4 py-2 bg-primary rounded-lg active:bg-primary/80"
+              >
+                <Text className="text-xs font-medium text-primary-foreground">Retry</Text>
+              </Pressable>
+            </View>
           ) : isSummaryTab ? (
             summaryText ? (
               <MarkdownText>{summaryText}</MarkdownText>
