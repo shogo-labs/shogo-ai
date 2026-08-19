@@ -6,7 +6,7 @@
  * Shows role, timestamp, and phase badge for a conversation turn.
  */
 
-import { View, Text } from "react-native"
+import { View, Text, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { User, Bot } from "lucide-react-native"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
@@ -25,26 +25,27 @@ export function TurnHeader({
   className,
 }: TurnHeaderProps) {
   const colors = usePhaseColor(phase || "")
+  const isNative = Platform.OS !== "web"
 
   const formattedTime = timestamp
     ? timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : null
 
   return (
-    <View className={cn("flex-row items-center gap-1.5 mb-0.5", className)}>
+    <View className={cn("flex-row items-center", isNative ? "min-h-7 gap-2 mb-1" : "gap-1.5 mb-0.5", className)}>
       {role === "user" ? (
-        <View className="w-4 h-4 rounded-full bg-primary/10 items-center justify-center">
-          <User className="w-2.5 h-2.5 text-primary" />
+        <View className={cn("rounded-full bg-primary/10 items-center justify-center", isNative ? "w-6 h-6" : "w-4 h-4")}>
+          <User className="text-primary" size={isNative ? 16 : 10} />
         </View>
       ) : (
-        <View className="w-4 h-4 rounded-full bg-muted items-center justify-center">
-          <Bot className="w-2.5 h-2.5 text-muted-foreground" />
+        <View className={cn("rounded-full bg-muted items-center justify-center", isNative ? "w-6 h-6" : "w-4 h-4")}>
+          <Bot className="text-muted-foreground" size={isNative ? 16 : 10} />
         </View>
       )}
 
       <Text
         className={cn(
-          "text-[10px] font-medium",
+          isNative ? "text-sm font-medium" : "text-[10px] font-medium",
           role === "user" ? "text-primary" : "text-muted-foreground"
         )}
       >
@@ -52,7 +53,7 @@ export function TurnHeader({
       </Text>
 
       {formattedTime && (
-        <Text className="text-[9px] text-muted-foreground/60 font-mono">
+        <Text className={cn("text-muted-foreground/60 font-mono", isNative ? "text-xs" : "text-[9px]")}>
           {formattedTime}
         </Text>
       )}
@@ -60,7 +61,7 @@ export function TurnHeader({
       {role === "assistant" && phase && (
         <Text
           className={cn(
-            "text-[9px] px-1 py-0.5 rounded",
+            isNative ? "text-xs px-2 py-0.5 rounded" : "text-[9px] px-1 py-0.5 rounded",
             colors.accent
           )}
         >

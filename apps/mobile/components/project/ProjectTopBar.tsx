@@ -51,7 +51,6 @@ import {
   MessageSquare,
   LayoutDashboard,
   Code2,
-  FolderOpen,
   Sliders,
   Radio,
   Activity,
@@ -88,9 +87,9 @@ import { ProjectExportModal } from './ProjectExportModal'
 /** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
 const nativeNarrowTitleMaxWidth = 132
 
-/** Native narrow top bar only (not web): slimmer than 320px desktop popover, capped to screen width. */
+/** Native narrow top bar only (not web): keep the project menu wide enough for the account row and usage card. */
 function narrowProjectDropdownWidth(screenWidth: number): number {
-  return Math.max(232, Math.min(276, screenWidth - 20))
+  return Math.max(300, Math.min(320, screenWidth - 96))
 }
 
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
@@ -104,7 +103,7 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
   ...(Platform.OS === 'web'
     ? [{ id: 'ide', label: 'IDE', icon: Code2 }]
-    : [{ id: 'files', label: 'Files', icon: FolderOpen }]),
+    : [{ id: 'files', label: 'Files', icon: Code2 }]),
   { id: 'plans', label: 'Plans', icon: ClipboardList },
   // Folders, Capabilities, Channels, Agents, Monitor, Checkpoints all
   // live behind this Settings tab now (rendered by SettingsPanel with a
@@ -231,6 +230,7 @@ function BarIconButton({
   testID?: string
 }) {
   const tipRef = useWebTitle(title)
+  const isNative = Platform.OS !== 'web'
 
   return (
     <Pressable
@@ -238,15 +238,17 @@ function BarIconButton({
       onPress={onPress}
       onHoverIn={onHoverIn}
       onPressIn={onHoverIn}
+      hitSlop={isNative ? 4 : undefined}
       testID={testID}
       className={cn(
-        'h-6 w-6 items-center justify-center rounded-md',
+        'items-center justify-center rounded-md',
+        isNative ? 'h-9 w-9' : 'h-6 w-6',
         active ? 'bg-primary' : 'active:bg-muted',
       )}
       accessibilityLabel={title}
     >
       <Icon
-        size={size}
+        size={isNative ? Math.max(size, 18) : size}
         className={cn(active ? 'text-primary-foreground' : 'text-muted-foreground')}
       />
     </Pressable>
@@ -450,7 +452,7 @@ export function ProjectTopBar({
   const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [
     ...narrowOverflowTabs.map(t => ({ id: t.id, label: t.label })),
-    ...(!hasActiveSubscription ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
+    ...(!hasActiveSubscription && !(Platform.OS !== 'web' && isNativePhone) ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
   ]
 
   const handleTabPress = useCallback((tabId: string) => {
@@ -515,11 +517,11 @@ export function ProjectTopBar({
             : { elevation: 12 }
         }
       >
-        <View className="flex-row items-center gap-0.5 flex-shrink-0">
+        <View className={cn('flex-row items-center flex-shrink-0', Platform.OS !== 'web' ? 'gap-1' : 'gap-0.5')}>
           {!ideEmbed && <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" />}
           {ideEmbed ? (
             <View className="px-1.5 py-0.5 max-w-[160px]">
-              <Text className="text-xs font-semibold text-foreground" numberOfLines={1} ellipsizeMode="tail">
+              <Text className={cn('font-semibold text-foreground', Platform.OS !== 'web' ? 'text-base' : 'text-xs')} numberOfLines={1} ellipsizeMode="tail">
                 {projectName}
               </Text>
             </View>
@@ -534,25 +536,26 @@ export function ProjectTopBar({
                 <Pressable
                   {...triggerProps}
                   className={cn(
-                    'flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted',
+                    'flex-row items-center gap-1 rounded-md active:bg-muted',
+                    Platform.OS !== 'web' ? 'min-h-9 px-2 py-1' : 'px-1.5 py-0.5',
                     !isNativePhone && 'max-w-[120px]',
                   )}
                   style={[
                     (triggerProps as { style?: StyleProp<ViewStyle> }).style,
-                    isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth } : undefined,
+                    isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth, alignSelf: 'flex-start' } : undefined,
                   ]}
                   accessibilityLabel="Switch project"
                   testID="project-switcher-trigger"
                 >
                   <Text
-                    className="text-xs font-semibold text-foreground"
-                    style={isNativePhone ? { flex: 1, minWidth: 0 } : undefined}
+                    className={cn('font-semibold text-foreground', Platform.OS !== 'web' ? 'text-base' : 'text-xs')}
+                    style={isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth - 22 } : undefined}
                     numberOfLines={1}
                     ellipsizeMode="tail"
                   >
                     {projectName}
                   </Text>
-                  <ChevronDown size={10} className="text-muted-foreground flex-shrink-0" />
+                  <ChevronDown size={Platform.OS !== 'web' ? 14 : 10} className="text-muted-foreground flex-shrink-0" />
                 </Pressable>
               )}
             >
@@ -565,11 +568,19 @@ export function ProjectTopBar({
                 }
                 style={
                   narrowNativeMenuW != null
-                    ? { width: narrowNativeMenuW, maxWidth: narrowNativeMenuW }
+                    ? { width: narrowNativeMenuW, maxWidth: narrowNativeMenuW, left: 16 }
                     : undefined
                 }
               >
-                <PopoverBody>
+                <PopoverBody
+                  style={{ maxHeight: 480 }}
+                  scrollEnabled
+                  showsVerticalScrollIndicator={Platform.OS !== 'web'}
+                  nestedScrollEnabled={Platform.OS !== 'web'}
+                  keyboardShouldPersistTaps="handled"
+                  bounces={Platform.OS !== 'web'}
+                  contentContainerStyle={Platform.OS !== 'web' ? { paddingBottom: 8 } : undefined}
+                >
                   <ProjectDropdownContent
                     key={dropdownKey}
                     projects={projects}
@@ -598,9 +609,9 @@ export function ProjectTopBar({
           )}
         </View>
 
-        <View className="w-px h-5 bg-border mx-1 flex-shrink-0" />
+        <View className={cn('w-px bg-border mx-1 flex-shrink-0', Platform.OS !== 'web' ? 'h-7' : 'h-5')} />
 
-        <View className="flex-row items-center gap-0.5" role="tablist">
+        <View className={cn('flex-row items-center', Platform.OS !== 'web' ? 'gap-1' : 'gap-0.5')} role="tablist">
           {narrowPrimaryTabs.map((tab) => (
             <BarIconButton
               key={tab.id}
@@ -623,7 +634,7 @@ export function ProjectTopBar({
           />
         )}
 
-        {onOpenChatSessions && narrowActiveTab === 'chat' && (
+        {onOpenChatSessions && (
           <BarIconButton
             icon={History}
             onPress={onOpenChatSessions}
@@ -642,12 +653,13 @@ export function ProjectTopBar({
               <Pressable
                 {...triggerProps}
                 className={cn(
-                  'h-7 w-7 items-center justify-center rounded-md',
+                  'items-center justify-center rounded-md',
+                  Platform.OS !== 'web' ? 'h-9 w-9' : 'h-7 w-7',
                   showNarrowMore ? 'bg-muted' : 'active:bg-muted',
                 )}
                 accessibilityLabel="More options"
               >
-                <MoreHorizontal size={14} className="text-muted-foreground" />
+                <MoreHorizontal size={Platform.OS !== 'web' ? 18 : 14} className="text-muted-foreground" />
               </Pressable>
             )}
           >
@@ -1014,13 +1026,13 @@ function RenameChatModal({
   onSave: () => void
 }) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType={Platform.OS === 'web' ? 'fade' : 'slide'} onRequestClose={onClose}>
       <Pressable onPress={onClose} className="flex-1 bg-black/50 items-center justify-center px-6">
         <Pressable onPress={(e) => e.stopPropagation()} className="bg-background rounded-xl w-full max-w-sm shadow-xl overflow-hidden">
           <View className="flex-row items-center justify-between px-5 pt-5 pb-3">
-            <Text className="text-base font-semibold text-foreground">Rename chat</Text>
-            <Pressable onPress={onClose} className="p-1 -mr-1 rounded-md active:bg-muted">
-              <X size={18} className="text-muted-foreground" />
+            <Text className={Platform.OS === 'web' ? "text-base font-semibold text-foreground" : "text-lg font-semibold text-foreground"}>Rename chat</Text>
+            <Pressable onPress={onClose} className={Platform.OS === 'web' ? "p-1 -mr-1 rounded-md active:bg-muted" : "h-10 w-10 -mr-2 items-center justify-center rounded-lg active:bg-muted"}>
+              <X size={Platform.OS === 'web' ? 18 : 20} className="text-muted-foreground" />
             </Pressable>
           </View>
           <View className="px-5 pb-4">
@@ -1029,20 +1041,20 @@ function RenameChatModal({
               onChangeText={onChangeName}
               placeholder="Chat name"
               placeholderTextColor="#9ca3af"
-              className="border border-border rounded-lg px-3 py-2.5 text-sm text-foreground web:outline-none"
+              className={Platform.OS === 'web' ? "border border-border rounded-lg px-3 py-2.5 text-sm text-foreground web:outline-none" : "min-h-12 border border-border rounded-lg px-3 py-3 text-base text-foreground"}
               autoFocus
               selectTextOnFocus
             />
           </View>
           <View className="px-5 pb-5 flex-row justify-end gap-2">
-            <Pressable onPress={onClose} className="px-4 py-2 rounded-lg border border-border active:bg-muted">
-              <Text className="text-sm font-medium text-foreground">Cancel</Text>
+            <Pressable onPress={onClose} className={Platform.OS === 'web' ? "px-4 py-2 rounded-lg border border-border active:bg-muted" : "min-h-11 px-4 py-2 rounded-lg border border-border active:bg-muted justify-center"}>
+              <Text className={Platform.OS === 'web' ? "text-sm font-medium text-foreground" : "text-base font-medium text-foreground"}>Cancel</Text>
             </Pressable>
             <Pressable
               onPress={onSave}
-              className={cn('px-4 py-2 rounded-lg', currentName.trim() ? 'bg-primary active:opacity-80' : 'bg-muted')}
+              className={cn('px-4 py-2 rounded-lg justify-center', Platform.OS !== 'web' && 'min-h-11', currentName.trim() ? 'bg-primary active:opacity-80' : 'bg-muted')}
             >
-              <Text className={cn('text-sm font-medium', currentName.trim() ? 'text-primary-foreground' : 'text-muted-foreground')}>
+              <Text className={cn(Platform.OS === 'web' ? 'text-sm font-medium' : 'text-base font-medium', currentName.trim() ? 'text-primary-foreground' : 'text-muted-foreground')}>
                 Save
               </Text>
             </Pressable>
@@ -1185,6 +1197,7 @@ function ProjectMenuView({
   folders: { id: string; name: string }[]
   canvasThemeSupported?: boolean | null
 }) {
+  const isNative = Platform.OS !== 'web'
   const [showDetailsModal, setShowDetailsModal] = useState(false)
   const [showRenameModal, setShowRenameModal] = useState(false)
   const [showMoveModal, setShowMoveModal] = useState(false)
@@ -1350,36 +1363,31 @@ function ProjectMenuView({
 
   return (
     <>
-      <ScrollView
-        className="max-h-[480px]"
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        bounces={false}
-      >
+      <View>
         {/* Go to Dashboard */}
         <Pressable
           onPress={onGoToDashboard}
-          className="flex-row items-center gap-2 px-4 py-3 active:bg-muted border-b border-border"
+          className={cn('flex-row items-center gap-2 px-4 active:bg-muted border-b border-border', isNative ? 'min-h-12 py-3' : 'py-3')}
         >
-          <ChevronLeft size={16} className="text-muted-foreground" />
-          <Text className="text-sm font-medium text-foreground">Go to Dashboard</Text>
+          <ChevronLeft size={isNative ? 20 : 16} className="text-muted-foreground" />
+          <Text className={isNative ? "text-base font-medium text-foreground" : "text-sm font-medium text-foreground"}>Go to Dashboard</Text>
         </Pressable>
 
         {/* Workspace info + plan badge */}
         <Pressable
           onPress={onSwitchProject}
-          className="px-4 py-3 active:bg-muted"
+          className={cn('px-4 active:bg-muted', isNative ? 'py-4' : 'py-3')}
           testID="project-switcher-open"
         >
           <View className="flex-row items-center gap-2.5">
-            <View className="h-8 w-8 rounded-lg bg-primary items-center justify-center">
-              <Text className="text-xs font-bold text-primary-foreground">
+            <View className={cn('rounded-lg bg-primary items-center justify-center', isNative ? 'h-10 w-10' : 'h-8 w-8')}>
+              <Text className={isNative ? "text-sm font-bold text-primary-foreground" : "text-xs font-bold text-primary-foreground"}>
                 {(workspaceName || 'W')[0]?.toUpperCase()}
               </Text>
             </View>
             <View className="flex-1 min-w-0">
               <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                <Text className={isNative ? "text-base font-semibold text-foreground" : "text-sm font-semibold text-foreground"} numberOfLines={1}>
                   {workspaceName || 'Workspace'}
                 </Text>
                 {showBilling && (
@@ -1419,10 +1427,10 @@ function ProjectMenuView({
             <Pressable
               key={item.label}
               onPress={item.onPress}
-              className="flex-row items-center gap-3 px-4 py-2.5 active:bg-muted"
+              className={cn('flex-row items-center gap-3 px-4 active:bg-muted', isNative ? 'min-h-12 py-3' : 'py-2.5')}
             >
-              <Icon size={16} className="text-muted-foreground" />
-              <Text className="text-sm text-foreground flex-1">{item.label}</Text>
+              <Icon size={isNative ? 20 : 16} className="text-muted-foreground" />
+              <Text className={isNative ? "text-base text-foreground flex-1" : "text-sm text-foreground flex-1"}>{item.label}</Text>
               {item.trailing}
             </Pressable>
           )
@@ -1434,7 +1442,7 @@ function ProjectMenuView({
             <AppearanceMenu />
           </>
         )}
-      </ScrollView>
+      </View>
 
       {/* Project Details Modal */}
       <ProjectDetailsModal
@@ -1507,13 +1515,13 @@ function RenameProjectModal({
   const canSubmit = name.trim().length > 0 && name.trim() !== currentName
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
+    <Modal visible={visible} transparent animationType={Platform.OS === 'web' ? 'fade' : 'slide'} onRequestClose={handleClose}>
       <Pressable onPress={handleClose} className="flex-1 bg-black/50 items-center justify-center px-6">
         <Pressable onPress={(e) => e.stopPropagation()} className="bg-background rounded-xl w-full max-w-sm shadow-xl overflow-hidden">
           <View className="flex-row items-center justify-between px-5 pt-5 pb-3">
-            <Text className="text-base font-semibold text-foreground">Rename project</Text>
-            <Pressable onPress={handleClose} className="p-1 -mr-1 rounded-md active:bg-muted">
-              <X size={18} className="text-muted-foreground" />
+            <Text className={Platform.OS === 'web' ? "text-base font-semibold text-foreground" : "text-lg font-semibold text-foreground"}>Rename project</Text>
+            <Pressable onPress={handleClose} className={Platform.OS === 'web' ? "p-1 -mr-1 rounded-md active:bg-muted" : "h-10 w-10 -mr-2 items-center justify-center rounded-lg active:bg-muted"}>
+              <X size={Platform.OS === 'web' ? 18 : 20} className="text-muted-foreground" />
             </Pressable>
           </View>
           <View className="px-5 pb-4">
@@ -1522,20 +1530,20 @@ function RenameProjectModal({
               onChangeText={setName}
               placeholder="Project name"
               placeholderTextColor="#9ca3af"
-              className="border border-border rounded-lg px-3 py-2.5 text-sm text-foreground web:outline-none"
+              className={Platform.OS === 'web' ? "border border-border rounded-lg px-3 py-2.5 text-sm text-foreground web:outline-none" : "min-h-12 border border-border rounded-lg px-3 py-3 text-base text-foreground"}
               autoFocus
               selectTextOnFocus
             />
           </View>
           <View className="px-5 pb-5 flex-row justify-end gap-2">
-            <Pressable onPress={handleClose} className="px-4 py-2 rounded-lg border border-border active:bg-muted">
-              <Text className="text-sm font-medium text-foreground">Cancel</Text>
+            <Pressable onPress={handleClose} className={Platform.OS === 'web' ? "px-4 py-2 rounded-lg border border-border active:bg-muted" : "min-h-11 px-4 py-2 rounded-lg border border-border active:bg-muted justify-center"}>
+              <Text className={Platform.OS === 'web' ? "text-sm font-medium text-foreground" : "text-base font-medium text-foreground"}>Cancel</Text>
             </Pressable>
             <Pressable
               onPress={() => canSubmit && onRename(name.trim())}
-              className={cn('px-4 py-2 rounded-lg', canSubmit ? 'bg-primary active:opacity-80' : 'bg-muted')}
+              className={cn('px-4 py-2 rounded-lg justify-center', Platform.OS !== 'web' && 'min-h-11', canSubmit ? 'bg-primary active:opacity-80' : 'bg-muted')}
             >
-              <Text className={cn('text-sm font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
+              <Text className={cn(Platform.OS === 'web' ? 'text-sm font-medium' : 'text-base font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
                 Rename
               </Text>
             </Pressable>
@@ -1562,31 +1570,31 @@ function MoveToFolderModal({
   onMove: (folderId: string | null) => void
 }) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType={Platform.OS === 'web' ? 'fade' : 'slide'} onRequestClose={onClose}>
       <Pressable onPress={onClose} className="flex-1 bg-black/50 items-center justify-center px-6">
         <Pressable onPress={(e) => e.stopPropagation()} className="bg-background rounded-xl w-full max-w-sm shadow-xl overflow-hidden">
           <View className="flex-row items-center justify-between px-5 pt-5 pb-3">
-            <Text className="text-base font-semibold text-foreground">Move to folder</Text>
-            <Pressable onPress={onClose} className="p-1 -mr-1 rounded-md active:bg-muted">
-              <X size={18} className="text-muted-foreground" />
+            <Text className={Platform.OS === 'web' ? "text-base font-semibold text-foreground" : "text-lg font-semibold text-foreground"}>Move to folder</Text>
+            <Pressable onPress={onClose} className={Platform.OS === 'web' ? "p-1 -mr-1 rounded-md active:bg-muted" : "h-10 w-10 -mr-2 items-center justify-center rounded-lg active:bg-muted"}>
+              <X size={Platform.OS === 'web' ? 18 : 20} className="text-muted-foreground" />
             </Pressable>
           </View>
-          <ScrollView className="max-h-[240px] px-5 pb-2">
+          <ScrollView className={Platform.OS === 'web' ? "max-h-[240px] px-5 pb-2" : "max-h-[360px] px-5 pb-2"} showsVerticalScrollIndicator={Platform.OS !== 'web'} nestedScrollEnabled={Platform.OS !== 'web'}>
             <Pressable
               onPress={() => onMove(null)}
-              className="flex-row items-center gap-3 px-3 py-3 rounded-lg active:bg-muted border border-border mb-2"
+              className={cn('flex-row items-center gap-3 px-3 py-3 rounded-lg active:bg-muted border border-border mb-2', Platform.OS !== 'web' && 'min-h-12')}
             >
-              <FolderInput size={16} className="text-muted-foreground" />
-              <Text className="text-sm text-foreground">Root (no folder)</Text>
+              <FolderInput size={Platform.OS === 'web' ? 16 : 20} className="text-muted-foreground" />
+              <Text className={Platform.OS === 'web' ? "text-sm text-foreground" : "text-base text-foreground"}>Root (no folder)</Text>
             </Pressable>
             {folders.map((folder) => (
               <Pressable
                 key={folder.id}
                 onPress={() => onMove(folder.id)}
-                className="flex-row items-center gap-3 px-3 py-3 rounded-lg active:bg-muted border border-border mb-2"
+                className={cn('flex-row items-center gap-3 px-3 py-3 rounded-lg active:bg-muted border border-border mb-2', Platform.OS !== 'web' && 'min-h-12')}
               >
-                <FolderInput size={16} className="text-muted-foreground" />
-                <Text className="text-sm text-foreground">{folder.name}</Text>
+                <FolderInput size={Platform.OS === 'web' ? 16 : 20} className="text-muted-foreground" />
+                <Text className={Platform.OS === 'web' ? "text-sm text-foreground" : "text-base text-foreground"}>{folder.name}</Text>
               </Pressable>
             ))}
             {folders.length === 0 && (
@@ -1596,8 +1604,8 @@ function MoveToFolderModal({
             )}
           </ScrollView>
           <View className="px-5 pt-2 pb-5 flex-row justify-end">
-            <Pressable onPress={onClose} className="px-4 py-2 rounded-lg border border-border active:bg-muted">
-              <Text className="text-sm font-medium text-foreground">Cancel</Text>
+            <Pressable onPress={onClose} className={Platform.OS === 'web' ? "px-4 py-2 rounded-lg border border-border active:bg-muted" : "min-h-11 px-4 py-2 rounded-lg border border-border active:bg-muted justify-center"}>
+              <Text className={Platform.OS === 'web' ? "text-sm font-medium text-foreground" : "text-base font-medium text-foreground"}>Cancel</Text>
             </Pressable>
           </View>
         </Pressable>
@@ -1622,18 +1630,18 @@ function AppearanceMenu() {
 
   return (
     <Popover
-      placement="right"
+      placement={Platform.OS === 'web' ? 'right' : 'top'}
       isOpen={popoverOpen}
       onOpen={() => setPopoverOpen(true)}
       onClose={() => setPopoverOpen(false)}
       trigger={(triggerProps) => (
         <Pressable
           {...triggerProps}
-          className="flex-row items-center gap-3 px-4 py-2.5 active:bg-muted"
+          className={cn('flex-row items-center gap-3 px-4 active:bg-muted', Platform.OS === 'web' ? 'py-2.5' : 'min-h-12 py-3')}
         >
-          <SunMoon size={16} className="text-muted-foreground" />
-          <Text className="text-sm text-foreground flex-1">Appearance</Text>
-          <ChevronRight size={14} className="text-muted-foreground" />
+          <SunMoon size={Platform.OS === 'web' ? 16 : 20} className="text-muted-foreground" />
+          <Text className={Platform.OS === 'web' ? "text-sm text-foreground flex-1" : "text-base text-foreground flex-1"}>Appearance</Text>
+          <ChevronRight size={Platform.OS === 'web' ? 14 : 18} className="text-muted-foreground" />
         </Pressable>
       )}
     >
@@ -1653,12 +1661,12 @@ function AppearanceMenu() {
               onPress={() => { setTheme(value); setPopoverOpen(false) }}
               className={cn(
                 'flex-row items-center active:bg-muted',
-                Platform.OS === 'web' ? 'gap-3 px-4 py-3' : 'gap-2 px-2.5 py-2.5',
+                Platform.OS === 'web' ? 'gap-3 px-4 py-3' : 'min-h-12 gap-2 px-4 py-3',
               )}
             >
               <Text
                 className={cn(
-                  'text-sm flex-1',
+                  Platform.OS === 'web' ? 'text-sm flex-1' : 'text-base flex-1',
                   theme === value ? 'text-foreground font-medium' : 'text-foreground',
                 )}
                 numberOfLines={1}
@@ -1666,7 +1674,7 @@ function AppearanceMenu() {
                 {label}
               </Text>
               {theme === value && (
-                <Check size={Platform.OS === 'web' ? 16 : 14} className="text-foreground flex-shrink-0" />
+                <Check size={Platform.OS === 'web' ? 16 : 18} className="text-foreground flex-shrink-0" />
               )}
             </Pressable>
           ))}
@@ -1716,7 +1724,7 @@ function ProjectDetailsModal({
   ]
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType={Platform.OS === 'web' ? 'fade' : 'slide'} onRequestClose={onClose}>
       <Pressable
         onPress={onClose}
         className="flex-1 bg-black/50 items-center justify-center px-6"
@@ -1727,39 +1735,45 @@ function ProjectDetailsModal({
         >
           {/* Header */}
           <View className="flex-row items-center justify-between px-5 pt-5 pb-3">
-            <Text className="text-base font-semibold text-foreground">Project details</Text>
-            <Pressable onPress={onClose} className="p-1 -mr-1 rounded-md active:bg-muted">
-              <X size={18} className="text-muted-foreground" />
+            <Text className={Platform.OS === 'web' ? "text-base font-semibold text-foreground" : "text-lg font-semibold text-foreground"}>Project details</Text>
+            <Pressable onPress={onClose} className={Platform.OS === 'web' ? "p-1 -mr-1 rounded-md active:bg-muted" : "h-10 w-10 -mr-2 items-center justify-center rounded-lg active:bg-muted"}>
+              <X size={Platform.OS === 'web' ? 18 : 20} className="text-muted-foreground" />
             </Pressable>
           </View>
 
           {/* Detail rows */}
-          <View className="px-5 pb-2">
+          <ScrollView
+            className="px-5 pb-2"
+            style={{ maxHeight: 420 }}
+            showsVerticalScrollIndicator={Platform.OS !== 'web'}
+            nestedScrollEnabled={Platform.OS !== 'web'}
+          >
             <View className="border border-border rounded-lg overflow-hidden">
               {rows.map((row, idx) => (
                 <View
                   key={row.label}
                   className={cn(
                     'flex-row items-center px-4 py-3',
+                    Platform.OS !== 'web' && 'min-h-12',
                     idx < rows.length - 1 && 'border-b border-border',
                   )}
                 >
-                  <Text className="text-sm text-muted-foreground w-24">{row.label}</Text>
-                  <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                  <Text className={Platform.OS === 'web' ? "text-sm text-muted-foreground w-24" : "text-base text-muted-foreground w-24"}>{row.label}</Text>
+                  <Text className={Platform.OS === 'web' ? "text-sm text-foreground flex-1" : "text-base text-foreground flex-1"} numberOfLines={1}>
                     {row.value}
                   </Text>
                 </View>
               ))}
             </View>
-          </View>
+          </ScrollView>
 
           {/* Footer */}
           <View className="px-5 pt-2 pb-5 flex-row justify-end">
             <Pressable
               onPress={onClose}
-              className="px-5 py-2 rounded-lg border border-border active:bg-muted"
+              className={Platform.OS === 'web' ? "px-5 py-2 rounded-lg border border-border active:bg-muted" : "min-h-11 px-5 py-2 rounded-lg border border-border active:bg-muted justify-center"}
             >
-              <Text className="text-sm font-medium text-foreground">Close</Text>
+              <Text className={Platform.OS === 'web' ? "text-sm font-medium text-foreground" : "text-base font-medium text-foreground"}>Close</Text>
             </Pressable>
           </View>
         </Pressable>
@@ -1832,11 +1846,7 @@ function ProjectSwitcherView({
       </View>
 
       {/* Project list */}
-      <ScrollView
-        className="max-h-[320px]"
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
+      <View>
         {filtered.length === 0 ? (
           <View className="px-4 py-6 items-center">
             <Text className="text-sm text-muted-foreground">
@@ -1880,7 +1890,7 @@ function ProjectSwitcherView({
             })}
           </View>
         )}
-      </ScrollView>
+      </View>
     </>
   )
 }

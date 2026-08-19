@@ -17,7 +17,7 @@
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
-import { ActivityIndicator, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator, Animated, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
@@ -54,8 +54,10 @@ export default function AppLayout() {
   const [ideAutoSignInError, setIdeAutoSignInError] = useState<string | null>(null)
   const ideAutoSignInAttempted = useRef(false)
   const { width } = useWindowDimensions()
-  const isWide = width >= 768
+  const isNativeApp = Platform.OS !== 'web'
+  const isWide = !isNativeApp && width >= 768
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const drawerProgress = useRef(new Animated.Value(0)).current
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
 
   const isProjectDetail = /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, '/'))
@@ -131,8 +133,10 @@ export default function AppLayout() {
   const closeDrawer = useCallback(() => setDrawerOpen(false), [])
 
   useEffect(() => {
-    if (isWide) setDrawerOpen(false)
-  }, [isWide])
+    if (!isWide) return
+    drawerProgress.setValue(0)
+    setDrawerOpen(false)
+  }, [drawerProgress, isWide])
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return
@@ -194,24 +198,47 @@ export default function AppLayout() {
   }
 
   const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
+  const nativeHomeChrome = isNativeApp && isHomePage && !isIdeEmbed
+  const shouldShiftHomeForDrawer = nativeHomeChrome
+  const drawerContentStyle = shouldShiftHomeForDrawer
+    ? {
+        transform: [
+          {
+            translateX: drawerProgress.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, Math.min(64, Math.max(48, width * 0.14))],
+            }),
+          },
+          {
+            scale: drawerProgress.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 0.97],
+            }),
+          },
+        ],
+      }
+    : undefined
 
   return (
     <DomainProvider>
-      <SafeAreaView className="flex-1 bg-background">
+      <SafeAreaView
+        className={nativeHomeChrome ? "flex-1 bg-card" : "flex-1 bg-background"}
+        edges={nativeHomeChrome ? ['top', 'left', 'right'] : undefined}
+      >
         <View className="flex-1 flex-row">
           {showSidebar && <AppSidebar />}
 
-          <View className="flex-1">
+          <Animated.View className="flex-1" style={drawerContentStyle}>
             {!isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
               {localMode && !isIdeEmbed && <RecordingIndicator />}
               <Slot />
             </View>
-          </View>
+          </Animated.View>
         </View>
 
         {!isWide && (
-          <AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />
+          <AppSidebar isOpen={drawerOpen} onClose={closeDrawer} drawerProgress={drawerProgress} />
         )}
       </SafeAreaView>
     </DomainProvider>

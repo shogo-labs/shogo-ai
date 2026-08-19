@@ -44,6 +44,7 @@ const TextInput = React.forwardRef<HTMLTextAreaElement, any>(function TextInput(
     onSelectionChange,
     onSubmitEditing,
     placeholderTextColor: _placeholderTextColor,
+    returnKeyType: _returnKeyType,
     style: _style,
     testID,
     textAlignVertical: _textAlignVertical,
@@ -95,6 +96,7 @@ mock.module("react-native", () => ({
   ScrollView: Host,
   Text: Host,
   TextInput,
+  useWindowDimensions: () => ({ width: 390, height: 844 }),
   View: Host,
 }))
 
@@ -133,7 +135,10 @@ mock.module("../../../lib/visible-models", () => ({
   resolveShortName: (modelId: string) => modelId,
   resolveTier: () => "economy",
 }))
-mock.module("../ModelPickerMenu", () => ({ ModelPickerMenu: () => null }))
+mock.module("../ModelPickerMenu", () => ({
+  ModelPickerMenu: () => null,
+  getNativeModelMenuWidth: () => 280,
+}))
 mock.module("../FileViewerModal", () => ({ FileViewerModal: () => null }))
 mock.module("../PastedTextChip", () => ({ PastedTextChip: () => null }))
 mock.module("../../voice-mode/ChatBridgeContext", () => ({

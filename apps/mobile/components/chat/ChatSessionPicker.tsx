@@ -35,7 +35,6 @@ import {
   Modal,
   ModalBackdrop,
   ModalContent,
-  ModalBody,
   ModalCloseButton,
 } from "@/components/ui/modal"
 import {
@@ -107,6 +106,8 @@ export interface ChatSessionPickerProps {
    * reload.
    */
   projectId?: string
+  /** Use phone-sized, full-width rows instead of the compact sidebar treatment. */
+  mobileFullscreen?: boolean
 }
 
 export function formatRelativeTime(timestamp: number): string {
@@ -420,6 +421,7 @@ export function ChatSessionSidebar({
   streamingSessionIds,
   completedSessionIds,
   projectId,
+  mobileFullscreen = false,
 }: ChatSessionPickerProps) {
   // Selected-row highlight uses a horizontal gradient that fades the primary
   // tint out toward the right edge — matches the sidebar wrapper's right-
@@ -586,7 +588,12 @@ export function ChatSessionSidebar({
   const renderRow = ({ item }: ListRenderItemInfo<SidebarRow>) => {
     if (item.kind === "header") {
       const headerInner = (
-        <View className="flex-row items-center gap-1 px-2 pt-3 pb-1">
+        <View
+          className={cn(
+            "flex-row items-center gap-1",
+            mobileFullscreen ? "px-4 pt-5 pb-2" : "px-2 pt-3 pb-1",
+          )}
+        >
           {item.collapsible ? (
             item.expanded ? (
               <ChevronDown size={10} className="text-muted-foreground shrink-0" />
@@ -594,7 +601,12 @@ export function ChatSessionSidebar({
               <ChevronRight size={10} className="text-muted-foreground shrink-0" />
             )
           ) : null}
-          <Text className="text-[10px] uppercase tracking-wide text-muted-foreground flex-1">
+          <Text
+            className={cn(
+              "uppercase tracking-wide text-muted-foreground flex-1",
+              mobileFullscreen ? "text-[11px] font-semibold" : "text-[10px]",
+            )}
+          >
             {item.label}
           </Text>
           {typeof item.count === "number" && (
@@ -633,22 +645,34 @@ export function ChatSessionSidebar({
       // racing with the icon's onHoverIn). CSS group-hover has no such race.
       <Pressable
         onPress={() => handleSessionSelect(session.id)}
+        style={mobileFullscreen ? { width: '100%', alignSelf: 'stretch' } : undefined}
         className={cn(
-          "group relative px-2 py-1 hover:bg-muted",
+          "group relative hover:bg-muted",
+          mobileFullscreen
+            ? "min-h-[62px] w-full justify-center px-4 py-3 border-b border-border/40 active:bg-muted"
+            : "px-2 py-1",
+          mobileFullscreen && isCurrent && "bg-muted/70",
         )}
       >
         {isCurrent && (
-          // Selection highlight, faded toward the right so it lines up
-          // visually with the sidebar's own right-edge fade. Rendered first
-          // so siblings (text + icons) stack on top; pointerEvents="none"
-          // keeps row taps reaching the parent Pressable.
-          <LinearGradient
-            colors={[`rgba(${primaryRgb},0.10)`, `rgba(${primaryRgb},0)`]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            pointerEvents="none"
-            style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }}
-          />
+          mobileFullscreen ? (
+            <View
+              pointerEvents="none"
+              className="absolute left-0 top-0 bottom-0 w-1 bg-primary"
+            />
+          ) : (
+            // Selection highlight, faded toward the right so it lines up
+            // visually with the sidebar's own right-edge fade. Rendered first
+            // so siblings (text + icons) stack on top; pointerEvents="none"
+            // keeps row taps reaching the parent Pressable.
+            <LinearGradient
+              colors={[`rgba(${primaryRgb},0.10)`, `rgba(${primaryRgb},0)`]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              pointerEvents="none"
+              style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }}
+            />
+          )
         )}
         {isEditing ? (
           <View className="flex-row items-center gap-2">
@@ -668,78 +692,108 @@ export function ChatSessionSidebar({
           </View>
         ) : (
           <>
-            <View className="flex-row items-center gap-2">
-              {isStreaming ? (
-                <Loader2
-                  size={12}
-                  className="text-primary animate-spin shrink-0"
-                  aria-label="Chat running"
-                />
-              ) : isCompleted ? (
-                <View
-                  className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"
-                  accessibilityLabel="Chat has new activity"
-                />
-              ) : session.isPinned ? (
-                <Pin size={10} className="text-muted-foreground shrink-0" />
-              ) : null}
-              <Text className="text-xs text-foreground flex-1" numberOfLines={1}>
-                {session.name}
-              </Text>
+            <View className={cn("flex-row items-center", mobileFullscreen ? "gap-3" : "gap-2")}>
+              <View
+                className={cn(
+                  "items-center justify-center shrink-0",
+                  mobileFullscreen && "h-9 w-9 rounded-full bg-muted",
+                )}
+              >
+                {isStreaming ? (
+                  <Loader2
+                    size={mobileFullscreen ? 16 : 12}
+                    className="text-primary animate-spin shrink-0"
+                    aria-label="Chat running"
+                  />
+                ) : isCompleted ? (
+                  <View
+                    className={cn(
+                      "rounded-full bg-primary shrink-0",
+                      mobileFullscreen ? "h-2 w-2" : "h-1.5 w-1.5",
+                    )}
+                    accessibilityLabel="Chat has new activity"
+                  />
+                ) : session.isPinned ? (
+                  <Pin size={mobileFullscreen ? 14 : 10} className="text-muted-foreground shrink-0" />
+                ) : mobileFullscreen ? (
+                  <MessageSquare size={15} className="text-muted-foreground shrink-0" />
+                ) : null}
+              </View>
+              <View className="flex-1 min-w-0">
+                <Text
+                  className={cn(
+                    "text-foreground flex-1",
+                    mobileFullscreen ? "text-sm font-medium" : "text-xs",
+                  )}
+                  numberOfLines={1}
+                >
+                  {session.name}
+                </Text>
+                {mobileFullscreen && session.messageCount >= 0 && (
+                  <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={1}>
+                    {session.messageCount} message{session.messageCount !== 1 ? 's' : ''} - {formatRelativeTime(session.updatedAt)}
+                  </Text>
+                )}
+              </View>
               {/*
                 Action icons are always mounted; their visibility is purely
                 CSS-driven via the parent row's `group` + `group-hover:flex`.
                 This keeps them in the DOM continuously so hovering between
                 them never tears down the cursor's hover target.
               */}
-              <View className="hidden group-hover:flex flex-row items-center gap-1 shrink-0">
-                {onTogglePin && (
-                  <Pressable
-                    onPress={() => onTogglePin(session.id, !session.isPinned)}
-                    className="p-1 shrink-0"
-                    accessibilityLabel={session.isPinned ? `Unpin ${session.name}` : `Pin ${session.name}`}
-                  >
-                    {session.isPinned ? (
-                      <PinOff className="h-2 w-2 text-gray-400" size={6} />
-                    ) : (
-                      <Pin className="h-2 w-2 text-gray-400" size={6} />
-                    )}
-                  </Pressable>
-                )}
-                {onToggleArchive && (
-                  <Pressable
-                    onPress={() => onToggleArchive(session.id, !session.isArchived)}
-                    className="p-1 shrink-0"
-                    accessibilityLabel={session.isArchived ? `Unarchive ${session.name}` : `Archive ${session.name}`}
-                  >
-                    {session.isArchived ? (
-                      <ArchiveRestore className="h-2 w-2 text-gray-400" size={6} />
-                    ) : (
-                      <Archive className="h-2 w-2 text-gray-400" size={6} />
-                    )}
-                  </Pressable>
-                )}
-                {onRename && (
-                  <Pressable
-                    onPress={() => handleStartEdit(session)}
-                    className="p-1 shrink-0"
-                    accessibilityLabel={`Rename ${session.name}`}
-                  >
-                    <Pencil className="h-2 w-2 text-gray-400" size={6} />
-                  </Pressable>
-                )}
-                {onDelete && (
-                  <Pressable
-                    onPress={() => onDelete(session.id)}
-                    className="p-1 shrink-0"
-                    accessibilityLabel={`Delete ${session.name}`}
-                  >
-                    <Trash2 className="h-2 w-2 text-gray-400" size={6} />
-                  </Pressable>
-                )}
-              </View>
+              {!mobileFullscreen && (
+                <View className="hidden group-hover:flex flex-row items-center gap-1 shrink-0">
+                  {onTogglePin && (
+                    <Pressable
+                      onPress={() => onTogglePin(session.id, !session.isPinned)}
+                      className="p-1 shrink-0"
+                      accessibilityLabel={session.isPinned ? `Unpin ${session.name}` : `Pin ${session.name}`}
+                    >
+                      {session.isPinned ? (
+                        <PinOff className="h-2 w-2 text-gray-400" size={6} />
+                      ) : (
+                        <Pin className="h-2 w-2 text-gray-400" size={6} />
+                      )}
+                    </Pressable>
+                  )}
+                  {onToggleArchive && (
+                    <Pressable
+                      onPress={() => onToggleArchive(session.id, !session.isArchived)}
+                      className="p-1 shrink-0"
+                      accessibilityLabel={session.isArchived ? `Unarchive ${session.name}` : `Archive ${session.name}`}
+                    >
+                      {session.isArchived ? (
+                        <ArchiveRestore className="h-2 w-2 text-gray-400" size={6} />
+                      ) : (
+                        <Archive className="h-2 w-2 text-gray-400" size={6} />
+                      )}
+                    </Pressable>
+                  )}
+                  {onRename && (
+                    <Pressable
+                      onPress={() => handleStartEdit(session)}
+                      className="p-1 shrink-0"
+                      accessibilityLabel={`Rename ${session.name}`}
+                    >
+                      <Pencil className="h-2 w-2 text-gray-400" size={6} />
+                    </Pressable>
+                  )}
+                  {onDelete && (
+                    <Pressable
+                      onPress={() => onDelete(session.id)}
+                      className="p-1 shrink-0"
+                      accessibilityLabel={`Delete ${session.name}`}
+                    >
+                      <Trash2 className="h-2 w-2 text-gray-400" size={6} />
+                    </Pressable>
+                  )}
+                </View>
+              )}
+              {mobileFullscreen && isCurrent && (
+                <Check size={16} className="text-primary shrink-0" />
+              )}
             </View>
-            {session.messageCount >= 0 && (
+            {!mobileFullscreen && session.messageCount >= 0 && (
               <Text className="text-xs text-gray-400 mt-0.5">
                 {session.messageCount} message{session.messageCount !== 1 ? 's' : ''}
               </Text>
@@ -770,24 +824,57 @@ export function ChatSessionSidebar({
   }
 
   return (
-    <View className="flex-1">
+    <View
+      className={cn("flex-1", mobileFullscreen && "bg-background")}
+      style={mobileFullscreen ? { width: '100%', alignSelf: 'stretch' } : undefined}
+    >
       {!hideHeader && (
-        <View className="flex-row items-center justify-between px-4 py-3">
-          <Text className="text-sm text-foreground">Chats</Text>
-          <View className="flex-row items-center gap-1">
+        <View
+          style={mobileFullscreen ? { width: '100%', alignSelf: 'stretch' } : undefined}
+          className={cn(
+            "flex-row items-center justify-between",
+            mobileFullscreen ? "px-4 py-4 border-b border-border/50" : "px-4 py-3",
+          )}
+        >
+          <View className="min-w-0 flex-1">
+            <Text
+              className={cn(
+                "text-foreground",
+                mobileFullscreen ? "text-lg font-semibold" : "text-sm",
+              )}
+              numberOfLines={1}
+            >
+              Chats
+            </Text>
+            {mobileFullscreen && (
+              <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={1}>
+                {sessions.length} chat{sessions.length === 1 ? '' : 's'}
+              </Text>
+            )}
+          </View>
+          <View className={cn("flex-row items-center", mobileFullscreen ? "gap-2" : "gap-1")}>
             {sessions.length > 0 && (
               <Pressable
                 onPress={() => setSearchOpen(true)}
-                className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
+                className={cn(
+                  "items-center justify-center rounded-md active:bg-muted",
+                  mobileFullscreen ? "h-9 w-9 bg-muted/60" : "h-7 w-7",
+                )}
               >
-                <Search className="text-muted-foreground" size={16} />
+                <Search className="text-muted-foreground" size={mobileFullscreen ? 18 : 16} />
               </Pressable>
             )}
             <Pressable
               onPress={onCreate}
-              className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
+              className={cn(
+                "items-center justify-center rounded-md active:bg-muted",
+                mobileFullscreen ? "h-9 w-9 bg-primary" : "h-7 w-7",
+              )}
             >
-              <Plus className="text-muted-foreground" size={16} />
+              <Plus
+                className={mobileFullscreen ? "text-primary-foreground" : "text-muted-foreground"}
+                size={mobileFullscreen ? 18 : 16}
+              />
             </Pressable>
           </View>
         </View>
@@ -798,6 +885,8 @@ export function ChatSessionSidebar({
         renderItem={renderRow}
         keyExtractor={(item) => item.id}
         className="flex-1"
+        style={mobileFullscreen ? { width: '100%', alignSelf: 'stretch' } : undefined}
+        contentContainerStyle={mobileFullscreen ? { paddingBottom: 28 } : undefined}
         onEndReached={handleEndReached}
         onEndReachedThreshold={0.5}
         ListFooterComponent={
@@ -832,28 +921,30 @@ export function ChatSessionSidebar({
             </ModalCloseButton>
           </View>
 
-          <ModalBody className="mt-0 mb-0 p-0">
-            <Pressable
-              onPress={() => { onCreate(); setSearchOpen(false); setSearchQuery("") }}
-              className="flex-row items-center gap-3 px-4 py-3 bg-muted/50 hover:bg-muted"
-            >
-              <Plus className="text-primary shrink-0" size={16} />
-              <Text className="text-sm font-medium text-primary">New chat</Text>
-            </Pressable>
-
-            {filteredSessions.length === 0 && searchQuery ? (
-              <View className="py-8 items-center">
-                <Text className="text-sm text-muted-foreground">No chats found</Text>
-              </View>
-            ) : (
-              <FlatList
-                data={filteredSessions}
-                renderItem={renderSearchResult}
-                keyExtractor={(item) => item.id}
-                style={{ maxHeight: 400 }}
-              />
-            )}
-          </ModalBody>
+          <View className="mt-0 mb-0 p-0">
+            <FlatList
+              data={filteredSessions}
+              renderItem={renderSearchResult}
+              keyExtractor={(item) => item.id}
+              style={{ maxHeight: 400 }}
+              ListHeaderComponent={
+                <Pressable
+                  onPress={() => { onCreate(); setSearchOpen(false); setSearchQuery("") }}
+                  className="flex-row items-center gap-3 px-4 py-3 bg-muted/50 hover:bg-muted"
+                >
+                  <Plus className="text-primary shrink-0" size={16} />
+                  <Text className="text-sm font-medium text-primary">New chat</Text>
+                </Pressable>
+              }
+              ListEmptyComponent={
+                searchQuery ? (
+                  <View className="py-8 items-center">
+                    <Text className="text-sm text-muted-foreground">No chats found</Text>
+                  </View>
+                ) : null
+              }
+            />
+          </View>
         </ModalContent>
       </Modal>
     </View>
