@@ -20,6 +20,18 @@ import {
   ModalHeader,
 } from "@/components/ui/modal"
 
+// React Native Web forwards unknown host component names straight to the
+// DOM, so a plain HTML <video> element works at runtime even though it
+// isn't part of react-native's typed component set. Declare its props
+// once, typed, instead of reaching for `@ts-ignore` at the call site.
+interface WebVideoProps {
+  src: string
+  controls?: boolean
+  autoPlay?: boolean
+  style?: React.CSSProperties
+}
+const WebVideo = 'video' as unknown as React.FC<WebVideoProps>
+
 export interface VideoPreviewModalProps {
   visible: boolean
   onClose: () => void
@@ -89,18 +101,17 @@ export function VideoPreviewModal({
             style={{ height: videoHeight, width: "100%" }}
           >
             {Platform.OS === "web" ? (
-              // @ts-ignore — React Native Web passes through HTML video props
-              React.createElement("video", {
-                src: videoSrc,
-                controls: true,
-                autoPlay: true,
-                style: {
+              <WebVideo
+                src={videoSrc}
+                controls
+                autoPlay
+                style={{
                   width: "100%",
                   height: videoHeight,
                   objectFit: "contain",
                   outline: "none",
-                },
-              })
+                }}
+              />
             ) : (
               <View className="items-center justify-center gap-3 p-8">
                 <VideoIcon size={40} className="text-muted-foreground" />
