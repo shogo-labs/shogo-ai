@@ -71,6 +71,7 @@ import { InstanceOfflineWatcher } from '../components/instance/InstanceOfflineWa
 import { PostHogProvider } from '../contexts/posthog'
 import { ThemeProvider, useTheme } from '../contexts/theme'
 import { AccentThemeProvider } from '../contexts/accent-theme'
+import { AppearanceProvider } from '../contexts/appearance'
 import { RootErrorBoundary } from '../components/RootErrorBoundary'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { captureAttribution } from '../lib/attribution'
@@ -219,9 +220,11 @@ function RootLayout() {
   return (
     <RootErrorBoundary>
       <ThemeProvider>
-        <AccentThemeProvider>
-          <RootLayoutInner />
-        </AccentThemeProvider>
+        <AppearanceProvider>
+          <AccentThemeProvider>
+            <RootLayoutInner />
+          </AccentThemeProvider>
+        </AppearanceProvider>
       </ThemeProvider>
     </RootErrorBoundary>
   )

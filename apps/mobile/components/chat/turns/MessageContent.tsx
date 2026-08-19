@@ -11,7 +11,7 @@
 import { useState, useCallback } from "react"
 import { View, Text, Image, Pressable, Linking, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { FileText } from "lucide-react-native"
+import { FileText, Play } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
 import { extractTextContent } from "@shogo/shared-app/chat"
 import { MarkdownText } from "../MarkdownText"
@@ -19,6 +19,7 @@ import { analyzeContent } from "../long-text-utils"
 import { LongTextPreviewCard } from "../LongTextPreviewCard"
 import { FileViewerModal } from "../FileViewerModal"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
+import { VideoPreviewModal } from "../VideoPreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
 
 export interface MessageContentProps {
@@ -140,9 +141,9 @@ function ImageThumbnail({
 
   if (hasError) {
     return (
-      <View className="max-w-[200px] rounded-md border border-border bg-muted p-2">
-        <Text className="text-xs text-muted-foreground">
-          Failed to load image
+      <View className="rounded-lg border border-border bg-muted items-center justify-center" style={{ width: 72, height: 72 }}>
+        <Text className="text-[10px] text-muted-foreground text-center">
+          Failed to load
         </Text>
       </View>
     )
@@ -159,14 +160,15 @@ function ImageThumbnail({
         accessibilityHint="Opens a larger preview."
         className={Platform.OS === "web" ? "cursor-zoom-in" : undefined}
       >
-        <Image
-          source={{ uri: url }}
-          className="max-w-[280px] rounded-md"
-          resizeMode="contain"
-          accessibilityLabel={`Image attachment ${index + 1}`}
-          onError={() => setHasError(true)}
-          style={{ width: 280, aspectRatio: 4 / 3 }}
-        />
+        <View className="rounded-lg overflow-hidden border border-border/40" style={{ width: 96, height: 72 }}>
+          <Image
+            source={{ uri: url }}
+            resizeMode="cover"
+            accessibilityLabel={`Image attachment ${index + 1}`}
+            onError={() => setHasError(true)}
+            style={{ width: 96, height: 72 }}
+          />
+        </View>
       </Pressable>
       <ImagePreviewModal
         visible={showModal}
@@ -200,10 +202,13 @@ function DocumentThumbnail({
   index: number
 }) {
   const [showModal, setShowModal] = useState(false)
+  const [showVideoModal, setShowVideoModal] = useState(false)
   const [fileContent, setFileContent] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
   const { title, kindLabel: typeLabel } = deriveFileLabel(mediaType, name)
+
+  const isVideo = mediaType.startsWith("video/")
 
   const isTextLike =
     mediaType.startsWith("text/") ||
@@ -213,6 +218,10 @@ function DocumentThumbnail({
     mediaType.includes("yaml")
 
   const handlePress = useCallback(async () => {
+    if (isVideo) {
+      setShowVideoModal(true)
+      return
+    }
     if (!isTextLike) {
       Linking.openURL(url)
       return
@@ -244,27 +253,47 @@ function DocumentThumbnail({
 
   return (
     <>
-      <Pressable
-        onPress={handlePress}
-        className="flex-row items-center gap-2.5 rounded-xl border border-border bg-muted/40 px-3 py-2.5 min-w-[200px] max-w-full"
-        accessibilityLabel={`File attachment ${index + 1}: ${title}`}
-        accessibilityRole="button"
-      >
-        <View className="h-9 w-9 items-center justify-center rounded-lg bg-primary/15 flex-shrink-0">
-          <FileText size={18} className="text-primary" />
-        </View>
-        <View className="flex-1 min-w-0">
-          <Text
-            className="text-xs font-medium text-foreground"
-            numberOfLines={1}
+      {isVideo ? (
+        <Pressable
+          onPress={handlePress}
+          accessibilityLabel={`Video attachment ${index + 1}: ${title}`}
+          accessibilityRole="button"
+        >
+          <View
+            className="rounded-lg overflow-hidden border border-border/60 bg-black/80 items-center justify-center"
+            style={{ width: 96, height: 72 }}
           >
-            {title}
-          </Text>
-          <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-            {loading ? "Loading…" : typeLabel}
-          </Text>
-        </View>
-      </Pressable>
+            <View className="rounded-full bg-white/20 items-center justify-center" style={{ width: 32, height: 32 }}>
+              <Play size={14} fill="white" className="text-white" />
+            </View>
+            <Text
+              className="text-[9px] text-white/50 absolute bottom-1.5 left-0 right-0 text-center"
+              numberOfLines={1}
+            >
+              {title}
+            </Text>
+          </View>
+        </Pressable>
+      ) : (
+        <Pressable
+          onPress={handlePress}
+          className="flex-row items-center gap-2 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 max-w-[220px]"
+          accessibilityLabel={`File attachment ${index + 1}: ${title}`}
+          accessibilityRole="button"
+        >
+          <View className="h-7 w-7 items-center justify-center rounded-md bg-primary/15 flex-shrink-0">
+            <FileText size={14} className="text-primary" />
+          </View>
+          <View className="flex-1 min-w-0">
+            <Text className="text-[11px] font-medium text-foreground" numberOfLines={1}>
+              {title}
+            </Text>
+            <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+              {loading ? "Loading…" : typeLabel}
+            </Text>
+          </View>
+        </Pressable>
+      )}
       {fileContent !== null && (
         <FileViewerModal
           visible={showModal}
@@ -274,6 +303,12 @@ function DocumentThumbnail({
           kind={mediaType.includes("json") ? "json" : mediaType.includes("markdown") ? "markdown" : "plain"}
         />
       )}
+      <VideoPreviewModal
+        visible={showVideoModal}
+        onClose={() => setShowVideoModal(false)}
+        url={url}
+        title={title}
+      />
     </>
   )
 }
@@ -313,7 +348,7 @@ export function MessageContent({
   if (isUser) {
     return (
       <View className={cn(baseClasses, "gap-2")}>
-        {images.length > 0 && (
+        {(images.length > 0 || files.length > 0) && (
           <View className="flex-row flex-wrap gap-2">
             {images.map((img, i) => (
               <ImageThumbnail
@@ -323,10 +358,6 @@ export function MessageContent({
                 index={i}
               />
             ))}
-          </View>
-        )}
-        {files.length > 0 && (
-          <View className="flex-col gap-1.5">
             {files.map((file, i) => (
               <DocumentThumbnail
                 key={`${message.id}-file-${i}`}
@@ -361,7 +392,7 @@ export function MessageContent({
             {content}
           </MarkdownText>
       ) : null}
-      {images.length > 0 && (
+      {(images.length > 0 || files.length > 0) && (
         <View className="flex-row flex-wrap gap-2">
           {images.map((img, i) => (
             <ImageThumbnail
@@ -371,10 +402,6 @@ export function MessageContent({
               index={i}
             />
           ))}
-        </View>
-      )}
-      {files.length > 0 && (
-        <View className="flex-col gap-1.5">
           {files.map((file, i) => (
             <DocumentThumbnail
               key={`${message.id}-file-${i}`}
