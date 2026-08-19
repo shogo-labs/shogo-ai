@@ -419,7 +419,8 @@ export const EditableUserMessage = memo(function EditableUserMessage({
           : undefined
       }
       className={cn(
-        "w-full rounded-md px-3 py-2 flex-row items-start gap-2",
+        "w-full rounded-md flex-row items-start gap-2",
+        Platform.OS !== "web" ? "min-h-12 px-4 py-3" : "px-3 py-2",
         // Resting fill is intentionally subtler than the previous
         // chat-bubble bg-secondary so a long thread of historical
         // user messages doesn't read as a row of stacked CTAs.
@@ -441,7 +442,8 @@ export const EditableUserMessage = memo(function EditableUserMessage({
           accessibilityRole="button"
           accessibilityLabel="Retry from this message"
           className={cn(
-            "h-6 w-6 items-center justify-center rounded-md",
+            "items-center justify-center rounded-md",
+            Platform.OS !== "web" ? "h-9 w-9" : "h-6 w-6",
             Platform.OS === "web" && "hover:bg-muted/60",
             busy && "opacity-40",
           )}
@@ -451,7 +453,7 @@ export const EditableUserMessage = memo(function EditableUserMessage({
           ) : (
             <RotateCcw
               className="h-3.5 w-3.5 text-muted-foreground"
-              size={14}
+              size={Platform.OS !== "web" ? 18 : 14}
             />
           )}
         </Pressable>

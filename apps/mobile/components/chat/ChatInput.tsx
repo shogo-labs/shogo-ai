@@ -23,6 +23,7 @@ import {
   Image,
   ScrollView,
   Platform,
+  useWindowDimensions,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -34,7 +35,7 @@ import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
 import { ContextTracker } from "./ContextTracker"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
-import { ModelPickerMenu } from "./ModelPickerMenu"
+import { ModelPickerMenu, getNativeModelMenuWidth } from "./ModelPickerMenu"
 import {
   ArrowUp,
   Plus,
@@ -138,8 +139,24 @@ function WebTooltip({ label, children }: { label: string; children: React.ReactN
   )
 }
 
-const MIN_INPUT_HEIGHT = 60
-const MAX_INPUT_HEIGHT = 200
+// Prefixed (rather than the generic MIN/MAX_INPUT_HEIGHT names used by
+// CompactChatInput) so the two composers' independently-tuned bounds
+// can't be mistaken for a shared source of truth that has drifted.
+const CHAT_INPUT_MIN_HEIGHT = 60
+const CHAT_INPUT_MAX_HEIGHT = 200
+const CHAT_INPUT_NATIVE_MIN_HEIGHT = 52
+const CHAT_INPUT_NATIVE_MAX_HEIGHT = 160
+
+function compactNativeModelLabel(modelId: string): string {
+  const label = resolveShortName(modelId)
+  const lower = label.toLowerCase()
+  if (lower.includes("haiku")) return "Haiku"
+  if (lower.includes("sonnet")) return "Sonnet"
+  if (lower.includes("opus")) return "Opus"
+  if (lower.includes("gemini")) return "Gemini"
+  if (lower.includes("gpt")) return "GPT"
+  return label.length > 12 ? `${label.slice(0, 9)}…` : label
+}
 
 interface AttachedFile {
   id: string
@@ -433,7 +450,14 @@ function ChatInputImpl({
   flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
+  const { width: windowWidth } = useWindowDimensions()
   const effectiveIsPro = features.billing ? isPro : true
+  const isNative = Platform.OS !== "web"
+  const isNativePhone = Platform.OS !== "web" && windowWidth < 600
+  const inputMinHeight = isNative ? CHAT_INPUT_NATIVE_MIN_HEIGHT : CHAT_INPUT_MIN_HEIGHT
+  const inputMaxHeight = isNative ? CHAT_INPUT_NATIVE_MAX_HEIGHT : CHAT_INPUT_MAX_HEIGHT
+  const modelTriggerMaxWidth = Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
+  const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
 
   const bridge = useChatBridgeOptional()
   const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
@@ -474,7 +498,7 @@ function ChatInputImpl({
       textChangeFlushHandleRef.current = null
     }
   }, [])
-  const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
+  const [inputHeight, setInputHeight] = useState(inputMinHeight)
   const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
@@ -1158,7 +1182,7 @@ function ChatInputImpl({
     cancelPendingTextChangeFlush()
     inputValueRef.current = ""
     setInputValue("")
-    setInputHeight(MIN_INPUT_HEIGHT)
+    setInputHeight(inputMinHeight)
     setPendingFiles([])
     setPastedTexts([])
     setViewingPastedId(null)
@@ -1167,7 +1191,15 @@ function ChatInputImpl({
     closeMentionMenu()
 
     textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush])
+  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush, inputMinHeight])
+
+  const handleSubmitEditing = useCallback(() => {
+    if (Platform.OS === "web") {
+      handleSubmit()
+      return
+    }
+    textInputRef.current?.blur()
+  }, [handleSubmit])
 
   // Applies a resolved "text" change's state commits. Shared by the fast
   // (synchronous) and slow (coalesced) paths in `handleChangeText`.
@@ -1175,7 +1207,7 @@ function ChatInputImpl({
     (change: Extract<ChatInputTextChange, { type: "text" }>) => {
       setInputValue(change.text)
       if (change.resetHeight) {
-        setInputHeight(MIN_INPUT_HEIGHT)
+        setInputHeight(inputMinHeight)
       }
 
       if (change.skillPicker.open) {
@@ -1188,7 +1220,7 @@ function ChatInputImpl({
 
       updateMentionState(change.text, change.mentionCaret)
     },
-    [updateMentionState]
+    [updateMentionState, inputMinHeight]
   )
 
   // Settles the current animation frame for `handleChangeText`'s burst
@@ -1314,7 +1346,9 @@ function ChatInputImpl({
     // We keep the bottom padding either way — it separates the
     // composer from whatever sits beneath it (file previews,
     // toolbar dropdowns, etc.).
-    <View className={cn(flush ? "pb-3" : "p-3 pt-0")}>
+    <View className={cn(
+      flush ? "pb-3" : isNative ? "px-2 pb-4 pt-0" : "p-3 pt-0",
+    )}>
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
           {ideContext?.activeFile && (
@@ -1914,13 +1948,20 @@ function ChatInputImpl({
               `text-xs` + `px-4 pt-4`) or the pills drift off the words. */}
           <View
             pointerEvents="none"
-            className="absolute top-0 bottom-0 left-0 right-0 overflow-hidden px-4 pt-4"
+            className={cn(
+              "absolute top-0 bottom-0 left-0 right-0 overflow-hidden px-4",
+              isNative ? "pt-3" : "pt-4",
+            )}
             style={{ zIndex: 0 }}
           >
             <Text
-              className="text-xs"
+              className={isNative ? "text-base" : "text-xs"}
               style={[
-                { color: "transparent", transform: [{ translateY: -overlayScrollY }] },
+                {
+                  color: "transparent",
+                  transform: [{ translateY: -overlayScrollY }],
+                  ...(isNative ? { fontSize: 16, lineHeight: 22 } : {}),
+                },
                 Platform.OS === "web"
                   ? ({ whiteSpace: "pre-wrap", wordBreak: "break-word" } as any)
                   : null,
@@ -1930,13 +1971,17 @@ function ChatInputImpl({
                 seg.mention ? (
                   <Text
                     key={idx}
-                    className="text-xs rounded bg-primary/20"
-                    style={{ color: "transparent" }}
+                    className={cn(isNative ? "text-base" : "text-xs", "rounded bg-primary/20")}
+                    style={{ color: "transparent", ...(isNative ? { fontSize: 16, lineHeight: 22 } : {}) }}
                   >
                     {seg.text}
                   </Text>
                 ) : (
-                  <Text key={idx} className="text-xs" style={{ color: "transparent" }}>
+                  <Text
+                    key={idx}
+                    className={isNative ? "text-base" : "text-xs"}
+                    style={{ color: "transparent", ...(isNative ? { fontSize: 16, lineHeight: 22 } : {}) }}
+                  >
                     {seg.text}
                   </Text>
                 )
@@ -1958,7 +2003,7 @@ function ChatInputImpl({
             // Keep the inline-mention overlay aligned once the box scrolls.
             setOverlayScrollY((e.nativeEvent as any)?.contentOffset?.y ?? 0)
           }}
-          onSubmitEditing={handleSubmit}
+          onSubmitEditing={handleSubmitEditing}
           onKeyPress={(e: any) => {
             // While the "@" menu is open, intercept navigation keys so they
             // drive the menu instead of the textarea / message submit.
@@ -2006,19 +2051,26 @@ function ChatInputImpl({
           accessibilityLabel="Chat message input"
           editable={!disabled && !voiceInput.isRecording}
           multiline
-          blurOnSubmit={false}
+          blurOnSubmit={Platform.OS !== "web"}
+          returnKeyType={Platform.OS === "web" ? undefined : "done"}
           onContentSizeChange={(e) => {
             const h = e.nativeEvent.contentSize.height
-            const clamped = Math.min(MAX_INPUT_HEIGHT, Math.max(MIN_INPUT_HEIGHT, h))
+            const clamped = Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
             if (clamped !== inputHeight) {
               setInputHeight(clamped)
             }
           }}
-          style={{ height: inputHeight, zIndex: 1 }}
+          style={{
+            height: inputHeight,
+            zIndex: 1,
+            ...(isNative ? { fontSize: 16, lineHeight: 22 } : {}),
+          }}
           className={cn(
-            "min-h-[60px] max-h-[200px] w-full",
+            isNative
+              ? "min-h-[52px] max-h-[160px] w-full"
+              : "min-h-[60px] max-h-[200px] w-full",
             "bg-transparent",
-            "px-4 pt-4 text-xs text-foreground",
+            isNative ? "px-4 pt-3 text-base text-foreground" : "px-4 pt-4 text-xs text-foreground",
             disabled && dimWhenDisabled && "opacity-50",
             Platform.OS === "web" && "outline-none no-focus-ring"
           )}
@@ -2027,9 +2079,21 @@ function ChatInputImpl({
         </View>
 
         {/* Bottom toolbar */}
-        <View className="flex-row items-center justify-between p-1.5">
+        <View
+          className={cn(
+            "flex-row items-center justify-between",
+            isNative ? "min-h-12 px-2 py-1" : "p-1.5",
+            isNativePhone && "items-end gap-y-1"
+          )}
+        >
           {/* Left side buttons */}
-          <View className="flex-row items-center gap-1">
+          <View
+            className={cn(
+              "flex-row items-center",
+              isNative ? "gap-1.5" : "gap-1",
+              isNativePhone && "min-w-0 flex-1 flex-wrap"
+            )}
+          >
             {/* Interaction mode selector (Agent / Plan / Ask) */}
             <Popover
               placement="top"
@@ -2041,10 +2105,13 @@ function ChatInputImpl({
                 <WebTooltip label={`Mode: ${currentInteractionConfig.label}`}>
                   <Pressable
                     {...triggerProps}
+                    hitSlop={isNative ? 6 : undefined}
                     disabled={disabled}
                     accessibilityLabel={`Mode: ${currentInteractionConfig.label}`}
                     className={cn(
-                      "h-[22px] w-[22px] items-center justify-center rounded-md",
+                      isNative
+                        ? "h-8 w-8 items-center justify-center rounded-lg"
+                        : "h-[22px] w-[22px] items-center justify-center rounded-md",
                       interactionMode === "agent" && "bg-muted/50",
                       interactionMode === "plan" &&
                         "border border-amber-500/45 bg-amber-500/12",
@@ -2060,7 +2127,7 @@ function ChatInputImpl({
                         interactionMode === "plan" && "text-amber-400",
                         interactionMode === "ask" && "text-emerald-400"
                       )}
-                      size={14}
+                      size={isNative ? 16 : 14}
                     />
                   </Pressable>
                 </WebTooltip>
@@ -2179,11 +2246,14 @@ function ChatInputImpl({
               <WebTooltip label="Also generate a stakeholder summary">
                 <Pressable
                   testID="dual-plan-toggle"
+                  hitSlop={isNative ? 6 : undefined}
                   disabled={disabled}
                   onPress={() => onDualPlanChange?.(!dualPlan)}
                   accessibilityLabel="Also generate a stakeholder summary"
                   className={cn(
-                    "h-[22px] w-[22px] items-center justify-center rounded-md",
+                    isNative
+                      ? "h-8 w-8 items-center justify-center rounded-lg"
+                      : "h-[22px] w-[22px] items-center justify-center rounded-md",
                     dualPlan
                       ? "border border-sky-500/45 bg-sky-500/12"
                       : "bg-muted/50"
@@ -2194,7 +2264,7 @@ function ChatInputImpl({
                       "h-3.5 w-3.5",
                       dualPlan ? "text-sky-400" : "text-muted-foreground"
                     )}
-                    size={14}
+                    size={isNative ? 16 : 14}
                   />
                 </Pressable>
               </WebTooltip>
@@ -2212,10 +2282,13 @@ function ChatInputImpl({
                   <WebTooltip label="Quick actions">
                     <Pressable
                       {...triggerProps}
+                      hitSlop={isNative ? 6 : undefined}
                       disabled={disabled}
                       accessibilityLabel="Quick actions"
                       className={cn(
-                        "h-[22px] w-[22px] items-center justify-center rounded-md",
+                        isNative
+                          ? "h-8 w-8 items-center justify-center rounded-lg"
+                          : "h-[22px] w-[22px] items-center justify-center rounded-md",
                         quickActionsOpen
                           ? "border border-amber-500/45 bg-amber-500/12"
                           : "bg-muted/50"
@@ -2226,7 +2299,7 @@ function ChatInputImpl({
                           "h-3.5 w-3.5",
                           quickActionsOpen ? "text-amber-400" : "text-muted-foreground"
                         )}
-                        size={14}
+                        size={isNative ? 16 : 14}
                       />
                     </Pressable>
                   </WebTooltip>
@@ -2263,7 +2336,7 @@ function ChatInputImpl({
             )}
 
             {/* Environment selector — pick Cloud or a paired machine */}
-            <EnvironmentPicker disabled={disabled} />
+            <EnvironmentPicker disabled={disabled} prominentMobile={isNative} />
 
             {/* Model selector */}
             <Popover
@@ -2275,18 +2348,31 @@ function ChatInputImpl({
               trigger={(triggerProps) => (
                 <Pressable
                   {...triggerProps}
+                  hitSlop={isNative ? 6 : undefined}
                   disabled={disabled}
-                  className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
+                  className={cn(
+                    isNative
+                      ? "h-8 flex-row items-center gap-1 rounded-lg px-2"
+                      : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                    isNativePhone && "min-w-0"
+                  )}
+                  style={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
                 >
-                  <Text className="text-xs text-muted-foreground">
-                    {resolveShortName(currentModelId)}
+                  <Text
+                    className={isNative ? "text-sm text-muted-foreground" : "text-xs text-muted-foreground"}
+                    numberOfLines={1}
+                  >
+                    {isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
                   </Text>
-                  <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
+                  <ChevronDown className="h-2 w-2 flex-shrink-0 text-muted-foreground/60" size={isNative ? 12 : 8} />
                 </Pressable>
               )}
             >
               <PopoverBackdrop />
-              <PopoverContent className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none">
+              <PopoverContent
+                className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
+                style={isNativePhone ? { width: nativeModelMenuWidth } : undefined}
+              >
                 <ModelPickerMenu
                   currentModelId={currentModelId}
                   effectiveIsPro={effectiveIsPro}
@@ -2302,19 +2388,23 @@ function ChatInputImpl({
 
           {/* Right side buttons */}
           {voiceInput.isRecording ? (
-            <View className="flex-row items-center gap-2">
+            <View className="flex-row flex-shrink-0 items-center gap-2">
               <VoiceWaveform />
               <Pressable
                 onPress={() => voiceInput.toggleRecording().catch(() => {})}
+                hitSlop={isNative ? 4 : undefined}
                 role="button"
                 accessibilityLabel="Stop voice recording"
-                className="h-6 w-6 rounded-full bg-foreground/90 items-center justify-center active:opacity-70"
+                className={cn(
+                  "rounded-full bg-foreground/90 items-center justify-center active:opacity-70",
+                  isNative ? "h-9 w-9" : "h-6 w-6",
+                )}
               >
-                <Square className="text-background" size={10} fill="currentColor" />
+                <Square className="text-background" size={isNative ? 14 : 10} fill="currentColor" />
               </Pressable>
             </View>
           ) : (
-          <View className="flex-row items-center gap-1">
+          <View className="flex-row flex-shrink-0 items-center gap-1">
             {contextUsage && (
               <ContextTracker
                 inputTokens={contextUsage.inputTokens}
@@ -2324,10 +2414,14 @@ function ChatInputImpl({
 
             <Pressable
               onPress={handleAttachClick}
+              hitSlop={isNative ? 4 : undefined}
               disabled={disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES}
               role="button"
               accessibilityLabel="Attach file"
-              className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
+              className={cn(
+                "rounded-full items-center justify-center active:opacity-70",
+                isNative ? "h-9 w-9 border border-border/45 bg-muted/30" : "min-h-5 min-w-5",
+              )}
               android_ripple={{ color: "rgba(128,128,128,0.25)" }}
             >
               <Plus
@@ -2337,7 +2431,7 @@ function ChatInputImpl({
                     ? "text-muted-foreground/40"
                     : "text-muted-foreground"
                 )}
-                size={12}
+                size={isNative ? 18 : 12}
               />
             </Pressable>
 
@@ -2345,39 +2439,49 @@ function ChatInputImpl({
               <>
                 <Pressable
                   onPress={onStop}
+                  hitSlop={isNative ? 4 : undefined}
                   accessibilityLabel="Stop"
                   testID="stop-streaming"
-                  className="h-5 w-5 rounded-full bg-destructive items-center justify-center active:opacity-70"
+                  className={cn(
+                    "rounded-full bg-destructive items-center justify-center active:opacity-70",
+                    isNative ? "h-9 w-9" : "h-5 w-5",
+                  )}
                 >
                   <Square
                     className="text-destructive-foreground m-auto"
-                    size={10}
+                    size={isNative ? 14 : 10}
                   />
                 </Pressable>
                 {(inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) && (
                   <Pressable
                     onPress={handleSubmit}
+                    hitSlop={isNative ? 4 : undefined}
                     disabled={disabled || isProcessingFiles}
                     role="button"
                     accessibilityLabel="Queue message"
-                    className="h-5 w-5 rounded-full items-center justify-center bg-primary"
+                    className={cn(
+                      "rounded-full items-center justify-center bg-primary",
+                      isNative ? "h-9 w-9" : "h-5 w-5",
+                    )}
                   >
-                    <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+                    <ArrowUp className="h-3 w-3 text-primary-foreground" size={isNative ? 18 : 12} />
                   </Pressable>
                 )}
               </>
             ) : (inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0 || references.length > 0) ? (
               <Pressable
                 onPress={handleSubmit}
+                hitSlop={isNative ? 4 : undefined}
                 disabled={disabled || isProcessingFiles}
                 role="button"
                 accessibilityLabel="Send message"
                 className={cn(
-                  "h-5 w-5 rounded-full items-center justify-center bg-primary",
+                  "rounded-full items-center justify-center bg-primary",
+                  isNative ? "h-9 w-9" : "h-5 w-5",
                   (disabled || isProcessingFiles) && "opacity-50"
                 )}
               >
-                <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+                <ArrowUp className="h-3 w-3 text-primary-foreground" size={isNative ? 18 : 12} />
               </Pressable>
             ) : voiceInput.canRecord ? (
               <Pressable
@@ -2385,10 +2489,14 @@ function ChatInputImpl({
                   voiceInput.clearError()
                   voiceInput.toggleRecording().catch(() => {})
                 }}
+                hitSlop={isNative ? 4 : undefined}
                 disabled={disabled || isProcessingFiles}
                 role="button"
                 accessibilityLabel="Start voice recording"
-                className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
+                className={cn(
+                  "rounded-full items-center justify-center active:opacity-70",
+                  isNative ? "h-9 w-9 border border-border/45 bg-muted/30" : "h-5 w-5",
+                )}
               >
                 <Mic
                   className={cn(
@@ -2397,7 +2505,7 @@ function ChatInputImpl({
                       ? "text-muted-foreground/40"
                       : "text-muted-foreground"
                   )}
-                  size={14}
+                  size={isNative ? 18 : 14}
                 />
               </Pressable>
             ) : null}

@@ -3,7 +3,7 @@
 'use client';
 import React from 'react';
 import { createModal } from '@gluestack-ui/core/modal/creator';
-import { Pressable, View, ScrollView, ViewStyle } from 'react-native';
+import { Pressable, View, ScrollView, ViewStyle, Platform } from 'react-native';
 import {
   Motion,
   AnimatePresence,
@@ -162,20 +162,25 @@ const ModalContent = React.forwardRef<
   IModalContentProps
 >(function ModalContent({ className, size, style, ...props }, ref) {
   const { size: parentSize } = useStyleContext(SCOPE);
+  const isNative = Platform.OS !== 'web';
 
   return (
     <UIModal.Content
       ref={ref}
       initial={{
         opacity: 0,
-        scale: 0.9,
+        scale: isNative ? 0.96 : 0.9,
+        ...(isNative ? { y: 24 } : {}),
       }}
       animate={{
         opacity: 1,
         scale: 1,
+        ...(isNative ? { y: 0 } : {}),
       }}
       exit={{
         opacity: 0,
+        scale: isNative ? 0.97 : 1,
+        ...(isNative ? { y: 20 } : {}),
       }}
       transition={{
         type: 'spring',
@@ -221,6 +226,9 @@ const ModalBody = React.forwardRef<
   return (
     <UIModal.Body
       ref={ref}
+      showsVerticalScrollIndicator={Platform.OS !== 'web'}
+      nestedScrollEnabled={Platform.OS !== 'web'}
+      keyboardShouldPersistTaps="handled"
       {...props}
       className={modalBodyStyle({
         class: className,

@@ -11,7 +11,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react'
 import type { ImageSourcePropType } from 'react-native'
 import { View, Text, TextInput, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions, Image, useColorScheme, Alert as RNAlert, Linking } from 'react-native'
 import Svg, { G, Path, Rect } from 'react-native-svg'
-import { Eye, EyeOff } from 'lucide-react-native'
+import { Eye, EyeOff, X } from 'lucide-react-native'
 import { Button } from '../primitives/Button'
 import { Card, CardContent } from '../primitives/Card'
 import { Input } from '../primitives/Input'
@@ -91,11 +91,16 @@ function useGoogleCtaTheme(colorScheme?: 'light' | 'dark') {
 function GoogleContinueButton({
   onPress,
   colorScheme,
+  nativeLanding = false,
 }: {
   onPress: () => void
   colorScheme?: 'light' | 'dark'
+  nativeLanding?: boolean
 }) {
-  const { isDark, labelColor, fill, stroke } = useGoogleCtaTheme(colorScheme)
+  const theme = useGoogleCtaTheme(colorScheme)
+  const { isDark, labelColor } = theme
+  const fill = nativeLanding ? '#2C2C2E' : theme.fill
+  const stroke = nativeLanding ? '#2C2C2E' : theme.stroke
   return (
     <Pressable
       role="button"
@@ -208,7 +213,7 @@ function AppleContinueButton({
 
 const LOGIN_HERO_BREAKPOINT = 768
 
-/** Light veil only — form panel uses frosted bg; stack screen is transparent so photo must read clearly. */
+/** Light veil only — the compact web form sits over the login artwork. */
 const MOBILE_HERO_SCRIM_LIGHT = 'rgba(255, 255, 255, 0.1)'
 const MOBILE_HERO_SCRIM_DARK = 'rgba(9, 9, 11, 0.28)'
 
@@ -564,7 +569,42 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
   )
 }
 
-function MobileLoginPanel({
+function NativeLoginBackdrop({ source }: { source: ImageSourcePropType }) {
+  return (
+    <>
+      <Image
+        source={source}
+        accessible={false}
+        accessibilityIgnoresInvertColors
+        blurRadius={Platform.OS === 'ios' ? 24 : 16}
+        resizeMode="cover"
+        style={{
+          position: 'absolute',
+          top: -24,
+          right: -24,
+          bottom: -24,
+          left: -24,
+          width: 'auto',
+          height: 'auto',
+          transform: [{ scale: 1.04 }],
+        }}
+      />
+      <View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          top: 0,
+          right: 0,
+          bottom: 0,
+          left: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.58)',
+        }}
+      />
+    </>
+  )
+}
+
+function NativeMobileLoginPanel({
   onSignIn,
   onSignUp,
   onGoogleSignIn,
@@ -573,6 +613,277 @@ function MobileLoginPanel({
   isLoading,
   error,
   onClearError,
+  colorScheme,
+  heroSource,
+}: LoginScreenProps & { heroSource: ImageSourcePropType }) {
+  const [activeTab, setActiveTab] = useState<Tab>('signin')
+  const [showEmailForm, setShowEmailForm] = useState(false)
+  const [dismissed, setDismissed] = useState(false)
+  const [typedHeroText, setTypedHeroText] = useState('')
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const scrollRef = useRef<ScrollView>(null)
+  const isNarrow = windowWidth < 375
+  const isCompactHeight = windowHeight < 720
+  const heroFontSize = isNarrow ? 34 : windowWidth >= 600 ? 48 : 42
+  const heroLineHeight = heroFontSize + 6
+  const cursorSize = isNarrow ? 30 : windowWidth >= 600 ? 40 : 36
+
+  useEffect(() => { if (error) setDismissed(false) }, [error])
+  useEffect(() => {
+    const target = "Let's build"
+    let characterIndex = 0
+    let deleting = false
+    let animationTimer: ReturnType<typeof setTimeout>
+
+    const animate = () => {
+      characterIndex += deleting ? -1 : 1
+      setTypedHeroText(target.slice(0, characterIndex))
+
+      if (!deleting && characterIndex === target.length) {
+        deleting = true
+        animationTimer = setTimeout(animate, 1250)
+        return
+      }
+
+      if (deleting && characterIndex === 0) {
+        deleting = false
+        animationTimer = setTimeout(animate, 520)
+        return
+      }
+
+      animationTimer = setTimeout(animate, deleting ? 55 : 105)
+    }
+
+    animationTimer = setTimeout(animate, 280)
+    return () => clearTimeout(animationTimer)
+  }, [])
+
+  const displayError = dismissed ? null : error
+  const dismissError = () => setDismissed(true)
+  const switchTab = (tab: Tab) => { setActiveTab(tab); setDismissed(true) }
+  const scrollToBottom = () => {
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)
+  }
+
+  if (!showEmailForm) {
+    return (
+      <View style={{ flex: 1, width: '100%', backgroundColor: '#000000', overflow: 'hidden' }}>
+        <NativeLoginBackdrop source={heroSource} />
+        <View
+          style={{
+            flex: 1,
+            zIndex: 1,
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingHorizontal: isNarrow ? 18 : 28,
+            paddingBottom: isCompactHeight ? 32 : 80,
+          }}
+        >
+          <View style={{ width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+            <Text
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.78}
+              maxFontSizeMultiplier={1.15}
+              style={{
+                color: '#FFFFFF',
+                fontSize: heroFontSize,
+                lineHeight: heroLineHeight,
+                fontWeight: '700',
+                letterSpacing: -1.4,
+                textAlign: 'center',
+                textShadowColor: 'rgba(0, 0, 0, 0.72)',
+                textShadowOffset: { width: 0, height: 2 },
+                textShadowRadius: 12,
+                flexShrink: 1,
+              }}
+            >
+              {typedHeroText}
+            </Text>
+            <Image
+              source={shogoRadialCursor}
+              accessible={false}
+              style={{
+                width: cursorSize,
+                height: cursorSize,
+                borderRadius: cursorSize / 2,
+                marginLeft: isNarrow ? 6 : 8,
+                marginTop: 6,
+                flexShrink: 0,
+              }}
+              resizeMode="contain"
+            />
+          </View>
+        </View>
+
+        <View
+          style={{
+            zIndex: 1,
+            width: '100%',
+            maxWidth: 600,
+            alignSelf: 'center',
+            backgroundColor: 'rgba(28, 28, 30, 0.97)',
+            borderTopLeftRadius: isNarrow ? 28 : 34,
+            borderTopRightRadius: isNarrow ? 28 : 34,
+            paddingHorizontal: isNarrow ? 16 : 20,
+            paddingTop: isCompactHeight ? 18 : 24,
+            paddingBottom: isCompactHeight ? 12 : 18,
+          }}
+        >
+          {onAppleSignIn ? (
+            <View style={{ marginBottom: 12 }}>
+              <AppleContinueButton onPress={onAppleSignIn} colorScheme="dark" disabled={isLoading} />
+            </View>
+          ) : null}
+          {onGoogleSignIn ? (
+            <View style={{ marginBottom: 12 }}>
+              <GoogleContinueButton onPress={onGoogleSignIn} colorScheme="dark" nativeLanding />
+            </View>
+          ) : null}
+          <Pressable
+            onPress={() => setShowEmailForm(true)}
+            disabled={isLoading}
+            role="button"
+            accessibilityLabel="Log in or sign up with email"
+            style={{
+              minHeight: 50,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: 16,
+              backgroundColor: '#2C2C2E',
+              opacity: isLoading ? 0.5 : 1,
+            }}
+          >
+            <Text style={{ color: '#FFFFFF', fontSize: 15, lineHeight: 20, fontWeight: '600', letterSpacing: -0.1 }}>
+              Log in or sign up
+            </Text>
+          </Pressable>
+          <Text
+            maxFontSizeMultiplier={1.3}
+            style={{ color: '#98989D', fontSize: 11, lineHeight: 16, textAlign: 'center', marginTop: isCompactHeight ? 10 : 14 }}
+          >
+            By continuing, you agree to Shogo&apos;s{' '}
+            <Text
+              onPress={() => openExternalUrl(PRIVACY_URL)}
+              accessibilityRole="link"
+              style={{ color: '#C7C7CC', textDecorationLine: 'underline' }}
+            >
+              Privacy Policy
+            </Text>
+            {' '}and{' '}
+            <Text
+              onPress={() => openExternalUrl(TERMS_URL)}
+              accessibilityRole="link"
+              style={{ color: '#C7C7CC', textDecorationLine: 'underline' }}
+            >
+              Terms of Use
+            </Text>
+            .
+          </Text>
+        </View>
+      </View>
+    )
+  }
+
+  return (
+    <KeyboardAvoidingView
+      style={{ flex: 1, width: '100%', backgroundColor: '#000000', overflow: 'hidden' }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      <NativeLoginBackdrop source={heroSource} />
+      <View style={{ zIndex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 12, paddingBottom: 10 }}>
+        <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '700', letterSpacing: -0.4 }}>Shogo</Text>
+        <Pressable
+          onPress={() => { setShowEmailForm(false); dismissError() }}
+          accessibilityRole="button"
+          accessibilityLabel="Close email login"
+          style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: '#2C2C2E', alignItems: 'center', justifyContent: 'center' }}
+        >
+          <X size={24} color="#FFFFFF" strokeWidth={2.5} />
+        </Pressable>
+      </View>
+
+      <ScrollView
+        ref={scrollRef}
+        style={{ flex: 1, zIndex: 1 }}
+        contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end', paddingTop: 24 }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+      >
+        <View
+          style={{
+            width: '100%',
+            maxWidth: 480,
+            alignSelf: 'center',
+            backgroundColor: 'rgba(28, 28, 30, 0.97)',
+            borderTopLeftRadius: 34,
+            borderTopRightRadius: 34,
+            paddingHorizontal: 24,
+            paddingTop: 26,
+            paddingBottom: 24,
+          }}
+        >
+          <Text className="text-2xl font-bold text-foreground">
+            {activeTab === 'signin' ? 'Welcome back' : 'Create your Shogo account'}
+          </Text>
+          <Text className="text-sm text-muted-foreground mt-1 mb-6">
+            {activeTab === 'signin' ? 'Log in to keep building.' : 'Start turning your ideas into software.'}
+          </Text>
+
+          <View className="flex-row bg-secondary rounded-xl p-1 mb-5" role="tablist">
+            {(['signin', 'signup'] as Tab[]).map((tab) => (
+              <Pressable
+                key={tab}
+                onPress={() => switchTab(tab)}
+                role="tab"
+                accessibilityState={{ selected: activeTab === tab }}
+                accessibilityLabel={tab === 'signin' ? 'Log in' : 'Sign up'}
+                className={cn('flex-1 py-2.5 rounded-lg items-center', activeTab === tab ? 'bg-card' : '')}
+              >
+                <Text className={cn('text-sm font-medium', activeTab === tab ? 'text-foreground' : 'text-muted-foreground')}>
+                  {tab === 'signin' ? 'Log in' : 'Sign up'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {activeTab === 'signin' ? (
+            <SignInForm
+              onSignIn={onSignIn}
+              onForgotPassword={onForgotPassword}
+              isLoading={isLoading}
+              error={displayError}
+              onClearError={dismissError}
+              onScrollToBottom={scrollToBottom}
+            />
+          ) : (
+            <SignUpForm
+              onSignUp={onSignUp}
+              isLoading={isLoading}
+              error={displayError}
+              onClearError={dismissError}
+              onScrollToBottom={scrollToBottom}
+            />
+          )}
+
+          <View className="mt-5">
+            <ConsentNotice />
+          </View>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  )
+}
+
+/** Preserve the existing compact browser layout; the native redesign must not leak into web. */
+function CompactWebLoginPanel({
+  onSignIn,
+  onSignUp,
+  onGoogleSignIn,
+  onAppleSignIn,
+  onForgotPassword,
+  isLoading,
+  error,
   colorScheme,
   heroSource,
 }: LoginScreenProps & { heroSource: ImageSourcePropType }) {
@@ -592,50 +903,19 @@ function MobileLoginPanel({
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)
   }
 
-  const panel = (
-    <>
+  return (
+    <View style={{ flex: 1, width: '100%', position: 'relative', overflow: 'hidden' }}>
       <Image
         source={heroSource}
-        style={
-          Platform.OS === 'web'
-            ? {
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: windowWidth,
-              height: windowHeight,
-              zIndex: 0,
-            }
-            : {
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              width: '100%',
-              height: '100%',
-              zIndex: 0,
-            }
-        }
+        style={{ position: 'absolute', top: 0, left: 0, width: windowWidth, height: windowHeight, zIndex: 0 }}
         resizeMode="cover"
         accessibilityIgnoresInvertColors
       />
       <View
         pointerEvents="none"
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: scrimColor,
-          zIndex: 1,
-        }}
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: scrimColor, zIndex: 1 }}
       />
-      <KeyboardAvoidingView
-        style={{ flex: 1, backgroundColor: 'transparent', zIndex: 2 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
+      <KeyboardAvoidingView style={{ flex: 1, backgroundColor: 'transparent', zIndex: 2 }}>
         <ScrollView
           ref={scrollRef}
           style={{ flex: 1, backgroundColor: 'transparent' }}
@@ -646,13 +926,11 @@ function MobileLoginPanel({
           <Card className="w-full max-w-md self-center border-border bg-card shadow-lg">
             <CardContent className="p-6">
               <View className="items-center mb-6">
-                {Platform.OS === 'web' && (
-                  <Image
-                    source={require('../../../../apps/mobile/assets/shogo-logo.svg')}
-                    style={{ width: 80, height: 80, marginBottom: 16 }}
-                    resizeMode="contain"
-                  />
-                )}
+                <Image
+                  source={require('../../../../apps/mobile/assets/shogo-logo.svg')}
+                  style={{ width: 80, height: 80, marginBottom: 16 }}
+                  resizeMode="contain"
+                />
                 <Text className="text-2xl font-bold text-foreground">Shogo</Text>
                 <Text className="text-sm text-muted-foreground mt-1">
                   Sign in to your account or create a new one
@@ -667,10 +945,7 @@ function MobileLoginPanel({
                     role="tab"
                     accessibilityState={{ selected: activeTab === tab }}
                     accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
-                    className={cn(
-                      'flex-1 py-2 rounded-md items-center',
-                      activeTab === tab ? 'bg-card' : '',
-                    )}
+                    className={cn('flex-1 py-2 rounded-md items-center', activeTab === tab ? 'bg-card' : '')}
                     style={activeTab === tab ? {
                       shadowColor: '#000',
                       shadowOffset: { width: 0, height: 1 },
@@ -679,33 +954,33 @@ function MobileLoginPanel({
                       elevation: 1,
                     } : undefined}
                   >
-                    <Text className={cn(
-                      'text-sm font-medium',
-                      activeTab === tab ? 'text-foreground' : 'text-muted-foreground',
-                    )}>
+                    <Text className={cn('text-sm font-medium', activeTab === tab ? 'text-foreground' : 'text-muted-foreground')}>
                       {tab === 'signin' ? 'Sign In' : 'Sign Up'}
                     </Text>
                   </Pressable>
                 ))}
               </View>
 
-              {activeTab === 'signin'
-                ? (
-                  <SignInForm
-                    onSignIn={onSignIn}
-                    onForgotPassword={onForgotPassword}
-                    isLoading={isLoading}
-                    error={displayError}
-                    onClearError={dismissError}
-                    onScrollToBottom={scrollToBottom}
-                  />
-                )
-                : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
-              }
+              {activeTab === 'signin' ? (
+                <SignInForm
+                  onSignIn={onSignIn}
+                  onForgotPassword={onForgotPassword}
+                  isLoading={isLoading}
+                  error={displayError}
+                  onClearError={dismissError}
+                  onScrollToBottom={scrollToBottom}
+                />
+              ) : (
+                <SignUpForm
+                  onSignUp={onSignUp}
+                  isLoading={isLoading}
+                  error={displayError}
+                  onClearError={dismissError}
+                  onScrollToBottom={scrollToBottom}
+                />
+              )}
 
-              <View className="mt-4">
-                <ConsentNotice />
-              </View>
+              <View className="mt-4"><ConsentNotice /></View>
 
               {(onGoogleSignIn || onAppleSignIn) ? (
                 <>
@@ -719,27 +994,20 @@ function MobileLoginPanel({
                       <AppleContinueButton onPress={onAppleSignIn} colorScheme={colorScheme} disabled={isLoading} />
                     </View>
                   ) : null}
-                  {onGoogleSignIn ? (
-                    <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
-                  ) : null}
+                  {onGoogleSignIn ? <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} /> : null}
                 </>
               ) : null}
             </CardContent>
           </Card>
         </ScrollView>
       </KeyboardAvoidingView>
-    </>
-  )
-
-  return (
-    <View style={{ flex: 1, width: '100%', position: 'relative', overflow: 'hidden' }}>
-      {panel}
     </View>
   )
 }
 
 const logoLight = require('../../../../apps/mobile/assets/shogo-logo-words.svg')
 const logoDark = require('../../../../apps/mobile/assets/shogo-logo-words-white.svg')
+const shogoRadialCursor = require('../../../../apps/mobile/assets/ic_playstore_legacy.png')
 const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 const loginHeroWordmarkWhite = require('../../../../apps/mobile/assets/login/shogo-logo-white.svg')
@@ -868,12 +1136,17 @@ function resolveLoginHeroArtwork(
 
 export function LoginScreen(props: LoginScreenProps) {
   const { width } = useWindowDimensions()
-  const isDesktopWeb = Platform.OS === 'web' && width >= LOGIN_HERO_BREAKPOINT
+  const isWeb = Platform.OS === 'web'
+  const isDesktopWeb = isWeb && width >= LOGIN_HERO_BREAKPOINT
   const scheme = props.colorScheme ?? 'light'
   const heroArtwork = resolveLoginHeroArtwork(scheme, props)
 
+  if (!isWeb) {
+    return <NativeMobileLoginPanel {...props} heroSource={heroArtwork} />
+  }
+
   if (!isDesktopWeb) {
-    return <MobileLoginPanel {...props} heroSource={heroArtwork} />
+    return <CompactWebLoginPanel {...props} heroSource={heroArtwork} />
   }
 
   return (

@@ -16,7 +16,7 @@
  * reflects what the runtime would seed even before the user touches it.
  */
 import React, { useEffect, useMemo, useRef, useState } from "react"
-import { View, Text, Pressable, ScrollView, Platform } from "react-native"
+import { View, Text, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native"
 import { Layers, ChevronDown, Check } from "lucide-react-native"
 import {
   Popover,
@@ -47,9 +47,14 @@ export interface TechStackPickerProps {
   /** Called with the chosen stack id when the user picks one. */
   onChange?: (techStackId: string) => void
   disabled?: boolean
+  prominentMobile?: boolean
 }
 
-export function TechStackPicker({ value, onChange, disabled }: TechStackPickerProps) {
+export function TechStackPicker({ value, onChange, disabled, prominentMobile = false }: TechStackPickerProps) {
+  const { width: windowWidth } = useWindowDimensions()
+  const isNativePhone = Platform.OS !== "web" && windowWidth < 600
+  const useProminentChip = prominentMobile && isNativePhone
+  const triggerMaxWidth = Math.max(useProminentChip ? 90 : 84, Math.min(useProminentChip ? 124 : 128, Math.floor(windowWidth * 0.28)))
   const [open, setOpen] = useState(false)
   const [stacks, setStacks] = useState<TechStackSummary[]>([])
   const fetchedRef = useRef(false)
@@ -91,15 +96,19 @@ export function TechStackPicker({ value, onChange, disabled }: TechStackPickerPr
             disabled={disabled}
             accessibilityLabel={`Tech stack: ${selected?.name ?? "default"}`}
             className={cn(
-              "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
-              "border border-border/60 bg-muted/40 active:opacity-80",
+              useProminentChip
+                ? "h-7 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-1.5"
+                : "h-[22px] flex-row items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-1.5",
+              "active:opacity-80",
+              isNativePhone && "min-w-0",
               disabled && "opacity-60",
             )}
+            style={isNativePhone ? { maxWidth: triggerMaxWidth } : undefined}
             testID="tech-stack-picker-trigger"
           >
-            <Layers className="h-3 w-3 text-muted-foreground" size={12} />
-            <Text className="text-[11px] text-muted-foreground">{displayLabel}</Text>
-            <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
+            <Layers className="flex-shrink-0 text-muted-foreground" size={12} />
+            <Text className={useProminentChip ? "text-[11px] text-foreground/85" : "text-[11px] text-muted-foreground"} numberOfLines={1}>{displayLabel}</Text>
+            <ChevronDown className="flex-shrink-0 text-muted-foreground/70" size={8} />
           </Pressable>
         </WebTooltip>
       )}

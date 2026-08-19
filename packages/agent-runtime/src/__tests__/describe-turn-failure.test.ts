@@ -53,6 +53,12 @@ describe('describeTurnFailure', () => {
     expect(out).not.toContain('API key')
   })
 
+  test('provider configuration failures ask the user to check provider settings', () => {
+    const out = describeTurnFailure('503 {"error":{"message":"OpenAI provider is not configured on this server."}}')
+    expect(out).toMatch(/provider settings/i)
+    expect(out).not.toMatch(/switch to a different model/i)
+  })
+
   test('overload / 5xx map to the model-unavailable message', () => {
     expect(describeTurnFailure('529 overloaded')).toMatch(/Model unavailable/i)
     expect(describeTurnFailure('503 service unavailable')).toMatch(/Model unavailable/i)

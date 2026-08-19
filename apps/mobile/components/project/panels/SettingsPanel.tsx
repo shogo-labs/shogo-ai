@@ -19,7 +19,7 @@
  * sidebar collapses to a horizontal scroller pinned to the top.
  */
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
-import { View, Text, Pressable, ScrollView, useWindowDimensions } from 'react-native'
+import { View, Text, Pressable, ScrollView, useWindowDimensions, Platform } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cn } from '@shogo/shared-ui/primitives'
 
@@ -235,12 +235,17 @@ function NarrowSidebar({
   activeId: string | null
   onSelect: (id: string) => void
 }) {
+  const isNative = Platform.OS !== 'web'
   return (
     <View className="border-b border-border bg-muted/40 dark:bg-black/20">
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: 8, paddingVertical: 6, gap: 4 }}
+        contentContainerStyle={{
+          paddingHorizontal: isNative ? 10 : 8,
+          paddingVertical: isNative ? 8 : 6,
+          gap: isNative ? 6 : 4,
+        }}
       >
         {groups.flatMap((group, gi) =>
           group.items.map((item, ii) => {
@@ -250,13 +255,14 @@ function NarrowSidebar({
             return (
               <React.Fragment key={item.id}>
                 {showDivider && (
-                  <View className="self-center w-px h-5 bg-border mx-1" />
+                  <View className={cn('self-center w-px bg-border mx-1', isNative ? 'h-6' : 'h-5')} />
                 )}
                 <Pressable
                   onPress={() => onSelect(item.id)}
                   testID={`settings-nav-${item.id}`}
                   className={cn(
-                    'px-2.5 py-1 rounded-md flex-row items-center gap-1.5',
+                    'rounded-md flex-row items-center gap-1.5',
+                    isNative ? 'min-h-10 px-3 py-2' : 'px-2.5 py-1',
                     isActive ? 'bg-accent' : 'active:bg-muted',
                   )}
                   accessibilityRole="tab"
@@ -264,14 +270,14 @@ function NarrowSidebar({
                   accessibilityLabel={item.label}
                 >
                   <Icon
-                    size={12}
+                    size={isNative ? 17 : 12}
                     className={cn(
                       isActive ? 'text-foreground' : 'text-muted-foreground',
                     )}
                   />
                   <Text
                     className={cn(
-                      'text-xs',
+                      isNative ? 'text-sm' : 'text-xs',
                       isActive
                         ? 'text-foreground font-medium'
                         : 'text-muted-foreground',

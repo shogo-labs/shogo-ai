@@ -10,7 +10,6 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { View, Text, Pressable, ScrollView, RefreshControl, ActivityIndicator } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -128,7 +127,7 @@ export default observer(function NotificationsScreen() {
   }, [items, actions])
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={['top']}>
+    <View className="flex-1 bg-background">
       {/* Header */}
       <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
         <Pressable
@@ -203,6 +202,6 @@ export default observer(function NotificationsScreen() {
           })}
         </ScrollView>
       )}
-    </SafeAreaView>
+    </View>
   )
 })

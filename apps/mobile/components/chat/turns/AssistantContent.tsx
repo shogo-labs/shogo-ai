@@ -714,7 +714,7 @@ export const AssistantContent = memo(
           return (
             <View key={part.id}>
               <MarkdownText
-                className="text-foreground text-xs prose-sm"
+                className={Platform.OS !== "web" ? "text-foreground text-base" : "text-foreground text-xs prose-sm"}
                 isStreaming={isStreaming}
               >
                 {part.text}

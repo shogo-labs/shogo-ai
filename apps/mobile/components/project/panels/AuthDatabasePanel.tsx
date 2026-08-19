@@ -22,6 +22,7 @@ import {
   Text,
   TextInput,
   View,
+  Platform,
 } from 'react-native'
 import {
   AlertCircle,
@@ -115,6 +116,7 @@ export function AuthDatabasePanel({ projectId, visible = true }: AuthDatabasePan
 // =============================================================================
 
 function AllowlistCard({ projectId }: { projectId: string }) {
+  const isNative = Platform.OS !== 'web'
   const [config, setConfig] = useState<AuthConfig>(DEFAULT_CONFIG)
   const [original, setOriginal] = useState<AuthConfig>(DEFAULT_CONFIG)
   const [loading, setLoading] = useState(true)
@@ -183,12 +185,12 @@ function AllowlistCard({ projectId }: { projectId: string }) {
   return (
     <View className="border border-border rounded-lg bg-card overflow-hidden">
       <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
-        <ShieldCheck size={16} className="text-primary" />
-        <Text className="text-sm font-semibold text-foreground flex-1">Sign-in allowlist</Text>
+        <ShieldCheck size={isNative ? 20 : 16} className="text-primary" />
+        <Text className={isNative ? "text-base font-semibold text-foreground flex-1" : "text-sm font-semibold text-foreground flex-1"}>Sign-in allowlist</Text>
         {savedAt && Date.now() - savedAt < 3000 ? (
           <View className="flex-row items-center gap-1">
-            <Check size={12} className="text-emerald-500" />
-            <Text className="text-[11px] text-emerald-500">Saved</Text>
+            <Check size={isNative ? 16 : 12} className="text-emerald-500" />
+            <Text className={isNative ? "text-sm text-emerald-500" : "text-[11px] text-emerald-500"}>Saved</Text>
           </View>
         ) : null}
       </View>
@@ -199,7 +201,7 @@ function AllowlistCard({ projectId }: { projectId: string }) {
         </View>
       ) : (
         <View className="p-4 gap-4">
-          <Text className="text-xs text-muted-foreground">
+          <Text className={isNative ? "text-sm leading-5 text-muted-foreground" : "text-xs text-muted-foreground"}>
             Controls who can sign in to this project via the Shogo SDK
             (<Text className="font-mono">shogo.auth.signIn</Text>). Does not affect sign-ins to studio.shogo.ai.
           </Text>
@@ -211,35 +213,35 @@ function AllowlistCard({ projectId }: { projectId: string }) {
                 <Pressable
                   key={id}
                   onPress={() => setConfig((c) => ({ ...c, mode: id }))}
-                  className={`flex-row items-start gap-3 rounded-lg border px-3 py-2.5 ${
+                  className={`flex-row items-start gap-3 rounded-lg border px-3 ${isNative ? 'py-3' : 'py-2.5'} ${
                     active
                       ? 'border-primary bg-primary/5'
                       : 'border-border active:bg-muted'
                   }`}
                 >
                   <View
-                    className={`w-8 h-8 rounded-md items-center justify-center ${
+                    className={`${isNative ? 'w-10 h-10' : 'w-8 h-8'} rounded-md items-center justify-center ${
                       active ? 'bg-primary/15' : 'bg-muted'
                     }`}
                   >
-                    <Icon size={15} className={active ? 'text-primary' : 'text-muted-foreground'} />
+                    <Icon size={isNative ? 18 : 15} className={active ? 'text-primary' : 'text-muted-foreground'} />
                   </View>
                   <View className="flex-1">
                     <Text
-                      className={`text-xs font-semibold ${
+                      className={`${isNative ? 'text-sm' : 'text-xs'} font-semibold ${
                         active ? 'text-primary' : 'text-foreground'
                       }`}
                     >
                       {label}
                     </Text>
-                    <Text className="text-[11px] text-muted-foreground mt-0.5">{description}</Text>
+                    <Text className={isNative ? "text-[13px] leading-[18px] text-muted-foreground mt-0.5" : "text-[11px] text-muted-foreground mt-0.5"}>{description}</Text>
                   </View>
                   <View
-                    className={`w-4 h-4 rounded-full border ${
+                    className={`${isNative ? 'w-5 h-5' : 'w-4 h-4'} rounded-full border ${
                       active ? 'border-primary bg-primary' : 'border-border'
                     } items-center justify-center mt-0.5`}
                   >
-                    {active ? <Check size={10} className="text-primary-foreground" /> : null}
+                    {active ? <Check size={isNative ? 12 : 10} className="text-primary-foreground" /> : null}
                   </View>
                 </Pressable>
               )
@@ -281,10 +283,10 @@ function AllowlistCard({ projectId }: { projectId: string }) {
 
           <View className="flex-row items-center justify-between border-t border-border pt-3">
             <View className="flex-1 pr-3">
-              <Text className="text-xs font-semibold text-foreground">
+              <Text className={isNative ? "text-sm font-semibold text-foreground" : "text-xs font-semibold text-foreground"}>
                 Require email verification
               </Text>
-              <Text className="text-[11px] text-muted-foreground mt-0.5">
+              <Text className={isNative ? "text-[13px] leading-[18px] text-muted-foreground mt-0.5" : "text-[11px] text-muted-foreground mt-0.5"}>
                 Only users with a verified email can sign in (regardless of mode).
               </Text>
             </View>
@@ -298,8 +300,8 @@ function AllowlistCard({ projectId }: { projectId: string }) {
 
           {error ? (
             <View className="flex-row items-center gap-2 bg-destructive/10 border border-destructive/40 rounded-md px-3 py-2">
-              <AlertCircle size={14} className="text-destructive" />
-              <Text className="text-[11px] text-destructive flex-1">{error}</Text>
+              <AlertCircle size={isNative ? 18 : 14} className="text-destructive" />
+              <Text className={isNative ? "text-[13px] text-destructive flex-1" : "text-[11px] text-destructive flex-1"}>{error}</Text>
             </View>
           ) : null}
 
@@ -308,15 +310,15 @@ function AllowlistCard({ projectId }: { projectId: string }) {
               <Pressable
                 onPress={() => setConfig(original)}
                 disabled={saving}
-                className="px-3 py-2 rounded-md border border-border active:bg-muted"
+                className={isNative ? "min-h-10 px-4 py-2 rounded-md border border-border active:bg-muted justify-center" : "px-3 py-2 rounded-md border border-border active:bg-muted"}
               >
-                <Text className="text-xs text-foreground">Discard</Text>
+                <Text className={isNative ? "text-sm text-foreground" : "text-xs text-foreground"}>Discard</Text>
               </Pressable>
             ) : null}
             <Pressable
               onPress={save}
               disabled={saving || !dirty}
-              className={`px-4 py-2 rounded-md ${
+              className={`${isNative ? 'min-h-10 justify-center' : ''} px-4 py-2 rounded-md ${
                 saving || !dirty ? 'bg-muted' : 'bg-primary active:opacity-90'
               }`}
             >
@@ -324,7 +326,7 @@ function AllowlistCard({ projectId }: { projectId: string }) {
                 <ActivityIndicator size="small" />
               ) : (
                 <Text
-                  className={`text-xs font-semibold ${
+                  className={`${isNative ? 'text-sm' : 'text-xs'} font-semibold ${
                     dirty ? 'text-primary-foreground' : 'text-muted-foreground'
                   }`}
                 >
@@ -353,6 +355,7 @@ interface UsersState {
 }
 
 function UsersCard({ projectId }: { projectId: string }) {
+  const isNative = Platform.OS !== 'web'
   const [state, setState] = useState<UsersState>({
     items: [],
     nextCursor: null,
@@ -435,20 +438,20 @@ function UsersCard({ projectId }: { projectId: string }) {
   return (
     <View className="border border-border rounded-lg bg-card overflow-hidden">
       <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
-        <Users size={16} className="text-primary" />
-        <Text className="text-sm font-semibold text-foreground flex-1">Users</Text>
+        <Users size={isNative ? 20 : 16} className="text-primary" />
+        <Text className={isNative ? "text-base font-semibold text-foreground flex-1" : "text-sm font-semibold text-foreground flex-1"}>Users</Text>
         <Pressable
           onPress={() => load({ reset: true })}
           disabled={state.loading}
-          className="w-7 h-7 items-center justify-center rounded-md active:bg-muted"
+          className={isNative ? "w-10 h-10 items-center justify-center rounded-md active:bg-muted" : "w-7 h-7 items-center justify-center rounded-md active:bg-muted"}
           accessibilityLabel="Refresh users"
         >
-          <RefreshCw size={13} className="text-muted-foreground" />
+          <RefreshCw size={isNative ? 18 : 13} className="text-muted-foreground" />
         </Pressable>
       </View>
 
       <View className="p-4 gap-3">
-        <Text className="text-[11px] text-muted-foreground">
+        <Text className={isNative ? "text-sm text-muted-foreground" : "text-[11px] text-muted-foreground"}>
           Users who have signed in to this project via the Shogo SDK.
         </Text>
         <View className="flex-row items-center gap-2">
@@ -458,20 +461,20 @@ function UsersCard({ projectId }: { projectId: string }) {
             onSubmitEditing={onSearchSubmit}
             placeholder="Search by name or email..."
             placeholderTextColor="rgba(120,120,120,0.6)"
-            className="flex-1 border border-border rounded-md px-3 py-2 text-xs text-foreground"
+            className={isNative ? "flex-1 min-h-11 border border-border rounded-md px-3 py-2 text-base text-foreground" : "flex-1 border border-border rounded-md px-3 py-2 text-xs text-foreground"}
           />
           <Pressable
             onPress={onSearchSubmit}
-            className="px-3 py-2 rounded-md border border-border active:bg-muted"
+            className={isNative ? "min-h-11 px-4 py-2 rounded-md border border-border active:bg-muted justify-center" : "px-3 py-2 rounded-md border border-border active:bg-muted"}
           >
-            <Text className="text-xs text-foreground">Search</Text>
+            <Text className={isNative ? "text-sm text-foreground" : "text-xs text-foreground"}>Search</Text>
           </Pressable>
         </View>
 
         {state.error ? (
           <View className="flex-row items-center gap-2 bg-destructive/10 border border-destructive/40 rounded-md px-3 py-2">
-            <AlertCircle size={14} className="text-destructive" />
-            <Text className="text-[11px] text-destructive flex-1">{state.error}</Text>
+            <AlertCircle size={isNative ? 18 : 14} className="text-destructive" />
+            <Text className={isNative ? "text-[13px] text-destructive flex-1" : "text-[11px] text-destructive flex-1"}>{state.error}</Text>
           </View>
         ) : null}
 
@@ -481,7 +484,7 @@ function UsersCard({ projectId }: { projectId: string }) {
           </View>
         ) : state.items.length === 0 ? (
           <View className="py-6 items-center">
-            <Text className="text-[11px] text-muted-foreground">
+            <Text className={isNative ? "text-sm text-muted-foreground" : "text-[11px] text-muted-foreground"}>
               No users have signed in to this project yet.
             </Text>
           </View>

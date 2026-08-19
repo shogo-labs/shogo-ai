@@ -134,9 +134,11 @@ function filenameFromPlanPath(filepath?: string | null): string | null {
 }
 
 export function PlansPanel({ visible, projectId, agentUrl, selectedModel, requestedPlanPath, onBuildPlan }: PlansPanelProps) {
+  const isNative = Platform.OS !== "web"
   const planStream = usePlanStreamSafe()
   const [plans, setPlans] = useState<AgentPlanSummary[]>([])
   const [loading, setLoading] = useState(false)
+  const [plansError, setPlansError] = useState<string | null>(null)
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null)
   const [planContent, setPlanContent] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -192,10 +194,13 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
   const fetchPlans = useCallback(async () => {
     setLoading(true)
+    setPlansError(null)
     try {
       const list = await agentClient.listPlans()
       setPlans(list)
     } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : "Unable to load plans right now"
+      setPlansError(message)
       console.error("[PlansPanel] Failed to fetch plans:", err)
     } finally {
       setLoading(false)
@@ -369,7 +374,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       !isSummarizingThisPlan
 
     return (
-      <View className="flex-1 bg-background">
+      <View className="flex-1 bg-background" style={{ alignSelf: "stretch", width: "100%", height: "100%" }}>
         {/* Detail header */}
         <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border" style={{ zIndex: 10, overflow: "visible" as any }}>
           <Pressable
@@ -612,12 +617,12 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
   // List view
   return (
-    <View className="flex-1 bg-background">
+    <View className="flex-1 bg-background" style={{ alignSelf: "stretch", width: "100%", height: "100%" }}>
       {/* Header */}
-      <View className="flex-row items-center justify-between px-4 py-3 border-b border-border">
+      <View className={cn("flex-row items-center justify-between px-4 border-b border-border", isNative ? "min-h-14 py-3" : "py-3")}>
         <View className="flex-row items-center gap-2">
-          <ClipboardList className="h-4 w-4 text-foreground" size={16} />
-          <Text className="font-semibold text-sm text-foreground">Plans</Text>
+          <ClipboardList className="text-foreground" size={isNative ? 20 : 16} />
+          <Text className={isNative ? "font-semibold text-base text-foreground" : "font-semibold text-sm text-foreground"}>Plans</Text>
         </View>
         <View className="flex-row items-center gap-1.5">
           {/* Persistent Dual Plan toggle — mirror of the same preference the
@@ -628,7 +633,8 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             onPress={handleDualPlanToggle}
             accessibilityLabel="Toggle summary generation for new plans"
             className={cn(
-              "h-7 flex-row items-center gap-1 rounded-md px-2",
+              "flex-row items-center gap-1 rounded-md px-2",
+              isNative ? "min-h-9" : "h-7",
               dualPlan
                 ? "border border-sky-500/45 bg-sky-500/12"
                 : "bg-muted/50"
@@ -639,34 +645,34 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
                 "h-3 w-3",
                 dualPlan ? "text-sky-400" : "text-muted-foreground"
               )}
-              size={12}
+              size={isNative ? 16 : 12}
             />
             <Text
               className={cn(
-                "text-[11px] font-medium",
+                isNative ? "text-sm font-medium" : "text-[11px] font-medium",
                 dualPlan ? "text-sky-400" : "text-muted-foreground"
               )}
             >
               Summary
             </Text>
           </Pressable>
-          <Pressable onPress={fetchPlans} className="h-8 w-8 items-center justify-center rounded-lg">
-            <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+          <Pressable onPress={fetchPlans} className={isNative ? "h-10 w-10 items-center justify-center rounded-lg" : "h-8 w-8 items-center justify-center rounded-lg"}>
+            <RefreshCw className="text-muted-foreground" size={isNative ? 18 : 14} />
           </Pressable>
         </View>
       </View>
 
       {/* Search */}
-      <View className="px-4 py-2 border-b border-border/60">
-        <View className="flex-row items-center gap-2 rounded-lg bg-muted/50 px-3 py-2">
-          <Search className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+      <View className={cn("px-4 border-b border-border/60", isNative ? "py-3" : "py-2")}>
+        <View className={cn("flex-row items-center gap-2 rounded-lg bg-muted/50 px-3", isNative ? "min-h-11 py-2.5" : "py-2")}>
+          <Search className="text-muted-foreground" size={isNative ? 18 : 14} />
           <TextInput
             value={searchQuery}
             onChangeText={setSearchQuery}
             placeholder="Search plans..."
             placeholderTextColor="#9ca3af"
             className={cn(
-              "flex-1 text-xs text-foreground",
+              isNative ? "flex-1 text-base text-foreground" : "flex-1 text-xs text-foreground",
               Platform.OS === "web" && "outline-none"
             )}
           />
@@ -674,7 +680,17 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       </View>
 
       {/* List */}
-      <ScrollView className="flex-1">
+      <ScrollView
+        className="flex-1"
+        style={{ flex: 1, alignSelf: "stretch", width: "100%" }}
+        contentContainerStyle={{
+          flexGrow: 1,
+          justifyContent:
+            filteredPlans.length === 0 && !planStream?.streamingPlan
+              ? "center"
+              : "flex-start",
+        }}
+      >
         {/* Streaming plan — clickable list entry that opens the detail view */}
         {planStream?.streamingPlan ? (
           <Pressable
@@ -695,7 +711,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             </View>
           </Pressable>
         ) : planStream?.isPlanStreaming && filteredPlans.length === 0 && !loading ? (
-          <View className="items-center justify-center py-12 px-4">
+          <View className="items-center justify-center px-4">
             <ActivityIndicator className="mb-3" />
             <Text className="text-sm text-muted-foreground text-center">
               Shogo is researching...
@@ -716,13 +732,26 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
         {loading && !planStream?.isPlanStreaming ? (
           <ActivityIndicator className="mt-8" />
+        ) : plansError && filteredPlans.length === 0 && !planStream?.isPlanStreaming && !planStream?.streamingPlan ? (
+          <View className="items-center justify-center px-4">
+            <ClipboardList className="text-muted-foreground/40 mb-3" size={isNative ? 40 : 32} />
+            <Text className={isNative ? "text-base text-muted-foreground text-center" : "text-sm text-muted-foreground text-center"}>
+              Plans are unavailable
+            </Text>
+            <Text className={isNative ? "text-sm text-muted-foreground/70 text-center mt-1" : "text-xs text-muted-foreground/70 text-center mt-1"}>
+              {plansError}
+            </Text>
+            <Pressable onPress={fetchPlans} className="mt-4 rounded-lg border border-border px-3 py-2 active:bg-accent">
+              <Text className={isNative ? "text-sm font-medium text-foreground" : "text-xs font-medium text-foreground"}>Try again</Text>
+            </Pressable>
+          </View>
         ) : filteredPlans.length === 0 && !planStream?.isPlanStreaming && !planStream?.streamingPlan ? (
-          <View className="items-center justify-center py-12 px-4">
-            <ClipboardList className="h-8 w-8 text-muted-foreground/40 mb-3" size={32} />
-            <Text className="text-sm text-muted-foreground text-center">
+          <View className="items-center justify-center px-4">
+            <ClipboardList className="text-muted-foreground/40 mb-3" size={isNative ? 40 : 32} />
+            <Text className={isNative ? "text-base text-muted-foreground text-center" : "text-sm text-muted-foreground text-center"}>
               {searchQuery ? "No plans match your search" : "No plans yet"}
             </Text>
-            <Text className="text-xs text-muted-foreground/70 text-center mt-1">
+            <Text className={isNative ? "text-sm text-muted-foreground/70 text-center mt-1" : "text-xs text-muted-foreground/70 text-center mt-1"}>
               Switch to Plan mode in the chat to create one
             </Text>
           </View>

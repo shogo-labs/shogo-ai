@@ -115,6 +115,7 @@ function classifyByStatus(status: number): RetryClassification | null {
 // Non-retryable patterns take precedence over retryable ones so that, e.g.,
 // "401 connection" is treated as auth rather than network.
 const NON_RETRYABLE_PATTERNS: Array<[RegExp, RetryReason]> = [
+  [/provider (is )?not configured|provider .*not configured|not configured on this server/i, 'auth'],
   [/\bunauthorized\b|invalid[_\s-]?api[_\s-]?key|authentication|permission denied|\b401\b|\b403\b/i, 'auth'],
   [/content[_\s-]?(policy|filter)|moderation|safety (system|filter)|stop_reason["'\s:]+content_filter/i, 'content_policy'],
   [/billing|insufficient[_\s]?(credits|funds|balance)|payment required|\b402\b|quota (exceeded|reached)|usage limit/i, 'billing'],

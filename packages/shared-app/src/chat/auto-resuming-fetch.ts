@@ -73,6 +73,10 @@ const TURN_HEADER = {
   CHAT_SESSION_ID: 'X-Chat-Session-Id',
 } as const
 
+let readableStreamResponseSupport:
+  | { responseCtor: typeof Response; supported: boolean }
+  | null = null
+
 /**
  * Default resume URL builder: appends `/<chatSessionId>/stream` to a chat
  * POST URL like `…/projects/<id>/chat` or `…/agent/chat`.
@@ -81,6 +85,139 @@ export function defaultBuildResumeUrl(chatPostUrl: string, chatSessionId: string
   // Strip a trailing slash, then append `/<chatSessionId>/stream`.
   const trimmed = chatPostUrl.replace(/\/+$/, '')
   return `${trimmed}/${encodeURIComponent(chatSessionId)}/stream`
+}
+
+function responseConstructorSupportsReadableStreamBody(): boolean {
+  const responseCtor = globalThis.Response
+  if (readableStreamResponseSupport?.responseCtor === responseCtor) {
+    return readableStreamResponseSupport.supported
+  }
+
+  let supported = false
+  try {
+    const probe = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close()
+      },
+    })
+    supported = !!new responseCtor(probe).body
+  } catch {
+    supported = false
+  }
+
+  readableStreamResponseSupport = { responseCtor, supported }
+  return supported
+}
+
+async function drainStreamBody(body: ReadableStream<Uint8Array>): Promise<Uint8Array<ArrayBuffer>> {
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      chunks.push(value)
+      total += value.byteLength
+    }
+  } finally {
+    try { reader.releaseLock() } catch { /* noop */ }
+  }
+
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return out as Uint8Array<ArrayBuffer>
+}
+
+function createBodyPreservingResponse(source: Response, body: ReadableStream<Uint8Array>): Response {
+  let currentBody = body
+  let consumed = false
+
+  const responseLike = {
+    get body() {
+      return currentBody
+    },
+    get bodyUsed() {
+      return consumed || currentBody.locked
+    },
+    get headers() {
+      return source.headers
+    },
+    get ok() {
+      return source.ok
+    },
+    get redirected() {
+      return source.redirected
+    },
+    get status() {
+      return source.status
+    },
+    get statusText() {
+      return source.statusText
+    },
+    get type() {
+      return source.type
+    },
+    get url() {
+      return source.url
+    },
+    async arrayBuffer() {
+      if (consumed) throw new TypeError('Body is already used')
+      consumed = true
+      const bytes = await drainStreamBody(currentBody)
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    },
+    async bytes() {
+      if (consumed) throw new TypeError('Body is already used')
+      consumed = true
+      return drainStreamBody(currentBody)
+    },
+    async text() {
+      return new TextDecoder().decode(await this.bytes())
+    },
+    async json() {
+      return JSON.parse(await this.text())
+    },
+    async blob() {
+      const type = source.headers.get('Content-Type') ?? ''
+      return new Blob([await this.arrayBuffer()], { type })
+    },
+    async formData() {
+      throw new TypeError('formData() is not supported for streaming chat responses')
+    },
+    clone() {
+      if (consumed || currentBody.locked) {
+        throw new TypeError('Body is already used')
+      }
+      const [bodyForOriginal, bodyForClone] = currentBody.tee()
+      currentBody = bodyForOriginal
+      return createBodyPreservingResponse(source, bodyForClone)
+    },
+  }
+
+  return responseLike as unknown as Response
+}
+
+function createResponseWithBody(source: Response, body: ReadableStream<Uint8Array>): Response {
+  if (responseConstructorSupportsReadableStreamBody()) {
+    return new Response(body, {
+      status: source.status,
+      statusText: source.statusText,
+      headers: source.headers,
+    })
+  }
+
+  // React Native / Expo can expose a native ReadableStream on the original
+  // fetch response while global Response cannot re-wrap that stream. Returning
+  // a Response-compatible object preserves the body so the AI SDK can consume
+  // the stream instead of failing with "The response body is empty."
+  return createBodyPreservingResponse(source, body)
 }
 
 /**
@@ -148,11 +285,7 @@ export function createAutoResumingFetch(
 
     // Re-construct the Response so the AI SDK reads from our durable body
     // but sees the original status / headers / content-type.
-    return new Response(wrappedBody, {
-      status: initialResponse.status,
-      statusText: initialResponse.statusText,
-      headers: initialResponse.headers,
-    })
+    return createResponseWithBody(initialResponse, wrappedBody)
   }
 
   return wrapped

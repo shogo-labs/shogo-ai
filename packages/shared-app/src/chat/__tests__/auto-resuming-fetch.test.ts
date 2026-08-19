@@ -115,6 +115,60 @@ describe('createAutoResumingFetch', () => {
     expect(text).toContain('data-turn-complete')
   })
 
+  test('preserves the durable body when Response cannot re-wrap ReadableStream bodies', async () => {
+    const RealResponse = globalThis.Response
+    const responseDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Response')
+    const body = streamFrom([
+      sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),
+      sseFrame({ type: 'text-delta', delta: 'hello-native' }),
+      sseFrame({ type: 'data-turn-complete', data: { turnId: TURN_ID, status: 'completed', lastSeq: 2 } }),
+    ])
+    const initialResponse = new RealResponse(body, {
+      status: 200,
+      statusText: 'OK',
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'X-Turn-Id': TURN_ID,
+        'X-Chat-Session-Id': SESSION_ID,
+      },
+    })
+
+    class BodyDroppingResponse extends RealResponse {
+      constructor(_body?: BodyInit | null, init?: ResponseInit) {
+        super(null, init)
+      }
+    }
+
+    Object.defineProperty(globalThis, 'Response', {
+      configurable: true,
+      writable: true,
+      value: BodyDroppingResponse,
+    })
+
+    try {
+      const baseFetch: any = async () => initialResponse
+      const fetcher = createAutoResumingFetch(baseFetch, { logger: SILENT_LOGGER })
+      const r = await fetcher(POST_URL, { method: 'POST' })
+
+      expect(r.status).toBe(200)
+      expect(r.headers.get('X-Turn-Id')).toBe(TURN_ID)
+      expect(r.body).not.toBeNull()
+      const text = await readAll(r.body!)
+      expect(text).toContain('hello-native')
+      expect(text).toContain('data-turn-complete')
+    } finally {
+      if (responseDescriptor) {
+        Object.defineProperty(globalThis, 'Response', responseDescriptor)
+      } else {
+        Object.defineProperty(globalThis, 'Response', {
+          configurable: true,
+          writable: true,
+          value: RealResponse,
+        })
+      }
+    }
+  })
+
   test('auto-resumes with ?fromSeq=N when stream ends without data-turn-complete', async () => {
     const initialBody = streamFrom([
       sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),
