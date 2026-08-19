@@ -136,10 +136,13 @@ function WebTooltip({ label, children }: { label: string; children: React.ReactN
   )
 }
 
-const MIN_INPUT_HEIGHT = 60
-const MAX_INPUT_HEIGHT = 200
-const NATIVE_MIN_INPUT_HEIGHT = 52
-const NATIVE_MAX_INPUT_HEIGHT = 160
+// Prefixed (rather than the generic MIN/MAX_INPUT_HEIGHT names used by
+// CompactChatInput) so the two composers' independently-tuned bounds
+// can't be mistaken for a shared source of truth that has drifted.
+const CHAT_INPUT_MIN_HEIGHT = 60
+const CHAT_INPUT_MAX_HEIGHT = 200
+const CHAT_INPUT_NATIVE_MIN_HEIGHT = 52
+const CHAT_INPUT_NATIVE_MAX_HEIGHT = 160
 
 function compactNativeModelLabel(modelId: string): string {
   const label = resolveShortName(modelId)
@@ -448,8 +451,8 @@ function ChatInputImpl({
   const effectiveIsPro = features.billing ? isPro : true
   const isNative = Platform.OS !== "web"
   const isNativePhone = Platform.OS !== "web" && windowWidth < 600
-  const inputMinHeight = isNative ? NATIVE_MIN_INPUT_HEIGHT : MIN_INPUT_HEIGHT
-  const inputMaxHeight = isNative ? NATIVE_MAX_INPUT_HEIGHT : MAX_INPUT_HEIGHT
+  const inputMinHeight = isNative ? CHAT_INPUT_NATIVE_MIN_HEIGHT : CHAT_INPUT_MIN_HEIGHT
+  const inputMaxHeight = isNative ? CHAT_INPUT_NATIVE_MAX_HEIGHT : CHAT_INPUT_MAX_HEIGHT
   const modelTriggerMaxWidth = Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
   const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
 

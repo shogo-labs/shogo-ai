@@ -2259,7 +2259,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
             <AccountMenu
               user={user}
               onSignOut={handleSignOut}
-              onNavigate={(href) => { router.push(href as any); onNavPress() }}
+              onNavigate={(href) => { router.push(href as Parameters<typeof router.push>[0]); onNavPress() }}
               isSuperAdmin={hasAdminAccess}
               isWide={isWide}
               bottomInset={drawerBottomInset}

@@ -68,12 +68,15 @@ import { AttachSourceSheet } from "./AttachSourceSheet"
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
 
-const MIN_INPUT_HEIGHT = 80
-const MAX_INPUT_HEIGHT = 200
-const PROMINENT_MIN_INPUT_HEIGHT = 92
-const PROMINENT_MAX_INPUT_HEIGHT = 210
-const NATIVE_MIN_INPUT_HEIGHT = 48
-const NATIVE_MAX_INPUT_HEIGHT = 144
+// Prefixed (rather than the generic MIN/MAX_INPUT_HEIGHT names used by
+// ChatInput) so the two composers' independently-tuned bounds can't be
+// mistaken for a shared source of truth that has drifted.
+const COMPACT_INPUT_MIN_HEIGHT = 80
+const COMPACT_INPUT_MAX_HEIGHT = 200
+const COMPACT_INPUT_PROMINENT_MIN_HEIGHT = 92
+const COMPACT_INPUT_PROMINENT_MAX_HEIGHT = 210
+const COMPACT_INPUT_NATIVE_MIN_HEIGHT = 48
+const COMPACT_INPUT_NATIVE_MAX_HEIGHT = 144
 
 function compactNativeModelLabel(modelId: string): string {
   const label = resolveShortName(modelId)
@@ -195,15 +198,15 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const useLightProminentComposer = useProminentComposer && prominentColorScheme === "light"
     const useCurrentNativeSizing = isNative && !useProminentComposer
     const inputMinHeight = useProminentComposer
-      ? PROMINENT_MIN_INPUT_HEIGHT
+      ? COMPACT_INPUT_PROMINENT_MIN_HEIGHT
       : useCurrentNativeSizing
-        ? NATIVE_MIN_INPUT_HEIGHT
-        : MIN_INPUT_HEIGHT
+        ? COMPACT_INPUT_NATIVE_MIN_HEIGHT
+        : COMPACT_INPUT_MIN_HEIGHT
     const inputMaxHeight = useProminentComposer
-      ? PROMINENT_MAX_INPUT_HEIGHT
+      ? COMPACT_INPUT_PROMINENT_MAX_HEIGHT
       : useCurrentNativeSizing
-        ? NATIVE_MAX_INPUT_HEIGHT
-        : MAX_INPUT_HEIGHT
+        ? COMPACT_INPUT_NATIVE_MAX_HEIGHT
+        : COMPACT_INPUT_MAX_HEIGHT
     const modelTriggerMaxWidth = useProminentComposer
       ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
       : Math.max(50, Math.min(62, Math.floor(windowWidth * 0.16)))

@@ -30,7 +30,7 @@ export const API_URL = (() => {
     const isIdeEmbed = new URLSearchParams(window.location.search).get('embed') === 'ide'
     if (isIdeEmbed) return origin
 
-    const desktop = (window as any).shogoDesktop as { apiUrl?: string } | undefined
+    const desktop = (window as Window & { shogoDesktop?: { apiUrl?: string } }).shogoDesktop
     if (desktop?.apiUrl) return desktop.apiUrl
 
     const envUrl = process.env.EXPO_PUBLIC_API_URL

@@ -198,10 +198,10 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
     try {
       const list = await agentClient.listPlans()
       setPlans(list)
-    } catch (err: any) {
-      const message = err?.message || "Unable to load plans right now"
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : "Unable to load plans right now"
       setPlansError(message)
-      console.log("[PlansPanel] Failed to fetch plans:", err)
+      console.error("[PlansPanel] Failed to fetch plans:", err)
     } finally {
       setLoading(false)
     }
@@ -214,7 +214,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
         const data = await agentClient.getPlan(filename)
         setPlanContent(data.content)
       } catch (err) {
-        console.log("[PlansPanel] Failed to fetch plan detail:", err)
+        console.error("[PlansPanel] Failed to fetch plan detail:", err)
         setPlanContent(null)
       } finally {
         setDetailLoading(false)
@@ -233,7 +233,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           setPlanContent(null)
         }
       } catch (err) {
-        console.log("[PlansPanel] Failed to delete plan:", err)
+        console.error("[PlansPanel] Failed to delete plan:", err)
       }
     },
     [agentClient, selectedPlan]
@@ -282,7 +282,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       setActiveTab("summary")
     } catch (err: any) {
       const message = err?.message || "Failed to generate summary"
-      console.log("[PlansPanel] Summary generation failed:", err)
+      console.error("[PlansPanel] Summary generation failed:", err)
       setTranslateError(message)
     } finally {
       setTranslateLoading((cur) => (cur === selectedPlan ? null : cur))

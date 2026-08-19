@@ -304,8 +304,8 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
     // is delayed, keep the centered loading state instead of showing a blank WebView.
   }, [])
 
-  const onNativeError = useCallback((e: any) => {
-    const message = e?.nativeEvent?.description || e?.nativeEvent?.domain || 'Unable to load preview'
+  const onNativeError = useCallback((e: { nativeEvent?: { description?: string; domain?: string } }) => {
+    const message = e.nativeEvent?.description || e.nativeEvent?.domain || 'Unable to load preview'
     setLoading(false)
     setError({ phase: 'runtime', message })
   }, [])
