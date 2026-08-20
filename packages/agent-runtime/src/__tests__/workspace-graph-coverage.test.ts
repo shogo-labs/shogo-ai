@@ -246,6 +246,61 @@ describe('WorkspaceGraph.updateGraph', () => {
 })
 
 // ===========================================================================
+// buildGraph — clear-then-insert ordering (regression)
+// ===========================================================================
+
+/**
+ * `buildGraph` walks `meta` with no ORDER BY, so file-processing order
+ * follows whatever the SQLite scan happens to return — which follows
+ * insertion (rowid) order, which follows the filesystem's raw readdir()
+ * order. That's alphabetical by luck on some filesystems (e.g. macOS/APFS
+ * for a freshly-created small directory) and not on others (ext4's htree
+ * hashing on Linux CI runners), so it must never be load-bearing.
+ *
+ * It used to be: `removeFileData(file)` deletes every edge whose source OR
+ * target qualified-name starts with that file's prefix, and the original
+ * single-pass loop ran clear-then-insert per file interleaved with every
+ * other file's clear-then-insert. So if file A's insert wrote an edge
+ * A -> B, and B's turn came up later in the SAME buildGraph run, B's own
+ * removeFileData deleted that edge — because it matches B's target prefix
+ * — before buildGraph ever returned. Whether B's turn came before or after
+ * A's was exactly the readdir-order question above, which is why this
+ * surfaced as a CI-only flake (5 failing assertions across two describe
+ * blocks) rather than something visible on a contributor's Mac.
+ *
+ * These tests force the previously-losing order directly (index the edge's
+ * *source* file before its *target* file) instead of depending on the
+ * filesystem, so the ordering dependency itself is what's under test.
+ */
+describe('WorkspaceGraph.buildGraph — clear-then-insert ordering', () => {
+  let b: Bench
+  beforeEach(async () => { b = await setupBench() })
+  afterEach(() => { b.cleanup() })
+
+  test('an edge survives when its target is scanned after its source', async () => {
+    writeFile(b, 'src/z-source.ts', '// CALLS:a-target\nconst z = 1\n')
+    await b.engine.reindex()
+    writeFile(b, 'src/a-target.ts', 'const a = 1\n')
+    await b.engine.reindex()
+
+    const out = await b.graph.buildGraph()
+    expect(out.filesProcessed).toBe(2)
+    expect(b.graph.getEdgesByTarget('code::src/a-target.ts::funcA-TARGET')).toHaveLength(1)
+  })
+
+  test('an edge survives when its target is scanned before its source (the other order)', async () => {
+    writeFile(b, 'src/a-target.ts', 'const a = 1\n')
+    await b.engine.reindex()
+    writeFile(b, 'src/z-source.ts', '// CALLS:a-target\nconst z = 1\n')
+    await b.engine.reindex()
+
+    const out = await b.graph.buildGraph()
+    expect(out.filesProcessed).toBe(2)
+    expect(b.graph.getEdgesByTarget('code::src/a-target.ts::funcA-TARGET')).toHaveLength(1)
+  })
+})
+
+// ===========================================================================
 // getImpactRadius — BFS in both directions
 // ===========================================================================
 
@@ -255,12 +310,6 @@ describe('WorkspaceGraph.getImpactRadius', () => {
   afterEach(() => { b.cleanup() })
 
   test('walks edges in both directions from seed files', async () => {
-    // Files are processed alphabetically by reindex+buildGraph. Use z-source
-    // pointing to a-target so when z-source is processed LAST, its edges are
-    // inserted AFTER the a-target's removeFileData ran (which only nukes its
-    // own qualified-name prefix). This works around a known quirk in
-    // workspace-graph's removeFileData that deletes edges targeting the
-    // file being re-processed.
     writeFile(b, 'src/a-target.ts', 'const target = 1\nconst more = 2\n')
     writeFile(b, 'src/z-source.ts', '// CALLS:a-target\nconst src = 1\nconst more = 2\n')
     await b.engine.reindex()
@@ -274,15 +323,10 @@ describe('WorkspaceGraph.getImpactRadius', () => {
 
   test('truncates when frontier blows past maxNodes', async () => {
     // Build a hub topology: hub.ts calls 20 other qualified names, so BFS
-    // from it hits all 20 at depth 1 and overflows maxNodes=5.
-    //
-    // The call targets deliberately have no file of their own on disk.
-    // buildGraph walks indexed files in an unspecified order and
-    // removeFileData deletes every edge *pointing at* the file it is about
-    // to re-process, so a hub whose targets are themselves indexed files
-    // loses an arbitrary subset of its edges depending on scan order. Edges
-    // to names that are never processed are stable, which keeps this test
-    // about BFS truncation rather than about buildGraph ordering.
+    // from it hits all 20 at depth 1 and overflows maxNodes=5. The call
+    // targets deliberately have no file of their own on disk, which keeps
+    // this test about BFS truncation rather than about how many of them
+    // buildGraph actually persisted (covered separately above).
     let callsLine = ''
     for (let i = 0; i < 20; i++) callsLine += `// CALLS:ghost${i}\n`
     writeFile(b, 'src/hub.ts', `${callsLine}const hub = 1\n`)

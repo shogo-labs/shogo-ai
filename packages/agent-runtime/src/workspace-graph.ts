@@ -223,16 +223,21 @@ export class WorkspaceGraph {
     const sourceFilter = sourceId ? ` WHERE source = ?` : ''
     const params = sourceId ? [sourceId] : []
 
+    // `meta` has no ORDER BY here, so this walks files in whatever order
+    // SQLite's table scan happens to return — which follows insertion
+    // order, which follows the filesystem's raw readdir() order (see
+    // index-engine.ts's walkDir). That's alphabetical by accident on some
+    // filesystems and not on others (e.g. ext4's htree hashing), so this
+    // must not depend on it. It doesn't, as of the two-pass split below —
+    // see that comment for what broke when it did.
     const files = this.db.prepare(`SELECT path, source FROM meta${sourceFilter}`).all(...params) as Array<{
       path: string; source: string
     }>
 
     const allPaths = files.map(f => f.path)
 
-    let nodesCreated = 0
-    let edgesCreated = 0
-    let filesProcessed = 0
-    const now = Date.now() / 1000
+    interface PendingFile { filePath: string; source: string; content: string; fileHash: string }
+    const pending: PendingFile[] = []
 
     let processedSinceYield = 0
     for (const { path: filePath, source } of files) {
@@ -259,7 +264,33 @@ export class WorkspaceGraph {
 
       if (existingNode?.file_hash === fileHash) continue
 
-      this.removeFileData(filePath, source)
+      pending.push({ filePath, source, content, fileHash })
+    }
+
+    // Clear stale nodes/edges for every file about to be rebuilt BEFORE
+    // inserting anything for any of them. `removeFileData` deletes edges
+    // by target-qualified-name prefix, which is right for dropping an
+    // edge's *previous* build — but interleaving it with inserts (the
+    // original single-pass loop) meant that as soon as file B's turn came
+    // up, its own removeFileData wiped out any edge file A had *just*
+    // inserted into it earlier in this same run, because that edge's
+    // target_qualified also matches B's prefix. Whether that happened
+    // depended entirely on whether A or B came first in the unordered scan
+    // above — on Linux/ext4 that flips across otherwise-identical runs,
+    // silently dropping a subset of CALLS/LINKS_TO/REFERENCES/EMBEDS edges.
+    // Doing every clear first removes the ordering dependency: no insert
+    // below can ever run before the clear that would have deleted it.
+    for (const p of pending) this.removeFileData(p.filePath, p.source)
+
+    let nodesCreated = 0
+    let edgesCreated = 0
+    const now = Date.now() / 1000
+
+    processedSinceYield = 0
+    for (const { filePath, source, content, fileHash } of pending) {
+      if (++processedSinceYield % GRAPH_YIELD_EVERY === 0) {
+        await yieldToEventLoop()
+      }
 
       // Always create a File node
       this.db.prepare(`
@@ -298,11 +329,9 @@ export class WorkspaceGraph {
           edgesCreated++
         }
       }
-
-      filesProcessed++
     }
 
-    return { nodesCreated, edgesCreated, filesProcessed }
+    return { nodesCreated, edgesCreated, filesProcessed: pending.length }
   }
 
   /**
@@ -335,6 +364,17 @@ export class WorkspaceGraph {
       }
     }
 
+    // Same two-pass split as buildGraph, for the same reason: changedPaths
+    // are always iterated before the dependents discovered from them (Set
+    // preserves insertion order), so a single-pass clear-then-insert loop
+    // guaranteed the wrong order here — a dependent's own removeFileData
+    // would always run after, and so always delete, the very edge from the
+    // changed file into it that this method exists to refresh. Clearing
+    // every file in the batch before inserting any of them removes the
+    // ordering dependency entirely.
+    interface PendingFile { filePath: string; content: string }
+    const pending: PendingFile[] = []
+
     for (const filePath of filesToProcess) {
       const absPath = join(src.scanDir, filePath)
 
@@ -348,8 +388,13 @@ export class WorkspaceGraph {
         content = readFileSync(absPath, 'utf-8')
       } catch { continue }
 
+      pending.push({ filePath, content })
+    }
+
+    for (const p of pending) this.removeFileData(p.filePath, source)
+
+    for (const { filePath, content } of pending) {
       const fileHash = this.computeHash(content)
-      this.removeFileData(filePath, source)
 
       this.db.prepare(`
         INSERT OR REPLACE INTO graph_nodes (kind, name, qualified_name, file_path, source, file_hash, extra, updated_at)
