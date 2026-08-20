@@ -58,6 +58,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test"
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import React, { Profiler } from "react"
+import { createReactNativeMock } from "../../../test/react-native-mock"
 
 const Host = React.forwardRef<HTMLElement, any>(function Host(
   {
@@ -142,16 +143,18 @@ const TextInput = React.forwardRef<HTMLTextAreaElement, any>(function TextInput(
   )
 })
 
-mock.module("react-native", () => ({
-  Image: Host,
-  Platform: { OS: "web" },
-  Pressable: Host,
-  ScrollView: Host,
-  Text: Host,
-  TextInput,
-  useWindowDimensions: () => ({ width: 390, height: 844 }),
-  View: Host,
-}))
+mock.module("react-native", () =>
+  createReactNativeMock({
+    Image: Host,
+    Platform: { OS: "web" },
+    Pressable: Host,
+    ScrollView: Host,
+    Text: Host,
+    TextInput,
+    useWindowDimensions: () => ({ width: 390, height: 844 }),
+    View: Host,
+  }),
+)
 
 // Icons come from the shared stub that `test/testing-library.ts` preloads.
 // A per-file `mock.module('lucide-react-native', …)` would narrow the module

@@ -27,10 +27,13 @@
 import { afterEach, describe, expect, mock, test } from "bun:test"
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import React from "react"
+import { createReactNativeMock } from "../../../test/react-native-mock"
 
 mock.module("react-native", () => {
   const RNW = require("react-native-web")
-  return {
+  return createReactNativeMock({
+    Appearance: RNW.Appearance,
+    Easing: RNW.Easing,
     Image: RNW.Image,
     Platform: RNW.Platform,
     Pressable: RNW.Pressable,
@@ -39,7 +42,7 @@ mock.module("react-native", () => {
     TextInput: RNW.TextInput,
     useWindowDimensions: RNW.useWindowDimensions,
     View: RNW.View,
-  }
+  })
 })
 
 // Icons come from the shared stub that `test/testing-library.ts` preloads.
