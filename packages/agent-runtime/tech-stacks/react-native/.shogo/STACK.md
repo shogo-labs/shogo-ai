@@ -39,10 +39,58 @@ spawns the bundler and the API server together.
 - Use functional components and hooks.
 - Use `react-native` primitives (`View`, `Text`, `Pressable`) — not raw
   `div` / `span`.
+- Style with the `className` prop and Tailwind utilities (NativeWind is
+  pre-configured — see "Styling" below), not `StyleSheet.create`, unless a
+  style genuinely needs a dynamic runtime value.
+- Prefer the pre-installed UI primitives in `src/components/ui/` (Button,
+  Card, Input, Badge, etc.) over hand-rolling the same widgets.
 - For navigation, use `@react-navigation/native` if added.
 - Persistent state on-device: `@react-native-async-storage/async-storage`.
 - For server-side data, edit `prisma/schema.prisma` and let the SDK
   regenerate the CRUD layer; call it from RN with the generated client.
+
+## Styling — NativeWind + UI primitives
+
+The workspace ships with **NativeWind v4** (Tailwind CSS for React Native)
+already wired up — Babel, Metro, and `tailwind.config.js` are configured;
+no setup is required.
+
+- `global.css` — Tailwind directives + CSS variable color tokens (light
+  values in `:root`, dark values under `@media (prefers-color-scheme:
+  dark)`). Imported once in `index.js`.
+- `tailwind.config.js` — content globs + the color palette (`background`,
+  `foreground`, `card`, `primary`, `secondary`, `muted`, `destructive`,
+  `border`, `input`, `ring`), each backed by a `--color-*` CSS variable so
+  light/dark both work automatically.
+- `src/lib/cn.ts` — `cn(...)` class-merging helper (`clsx` + `tailwind-merge`).
+- `src/components/ui/` — pre-installed primitives, styled the same way
+  shadcn/ui components are on the web tech stack. Import by file, e.g.:
+
+```tsx
+import { Button } from '@/components/ui/button'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
+import { Progress } from '@/components/ui/progress'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
+import { Avatar } from '@/components/ui/avatar'
+import { Separator } from '@/components/ui/separator'
+```
+
+Available today: `Button`, `Card` (+ `CardHeader`/`CardTitle`/
+`CardDescription`/`CardContent`/`CardFooter`), `Input`, `Badge`, `Avatar`,
+`Separator`, `Switch`, `Progress`, `Skeleton`, `Alert` (+ `AlertTitle`/
+`AlertDescription`), `Checkbox`.
+
+**Adding a new primitive** (e.g. `Textarea`, `Select`): create
+`src/components/ui/<name>.tsx` following the same pattern as the existing
+files — a thin wrapper around a `react-native` primitive that takes
+`className`, merges it with variant styles via `cn(...)`, and uses only
+the color tokens already defined in `tailwind.config.js` (or new ones you
+add there + `global.css`) so dark mode keeps working for free.
 
 ## Forbidden commands
 

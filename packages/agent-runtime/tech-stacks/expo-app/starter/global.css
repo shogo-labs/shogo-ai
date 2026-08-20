@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-background: 255 255 255;
+  --color-foreground: 15 15 20;
+  --color-card: 255 255 255;
+  --color-card-foreground: 15 15 20;
+  --color-primary: 99 102 241;
+  --color-primary-foreground: 255 255 255;
+  --color-secondary: 241 245 249;
+  --color-secondary-foreground: 15 23 42;
+  --color-muted: 241 245 249;
+  --color-muted-foreground: 100 116 139;
+  --color-destructive: 239 68 68;
+  --color-destructive-foreground: 255 255 255;
+  --color-border: 226 232 240;
+  --color-input: 226 232 240;
+  --color-ring: 99 102 241;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background: 11 11 15;
+    --color-foreground: 245 245 247;
+    --color-card: 24 24 28;
+    --color-card-foreground: 245 245 247;
+    --color-primary: 129 140 248;
+    --color-primary-foreground: 15 15 20;
+    --color-secondary: 39 39 46;
+    --color-secondary-foreground: 245 245 247;
+    --color-muted: 39 39 46;
+    --color-muted-foreground: 161 161 170;
+    --color-destructive: 248 113 113;
+    --color-destructive-foreground: 15 15 20;
+    --color-border: 63 63 70;
+    --color-input: 63 63 70;
+    --color-ring: 129 140 248;
+  }
+}
