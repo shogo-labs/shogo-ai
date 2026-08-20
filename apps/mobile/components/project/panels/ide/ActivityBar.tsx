@@ -52,6 +52,7 @@ export function ActivityBar({
   onToggleTerminal,
   hiddenItemIds,
   extensionContainers = [],
+  className = "",
 }: {
   active: ActivityId;
   sidebarOpen: boolean;
@@ -62,6 +63,7 @@ export function ActivityBar({
   onToggleTerminal: () => void;
   hiddenItemIds?: ActivityId[];
   extensionContainers?: ExtensionRuntimeContainer[];
+  className?: string;
 }) {
   const handleSelect = (id: ActivityId) => {
     if (active === id && sidebarOpen) {
@@ -87,7 +89,7 @@ export function ActivityBar({
     : allItems;
 
   return (
-    <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between bg-[color:var(--ide-panel)] border-l border-[color:var(--ide-border)] py-2">
+    <div className={`flex h-full w-12 shrink-0 flex-col items-center justify-between bg-[color:var(--ide-panel)] border-l border-[color:var(--ide-border)] py-2 ${className}`}>
       <div className="flex flex-col items-center gap-1">
         {visibleItems.map(({ id, icon: Icon, iconUrl, label, hint }) => {
           const isActive = active === id && sidebarOpen;

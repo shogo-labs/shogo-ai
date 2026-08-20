@@ -92,6 +92,8 @@ function narrowProjectDropdownWidth(screenWidth: number): number {
   return Math.max(300, Math.min(320, screenWidth - 96))
 }
 
+type IdePrimarySideBarPosition = 'left' | 'right'
+
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
   { id: 'canvas', label: 'Canvas', icon: LayoutDashboard },
@@ -197,6 +199,8 @@ export interface ProjectTopBarProps {
    */
   onCanvasPrewarm?: () => void
   onOpenCodeWorkbench?: () => void
+  idePrimarySideBarPosition?: IdePrimarySideBarPosition
+  onIdePrimarySideBarPositionChange?: (position: IdePrimarySideBarPosition) => void
   ideEmbed?: boolean
 }
 
@@ -251,6 +255,37 @@ function BarIconButton({
         size={isNative ? Math.max(size, 18) : size}
         className={cn(active ? 'text-primary-foreground' : 'text-muted-foreground')}
       />
+    </Pressable>
+  )
+}
+
+function IdeAlignmentToggle({
+  position,
+  nextPosition,
+  onPress,
+}: {
+  position: IdePrimarySideBarPosition
+  nextPosition: IdePrimarySideBarPosition
+  onPress: () => void
+}) {
+  const title = `Switch IDE files and tabs to ${nextPosition} alignment`
+  const tipRef = useWebTitle(title)
+  const leftActive = position === 'left'
+
+  return (
+    <Pressable
+      ref={tipRef}
+      onPress={onPress}
+      className="h-7 w-7 items-center justify-center rounded-md active:bg-muted web:hover:bg-muted/70"
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      testID="ide-sidebar-alignment-toggle"
+    >
+      <View className="h-[17px] w-[17px] flex-row overflow-hidden rounded-[4px] border border-muted-foreground/80 bg-background">
+        {leftActive && <View className="w-[6px] bg-muted-foreground" />}
+        <View className="flex-1 bg-transparent" />
+        {!leftActive && <View className="w-[6px] bg-muted-foreground" />}
+      </View>
     </Pressable>
   )
 }
@@ -379,6 +414,8 @@ export function ProjectTopBar({
   onCanvasOpenInNewTab,
   onCanvasPrewarm,
   onOpenCodeWorkbench,
+  idePrimarySideBarPosition = 'left',
+  onIdePrimarySideBarPositionChange,
   ideEmbed = false,
 }: ProjectTopBarProps) {
   const router = useRouter()
@@ -475,6 +512,19 @@ export function ProjectTopBar({
     }
     return activeTab === tabId
   }, [onNarrowTabChange, narrowActiveTab, narrowPreviewTab, activeTab])
+
+  const showIdeAlignmentControl = Platform.OS === 'web' && getTabActive('ide') && !!onIdePrimarySideBarPositionChange
+  const nextIdePrimarySideBarPosition: IdePrimarySideBarPosition = idePrimarySideBarPosition === 'left' ? 'right' : 'left'
+  const renderIdeAlignmentControl = () => {
+    if (!showIdeAlignmentControl) return null
+    return (
+      <IdeAlignmentToggle
+        position={idePrimarySideBarPosition}
+        nextPosition={nextIdePrimarySideBarPosition}
+        onPress={() => onIdePrimarySideBarPositionChange?.(nextIdePrimarySideBarPosition)}
+      />
+    )
+  }
 
   const chatPanelWidth = chatPanelWidthProp ?? 480
   const narrowNativeMenuW = Platform.OS !== 'web' ? narrowProjectDropdownWidth(width) : null
@@ -634,7 +684,9 @@ export function ProjectTopBar({
           />
         )}
 
-        {onOpenChatSessions && (
+        {showIdeAlignmentControl && renderIdeAlignmentControl()}
+
+        {onOpenChatSessions && narrowActiveTab === 'chat' && (
           <BarIconButton
             icon={History}
             onPress={onOpenChatSessions}
@@ -997,6 +1049,7 @@ export function ProjectTopBar({
               <Text className="text-[10px] font-medium text-foreground">Upgrade</Text>
             </Pressable>
           )}
+          {showIdeAlignmentControl && renderIdeAlignmentControl()}
         </View>
       </View>
 
