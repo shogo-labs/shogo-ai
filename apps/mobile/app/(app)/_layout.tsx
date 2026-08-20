@@ -228,7 +228,14 @@ export default function AppLayout() {
         <View className="flex-1 flex-row">
           {showSidebar && <AppSidebar />}
 
-          <Animated.View className="flex-1" style={drawerContentStyle}>
+          {/*
+            NativeWind's `className` prop is not processed on raw `Animated.View`
+            (only registered host components get cssInterop treatment), so
+            `flex-1` silently no-ops here on web and the column collapses to its
+            content width. Pass `flex: 1` via `style` instead, which works
+            regardless of NativeWind interop registration.
+          */}
+          <Animated.View style={[{ flex: 1 }, drawerContentStyle]}>
             {!isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
               {localMode && !isIdeEmbed && <RecordingIndicator />}
