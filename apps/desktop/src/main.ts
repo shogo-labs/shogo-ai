@@ -24,6 +24,7 @@ import crypto from 'crypto'
 import http, { type Server as HttpServer } from 'http'
 import https from 'https'
 import { startLocalServer, stopLocalServer, getApiUrl } from './local-server'
+import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter, type DesktopLogLevel } from './signoz-log-exporter'
 import { getWebDir, getBunPath, getDbPath } from './paths'
 import {
   routeShogoRequest,
@@ -109,14 +110,28 @@ fs.mkdirSync(logDir, { recursive: true })
 const logFile = path.join(logDir, 'main.log')
 const logStream = fs.createWriteStream(logFile, { flags: 'a' })
 
+function formatLogMessage(args: unknown[]): string {
+  return args.map(a => (a instanceof Error ? a.stack || a.message : String(a))).join(' ')
+}
+
 function formatLogLine(level: string, args: unknown[]): string {
   const ts = new Date().toISOString()
-  const msg = args.map(a => (a instanceof Error ? a.stack || a.message : String(a))).join(' ')
-  return `${ts} [${level}] ${msg}\n`
+  return `${ts} [${level}] ${formatLogMessage(args)}\n`
+}
+
+function toDesktopLogLevel(level: string): DesktopLogLevel {
+  return level === 'ERROR' ? 'ERROR'
+    : level === 'WARN' ? 'WARN'
+    : level === 'FATAL' ? 'FATAL'
+    : 'INFO'
 }
 
 function writeLog(level: string, ...args: unknown[]): void {
   logStream.write(formatLogLine(level, args))
+  // Tee to SigNoz. exportLogLine MUST NOT call
+  // console.* — it runs behind the patched console below, so any console use
+  // here would re-enter writeLog and loop.
+  exportLogLine(toDesktopLogLevel(level), formatLogMessage(args))
 }
 
 function writeLogSync(level: string, ...args: unknown[]): void {
@@ -135,6 +150,12 @@ const origWarn = console.warn
 console.log = (...args: unknown[]) => { origLog(...args); writeLog('INFO', ...args) }
 console.error = (...args: unknown[]) => { origError(...args); writeLog('ERROR', ...args) }
 console.warn = (...args: unknown[]) => { origWarn(...args); writeLog('WARN', ...args) }
+
+// Start SigNoz log export. Must be after the console.* patch so it can derive
+// sanitized structured telemetry from main-process log lines — including the
+// local API process's stdout/stderr, which local-server.ts pipes through
+// console.*. Never throws.
+initSignozLogExporter({ serviceVersion: app.getVersion() })
 
 process.on('uncaughtException', (err) => {
   // Sync write so the FATAL line actually reaches disk before Electron
@@ -1717,6 +1738,8 @@ app.on('window-all-closed', () => {
 let isQuitting = false
 app.on('before-quit', (event) => {
   console.log(`[Desktop] before-quit fired, isQuitting=${isQuitting}, isCloudMode=${isCloudMode}, applyingUpdate=${getIsApplyingUpdate()}`)
+  // Flush any queued SigNoz log records before exit (best-effort, never blocks).
+  void shutdownSignozLogExporter().catch(() => {})
   if (isQuitting) return
   if (isCloudMode) {
     disposeIdeServers()
