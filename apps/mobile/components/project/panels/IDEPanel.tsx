@@ -9,6 +9,8 @@ import { DesktopFs, getDesktopFsBridge } from './ide/workspace/desktopFs'
 import type { WorkspaceService } from './ide/workspace/types'
 import { agentFetch } from '../../../lib/agent-fetch'
 
+type IdePrimarySideBarPosition = 'left' | 'right'
+
 interface IDEPanelProps {
   visible: boolean
   projectId: string
@@ -16,6 +18,7 @@ interface IDEPanelProps {
   agentUrl?: string | null
   isExternalProject?: boolean
   folderPath?: string | null
+  primarySideBarPosition?: IdePrimarySideBarPosition
 }
 
 /**
@@ -38,6 +41,7 @@ export function IDEPanel({
   agentUrl,
   isExternalProject,
   folderPath,
+  primarySideBarPosition = 'left',
 }: IDEPanelProps) {
   // SdkFs is always-on: it's the canonical backend for writes, search, and
   // SSE subscriptions even when the desktop IPC fast-path is available
@@ -118,6 +122,7 @@ export function IDEPanel({
           fetchImpl={agentFetch}
           isExternalProject={isExternalProject}
           folderPath={folderPath}
+          primarySideBarPosition={primarySideBarPosition}
         />
       </div>
     </View>

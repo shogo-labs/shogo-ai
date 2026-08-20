@@ -98,6 +98,7 @@ function isSqlitePath(path: string): boolean {
  *  language matches one of these is opened via svc.readFileUrl() (not
  *  readFile()) and its OpenFile.content holds a URL rather than text. */
 type PreviewLanguage = "image" | "sqlite" | "pdf" | "audio" | "video" | "font";
+type PrimarySideBarPosition = "left" | "right";
 const PREVIEW_LANGUAGES: ReadonlySet<string> = new Set<PreviewLanguage>([
   "image", "sqlite", "pdf", "audio", "video", "font",
 ]);
@@ -210,6 +211,7 @@ export function Workbench({
   fetchImpl,
   isExternalProject = true,
   folderPath,
+  primarySideBarPosition = "left",
 }: {
   agentService: WorkspaceService;
   agentLabel?: string;
@@ -241,6 +243,7 @@ export function Workbench({
   isExternalProject?: boolean;
   /** Absolute path to the project's primary folder (for external/open-folder projects). */
   folderPath?: string | null;
+  primarySideBarPosition?: PrimarySideBarPosition;
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
@@ -367,7 +370,13 @@ export function Workbench({
     broadcastEditorFontChange(settings.fontFamily);
   }, [settings.fontFamily]);
 
-  const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal", invert: true });
+  const sidebarSplit = useResizable({
+    initial: 280,
+    min: 200,
+    max: 540,
+    direction: "horizontal",
+    invert: primarySideBarPosition === "right",
+  });
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
@@ -2011,7 +2020,7 @@ export function Workbench({
       data-theme={themeMode}
     >
       <div className="flex flex-1 min-h-0">
-        <div className="flex flex-1 min-w-0">
+        <div className={`flex flex-1 min-w-0 ${primarySideBarPosition === "left" ? "order-4" : "order-1"}`}>
           <div className="flex flex-1 min-w-0 flex-col">
             <AgentEditBanner
               conflicts={conflicts}
@@ -2159,11 +2168,14 @@ export function Workbench({
         {sidebarOpen && activity !== "checkpoint" && (
           <>
 
-            <VerticalSplit onMouseDown={sidebarSplit.onMouseDown} />
+            <VerticalSplit
+              onMouseDown={sidebarSplit.onMouseDown}
+              className={primarySideBarPosition === "left" ? "order-3" : "order-2"}
+            />
 
             <div
               style={{ width: sidebarSplit.size, flexShrink: 0, maxWidth: "55%", minWidth: 0 }}
-              className="h-full bg-[color:var(--ide-surface)] overflow-hidden"
+              className={`h-full bg-[color:var(--ide-surface)] overflow-hidden ${primarySideBarPosition === "left" ? "order-2" : "order-3"}`}
             >
               {activity === "files" && (
                 <FilesPane
@@ -2240,6 +2252,7 @@ export function Workbench({
           )}
 
         <ActivityBar
+          className={primarySideBarPosition === "left" ? "order-1" : "order-4"}
           active={activity}
           sidebarOpen={sidebarOpen}
           terminalOpen={bottomPanelOpen}

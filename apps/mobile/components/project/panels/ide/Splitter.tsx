@@ -52,18 +52,18 @@ export function useResizable({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [direction, min, max]);
+  }, [direction, invert, min, max]);
 
   return { size, setSize, onMouseDown };
 }
 
-export function VerticalSplit({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
+export function VerticalSplit({ onMouseDown, className = "" }: { onMouseDown: (e: React.MouseEvent) => void; className?: string }) {
   // Thin visual seam (1px) but a fat invisible hit area (7px) so users can
   // grab it without precision aim. Hover shows the accent colour.
   return (
     <div
       onMouseDown={onMouseDown}
-      className="group relative w-[1px] shrink-0 cursor-col-resize bg-[color:var(--ide-border)]"
+      className={`group relative w-[1px] shrink-0 cursor-col-resize bg-[color:var(--ide-border)] ${className}`}
     >
       <div
         aria-hidden
