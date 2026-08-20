@@ -1,21 +1,33 @@
 import React from 'react'
-import { SafeAreaView, StatusBar, StyleSheet, Text, View } from 'react-native'
+import { SafeAreaView, ScrollView, Text, View } from 'react-native'
+import { Badge } from './src/components/ui/badge'
+import { Button } from './src/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './src/components/ui/card'
 
 export default function App() {
   return (
-    <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="light-content" />
-      <View style={styles.container}>
-        <Text style={styles.title}>Shogo</Text>
-        <Text style={styles.subtitle}>React Native (bare) + Hono backend</Text>
-      </View>
+    <SafeAreaView className="flex-1 bg-background">
+      <ScrollView contentContainerClassName="gap-4 p-6">
+        <View className="gap-1">
+          <Text className="text-2xl font-bold text-foreground">Shogo</Text>
+          <Text className="text-sm text-muted-foreground">React Native (bare) + Hono backend</Text>
+        </View>
+        <Card>
+          <CardHeader>
+            <View className="flex-row items-center justify-between">
+              <CardTitle>NativeWind is set up</CardTitle>
+              <Badge>Ready</Badge>
+            </View>
+            <CardDescription>
+              Style with the className prop and Tailwind utilities. Pre-installed UI
+              primitives live in src/components/ui — see App.tsx for a usage example.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="gap-2">
+            <Button onPress={() => {}}>Primary button</Button>
+          </CardContent>
+        </Card>
+      </ScrollView>
     </SafeAreaView>
   )
 }
-
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0b0b0f' },
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  title: { color: '#fff', fontSize: 28, fontWeight: '700' },
-  subtitle: { color: '#9aa0a6', fontSize: 14, marginTop: 8, textAlign: 'center' },
-})
