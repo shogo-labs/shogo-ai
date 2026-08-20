@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+/**
+ * Removes obsolete system-bar color calls from the precompiled React Native
+ * artifact. Android 15 ignores these calls for edge-to-edge apps, but Play can
+ * still find their bytecode. The stack-equivalent replacements keep frames and
+ * all unrelated React Native behavior unchanged.
+ */
+abstract class ShogoEdgeToEdgeVisitorFactory implements
+    com.android.build.api.instrumentation.AsmClassVisitorFactory<
+        com.android.build.api.instrumentation.InstrumentationParameters.None> {
+
+  private static final List<String> TARGET_CLASSES = [
+    'com.facebook.react.modules.statusbar.StatusBarModule',
+    'com.facebook.react.views.view.WindowUtilKt',
+    'com.swmansion.rnscreens.ScreenWindowTraits',
+    'expo.modules.devlauncher.launcher.configurators.DevLauncherExpoActivityConfigurator',
+    'expo.modules.imagepicker.ExpoCropImageUtils',
+  ]
+
+  @Override
+  boolean isInstrumentable(com.android.build.api.instrumentation.ClassData classData) {
+    TARGET_CLASSES.any { target ->
+      classData.className == target || classData.className.startsWith("${target}\$")
+    }
+  }
+
+  @Override
+  org.objectweb.asm.ClassVisitor createClassVisitor(
+      com.android.build.api.instrumentation.ClassContext classContext,
+      org.objectweb.asm.ClassVisitor nextClassVisitor
+  ) {
+    return new org.objectweb.asm.ClassVisitor(
+        org.objectweb.asm.Opcodes.ASM9,
+        nextClassVisitor
+    ) {
+      @Override
+      org.objectweb.asm.MethodVisitor visitMethod(
+          int access,
+          String methodName,
+          String methodDescriptor,
+          String signature,
+          String[] exceptions
+      ) {
+        org.objectweb.asm.MethodVisitor nextMethod = super.visitMethod(
+            access,
+            methodName,
+            methodDescriptor,
+            signature,
+            exceptions
+        )
+
+        return new org.objectweb.asm.MethodVisitor(
+            org.objectweb.asm.Opcodes.ASM9,
+            nextMethod
+        ) {
+          @Override
+          void visitMethodInsn(
+              int opcode,
+              String owner,
+              String invokedName,
+              String invokedDescriptor,
+              boolean isInterface
+          ) {
+            if (owner == 'android/view/Window') {
+              if (invokedName in ['getStatusBarColor', 'getNavigationBarColor'] &&
+                  invokedDescriptor == '()I') {
+                super.visitInsn(org.objectweb.asm.Opcodes.POP)
+                super.visitInsn(org.objectweb.asm.Opcodes.ICONST_0)
+                return
+              }
+
+              if (invokedName in ['setStatusBarColor', 'setNavigationBarColor'] &&
+                  invokedDescriptor == '(I)V') {
+                super.visitInsn(org.objectweb.asm.Opcodes.POP2)
+                return
+              }
+            }
+
+            super.visitMethodInsn(
+                opcode,
+                owner,
+                invokedName,
+                invokedDescriptor,
+                isInterface
+            )
+          }
+
+          @Override
+          void visitFieldInsn(
+              int opcode,
+              String owner,
+              String fieldName,
+              String fieldDescriptor
+          ) {
+            if (opcode == org.objectweb.asm.Opcodes.PUTFIELD &&
+                owner == 'android/view/WindowManager$LayoutParams' &&
+                fieldName == 'layoutInDisplayCutoutMode' &&
+                fieldDescriptor == 'I') {
+              super.visitInsn(org.objectweb.asm.Opcodes.POP2)
+              return
+            }
+
+            super.visitFieldInsn(opcode, owner, fieldName, fieldDescriptor)
+          }
+        }
+      }
+    }
+  }
+}
+
+subprojects {
+  pluginManager.withPlugin('com.android.application') {
+    androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+      variant.instrumentation.transformClassesWith(
+          ShogoEdgeToEdgeVisitorFactory,
+          com.android.build.api.instrumentation.InstrumentationScope.ALL
+      ) {}
+      variant.instrumentation.setAsmFramesComputationMode(
+          com.android.build.api.instrumentation.FramesComputationMode.COPY_FRAMES
+      )
+    }
+  }
+}
