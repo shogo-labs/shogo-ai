@@ -21,6 +21,8 @@ import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
+import { emitLogToSink } from '@shogo-ai/sdk/logger'
+import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
 import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded } from '@shogo-ai/sdk/generators'
 import {
@@ -28,6 +30,21 @@ import {
   cleanupStagingOutput,
   DEFAULT_STAGING_DIR,
 } from './build-output-commit'
+
+/**
+ * Whether to forward runtime build/console log lines to the OTEL log sink for
+ * SigNoz export. Desktop local-server.ts always labels its child runtime with
+ * `OTEL_SERVICE_NAME=shogo-desktop-runtime`; use that service identity rather
+ * than a feature switch so Desktop export is always on while cloud/metal
+ * runtimes are not flooded with every raw vite-watch build line.
+ */
+const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.OTEL_SERVICE_NAME === 'shogo-desktop-runtime'
+
+/** Derive the project id from a `<root>/.shogo/logs/build.log` path (best-effort). */
+function projectIdFromLogPath(logPath: string): string | undefined {
+  const m = logPath.replace(/\\/g, '/').match(/([^/]+)\/\.shogo\/logs\/[^/]+$/)
+  return m?.[1]
+}
 
 /**
  * Append a line to the on-disk runtime build log *and* dispatch it
@@ -55,6 +72,24 @@ export function emitBuildLine(
   // and made the agent-runtime's /health endpoint unreachable.
   scheduleLogWrite(buildLogPath, `${prefix} ${line}\n`)
   recordBuildEntry(`${prefix} ${line}`, stream === 'stderr' ? 'error' : 'info')
+  // Forward a copy to SigNoz for desktop-local runtimes. No-op unless the OTEL sink is
+  // installed; the line is already on disk above, so this only adds the export.
+  if (FORWARD_RUNTIME_LOGS_TO_SIGNOZ) {
+    const safe = sanitizeRuntimeLineForSignoz(`${prefix} ${line}`, 'build.log')
+    if (safe) {
+      const projectId = projectIdFromLogPath(buildLogPath)
+      emitLogToSink({
+        level: stream === 'stderr' ? 'error' : 'info',
+        msg: safe.msg,
+        service: 'shogo-agent-runtime',
+        'log.source': 'build.log',
+        'log.stream': stream,
+        'log.category': safe.category,
+        'log.redacted': safe.redacted ? 'true' : 'false',
+        ...(projectId ? { 'project.id': projectId } : {}),
+      })
+    }
+  }
 }
 import { createServer } from 'net'
 import { pkg, resolveBinInvocation } from '@shogo/shared-runtime'

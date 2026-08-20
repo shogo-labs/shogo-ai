@@ -346,6 +346,17 @@ export async function startLocalServer(): Promise<void> {
   delete (env as Record<string, string | undefined>).DATABASE_URL
   delete (env as Record<string, string | undefined>).PROJECTS_DATABASE_URL
 
+  // SigNoz export for local desktop runtimes. `env` already inherits
+  // process.env (including OTEL_EXPORTER_OTLP_ENDPOINT and
+  // SIGNOZ_INGESTION_KEY when the desktop build provides them), so there is
+  // nothing to forward when telemetry is not configured — and defaulting the
+  // endpoint would opt every install into exporting. `OTEL_SERVICE_NAME` keeps
+  // desktop-local runtime telemetry separate from cloud/metal runtime
+  // telemetry in SigNoz.
+  if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    env.OTEL_SERVICE_NAME = 'shogo-desktop-runtime'
+  }
+
   ensureDatabase(bunPath)
   runMigrations(bunPath, env)
 
