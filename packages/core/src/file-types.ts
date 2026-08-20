@@ -72,13 +72,51 @@ export const BINARY_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
   'parquet', 'arrow', 'feather', 'h5', 'hdf5', 'nc', 'tfrecord',
 ])
 
-/** True iff `path`'s extension is in {@link BINARY_FILE_EXTENSIONS}.
- *  Case-insensitive; tolerant of paths with no extension (returns
- *  false). Operates purely on the suffix — does not stat the file. */
-export function isBinaryFilePath(path: string): boolean {
-  const dot = path.lastIndexOf('.')
-  if (dot < 0) return false
+/** Temporary/download suffixes commonly appended to the real filename while
+ *  producers are still writing the file. `video.mp4.part` must inherit the
+ *  binary classification from `video.mp4`; otherwise the IDE can route a
+ *  still-mutating media file into Monaco as plaintext. */
+export const BINARY_FILE_TRANSIENT_SUFFIXES: ReadonlySet<string> = new Set([
+  'part', 'partial', 'crdownload', 'download',
+])
+
+/** Extensionless executables/binary tools that commonly appear in generated
+ *  SDK/toolchain directories. These paths have no suffix to classify, but
+ *  opening them in Monaco still corrupts the editor model/render lifecycle. */
+export const BINARY_FILE_BASENAMES: ReadonlySet<string> = new Set([
+  'aapt', 'aapt2', 'adb', 'apksigner', 'bcc_compat', 'dexdump', 'dmtracedump',
+  'etc1tool', 'fastboot', 'hprof-conv', 'llvm-rs-cc', 'mksdcard', 'qemu-aarch64-static',
+  'qemu-arm-static', 'qemu-i386-static', 'qemu-x86_64-static', 'split-select',
+  'sqlite3', 'zipalign',
+])
+
+function basenameOf(path: string): string {
   const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
-  if (dot < slash) return false
-  return BINARY_FILE_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
+  return path.slice(slash + 1)
+}
+
+function extensionOfBasename(basename: string): string | null {
+  const dot = basename.lastIndexOf('.')
+  if (dot <= 0 || dot === basename.length - 1) return null
+  return basename.slice(dot + 1).toLowerCase()
+}
+
+/** True iff `path` is known to represent binary content on disk.
+ *  Case-insensitive; tolerant of paths with no extension. Also preserves
+ *  binary classification through transient writer/download suffixes such as
+ *  `.part` and blocks known extensionless binary tool names. Operates purely
+ *  on the suffix/basename — does not stat the file. */
+export function isBinaryFilePath(path: string): boolean {
+  let basename = basenameOf(path).toLowerCase()
+  if (BINARY_FILE_BASENAMES.has(basename)) return true
+
+  for (let i = 0; i < 2; i++) {
+    const ext = extensionOfBasename(basename)
+    if (!ext) return false
+    if (BINARY_FILE_EXTENSIONS.has(ext)) return true
+    if (!BINARY_FILE_TRANSIENT_SUFFIXES.has(ext)) return false
+    basename = basename.slice(0, -(ext.length + 1))
+  }
+
+  return false
 }
