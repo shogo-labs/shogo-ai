@@ -9,9 +9,14 @@
  *      `react-native/index.js`, and `Bun.plugin onResolve` doesn't fire
  *      for runtime imports (oven-sh/bun#21380). The components we test
  *      under happy-dom are web-mode, so `Platform.OS === 'web'` is the
- *      only RN surface they need. We provide a minimal shim covering
- *      `Platform`, `StyleSheet`, and the primitive components used in
- *      the IDE drawer code path.
+ *      only RN surface they need. `./react-native-mock` provides a
+ *      comprehensive shim covering `Platform`, `StyleSheet`, and the
+ *      primitive components used across the app; non-trivial RN behavior
+ *      (Animated, gesture handlers, …) is intentionally absent —
+ *      components that need those should be tested via extracted pure
+ *      logic, not under RTL. Per-file `mock.module('react-native', ...)`
+ *      overrides should build on `createReactNativeMock()` rather than
+ *      replacing the module outright — see that file's header comment.
  *   2. Extend Bun's `expect` with jest-dom matchers.
  *   3. Register an RTL `cleanup()` hook so `render()` results don't leak
  *      between tests.
@@ -19,204 +24,9 @@
 import { afterEach, expect, mock } from 'bun:test'
 import * as matchers from '@testing-library/jest-dom/matchers'
 import { cleanup } from '@testing-library/react'
-import { createElement, forwardRef } from 'react'
+import { reactNativeMockBase } from './react-native-mock'
 
-mock.module('react-native', () => {
-  // Minimal RN shim. Components return their children inside a div so
-  // happy-dom can render them; non-trivial RN behavior (Animated,
-  // gesture handlers, …) is intentionally absent — components that need
-  // those should be tested via extracted pure logic, not under RTL.
-  const passthroughHost = (tag: string) =>
-    forwardRef(function HostShim(
-      props: Record<string, unknown>,
-      ref: React.Ref<HTMLDivElement>,
-    ) {
-      const { children, style, ...rest } = props as {
-        children?: React.ReactNode
-        style?: unknown
-      }
-      return createElement(
-        tag,
-        { ...rest, ref, 'data-rn-shim': props['testID'] ?? undefined },
-        children,
-      )
-    })
-
-  return {
-    Platform: {
-      OS: 'web',
-      Version: 0,
-      isPad: false,
-      isTV: false,
-      select: <T,>(spec: { web?: T; default?: T }) =>
-        spec.web !== undefined ? spec.web : spec.default,
-    },
-    StyleSheet: {
-      create: <T,>(s: T) => s,
-      flatten: (s: unknown) => s,
-      hairlineWidth: 1,
-      absoluteFill: {},
-      absoluteFillObject: {},
-    },
-    Dimensions: {
-      get: () => ({ width: 1024, height: 768, scale: 1, fontScale: 1 }),
-      addEventListener: () => ({ remove: () => {} }),
-    },
-    Appearance: {
-      getColorScheme: () => 'light',
-      addChangeListener: () => ({ remove: () => {} }),
-    },
-    Keyboard: {
-      addListener: () => ({ remove: () => {} }),
-      dismiss: () => {},
-    },
-    PixelRatio: {
-      get: () => 1,
-      getFontScale: () => 1,
-      getPixelSizeForLayoutSize: (n: number) => n,
-      roundToNearestPixel: (n: number) => n,
-    },
-    View: passthroughHost('div'),
-    Text: passthroughHost('span'),
-    TextInput: passthroughHost('input'),
-    ScrollView: passthroughHost('div'),
-    Pressable: passthroughHost('button'),
-    TouchableOpacity: passthroughHost('button'),
-    TouchableHighlight: passthroughHost('button'),
-    TouchableWithoutFeedback: passthroughHost('div'),
-    FlatList: passthroughHost('div'),
-    SafeAreaView: passthroughHost('div'),
-    KeyboardAvoidingView: passthroughHost('div'),
-    Modal: passthroughHost('div'),
-    ActivityIndicator: passthroughHost('div'),
-    Image: passthroughHost('img'),
-    Animated: {
-      View: passthroughHost('div'),
-      Text: passthroughHost('span'),
-      Value: class {
-        setValue() {}
-        addListener() { return 'id' }
-        removeListener() {}
-        removeAllListeners() {}
-        interpolate() { return this }
-      },
-      timing: () => ({ start: (cb?: () => void) => cb?.() }),
-      spring: () => ({ start: (cb?: () => void) => cb?.() }),
-      sequence: () => ({ start: (cb?: () => void) => cb?.() }),
-      parallel: () => ({ start: (cb?: () => void) => cb?.() }),
-      loop: () => ({ start: () => {} }),
-      createAnimatedComponent: <T,>(c: T) => c,
-    },
-    NativeModules: {},
-    NativeEventEmitter: class {
-      addListener() { return { remove: () => {} } }
-      removeAllListeners() {}
-    },
-    DeviceEventEmitter: {
-      addListener: () => ({ remove: () => {} }),
-      emit: () => {},
-    },
-    Linking: {
-      openURL: () => Promise.resolve(),
-      canOpenURL: () => Promise.resolve(false),
-      addEventListener: () => ({ remove: () => {} }),
-    },
-    InteractionManager: {
-      runAfterInteractions: (cb: () => void) => {
-        cb()
-        return { cancel: () => {} }
-      },
-    },
-    UIManager: {
-      measureInWindow: () => {},
-      measure: () => {},
-      setLayoutAnimationEnabledExperimental: () => {},
-    },
-    // `react-native-svg` (transitive dep of `lucide-react-native`)
-    // destructures `Touchable.Mixin` at module load. Provide an empty
-    // mixin so its module evaluation doesn't throw.
-    Touchable: {
-      Mixin: {},
-      TOUCH_TARGET_DEBUG: false,
-      renderDebugView: () => null,
-    },
-    // Same story as `Touchable` above: `react-native-svg` reads the key set of
-    // `PanResponder.create({}).panHandlers` at module load, so this has to
-    // return the real handler names rather than a bare object.
-    PanResponder: {
-      create: () => ({
-        panHandlers: {
-          onStartShouldSetResponder: () => false,
-          onMoveShouldSetResponder: () => false,
-          onResponderGrant: () => {},
-          onResponderMove: () => {},
-          onResponderRelease: () => {},
-          onResponderTerminate: () => {},
-          onResponderTerminationRequest: () => true,
-          onStartShouldSetResponderCapture: () => false,
-          onMoveShouldSetResponderCapture: () => false,
-          onResponderReject: () => {},
-          onResponderStart: () => {},
-          onResponderEnd: () => {},
-        },
-      }),
-    },
-    StatusBar: passthroughHost('div'),
-    // Misc named exports referenced by Expo / RN-svg / lucide
-    // transitively at module-load time.
-    TurboModuleRegistry: {
-      getEnforcing: () => ({}),
-      get: () => null,
-    },
-    NativeAppEventEmitter: {
-      addListener: () => ({ remove: () => {} }),
-    },
-    findNodeHandle: () => null,
-    requireNativeComponent: () => passthroughHost('div'),
-    processColor: (c: unknown) => c,
-    LayoutAnimation: {
-      configureNext: () => {},
-      Presets: { spring: {}, easeInEaseOut: {}, linear: {} },
-      Types: {},
-      Properties: {},
-      create: () => ({}),
-    },
-    AppRegistry: {
-      registerComponent: () => {},
-      runApplication: () => {},
-    },
-    AppState: {
-      currentState: 'active',
-      addEventListener: () => ({ remove: () => {} }),
-    },
-    BackHandler: {
-      addEventListener: () => ({ remove: () => {} }),
-      removeEventListener: () => {},
-      exitApp: () => {},
-    },
-    AccessibilityInfo: {
-      addEventListener: () => ({ remove: () => {} }),
-      isScreenReaderEnabled: () => Promise.resolve(false),
-      isReduceMotionEnabled: () => Promise.resolve(false),
-    },
-    PermissionsAndroid: {
-      PERMISSIONS: {},
-      RESULTS: {},
-      request: () => Promise.resolve('granted'),
-      check: () => Promise.resolve(true),
-    },
-    Alert: { alert: () => {} },
-    Share: { share: () => Promise.resolve({ action: 'dismissed' }) },
-    Settings: {
-      get: () => undefined,
-      set: () => {},
-      watchKeys: () => 0,
-      clearWatch: () => {},
-    },
-    Vibration: { vibrate: () => {}, cancel: () => {} },
-    UIIManager: {},
-  }
-})
+mock.module('react-native', () => reactNativeMockBase)
 
 // `lucide-react-native` pulls in `react-native-svg`, which in turn does
 // real native module resolution that we can't satisfy in happy-dom. The

@@ -24,6 +24,52 @@ index 59ea66e459dbf6922bcd80a6ac014408ca13c2af..562287b773d1b5ee05a11a0c670e042d
  }
  function parseDimension({ unit, value }, options) {
      switch (unit) {
+diff --git a/dist/index.js b/dist/index.js
+index f4c13e0581defec0349c406c71a6037cd5168008..c5150264e53e67c072c62b92b5b9897c9f485cab 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -22,7 +22,9 @@ var react_1 = require("react");
+ Object.defineProperty(exports, "createElement", { enumerable: true, get: function () { return react_1.createElement; } });
+ var wrap_jsx_1 = require("./runtime/wrap-jsx");
+ Object.defineProperty(exports, "wrapJSX", { enumerable: true, get: function () { return __importDefault(wrap_jsx_1).default; } });
+-__exportStar(require("./doctor"), exports);
++Object.defineProperty(exports, "verifyJSX", { enumerable: true, get: function () { return require("./doctor").verifyJSX; } });
++Object.defineProperty(exports, "verifyFlag", { enumerable: true, get: function () { return require("./doctor").verifyFlag; } });
++Object.defineProperty(exports, "verifyData", { enumerable: true, get: function () { return require("./doctor").verifyData; } });
+ var runtime_1 = require("./runtime");
+ Object.defineProperty(exports, "StyleSheet", { enumerable: true, get: function () { return runtime_1.StyleSheet; } });
+ Object.defineProperty(exports, "colorScheme", { enumerable: true, get: function () { return runtime_1.colorScheme; } });
+diff --git a/dist/runtime/web/color-scheme.js b/dist/runtime/web/color-scheme.js
+index c8fb1d2d9eb59204349cf80aeb56cbc281e81771..a57ec5eaaeb6544171e020c06b7966b64f87d53c 100644
+--- a/dist/runtime/web/color-scheme.js
++++ b/dist/runtime/web/color-scheme.js
+@@ -38,7 +38,7 @@ else if ("window" in globalThis) {
+             : "system");
+     }).observe(headNode, { attributes: false, childList: true, subtree: false });
+ }
+-const systemColorScheme = (0, observable_1.observable)(appearance.getColorScheme() ?? "light");
++const systemColorScheme = (0, observable_1.observable)(appearance?.getColorScheme() ?? "light");
+ const colorSchemeObservable = (0, observable_1.observable)(initialColor, { fallback: systemColorScheme });
+ exports.colorScheme = {
+     set(value) {
+@@ -67,7 +67,7 @@ exports.colorScheme = {
+     toggle() {
+         let current = colorSchemeObservable.get();
+         if (current === undefined)
+-            current = appearance.getColorScheme() ?? "light";
++            current = appearance?.getColorScheme() ?? "light";
+         exports.colorScheme.set(current === "light" ? "dark" : "light");
+     },
+     [shared_1.INTERNAL_RESET]: (appearance) => {
+@@ -78,7 +78,7 @@ exports.colorScheme = {
+ function resetAppearanceListeners($appearance) {
+     appearance = $appearance;
+     appearanceListener?.remove();
+-    appearanceListener = appearance.addChangeListener((state) => {
++    appearanceListener = appearance?.addChangeListener((state) => {
+         if (react_native_1.AppState.currentState === "active") {
+             systemColorScheme.set(state.colorScheme ?? "light");
+         }
 diff --git a/src/css-to-rn/parseDeclaration.ts b/src/css-to-rn/parseDeclaration.ts
 index bf095a5b430d24f791b8478f5b513d703bd1a02a..a422588621d0b9aad86346567c76c433ebbcdc12 100644
 --- a/src/css-to-rn/parseDeclaration.ts
@@ -54,3 +100,62 @@ index bf095a5b430d24f791b8478f5b513d703bd1a02a..a422588621d0b9aad86346567c76c433
  }
  
  function parseDimension(
+diff --git a/src/index.ts b/src/index.ts
+index 8cae6336931fa5e23f26fe1892f78f8cb90485b6..7bbc1f5f462f62da197b5a299ce792d88bac63c4 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -2,7 +2,22 @@ export { createElement } from "react";
+ 
+ export { default as wrapJSX } from "./runtime/wrap-jsx";
+ 
+-export * from "./doctor";
++// `doctor.ts` intentionally contains literal JSX in a function body, so a
++// consuming bundler's own configured JSX pragma reaches into node_modules
++// and transforms it too -- that's how `verifyJSX()` proves the pragma is
++// wired up correctly. Metro treats this as a normal file to transform.
++// Bun's transpiler does not: merely loading (not calling) this file panics
++// with "Expected CommonJS module to have a function wrapper" -- a Bun bug,
++// not a css-interop one. `export * from "./doctor"` forced that load the
++// instant anything imports this package at all. Nothing on our test path
++// needs verifyJSX/verifyFlag/verifyData -- they back a `nativewind doctor`
++// CLI diagnostic -- so defer the require to first access instead.
++export const verifyJSX: () => boolean = (...args) =>
++  require("./doctor").verifyJSX(...args);
++export const verifyFlag: (name?: string, value?: string) => boolean = (...args) =>
++  require("./doctor").verifyFlag(...args);
++export const verifyData: () => boolean = (...args) =>
++  require("./doctor").verifyData(...args);
+ 
+ export {
+   StyleSheet,
+diff --git a/src/runtime/web/color-scheme.ts b/src/runtime/web/color-scheme.ts
+index 3e64d9f147ca76e3c3a2d5fc17191c3dcf983e08..af61ce960eae228c24eab15f65b35a78d760d6b2 100644
+--- a/src/runtime/web/color-scheme.ts
++++ b/src/runtime/web/color-scheme.ts
+@@ -52,7 +52,7 @@ if (darkModeFlag) {
+ }
+ 
+ const systemColorScheme = observable<"light" | "dark">(
+-  appearance.getColorScheme() ?? "light",
++  appearance?.getColorScheme() ?? "light",
+ );
+ 
+ const colorSchemeObservable = observable<"light" | "dark" | undefined>(
+@@ -95,7 +95,7 @@ export const colorScheme = {
+   get: colorSchemeObservable.get,
+   toggle() {
+     let current = colorSchemeObservable.get();
+-    if (current === undefined) current = appearance.getColorScheme() ?? "light";
++    if (current === undefined) current = appearance?.getColorScheme() ?? "light";
+     colorScheme.set(current === "light" ? "dark" : "light");
+   },
+   [INTERNAL_RESET]: (appearance: typeof Appearance) => {
+@@ -107,7 +107,7 @@ export const colorScheme = {
+ function resetAppearanceListeners($appearance: typeof Appearance) {
+   appearance = $appearance;
+   appearanceListener?.remove();
+-  appearanceListener = appearance.addChangeListener((state) => {
++  appearanceListener = appearance?.addChangeListener((state) => {
+     if (AppState.currentState === "active") {
+       systemColorScheme.set(state.colorScheme ?? "light");
+     }

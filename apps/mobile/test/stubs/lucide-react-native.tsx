@@ -278,6 +278,7 @@ export {
   Icon as UserPlus,
   Icon as Users,
   Icon as Video,
+  Icon as VideoIcon,
   Icon as Wallet,
   Icon as Wand2,
   Icon as Wifi,
