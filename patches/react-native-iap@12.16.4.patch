@@ -16,3 +16,16 @@ index 0000000000000000000000000000000000000000..11111111111111111111111111111111
          if (activity == null) {
              promise.safeReject(PromiseUtils.E_UNKNOWN, "getCurrentActivity returned null")
              return
+diff --git a/android/gradle.properties b/android/gradle.properties
+index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111 100644
+--- a/android/gradle.properties
++++ b/android/gradle.properties
+@@ -6,7 +6,7 @@ RNIap_buildToolsVersion=33.0.0
+ RNIap_ndkversion=23.1.7779620
+ RNIap_playServicesVersion=18.1.0
+ RNIap_amazonSdkVersion=3.0.7
+-RNIap_playBillingSdkVersion=7.0.0
++RNIap_playBillingSdkVersion=8.0.0
+ RNIap_isAmazonDrmEnabled=true
+ 
+ android.useAndroidX=true
