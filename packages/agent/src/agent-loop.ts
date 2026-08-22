@@ -41,10 +41,12 @@ import {
   type InferenceRetryOptions,
   type InferenceRetryInfo,
 } from './inference-retry'
+import { waitForConnectivity, type ConnectivityWaitInfo } from './connectivity'
 
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { OrchestrationOptions }
 export type { InferenceRetryOptions, InferenceRetryInfo }
+export type { ConnectivityWaitInfo } from './connectivity'
 // Re-exported so callers surfacing a failed turn (e.g. the agent-runtime
 // gateway) classify inference errors with the SAME logic the loop used to
 // retry them — keeping the retry decision and the user-facing message
@@ -139,6 +141,22 @@ export interface AgentLoopOptions {
    * deltas instead of concatenating the regenerated output.
    */
   onInferenceRetry?: (info: InferenceRetryInfo) => void
+  /**
+   * Layer 7: called on every backoff tick while the loop is "parked" waiting
+   * for connectivity to return (see `connectivityWait` on `inferenceRetry`
+   * and `connectivity.ts`'s module doc). Fires at least once every 15s so
+   * the gateway can emit a `data-connectivity-wait` heartbeat frame that
+   * keeps the client's stall watchdog and the stream buffer from treating
+   * the turn as dead.
+   */
+  onConnectivityWait?: (info: ConnectivityWaitInfo) => void
+  /**
+   * Called once, right before the loop resumes generation after a
+   * successful `onConnectivityWait` park. The gateway uses this to emit a
+   * terminal `data-connectivity-wait` frame (`state: 'reconnected'`) so the
+   * client can clear its "waiting for connection" banner.
+   */
+  onConnectivityReconnected?: () => void
   /** Tool orchestration config. Pass false to disable wrapping (tools run raw parallel). */
   orchestration?: OrchestrationOptions | false
   /** AbortSignal for external cancellation (e.g., user stop). */
@@ -496,7 +514,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   const discardedUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
   if (inferenceRetry && !abortTriggered) {
     let retryAttempt = 0
-    while (retryAttempt < inferenceRetry.maxAttempts) {
+    while (true) {
       if (abortTriggered || signal?.aborted) break
 
       const failure = detectInferenceFailure(agent.state.messages, promptError)
@@ -528,24 +546,82 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         agent.state.messages = trimmed
       }
 
-      retryAttempt++
-      const delayMs = inferenceRetry.computeDelayMs(retryAttempt)
-      try {
-        options.onInferenceRetry?.({
-          attempt: retryAttempt,
-          maxAttempts: inferenceRetry.maxAttempts,
-          reason: classification.reason,
-          delayMs,
-          error: failure.errorText,
-        })
-      } catch { /* listener must not break the loop */ }
-      console.warn(
-        `[AgentLoop] INFERENCE_RETRY attempt=${retryAttempt}/${inferenceRetry.maxAttempts} ` +
-          `reason=${classification.reason} delayMs=${delayMs} error=${failure.errorText.slice(0, 160)}`,
-      )
+      if (retryAttempt < inferenceRetry.maxAttempts) {
+        // Fast tier: short bounded backoff for blips (default 2 attempts,
+        // 0.5-8s). This is unchanged from before Layer 7 existed.
+        retryAttempt++
+        const delayMs = inferenceRetry.computeDelayMs(retryAttempt)
+        try {
+          options.onInferenceRetry?.({
+            attempt: retryAttempt,
+            maxAttempts: inferenceRetry.maxAttempts,
+            reason: classification.reason,
+            delayMs,
+            error: failure.errorText,
+          })
+        } catch { /* listener must not break the loop */ }
+        console.warn(
+          `[AgentLoop] INFERENCE_RETRY attempt=${retryAttempt}/${inferenceRetry.maxAttempts} ` +
+            `reason=${classification.reason} delayMs=${delayMs} error=${failure.errorText.slice(0, 160)}`,
+        )
 
+        promptError = undefined
+        if (delayMs > 0) await inferenceRetry.sleep(delayMs)
+        if (abortTriggered || signal?.aborted) break
+
+        try {
+          await agent.continue()
+        } catch (err: any) {
+          promptError = err
+        }
+        continue
+      }
+
+      // Layer 7: fast budget exhausted on a failure that's still classified
+      // retryable. Rather than guess whether that means "no internet" or
+      // "provider is having a bad moment", ask: probe upstream reachability
+      // and, if the network path itself is down, park here polling with
+      // backoff until it comes back, instead of failing the turn. Only
+      // engages when a probe URL is configured (desktop's RuntimeManager
+      // injects `AI_UPSTREAM_HEALTH_URL`; deployments that don't set it, or
+      // that pass `connectivityWait: false`, keep the original fail-fast
+      // behavior here).
+      const park = inferenceRetry.connectivityWait
+      if (!park) break
+
+      console.warn(
+        `[AgentLoop] CONNECTIVITY_PARK fast-retry budget exhausted (${inferenceRetry.maxAttempts} attempts) ` +
+          `reason=${classification.reason} — probing upstream connectivity before giving up`,
+      )
+      const parkResult = await waitForConnectivity({
+        probeUrl: park.probeUrl,
+        signal,
+        maxWaitMs: park.maxWaitMs,
+        probe: park.probe,
+        sleep: park.sleep,
+        now: park.now,
+        onWaiting: (info) => {
+          try {
+            options.onConnectivityWait?.(info)
+          } catch { /* listener must not break the loop */ }
+        },
+      })
+
+      if (parkResult !== 'reconnected') {
+        console.warn(`[AgentLoop] CONNECTIVITY_PARK ended without reconnecting (result=${parkResult})`)
+        break
+      }
+
+      console.warn('[AgentLoop] CONNECTIVITY_PARK reconnected — resuming turn')
+      try {
+        options.onConnectivityReconnected?.()
+      } catch { /* listener must not break the loop */ }
+
+      // Connectivity is back — reset the fast budget and re-issue the
+      // dropped call. Tools already executed earlier in this turn are
+      // untouched (same idempotency invariant the fast tier relies on).
+      retryAttempt = 0
       promptError = undefined
-      if (delayMs > 0) await inferenceRetry.sleep(delayMs)
       if (abortTriggered || signal?.aborted) break
 
       try {

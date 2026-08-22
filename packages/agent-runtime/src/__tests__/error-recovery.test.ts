@@ -390,6 +390,121 @@ describe('runAgentLoop inference retry', () => {
     expect(getCalls()).toBe(4) // initial + 3 re-issues
   })
 
+  test('connectivity park (Layer 7): survives an outage that outlasts the fast-retry budget, with no duplicate tool execution', async () => {
+    const tracker = new MockToolTracker()
+    const tool = tracker.createTool('read_file', 'Read a file', { content: 'file data' })
+
+    // step0: tool use (executes the tool once)
+    // step1: follow-up fails (retryable) — detected as the initial failure
+    // step2: the single fast-retry re-issue ALSO fails — fast budget exhausted
+    // step3: the park-triggered re-issue (after "reconnecting") succeeds
+    const { fn, getCalls } = createScriptedStreamFn([
+      buildToolUseResponse([{ name: 'read_file', arguments: { path: 'a.txt' }, id: 'toolu_1' }]),
+      { throw: 'ECONNRESET' },
+      { throw: 'ECONNRESET' },
+      buildTextResponse('Back online — here is the file summary'),
+    ])
+
+    // Fake clock/sleep so the backoff sequence inside waitForConnectivity
+    // (1s/5s/15s) doesn't burn real wall-clock time in the test.
+    let clockNow = 0
+    const fakeSleep = async (ms: number) => { clockNow += ms }
+
+    let probeCalls = 0
+    const waitingTicks: Array<{ attempt: number; elapsedMs: number; nextProbeInMs: number }> = []
+    let reconnectedFired = false
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Read a.txt',
+      tools: [tool],
+      streamFn: fn,
+      inferenceRetry: {
+        maxAttempts: 1,
+        ...NO_BACKOFF,
+        connectivityWait: {
+          probeUrl: 'https://fake-health.test/health',
+          // Unreachable for the first 2 probes (simulating a real outage
+          // the fast-retry tier can't ride out), reachable on the 3rd.
+          probe: async () => {
+            probeCalls++
+            return probeCalls > 2
+          },
+          sleep: fakeSleep,
+          now: () => clockNow,
+        },
+      },
+      onConnectivityWait: (info) => waitingTicks.push(info),
+      onConnectivityReconnected: () => { reconnectedFired = true },
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.text).toBe('Back online — here is the file summary')
+    expect(result.toolCalls).toHaveLength(1)
+    expect(result.toolCalls[0].name).toBe('read_file')
+    // The critical idempotency guarantee: the tool executed exactly once
+    // across the failed attempt, the exhausted fast retry, AND the parked
+    // reconnect — none of those re-run tools, only the dropped model call.
+    expect(tracker.getCallsFor('read_file')).toHaveLength(1)
+    expect(getCalls()).toBe(4)
+
+    expect(probeCalls).toBe(3)
+    expect(waitingTicks).toHaveLength(2) // one heartbeat per failed probe
+    expect(waitingTicks.map((t) => t.attempt)).toEqual([1, 2])
+    expect(reconnectedFired).toBe(true)
+  })
+
+  test('connectivity park: gives up (result.error set) when the outage never clears within maxWaitMs', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([{ throw: 'socket hang up' }])
+
+    let clockNow = 0
+    const fakeSleep = async (ms: number) => { clockNow += ms }
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: {
+        maxAttempts: 1,
+        ...NO_BACKOFF,
+        connectivityWait: {
+          probeUrl: 'https://fake-health.test/health',
+          probe: async () => false, // never comes back
+          sleep: fakeSleep,
+          now: () => clockNow,
+          maxWaitMs: 2_000, // smaller than a single backoff step
+        },
+      },
+    })
+
+    expect(result.error).toBeDefined()
+    // initial attempt + 1 fast retry; the park tier probes/backs off purely
+    // via the injected fake clock/probe, never re-issuing the model call.
+    expect(getCalls()).toBe(2)
+  })
+
+  test('connectivity park does not engage when connectivityWait is not configured (fails fast, unchanged legacy behavior)', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([{ throw: 'ECONNRESET' }])
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: { maxAttempts: 1, ...NO_BACKOFF }, // no connectivityWait
+    })
+
+    expect(result.error).toBeDefined()
+    expect(getCalls()).toBe(2) // initial + 1 fast retry, then gives up — no park
+  })
+
   test('retry can be disabled via inferenceRetry: false', async () => {
     const { fn, getCalls } = createScriptedStreamFn([
       { throw: 'socket hang up' },

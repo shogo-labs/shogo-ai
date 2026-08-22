@@ -2180,6 +2180,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         const proxyUrl = buildAiProxyUrl(apiBase)
         runtimeEnv.AI_PROXY_URL = proxyUrl
 
+        // Connectivity probe the agent loop polls when parking a turn on a
+        // retryable inference failure (see `packages/agent/src/connectivity.ts`).
+        // Always points at the LOCAL api's `/api/ai/upstream-health`, which
+        // itself resolves the real egress target (cloud / direct / local-llm)
+        // so the runtime child never needs to know that routing logic.
+        runtimeEnv.AI_UPSTREAM_HEALTH_URL = `${apiBase}/api/ai/upstream-health`
+
         // Pin SHOGO_API_URL to the LOCAL desktop API. Without this, the
         // embedded WorkerRuntimeManager would default SHOGO_API_URL to
         // `cfg.cloudUrl` (= https://studio.shogo.ai) — that's the right

@@ -4,6 +4,7 @@ export {
   extractTextContent,
   formatErrorMessage,
   isTunnelDisconnectError,
+  isClientNetworkFailure,
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,

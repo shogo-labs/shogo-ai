@@ -60,6 +60,7 @@ import {
   Sparkles,
   Languages,
   Play,
+  WifiOff,
 } from "lucide-react-native"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
@@ -325,6 +326,11 @@ export type QueuedMessage = {
   content: string
   files?: FileAttachment[]
   selectedModel?: string
+  /** True when queued because a send failed on a network error, rather than
+   * because it was typed while a turn was streaming. Rendered with a
+   * distinct "waiting for connection" style so it's obvious nothing was
+   * lost and it'll retry automatically. */
+  offline?: boolean
 }
 
 export interface ChatInputProps {
@@ -1426,8 +1432,15 @@ function ChatInputImpl({
       )}
 
       {/* Queued messages */}
-      {queuedMessages.length > 0 && (
-        <View className="rounded-t-lg border-x border-t border-border/60 bg-muted/30 overflow-hidden">
+      {queuedMessages.length > 0 && (() => {
+        const offlineCount = queuedMessages.filter((m) => m.offline).length
+        return (
+        <View className={cn(
+          "rounded-t-lg border-x border-t overflow-hidden",
+          offlineCount > 0
+            ? "border-orange-400/50 bg-orange-50 dark:bg-orange-950/30"
+            : "border-border/60 bg-muted/30",
+        )}>
           <Pressable
             onPress={() => setQueueExpanded((prev) => !prev)}
             className="w-full flex-row items-center justify-between px-2 py-1"
@@ -1435,13 +1448,22 @@ function ChatInputImpl({
             <View className="flex-row items-center gap-2">
               <ChevronDown
                 className={cn(
-                  "h-4 w-4 text-muted-foreground",
+                  "h-4 w-4",
+                  offlineCount > 0 ? "text-orange-600 dark:text-orange-400" : "text-muted-foreground",
                   !queueExpanded && "-rotate-90"
                 )}
                 size={16}
               />
-              <Text className="text-sm text-foreground">
-                {queuedMessages.length} Queued
+              {offlineCount > 0 && (
+                <WifiOff size={13} className="text-orange-600 dark:text-orange-400" />
+              )}
+              <Text className={cn(
+                "text-sm",
+                offlineCount > 0 ? "text-orange-700 dark:text-orange-300" : "text-foreground",
+              )}>
+                {offlineCount > 0
+                  ? `${offlineCount} waiting to send${queuedMessages.length > offlineCount ? ` \u00b7 ${queuedMessages.length - offlineCount} queued` : ""}`
+                  : `${queuedMessages.length} Queued`}
               </Text>
             </View>
           </Pressable>
@@ -1487,7 +1509,11 @@ function ChatInputImpl({
                       Platform.OS === "web" && "hover:bg-muted/40"
                     )}
                   >
-                    <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
+                    {msg.offline ? (
+                      <WifiOff size={11} className="text-orange-600 dark:text-orange-400 flex-shrink-0" />
+                    ) : (
+                      <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
+                    )}
                     {previewImage && (
                       <Image
                         source={{ uri: previewImage.dataUrl }}
@@ -1702,7 +1728,8 @@ function ChatInputImpl({
             </View>
           )}
         </View>
-      )}
+        )
+      })()}
 
       {/* Dropdown + input layer.
 

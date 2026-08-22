@@ -18,6 +18,7 @@ export default defineConfig({
     'src/hooks/bundled/session-memory/handler.ts',
     'src/ai-client.ts',
     'src/ai-proxy.ts',
+    'src/connectivity.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,
