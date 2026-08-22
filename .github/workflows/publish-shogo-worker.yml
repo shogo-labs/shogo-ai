@@ -91,7 +91,13 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          # npm's OIDC/provenance publish handshake requires npm 11.5.1+
+          # (bundled with Node 24). Node 20 ships npm ~10.x, which silently
+          # falls back to an unauthenticated publish request and fails with
+          # a misleading `404 ... is not in this registry` — see the
+          # `Publish to npm` step and publish-sdk.yml, which already uses
+          # Node 24 for the same reason.
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Cache bun dependencies
