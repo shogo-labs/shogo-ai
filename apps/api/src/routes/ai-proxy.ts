@@ -39,6 +39,10 @@ import { resolveApiKey } from './api-keys'
 import { getDbRoutingConfigSync, getMergedModelEntrySync } from '../services/model-registry.service'
 import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
 import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
+import {
+  resolveVisibleModelsForWorkspace,
+  isModelProviderConfigured,
+} from '../services/visible-models.service'
 import { wipeCloudKey } from '../lib/cloud-key-wipe'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
@@ -2853,8 +2857,12 @@ export function aiProxyRoutes() {
   // =========================================================================
   // GET /ai/v1/models - List available models
   // =========================================================================
+  // Reflects the same admin-curated, workspace-visible set the chat picker
+  // uses (`resolveVisibleModelsForWorkspace`) rather than the full static
+  // catalog — a model an admin hasn't enabled (or a workspace has hidden)
+  // won't be listed here, even though the static catalog fallback still
+  // covers a fresh/unseeded instance. See `services/visible-models.service.ts`.
   router.get('/ai/v1/models', async (c) => {
-    // Token validation is optional for model listing (nice for discovery)
     const tokenPayload = await validateProxyAuth(c)
     if (!tokenPayload) {
       return c.json(
@@ -2869,18 +2877,28 @@ export function aiProxyRoutes() {
       )
     }
 
-    const models = Object.entries(MODEL_REGISTRY)
-      // Filter out aliases (entries where key !== apiModel and another entry has the same apiModel)
-      .filter(([key, config]) => key === config.apiModel)
-      .map(([key, config]) => ({
-        id: key,
+    const created = Math.floor(Date.now() / 1000)
+    const visible = await resolveVisibleModelsForWorkspace(tokenPayload.workspaceId)
+
+    const models = [
+      ...visible.catalogModels.map((entry) => ({
+        id: entry.id,
         object: 'model',
-        created: Math.floor(Date.now() / 1000),
-        owned_by: config.provider,
-        display_name: config.displayName,
+        created,
+        owned_by: entry.provider,
+        display_name: entry.displayName,
         // Indicate if the provider is actually configured
-        available: !!getProviderApiKey(config.provider),
-      }))
+        available: isModelProviderConfigured(entry.provider),
+      })),
+      ...visible.openrouterModels.map((entry) => ({
+        id: entry.id,
+        object: 'model',
+        created,
+        owned_by: 'openrouter',
+        display_name: entry.displayName,
+        available: isModelProviderConfigured('openrouter'),
+      })),
+    ]
 
     return c.json({
       object: 'list',

@@ -634,7 +634,10 @@ const openai = await generateText({
 ```
 
 List available model ids with `GET /api/ai/v1/models` on Shogo Cloud (or
-any authenticated Shogo backend).
+any authenticated Shogo backend). This reflects the admin-curated,
+workspace-visible model set (same source as the chat picker) — not the
+full code-shipped catalog — so a model must be enabled by a super-admin
+(and not hidden by the workspace's own allowlist) to appear here.
 
 ### Tool calling
 

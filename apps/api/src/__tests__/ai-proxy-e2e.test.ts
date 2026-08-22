@@ -95,7 +95,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
   // Step 2: List models (like the UI model picker would)
   // ===========================================================================
 
-  test('list models returns updated model registry with new Anthropic models', async () => {
+  test('list models returns the workspace-visible model set', async () => {
     const res = await app.fetch(
       new Request('http://localhost/api/ai/v1/models', {
         headers: { Authorization: `Bearer ${proxyToken}` },
@@ -109,20 +109,20 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
     const modelIds = data.data.map((m: any) => m.id)
     console.log(`[E2E] Available models (${modelIds.length}):`, modelIds)
 
-    // Verify the new current-gen models are present
-    expect(modelIds).toContain('claude-opus-4-7')
-    expect(modelIds).toContain('claude-sonnet-4-5-20250929')
+    // No DB models are seeded in this test's mocked prisma, so the listing
+    // falls back to the current-generation static catalog (mirroring the
+    // chat picker's unseeded-instance fallback) — current-gen Anthropic and
+    // OpenAI models are present.
+    expect(modelIds).toContain('claude-opus-5')
+    expect(modelIds).toContain('claude-sonnet-5')
     expect(modelIds).toContain('claude-haiku-4-5-20251001')
+    expect(modelIds).toContain('gpt-5.5')
+    expect(modelIds).toContain('gpt-5.4-mini')
 
-    // Verify legacy models are still present
-    expect(modelIds).toContain('claude-opus-4-5-20251101')
-    expect(modelIds).toContain('claude-sonnet-4-20250514')
-    expect(modelIds).toContain('claude-3-7-sonnet-20250219')
-    expect(modelIds).toContain('claude-3-haiku-20240307')
-
-    // Verify OpenAI models
-    expect(modelIds).toContain('gpt-4o')
-    expect(modelIds).toContain('gpt-4o-mini')
+    // Legacy catalog entries are routable but no longer listed by default.
+    expect(modelIds).not.toContain('claude-3-haiku-20240307')
+    expect(modelIds).not.toContain('gpt-4o')
+    expect(modelIds).not.toContain('gpt-4o-mini')
 
     // Verify model structure
     for (const model of data.data) {
