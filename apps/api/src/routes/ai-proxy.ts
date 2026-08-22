@@ -98,7 +98,7 @@ export interface ChatCompletionRequest {
     // accept it here so callers routed through the OpenAI chat-completions
     // shape (pi-ai's openai-completions provider) don't trip the converter.
     role: 'system' | 'developer' | 'user' | 'assistant' | 'tool'
-    content: string | Array<ChatCompletionContentBlock>
+    content: string | Array<ChatCompletionContentBlock> | null
     name?: string
     tool_call_id?: string
     tool_calls?: Array<{
@@ -850,7 +850,9 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
     if (msg.role === 'system' || msg.role === 'developer') {
       const text = typeof msg.content === 'string'
         ? msg.content
-        : msg.content.map(p => p.text || '').join('\n')
+        : Array.isArray(msg.content)
+          ? msg.content.map(p => p.text || '').join('\n')
+          : ''
 
       if (anyCacheMeta) {
         // Prefer per-message providerOptions; fall back to the last content block's
@@ -871,6 +873,61 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
     }
 
     const msgCC = mapCacheControl(msg.providerOptions?.anthropic?.cacheControl)
+
+    if (msg.role === 'assistant' && msg.tool_calls?.length) {
+      const blocks: Array<Record<string, unknown>> = []
+
+      if (Array.isArray(msg.content)) {
+        blocks.push(...msg.content.map(b => {
+          const bcc = b.cache_control ?? mapCacheControl(b.providerOptions?.anthropic?.cacheControl)
+          const rest = { ...b }
+          delete (rest as { providerOptions?: unknown }).providerOptions
+          if (bcc) (rest as { cache_control?: AnthropicCacheControl }).cache_control = bcc
+          else delete (rest as { cache_control?: unknown }).cache_control
+          return rest
+        }))
+      } else if (typeof msg.content === 'string' && msg.content.length > 0) {
+        blocks.push({ type: 'text', text: msg.content, ...(msgCC ? { cache_control: msgCC } : {}) })
+      }
+
+      if (msgCC && blocks.length) {
+        const last = blocks[blocks.length - 1] as { cache_control?: AnthropicCacheControl }
+        if (!last.cache_control) last.cache_control = msgCC
+      }
+
+      for (const call of msg.tool_calls) {
+        let input: unknown = {}
+        try {
+          input = call.function.arguments ? JSON.parse(call.function.arguments) : {}
+        } catch {
+          input = { arguments: call.function.arguments }
+        }
+
+        blocks.push({
+          type: 'tool_use',
+          id: call.id,
+          name: call.function.name,
+          input,
+        })
+      }
+
+      messages.push({ role: 'assistant', content: blocks })
+      continue
+    }
+
+    if (msg.role === 'tool') {
+      messages.push({
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: msg.tool_call_id || '',
+          content: typeof msg.content === 'string'
+            ? msg.content
+            : JSON.stringify(msg.content ?? ''),
+        }],
+      })
+      continue
+    }
 
     if (Array.isArray(msg.content)) {
       // Preserve / translate per-content-block cache metadata.
@@ -898,7 +955,7 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
       // No cache metadata on this message — pass through unchanged.
       messages.push({
         role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: msg.content,
+        content: msg.content ?? '',
       })
     }
   }
@@ -1217,7 +1274,7 @@ export async function proxyAnthropicStream(
 
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`Anthropic API error (${response.status}): ${errorText}`)
+    throw new UpstreamProviderError('Anthropic', response.status, errorText)
   }
 
   // Transform Anthropic SSE stream to OpenAI SSE format
@@ -1455,11 +1512,21 @@ export async function proxyAnthropicNonStream(
 
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`Anthropic API error (${response.status}): ${errorText}`)
+    throw new UpstreamProviderError('Anthropic', response.status, errorText)
   }
 
   const anthropicResponse = await response.json()
   return convertAnthropicResponseToOpenAI(anthropicResponse, request.model)
+}
+
+class UpstreamProviderError extends Error {
+  constructor(
+    public provider: string,
+    public status: number,
+    public body: string,
+  ) {
+    super(`${provider} API error (${status}): ${body}`)
+  }
 }
 
 // =============================================================================
@@ -2676,16 +2743,19 @@ export function aiProxyRoutes() {
       console.error('[AI Proxy] Error:', error.message)
 
       // Return OpenAI-compatible error format
-      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      const statusCode = error instanceof UpstreamProviderError
+        ? error.status
+        : error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
       return c.json(
         {
           error: {
             message: error.message || 'Internal proxy error',
-            type: 'server_error',
-            code: 'proxy_error',
+            type: error instanceof UpstreamProviderError ? 'upstream_error' : 'server_error',
+            code: error instanceof UpstreamProviderError ? 'provider_error' : 'proxy_error',
+            ...(error instanceof UpstreamProviderError ? { provider: error.provider.toLowerCase(), upstream_status: error.status } : {}),
           },
         },
-        statusCode
+        statusCode as any
       )
     }
   })
