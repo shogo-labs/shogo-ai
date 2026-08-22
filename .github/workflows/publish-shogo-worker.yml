@@ -91,14 +91,22 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          # npm's OIDC/provenance publish handshake requires npm 11.5.1+
+          # npm's OIDC trusted-publishing handshake requires npm 11.5.1+
           # (bundled with Node 24). Node 20 ships npm ~10.x, which silently
           # falls back to an unauthenticated publish request and fails with
           # a misleading `404 ... is not in this registry` — see the
           # `Publish to npm` step and publish-sdk.yml, which already uses
           # Node 24 for the same reason.
+          #
+          # Deliberately no `registry-url:` here: setting it makes
+          # actions/setup-node write an .npmrc with an `_authToken`
+          # placeholder, and npm prioritizes that token-based config over
+          # the OIDC trusted-publisher handshake even when the token is
+          # empty/unset. `@shogo-ai/worker` is registered as a trusted
+          # publisher for this exact repo+workflow on npmjs.com, so no
+          # registry/token config is needed — npm publish authenticates via
+          # the job's `id-token: write` permission instead.
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Cache bun dependencies
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -279,12 +287,16 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/shogo-worker
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           CHANNEL: ${{ steps.version.outputs.channel }}
         run: |
           set -euo pipefail
-          # When npm sees a published version on `latest`, lower channels
-          # like `beta`/`nightly` should NOT overwrite it — pass --tag.
+          # No NODE_AUTH_TOKEN: @shogo-ai/worker is registered as a trusted
+          # publisher (OIDC) for this repo+workflow on npmjs.com. npm uses
+          # the job's `id-token: write` permission to authenticate instead
+          # of a stored secret — passing --provenance explicitly triggers
+          # that handshake. When npm sees a published version on `latest`,
+          # lower channels like `beta`/`nightly` should NOT overwrite it —
+          # pass --tag.
           npm publish --access public --provenance --tag "$CHANNEL"
 
       - name: Append worker tarballs to v* GitHub Release
