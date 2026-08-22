@@ -85,6 +85,11 @@ import { apiKeyRoutes } from './routes/api-keys'
 import { cliAuthRoutes } from './routes/cli-auth'
 import { getFrontendUrl, getShogoCloudUrl } from './lib/cloud-urls'
 import { fetchCloudVisibleModels } from './lib/federated-upstream'
+import {
+  readVisibleModelsConfig,
+  writeVisibleModelsConfig,
+  resolvePlatformVisibleModels,
+} from './services/visible-models.service'
 import { localAuthRoutes } from './routes/local-auth'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
@@ -103,7 +108,6 @@ import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverri
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { normalizeAdminScopes } from './lib/admin-scopes'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
-import { getNativeProviderApiKeySync } from './services/provider-credentials.service'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
@@ -917,108 +921,6 @@ app.get('/api/config', async (c) => {
     features: { ...featureDefaults, ...overrides },
   })
 })
-
-/** Resolve an allowlist into full picker-ready catalog entries against the
- *  MERGED catalog (static `MODEL_CATALOG` overlaid with enabled DB-defined
- *  models). `null` ids means "all current-generation models". Shipping these
- *  over the wire lets a cloud-connected desktop render models its bundled
- *  catalog may not know about — including purely-DB-defined ones (e.g. MiMo).
- *
- *  The `family` and `maxOutputTokens` fields are included so clients can
- *  label/color and gate a model they don't carry in their bundled catalog. */
-/** Native provider id -> the env var that holds its API key. Both cloud
- *  (k8s secrets) and local BYOK (which mirrors saved keys into `process.env`)
- *  populate these, so a single presence check gates visibility for either. */
-const PROVIDER_ENV_KEY: Record<string, string> = {
-  anthropic: 'ANTHROPIC_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  google: 'GOOGLE_API_KEY',
-  openrouter: 'OPENROUTER_API_KEY',
-}
-
-/** A model is presentable only when its provider has a usable key. `custom`
- *  models carry their own encrypted key (and are only merged when enabled), so
- *  they're always considered configured. Unknown/legacy providers aren't gated
- *  to avoid hiding models we don't have an env mapping for. */
-function isModelProviderConfigured(provider: string): boolean {
-  if (provider === 'custom' || provider === 'local') return true
-  if (!PROVIDER_ENV_KEY[provider]) return true
-  // Respect admin-stored (encrypted DB) keys as well as env vars.
-  return !!getNativeProviderApiKeySync(provider)
-}
-
-async function resolveVisibleCatalogModels(
-  catalogIds: string[] | null,
-): Promise<Array<{ id: string; provider: string; displayName: string; shortDisplayName: string; tier: string; family: string; maxOutputTokens: number; sortOrder?: number; description?: string; contextWindow?: number; reasoningEffort?: string }>> {
-  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync } = await import('./services/model-registry.service')
-  const toVisible = (entry: any) => ({
-    id: entry.id,
-    provider: entry.provider,
-    displayName: entry.displayName,
-    shortDisplayName: entry.shortDisplayName,
-    tier: entry.tier,
-    family: entry.family,
-    maxOutputTokens: entry.maxOutputTokens,
-    ...(typeof entry.sortOrder === 'number' ? { sortOrder: entry.sortOrder } : {}),
-    ...(entry.description ? { description: entry.description } : {}),
-    ...(typeof entry.contextWindow === 'number' ? { contextWindow: entry.contextWindow } : {}),
-    ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
-  })
-  // Stable sort by sortOrder (ascending); models without one sink to the
-  // bottom, preserving their catalog order. This is what gives the user
-  // picker its admin-controlled order.
-  const bySortOrder = <T extends { sortOrder?: number }>(rows: T[]): T[] =>
-    rows
-      .map((row, i) => ({ row, i }))
-      .sort((a, b) => {
-        const ao = a.row.sortOrder ?? Number.POSITIVE_INFINITY
-        const bo = b.row.sortOrder ?? Number.POSITIVE_INFINITY
-        return ao === bo ? a.i - b.i : ao - bo
-      })
-      .map((x) => x.row)
-  if (catalogIds === null) {
-    // DB-managed picker: when any models are defined in the DB, the picker
-    // reflects exactly those (the admin-curated/seeded set) so super admins
-    // can fully control — and remove — what users see. The static
-    // MODEL_CATALOG is a routing-only fallback, used here ONLY when the DB
-    // has no models yet, so a fresh/unseeded instance is never empty.
-    const dbEntries = getDbModelEntriesSync()
-    const usingStaticFallback = dbEntries.length === 0
-    const source = usingStaticFallback ? getMergedCatalogSync() : dbEntries
-    return bySortOrder(
-      source
-        .filter((e) => e.generation === 'current')
-        // Provider-key gating is meaningful for admin-managed rows: if the
-        // admin has configured models but removed the backing provider key,
-        // those models should disappear from the picker. The static catalog is
-        // only a first-run fallback for an unseeded DB; gating it would make a
-        // fresh dev instance empty before the admin has had a chance to add
-        // keys or DB rows.
-        .filter((e) => usingStaticFallback || isModelProviderConfigured(e.provider))
-        .map(toVisible),
-    )
-  }
-  const out: Array<ReturnType<typeof toVisible>> = []
-  for (const id of catalogIds) {
-    const entry = getMergedModelEntrySync(id)
-    if (entry && isModelProviderConfigured(entry.provider)) out.push(toVisible(entry))
-  }
-  return bySortOrder(out)
-}
-
-/** Build the full platform-visible model payload: the catalog allowlist
- *  resolved to picker-ready entries plus the admin-curated OpenRouter extras.
- *  Shared by `GET /api/platform/visible-models` and the per-workspace endpoint
- *  (which intersects this with the workspace's own allowlist). */
-async function resolvePlatformVisibleModels(): Promise<{
-  catalogIds: string[] | null
-  openrouterModels: VisibleOpenRouterModelStored[]
-  catalogModels: Awaited<ReturnType<typeof resolveVisibleCatalogModels>>
-}> {
-  const config = await readVisibleModelsConfig()
-  const catalogModels = await resolveVisibleCatalogModels(config.catalogIds)
-  return { catalogIds: config.catalogIds, openrouterModels: config.openrouterModels, catalogModels }
-}
 
 // Visible-models read endpoint — open to all callers (drives user-facing
 // chat-input pickers). Returns the admin allowlist as stored, with `null`
@@ -6128,91 +6030,10 @@ app.put('/api/admin/settings/title-generation-model', async (c) => {
 // Same shape works for both cloud (super-admin sets it for all workspaces)
 // and local (admin sets it for their local users). PlatformSetting exists
 // in both schemas so the same handlers work without branching.
-
-const VISIBLE_MODELS_KEY = 'models.visible'
-
-interface VisibleOpenRouterModelStored {
-  id: string
-  displayName: string
-  contextLength?: number
-  tier?: 'economy' | 'standard' | 'premium'
-  /**
-   * Per-token rates in USD captured from OpenRouter's `/api/v1/models`
-   * at the time the admin added the model. Stored alongside the entry
-   * so:
-   *   - the admin UI can show real $/M-token figures next to each model,
-   *   - the eval cost calculator can report real (not Sonnet-fallback)
-   *     dollar costs without hitting OpenRouter at every run,
-   *   - usage analytics can compute spend without re-fetching upstream.
-   *
-   * Fields are optional individually because OpenRouter doesn't return
-   * cache pricing for every model. Missing → 0 in cost calc.
-   */
-  pricing?: {
-    promptPerToken?: number
-    completionPerToken?: number
-    cacheReadPerToken?: number
-    cacheWritePerToken?: number
-  }
-}
-
-interface VisibleModelsConfigStored {
-  catalogIds: string[] | null
-  openrouterModels: VisibleOpenRouterModelStored[]
-}
-
-const DEFAULT_VISIBLE_MODELS: VisibleModelsConfigStored = {
-  catalogIds: null,
-  openrouterModels: [],
-}
-
-function sanitizeOpenRouterPricing(raw: any): VisibleOpenRouterModelStored['pricing'] | undefined {
-  if (!raw || typeof raw !== 'object') return undefined
-  const out: NonNullable<VisibleOpenRouterModelStored['pricing']> = {}
-  for (const key of ['promptPerToken', 'completionPerToken', 'cacheReadPerToken', 'cacheWritePerToken'] as const) {
-    const v = raw[key]
-    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[key] = v
-  }
-  return Object.keys(out).length > 0 ? out : undefined
-}
-
-function sanitizeOpenRouterEntry(m: any): VisibleOpenRouterModelStored | null {
-  if (!m || typeof m.id !== 'string' || typeof m.displayName !== 'string') return null
-  return {
-    id: m.id,
-    displayName: m.displayName,
-    contextLength: typeof m.contextLength === 'number' ? m.contextLength : undefined,
-    tier: m.tier === 'economy' || m.tier === 'standard' || m.tier === 'premium' ? m.tier : undefined,
-    pricing: sanitizeOpenRouterPricing(m.pricing),
-  }
-}
-
-function parseVisibleModelsValue(raw: string | null | undefined): VisibleModelsConfigStored {
-  if (!raw) return { ...DEFAULT_VISIBLE_MODELS }
-  try {
-    const parsed = JSON.parse(raw)
-    const catalogIds = Array.isArray(parsed?.catalogIds)
-      ? parsed.catalogIds.filter((x: unknown): x is string => typeof x === 'string')
-      : parsed?.catalogIds === null ? null : null
-    const openrouterModels = Array.isArray(parsed?.openrouterModels)
-      ? parsed.openrouterModels
-          .map(sanitizeOpenRouterEntry)
-          .filter((m: VisibleOpenRouterModelStored | null): m is VisibleOpenRouterModelStored => m !== null)
-      : []
-    return { catalogIds, openrouterModels }
-  } catch {
-    return { ...DEFAULT_VISIBLE_MODELS }
-  }
-}
-
-async function readVisibleModelsConfig(): Promise<VisibleModelsConfigStored> {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: VISIBLE_MODELS_KEY } })
-    return parseVisibleModelsValue(row?.value)
-  } catch {
-    return { ...DEFAULT_VISIBLE_MODELS }
-  }
-}
+//
+// The resolution algorithm (allowlist parsing, catalog merge, provider-key
+// gating) lives in `services/visible-models.service.ts` — shared with the
+// `GET /ai/v1/models` gateway listing, which can't import from `server.ts`.
 
 // GET /api/admin/settings/visible-models — read the configured allowlist.
 app.get('/api/admin/settings/visible-models', async (c) => {
@@ -6233,22 +6054,7 @@ app.put('/api/admin/settings/visible-models', async (c) => {
     const auth = c.get('auth') as any
     const userId = auth?.user?.id || 'unknown'
 
-    const next: VisibleModelsConfigStored = {
-      catalogIds: Array.isArray(body?.catalogIds)
-        ? body.catalogIds.filter((x: unknown): x is string => typeof x === 'string')
-        : null,
-      openrouterModels: Array.isArray(body?.openrouterModels)
-        ? body.openrouterModels
-            .map(sanitizeOpenRouterEntry)
-            .filter((m: VisibleOpenRouterModelStored | null): m is VisibleOpenRouterModelStored => m !== null)
-        : [],
-    }
-
-    await prisma.platformSetting.upsert({
-      where: { key: VISIBLE_MODELS_KEY },
-      create: { key: VISIBLE_MODELS_KEY, value: JSON.stringify(next), updatedBy: userId },
-      update: { value: JSON.stringify(next), updatedBy: userId },
-    })
+    const next = await writeVisibleModelsConfig(body, userId)
 
     return c.json({ ok: true, config: next })
   } catch (err: any) {

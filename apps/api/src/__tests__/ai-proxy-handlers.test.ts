@@ -553,7 +553,7 @@ describe('GET /ai/v1/access', () => {
 // =========================================================================
 
 describe('AI proxy model listing and token generation', () => {
-  test('GET /ai/v1/models requires auth and returns canonical model metadata', async () => {
+  test('GET /ai/v1/models requires auth and returns the workspace-visible model set', async () => {
     const app = buildApp()
     const unauth = await app.fetch(new Request('http://x/api/ai/v1/models'))
     expect(unauth.status).toBe(401)
@@ -564,8 +564,15 @@ describe('AI proxy model listing and token generation', () => {
     expect(res.status).toBe(200)
     const data = await res.json() as any
     expect(data.object).toBe('list')
-    expect(data.data.some((model: any) => model.id === 'gpt-4o-mini' && model.available === true)).toBe(true)
-    expect(data.data.some((model: any) => model.id === 'claude-3-haiku-20240307' && model.available === true)).toBe(true)
+    // No DB models are seeded in this test's mocked prisma, so the listing
+    // falls back to the current-generation static catalog (mirroring the
+    // chat picker's unseeded-instance fallback) — not every id the static
+    // MODEL_CATALOG has ever shipped.
+    expect(data.data.some((model: any) => model.id === 'claude-haiku-4-5-20251001' && model.available === true)).toBe(true)
+    expect(data.data.some((model: any) => model.id === 'gpt-5.4-nano' && model.available === true)).toBe(true)
+    // Legacy catalog entries are routable but no longer listed by default.
+    expect(data.data.some((model: any) => model.id === 'gpt-4o-mini')).toBe(false)
+    expect(data.data.some((model: any) => model.id === 'claude-3-haiku-20240307')).toBe(false)
   })
 
   test('POST /ai/proxy/tokens validates input, project scope, and returns an expiring token', async () => {
