@@ -268,6 +268,76 @@ describe('POST /local/cloud-login/heartbeat', () => {
     const statusRes = await app.request('/api/local/cloud-login/status')
     expect((await statusRes.json()).cloudKeyRejected).toBe(false)
   })
+
+  // REPRODUCTION: a real desktop `main.log` showed this exact warning logged
+  // 15,000+ times over several weeks — once per 5-minute heartbeat tick for
+  // as long as the (persistently-revoked) key stayed rejected, drowning out
+  // everything else in the log and giving no signal that the situation had
+  // stabilized into a distinct, actionable problem vs. ambient noise. The
+  // fix logs only the false→true transition; the heartbeat response itself
+  // (and thus the renderer's banner) still reports `cloudKeyRejected: true`
+  // on every tick, so the UI is unaffected — only the log spam is gone.
+  test('REPRO: 401 heartbeat log warns once per rejection episode, not every tick', async () => {
+    findUniqueMock.mockImplementation(async () => ({ value: 'sk_revoked' }))
+    const warnSpy = mock(() => {})
+    const originalWarn = console.warn
+    console.warn = warnSpy as any
+    try {
+      mockFetch(() => bridgeErr(401, { ok: false, error: 'key revoked' }))
+      const app = mountApp()
+
+      // Simulate 20 consecutive 5-minute heartbeat ticks against the same
+      // persistently-revoked key (~100 minutes of the observed incident).
+      for (let i = 0; i < 20; i++) {
+        const res = await app.request('/api/local/cloud-login/heartbeat', { method: 'POST' })
+        expect(res.status).toBe(401)
+        expect((await res.json()).cloudKeyRejected).toBe(true)
+      }
+
+      const cloudLoginWarnings = warnSpy.mock.calls.filter((call) =>
+        String(call[0]).includes('[CloudLogin] Cloud rejected API key'),
+      )
+      expect(cloudLoginWarnings.length).toBe(1)
+    } finally {
+      console.warn = originalWarn
+    }
+  })
+
+  test('REPRO: a healthy heartbeat between episodes re-arms the once-per-episode warning', async () => {
+    findUniqueMock.mockImplementation(async () => ({ value: 'sk' }))
+    const warnSpy = mock(() => {})
+    const originalWarn = console.warn
+    console.warn = warnSpy as any
+    try {
+      const app = mountApp()
+
+      // Normalize the module-level flag to false regardless of what the
+      // previous test in this file left it as (it isn't reset in
+      // `beforeEach` since it's private state inside local-auth.ts).
+      mockFetch(() => bridgeOk({ ok: true }))
+      await app.request('/api/local/cloud-login/heartbeat', { method: 'POST' })
+
+      // Episode 1: rejected twice in a row -> exactly one warning.
+      mockFetch(() => bridgeErr(401, { ok: false }))
+      await app.request('/api/local/cloud-login/heartbeat', { method: 'POST' })
+      await app.request('/api/local/cloud-login/heartbeat', { method: 'POST' })
+
+      // Recovers.
+      mockFetch(() => bridgeOk({ ok: true }))
+      await app.request('/api/local/cloud-login/heartbeat', { method: 'POST' })
+
+      // Episode 2: a distinct, later rejection deserves its own warning.
+      mockFetch(() => bridgeErr(401, { ok: false }))
+      await app.request('/api/local/cloud-login/heartbeat', { method: 'POST' })
+
+      const cloudLoginWarnings = warnSpy.mock.calls.filter((call) =>
+        String(call[0]).includes('[CloudLogin] Cloud rejected API key'),
+      )
+      expect(cloudLoginWarnings.length).toBe(2)
+    } finally {
+      console.warn = originalWarn
+    }
+  })
 })
 
 // ─── GET /local/cloud-login/status ─────────────────────────────────────────

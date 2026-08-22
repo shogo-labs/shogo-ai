@@ -125,8 +125,13 @@ export function localAuthRoutes() {
         // 401 ⇒ key revoked or superseded; surface so the UI can prompt
         // the user to re-sign-in. We never wipe credentials automatically.
         if (res.status === 401) {
-          cloudKeyRejected = true
-          console.warn('[CloudLogin] Cloud rejected API key (401) — key may be revoked or expired. User must re-sign-in.')
+          // De-dupe: without this, a persistently-revoked key logged this
+          // warning on every 5-minute heartbeat tick forever — one real
+          // instance produced 15,000+ identical lines over several weeks,
+          // drowning out everything else in the log. Only log the
+          // false→true transition (`markCloudKeyRejected` below mirrors
+          // this for the federated-upstream path).
+          markCloudKeyRejected('heartbeat 401')
         }
         return c.json({
           ok: false,

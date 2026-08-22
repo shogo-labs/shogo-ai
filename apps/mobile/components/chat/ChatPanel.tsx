@@ -73,6 +73,7 @@ import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import { probeChatTurnStatus, shouldAttachLiveStream, type ChatTurnStatus } from "./probe-turn-status"
 import { decideRetryAction, lastAssistantHasResumableWork } from "./retry-triage"
 import { decideStallRecovery, computeRecoveryBackoff } from "./stall-recovery"
+import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
@@ -2350,6 +2351,75 @@ export const ChatPanel = observer(function ChatPanel({
     },
   })
 
+  // Circuit breaker for the *automatic* resume paths (Effect 1's post-load
+  // live-turn probe and `attemptStallRecovery`'s stall detector below) — as
+  // opposed to the user-initiated `handleRetry` tap, which always honors the
+  // user's explicit request and is intentionally NOT gated here.
+  //
+  // Both automatic paths are individually guarded against re-firing for the
+  // *same* turn, but a real-world log showed a ~45min storm of `resumeStream()`
+  // calls every ~8-10s, each replaying the AI SDK's default `/stream` resume
+  // convention from `fromSeq=0` (the default has no way to carry our custom
+  // seq cursor — see `buildChatTurnUrl` — so every automatic reattach re-reads
+  // the *entire* buffered turn from the start). If the freshly-reattached
+  // stream itself stalls quickly (e.g. because the client is offline, or the
+  // reattach races a session-boundary edge case), each of these paths can
+  // still legitimately re-fire on what looks like forward progress, and
+  // nothing previously stopped that from repeating indefinitely.
+  //
+  // This tracks a rolling window of automatic-resume timestamps (see
+  // `recordAutoResumeAttempt`) and trips once too many happen too quickly,
+  // falling back to the static "tap Retry" banner instead of hammering the
+  // runtime forever. Deliberately generous (a handful of legitimate
+  // reattaches — e.g. flaky wifi during a long tool run — shouldn't trip it)
+  // but tight enough to kill a tight reconnect loop.
+  const autoResumeTimestampsRef = useRef<number[]>([])
+  const autoResumeCircuitTrippedRef = useRef(false)
+  const guardedAutoResumeStream = useCallback(
+    (reason: "live-turn-probe" | "stall-recovery") => {
+      if (autoResumeCircuitTrippedRef.current) {
+        return
+      }
+      const { timestamps, tripped } = recordAutoResumeAttempt(
+        autoResumeTimestampsRef.current,
+        Date.now(),
+      )
+      autoResumeTimestampsRef.current = timestamps
+      if (tripped) {
+        autoResumeCircuitTrippedRef.current = true
+        console.error(
+          `[ChatPanel] Auto-resume circuit breaker tripped (${timestamps.length} automatic reconnects in the last minute, reason=${reason}); ` +
+            "giving up on auto-recovery and falling back to the manual Retry banner",
+        )
+        try {
+          Sentry.captureMessage("chat_auto_resume_circuit_breaker_tripped", {
+            level: "warning",
+            tags: { reason },
+            extra: {
+              turnId: currentTurnIdRef.current,
+              sessionId: currentSessionIdRef.current,
+              projectId: projectId ?? null,
+              lastSeq: turnLastSeqRef.current,
+              attemptsInWindow: timestamps.length,
+            },
+          })
+        } catch (reportErr) {
+          console.warn("[ChatPanel] failed to report circuit breaker trip to Sentry:", reportErr)
+        }
+        return
+      }
+      void resumeStream()
+    },
+    [resumeStream, projectId],
+  )
+  // A session switch means the user navigated away from whatever was
+  // looping — give the (new) session a clean breaker rather than carrying a
+  // trip from an unrelated chat forever.
+  useEffect(() => {
+    autoResumeTimestampsRef.current = []
+    autoResumeCircuitTrippedRef.current = false
+  }, [currentSessionId])
+
   const [stoppedMessages, setStoppedMessages] = useState<UIMessage[] | null>(null)
   const messagesRef = useRef(messages)
   messagesRef.current = messages
@@ -3205,7 +3275,7 @@ export const ChatPanel = observer(function ChatPanel({
         }).then((turnStatus) => {
           if (myGeneration !== loadGenerationRef.current) return
           if (shouldAttachLiveStream(turnStatus)) {
-            void resumeStream()
+            guardedAutoResumeStream("live-turn-probe")
           }
         })
       })
@@ -4512,7 +4582,7 @@ export const ChatPanel = observer(function ChatPanel({
             console.log(
               `[ChatPanel] auto-recovery: turn ${recoveryTurnId} still active — reattaching live stream (fromSeq=${fromSeqAtStall})`,
             )
-            void resumeStream()
+            guardedAutoResumeStream("stall-recovery")
             return
           }
           if (action === "give-up") {
@@ -4534,7 +4604,7 @@ export const ChatPanel = observer(function ChatPanel({
     chatWorkspaceId,
     expoFetch,
     nativeHeaders,
-    resumeStream,
+    guardedAutoResumeStream,
   ])
   stallRecoveryRef.current = attemptStallRecovery
 
