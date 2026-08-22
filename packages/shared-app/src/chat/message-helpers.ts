@@ -71,6 +71,48 @@ export function isTunnelDisconnectError(message: string): boolean {
 }
 
 /**
+ * Fetch-level "the request never reached a server" patterns — distinct from
+ * `CONNECTION_ERROR_PATTERNS` above, which also matches mid-stream drops
+ * reported *by* a server (tunnel relay timeouts, ECONNRESET forwarded from a
+ * proxy, etc). This is specifically for the client's OWN `fetch()` throwing
+ * before any response, which is what the offline send queue in `ChatPanel`
+ * needs to distinguish "no internet, safe to queue and retry" from "the
+ * server responded with a real error" (auth, usage limit, 500, ...).
+ */
+const CLIENT_NETWORK_FAILURE_PATTERNS = [
+  /failed to fetch/i, // Chrome/V8
+  /load failed/i, // Safari
+  /network request failed/i, // React Native
+  /networkerror/i, // Firefox
+  /the internet connection appears to be offline/i, // WebKit/native
+  /err_internet_disconnected/i,
+  /err_network_changed/i,
+  /err_connection_(refused|reset|closed|timed_out)/i,
+]
+
+/**
+ * True when `err` is the client's `fetch()` itself failing to reach any
+ * server (DNS failure, no route, connection refused/reset) — as opposed to
+ * the server responding with an HTTP error status or a mid-stream failure.
+ * Used to decide whether a failed send is safe to silently queue for
+ * automatic retry (network-class) or should surface as a normal error
+ * (everything else — the server DID respond, just unfavorably).
+ */
+export function isClientNetworkFailure(err: unknown): boolean {
+  if (!err) return false
+  const message = err instanceof Error ? err.message : String(err)
+  if (CLIENT_NETWORK_FAILURE_PATTERNS.some((p) => p.test(message))) return true
+  // A bare `TypeError` with no other classification is the DOM/RN fetch
+  // spec's generic "network error" signature (no HTTP response was ever
+  // received) — Chrome/Safari/RN all throw plain TypeErrors for this rather
+  // than a more specific subclass.
+  if (err instanceof TypeError && !/json|undefined|null|is not a function/i.test(message)) {
+    return true
+  }
+  return false
+}
+
+/**
  * Internal retryability marker the AI proxy embeds in stream-error messages
  * (see `apps/api/src/routes/ai-proxy.ts` / `packages/agent/src/retry-classifier.ts`).
  * It is meant for the server-side retry classifier, never for users, so we

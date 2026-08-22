@@ -55,6 +55,18 @@ export interface ChatTransportOptions {
    * flips. Ignored when `durableResume` is false (no wrapper exists).
    */
   onChunk?: (info: { bytes: number; resumed: boolean }) => void
+  /**
+   * Accessor for the current send's client-generated turn idempotency id,
+   * read fresh on every POST and forwarded as `X-Client-Turn-Id`. The caller
+   * (e.g. `ChatPanel`) sets the value right before invoking `sendMessage()`
+   * and reuses the SAME id across retries of one logical send (notably the
+   * offline send queue re-POSTing a message after a network failure) so the
+   * server can recognize a retry and attach to the existing turn instead of
+   * starting a duplicate one — see `X-Client-Turn-Id` handling in
+   * `apps/api/src/routes/project-chat.ts`. Return `undefined`/omit to send
+   * no header (older servers ignore unknown headers).
+   */
+  getClientTurnId?: () => string | undefined
 }
 
 export interface ChatTransportConfig {
@@ -118,6 +130,7 @@ export function useChatTransportConfig({
   chatSessionId,
   durableResume = true,
   onChunk,
+  getClientTurnId,
 }: ChatTransportOptions): ChatTransportConfig | undefined {
   return useMemo(() => {
     if (!projectId && !workspaceId && !localAgentUrl) return undefined
@@ -127,14 +140,21 @@ export function useChatTransportConfig({
       ? createAutoResumingFetch(baseFetch.bind(globalThis), { onChunk })
       : customFetch
 
-    // Compose `headers` so the caller-provided headers (cookies, auth) and
-    // the chat-session header are both forwarded. The AI SDK accepts either
-    // a static record or a thunk; collapse both forms here.
+    // Compose `headers` so the caller-provided headers (cookies, auth), the
+    // chat-session header, and the per-send turn idempotency header are all
+    // forwarded. The AI SDK accepts either a static record or a thunk;
+    // collapse both forms here. `getClientTurnId` is read fresh on every
+    // request (unlike `chatSessionId`, which is fixed for this transport
+    // instance) so each send can carry its own id.
     const composedHeaders: ChatTransportConfig['headers'] | undefined =
-      chatSessionId
+      chatSessionId || getClientTurnId
         ? () => {
             const base = typeof headers === 'function' ? headers() : headers ?? {}
-            return { ...base, 'X-Chat-Session-Id': chatSessionId }
+            const result: Record<string, string> = { ...base }
+            if (chatSessionId) result['X-Chat-Session-Id'] = chatSessionId
+            const clientTurnId = getClientTurnId?.()
+            if (clientTurnId) result['X-Client-Turn-Id'] = clientTurnId
+            return result
           }
         : headers
 
@@ -144,5 +164,5 @@ export function useChatTransportConfig({
       fetch,
       headers: composedHeaders,
     }
-  }, [apiBaseUrl, projectId, workspaceId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume, onChunk])
+  }, [apiBaseUrl, projectId, workspaceId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume, onChunk, getClientTurnId])
 }

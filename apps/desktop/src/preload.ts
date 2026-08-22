@@ -240,6 +240,21 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.removeAllListeners('cloud-connection-status')
   },
 
+  // Offline-resilient chat, sleep/wake tier — see the `powerMonitor` wiring
+  // in main.ts. `onSystemResume` lets the chat UI force an immediate
+  // upstream-health probe / offline-queue drain right after the OS wakes,
+  // instead of waiting out its normal reconnect-poll interval.
+  onSystemResume: (callback: () => void): (() => void) => {
+    const listener = () => callback()
+    ipcRenderer.on('system-resume', listener)
+    return () => ipcRenderer.removeListener('system-resume', listener)
+  },
+  onSystemSuspend: (callback: () => void): (() => void) => {
+    const listener = () => callback()
+    ipcRenderer.on('system-suspend', listener)
+    return () => ipcRenderer.removeListener('system-suspend', listener)
+  },
+
   // Local filesystem fast-path for the IDE Monaco file tree + file reads.
   // Bypasses the loopback HTTP round-trip to per-project agent-runtimes so
   // the tree renders the moment the user opens a project, before the

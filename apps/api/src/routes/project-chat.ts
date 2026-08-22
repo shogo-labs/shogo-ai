@@ -29,6 +29,7 @@ import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billi
 import { enrichWorkspaceReferences, enrichProjectReferences } from "../lib/chat-references"
 import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
+import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -1083,6 +1084,66 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           },
           400
         )
+      }
+
+      // Turn idempotency: a `clientTurnId` that matches the most recently
+      // started turn for this chat session means this POST is a retry of an
+      // already-in-flight-or-recently-finished send — most commonly the
+      // client's offline send queue re-POSTing a message whose original
+      // request failed on a network error but may have actually reached the
+      // runtime. Attach to the existing buffered turn instead of starting a
+      // second `runAgentLoop` invocation. See `chat-turn-idempotency.ts` and
+      // `X-Client-Turn-Id` in `useChatTransport.ts`.
+      const clientTurnId: string | null =
+        c.req.header('X-Client-Turn-Id') ||
+        (typeof parsedBody?.clientTurnId === 'string' ? parsedBody.clientTurnId : null)
+
+      if (clientTurnId && isRecentClientTurn(incomingChatSessionId, clientTurnId)) {
+        console.log(
+          `[ProjectChat] X-Client-Turn-Id ${clientTurnId} matches a recent turn for session ` +
+            `${incomingChatSessionId} — attaching to the existing buffer instead of starting a new turn`,
+        )
+        try {
+          const attachResponse = await fetchFromRuntime(
+            projectId,
+            `/agent/chat/${incomingChatSessionId}/stream`,
+            { method: 'GET' },
+          )
+          if (attachResponse.status !== 204 && attachResponse.body) {
+            const responseHeaders = new Headers()
+            attachResponse.headers.forEach((value, key) => {
+              if (!["content-length", "transfer-encoding", "connection"].includes(key.toLowerCase())) {
+                responseHeaders.set(key, value)
+              }
+            })
+            responseHeaders.set("Access-Control-Allow-Origin", "*")
+            responseHeaders.set(
+              "Access-Control-Expose-Headers",
+              "X-Turn-Id, X-Chat-Session-Id, X-Last-Seq, X-Turn-Status",
+            )
+            responseHeaders.set("X-Accel-Buffering", "no")
+            chatSpan.setAttribute("chat.attached_existing_turn", true)
+            chatSpan.setStatus({ code: SpanStatusCode.OK, message: "attached_existing_turn" })
+            chatSpan.end()
+            return new Response(attachResponse.body, { status: attachResponse.status, headers: responseHeaders })
+          }
+          // 204 — the buffered turn already aged out of the runtime's
+          // StreamBufferStore. Nothing to attach to; fall through and start
+          // a fresh turn below (still recording the same clientTurnId).
+          console.log(
+            `[ProjectChat] No buffered turn to attach to for session ${incomingChatSessionId} ` +
+              `(clientTurnId=${clientTurnId}) — starting a fresh turn`,
+          )
+        } catch (err: any) {
+          console.warn(
+            `[ProjectChat] Failed to attach to existing turn for ${incomingChatSessionId}:`,
+            err?.message || err,
+          )
+          // Fall through and start a fresh turn rather than dropping the send.
+        }
+      }
+      if (clientTurnId) {
+        recordClientTurn(incomingChatSessionId, clientTurnId)
       }
 
       // Open a billing session so the AI proxy accumulates tokens across

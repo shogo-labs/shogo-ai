@@ -54,6 +54,7 @@ import {
   extractTextContent,
   formatErrorMessage,
   isTunnelDisconnectError,
+  isClientNetworkFailure,
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
@@ -148,7 +149,7 @@ import {
 import { subagentStreamStore } from "../../lib/subagent-stream-store"
 import { teamStore } from "../../lib/team-store"
 import * as ExpoLinking from "expo-linking"
-import { AlertCircle, RefreshCw, X, ChevronDown } from "lucide-react-native"
+import { AlertCircle, RefreshCw, WifiOff, X, ChevronDown } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
 import { usePlanStreamSafe } from "./PlanStreamContext"
 import { AgentClient } from "@shogo-ai/sdk/agent"
@@ -195,6 +196,33 @@ export type QueuedMessage = {
   files?: FileAttachment[]
   selectedModel?: string
   references?: ChatReference[]
+  /**
+   * True when this entry is here because a send already failed on a client
+   * network error (`isClientNetworkFailure`) — as opposed to the normal case
+   * of a message typed while a turn was streaming. Drained the same way
+   * (falling-edge / online-restored effects both call `processMessageQueue`)
+   * but redelivered via `offlineRetry`'s exact payload instead of being
+   * re-run through `sendMessageInternal` — the original call already
+   * persisted the user message and set the optimistic bubble, so re-running
+   * the full send path would duplicate both.
+   */
+  offline?: boolean
+  /** Only set when `offline` is true: the exact wire payload to redeliver. */
+  offlineRetry?: {
+    messagePayload: { text: string; files?: Array<{ type: "file"; mediaType: string; url: string; name?: string }> }
+    bodyExtra: Record<string, unknown>
+  }
+}
+
+/**
+ * Client-generated turn idempotency id, forwarded as `X-Client-Turn-Id`
+ * (see `useChatTransport.ts`). Not a real UUID — `crypto.randomUUID` isn't
+ * reliably available across every Hermes/web/native runtime this file ships
+ * on — just unique enough to de-dupe retries of one logical send against
+ * `apps/api/src/lib/chat-turn-idempotency.ts`.
+ */
+function generateClientTurnId(): string {
+  return `ctid-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 function buildOptimisticUserMessage(input: OptimisticUserInput, id = "optimistic-user-pending"): UIMessage {
@@ -1386,6 +1414,15 @@ export const ChatPanel = observer(function ChatPanel({
     lastChatProgressAtRef.current = Date.now()
   }, [])
 
+  // Turn idempotency id for the send currently in flight (or about to be).
+  // Set in `sendMessageInternal` right before calling `sendMessage()`; the
+  // transport's `getClientTurnId` reads it fresh on every POST. A retry of
+  // the SAME logical send (the offline send queue re-POSTing after a
+  // network failure) passes its previously-generated id back in via
+  // `extraBody.clientTurnId` so this ref — and therefore the header the
+  // server de-dupes on — stays stable across attempts.
+  const pendingClientTurnIdRef = useRef<string | undefined>(undefined)
+
   // Flipped synchronously in `handleStop` so `onFinish` (which fires after
   // `stop()` finalises the in-flight assistant message) can distinguish a
   // user-initiated abort from a real "agent returned nothing" condition.
@@ -1415,6 +1452,7 @@ export const ChatPanel = observer(function ChatPanel({
     // POST by tens of seconds on a cold turn (system-prompt build +
     // Anthropic TTFB).
     onChunk: bumpChatProgress,
+    getClientTurnId: () => pendingClientTurnIdRef.current,
   })
   const chatTransport = useMemo(
     () => (transportConfig ? new DefaultChatTransport(transportConfig) : undefined),
@@ -1543,6 +1581,30 @@ export const ChatPanel = observer(function ChatPanel({
           if (parts.length === last.parts.length) return prev
           return prev.map((m, i) => (i === lastIdx ? { ...m, parts } : m))
         })
+        return
+      }
+
+      // The runtime's fast inference-retry budget was exhausted on a still-
+      // retryable failure and it couldn't reach the model's upstream health
+      // endpoint — it's now "parked", polling connectivity with backoff
+      // instead of failing the turn (see `packages/agent/src/connectivity.ts`).
+      // Drive the "waiting for connection" banner from these heartbeats
+      // rather than a client-side timer, since the runtime is the one that
+      // actually knows whether it's still parked.
+      if (dataPart.type === "data-connectivity-wait") {
+        const d = (dataPart as any).data ?? {}
+        if (d.state === "reconnected") {
+          setConnectivityWait(null)
+          setJustReconnected(true)
+          setTimeout(() => setJustReconnected(false), 3000)
+        } else {
+          setJustReconnected(false)
+          setConnectivityWait({
+            attempt: typeof d.attempt === "number" ? d.attempt : 0,
+            elapsedMs: typeof d.elapsedMs === "number" ? d.elapsedMs : 0,
+            nextProbeInMs: typeof d.nextProbeInMs === "number" ? d.nextProbeInMs : 0,
+          })
+        }
         return
       }
 
@@ -1861,6 +1923,10 @@ export const ChatPanel = observer(function ChatPanel({
           turnCompletedRef.current = false
           turnLastSeqRef.current = 0
         }
+        // A fresh turn can't already be parked — clear any stale banner from
+        // a previous turn (defensive; normally a `reconnected` frame already
+        // cleared it before the turn completed).
+        setConnectivityWait(null)
       }
       if (dataPart.type === "data-turn-seq") {
         const seq = (dataPart as any).data?.seq
@@ -2604,6 +2670,23 @@ export const ChatPanel = observer(function ChatPanel({
   // app backgrounded, transport blip) but is still running server-side. Drives
   // a transient "Reconnecting…" banner instead of a dead-end "tap Retry".
   const [streamAutoRecovering, setStreamAutoRecovering] = useState(false)
+  // Non-null while the runtime's agent loop is "parked" waiting for internet
+  // connectivity to return (see `data-connectivity-wait` handling in
+  // `onData` above). Distinct from `streamAutoRecovering`: that one is the
+  // CLIENT reconnecting its display stream to a turn that's still running
+  // server-side; this one is the SERVER's model call itself unable to reach
+  // the internet. Both can't be true at once in practice (a parked turn
+  // keeps sending heartbeats, so the client's own stream never goes stale),
+  // but they're tracked separately since they have different causes and
+  // different user-facing copy.
+  const [connectivityWait, setConnectivityWait] = useState<{
+    attempt: number
+    elapsedMs: number
+    nextProbeInMs: number
+  } | null>(null)
+  // Briefly true right after a park ends, to show "Back online, resuming…"
+  // instead of just silently clearing the banner.
+  const [justReconnected, setJustReconnected] = useState(false)
 
   const isRemoteInstance = !!localAgentUrl
   const isTunnelError = !!(error && isRemoteInstance && isTunnelDisconnectError(error.message))
@@ -2665,6 +2748,14 @@ export const ChatPanel = observer(function ChatPanel({
 
   const errorBannerNeedsReadMore =
     errorBannerText.split(/\n/).length > 2 || errorBannerText.length > 140
+
+  const connectivityWaitElapsedLabel = useMemo(() => {
+    if (!connectivityWait) return ''
+    const totalSec = Math.max(0, Math.floor(connectivityWait.elapsedMs / 1000))
+    const mins = Math.floor(totalSec / 60)
+    const secs = totalSec % 60
+    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+  }, [connectivityWait])
 
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
   const [optimisticUserInput, setOptimisticUserInput] = useState<OptimisticUserInput | null>(null)
@@ -2815,6 +2906,8 @@ export const ChatPanel = observer(function ChatPanel({
     // stale banner from an earlier turn dismisses the moment the user taps
     // Stop — they shouldn't have to send a new message to get rid of it.
     setEmptyResponseError(null)
+    setConnectivityWait(null)
+    setJustReconnected(false)
     setStoppedMessages([...messagesRef.current])
     stop()
 
@@ -3744,6 +3837,64 @@ export const ChatPanel = observer(function ChatPanel({
   }, [])
 
   // Internal function that actually sends a message (used by queue processor)
+  // Isolated "actually put it on the wire" step, factored out of
+  // `sendMessageInternal` so a network-class failure can be queued for
+  // automatic retry WITHOUT re-running the persistence/optimistic-UI side
+  // effects (`actions.addMessage`, `setOptimisticUserInput`) that already
+  // ran before this is called — re-running those on retry would duplicate
+  // the persisted user message. Non-network failures (auth, usage limit,
+  // 5xx, etc. — the server DID respond) still propagate normally so the
+  // existing error banner handles them.
+  const deliverMessage = useCallback(
+    async (
+      messagePayload: { text: string; files?: Array<{ type: "file"; mediaType: string; url: string; name?: string }> },
+      bodyExtra: Record<string, unknown>,
+      opts?: { queuedId?: string }
+    ) => {
+      const clientTurnId = typeof bodyExtra.clientTurnId === "string" ? bodyExtra.clientTurnId : undefined
+      pendingClientTurnIdRef.current = clientTurnId
+      try {
+        await sendMessage(messagePayload, { body: bodyExtra })
+      } catch (err) {
+        if (!isClientNetworkFailure(err)) throw err
+
+        console.warn(
+          "[ChatPanel] Send failed on a network error — queueing for automatic retry once back online:",
+          err
+        )
+        const queuedFiles: FileAttachment[] | undefined = messagePayload.files?.map((f) => ({
+          dataUrl: f.url,
+          type: f.mediaType,
+          name: f.name ?? "",
+        }))
+        const entry: QueuedMessage = {
+          id: opts?.queuedId ?? `offline-${clientTurnId ?? generateClientTurnId()}`,
+          content: messagePayload.text,
+          files: queuedFiles,
+          selectedModel: typeof bodyExtra.agentMode === "string" ? bodyExtra.agentMode : undefined,
+          references: Array.isArray(bodyExtra.references) ? (bodyExtra.references as ChatReference[]) : undefined,
+          offline: true,
+          offlineRetry: { messagePayload, bodyExtra },
+        }
+        setMessageQueue((queue) => {
+          const existingIdx = opts?.queuedId ? queue.findIndex((m) => m.id === opts.queuedId) : -1
+          if (existingIdx !== -1) {
+            const copy = [...queue]
+            copy[existingIdx] = entry
+            return copy
+          }
+          return [...queue, entry]
+        })
+        // Swallowed — the send is handled via the queue now, not a hard
+        // failure. The persisted user message + optimistic bubble from
+        // `sendMessageInternal` (or the original attempt, on a retry) stay
+        // exactly as they are; the "N Queued" strip is the user-visible
+        // signal that it hasn't actually gone out yet.
+      }
+    },
+    [sendMessage]
+  )
+
   const sendMessageInternal = useCallback(
     async (
       content: string,
@@ -3885,6 +4036,16 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       try {
+        // Reuse the caller-supplied id when this is a retry of an already-
+        // queued send (see the offline send queue's drain path); otherwise
+        // mint a fresh one for this new logical send. Either way, stash it
+        // in the ref the transport's `getClientTurnId` reads so the header
+        // on THIS request matches what we record here.
+        const clientTurnId =
+          (typeof extraBody?.clientTurnId === "string" && extraBody.clientTurnId) ||
+          generateClientTurnId()
+        pendingClientTurnIdRef.current = clientTurnId
+
         const bodyExtra: Record<string, unknown> = {
           featureId,
           phase,
@@ -3896,6 +4057,7 @@ export const ChatPanel = observer(function ChatPanel({
           interactionMode: interactionModeRef.current,
           dualPlan: dualPlanRef.current,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          clientTurnId,
         }
         const planToSend = confirmedPlanRef.current
         if (planToSend) {
@@ -3916,7 +4078,7 @@ export const ChatPanel = observer(function ChatPanel({
           Object.assign(bodyExtra, extraBody)
         }
         console.log("[ChatPanel][send] bodyExtra — interactionMode:", bodyExtra.interactionMode, "agentMode:", bodyExtra.agentMode, "hasConfirmedPlan:", !!bodyExtra.confirmedPlan, "text:", trimmedContent.slice(0, 80))
-        await sendMessage(messagePayload, { body: bodyExtra })
+        await deliverMessage(messagePayload, bodyExtra)
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
         throw err
@@ -3927,7 +4089,7 @@ export const ChatPanel = observer(function ChatPanel({
     [
       currentSessionId,
       studioChat,
-      sendMessage,
+      deliverMessage,
       featureId,
       phase,
       extractMediaType,
@@ -3993,18 +4155,36 @@ export const ChatPanel = observer(function ChatPanel({
     setMessageQueue((queue) => queue.slice(1))
 
     try {
-      await sendMessageInternal(
-        nextMessage.content,
-        nextMessage.files,
-        nextMessage.selectedModel,
-        undefined,
-        nextMessage.references
-      )
+      if (nextMessage.offline && nextMessage.offlineRetry) {
+        // Redeliver the exact original payload rather than re-running
+        // `sendMessageInternal` — that already persisted the user message
+        // and set the optimistic bubble on the FIRST attempt; re-running it
+        // here would duplicate both. `deliverMessage` re-queues (doesn't
+        // throw) on a repeat network failure, so this "succeeds" either way.
+        await deliverMessage(
+          nextMessage.offlineRetry.messagePayload,
+          nextMessage.offlineRetry.bodyExtra,
+          { queuedId: nextMessage.id }
+        )
+        // An offline retry that fails again never starts a real stream, so
+        // the `isStreaming` falling-edge effect below will never fire for
+        // it — reset here so the next online-restored tick can pick the
+        // queue back up instead of finding it wedged `true` forever.
+        isProcessingQueueRef.current = false
+      } else {
+        await sendMessageInternal(
+          nextMessage.content,
+          nextMessage.files,
+          nextMessage.selectedModel,
+          undefined,
+          nextMessage.references
+        )
+      }
     } catch (err) {
       console.error("[ChatPanel] Error processing queued message:", err)
       isProcessingQueueRef.current = false
     }
-  }, [isStreaming, sendMessageInternal, currentSessionId, messageQueue])
+  }, [isStreaming, sendMessageInternal, deliverMessage, currentSessionId, messageQueue])
 
   // Process queue when streaming completes
   const queueStreamingRef = useRef(false)
@@ -4019,6 +4199,72 @@ export const ChatPanel = observer(function ChatPanel({
       }
     }
   }, [isStreaming, messageQueue.length, processMessageQueue, currentSessionId])
+
+  // Drain offline-queued sends once connectivity looks restored. Unlike the
+  // falling-edge effect above (which only fires after a real stream ends),
+  // an offline entry never starts a stream in the first place — nothing
+  // will naturally trigger a retry unless we watch for connectivity
+  // ourselves. `navigator.onLine`/the `online` event only report link
+  // state (a captive portal or LAN-only wifi still fires `online`), so we
+  // confirm with the same `/api/ai/upstream-health` probe the server-side
+  // park tier uses before actually draining.
+  const hasOfflineQueued = messageQueue.some((m) => m.offline)
+  useEffect(() => {
+    if (!hasOfflineQueued || !currentSessionId) return
+
+    let cancelled = false
+    const checkUpstreamReachable = async (): Promise<boolean> => {
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return false
+      if (!API_URL) return true
+      try {
+        const fetchFn = expoFetch ?? globalThis.fetch
+        const res = await fetchFn(`${API_URL}/api/ai/upstream-health`, {
+          signal: AbortSignal.timeout(4000),
+        } as any)
+        if (!res.ok) return false
+        const data = await res.json().catch(() => null)
+        return !!data?.reachable
+      } catch {
+        return false
+      }
+    }
+
+    const tryDrain = async () => {
+      if (cancelled || isStreaming || isProcessingQueueRef.current) return
+      const reachable = await checkUpstreamReachable()
+      if (!cancelled && reachable) {
+        processMessageQueue()
+      }
+    }
+
+    const onOnline = () => { void tryDrain() }
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("online", onOnline)
+    }
+    // Desktop sleep/wake: `online` doesn't reliably fire for a wake with
+    // wifi already associated (the OS never dropped the link, it just
+    // stopped scheduling timers), so a laptop that slept through an entire
+    // outage would otherwise sit on the 10s poll below. `system-resume` is
+    // Electron's `powerMonitor` forwarded via preload — see the effect
+    // above and `apps/desktop/src/main.ts`. No-op on mobile/web.
+    const bridge = (window as unknown as { shogoDesktop?: { onSystemResume?: (cb: () => void) => () => void } })
+      .shogoDesktop
+    const unsubscribeResume = bridge?.onSystemResume?.(() => { void tryDrain() })
+    // Poll as a fallback for the remaining case neither event covers: a
+    // captive portal / LAN with a link but no real internet — the
+    // upstream-health probe is the actual source of truth.
+    const interval = setInterval(() => { void tryDrain() }, 10_000)
+    void tryDrain()
+
+    return () => {
+      cancelled = true
+      if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
+        window.removeEventListener("online", onOnline)
+      }
+      unsubscribeResume?.()
+      clearInterval(interval)
+    }
+  }, [hasOfflineQueued, isStreaming, currentSessionId, processMessageQueue, expoFetch])
 
   // Stall watchdog — break a wedged `submitted`/`streaming` status so the
   // queue-drain effect above gets its falling edge.
@@ -4063,6 +4309,23 @@ export const ChatPanel = observer(function ChatPanel({
     }
     document.addEventListener("visibilitychange", onVisibility)
     return () => document.removeEventListener("visibilitychange", onVisibility)
+  }, [])
+
+  // Desktop-only: same false-stall-trip problem as the tab-visibility case
+  // above, but for a real OS sleep/wake (lid close, `pmset sleepnow`, etc.)
+  // rather than a backgrounded tab — a nap can outlast the stall threshold
+  // by hours. `window.shogoDesktop.onSystemResume` is wired from Electron's
+  // `powerMonitor` in `apps/desktop/src/main.ts`; it's undefined on mobile
+  // / web builds, where this is a no-op.
+  useEffect(() => {
+    const bridge = (window as unknown as { shogoDesktop?: { onSystemResume?: (cb: () => void) => () => void } })
+      .shogoDesktop
+    if (!bridge?.onSystemResume) return
+    const unsubscribe = bridge.onSystemResume(() => {
+      console.log("[ChatPanel] System resumed from sleep — resetting stall watchdog and re-checking connectivity")
+      lastChatProgressAtRef.current = Date.now()
+    })
+    return unsubscribe
   }, [])
 
   useEffect(() => {
@@ -5355,6 +5618,43 @@ export const ChatPanel = observer(function ChatPanel({
               </View>
             </View>
           )}
+
+          {/* Connectivity park banner — the runtime's model call couldn't reach
+              its upstream health endpoint and is polling with backoff instead
+              of failing the turn (see `data-connectivity-wait` in `onData`).
+              Rendered ahead of the generic error banner since a parked turn
+              is still alive, not failed — the user should see "waiting", not
+              an error, and Cancel maps to the same `handleStop` as everywhere
+              else. `justReconnected` shows a brief confirmation once the
+              runtime resumes rather than snapping straight back to nothing. */}
+          {(connectivityWait || justReconnected) && !errorDismissed ? (
+            <View className="px-4 pb-2 max-w-3xl w-full self-center">
+              <View className="flex-row items-start gap-1.5 rounded-md border border-orange-400/50 bg-orange-50 dark:bg-orange-950/30 px-3 py-2">
+                {justReconnected ? (
+                  <RefreshCw size={14} className="h-3.5 w-3.5 shrink-0 mt-0.5 text-orange-600 dark:text-orange-400" />
+                ) : (
+                  <WifiOff size={14} className="h-3.5 w-3.5 shrink-0 mt-0.5 text-orange-600 dark:text-orange-400" />
+                )}
+                <View className="flex-1 min-w-0 flex-row items-center justify-between gap-1.5">
+                  <Text className="flex-1 text-xs text-orange-700 dark:text-orange-300">
+                    {justReconnected
+                      ? 'Back online — resuming\u2026'
+                      : `No internet connection. Waiting to resume${connectivityWaitElapsedLabel ? ` (${connectivityWaitElapsedLabel})` : ''}\u2026`}
+                  </Text>
+                  {!justReconnected && (
+                    <Pressable
+                      onPress={handleStop}
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel and stop waiting for connection"
+                      className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
+                    >
+                      <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">Cancel</Text>
+                    </Pressable>
+                  )}
+                </View>
+              </View>
+            </View>
+          ) : null}
 
           {/* Error Alert — cap long messages so the sidebar layout stays usable.
               Also surfaces while auto-recovery is reconnecting, even when the

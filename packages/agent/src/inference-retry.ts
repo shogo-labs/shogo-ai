@@ -37,12 +37,38 @@ export interface InferenceRetryOptions {
   computeDelayMs?: (attempt: number) => number
   /** Injectable sleep (tests pass a no-op / fake-timer). */
   sleep?: (ms: number) => Promise<void>
+  /**
+   * Layer 7: connectivity park. When the fast-retry budget above (`maxAttempts`)
+   * is exhausted on a *still-retryable* failure, and a probe URL is available
+   * (explicit here, or env `AI_UPSTREAM_HEALTH_URL`), the agent loop polls
+   * upstream reachability with backoff (`connectivity.ts`) instead of failing
+   * the turn — this is what lets a turn survive a real internet outage rather
+   * than just a few-second blip. Pass `false` to disable parking even when a
+   * probe URL is configured (e.g. deployments that want today's fail-fast
+   * behavior). Defaults to enabled when a probe URL resolves.
+   */
+  connectivityWait?: ConnectivityParkOptions | false
+}
+
+export interface ConnectivityParkOptions {
+  /** Health-check URL to poll. Defaults to env `AI_UPSTREAM_HEALTH_URL`. */
+  probeUrl?: string
+  /** Overall park budget in ms. `0` = unlimited. Defaults to `SHOGO_OFFLINE_MAX_WAIT_MS` (30 min). */
+  maxWaitMs?: number
+  /** Injectable probe (tests script a reachable/unreachable sequence). */
+  probe?: (url: string) => Promise<boolean>
+  /** Injectable sleep — mirrors the fast-retry `sleep` seam above. */
+  sleep?: (ms: number) => Promise<void>
+  /** Injectable clock (tests use a fake clock for deterministic elapsed math). */
+  now?: () => number
 }
 
 export interface ResolvedInferenceRetry {
   maxAttempts: number
   computeDelayMs: (attempt: number) => number
   sleep: (ms: number) => Promise<void>
+  /** `null` when parking is disabled or no probe URL is configured anywhere. */
+  connectivityWait: (ConnectivityParkOptions & { probeUrl: string }) | null
 }
 
 export interface InferenceRetryInfo {
@@ -101,7 +127,16 @@ export function resolveInferenceRetryOptions(
 
   const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
 
-  return { maxAttempts, computeDelayMs, sleep }
+  let connectivityWait: (ConnectivityParkOptions & { probeUrl: string }) | null = null
+  if (o.connectivityWait !== false) {
+    const cw = o.connectivityWait ?? {}
+    const probeUrl = cw.probeUrl ?? process.env.AI_UPSTREAM_HEALTH_URL
+    if (probeUrl) {
+      connectivityWait = { ...cw, probeUrl }
+    }
+  }
+
+  return { maxAttempts, computeDelayMs, sleep, connectivityWait }
 }
 
 export interface InferenceFailure {

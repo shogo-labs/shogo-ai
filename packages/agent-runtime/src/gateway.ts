@@ -2835,6 +2835,46 @@ export class AgentGateway {
               `(reason=${info.reason}, delay=${info.delayMs}ms) for session ${sessionId}`,
           )
         },
+        // Layer 7: connectivity park. Fires when the fast inference-retry
+        // budget above is exhausted but the failure is still classified
+        // retryable and a probe URL resolved (desktop injects
+        // AI_UPSTREAM_HEALTH_URL). Ticks at least every 15s while parked —
+        // comfortably under both the client's 180s stall-watchdog threshold
+        // (apps/mobile/lib/chat-stall-watchdog.ts) and the stream buffer's
+        // grace window, so these heartbeats keep a long-parked turn's SSE
+        // connection (and the buffer replay a reconnecting client resumes
+        // into) alive instead of looking dead.
+        onConnectivityWait: (info) => {
+          if (uiWriter) {
+            uiWriter.write({
+              type: 'data-connectivity-wait',
+              data: {
+                state: 'waiting',
+                attempt: info.attempt,
+                elapsedMs: info.elapsedMs,
+                nextProbeInMs: info.nextProbeInMs,
+              },
+            } as any)
+          }
+          console.warn(
+            `${this.logPrefix} Connectivity park: attempt ${info.attempt}, ` +
+              `elapsed ${Math.round(info.elapsedMs / 1000)}s, next probe in ${Math.round(info.nextProbeInMs / 1000)}s ` +
+              `for session ${sessionId}`,
+          )
+        },
+        // Fires once, right before the loop resumes generation after a
+        // successful park. A terminal frame with a distinct `state` so the
+        // client can clear its "waiting for connection" banner immediately
+        // rather than waiting for the next content event.
+        onConnectivityReconnected: () => {
+          if (uiWriter) {
+            uiWriter.write({
+              type: 'data-connectivity-wait',
+              data: { state: 'reconnected' },
+            } as any)
+          }
+          console.warn(`${this.logPrefix} Connectivity restored — resuming turn for session ${sessionId}`)
+        },
         onToolCallStart: (toolName, toolCallId) => {
           this._lastTool = toolName
           flushAssistantText()

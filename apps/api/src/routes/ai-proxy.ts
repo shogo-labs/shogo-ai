@@ -3754,6 +3754,66 @@ export function aiProxyRoutes() {
     })
   })
 
+  // ---------------------------------------------------------------------
+  // Upstream connectivity probe
+  //
+  // Used by the agent loop's "park" tier (see `packages/agent/src/
+  // connectivity.ts`) to tell "no internet" apart from "provider is having
+  // an issue" once the fast pre-stream retries in `fetchAnthropicWithRetry`
+  // are exhausted. Any HTTP response — even a 4xx/5xx — means the network
+  // path to the target is up (DNS resolved, TCP/TLS connected); we only
+  // report `reachable: false` when the request never gets a response at all
+  // (DNS failure, connection refused/reset, timeout). Only a coarse `target`
+  // label is returned (never the resolved URL) since this route is mounted
+  // before the general auth middleware and callable without a proxy token.
+  // ---------------------------------------------------------------------
+  type UpstreamHealthTarget = 'cloud' | 'direct' | 'local-llm'
+
+  function resolveUpstreamHealthTarget(): { mode: UpstreamHealthTarget; url: string } {
+    const localBase = process.env.LOCAL_LLM_BASE_URL
+    if (process.env.AI_MODE === 'local-llm' && localBase) {
+      return { mode: 'local-llm', url: localBase.replace(/\/$/, '') }
+    }
+    if (isShogoCloudForwarding()) {
+      return { mode: 'cloud', url: `${getShogoCloudUrl()}/api/health` }
+    }
+    return { mode: 'direct', url: 'https://api.anthropic.com' }
+  }
+
+  const UPSTREAM_HEALTH_CACHE_MS = 2_000
+  const UPSTREAM_HEALTH_TIMEOUT_MS = 3_000
+  let upstreamHealthCache: { mode: UpstreamHealthTarget; reachable: boolean; checkedAt: number } | null = null
+
+  async function probeUpstreamReachable(url: string, timeoutMs: number): Promise<boolean> {
+    try {
+      await fetch(url, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  router.get('/ai/upstream-health', async (c) => {
+    const target = resolveUpstreamHealthTarget()
+    const now = Date.now()
+    if (
+      upstreamHealthCache &&
+      upstreamHealthCache.mode === target.mode &&
+      now - upstreamHealthCache.checkedAt < UPSTREAM_HEALTH_CACHE_MS
+    ) {
+      return c.json({
+        reachable: upstreamHealthCache.reachable,
+        target: target.mode,
+        checkedAt: upstreamHealthCache.checkedAt,
+        cached: true,
+      })
+    }
+
+    const reachable = await probeUpstreamReachable(target.url, UPSTREAM_HEALTH_TIMEOUT_MS)
+    upstreamHealthCache = { mode: target.mode, reachable, checkedAt: now }
+    return c.json({ reachable, target: target.mode, checkedAt: now, cached: false })
+  })
+
   return router
 }
 

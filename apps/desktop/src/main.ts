@@ -17,7 +17,7 @@ if (handleSquirrelEvent()) {
 import { initSentry, setSentryDeviceTag } from './sentry'
 initSentry()
 
-import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog } from 'electron'
+import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
@@ -1755,6 +1755,30 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (!windowManager.hasWindows()) {
       createWindow()
+    }
+  })
+
+  // Offline-resilient chat, sleep/wake tier: a laptop suspend can outlast
+  // both the agent loop's fast inference-retry budget AND its connectivity
+  // park polling by a wide margin (backoff caps at 15s; a lid-closed nap is
+  // often 8+ hours). The park loop and the renderer's own reconnect polls
+  // (`ChatPanel`'s offline send-queue drain, `auto-resuming-fetch`) will
+  // eventually notice on their own timers, but "eventually" after a long
+  // sleep means minutes of dead air before the first post-wake probe fires.
+  // `powerMonitor.on('resume', ...)` fires immediately when the OS wakes,
+  // so we forward it to every renderer to force an immediate probe/retry
+  // instead of waiting out normal backoff. See `onSystemResume` in
+  // `preload.ts`.
+  powerMonitor.on('resume', () => {
+    console.log('[Desktop] System resumed from sleep — notifying renderers to re-probe connectivity')
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('system-resume')
+    }
+  })
+  powerMonitor.on('suspend', () => {
+    console.log('[Desktop] System suspending')
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('system-suspend')
     }
   })
 })
