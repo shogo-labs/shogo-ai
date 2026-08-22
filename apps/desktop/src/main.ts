@@ -388,6 +388,32 @@ function mapCloudLoginError(err: CloudLoginError): string {
 const HEARTBEAT_INTERVAL_MS = 5 * 60_000
 let heartbeatTimer: NodeJS.Timeout | null = null
 
+// Bug: a persistently-revoked key used to push the SAME passive
+// `cloud-connection-status` IPC event every 5 minutes forever, logging a
+// warning each tick and relying on the user to notice a small banner buried
+// on the Settings screen. One user's logs showed 15,000+ of these silent
+// rejections over weeks — the underlying "please sign in again" issue never
+// surfaced anywhere the user would actually see it. Track the rejection as
+// an *episode* instead of a per-tick fact: warn/notify once when it starts,
+// stay quiet while it persists, and only reset once the key is healthy
+// again (so a future, unrelated rejection still gets its own notification).
+let cloudKeyRejectionNotified = false
+
+function notifyCloudKeyRejected(): void {
+  if (cloudKeyRejectionNotified) return
+  cloudKeyRejectionNotified = true
+  if (!Notification.isSupported()) return
+  const n = new Notification({
+    title: 'Shogo Cloud sign-in needed',
+    body: 'Your cloud connection was rejected — click to reconnect in Settings.',
+    silent: false,
+  })
+  n.on('click', () => {
+    windowManager.focusAndNavigatePrimaryWindow('/general')
+  })
+  n.show()
+}
+
 function startCloudLoginHeartbeat(): void {
   if (heartbeatTimer) return
   const tick = async (): Promise<void> => {
@@ -399,7 +425,11 @@ function startCloudLoginHeartbeat(): void {
       })
       const body = (await res.json().catch(() => ({}))) as CloudLoginBody
       if (body?.cloudKeyRejected) {
-        console.warn('[Desktop] Cloud rejected API key — notifying renderer of connection issue')
+        notifyCloudKeyRejected()
+      } else if (body?.ok) {
+        // Key is healthy again — a future rejection is a new, distinct
+        // episode and deserves its own notification.
+        cloudKeyRejectionNotified = false
       }
       // Push current cloud-connection health to the renderer so the
       // Settings UI can show a warning banner without signing out.
