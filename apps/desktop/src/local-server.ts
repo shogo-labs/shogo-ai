@@ -227,8 +227,15 @@ function readHostRuntimeConfig(): import('./config').HostRuntimeConfig {
     return readConfig().hostRuntime
   } catch {
     // Config unreadable (first launch race, corrupt file) — fall back to the
-    // safe defaults so limits are still applied. Mirrors the DEFAULT in config.ts.
-    return { memoryMB: 2048, cpuPercent: 0, warmPoolSize: 0 }
+    // RAM-aware default so limits are still applied. Mirrors the DEFAULT in
+    // config.ts (see runtime-memory.ts for why this isn't a flat 2048MB).
+    const { computeDefaultRuntimeMemoryMB } = require('./runtime-memory') as typeof import('./runtime-memory')
+    const os = require('os') as typeof import('os')
+    return {
+      memoryMB: computeDefaultRuntimeMemoryMB(Math.round(os.totalmem() / 1024 / 1024)),
+      cpuPercent: 0,
+      warmPoolSize: 0,
+    }
   }
 }
 
