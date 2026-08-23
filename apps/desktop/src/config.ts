@@ -5,6 +5,7 @@ import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
+import { computeDefaultRuntimeMemoryMB } from './runtime-memory'
 
 export interface HostRuntimeConfig {
   /** Per-project RAM ceiling in MB for the host-spawned agent-runtime process
@@ -63,10 +64,12 @@ export function getCloudUrl(): string {
   return (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
 }
 
-const DEFAULT_HOST_RUNTIME_CONFIG: HostRuntimeConfig = {
-  memoryMB: 2048,
-  cpuPercent: 0,  // 0 = no CPU cap
-  warmPoolSize: 0,  // 0 = warm pool disabled
+function getDefaultHostRuntimeConfig(): HostRuntimeConfig {
+  return {
+    memoryMB: computeDefaultRuntimeMemoryMB(Math.round(os.totalmem() / 1024 / 1024)),
+    cpuPercent: 0,  // 0 = no CPU cap
+    warmPoolSize: 0,  // 0 = warm pool disabled
+  }
 }
 
 const DEFAULT_MEETING_CONFIG: MeetingConfig = {
@@ -81,7 +84,7 @@ const DEFAULT_MEETING_CONFIG: MeetingConfig = {
 
 const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   mode: 'local',
-  hostRuntime: { ...DEFAULT_HOST_RUNTIME_CONFIG },
+  hostRuntime: getDefaultHostRuntimeConfig(),
   meetings: { ...DEFAULT_MEETING_CONFIG },
 }
 
@@ -107,7 +110,7 @@ export function readConfig(): DesktopConfig {
   const config: DesktopConfig = {
     mode: parsed.mode === 'cloud' ? 'cloud' : 'local',
     hostRuntime: {
-      ...DEFAULT_HOST_RUNTIME_CONFIG,
+      ...getDefaultHostRuntimeConfig(),
       ...(typeof parsed.hostRuntime === 'object' && parsed.hostRuntime !== null
         ? parsed.hostRuntime
         : {}),
