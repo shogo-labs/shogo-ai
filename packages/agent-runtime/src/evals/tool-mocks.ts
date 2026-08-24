@@ -1948,7 +1948,7 @@ export const COMPOSIO_NOTFOUND_ERROR_MOCKS: ToolMockMap = {
   },
   YOUTUBE_MULTIPART_UPLOAD_VIDEO: {
     type: 'static',
-    paramKeys: ['videoFilePath', 'title', 'description'],
+    paramKeys: ['videoFile', 'title', 'description'],
     hidden: true,
     response: {
       data: { video_id: 'yt_abc123', status: 'uploaded', title: 'My Video' },

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 // --- Mutable handler refs read at call time so test-time overrides apply
 // even though the SUT caches the Composio client. ---------------------------
@@ -59,6 +62,8 @@ import {
   checkComposioAuth,
   classifyComposioError,
   extractComposioErrorDetail,
+  normalizeFileUploadableArgs,
+  getComposioFileUploadDirs,
 } from '../composio'
 
 const ENV_KEYS = [
@@ -648,6 +653,87 @@ describe('registerToolkitProxyTools', () => {
     const tool = mgr.calls[0].tools[0]
     expect(tool.description).toMatch(/Composio tool/)
   })
+
+  // The real Composio catalog describes `file_uploadable` params with the
+  // backend storage shape — `{ type: 'object', required: [name, mimetype,
+  // s3key] }`. Exposing that to the model is what produced the s3key-404
+  // guessing loop: it cannot know an s3key, so it filled the field with a
+  // path/URL/invented key, and the SDK skips staging for non-string values.
+  const YOUTUBE_FILE_UPLOADABLE_SCHEMA = {
+    type: 'object',
+    title: 'FileUploadable',
+    required: ['name', 'mimetype', 's3key'],
+    properties: {
+      name: { type: 'string', description: 'The filename' },
+      s3key: { type: 'string', description: 'The S3 key of a publicly accessible file' },
+      mimetype: { type: 'string', description: 'The MIME type of the file' },
+    },
+    description: 'Video file to upload to YouTube.',
+    file_uploadable: true,
+    additionalProperties: false,
+  }
+
+  function youtubeUploadSchema() {
+    return [{
+      slug: 'YOUTUBE_MULTIPART_UPLOAD_VIDEO',
+      description: 'Upload a video',
+      is_deprecated: false,
+      input_parameters: {
+        properties: {
+          videoFile: YOUTUBE_FILE_UPLOADABLE_SCHEMA,
+          title: { type: 'string' },
+        },
+        required: ['videoFile', 'title'],
+      },
+    }]
+  }
+
+  it('collapses an object-shaped file_uploadable param to a path string', async () => {
+    mockedSchemas = youtubeUploadSchema()
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'youtube')
+    const tool = mgr.calls[0].tools[0]
+
+    const videoFile = tool.parameters.properties.videoFile
+    expect(videoFile.type).toBe('string')
+    // The s3key sub-field must not survive — that's the field the model was
+    // forced to invent a value for.
+    expect(videoFile.properties).toBeUndefined()
+    expect(JSON.stringify(tool.parameters)).not.toContain('s3key')
+    expect(videoFile.description).toContain('Video file to upload to YouTube.')
+    expect(videoFile.description).toMatch(/http\(s\) URL/)
+    expect(tool.description).toMatch(/videoFile/)
+  })
+
+  it('refuses a missing file instead of forwarding it as a fake s3key', async () => {
+    mockedSchemas = youtubeUploadSchema()
+    let executeCalls = 0
+    handlers.toolsExecute = async () => {
+      executeCalls++
+      return { successful: true, data: { ok: true } }
+    }
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'youtube')
+    const tool = mgr.calls[0].tools[0]
+    const res = await tool.execute('tc', { videoFile: 'does-not-exist.mp4', title: 'x' })
+    expect(executeCalls).toBe(0)
+    expect(res.details.errorKind).toBe('unstaged_file')
+    expect(res.details.error).toMatch(/does not exist/)
+  })
+
+  it('forwards an http(s) URL untouched so the SDK stages it', async () => {
+    mockedSchemas = youtubeUploadSchema()
+    let seenArgs: any = null
+    handlers.toolsExecute = async (_slug: string, opts: any) => {
+      seenArgs = opts.arguments
+      return { successful: true, data: { ok: true } }
+    }
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'youtube')
+    const tool = mgr.calls[0].tools[0]
+    await tool.execute('tc', { videoFile: 'https://example.com/clip.mp4', title: 'x' })
+    expect(seenArgs.videoFile).toBe('https://example.com/clip.mp4')
+  })
 })
 
 describe('checkComposioAuth', () => {
@@ -916,5 +1002,126 @@ describe('timings', () => {
     const snap = getComposioTimings()
     clearComposioTimings()
     expect(snap.length).toBeGreaterThan(0)
+  })
+})
+
+describe('classifyComposioError: unstaged file (s3key 404)', () => {
+  it('classifies Composio s3key 404 as unstaged_file, not notfound', () => {
+    const c = classifyComposioError(
+      "Failed to download file with s3key '/tmp/test_upload.mp4': storage returned HTTP 404",
+    )
+    expect(c.kind).toBe('unstaged_file')
+    expect(c.hint).toMatch(/never uploaded/i)
+    expect(c.hint).not.toMatch(/do not guess ids/i)
+  })
+
+  it('still classifies a genuine tool-slug 404 as notfound', () => {
+    const c = classifyComposioError('Unable to retrieve tool with slug YOUTUBE_UPLOAD_VIDEO')
+    expect(c.kind).toBe('notfound')
+  })
+})
+
+describe('normalizeFileUploadableArgs', () => {
+  let workspace: string
+
+  beforeEach(async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'shogo-composio-upload-'))
+    setEnv('WORKSPACE_DIR', workspace)
+  })
+
+  afterEach(async () => {
+    setEnv('WORKSPACE_DIR', undefined)
+    await rm(workspace, { recursive: true, force: true })
+  })
+
+  it('includes /tmp in the SDK upload dirs', () => {
+    expect(getComposioFileUploadDirs().some((d) => d === '/tmp' || d.endsWith('/tmp'))).toBe(true)
+  })
+
+  it('rebases a relative path onto the workspace when the file exists', async () => {
+    const rel = 'clips/clip.mp4'
+    await mkdir(join(workspace, 'clips'), { recursive: true })
+    await writeFile(join(workspace, rel), 'video')
+    const r = await normalizeFileUploadableArgs({ videoFile: rel }, ['videoFile'])
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.args.videoFile).toBe(resolve(workspace, rel))
+  })
+
+  it('rejects a missing relative path without forwarding a fake s3key', async () => {
+    const r = await normalizeFileUploadableArgs({ videoFile: 'missing.mp4' }, ['videoFile'])
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/does not exist/)
+  })
+
+  it('accepts an absolute path under /tmp when the file exists', async () => {
+    const tmpFile = join(tmpdir(), `shogo-upload-${Date.now()}.mp4`)
+    await writeFile(tmpFile, 'video')
+    try {
+      const r = await normalizeFileUploadableArgs({ videoFile: tmpFile }, ['videoFile'])
+      expect(r.ok).toBe(true)
+      if (r.ok) expect(r.args.videoFile).toBe(resolve(tmpFile))
+    } finally {
+      await rm(tmpFile, { force: true })
+    }
+  })
+
+  it('rejects an absolute path outside workspace and temp', async () => {
+    const r = await normalizeFileUploadableArgs({ videoFile: '/etc/hosts' }, ['videoFile'])
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/outside the workspace/)
+  })
+
+  // The SDK's own downloader caps response size, disables redirects and sets
+  // connect/read timeouts. Re-downloading here with a bare `fetch` would lose
+  // all three, so URLs are handed over untouched.
+  it('leaves an http(s) URL untouched for the SDK to stage', async () => {
+    let fetched = false
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      fetched = true
+      return new Response('nope', { status: 200 })
+    }) as any
+    try {
+      const url = 'https://example.com/media/clip.mp4'
+      const r = await normalizeFileUploadableArgs({ videoFile: url }, ['videoFile'])
+      expect(r.ok).toBe(true)
+      if (r.ok) expect(r.args.videoFile).toBe(url)
+      expect(fetched).toBe(false)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('rejects a non-http URL instead of forwarding it as an s3key', async () => {
+    const r = await normalizeFileUploadableArgs(
+      { videoFile: 'ftp://files.example/clip.mp4' },
+      ['videoFile'],
+    )
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/cannot be uploaded/)
+  })
+
+  // Sessions bound before the schema collapse saw the raw storage shape and
+  // stuffed a path into `s3key`. Recover those rather than 404ing.
+  it('unwraps a path mis-filled into a legacy { s3key } descriptor', async () => {
+    const abs = join(workspace, 'clip.mp4')
+    await writeFile(abs, 'video')
+    const r = await normalizeFileUploadableArgs(
+      { videoFile: { name: 'clip.mp4', mimetype: 'video/mp4', s3key: abs } },
+      ['videoFile'],
+    )
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.args.videoFile).toBe(resolve(abs))
+  })
+
+  it('leaves a genuine pre-staged descriptor untouched', async () => {
+    const descriptor = {
+      name: 'clip.mp4',
+      mimetype: 'video/mp4',
+      s3key: '47563/gmail/GET_ATTACHMENT/response/12345',
+    }
+    const r = await normalizeFileUploadableArgs({ videoFile: descriptor }, ['videoFile'])
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.args.videoFile).toEqual(descriptor)
   })
 })
