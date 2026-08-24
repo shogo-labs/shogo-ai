@@ -24,6 +24,7 @@ import {
   wroteEnvFile,
   responseContains,
   toolCallArgsContain,
+  usedGhCli,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -398,6 +399,40 @@ const ghPreferCli: AgentEval = {
     },
   ],
   antiPatterns: ['Called connect("github") despite having a token'],
+}
+
+const ghIssuesWithoutToken: AgentEval = {
+  id: 'cli-gh-issues-without-token',
+  name: 'CLI Routing: GitHub issues use gh even without a PAT in the prompt',
+  category: 'tool-routing',
+  level: 2,
+  input: 'Check my GitHub issues and show me the open bugs',
+  maxScore: 100,
+  toolMocks: CLI_EXEC_MOCK,
+  validationCriteria: [
+    {
+      id: 'used-gh-cli',
+      description: 'Used gh issue via exec',
+      points: 50,
+      phase: 'execution',
+      validate: (r) => usedGhCli(r, 'issue') || execCommandContains(r, 'gh '),
+    },
+    {
+      id: 'did-not-tool-install',
+      description: 'Did NOT use connect for GitHub',
+      points: 30,
+      phase: 'execution',
+      validate: (r) => neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
+    },
+    {
+      id: 'mentions-issues',
+      description: 'Response mentions issues from CLI output',
+      points: 20,
+      phase: 'execution',
+      validate: (r) => responseContains(r, 'issue') || responseContains(r, 'login page') || responseContains(r, 'favicon') || responseContains(r, 'bug'),
+    },
+  ],
+  antiPatterns: ['Called connect("github") or GITHUB_* Composio tools for listing issues'],
 }
 
 const stripePreferCli: AgentEval = {
@@ -799,6 +834,7 @@ export const CLI_ROUTING_EVALS: AgentEval[] = [
   ociTokenFlow,
   // CLI preference over managed
   ghPreferCli,
+  ghIssuesWithoutToken,
   stripePreferCli,
   glabPreferCli,
   awsPreferCli,

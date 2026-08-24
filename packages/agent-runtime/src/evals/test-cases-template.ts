@@ -11,7 +11,8 @@
 
 import type { AgentEval } from './types'
 import { getAgentTemplateById } from '../agent-templates'
-import { usedTool, usedToolAnywhere } from './eval-helpers'
+import { usedTool, usedToolAnywhere, usedGhCli } from './eval-helpers'
+import { GH_CLI_EXEC_MOCK } from './tool-mocks'
 
 function getTemplateFiles(templateId: string): Record<string, string> {
   const template = getAgentTemplateById(templateId)
@@ -96,8 +97,8 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'The "GitHub Ops" template has been installed. Can you describe what\'s been set up and walk me through how to customize it or connect my own tools?',
     workspaceFiles: {
       ...getTemplateFiles('devops-hub'),
-      '.shogo/skills/github-ops/SKILL.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status"\ntools: [search_integrations, connect, write_file, edit_file, send_message]\n---\n# GitHub Ops\nCheck GitHub repos and build a triage dashboard.',
-      '.shogo/skills/pr-review/SKILL.md': '---\nname: pr-review\nversion: 2.0.0\ndescription: Review pull requests\ntrigger: "review pr|code review"\ntools: [search_integrations, connect, write_file, edit_file]\n---\n# PR Review\nFetch diff, analyze, post feedback.',
+      '.shogo/skills/github-ops/SKILL.md': '---\nname: github-ops\nversion: 3.0.0\ndescription: Monitor GitHub repos via gh CLI\ntrigger: "check github|repo status|ci status"\ntools: [exec, write_file, send_message]\n---\n# GitHub Ops\nUse gh issue list / gh pr list. Do not connect GitHub.',
+      '.shogo/skills/pr-review/SKILL.md': '---\nname: pr-review\nversion: 3.0.0\ndescription: Review pull requests with gh\ntrigger: "review pr|code review"\ntools: [exec, write_file]\n---\n# PR Review\nUse gh pr view / gh pr diff. Do not connect GitHub.',
     },
     maxScore: 100,
     validationCriteria: [
@@ -112,13 +113,13 @@ export const TEMPLATE_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'suggests-connect-github',
-        description: 'Agent suggests connecting GitHub integration',
+        id: 'suggests-gh-cli',
+        description: 'Agent suggests using the gh CLI for GitHub issues/PRs',
         points: 25,
         phase: 'execution',
         validate: (r) => {
           const text = r.responseText.toLowerCase()
-          return text.includes('connect') && text.includes('github')
+          return text.includes('gh ') || text.includes('github cli') || (text.includes('gh') && (text.includes('issue') || text.includes('pr')))
         },
       },
       {
@@ -210,29 +211,24 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'Check the status of my repos — are there any open PRs or CI failures?',
     workspaceFiles: {
       ...getTemplateFiles('devops-hub'),
-      '.shogo/skills/github-ops/SKILL.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [search_integrations, connect, write_file, edit_file, send_message]\n---\n# GitHub Ops\n1. Search for GitHub integration (search_integrations). If not installed: connect({ name: "github" })\n2. Fetch open PRs and issues\n3. Build or update dashboard\n4. Alert on stale PRs',
+      '.shogo/skills/github-ops/SKILL.md': '---\nname: github-ops\nversion: 3.0.0\ndescription: Monitor GitHub repos via gh CLI\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [exec, write_file, send_message]\n---\n# GitHub Ops\n1. exec gh auth status\n2. exec gh pr list / gh issue list / gh run list\n3. Build or update dashboard\n4. Alert on stale PRs',
     },
     maxScore: 100,
+    toolMocks: GH_CLI_EXEC_MOCK,
     validationCriteria: [
       {
-        id: 'checked-tools',
-        description: 'Agent searched for integrations (search_integrations)',
-        points: 30,
-        phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
+        id: 'used-gh-cli',
+        description: 'Used gh via exec for PRs, issues, or CI',
+        points: 40,
+        phase: 'execution',
+        validate: (r) => usedGhCli(r),
       },
       {
-        id: 'tried-install-github',
-        description: 'Agent tried to install or connect GitHub integration',
-        points: 30,
+        id: 'did-not-connect-github',
+        description: 'Did not connect Composio GitHub',
+        points: 20,
         phase: 'execution',
-        validate: (r) => {
-          if (usedToolAnywhere(r, 'connect')) {
-            const call = r.toolCalls.find(t => t.name === 'connect')
-            return JSON.stringify(call?.input).toLowerCase().includes('github')
-          }
-          return false
-        },
+        validate: (r) => !usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'mentions-prs-or-ci',

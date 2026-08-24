@@ -101,6 +101,11 @@ export function execCommandContains(result: EvalResult, substring: string): bool
     })
 }
 
+/** True if the agent ran the GitHub CLI via exec (`gh …`). */
+export function usedGhCli(result: EvalResult, subcommand?: string): boolean {
+  return execCommandContains(result, subcommand ? `gh ${subcommand}` : 'gh ')
+}
+
 /** True if any `write_file` tool call targets `.env` and its content contains `key`. */
 export function wroteEnvFile(result: EvalResult, key: string): boolean {
   return result.toolCalls

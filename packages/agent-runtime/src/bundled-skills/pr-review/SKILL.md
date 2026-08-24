@@ -1,20 +1,20 @@
 ﻿---
 name: pr-review
-version: 2.0.0
+version: 3.0.0
 description: Review a specific pull request — fetch diff, analyze code quality, post feedback
 trigger: "review pr|review pull request|check pr|code review|review #"
-tools: [search_integrations, connect, memory_read, write_file]
+tools: [exec, memory_read, write_file]
 ---
 
 # PR Review
 
-When asked to review a specific PR:
+When asked to review a specific PR, use the pre-installed `gh` CLI via `exec`.
+Do not `connect` GitHub or call `GITHUB_*` tools.
 
-1. **Connect** — Ensure GitHub integration is installed via `search_integrations`. If not:
-   - `connect({ name: "github" })` to connect via Composio OAuth
+1. **Auth** — `exec({ command: "gh auth status" })`. If not authenticated, ask for a PAT, save it to `.env` as `GITHUB_TOKEN`, retry.
 2. **Fetch** — Get the PR details:
-   - `GITHUB_GET_PULL_REQUEST` for PR metadata (title, description, author)
-   - `GITHUB_LIST_PULL_REQUEST_FILES` for the changed files
+   - `exec({ command: "gh pr view <number> --json title,body,author,files,reviews,url" })`
+   - `exec({ command: "gh pr diff <number>" })`
 3. **Analyze** — Review the diff for:
    - Security vulnerabilities (hardcoded secrets, SQL injection, XSS)
    - Logic errors and edge cases

@@ -521,6 +521,7 @@ describe('gateway-tools', () => {
       const tool = getTool(createCtx(), 'connect')
       expect(tool.description).toContain('Composio')
       expect(tool.description).toContain('MCP')
+      expect(tool.description).toContain('gh issue list')
       const schema = JSON.stringify(tool.parameters)
       expect(schema).toContain('"name"')
       expect(schema).toContain('"source"')

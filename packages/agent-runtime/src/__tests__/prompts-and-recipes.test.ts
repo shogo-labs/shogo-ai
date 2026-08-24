@@ -75,6 +75,8 @@ describe('optimized-prompts constants', () => {
   test('guides carry their expected section markers', () => {
     expect(OPTIMIZED_MEMORY_GUIDE).toContain('Memory')
     expect(OPTIMIZED_MCP_DISCOVERY_GUIDE).toContain('Tool')
+    expect(OPTIMIZED_MCP_DISCOVERY_GUIDE).toContain('gh issue list')
+    expect(OPTIMIZED_MCP_DISCOVERY_GUIDE).toContain('GitHub is always CLI-first')
     expect(BROWSER_TOOL_GUIDE).toContain('Browser')
   })
 })

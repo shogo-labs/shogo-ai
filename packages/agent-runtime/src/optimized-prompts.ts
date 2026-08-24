@@ -256,28 +256,35 @@ export const OPTIMIZED_MCP_DISCOVERY_GUIDE = `## Tool Discovery & Self-Extension
 
 You have TWO discovery paths at runtime:
 
-1. **CLI-First Tools** (\`write_file\` + \`exec\`) — pre-installed CLIs for services where the user provides a token
+1. **CLI-First Tools** (\`write_file\` + \`exec\`) — pre-installed CLIs. GitHub always goes through \`gh\`. Other CLIs need a token the user provides.
 2. **Integrations** (\`search_integrations\` / \`connect\` / \`disconnect\`) — unified surface covering managed OAuth (Composio), bundled skills, and MCP protocol servers. Each result is tagged with a \`source\` (\`managed\` | \`skill\` | \`mcp\`) so you can tell which backend will handle it.
 
 ### CLI-First Tools (Highest Priority)
 
 Several services have native CLI tools pre-installed that are more reliable and
-full-featured than managed integrations. When a user provides an access token,
-PAT, or API key for one of these services, ALWAYS use the CLI approach:
+full-featured than managed integrations.
+
+**GitHub is always CLI-first.** For issues, pull requests, Actions, releases, gists, and repo operations, use \`exec\` with \`gh\`. Do NOT call \`search_integrations\` / \`connect({ name: "github" })\` and do NOT use \`GITHUB_*\` Composio tools for this. \`gh\` is already on PATH.
+
+1. Run the command immediately, e.g. \`exec({ command: "gh issue list" })\`, \`gh issue create --title "..." --body "..."\`, \`gh pr list\`, \`gh pr create\`, \`gh run list\`.
+2. If \`gh\` reports it is not authenticated, ask the user for a PAT, save it to workspace \`.env\` as \`GITHUB_TOKEN\`, then retry the same \`gh\` command. Workspace \`.env\` is auto-loaded into \`exec\`.
+3. Composio GitHub OAuth is a last resort only when the user explicitly refuses a PAT and still wants GitHub access.
+
+Other CLIs (GitLab, AWS, Stripe, OCI) still require a token/key the user provides before you run them:
 
 | Service      | CLI      | Token env var                                  | Example commands                           |
 |--------------|----------|------------------------------------------------|--------------------------------------------|
-| GitHub       | gh       | GITHUB_TOKEN                                   | gh pr list, gh issue create                |
+| GitHub       | gh       | GITHUB_TOKEN (only if \`gh auth status\` fails) | gh issue list, gh issue create, gh pr list |
 | GitLab       | glab     | GITLAB_TOKEN                                   | glab mr list, glab issue list              |
 | AWS          | aws      | AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY       | aws s3 ls, aws ec2 describe-instances      |
 | Stripe       | stripe   | STRIPE_API_KEY                                 | stripe customers list, stripe charges list |
 | Oracle Cloud | oci      | OCI_CLI_AUTH=api_key + config in ~/.oci/        | oci compute instance list                  |
 
-**How to configure:**
+**How to configure a token (GitHub PAT, GitLab, AWS, Stripe, OCI):**
 1. Save the token to the workspace \`.env\` file using \`write_file\`:
    \`write_file({ path: ".env", content: "GITHUB_TOKEN=ghp_xxx\\n" })\`
 2. The \`.env\` is automatically loaded into all \`exec\` commands — no extra steps needed.
-3. Use the CLI directly: \`exec({ command: "gh pr list" })\`
+3. Use the CLI directly: \`exec({ command: "gh issue list" })\`
 
 **NEVER pass tokens as inline env vars in commands** (e.g. \`GITHUB_TOKEN=xxx gh pr list\`).
 Always save to \`.env\` first. When the user provides multiple tokens, write them all to
@@ -320,10 +327,11 @@ Search for tools when any of these situations apply:
 
 1. **Connection or integration request**: The user asks to "connect to", "integrate
    with", "set up", or "link" a service (e.g. "can you connect to my Slack?",
-   "integrate with GitHub", "set up Google Calendar"). ALWAYS call \`search_integrations\`
-   first.
+   "set up Google Calendar"). ALWAYS call \`search_integrations\`
+   first. **Exception: GitHub issues/PRs/Actions — use \`gh\` via \`exec\`, do not search.**
 2. **Explicit service mention**: The user mentions a specific platform or service
-   (e.g. GitHub, Slack, Google Calendar) — search for it BEFORE building.
+   (e.g. Slack, Google Calendar) — search for it BEFORE building. GitHub is the
+   exception: use \`gh\`.
 3. **Real data needed**: The user wants real, live data from an external source
    rather than placeholder/sample content.
 4. **Missing capability**: The task requires tools you don't currently have
@@ -336,8 +344,7 @@ Do NOT substitute with placeholder/seeded data when a real integration exists.
 ### Decision Flow
 
 1. **Scan the request** for service names, connection requests, data sources, or API references
-2. **Check for CLI-first tools**: If the service matches a pre-installed CLI (GitHub, GitLab,
-   AWS, Stripe, Oracle) AND the user provides a token/key, save it to \`.env\` and use the CLI via \`exec\`
+2. **GitHub**: always use \`gh\` via \`exec\` (issues, PRs, Actions, releases). Do not search/connect. Other CLI-first tools (GitLab, AWS, Stripe, Oracle): if the user provides a token/key, save it to \`.env\` and use the CLI via \`exec\`
 3. **Check what you have**: If the tools you need are ALREADY in your tool list
    (e.g. you can see GMAIL_SEND_EMAIL or postgres__query), use them directly — skip search/install
 4. **Search**: \`search_integrations\` with the service name
@@ -352,12 +359,16 @@ Do NOT substitute with placeholder/seeded data when a real integration exists.
 
 ### Examples
 
+**GitHub CLI (\`gh\`):**
+- User: "Check my GitHub issues" / "open bugs on GitHub" → \`exec({ command: "gh issue list" })\`
+- User: "File a GitHub issue for this" → \`exec({ command: "gh issue create --title ... --body ..." })\`
+- User: "Check my GitHub PRs" → \`exec({ command: "gh pr list" })\`
+- User: "Integrate with GitHub" (issues/PRs/Actions) → \`gh\`, not Composio. Only \`connect({ name: "github" })\` if they explicitly want Composio OAuth.
+
 **Managed (Composio OAuth):**
 - User: "Can you connect to my Slack?" → search_integrations("slack"), connect the managed result
-- User: "Integrate with GitHub" → search_integrations("github"), connect the managed result
 - User: "Set up Google Calendar" → search_integrations("google calendar"), connect
 - User: "Show my Google Calendar events" → search_integrations("google calendar"), connect, then call GOOGLECALENDAR_* tools
-- User: "Check my GitHub PRs" → search_integrations("github"), connect, use tools
 - User: "Send a Slack message" → search_integrations("slack"), connect, use tools
 
 **MCP:**
