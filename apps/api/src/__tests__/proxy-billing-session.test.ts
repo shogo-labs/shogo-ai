@@ -12,8 +12,6 @@
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 
-import { MARKUP_MULTIPLIER } from '../lib/usage-cost'
-
 // Track calls to consumeUsage (new single-object-arg API)
 let consumeUsageCalls: any[] = []
 // When set, consumeUsage rejects with this — used to cover the deleted-project
@@ -28,7 +26,12 @@ mock.module('../services/billing.service', () => ({
   },
 }))
 
+mock.module('../services/cost-analytics.service', () => ({
+  recordAgentCostMetric: async () => {},
+}))
+
 // Must import AFTER mocking
+import { MARKUP_MULTIPLIER } from '../lib/usage-cost'
 import {
   openSession,
   closeSession,
