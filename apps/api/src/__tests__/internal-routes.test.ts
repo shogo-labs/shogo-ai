@@ -17,8 +17,9 @@
  *   - POST /agent-eval-results             — totalCases > 0, passedCases bounds, persistence
  *
  * Auth helpers (`validateAuth`) tested via endpoint behaviour:
- *   - SHOGO_LOCAL_MODE=true + x-runtime-token branch
+ *   - HMAC-signed x-runtime-token (production metal + local)
  *   - K8s SA bearer token branch
+ *   - SA-token fallthrough to runtime token
  *   - 401 when no credentials match
  */
 
@@ -311,14 +312,15 @@ describe('POST /heartbeat/complete', () => {
     expect(res.status).toBe(401)
   })
 
-  test('runtime token: not honored when SHOGO_LOCAL_MODE is not true', async () => {
+  test('runtime token: honored in production (SHOGO_LOCAL_MODE unset)', async () => {
     delete process.env.SHOGO_LOCAL_MODE
     runtimeToken.verifyRuntimeToken.mockImplementation(() => ({ ok: true, projectId: 'p1', format: 'v1' }))
+    agentConfigState.set('p1', { projectId: 'p1', lastHeartbeatAt: null })
     const res = await app.request('/heartbeat/complete', jsonReq(
       { 'x-runtime-token': 'rt' },
       { projectId: 'p1' },
     ))
-    expect(res.status).toBe(401)
+    expect(res.status).toBe(200)
   })
 })
 

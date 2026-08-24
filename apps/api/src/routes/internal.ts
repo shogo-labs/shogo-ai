@@ -68,9 +68,38 @@ function checkRateLimit(projectId: string): boolean {
   return entry.count <= RATE_LIMIT_MAX
 }
 
+function logAuthReject(reason: string, projectId?: string): void {
+  console.warn(`[InternalAuth] rejected: ${reason}${projectId ? ` projectId=${projectId}` : ''}`)
+}
+
 /**
- * Validate request auth: tries K8s SA token first, then falls back to
- * runtime-token verification in local mode.
+ * Who authenticated an internal request.
+ *
+ * `sa` is cluster-scoped (a real K8s ServiceAccount, only obtainable inside
+ * the cluster). `project` and `workspace` are HMAC bearer capabilities that a
+ * runtime holds in env, so an agent can read its own token — which means they
+ * must never be treated as cluster-scoped. Routes that take a `workspaceId`
+ * from the request body have to cross-check it against the token's scope; see
+ * `authorizeWorkspaceScope`.
+ */
+type InternalIdentity =
+  | { kind: 'sa' }
+  | { kind: 'project'; projectId: string }
+  | { kind: 'workspace'; workspaceId: string }
+
+/**
+ * Authenticate a request: K8s SA bearer first, then HMAC-signed runtime token.
+ *
+ * Runtime tokens are accepted in production, not only local mode. Metal
+ * microVMs (and any runtime without a ServiceAccount token file) send
+ * `x-runtime-token` with no `Authorization` header; gating that path on
+ * `SHOGO_LOCAL_MODE` 401'd every publish/checkpoint from those runtimes.
+ * `authMiddleware` already accepts the same credential in production across
+ * `/api/*`, so this only removes an inconsistency — see ../lib/runtime-token.md.
+ *
+ * If a Bearer header is present but TokenReview fails, fall through to the
+ * runtime token instead of dead-ending — a Knative pod whose SA token is
+ * stale still carries a valid `x-runtime-token`.
  *
  * Two runtime topologies present different `x-runtime-token` types:
  *   - Legacy single-project runtime → PROJECT token (`rt_v1_<projectId>_…`),
@@ -81,36 +110,104 @@ function checkRateLimit(projectId: string): boolean {
  *     to the token's workspace so a workspace token can't act on a project
  *     in another workspace.
  */
-async function validateAuth(c: Context, projectId?: string): Promise<boolean> {
+async function authenticate(c: Context, projectId?: string): Promise<InternalIdentity | null> {
   const authHeader = c.req.header('Authorization')
   if (authHeader?.startsWith('Bearer ')) {
     const identity = await validatePodToken(authHeader.slice(7))
-    if (identity) return true
+    if (identity) return { kind: 'sa' }
+    console.warn(
+      `[InternalAuth] SA token rejected; falling through to runtime token` +
+        `${projectId ? ` projectId=${projectId}` : ''}`,
+    )
   }
 
-  if (process.env.SHOGO_LOCAL_MODE === 'true') {
-    const runtimeToken = c.req.header('x-runtime-token')
-    if (runtimeToken) {
-      const { verifyRuntimeToken } = await import('../lib/runtime-token')
-      const verified = verifyRuntimeToken(runtimeToken, projectId)
-      if (verified.ok && (!projectId || verified.projectId === projectId)) {
-        return true
-      }
+  const runtimeToken = c.req.header('x-runtime-token')
+  if (!runtimeToken) {
+    logAuthReject(
+      authHeader?.startsWith('Bearer ')
+        ? 'invalid_sa_token_and_no_runtime_token'
+        : 'missing_credentials',
+      projectId,
+    )
+    return null
+  }
 
-      // Workspace (merged-root) runtimes authenticate with a workspace
-      // token instead of a project token. Accept it, enforcing project
-      // membership for project-scoped routes.
-      const { verifyWorkspaceRuntimeToken } = await import('../lib/workspace-runtime-token')
-      const wsVerified = verifyWorkspaceRuntimeToken(runtimeToken)
-      if (wsVerified.ok) {
-        if (!projectId) return true
-        const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
-        const workspaceId = await resolveProjectWorkspaceId(projectId)
-        return workspaceId === wsVerified.workspaceId
-      }
+  const { verifyRuntimeToken } = await import('../lib/runtime-token')
+  const verified = verifyRuntimeToken(runtimeToken, projectId)
+  if (verified.ok) {
+    if (!projectId || verified.projectId === projectId) {
+      return { kind: 'project', projectId: verified.projectId }
     }
+    logAuthReject(`runtime_token_project_mismatch tokenProject=${verified.projectId}`, projectId)
+    return null
   }
 
+  // Workspace (merged-root) runtimes authenticate with a workspace token
+  // instead of a project token. Accept it, enforcing project membership
+  // for project-scoped routes.
+  const { verifyWorkspaceRuntimeToken } = await import('../lib/workspace-runtime-token')
+  const wsVerified = verifyWorkspaceRuntimeToken(runtimeToken)
+  if (wsVerified.ok) {
+    if (!projectId) return { kind: 'workspace', workspaceId: wsVerified.workspaceId }
+    const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
+    const workspaceId = await resolveProjectWorkspaceId(projectId)
+    if (workspaceId === wsVerified.workspaceId) {
+      return { kind: 'workspace', workspaceId: wsVerified.workspaceId }
+    }
+    logAuthReject(
+      `workspace_token_mismatch tokenWorkspace=${wsVerified.workspaceId} projectWorkspace=${workspaceId ?? 'none'}`,
+      projectId,
+    )
+    return null
+  }
+
+  logAuthReject(`runtime_token_invalid reason=${verified.reason}`, projectId)
+  return null
+}
+
+/** Boolean form for project-scoped routes, where the path param is the scope. */
+async function validateAuth(c: Context, projectId?: string): Promise<boolean> {
+  return (await authenticate(c, projectId)) !== null
+}
+
+/**
+ * Authorize a route whose target workspace comes from the request body rather
+ * than a path param, so the token's own scope cannot be inferred from the URL.
+ *
+ * A runtime token is a project/workspace capability, not a cluster credential:
+ * without this check any pod could write analytics rows against an arbitrary
+ * `workspaceId`. SA callers are cluster-internal and stay unrestricted.
+ */
+async function authorizeWorkspaceScope(
+  c: Context,
+  workspaceId: string | null,
+  projectId?: string,
+): Promise<boolean> {
+  const identity = await authenticate(c, projectId)
+  if (!identity) return false
+  if (identity.kind === 'sa') return true
+  if (!workspaceId) {
+    logAuthReject(`workspace_scope_required identity=${identity.kind}`, projectId)
+    return false
+  }
+
+  if (identity.kind === 'workspace') {
+    if (identity.workspaceId === workspaceId) return true
+    logAuthReject(
+      `workspace_scope_mismatch tokenWorkspace=${identity.workspaceId} body=${workspaceId}`,
+      projectId,
+    )
+    return false
+  }
+
+  const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
+  const tokenWorkspaceId = await resolveProjectWorkspaceId(identity.projectId)
+  if (tokenWorkspaceId && tokenWorkspaceId === workspaceId) return true
+  logAuthReject(
+    `workspace_scope_mismatch tokenProject=${identity.projectId} ` +
+      `tokenWorkspace=${tokenWorkspaceId ?? 'none'} body=${workspaceId}`,
+    projectId,
+  )
   return false
 }
 
@@ -363,8 +460,8 @@ app.post('/validate-preview-token', async (c) => {
  * the API the token, the API returns `{ valid, projectId }`. Mirrors the
  * existing `/validate-preview-token` pattern.
  *
- * Authenticated like the rest of /internal: K8s SA bearer in cluster, or
- * runtime-token in local mode.
+ * Authenticated like the rest of /internal: K8s SA bearer, or HMAC-signed
+ * `x-runtime-token` (metal / local desktop / Knative SA fallthrough).
  */
 app.post('/validate-runtime-token', async (c) => {
   if (!(await validateAuth(c))) {
@@ -405,7 +502,7 @@ app.post('/validate-runtime-token', async (c) => {
  *
  * Called by agent-runtime spawning a sub-agent to learn whether the user has
  * overridden the built-in default model for this agent type. Authenticated
- * via K8s SA token (cluster) or runtime token (local mode).
+ * via K8s SA token or HMAC-signed `x-runtime-token`.
  *
  * Returns 200 { override: { model, provider, source } | null }.
  */
@@ -422,7 +519,7 @@ app.get('/subagent-overrides/resolve', async (c) => {
     return c.json({ error: 'workspaceId and agentType are required' }, 400)
   }
 
-  if (!(await validateAuth(c, projectId))) {
+  if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 
@@ -463,11 +560,14 @@ app.post('/agent-cost-metrics', async (c) => {
   }
 
   const projectId = typeof body.projectId === 'string' ? body.projectId : undefined
-  if (!(await validateAuth(c, projectId))) {
+  const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null
+  // The target workspace comes from the body, so a project/workspace runtime
+  // token must be checked against it — otherwise any pod could write metrics
+  // (and skew model-quality analytics) for a workspace it doesn't belong to.
+  if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 
-  const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null
   const agentType = typeof body.agentType === 'string' ? body.agentType : null
   const model = typeof body.model === 'string' ? body.model : null
   if (!workspaceId || !agentType || !model) {
@@ -515,7 +615,10 @@ function numberOr(value: unknown, fallback: number): number {
  * (Phase 3.1) to give the recommendation gate eval-anchored ground truth.
  *
  * `workspaceId` is optional — global eval results (no workspace) are visible
- * to every workspace as the default anchor.
+ * to every workspace as the default anchor. Because a global row is an anchor
+ * for *every* workspace's recommendation gate, writing one requires a
+ * cluster-scoped SA credential; a runtime token may only write rows scoped to
+ * its own workspace.
  */
 app.post('/agent-eval-results', async (c) => {
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
@@ -523,7 +626,8 @@ app.post('/agent-eval-results', async (c) => {
     return c.json({ error: 'Invalid JSON body' }, 400)
   }
 
-  if (!(await validateAuth(c))) {
+  const bodyWorkspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null
+  if (!(await authorizeWorkspaceScope(c, bodyWorkspaceId))) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 
@@ -546,7 +650,7 @@ app.post('/agent-eval-results', async (c) => {
   try {
     const { recordAgentEvalResult } = await import('../services/cost-analytics.service')
     const row = await recordAgentEvalResult({
-      workspaceId: typeof body.workspaceId === 'string' ? body.workspaceId : null,
+      workspaceId: bodyWorkspaceId,
       agentType,
       model,
       provider: typeof body.provider === 'string' ? body.provider : null,
@@ -803,7 +907,7 @@ app.post('/projects/:projectId/checkpoints/:checkpointId/rollback', async (c) =>
  *
  * Lets the agent's publish tool tell a first publish (no subdomain yet, must
  * confirm one with the user) from a republish (reuse the live subdomain). Auth:
- * K8s SA token (cluster) OR `x-runtime-token` (local desktop).
+ * K8s SA token (cluster) OR HMAC-signed `x-runtime-token` (metal / local).
  */
 app.get('/projects/:projectId/publish', async (c) => {
   const projectId = c.req.param('projectId')
@@ -846,7 +950,7 @@ app.get('/projects/:projectId/publish', async (c) => {
  * publish tool can deploy `{subdomain}.shogo.one` directly (the public route is
  * session-authenticated and unreachable from the pod). Shares the exact same
  * pipeline via `publishProject`. Auth: K8s SA token (cluster) OR
- * `x-runtime-token` (local desktop).
+ * HMAC-signed `x-runtime-token` (metal / local).
  */
 app.post('/projects/:projectId/publish', async (c) => {
   const projectId = c.req.param('projectId')
