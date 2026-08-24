@@ -12,6 +12,9 @@
 
 import { Composio } from '@composio/core'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
+import { access } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { isAbsolute, resolve, sep } from 'node:path'
 import type { MCPClientManager } from './mcp-client'
 import { fetchComposioToolSchemas, type ComposioToolSchema } from './composio-auto-bind'
 import { smartTruncateJson } from './response-transforms'
@@ -249,17 +252,132 @@ let composioClient: Composio | null = null
  * passes to `file_uploadable` tool fields (e.g. YOUTUBE_UPLOAD_VIDEO's
  * `videoFilePath`). `WORKSPACE_DIR` mirrors the resolution in server.ts. The
  * built-in sensitive-path denylist (`.ssh`, `.aws`, `.env`, …) stays on.
+ *
+ * `/tmp` (and `os.tmpdir()`) are included because agents routinely land files
+ * there via `exec` (`ffmpeg`, `curl -o /tmp/…`); without them the SDK rejects
+ * the path with `ComposioFileUploadPathNotAllowedError` instead of staging it.
  */
-function getComposioFileUploadDirs(): string[] {
-  const workspaceDir =
+export function getComposioFileUploadDirs(): string[] {
+  const workspaceDir = composioWorkspaceDir()
+  const home = process.env.HOME
+  const dirs = [workspaceDir]
+  if (home) dirs.push(`${home}/.composio/temp`)
+  const osTmp = tmpdir()
+  if (osTmp) dirs.push(osTmp)
+  if (!dirs.includes('/tmp')) dirs.push('/tmp')
+  return dirs
+}
+
+function composioWorkspaceDir(): string {
+  return (
     process.env.WORKSPACE_DIR ||
     process.env.AGENT_DIR ||
     process.env.PROJECT_DIR ||
     '/app/workspace'
-  const home = process.env.HOME
-  const dirs = [workspaceDir]
-  if (home) dirs.push(`${home}/.composio/temp`)
-  return dirs
+  )
+}
+
+function isPathInsideDir(filePath: string, dir: string): boolean {
+  const resolvedFile = resolve(filePath)
+  const resolvedDir = resolve(dir)
+  return resolvedFile === resolvedDir || resolvedFile.startsWith(resolvedDir + sep)
+}
+
+function isAllowedUploadPath(filePath: string): boolean {
+  return getComposioFileUploadDirs().some((dir) => isPathInsideDir(filePath, dir))
+}
+
+export type FileUploadNormalizeResult =
+  | { ok: true; args: Record<string, any> }
+  | { ok: false; error: string }
+
+export const FILE_UPLOAD_PARAM_HINT =
+  'Provide a local file path (workspace-relative is fine) or an http(s) URL — ' +
+  'it is uploaded automatically. Never invent an S3 key.'
+
+const FILE_UPLOAD_PATH_HINT =
+  'Pass a path to an existing local file, or an http(s) URL (not a guessed S3 key).'
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value)
+}
+
+/**
+ * Recover the path/URL the model meant from a `file_uploadable` argument.
+ *
+ * Returns `undefined` when the value should be forwarded untouched.
+ *
+ * Post-schema-collapse the model sends a plain string. The object branch is a
+ * safety net for sessions whose tool schemas predate the collapse: those saw
+ * the raw `{ name, mimetype, s3key }` shape and stuffed a path or URL into
+ * `s3key`. A genuine pre-staged descriptor (from an upstream Composio download
+ * action) also arrives as that shape, so only clearly path- or URL-like keys
+ * are unwrapped — anything opaque is assumed to be a real key and left alone.
+ */
+function unwrapFileUploadValue(raw: unknown): string | undefined {
+  if (typeof raw === 'string') return raw || undefined
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const s3key = (raw as Record<string, unknown>).s3key
+  if (typeof s3key !== 'string' || !s3key) return undefined
+  const pathLike =
+    s3key.startsWith('/') || s3key.startsWith('./') || s3key.startsWith('../')
+  if (pathLike || /^[a-z][a-z0-9+.-]*:\/\//i.test(s3key)) return s3key
+  return undefined
+}
+
+/**
+ * Resolve `file_uploadable` args into values the SDK's auto-upload can stage.
+ *
+ * Relative paths are rebased onto the workspace — the SDK resolves them
+ * against `process.cwd()`, which is not the agent's workspace. Absolute paths
+ * must exist and land under an allowed upload dir. http(s) URLs are left as-is
+ * for the SDK to fetch: its downloader caps response size, disables redirects
+ * and sets connect/read timeouts, none of which a bare `fetch` here would do.
+ * Anything else (missing file, non-http scheme, path outside the allowed dirs)
+ * fails with an actionable error rather than being forwarded as a fake s3key.
+ */
+export async function normalizeFileUploadableArgs(
+  args: Record<string, any>,
+  fields: string[],
+): Promise<FileUploadNormalizeResult> {
+  if (fields.length === 0) return { ok: true, args }
+  const out = { ...args }
+  const workspaceDir = composioWorkspaceDir()
+
+  for (const field of fields) {
+    const value = unwrapFileUploadValue(out[field])
+    if (value === undefined) continue
+
+    if (isHttpUrl(value)) {
+      out[field] = value
+      continue
+    }
+
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+      return {
+        ok: false,
+        error: `File field "${field}" is a URL that cannot be uploaded (${value}). ${FILE_UPLOAD_PATH_HINT}`,
+      }
+    }
+
+    const resolved = isAbsolute(value) ? resolve(value) : resolve(workspaceDir, value)
+    try {
+      await access(resolved)
+    } catch {
+      return {
+        ok: false,
+        error: `File field "${field}" does not exist at ${resolved}. ${FILE_UPLOAD_PATH_HINT}`,
+      }
+    }
+    if (!isAllowedUploadPath(resolved)) {
+      return {
+        ok: false,
+        error: `File field "${field}" at ${resolved} is outside the workspace and temp dirs. Copy it into the workspace first. ${FILE_UPLOAD_PATH_HINT}`,
+      }
+    }
+    out[field] = resolved
+  }
+  return { ok: true, args: out }
 }
 
 function getComposioClient(): Composio | null {
@@ -449,6 +567,7 @@ export function buildLegacyComposioUserId(userId: string, projectId: string): st
 //   auth       -> OAuth session expired/invalid -> reconnect
 //   permission -> connected but missing scope (e.g. YouTube 403) -> reconnect w/ scope
 //   notfound   -> resource id wrong OR slug not in catalog -> verify id / discover slug
+//   unstaged_file -> file param forwarded unstaged as a fake s3key -> pass a path/URL
 //   validation -> bad arguments (e.g. token passed as channel id) -> fix args
 const COMPOSIO_AUTH_PATTERNS = [
   'not_authed', 'invalid_auth', 'token expired', 'refresh token',
@@ -458,6 +577,10 @@ const COMPOSIO_AUTH_PATTERNS = [
 const COMPOSIO_PERMISSION_PATTERNS = [
   'forbidden', '403', 'access denied', 'not properly authorized',
   'insufficient scope', 'insufficient permission', 'permission denied',
+]
+const COMPOSIO_UNSTAGED_FILE_PATTERNS = [
+  'failed to download file with s3key',
+  'download file with s3key',
 ]
 const COMPOSIO_NOTFOUND_PATTERNS = [
   '404', 'not found', 'unable to retrieve tool', 'tool not found',
@@ -475,7 +598,7 @@ const COMPOSIO_NOTCONNECTED_PATTERNS = [
   'connect your', 'connect the', 'initiate_connection',
 ]
 
-type ComposioErrorKind = 'auth' | 'permission' | 'notfound' | 'validation' | 'notconnected' | 'unknown'
+type ComposioErrorKind = 'auth' | 'permission' | 'notfound' | 'validation' | 'notconnected' | 'unstaged_file' | 'unknown'
 
 /**
  * The Composio SDK (>=0.6) throws ComposioToolExecutionError on failure with a
@@ -554,6 +677,12 @@ export function classifyComposioError(raw: string): ComposioErrorClass {
       kind: 'permission',
       needsScope: true,
       hint: 'The integration is connected but lacks the scope/permission for this action. Ask the user to reconnect granting the required scope (e.g. repo for GitHub, youtube.* for YouTube), then retry. Do not repeat the call unchanged.',
+    }
+  }
+  if (has(COMPOSIO_UNSTAGED_FILE_PATTERNS)) {
+    return {
+      kind: 'unstaged_file',
+      hint: 'The file was never uploaded to Composio storage, so the key does not resolve. Pass a path to an existing local file, or an http(s) URL, and let it be uploaded. Do not retry with a different key.',
     }
   }
   if (has(COMPOSIO_NOTFOUND_PATTERNS)) {
@@ -670,20 +799,20 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
     parameters = Type.Object(props)
   }
 
-  // Fields the catalog marks `file_uploadable` (e.g. YOUTUBE_UPLOAD_VIDEO's
-  // `videoFilePath`). The SDK's auto-upload reads a local *path* arg and stages
-  // it to Composio storage — but it resolves a relative path against
-  // `process.cwd()`, which is not the agent's workspace. The agent typically
-  // passes a workspace-relative path ("uploads/clip.mp4"), so we rebase those
-  // onto WORKSPACE_DIR before execute. URLs and already-staged descriptors are
-  // left untouched.
+  // Fields the catalog marks `file_uploadable` (e.g. YOUTUBE_MULTIPART_UPLOAD_VIDEO's
+  // `videoFile`). Collapsed to a path string in `parameters` above; normalized
+  // to something the SDK can stage before execute.
   const fileUploadableFields = Object.entries(schema.input_parameters?.properties ?? {})
     .filter(([, prop]) => (prop as any)?.file_uploadable === true)
     .map(([key]) => key)
 
+  const baseDescription = schema.description || `Composio tool: ${schema.slug}`
+
   return {
     name: schema.slug,
-    description: schema.description || `Composio tool: ${schema.slug}`,
+    description: fileUploadableFields.length > 0
+      ? `${baseDescription} File fields (${fileUploadableFields.join(', ')}): ${FILE_UPLOAD_PARAM_HINT}`
+      : baseDescription,
     label: `composio: ${schema.slug}`,
     parameters,
     execute: async (_toolCallId: string, params: unknown) => {
@@ -691,29 +820,18 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
       if (!client || !storedComposioUserId) {
         return textResult({ error: 'Composio not initialized. Call connect first.' })
       }
-      const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
+      let args = (params && typeof params === 'object') ? { ...(params as Record<string, any>) } : {}
 
-      // Rebase relative file paths onto the workspace so the SDK's auto-upload
-      // (which resolves against process.cwd()) can read them. Absolute paths,
-      // URLs, and pre-staged { s3key } descriptors pass through unchanged.
       if (fileUploadableFields.length > 0) {
-        const path = require('node:path') as typeof import('node:path')
-        const workspaceDir =
-          process.env.WORKSPACE_DIR ||
-          process.env.AGENT_DIR ||
-          process.env.PROJECT_DIR ||
-          '/app/workspace'
-        for (const field of fileUploadableFields) {
-          const value = args[field]
-          if (
-            typeof value === 'string' &&
-            value &&
-            !/^[a-z][a-z0-9+.-]*:\/\//i.test(value) &&
-            !path.isAbsolute(value)
-          ) {
-            args[field] = path.resolve(workspaceDir, value)
-          }
+        const normalized = await normalizeFileUploadableArgs(args, fileUploadableFields)
+        if (!normalized.ok) {
+          return textResult({
+            error: normalized.error,
+            errorKind: 'unstaged_file',
+            hint: FILE_UPLOAD_PARAM_HINT,
+          })
         }
+        args = normalized.args
       }
 
       // A single execute attempt, normalized to a discriminated result so the
@@ -794,6 +912,26 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
 
 function jsonSchemaPropertyToTypebox(p: Record<string, any>): any {
   const { Type } = require('@sinclair/typebox')
+
+  // Composio describes `file_uploadable` params with its *storage* shape —
+  // `{ type: 'object', required: ['name','mimetype','s3key'] }`. Handing that
+  // to a model is unusable: it cannot know an s3key, so it fills the field
+  // with a local path, a URL, or an invented key, and the backend then fails
+  // with "Failed to download file with s3key '<whatever>': HTTP 404".
+  //
+  // The SDK's own `tools.get()` collapses these to a single path string
+  // (`transformSchema` in FileToolModifier.utils.neutral). We build TypeBox
+  // from the raw v3 REST catalog instead of going through `tools.get()`, so
+  // the collapse has to happen here too. At execute time the SDK stages the
+  // string — local path or http(s) URL — and substitutes the real descriptor;
+  // a non-string value is passed through unstaged (`hydrateFiles` returns
+  // early unless the value is a string or File), which is the bug above.
+  if (p.file_uploadable === true) {
+    return Type.String({
+      description: [p.description, FILE_UPLOAD_PARAM_HINT].filter(Boolean).join(' '),
+    })
+  }
+
   switch (p.type) {
     case 'string':
       return Type.String({ description: p.description })
