@@ -206,8 +206,21 @@ radius.
    not only under `SHOGO_LOCAL_MODE`, reusing the project-scoping checks already
    written for local mode so a project token cannot act on another project and a
    workspace token still has to pass the project-membership check.
+   This is consistent with existing posture rather than a widening:
+   `authMiddleware` already accepts `x-runtime-token` in production across all of
+   `/api/*` with no local-mode gate, so the check in `internal.ts` was an
+   inconsistency, not deliberate hardening.
 2. Make the Bearer branch fall through to the runtime token on failure instead of
    dead-ending.
+3. **Close the scope hole this exposes.** Routes that call `validateAuth(c)`
+   with no projectId can't infer the token's scope from the URL. `POST
+   /agent-cost-metrics` takes `workspaceId` from the *body* and never
+   cross-checked it, and `/agent-eval-results` can write a global row that
+   anchors every workspace's recommendation gate. Since a runtime can read its
+   own `RUNTIME_AUTH_SECRET` from env, leaving these open would break the
+   "zero blast radius" property `runtime-token.md` documents. Fix: have auth
+   return the resolved identity (`sa` | `project` | `workspace`) rather than a
+   boolean, and require SA or a matching workspace on those two routes.
 3. **Log every `validateAuth` rejection with the reason.** This bug ran for
    weeks because its failure path is completely silent; the logging is arguably
    the more valuable half of the fix.
@@ -316,10 +329,27 @@ This means the headline reliability figures in the baseline above —
 8.8% failed, 5.4% empty — are **floors, not totals**. Turns that died early are
 missing from both the numerator and the denominator.
 
-**Fix.** Record a zero-token turn-attempted/failed row (or a dedicated
-`turn_failures` record) so these are countable, including a reason code for the
-pre-`openSession` rejections. Add a warning log when a session closes with zero
-tokens while a user message exists for that chat session.
+**Fix.** Record a zero-token turn-attempted/failed row so these are countable,
+including a reason code for the pre-`openSession` rejections. Add a warning log
+when a session closes with zero tokens while a user message exists for that chat
+session.
+
+Two constraints found while implementing, both load-bearing:
+
+1. **Do not write these under `agentType: 'main-chat'`.**
+   `recordAgentCostMetric` feeds `maybeRecordExperimentRun`, which matches on
+   `(agentType, model)` and writes an A/B variant result; the same rows also
+   drive the per-model quality windows the recommendation gate reads. A turn
+   that died before the LLM carries `session.model` (defaulting to `sonnet`),
+   so folding it into `main-chat` would blame a *model* for an infrastructure
+   fault and skew live experiments. These land under a distinct
+   `main-chat-failed` type instead — countable, but out of the model-scoring
+   path.
+2. **Skip the `openSession` overwrite path.** It calls `closeSession` to drain a
+   stale map entry, which is bookkeeping rather than a turn ending; emitting a
+   failure row there would inflate the dropped-turn count with our own session
+   maintenance. Passed as `bookkeeping: true`. `discardPartial` stays silent for
+   the existing reason — those turns resume and complete on a later request.
 
 **Verification.** After deploy, the 48h queries from this document should show a
 non-zero count of early-failure turns; that number is the true size of B1.
@@ -351,19 +381,57 @@ descendant of `ac3be894c` (the commit that sets
 `git merge-base --is-ancestor` against the four distinct image SHAs in use. The
 SDK auto-upload flag is live and uploads still fail.
 
-**Root cause** [code]. In `createProxyTool().execute()`
-(`packages/agent-runtime/src/composio.ts:696-716`) only **relative** paths are
-rebased onto the workspace; URLs and absolute paths pass through unchanged by
-explicit design. Meanwhile `getComposioFileUploadDirs()` permits only
-`$WORKSPACE_DIR` and `$HOME/.composio/temp`, so `/tmp/foo.mp4` cannot be staged
-by the SDK either. Anything the SDK does not stage is forwarded verbatim, and
-Composio's backend interprets the string as an **already-uploaded S3 key** →
-404.
+**Root cause** [measured + code]. **Corrected after a second pass** — the
+first-pass answer below ("only relative paths are rebased") was wrong, and a fix
+built on it is a no-op. The real cause is that we hand the model Composio's
+*storage* schema and it dutifully invents an S3 key.
 
-The agent is also not told what to pass [code]: `file_uploadable` is dropped by
-`jsonSchemaPropertyToTypebox()` so it never reaches the model, tool descriptions
-come verbatim from the Composio catalog with no Shogo overlay, and no system
-prompt covers file params.
+Fetched from the live catalog (`GET /api/v3/tools?toolkit_slug=youtube`), the
+`videoFile` param is an **object**, not a string:
+
+```json
+"videoFile": {
+  "type": "object", "title": "FileUploadable",
+  "required": ["name", "mimetype", "s3key"],
+  "properties": { "name": {…}, "s3key": {…}, "mimetype": {…} },
+  "file_uploadable": true
+}
+```
+
+The chain:
+
+1. The SDK's `tools.get()` collapses `file_uploadable` down to
+   `{ type: 'string', format: 'path' }` before the model sees it
+   (`transformSchema`, `FileToolModifier.utils.neutral.ts`). We never call
+   `tools.get()` — we build TypeBox from the raw v3 REST catalog, so
+   `jsonSchemaPropertyToTypebox()` takes its `case 'object'` branch and exposes
+   the raw shape with **`s3key` required**.
+2. The model cannot know an `s3key`, so it fills that field with whatever it
+   has. Every value in the table above is just *what went into the `s3key`
+   string* — the "wildly inconsistent" values are a symptom, not the disease.
+3. At execute time the SDK's `hydrateFiles` bails on non-string values
+   (`if (typeof value !== 'string' && !(value instanceof File)) return value`),
+   so **staging never runs** and the object is forwarded verbatim.
+4. Composio's backend tries to fetch the supplied key → HTTP 404.
+
+Confirmed against the installed `@composio/core` 0.10.0 in `node_modules`, not
+just the upstream `next` branch.
+
+**Why the first-pass root cause is provably wrong** [measured]. Staging failures
+throw typed errors out of `tools.execute` — `ComposioFileNotFoundError`,
+`ComposioFileUploadPathNotAllowedError`. With `/tmp` absent from
+`fileUploadDirs`, `/tmp/test_upload.mp4` would have produced *PathNotAllowed*.
+It produced an s3key 404 instead, which is only reachable if the modifier never
+engaged. Likewise `/app/workspace/scripts/…/cricket_fact_1.mp4` sits *inside* the
+allowlist and still 404'd.
+
+**Blast radius is wider than YouTube** [measured]. Every `file_uploadable` field
+in the catalog uses this object shape — zero string-shaped fields across the
+toolkits checked — so the same bug hits Instagram
+(`INSTAGRAM_POST_IG_USER_MEDIA.image_file`/`.video_file`), Facebook
+(`FACEBOOK_CREATE_PHOTO_POST.media`, `.photo`, `FACEBOOK_CREATE_VIDEO_POST.video`)
+and Google Drive (`GOOGLEDRIVE_UPLOAD_FILE.file_to_upload`, +3). This likely
+subsumes the separately-tracked Instagram/Facebook media errors.
 
 **The retry-with-different-keys behaviour is our own hint text, not model
 whimsy** [code]. `classifyComposioError` maps the s3key 404 to
@@ -385,21 +453,27 @@ URL, `/tmp` absolute path, and a nonexistent workspace file.
 
 **Fix.**
 
-1. Normalize `file_uploadable` fields before dispatch: resolve the path, verify
-   it exists and lands under an allowed upload dir, and fail with an actionable
-   message if not.
-2. Stage external/preview URLs by downloading into the workspace first (or
-   return an explicit "download it first" instruction), rather than forwarding a
-   URL as an S3 key.
-3. Map `/tmp` into an allowed staging dir, since agents legitimately land there
-   after `exec`.
-4. Add a distinct error classification for unstaged-file failures so they no
-   longer inherit the `notfound` "verify the id / vary the call" hint. The
-   replacement hint should name the real problem and the real remedy ("the file
-   was not uploaded; pass a workspace-relative path to an existing file"), which
-   removes the incentive to guess key variants.
-5. Overlay the tool description for file params: "pass a workspace-relative
-   path, not a URL".
+1. **Collapse the schema** (the actual fix). In `jsonSchemaPropertyToTypebox()`,
+   branch on `file_uploadable === true` *before* the type switch and emit a
+   single path string, mirroring the SDK's `transformSchema`. The model then
+   passes a string, `hydrateFiles` stages it, and the backend receives a real
+   `{ name, mimetype, s3key }` descriptor. Without this step, nothing else in
+   this list matters.
+2. Normalize the value before dispatch: rebase relative paths onto the workspace
+   (the SDK resolves them against `process.cwd()`), and fail with an actionable
+   message when the file is missing or outside the allowed dirs.
+3. **Leave http(s) URLs to the SDK.** It already stages remote URLs, with a
+   response-size cap, redirects disabled and connect/read timeouts. Re-
+   downloading them here with a bare `fetch` would lose all three protections
+   for no benefit.
+4. Map `/tmp` into `fileUploadDirs`, since agents legitimately land there after
+   `exec`. Only load-bearing once staging actually runs.
+5. Unwrap a legacy `{ s3key: "<path>" }` object whose key is clearly a path or
+   URL, for sessions bound before the collapse. Opaque keys pass through — those
+   are genuine pre-staged descriptors from upstream download actions.
+6. Add a distinct error classification for unstaged-file failures so they no
+   longer inherit the `notfound` "verify the id / vary the call" hint, which is
+   what drove the key-guessing loop.
 
 **Verification.** The eval mock is currently wrong and cannot catch this
 [code]: `packages/agent-runtime/src/evals/tool-mocks.ts:1905-1907` mocks the
