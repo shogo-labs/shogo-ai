@@ -29,6 +29,16 @@ import { recordAgentCostMetric } from '../services/cost-analytics.service'
 
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000 // 10 min safety net
 
+/**
+ * `agentType` for turns that died before the LLM produced any tokens.
+ *
+ * Kept distinct from `main-chat` on purpose: these rows exist to make silent
+ * dropped turns countable, and folding them into `main-chat` would charge a
+ * model's measured quality (and any active A/B experiment) for failures the
+ * model was never involved in.
+ */
+export const FAILED_TURN_AGENT_TYPE = 'main-chat-failed'
+
 export interface BillingSessionQualitySignals {
   success?: boolean
   hitMaxTurns?: boolean
@@ -106,7 +116,12 @@ export function openSession(
   if (existing) {
     const log = chatSessionId ? console.error : console.warn
     log(`[BillingSession] Overwriting existing session for ${key} (${existing.requestCount} requests buffered)`)
-    closeSession(projectId, { chatSessionId: chatSessionId ?? undefined }).catch(() => {})
+    // `bookkeeping` — draining a stale map entry, not a turn ending. Without
+    // it every overwrite would emit a failed-turn metric row.
+    closeSession(projectId, {
+      chatSessionId: chatSessionId ?? undefined,
+      bookkeeping: true,
+    }).catch(() => {})
   }
 
   sessions.set(key, {
@@ -260,10 +275,18 @@ function lookupSession(projectId: string, chatSessionId?: string | null): Billin
  * terminal `data-turn-complete` marker — we don't want to bill a user
  * for a half-finished turn that the auto-resuming-fetch client will
  * reconnect and finish on a subsequent request.
+ *
+ * When `bookkeeping: true`, the close is internal session-map maintenance
+ * rather than a turn ending, so a zero-token close does not emit a
+ * failed-turn metric row.
  */
 export async function closeSession(
   projectId: string,
-  options: { discardPartial?: boolean; chatSessionId?: string | null } = {},
+  options: {
+    discardPartial?: boolean
+    chatSessionId?: string | null
+    bookkeeping?: boolean
+  } = {},
 ): Promise<{ billedUsd: number; rawUsd: number; totalTokens: number }> {
   // Prefer the composite key. Fall back to the legacy projectId-only key
   // so callers that opened a session without a chatSessionId (or that
@@ -282,6 +305,54 @@ export async function closeSession(
 
   const totalTokens = session.inputTokens + session.cachedInputTokens + session.cacheWriteTokens + session.outputTokens
   if (totalTokens === 0 && session.imageBilledUsd === 0) {
+    // Do not bill, but still record a metrics row so turns that die before
+    // the LLM (pod unreachable, 402, stream abort with no tokens) are
+    // countable. Skipping this made silent dropped turns invisible in
+    // agent_cost_metrics.
+    //
+    // Two closes are deliberately silent:
+    //   - `discardPartial` — the stream EOF'd before turn-complete, but the
+    //     client reconnects and the turn finishes on a later request.
+    //   - `bookkeeping` — session-map maintenance (an overwrite in
+    //     `openSession`), not a turn ending at all.
+    if (!options.discardPartial && !options.bookkeeping) {
+      const durationMs = Date.now() - session.openedAt
+      console.warn(
+        `[BillingSession] Zero-token close for ${key} (turn died before LLM)` +
+          `${session.chatSessionId ? ` chatSessionId=${session.chatSessionId}` : ''}`,
+      )
+      void recordAgentCostMetric({
+        workspaceId: session.workspaceId,
+        projectId: session.projectId,
+        // NOT `main-chat`: the model never ran, so this must not land in the
+        // per-model quality windows the recommendation gate reads, and must
+        // not be attributed to an active A/B experiment for `main-chat`
+        // (`maybeRecordExperimentRun` matches on agentType + model). A
+        // distinct type keeps the failure countable without blaming a model
+        // for an infrastructure fault. `session.model` is still recorded for
+        // triage — it defaults to `sonnet` when the turn died pre-LLM.
+        agentType: FAILED_TURN_AGENT_TYPE,
+        model: session.model,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        toolCalls: 0,
+        creditCost: 0,
+        wallTimeMs: durationMs,
+        success: false,
+        hitMaxTurns: false,
+        loopDetected: false,
+        escalated: false,
+        responseEmpty: true,
+        metadata: {
+          ...(session.chatSessionId ? { chatSessionId: session.chatSessionId } : {}),
+          earlyFailure: true,
+          reason: 'zero_tokens',
+        },
+      }).catch((err) => {
+        console.warn('[BillingSession] Failed to record zero-token cost metric:', err?.message ?? err)
+      })
+    }
     return { billedUsd: 0, rawUsd: 0, totalTokens: 0 }
   }
 

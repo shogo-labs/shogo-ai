@@ -250,11 +250,41 @@ describe('closeSession', () => {
     expect(r).toEqual({ billedUsd: 0, rawUsd: 0, totalTokens: 0 })
   })
 
-  it('returns zeros when session is empty (no tokens, no images)', async () => {
-    openSession('p1', 'w1', 'u1')
-    const r = await closeSession('p1')
+  it('returns zeros when session is empty (no tokens, no images) but still records a failed metric', async () => {
+    openSession('p1', 'w1', 'u1', 'chat-empty')
+    const r = await closeSession('p1', { chatSessionId: 'chat-empty' })
     expect(r).toEqual({ billedUsd: 0, rawUsd: 0, totalTokens: 0 })
     expect(consumeUsageCalls).toHaveLength(0)
+    expect(costMetricCalls).toHaveLength(1)
+    expect(costMetricCalls[0].success).toBe(false)
+    expect(costMetricCalls[0].responseEmpty).toBe(true)
+    expect(costMetricCalls[0].inputTokens).toBe(0)
+    expect(costMetricCalls[0].metadata).toMatchObject({
+      chatSessionId: 'chat-empty',
+      earlyFailure: true,
+      reason: 'zero_tokens',
+    })
+    expect(String(logs.warn[0])).toContain('Zero-token close')
+  })
+
+  // The model never ran, so this row must not reach the per-model quality
+  // windows or get attributed to an active `main-chat` A/B experiment —
+  // `maybeRecordExperimentRun` matches on agentType + model.
+  it('records the failed turn under a distinct agentType, not main-chat', async () => {
+    openSession('p1', 'w1', 'u1', 'chat-agenttype')
+    await closeSession('p1', { chatSessionId: 'chat-agenttype' })
+    expect(costMetricCalls).toHaveLength(1)
+    expect(costMetricCalls[0].agentType).toBe('main-chat-failed')
+    expect(costMetricCalls[0].agentType).not.toBe('main-chat')
+    expect(costMetricCalls[0].creditCost).toBe(0)
+  })
+
+  it('a real main-chat turn still records under main-chat', async () => {
+    openSession('p1', 'w1', 'u1', 'chat-ok')
+    accumulateUsage('p1', 'sonnet', 1000, 500, 0, 0, 'chat-ok')
+    await closeSession('p1', { chatSessionId: 'chat-ok' })
+    expect(costMetricCalls).toHaveLength(1)
+    expect(costMetricCalls[0].agentType).toBe('main-chat')
   })
 
   it('discardPartial:true skips charging but still drains the session', async () => {
@@ -266,6 +296,25 @@ describe('closeSession', () => {
     expect(consumeUsageCalls).toHaveLength(0)
     expect(hasSession('p1')).toBe(false)
     expect(String(logs.log[0])).toContain('Discarded partial session')
+  })
+
+  it('discardPartial on a zero-token session does not record a metric', async () => {
+    openSession('p1', 'w1', 'u1')
+    const r = await closeSession('p1', { discardPartial: true })
+    expect(r.totalTokens).toBe(0)
+    expect(consumeUsageCalls).toHaveLength(0)
+    expect(costMetricCalls).toHaveLength(0)
+  })
+
+  // Overwriting a stale map entry is bookkeeping, not a turn ending. Emitting
+  // a failure row here would inflate the dropped-turn count with our own
+  // session-map maintenance.
+  it('an openSession overwrite does not record a failed-turn metric', async () => {
+    openSession('p-overwrite', 'w1', 'u1', 'chat-dup')
+    openSession('p-overwrite', 'w1', 'u1', 'chat-dup')
+    await Promise.resolve()
+    expect(costMetricCalls).toHaveLength(0)
+    expect(consumeUsageCalls).toHaveLength(0)
   })
 
   it('charges via billing service and forwards full metadata', async () => {
