@@ -143,3 +143,30 @@ export function resolveProgressAfterVisibilityChange(opts: {
 }): number {
   return opts.isVisibleNow ? opts.now : opts.lastProgressAt
 }
+
+/** Shown when the stall watchdog aborts a turn that never produced a byte. */
+export const STALL_TIMEOUT_USER_MESSAGE = 'Request timed out — tap retry'
+
+/** Shown when the agent run finished with no text and no tool calls. */
+export const EMPTY_AGENT_RESPONSE_MESSAGE = 'The agent returned no content.'
+
+/**
+ * Decide the error-banner text after `useChat().onFinish`.
+ *
+ * Historically `isAbort` (user Stop, stall watchdog, unmount) always cleared
+ * the banner, so a watchdog-aborted turn left the user with no indication
+ * that anything failed. User-initiated Stop still clears — that is not an
+ * error. Stall-watchdog abort surfaces {@link STALL_TIMEOUT_USER_MESSAGE}.
+ */
+export function emptyResponseErrorAfterFinish(opts: {
+  isAbort: boolean
+  userInitiatedStop: boolean
+  stallWatchdogTripped: boolean
+  hasContent: boolean
+}): string | null {
+  if (opts.userInitiatedStop) return null
+  if (opts.stallWatchdogTripped) return STALL_TIMEOUT_USER_MESSAGE
+  if (opts.isAbort) return null
+  if (!opts.hasContent) return EMPTY_AGENT_RESPONSE_MESSAGE
+  return null
+}

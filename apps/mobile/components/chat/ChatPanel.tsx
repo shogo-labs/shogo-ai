@@ -103,6 +103,9 @@ import { useDualPlan } from "../../lib/dual-plan-preference"
 import {
   isChatStalled,
   resolveProgressAfterVisibilityChange,
+  emptyResponseErrorAfterFinish,
+  STALL_TIMEOUT_USER_MESSAGE,
+  EMPTY_AGENT_RESPONSE_MESSAGE,
   DEFAULT_SUBMITTED_STALL_MS,
   DEFAULT_STREAMING_STALL_MS,
 } from "../../lib/chat-stall-watchdog"
@@ -1429,6 +1432,9 @@ export const ChatPanel = observer(function ChatPanel({
   // Without this we raise a scary "context corruption" banner every time
   // the user taps Stop before the model produced any text or tool calls.
   const userInitiatedStopRef = useRef(false)
+  // Set just before the stall watchdog calls `stop()`, so `onFinish` can
+  // keep a timeout banner instead of wiping error state (silent dropped turns).
+  const stallWatchdogTrippedRef = useRef(false)
 
   // Workspace-scoped chat routes to `/api/workspaces/:workspaceId/chat`
   // instead of the per-project endpoint. Only set when this panel is
@@ -2227,21 +2233,19 @@ export const ChatPanel = observer(function ChatPanel({
       const hasToolCallsInMessage = message.parts?.some(
         (p: any) => p.type === "tool-invocation" || p.type === "tool-result"
       )
-      // `isAbort` comes straight from the AI SDK (see ai/dist/index.mjs
-      // `AbstractChat#makeRequest` finally block) and is set whenever the
-      // active response's AbortController fires — covers user-initiated
-      // Stop, the stall watchdog, panel unmount, and any future caller of
-      // `stop()` without us having to instrument each path. The ref is
-      // kept as a belt-and-braces fallback.
-      if (isAbort || userInitiatedStopRef.current) {
-        userInitiatedStopRef.current = false
-        setEmptyResponseError(null)
-      } else if (!hasTextContent && !hasToolCallsInMessage && contentLength === 0) {
+      const hasContent = !!(hasTextContent || hasToolCallsInMessage || contentLength > 0)
+      const nextError = emptyResponseErrorAfterFinish({
+        isAbort: !!(isAbort || userInitiatedStopRef.current),
+        userInitiatedStop: userInitiatedStopRef.current,
+        stallWatchdogTripped: stallWatchdogTrippedRef.current,
+        hasContent,
+      })
+      if (nextError === EMPTY_AGENT_RESPONSE_MESSAGE) {
         console.warn("[ChatPanel] Agent returned empty response — possible context corruption")
-        setEmptyResponseError("The agent returned no content.")
-      } else {
-        setEmptyResponseError(null)
       }
+      userInitiatedStopRef.current = false
+      stallWatchdogTrippedRef.current = false
+      setEmptyResponseError(nextError)
 
       if (currentSessionId) {
         refetchUsageWallet()
@@ -4379,6 +4383,8 @@ export const ChatPanel = observer(function ChatPanel({
           console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
         }
         try {
+          stallWatchdogTrippedRef.current = true
+          setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
           void stop()
         } catch (err) {
           console.warn("[ChatPanel] stall watchdog stop() threw:", err)
