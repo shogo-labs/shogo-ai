@@ -285,6 +285,28 @@ describe('POST /heartbeat/complete', () => {
     })
     expect(res.status).toBe(200)
   })
+  test('200 with runtime token in production (metal: no SA token, no SHOGO_LOCAL_MODE)', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    store.podIdentity = null
+    store.runtimeVerify = { ok: true, projectId: 'p1' }
+    const res = await app.request('/heartbeat/complete', {
+      method: 'POST',
+      headers: { 'x-runtime-token': 'rt', ...JSON_H },
+      body: JSON.stringify({ projectId: 'p1' }),
+    })
+    expect(res.status).toBe(200)
+  })
+  test('200 when SA token fails TokenReview but a valid runtime token is also present', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    store.podIdentity = null
+    store.runtimeVerify = { ok: true, projectId: 'p1' }
+    const res = await app.request('/heartbeat/complete', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer stale-sa', 'x-runtime-token': 'rt', ...JSON_H },
+      body: JSON.stringify({ projectId: 'p1' }),
+    })
+    expect(res.status).toBe(200)
+  })
   test('401 when runtime token mismatches projectId in local mode', async () => {
     process.env.SHOGO_LOCAL_MODE = 'true'
     store.podIdentity = null
@@ -562,6 +584,71 @@ describe('POST /agent-cost-metrics', () => {
     })
     expect(res.status).toBe(500)
   })
+
+  // The target workspace arrives in the body, so it cannot be inferred from
+  // the URL. A runtime token is a project/workspace capability an agent can
+  // read out of its own env — without a cross-check any pod could write
+  // analytics rows (and skew model-quality scoring) for another workspace.
+  describe('workspace scoping for runtime-token callers', () => {
+    test('200 when a project token resolves to the body workspaceId', async () => {
+      delete process.env.SHOGO_LOCAL_MODE
+      store.podIdentity = null
+      store.runtimeVerify = { ok: true, projectId: 'proj-1' }
+      store.resolvedWorkspaceId = 'ws-1'
+      const res = await app.request('/agent-cost-metrics', {
+        method: 'POST', headers: { 'x-runtime-token': 'rt', ...JSON_H },
+        body: JSON.stringify({ workspaceId: 'ws-1', projectId: 'proj-1', agentType: 't', model: 'm' }),
+      })
+      expect(res.status).toBe(200)
+    })
+
+    test('401 when a project token belongs to a different workspace', async () => {
+      delete process.env.SHOGO_LOCAL_MODE
+      store.podIdentity = null
+      store.runtimeVerify = { ok: true, projectId: 'proj-1' }
+      store.resolvedWorkspaceId = 'ws-mine'
+      const res = await app.request('/agent-cost-metrics', {
+        method: 'POST', headers: { 'x-runtime-token': 'rt', ...JSON_H },
+        body: JSON.stringify({ workspaceId: 'ws-someone-else', projectId: 'proj-1', agentType: 't', model: 'm' }),
+      })
+      expect(res.status).toBe(401)
+      expect(store.recordedMetric).toBeNull()
+    })
+
+    test('401 when a workspace token targets another workspace', async () => {
+      delete process.env.SHOGO_LOCAL_MODE
+      store.podIdentity = null
+      store.runtimeVerify = { ok: false, reason: 'malformed' }
+      store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+      const res = await app.request('/agent-cost-metrics', {
+        method: 'POST', headers: { 'x-runtime-token': 'wrt', ...JSON_H },
+        body: JSON.stringify({ workspaceId: 'ws-2', agentType: 't', model: 'm' }),
+      })
+      expect(res.status).toBe(401)
+      expect(store.recordedMetric).toBeNull()
+    })
+
+    test('200 when a workspace token targets its own workspace', async () => {
+      delete process.env.SHOGO_LOCAL_MODE
+      store.podIdentity = null
+      store.runtimeVerify = { ok: false, reason: 'malformed' }
+      store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+      const res = await app.request('/agent-cost-metrics', {
+        method: 'POST', headers: { 'x-runtime-token': 'wrt', ...JSON_H },
+        body: JSON.stringify({ workspaceId: 'ws-1', agentType: 't', model: 'm' }),
+      })
+      expect(res.status).toBe(200)
+    })
+
+    test('SA callers stay unrestricted (cluster-internal)', async () => {
+      store.resolvedWorkspaceId = 'ws-unrelated'
+      const res = await app.request('/agent-cost-metrics', {
+        method: 'POST', headers: { ...SA, ...JSON_H },
+        body: JSON.stringify({ workspaceId: 'any-ws', agentType: 't', model: 'm' }),
+      })
+      expect(res.status).toBe(200)
+    })
+  })
 })
 
 // ─── POST /agent-eval-results ───────────────────────────────────────────────
@@ -586,6 +673,35 @@ describe('POST /agent-eval-results', () => {
       method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ agentType: 't' }),
     })
     expect(res.status).toBe(400)
+  })
+  // A workspaceId-less row is the global anchor every workspace's
+  // recommendation gate reads, so writing one needs a cluster credential.
+  test('401 when a runtime token tries to write a global (workspace-less) row', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    store.podIdentity = null
+    store.runtimeVerify = { ok: true, projectId: 'proj-1' }
+    store.resolvedWorkspaceId = 'ws-1'
+    const res = await app.request('/agent-eval-results', {
+      method: 'POST', headers: { 'x-runtime-token': 'rt', ...JSON_H },
+      body: JSON.stringify({ agentType: 't', model: 'm', suite: 's', totalCases: 2, passedCases: 1 }),
+    })
+    expect(res.status).toBe(401)
+    expect(store.recordedEval).toBeNull()
+  })
+  test('200 when a runtime token writes a row scoped to its own workspace', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    store.podIdentity = null
+    store.runtimeVerify = { ok: true, projectId: 'proj-1' }
+    store.resolvedWorkspaceId = 'ws-1'
+    const res = await app.request('/agent-eval-results', {
+      method: 'POST', headers: { 'x-runtime-token': 'rt', ...JSON_H },
+      body: JSON.stringify({
+        workspaceId: 'ws-1', agentType: 't', model: 'm', suite: 's',
+        totalCases: 2, passedCases: 1,
+      }),
+    })
+    expect(res.status).toBe(200)
+    expect(store.recordedEval.workspaceId).toBe('ws-1')
   })
   test('400 when totalCases <= 0', async () => {
     const res = await app.request('/agent-eval-results', {
@@ -907,12 +1023,12 @@ describe('validateAuth: local mode with no runtime token header', () => {
 // `verifyWorkspaceRuntimeToken` and enforce project→workspace membership for
 // project-scoped routes (regression: pod→API 401s for checkpoints, heartbeat,
 // cost metrics, etc.).
-describe('validateAuth: workspace runtime token (local mode)', () => {
+describe('validateAuth: workspace runtime token', () => {
   const SHA = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0'
   const body = { commitSha: SHA, commitMessage: 'auto', branch: 'main', filesChanged: 0, additions: 0, deletions: 0 }
 
-  test('200 when workspace token is valid and the project belongs to that workspace', async () => {
-    process.env.SHOGO_LOCAL_MODE = 'true'
+  test('200 when workspace token is valid and the project belongs to that workspace (production)', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
     store.podIdentity = null
     store.runtimeVerify = { ok: false, reason: 'malformed' }
     store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
@@ -1042,8 +1158,8 @@ describe('GET /projects/:projectId/publish', () => {
     })
   })
 
-  test('200 with runtime token in local mode', async () => {
-    process.env.SHOGO_LOCAL_MODE = 'true'
+  test('200 with runtime token in production (metal-shaped, no SHOGO_LOCAL_MODE)', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
     store.podIdentity = null
     store.runtimeVerify = { ok: true, projectId: 'p-local' }
     store.prismaProjectFindUnique = {
@@ -1149,8 +1265,8 @@ describe('POST /projects/:projectId/publish', () => {
     expect((await res.json()).error.code).toBe('publish_failed')
   })
 
-  test('200 with runtime token in local mode', async () => {
-    process.env.SHOGO_LOCAL_MODE = 'true'
+  test('200 with runtime token in production (metal-shaped, no SHOGO_LOCAL_MODE)', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
     store.podIdentity = null
     store.runtimeVerify = { ok: true, projectId: 'p-local' }
     store.publishResult = ok
