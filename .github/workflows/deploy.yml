@@ -216,9 +216,9 @@ jobs:
 
           BASE_DOCKERFILE=$(has_match '^packages/agent-runtime/Dockerfile\.base')
           SDK_EXAMPLES=$(has_match '^packages/sdk/examples/')
-          # Dockerfile.base pre-warms Bun's tarball cache from the expo-three
-          # starter package.json. Bumping its deps invalidates the prewarm.
-          EXPO_PREWARM=$(has_match '^packages/agent-runtime/tech-stacks/expo-three/starter/package\.json')
+          # Dockerfile.base pre-warms Bun's tarball cache from both Expo
+          # starters. Bumping either tree invalidates the prewarm.
+          EXPO_PREWARM=$(has_match '^packages/agent-runtime/tech-stacks/expo-(three|app)/starter/package\.json')
           RUNTIME_BASE_CHANGED=false
           if [ "$BASE_DOCKERFILE" = "true" ] || [ "$SDK_EXAMPLES" = "true" ] || [ "$EXPO_PREWARM" = "true" ]; then
             RUNTIME_BASE_CHANGED=true
@@ -254,16 +254,18 @@ jobs:
 
           # Content-hash tag for the runtime base image. Hash exactly the
           # inputs that define the base (the same files that drive
-          # runtime_base_changed above): Dockerfile.base, the expo-three
-          # prewarm package.json, and the SDK examples. The base is built and
-          # pushed under shogo-runtime-base:<base_tag> only when this tag is
-          # absent in OCIR, and the runtime image is built FROM that exact tag.
-          # So the heavy base layers stay byte-identical until these inputs
-          # actually change (and a revert reuses the previously built tag).
+          # runtime_base_changed above): Dockerfile.base, both Expo starter
+          # package.json files that feed the Bun prewarm, and the SDK
+          # examples. The base is built and pushed under
+          # shogo-runtime-base:<base_tag> only when this tag is absent in
+          # OCIR, and the runtime image is built FROM that exact tag. So the
+          # heavy base layers stay byte-identical until these inputs actually
+          # change (and a revert reuses the previously built tag).
           BASE_HASH=$(
             {
               sha256sum packages/agent-runtime/Dockerfile.base \
-                        packages/agent-runtime/tech-stacks/expo-three/starter/package.json 2>/dev/null
+                        packages/agent-runtime/tech-stacks/expo-three/starter/package.json \
+                        packages/agent-runtime/tech-stacks/expo-app/starter/package.json 2>/dev/null
               find packages/sdk/examples -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null
             } | sha256sum | cut -c1-16
           )

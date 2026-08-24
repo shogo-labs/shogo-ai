@@ -94,7 +94,7 @@ describe('ensureWorkspaceDeps — stack mismatch on viteBin fast path', () => {
   test('Expo package.json + leftover .bin/vite must NOT short-circuit', async () => {
     seedHybridState({
       name: 'expo-app',
-      dependencies: { expo: '~51.0.0', react: '18.2.0' },
+      dependencies: { expo: '~57.0.0', react: '19.2.3' },
     })
 
     // The function will throw because our installAsync stub throws —

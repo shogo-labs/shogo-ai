@@ -113,7 +113,7 @@ function buildBundleZipWithInstallMarker(): Uint8Array {
     'project.json': strToU8(JSON.stringify(projectJson)),
     // Real workspace content the importer expects.
     'workspace/package.json': strToU8(
-      JSON.stringify({ name: 'expo-app', dependencies: { expo: '~51.0.0' } }),
+      JSON.stringify({ name: 'expo-app', dependencies: { expo: '~57.0.0' } }),
     ),
     'workspace/app/index.tsx': strToU8('export default () => null\n'),
     // The toxic file: a per-machine install-marker that was written by

@@ -93,10 +93,10 @@ function seedPoisonedWorkspace(): string {
   const pkg = {
     name: 'expo-app',
     dependencies: {
-      expo: '~51.0.0',
-      'expo-router': '~3.5.0',
+      expo: '~57.0.0',
+      'expo-router': '~57.0.0',
       '@react-three/fiber': '^8.16.0',
-      react: '18.2.0',
+      react: '19.2.3',
     },
   }
   writeFileSync(join(TMP, 'package.json'), JSON.stringify(pkg))
@@ -149,7 +149,7 @@ describe('ensureWorkspaceDeps — install-marker stale-deps probe', () => {
     const pkg = {
       name: 'expo-app',
       dependencies: {
-        expo: '~51.0.0',
+        expo: '~57.0.0',
       },
     }
     writeFileSync(join(TMP, 'package.json'), JSON.stringify(pkg))

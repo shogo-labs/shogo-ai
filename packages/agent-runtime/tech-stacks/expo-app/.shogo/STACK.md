@@ -15,7 +15,8 @@ This project is an Expo + React Native app with TypeScript.
 
 ## Files
 
-- `App.tsx` — root component.
+- `app/_layout.tsx` — expo-router root layout.
+- `app/index.tsx` — home screen.
 - `src/` — your code.
 - `app.json` — Expo config. Don't change `name` / `slug` casually.
 - `babel.config.js` — Expo's Babel preset; required for fast refresh.
@@ -31,7 +32,7 @@ This project is an Expo + React Native app with TypeScript.
   style genuinely needs a dynamic runtime value.
 - Prefer the pre-installed UI primitives in `src/components/ui/` (Button,
   Card, Input, Badge, etc.) over hand-rolling the same widgets.
-- For navigation, prefer `expo-router` if added.
+- Navigation is `expo-router` (file-based routes under `app/`).
 - Persistent state: `expo-sqlite` or `@react-native-async-storage/async-storage`.
 
 ## Styling — NativeWind + UI primitives

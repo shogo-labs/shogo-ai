@@ -112,16 +112,25 @@ ENV NPM_CONFIG_CACHE=/app/.npm \
 #
 # The cache is purely additive — even if a project pins different versions
 # than the prewarm template, unchanged tarballs are still hits. Staleness
-# only costs the delta. The prewarm template is the expo-three starter
-# because it's a superset of expo-app's deps (three.js + expo deps).
+# only costs the delta. We prewarm TWO trees: expo-three (SDK 51 + three.js +
+# expo-gl, still the 3D stack) and expo-app (SDK 57). They used to share a
+# tree when expo-app was a subset of expo-three; they no longer do.
 #
 # This block runs as appuser so /app/.bun/cache ends up uid 1001 owned.
 COPY --chown=appuser:appgroup packages/agent-runtime/tech-stacks/expo-three/starter/package.json \
-     /tmp/expo-prewarm/package.json
+     /tmp/expo-three-prewarm/package.json
 USER appuser
-RUN cd /tmp/expo-prewarm && \
+RUN cd /tmp/expo-three-prewarm && \
     bun install --no-save --no-progress && \
-    rm -rf /tmp/expo-prewarm
+    rm -rf /tmp/expo-three-prewarm
+USER root
+
+COPY --chown=appuser:appgroup packages/agent-runtime/tech-stacks/expo-app/starter/package.json \
+     /tmp/expo-app-prewarm/package.json
+USER appuser
+RUN cd /tmp/expo-app-prewarm && \
+    bun install --no-save --no-progress && \
+    rm -rf /tmp/expo-app-prewarm
 USER root
 
 # Pre-warm Bun's cache with the react-app runtime-template dependency tree
