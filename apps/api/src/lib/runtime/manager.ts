@@ -1005,8 +1005,8 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // so the sentinel is never created. On every subsequent restart the
     // sentinel-missing branch then deletes `bun.lock` and *wipes
     // node_modules entirely*, then runs `npm install`. On Windows, with a
-    // stale `package-lock.json` and any peer-dep conflict (e.g. `@react-three/drei@^10`
-    // wanting React 19 vs Expo 51 pinning React 18), the reinstall either
+    // stale `package-lock.json` and any peer-dep conflict (e.g. `@react-three/drei@^9`
+    // wanting React 18 vs Expo 57 pinning React 19), the reinstall either
     // fails outright (ERESOLVE) or silently drops packages — and the
     // user sees "missing packages every time I restart".
     //

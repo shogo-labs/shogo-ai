@@ -380,7 +380,7 @@ describe('ensureWorkspaceDeps platform detection', () => {
     // Expo-style package.json (no `vite` dep, no `vite` bin in node_modules)
     writeFileSync(
       join(DEPS_DIR, 'package.json'),
-      '{"name":"expo-app","dependencies":{"expo":"~51.0.0","react":"18.2.0"}}',
+      '{"name":"expo-app","dependencies":{"expo":"~57.0.0","react":"19.2.3"}}',
     )
     mkdirSync(join(DEPS_DIR, 'node_modules', 'expo'), { recursive: true })
     writeFileSync(join(DEPS_DIR, 'node_modules', 'expo', 'package.json'), '{}')
@@ -403,7 +403,7 @@ describe('ensureWorkspaceDeps platform detection', () => {
     // checking the install-marker side-effect.
     rmSync(DEPS_DIR, { recursive: true, force: true })
     mkdirSync(DEPS_DIR, { recursive: true })
-    writeFileSync(join(DEPS_DIR, 'package.json'), '{"name":"expo-app","dependencies":{"expo":"~51.0.0"}}')
+    writeFileSync(join(DEPS_DIR, 'package.json'), '{"name":"expo-app","dependencies":{"expo":"~57.0.0"}}')
     // No node_modules at all.
     writeInstallMarker(DEPS_DIR)
     const beforeHash = readInstallMarker(DEPS_DIR)
