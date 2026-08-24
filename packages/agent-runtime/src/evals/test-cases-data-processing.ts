@@ -23,6 +23,7 @@ import {
   neverUsedTool,
   responseContains,
   toolCallArgsContain,
+  usedGhCli,
 } from './eval-helpers'
 
 function wroteSchemaFile(r: { toolCalls: Array<{ name: string; input: unknown }> }): boolean {
@@ -76,18 +77,18 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
     toolMocks: DATA_PROCESSING_LARGE_ISSUES_MOCKS,
     validationCriteria: [
       {
-        id: 'installed-github',
-        description: 'Installed GitHub via connect',
+        id: 'fetched-issues',
+        description: 'Fetched GitHub issues via gh CLI or connect',
         points: 10,
-        phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect'),
+        phase: 'execution',
+        validate: (r) => usedGhCli(r, 'issue') || usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'called-list-issues',
-        description: 'Called GITHUB_LIST_REPOSITORY_ISSUES to fetch issues',
+        description: 'Listed issues with gh or GITHUB_LIST_REPOSITORY_ISSUES',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
+        validate: (r) => usedGhCli(r, 'issue') || usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'created-prisma-schema',
@@ -219,18 +220,18 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
     toolMocks: DATA_PROCESSING_TOP_N_MOCKS,
     validationCriteria: [
       {
-        id: 'installed-github',
-        description: 'Installed GitHub via connect',
+        id: 'fetched-issues',
+        description: 'Fetched GitHub issues via gh CLI or connect',
         points: 10,
-        phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect'),
+        phase: 'execution',
+        validate: (r) => usedGhCli(r, 'issue') || usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'called-list-issues',
-        description: 'Called GITHUB_LIST_REPOSITORY_ISSUES to fetch issues',
+        description: 'Listed issues with gh or GITHUB_LIST_REPOSITORY_ISSUES',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
+        validate: (r) => usedGhCli(r, 'issue') || usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'created-prisma-schema',

@@ -9,7 +9,7 @@
 
 import type { AgentEval, EvalResult } from './types'
 import { WEEKLY_REPORT_MOCKS } from './tool-mocks'
-import { usedTool, usedToolAnywhere, responseContains, toolCallsJson } from './eval-helpers'
+import { usedTool, usedToolAnywhere, responseContains, toolCallsJson, usedGhCli } from './eval-helpers'
 
 function subagentWasSpawned(r: EvalResult): boolean {
   return r.toolCalls.some(tc =>
@@ -65,13 +65,6 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
         validate: (r) => usedToolAnywhere(r, 'connect') && toolCallsJson(r).includes('jira'),
       },
       {
-        id: 'installed-github',
-        description: 'Agent installed the GitHub integration',
-        points: 5,
-        phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect') && toolCallsJson(r).includes('github'),
-      },
-      {
         id: 'queried-jira',
         description: 'Agent queried Jira for issues',
         points: 5,
@@ -80,10 +73,10 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
       },
       {
         id: 'queried-github',
-        description: 'Agent queried GitHub for PRs',
-        points: 5,
+        description: 'Agent listed GitHub PRs with gh CLI',
+        points: 10,
         phase: 'intention',
-        validate: (r) => usedIntegrationTool(r, 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_GET_PULL_REQUEST'),
+        validate: (r) => usedGhCli(r, 'pr') || usedIntegrationTool(r, 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_GET_PULL_REQUEST'),
       },
       {
         id: 'mentions-tickets',
@@ -140,18 +133,11 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
         validate: (r) => subagentWasSpawned(r),
       },
       {
-        id: 'installed-github',
-        description: 'Agent installed GitHub integration',
-        points: 4,
+        id: 'used-gh-cli',
+        description: 'Agent listed PRs with the gh CLI',
+        points: 8,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect') && toolCallsJson(r).includes('github'),
-      },
-      {
-        id: 'queried-prs',
-        description: 'Agent called GITHUB_LIST_PULL_REQUESTS',
-        points: 4,
-        phase: 'intention',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_PULL_REQUESTS'),
+        validate: (r) => usedGhCli(r, 'pr') || usedTool(r, 'GITHUB_LIST_PULL_REQUESTS'),
       },
       {
         id: 'mentions-pr-titles',
@@ -281,7 +267,7 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
         phase: 'intention',
         validate: (r) =>
           usedIntegrationTool(r, 'JIRA_GET_ISSUES') &&
-          usedIntegrationTool(r, 'GITHUB_LIST_PULL_REQUESTS'),
+          (usedGhCli(r, 'pr') || usedIntegrationTool(r, 'GITHUB_LIST_PULL_REQUESTS')),
       },
       {
         id: 'identified-gaps',
@@ -330,13 +316,15 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
         validate: (r) => subagentWasSpawned(r),
       },
       {
-        id: 'installed-both',
-        description: 'Agent installed both Jira and GitHub integrations',
+        id: 'installed-jira',
+        description: 'Agent installed Jira; GitHub via gh CLI or connect',
         points: 4,
         phase: 'intention',
         validate: (r) => {
           const json = toolCallsJson(r)
-          return usedToolAnywhere(r, 'connect') && json.includes('jira') && json.includes('github')
+          const jira = usedToolAnywhere(r, 'connect') && json.includes('jira')
+          const github = usedGhCli(r) || json.includes('github')
+          return jira && github
         },
       },
       {
@@ -346,7 +334,7 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
         phase: 'intention',
         validate: (r) =>
           usedIntegrationTool(r, 'JIRA_GET_ISSUES', 'JIRA_GET_SPRINT') &&
-          usedIntegrationTool(r, 'GITHUB_LIST_PULL_REQUESTS'),
+          (usedGhCli(r, 'pr') || usedIntegrationTool(r, 'GITHUB_LIST_PULL_REQUESTS')),
       },
       {
         id: 'used-canvas',

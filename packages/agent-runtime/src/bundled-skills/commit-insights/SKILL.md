@@ -3,22 +3,21 @@ name: commit-insights
 version: 1.0.0
 description: Analyze git commit patterns, PR cycle times, code churn, and team velocity for engineering managers
 trigger: "commit insights|engineering metrics|team velocity|pr cycle time|code churn|engineering health|team stats"
-tools: [search_integrations, connect, memory_read, write_file, send_message, web]
+tools: [exec, memory_read, write_file, send_message, web]
 ---
 
 # Commit Insights
 
-Analyze git activity and produce engineering health metrics:
+Analyze git activity and produce engineering health metrics. Use the `gh` CLI — do not `connect` GitHub.
 
-1. **Connect** — Check if GitHub integration is installed via `search_integrations`. If not:
-   - `connect({ name: "github" })` to connect via Composio OAuth
+1. **Auth** — `exec({ command: "gh auth status" })`. If not authenticated, ask for a PAT, save `GITHUB_TOKEN` to `.env`, retry.
 2. **Configure** — Read tracked repos and team from memory (key: `git_insights_config`)
    - Repos to analyze, team member GitHub usernames
    - If not configured, ask the user which repos/team to track
-3. **Fetch data** — For each configured repo:
-   - `GITHUB_LIST_COMMITS` — all commits in the analysis window (7 days default)
-   - `GITHUB_LIST_PULL_REQUESTS` — open, merged, and closed PRs
-   - PR details: time from open to first review, time to merge, review rounds
+3. **Fetch data** — For each configured repo (`-R owner/repo`):
+   - `exec({ command: "gh api repos/OWNER/REPO/commits?since=..." })`
+   - `exec({ command: "gh pr list -R OWNER/REPO --state all --limit 100" })`
+   - PR details: `gh pr view NUMBER --json createdAt,mergedAt,reviews`
 4. **Compute metrics** —
    - **Weekly commits:** total and per-developer breakdown
    - **PR cycle time:** median time from PR open to merge

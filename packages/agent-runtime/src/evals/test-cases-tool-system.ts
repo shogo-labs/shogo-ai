@@ -28,6 +28,7 @@ import {
   toolCallsJson,
   toolCallArgsContain,
   installCalledWithoutCommand,
+  usedGhCli,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -310,7 +311,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
     workspaceFiles: { 'config.json': V2_CONFIG },
     conversationHistory: [
       { role: 'user', content: 'I want an issue tracker dashboard that pulls live data from my GitHub.' },
-      { role: 'assistant', content: 'I can build that for you! I\'ll connect to your GitHub, pull your open issues, and create a React dashboard component. Which repository should I check?' },
+      { role: 'assistant', content: 'I can build that for you! I\'ll pull your open issues with the gh CLI and create a React dashboard component. Which repository should I check?' },
       { role: 'user', content: 'Just use my default repos. Show the latest data in a table.' },
     ],
     input: 'Go ahead and build it!',
@@ -318,32 +319,11 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
     toolMocks: TOOL_LIFECYCLE_FULL_MOCKS,
     validationCriteria: [
       {
-        id: 'searched-for-github',
-        description: 'Used search_integrations to find GitHub integration',
-        points: 10,
-        phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
-      },
-      {
-        id: 'installed-github',
-        description: 'Used connect to connect GitHub',
-        points: 10,
-        phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect'),
-      },
-      {
-        id: 'install-managed-style',
-        description: 'connect used managed-style (no command/args) for Composio',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => installCalledWithoutCommand(r),
-      },
-      {
         id: 'fetched-issues',
-        description: 'Called GitHub list issues tool directly',
-        points: 15,
+        description: 'Listed GitHub issues with gh CLI',
+        points: 45,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
+        validate: (r) => usedGhCli(r, 'issue') || usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'wrote-code-file',
@@ -364,15 +344,15 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       },
       {
         id: 'correct-lifecycle-order',
-        description: 'Tools in correct order: search → install → fetch → write',
+        description: 'Fetched issues with gh before writing the dashboard',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const searchIdx = r.toolCalls.findIndex(t => t.name === 'search_integrations')
-          const installIdx = r.toolCalls.findIndex(t => t.name === 'connect')
-          const fetchIdx = r.toolCalls.findIndex(t => t.name === 'GITHUB_LIST_REPOSITORY_ISSUES')
+          const fetchIdx = r.toolCalls.findIndex(t =>
+            t.name === 'exec' && String((t.input as any)?.command ?? '').includes('gh '),
+          )
           const writeIdx = r.toolCalls.findIndex(t => t.name === 'write_file')
-          return searchIdx >= 0 && installIdx > searchIdx && fetchIdx > installIdx && writeIdx > fetchIdx
+          return fetchIdx >= 0 && writeIdx > fetchIdx
         },
       },
       {

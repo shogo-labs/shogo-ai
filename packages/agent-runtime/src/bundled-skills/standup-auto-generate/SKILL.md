@@ -10,11 +10,11 @@ tools: [search_integrations, connect, memory_read, write_file, send_message]
 
 Auto-generate standup summaries from development activity:
 
-1. **Connect** — Ensure GitHub and Slack are connected:
-   - `connect({ name: "github" })` if not connected
+1. **Connect** — Slack via Composio if the user wants Slack context. GitHub always via `gh`:
+   - `exec({ command: "gh auth status" })` (save `GITHUB_TOKEN` to `.env` if needed)
    - `connect({ name: "slack" })` if not connected (optional but recommended)
 2. **Gather data** — Pull last 24h of activity:
-   - GitHub: commits, PRs opened/merged/reviewed, issues closed per developer
+   - GitHub: `gh pr list`, `gh issue list`, `gh api .../commits` per developer
    - Slack (if connected): messages in engineering channels for context
 3. **Classify** — For each team member, categorize activity into:
    - **Done:** merged PRs, closed issues, significant commits

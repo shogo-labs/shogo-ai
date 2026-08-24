@@ -69,6 +69,7 @@ import {
   responseContains,
   toolCallArgsContain,
   installCalledWithoutCommand,
+  usedGhCli,
 } from './eval-helpers'
 
 // True if the response surfaces *actionable* reconnect / re-authorize guidance
@@ -161,13 +162,13 @@ export const COMPOSIO_EVALS: AgentEval[] = [
     name: 'Composio: Prefers Composio over npm MCP',
     category: 'mcp-discovery',
     level: 2,
-    input: 'Check my GitHub issues and show me the open bugs',
+    input: 'Check my Linear issues and show me the open bugs',
     maxScore: 100,
     toolMocks: COMPOSIO_PREFERENCE_MOCKS,
     validationCriteria: [
       {
-        id: 'searched-for-github',
-        description: 'Used search_integrations to find GitHub',
+        id: 'searched-for-linear',
+        description: 'Used search_integrations to find Linear',
         points: 15,
         phase: 'intention',
         validate: (r) => usedToolAnywhere(r, 'search_integrations'),
@@ -191,14 +192,14 @@ export const COMPOSIO_EVALS: AgentEval[] = [
         description: 'Used Composio proxy tools (not local MCP tools)',
         points: 20,
         phase: 'execution',
-        validate: (r) => r.toolCalls.some(t => t.name.startsWith('GITHUB_')),
+        validate: (r) => r.toolCalls.some(t => t.name.startsWith('LINEAR_')),
       },
       {
-        id: 'executed-github-query',
-        description: 'Called GitHub list issues tool directly',
+        id: 'executed-linear-query',
+        description: 'Called Linear list issues tool directly',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
+        validate: (r) => usedTool(r, 'LINEAR_LIST_ISSUES'),
       },
       {
         id: 'response-has-issues',
@@ -209,7 +210,7 @@ export const COMPOSIO_EVALS: AgentEval[] = [
       },
     ],
     antiPatterns: [
-      'Agent installed the npm @modelcontextprotocol/server-github instead of using Composio',
+      'Agent installed the npm Linear MCP instead of using Composio',
       'Agent passed command or args to connect for a Composio integration',
     ],
   },
@@ -427,23 +428,23 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     // for PRs and relied on the agent's discretion to auto-save, which
     // never fired under the haiku model — the eval is testing the save
     // step itself, so we make the requirement obvious.
-    input: 'Show me my open pull requests on GitHub. After you do, save a reusable skill at skills/<short-name>.md (with a YAML frontmatter trigger line and the GitHub tool names you used) so I can repeat this faster next time.',
+    input: 'Show me my open pull requests on GitHub. After you do, save a reusable skill at skills/<short-name>.md (with a YAML frontmatter trigger line and the gh commands you used) so I can repeat this faster next time.',
     maxScore: 100,
-    toolMocks: withHiddenNativeTools(COMPOSIO_GITHUB_PR_SKILL_SAVE_MOCKS, SKILL_SAVE_HIDES),
+    toolMocks: withHiddenNativeTools(COMPOSIO_GITHUB_PR_SKILL_SAVE_MOCKS, [
+      'send_message',
+      'edit_file',
+      'agent_spawn',
+      'browser',
+      'web',
+      'read_file',
+    ]),
     validationCriteria: [
       {
-        id: 'completed-discovery',
-        description: 'Completed the full Composio discovery flow',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => usedToolAnywhere(r, 'search_integrations') && usedToolAnywhere(r, 'connect'),
-      },
-      {
         id: 'fetched-prs',
-        description: 'Called GitHub list pull requests tool directly',
-        points: 15,
+        description: 'Listed PRs with the gh CLI via exec',
+        points: 30,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_PULL_REQUESTS'),
+        validate: (r) => usedGhCli(r, 'pr'),
       },
       {
         id: 'response-mentions-prs',
@@ -512,7 +513,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
           })
           if (!writeCall) return false
           const content = ((writeCall.input as Record<string, any>).content || '') as string
-          return content.includes('GITHUB_LIST_PULL_REQUESTS') || content.includes('PULL_REQUEST')
+          return content.includes('gh pr') || content.includes('gh ')
         },
       },
     ],

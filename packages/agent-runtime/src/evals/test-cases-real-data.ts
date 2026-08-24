@@ -28,6 +28,7 @@ import {
   neverUsedTool,
   delegatedTo,
   responseContains,
+  usedGhCli,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -37,12 +38,12 @@ import {
 export const REAL_DATA_EVALS: AgentEval[] = [
 
   // =========================================================================
-  // Case 1: "Show my GitHub issues" — must use MCP, NOT seed fake issues
-  // Level 2 | Agent should search for GitHub integration and display real data
+  // Case 1: "Show my GitHub issues" — must use gh CLI, NOT seed fake issues
+  // Level 2 | Agent should exec `gh issue list` and display real data
   // =========================================================================
   {
     id: 'real-data-github-issues-dashboard',
-    name: 'Real Data: GitHub issues dashboard uses integration, not fake data',
+    name: 'Real Data: GitHub issues dashboard uses gh CLI, not fake data',
     category: 'mcp-discovery',
     level: 2,
     input: 'Build me a dashboard showing my GitHub issues. I want to see open bugs, their assignees, and labels.',
@@ -50,25 +51,18 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     toolMocks: REAL_DATA_GITHUB_ISSUES_MOCKS,
     validationCriteria: [
       {
-        id: 'searched-for-github',
-        description: 'Used search_integrations to find a GitHub integration',
-        points: 20,
-        phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
+        id: 'used-gh-cli',
+        description: 'Listed issues with the gh CLI via exec',
+        points: 35,
+        phase: 'execution',
+        validate: (r) => usedGhCli(r, 'issue'),
       },
       {
-        id: 'installed-integration',
-        description: 'Used connect to connect the integration',
-        points: 15,
-        phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect'),
-      },
-      {
-        id: 'fetched-real-issues',
-        description: 'Called GitHub list issues tool directly to fetch real issues',
+        id: 'did-not-connect-github',
+        description: 'Did NOT connect a Composio GitHub integration',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
+        validate: (r) => neverUsedTool(r, 'connect'),
       },
       {
         id: 'response-has-real-data',
@@ -98,9 +92,8 @@ export const REAL_DATA_EVALS: AgentEval[] = [
       },
     ],
     antiPatterns: [
-      'Agent seeded fabricated/placeholder GitHub issues instead of fetching from the integration',
-      'Agent never searched for a GitHub MCP integration',
-      'Agent used invented issue data before attempting to fetch real data',
+      'Agent seeded fabricated/placeholder GitHub issues instead of fetching via gh',
+      'Agent used connect({ name: "github" }) instead of the gh CLI',
     ],
   },
 
@@ -398,25 +391,18 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     toolMocks: REAL_DATA_GITHUB_ISSUES_MOCKS,
     validationCriteria: [
       {
-        id: 'searched-for-integration',
-        description: 'Used search_integrations to find GitHub integration (triggered by "my GitHub issues")',
-        points: 25,
-        phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'search_integrations'),
+        id: 'used-gh-cli',
+        description: 'Listed issues with the gh CLI via exec',
+        points: 40,
+        phase: 'execution',
+        validate: (r) => usedGhCli(r, 'issue'),
       },
       {
-        id: 'installed-integration',
-        description: 'Used connect to connect the integration',
-        points: 15,
-        phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect'),
-      },
-      {
-        id: 'fetched-real-data',
-        description: 'Called GitHub list issues tool directly to fetch real issues',
+        id: 'did-not-connect-github',
+        description: 'Did NOT connect a Composio GitHub integration',
         points: 25,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
+        validate: (r) => neverUsedTool(r, 'connect'),
       },
       {
         id: 'built-canvas',
@@ -445,8 +431,8 @@ export const REAL_DATA_EVALS: AgentEval[] = [
       },
     ],
     antiPatterns: [
-      'Agent seeded fabricated GitHub issues instead of fetching real data',
-      'Agent never searched for a GitHub integration despite user saying "my GitHub issues"',
+      'Agent seeded fabricated GitHub issues instead of fetching via gh',
+      'Agent used connect({ name: "github" }) instead of the gh CLI',
     ],
   },
 

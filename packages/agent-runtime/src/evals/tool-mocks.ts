@@ -229,11 +229,54 @@ export const COMPETITIVE_INTEL_MOCKS: ToolMockMap = {
   },
 }
 
+export const GH_CLI_EXEC_MOCK: ToolMockMap = {
+  exec: {
+    type: 'pattern',
+    paramKeys: ['command'],
+    patterns: [
+      {
+        match: { command: 'gh issue' },
+        response: {
+          stdout: '#42\tApp crashes on login with SSO\tOPEN\tbug, critical\n#38\tMemory leak in websocket handler\tOPEN\tbug\n#35\tAPI rate limiting returns 500 instead of 429\tOPEN\tbug\n#31\tDashboard charts fail to render on Safari\tOPEN\tbug\n#29\tAdd dark mode support\tOPEN\tenhancement',
+          stderr: '',
+          exitCode: 0,
+        },
+      },
+      {
+        match: { command: 'gh pr' },
+        response: {
+          stdout: '#234\tfeat: implement JWT auth middleware (PROJ-101)\tMERGED\talice\n#235\tfeat: password reset email with Resend (PROJ-102)\tMERGED\tbob\n#236\tfix: checkout total rounding error (PROJ-103)\tMERGED\tcharlie\n#237\tfeat: redesign settings page (PROJ-104)\tMERGED\tdana\n#42\tFix critical auth bypass\tOPEN\talice\n#41\tAdd logging middleware\tOPEN\tbob',
+          stderr: '',
+          exitCode: 0,
+        },
+      },
+      {
+        match: { command: 'gh run' },
+        response: {
+          stdout: 'completed\tsuccess\tCI\tmain\t3m22s\ncompleted\tfailure\tCI\tfeature/dark-mode\t1m45s',
+          stderr: '',
+          exitCode: 0,
+        },
+      },
+      {
+        match: { command: 'gh auth' },
+        response: {
+          stdout: 'github.com\n  ✓ Logged in to github.com account acme (keyring)\n  - Active account: true',
+          stderr: '',
+          exitCode: 0,
+        },
+      },
+    ],
+    default: { stdout: '', stderr: '', exitCode: 0 },
+  },
+}
+
 // ---------------------------------------------------------------------------
 // Fixture: GitHub Issue Triage Board (Case 2)
 // ---------------------------------------------------------------------------
 
 export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
+  ...GH_CLI_EXEC_MOCK,
   search_integrations: {
     type: 'static',
     description: 'Search for MCP servers by capability or keyword.',
@@ -640,6 +683,7 @@ const PR_PATTERN_SPEC: ToolMockSpec = {
 }
 
 export const PR_REVIEW_MOCKS: ToolMockMap = {
+  ...GH_CLI_EXEC_MOCK,
   search_integrations: {
     type: 'static',
     description: 'Search for tools by capability or keyword.',
@@ -1674,10 +1718,10 @@ export const COMPOSIO_PREFERENCE_MOCKS: ToolMockMap = {
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
     response: {
-      query: 'github',
+      query: 'linear',
       results: [
-        { name: 'github', description: 'GitHub — manage repos, issues, PRs, actions, and code', source: 'composio' },
-        { name: 'GitHub MCP Server', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions.', installCommand: 'npx -y @modelcontextprotocol/server-github', source: 'npm' },
+        { name: 'linear', description: 'Linear — manage issues, projects, and cycles', source: 'composio' },
+        { name: 'Linear MCP Server', qualifiedName: '@modelcontextprotocol/server-linear', description: 'Access Linear issues and projects.', installCommand: 'npx -y @modelcontextprotocol/server-linear', source: 'npm' },
       ],
       message: 'Found 2 integration(s). Composio results are preferred.',
     },
@@ -1689,17 +1733,17 @@ export const COMPOSIO_PREFERENCE_MOCKS: ToolMockMap = {
     response: {
       ok: true,
       server: 'composio',
-      integration: 'github',
-      toolCount: 3,
-      tools: ['GITHUB_LIST_REPOSITORY_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_LIST_PULL_REQUESTS'],
+      integration: 'linear',
+      toolCount: 2,
+      tools: ['LINEAR_LIST_ISSUES', 'LINEAR_CREATE_ISSUE'],
       authStatus: 'active',
-      message: 'Installed github with 3 tool(s). Auth is active.',
+      message: 'Installed linear with 2 tool(s). Auth is active.',
     },
   },
-GITHUB_LIST_REPOSITORY_ISSUES: {
+  LINEAR_LIST_ISSUES: {
     type: 'static',
-    description: 'List issues in a repository.',
-    paramKeys: ['repo', 'state'],
+    description: 'List issues in a Linear workspace.',
+    paramKeys: ['query', 'state'],
     hidden: true,
     response: {
       data: [
@@ -1919,6 +1963,7 @@ export const COMPOSIO_NOTFOUND_ERROR_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const COMPOSIO_GITHUB_PR_SKILL_SAVE_MOCKS: ToolMockMap = {
+  ...GH_CLI_EXEC_MOCK,
   search_integrations: {
     type: 'static',
     paramKeys: ['query', 'limit'],
@@ -2190,6 +2235,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
 // ---------------------------------------------------------------------------
 
 export const REAL_DATA_GITHUB_ISSUES_MOCKS: ToolMockMap = {
+  ...GH_CLI_EXEC_MOCK,
   search_integrations: {
     type: 'pattern',
     description: 'Search for MCP servers by capability or keyword.',
@@ -2759,6 +2805,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
 // ---------------------------------------------------------------------------
 
 export const TOOL_LIFECYCLE_FULL_MOCKS: ToolMockMap = {
+  ...GH_CLI_EXEC_MOCK,
   search_integrations: {
     type: 'static',
     description: 'Search for tools by capability or keyword.',
@@ -3290,6 +3337,7 @@ function generateMassiveCalendarMock(): any {
 }
 
 export const DATA_PROCESSING_LARGE_ISSUES_MOCKS: ToolMockMap = {
+  ...GH_CLI_EXEC_MOCK,
   search_integrations: {
     type: 'static',
     paramKeys: ['query'],
@@ -3464,7 +3512,7 @@ export const SKILL_INSTALL_MOCKS: ToolMockMap = {
       {
         match: { path: '.shogo/skills/github-ops/SKILL.md' },
         response: {
-          content: '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos — fetch PRs, issues, CI status via Composio and display on dashboard\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [search_integrations, connect, write_file, edit_file, send_message]\n---\n\n# GitHub Ops\n\nWhen triggered, check GitHub repos and build a triage dashboard:\n\n1. **Connect** — Check if GitHub integration is installed via search_integrations.\n2. **Fetch** — Once connected, call GITHUB_LIST_PULL_REQUESTS for open PRs.\n3. **Build dashboard** — Create or update a GitHub ops dashboard.\n4. **Alert** — For PRs open >2 days with no reviewer.\n5. **Persist** — Log findings to memory for trend tracking.',
+          content: '---\nname: github-ops\nversion: 3.0.0\ndescription: Monitor GitHub repos — fetch PRs, issues, CI status with gh CLI\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [exec, write_file, send_message]\n---\n\n# GitHub Ops\n\nWhen triggered, check GitHub repos and build a triage dashboard:\n\n1. **Auth** — exec gh auth status. Save GITHUB_TOKEN to .env if needed.\n2. **Fetch** — exec gh pr list / gh issue list / gh run list.\n3. **Build dashboard** — Create or update a GitHub ops dashboard.\n4. **Alert** — For PRs open >2 days with no reviewer.\n5. **Persist** — Log findings to memory for trend tracking.',
           path: '.shogo/skills/github-ops/SKILL.md',
           size: 612,
         },
@@ -3556,6 +3604,7 @@ export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
+  ...GH_CLI_EXEC_MOCK,
   search_integrations: {
     type: 'pattern',
     patterns: [

@@ -3,21 +3,20 @@ name: dev-activity-track
 version: 1.0.0
 description: Fetch GitHub developer activity (commits, PRs, reviews) and build an activity dashboard
 trigger: "dev activity|developer activity|team activity|who committed|activity dashboard|daily activity"
-tools: [search_integrations, connect, memory_read, write_file, send_message]
+tools: [exec, memory_read, write_file, send_message]
 ---
 
 # Developer Activity Tracker
 
-When triggered, fetch developer activity from GitHub and build a dashboard:
+When triggered, fetch developer activity from GitHub with the `gh` CLI and build a dashboard. Do not `connect` GitHub.
 
-1. **Connect** — Check if GitHub integration is installed via `search_integrations`. If not:
-   - `connect({ name: "github" })` to connect via Composio OAuth
+1. **Auth** — `exec({ command: "gh auth status" })`. If not authenticated, ask for a PAT, save `GITHUB_TOKEN` to `.env`, retry.
 2. **Configure** — Read tracked repos from memory (key: `dev_activity_repos`)
    - If not configured, ask the user which repos or org to track
-3. **Fetch activity** — For each configured repo, pull:
-   - `GITHUB_LIST_COMMITS` — commits from the last 24h (or since last check)
-   - `GITHUB_LIST_PULL_REQUESTS` — open and recently merged PRs
-   - `GITHUB_LIST_PULL_REQUEST_REVIEWS` — review activity
+3. **Fetch activity** — For each configured repo (`-R owner/repo`), pull:
+   - `exec({ command: "gh api repos/OWNER/REPO/commits --jq ..." })` — commits from the last 24h
+   - `exec({ command: "gh pr list -R OWNER/REPO --state all --limit 50" })`
+   - `exec({ command: "gh api repos/OWNER/REPO/pulls/NUMBER/reviews" })` as needed
 4. **Aggregate** — Group activity by developer:
    - Commit count per person
    - PRs opened, reviewed, and merged per person

@@ -12,7 +12,7 @@ When a production incident is reported, investigate and build a timeline:
 
 1. **Gather data** — Check available integrations via `search_integrations`, then:
    - **Sentry** (if installed): `SENTRY_LIST_ISSUES` for recent error spikes
-   - **GitHub** (if installed): `GITHUB_LIST_RECENT_DEPLOYS` for recent deploys
+   - **GitHub**: `exec({ command: "gh run list --limit 20" })` for recent deploys / CI (do not connect GitHub)
    - **Datadog** (if installed): `DATADOG_QUERY_METRICS` for infra metrics
    - If tools aren't installed, suggest connecting them:
      `search_integrations("sentry")`, `search_integrations("datadog")`

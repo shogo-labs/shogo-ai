@@ -27,7 +27,7 @@ import {
   STRIPE_REVENUE_MOCKS,
   PR_REVIEW_MOCKS,
 } from './tool-mocks'
-import { usedTool, usedToolAnywhere, neverUsedTool, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
+import { usedTool, usedToolAnywhere, neverUsedTool, toolCallCount, responseContains, toolCallsJson, usedGhCli } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Shared V2 config — activeMode: 'canvas'
@@ -226,16 +226,16 @@ export const COMPLEX_EVALS: AgentEval[] = [
     initialMode: 'canvas',
     useRuntimeTemplate: true,
     workspaceFiles: { 'config.json': V2_CONFIG },
-    input: 'I need a triage board for my GitHub issues in the acme-corp/webapp repository. Pull the open issues using the GitHub integration (use GITHUB_LIST_REPOSITORY_ISSUES), categorize them by severity (Critical, High, Medium, Low based on their labels), and build me a React dashboard with the issues organized by severity columns. Set up a Prisma schema for persisting issue data with a status field, and write the components so I can see all issues at a glance. Verify everything looks good.',
+    input: 'I need a triage board for my GitHub issues in the acme-corp/webapp repository. Pull the open issues with `gh issue list -R acme-corp/webapp`, categorize them by severity (Critical, High, Medium, Low based on their labels), and build me a React dashboard with the issues organized by severity columns. Set up a Prisma schema for persisting issue data with a status field, and write the components so I can see all issues at a glance. Verify everything looks good.',
     maxScore: 100,
     toolMocks: withSkillServerMocks(GITHUB_TRIAGE_MOCKS),
     validationCriteria: [
       {
         id: 'used-github-issues',
-        description: 'Used GITHUB_LIST_REPOSITORY_ISSUES to fetch issues',
+        description: 'Used gh issue list to fetch issues',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
+        validate: (r) => usedGhCli(r, 'issue') || usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'wrote-src-file',
@@ -811,16 +811,16 @@ export const COMPLEX_EVALS: AgentEval[] = [
     initialMode: 'canvas',
     useRuntimeTemplate: true,
     workspaceFiles: { 'config.json': V2_CONFIG },
-    input: 'I manage 3 repos under the acme-corp GitHub org: acme-corp/frontend, acme-corp/backend, and acme-corp/infra. Use the GitHub integration (GITHUB_LIST_PULL_REQUESTS) to pull open PRs from each repo. Build me a unified PR review queue in React with a table showing: repo name, PR title, author, CI status, and age. Add action buttons for "Approve" and "Request Changes" with proper click handlers. For any PR that\'s been open more than 2 days with no review, send a Discord alert using send_message (channel: #pr-alerts). Set up a Prisma schema for tracking PR reviews. Verify the code.',
+    input: 'I manage 3 repos under the acme-corp GitHub org: acme-corp/frontend, acme-corp/backend, and acme-corp/infra. Use `gh pr list -R` for each repo to pull open PRs. Build me a unified PR review queue in React with a table showing: repo name, PR title, author, CI status, and age. Add action buttons for "Approve" and "Request Changes" with proper click handlers. For any PR that\'s been open more than 2 days with no review, send a Discord alert using send_message (channel: #pr-alerts). Set up a Prisma schema for tracking PR reviews. Verify the code.',
     maxScore: 100,
     toolMocks: withSkillServerMocks(PR_REVIEW_MOCKS),
     validationCriteria: [
       {
         id: 'used-github-multi',
-        description: 'Used GITHUB_LIST_REPOSITORY_ISSUES or GITHUB_LIST_PULL_REQUESTS at least 2 times (multi-repo)',
+        description: 'Listed PRs with gh or GITHUB_LIST_PULL_REQUESTS at least twice (multi-repo)',
         points: 10,
         phase: 'intention',
-        validate: (r) => (toolCallCount(r, 'GITHUB_LIST_REPOSITORY_ISSUES') + toolCallCount(r, 'GITHUB_LIST_PULL_REQUESTS')) >= 2,
+        validate: (r) => usedGhCli(r, 'pr') || (toolCallCount(r, 'GITHUB_LIST_REPOSITORY_ISSUES') + toolCallCount(r, 'GITHUB_LIST_PULL_REQUESTS')) >= 2,
       },
       {
         id: 'wrote-src-file',
