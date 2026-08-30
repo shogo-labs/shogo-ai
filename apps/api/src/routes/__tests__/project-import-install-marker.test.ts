@@ -180,6 +180,9 @@ describe('runImport — strip .shogo/install-marker', () => {
     expect(result.stats.filesSkipped).toBe(1)
     expect(result.stats.filesWritten).toBe(TOTAL_WORKSPACE_FILES_IN_BUNDLE - 1)
 
+    const created = [...prismaState.projects.values()][0]
+    expect(created?.settings).toMatchObject({ techStackId: 'expo-app' })
+
     // None of the writeFiles SSE events should report a path under
     // `.shogo/install-marker`. Prove by asserting that no such file
     // appears in either the writeFiles `path` payloads (if any) or the

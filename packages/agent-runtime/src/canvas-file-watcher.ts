@@ -3,13 +3,19 @@
 /**
  * CanvasFileWatcher — Detects workspace file changes and broadcasts events.
  *
- * Two input paths feed the same event stream:
+ * Three input paths feed the same event stream:
  *
  *   1. Explicit notifications from gateway-tools.ts when the chat agent's
  *      write_file / edit_file tools succeed. These are synchronous with the
  *      tool response and fire before the tool returns.
  *
- *   2. A chokidar watcher on the workspace root. This catches every write
+ *   2. Explicit notifications from `PUT`/`DELETE /agent/workspace/files/*`
+ *      (IDE / SDK saves). Those HTTP writes used to rely only on chokidar.
+ *      Firecracker guests often miss inotify, so IDE saves never reached
+ *      CanvasBuildManager and Expo `dist/` stayed frozen until a manual
+ *      `/preview/restart`.
+ *
+ *   3. A chokidar watcher on the workspace root. This catches every write
  *      regardless of source — Shogo external agents, the host user editing
  *      files directly on disk, git pulls, etc. Without this, the IDE live-
  *      edit experience is only reliable when the project's own chat agent
@@ -48,6 +54,8 @@ const BUILDABLE_PREFIXES = [
   'babel.config',
   'metro.config',
   'expo-router',
+  // Copied into dist/ without a content hash (worklets, wasm, static assets).
+  'public/',
 ] as const
 const BUILDABLE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.css', '.html', '.json'] as const
 
@@ -501,9 +509,10 @@ export class CanvasFileWatcher {
   }
 
   /**
-   * Explicit notifier used by gateway-tools.ts. Runs synchronously before
-   * the tool call returns — redundant with chokidar but faster (no debounce
-   * or filesystem stat) and survives watcher init failures.
+   * Explicit notifier used by gateway-tools.ts and the HTTP file
+   * PUT/DELETE handlers. Runs synchronously before the caller returns —
+   * redundant with chokidar but faster (no debounce or filesystem stat)
+   * and survives watcher init failures / silent inotify on Firecracker.
    */
   onFileChanged(relativePath: string, _absolutePath: string): void {
     const path = relativePath.split('\\').join('/')

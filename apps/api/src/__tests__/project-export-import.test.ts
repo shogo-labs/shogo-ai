@@ -346,6 +346,95 @@ describe('runImport', () => {
     expect(chatMessages.length).toBe(1)
   })
 
+  test('infers expo-app from workspace files when settings omit techStackId', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const buf = zipSync({
+      'project.json': strToU8(makeProjectJson()),
+      'workspace/package.json': strToU8(
+        JSON.stringify({
+          name: 'singing',
+          dependencies: { expo: '~57.0.14', 'expo-router': '~57.0.14' },
+        }),
+      ),
+      'workspace/app.json': strToU8(JSON.stringify({ expo: { name: 'Singing' } })),
+    })
+    const result = await runImport(
+      buf,
+      'w-1',
+      'u-1',
+      { includeChats: false, runBootstrap: false },
+      () => {},
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const row = projects.get(result.project.id)
+    expect(row?.settings).toMatchObject({
+      activeMode: 'canvas',
+      canvasEnabled: true,
+      techStackId: 'expo-app',
+    })
+    // Must be a real object — JSON.stringify here becomes a jsonb string
+    // scalar on Postgres and `settings?.techStackId` is undefined on cloud.
+    expect(typeof row?.settings).toBe('object')
+    const marker = join(tmpRoot, result.project.id, '.tech-stack')
+    expect(existsSync(marker)).toBe(true)
+    expect(readFileSync(marker, 'utf8')).toBe('expo-app')
+  })
+
+  test('does not override an explicit chat-only project that already has a stack id', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const bundle = JSON.parse(makeProjectJson())
+    bundle.project.settings = {
+      activeMode: 'none',
+      canvasEnabled: false,
+      techStackId: 'expo-app',
+    }
+    const buf = zipSync({
+      'project.json': strToU8(JSON.stringify(bundle)),
+      'workspace/package.json': strToU8(
+        JSON.stringify({ dependencies: { expo: '~57.0.0' } }),
+      ),
+    })
+    const result = await runImport(
+      buf,
+      'w-1',
+      'u-1',
+      { includeChats: false, runBootstrap: false },
+      () => {},
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(projects.get(result.project.id)?.settings).toMatchObject({
+      activeMode: 'none',
+      canvasEnabled: false,
+      techStackId: 'expo-app',
+    })
+  })
+
+  test('keeps an explicit settings.techStackId over file heuristics', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const bundle = JSON.parse(makeProjectJson())
+    bundle.project.settings = { activeMode: 'canvas', techStackId: 'python-data' }
+    const buf = zipSync({
+      'project.json': strToU8(JSON.stringify(bundle)),
+      'workspace/package.json': strToU8(
+        JSON.stringify({ dependencies: { expo: '~57.0.0' } }),
+      ),
+    })
+    const result = await runImport(
+      buf,
+      'w-1',
+      'u-1',
+      { includeChats: false, runBootstrap: false },
+      () => {},
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(projects.get(result.project.id)?.settings).toMatchObject({
+      techStackId: 'python-data',
+    })
+  })
+
   test('unsupported bundle version emits non-fatal warning but still imports', async () => {
     members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
     const buf = zipSync({

@@ -109,6 +109,7 @@ import {
   findMissingTopLevelDeps,
   migrateLegacyShogoSdkPin,
   runWorkspaceInstall,
+  resolveWorkspaceTechStackId,
 } from './workspace-defaults'
 
 const LOG_PREFIX = 'preview-manager'
@@ -1042,20 +1043,18 @@ export class PreviewManager {
   }
 
   /**
-   * Read the project's `.tech-stack` marker and resolve the dev bundler
-   * declared in stack.json. Defaults to `vite` when no marker exists or
-   * the field is missing — preserves the historic default for the
+   * Read the project's resolved tech-stack id and map it through
+   * stack.json's `runtime.devServer`. Defaults to `vite` when the
+   * field is missing — preserves the historic default for the
    * `react-app` / `threejs-game` / `phaser-game` stacks.
    *
-   * The marker is always at the workspace root, regardless of whether the
-   * stack uses the legacy `<workspace>/project/` layout or seeds at the
-   * workspace root (Expo, RN).
+   * Resolution goes through `resolveWorkspaceTechStackId` so a
+   * poisoned `react-app` marker on an imported Expo workspace still
+   * selects Metro. The marker is always at the workspace root.
    */
   private resolveDevServer(): DevServerKind {
     try {
-      const markerPath = join(this.workspaceDir, '.tech-stack')
-      if (!existsSync(markerPath)) return 'vite'
-      const stackId = readFileSync(markerPath, 'utf-8').trim()
+      const stackId = resolveWorkspaceTechStackId(this.workspaceDir)
       if (!stackId) return 'vite'
       const meta = loadTechStackMeta(stackId)
       const decl = meta?.runtime?.devServer
@@ -3654,6 +3653,15 @@ export class PreviewManager {
             `[${LOG_PREFIX}] expo export succeeded but commit into dist/ failed — ` +
               `previous build (if any) remains live`,
           )
+        } else if (this.onBuildComplete) {
+          // Cloud Expo has no HMR. `/preview/restart` and the boot-time
+          // seed both land here; fire the same reload toast CBM uses so
+          // the canvas iframe picks up the new hashed `entry-*.js`.
+          try {
+            this.onBuildComplete()
+          } catch (err: any) {
+            console.warn(`[${LOG_PREFIX}] onBuildComplete subscriber threw: ${err?.message ?? err}`)
+          }
         }
       }
     } else {

@@ -357,3 +357,123 @@ describe('Expo cloud rebuild repro', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Repro: imported Expo preview never updates after edits (2026-08-30)
+// ---------------------------------------------------------------------------
+//
+// Project 2945c130 (Singing / Expo) was imported from a .shogo that had no
+// techStackId and no .tech-stack marker, but DID ship a prebuilt dist/.
+// Cloud boot then:
+//
+//   1. initializeEssentials: TECH_STACK_ID unset, no marker on disk
+//      → defaults to `react-app` and seedTechStack WRITES that marker.
+//   2. S3/hydrate overlays the Expo package.json + imported dist/.
+//      The react-app marker survives (the zip had none to overwrite it).
+//   3. CanvasBuildManager.markerNamesViteStack() sees react-app → bails.
+//      triggerRebuild() is a silent no-op. The iframe keeps serving the
+//      imported dist/ forever.
+//   4. PreviewManager.resolveDevServer() also reads react-app → vite.
+//      package.json has no vite, so vite-watch never starts either.
+//
+// The user-visible symptom: "I make changes and rebuild, preview doesn't
+// update." Dist contents never change.
+// ---------------------------------------------------------------------------
+
+function seedPoisonedImportedExpo(workspaceDir: string): void {
+  // What initializeEssentials writes when TECH_STACK_ID is missing.
+  writeFileSync(join(workspaceDir, '.tech-stack'), 'react-app')
+
+  const expoPkg = {
+    name: 'singing-expo',
+    private: true,
+    main: 'expo-router/entry',
+    dependencies: {
+      expo: '~57.0.14',
+      'expo-router': '~57.0.14',
+      react: '19.2.3',
+      'react-native': '0.86.2',
+    },
+  }
+  writeFileSync(join(workspaceDir, 'package.json'), JSON.stringify(expoPkg, null, 2))
+
+  mkdirSync(join(workspaceDir, 'app'), { recursive: true })
+  writeFileSync(
+    join(workspaceDir, 'app', 'index.tsx'),
+    `import { Text } from 'react-native'\nexport default () => <Text>original</Text>\n`,
+  )
+  mkdirSync(join(workspaceDir, 'dist'), { recursive: true })
+  writeFileSync(join(workspaceDir, 'dist', 'index.html'), '<html>imported-prebuilt-dist</html>')
+
+  writeBundlerShim(workspaceDir, 'expo')
+  writeBundlerShim(workspaceDir, 'vite')
+}
+
+describe('imported Expo preview never updates (poisoned react-app marker)', () => {
+  test('CanvasBuildManager rebuilds with expo despite .tech-stack=react-app', async () => {
+    seedPoisonedImportedExpo(TMP)
+
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => {},
+      onBuildError: () => {},
+    })
+    await mgr.start()
+
+    const dist = readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8')
+    expect(dist).toContain('expo-built-this')
+    expect(dist).not.toContain('imported-prebuilt-dist')
+    expect(dist).not.toContain('vite-built-this')
+    expect(readInvocations()).toEqual(['expo'])
+  })
+
+  test('agent edit replaces the imported dist, not a no-op', async () => {
+    seedPoisonedImportedExpo(TMP)
+
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => {},
+      onBuildError: () => {},
+    })
+    const watcher = CanvasFileWatcher.getInstance(TMP)
+    watcher.setOnRebuild(() => mgr.triggerRebuild())
+    await mgr.start()
+
+    writeFileSync(
+      join(TMP, 'app', 'index.tsx'),
+      `import { Text } from 'react-native'\nexport default () => <Text>after-edit</Text>\n`,
+    )
+    watcher.onFileChanged('app/index.tsx', join(TMP, 'app', 'index.tsx'))
+
+    const sawSecondBuild = await waitFor(() => readInvocations().filter((s) => s === 'expo').length >= 2)
+    expect(sawSecondBuild).toBe(true)
+    expect(readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8')).toContain('expo-built-this')
+    expect(readInvocations()).not.toContain('vite')
+  })
+
+  test('IDE save (HTTP PUT notify, not chokidar) replaces imported dist', async () => {
+    seedPoisonedImportedExpo(TMP)
+
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => {},
+      onBuildError: () => {},
+    })
+    const watcher = CanvasFileWatcher.getInstance(TMP)
+    watcher.setOnRebuild(() => mgr.triggerRebuild())
+    await mgr.start()
+
+    mkdirSync(join(TMP, 'src', 'hooks'), { recursive: true })
+    writeFileSync(
+      join(TMP, 'src', 'hooks', 'useLiveEngine.web.ts'),
+      'export function useLiveEngine() { return null }\n',
+    )
+    // Mirrors server.ts PUT /agent/workspace/files/* → onFileChanged.
+    watcher.onFileChanged(
+      'src/hooks/useLiveEngine.web.ts',
+      join(TMP, 'src', 'hooks', 'useLiveEngine.web.ts'),
+    )
+
+    const sawSecondBuild = await waitFor(() => readInvocations().filter((s) => s === 'expo').length >= 2)
+    expect(sawSecondBuild).toBe(true)
+    expect(readInvocations()).not.toContain('vite')
+  })
+})
+

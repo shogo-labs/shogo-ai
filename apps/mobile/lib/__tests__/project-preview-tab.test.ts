@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { defaultTabForProject } from '../project-preview-tab'
+import { canvasDisabledRedirect, defaultTabForProject } from '../project-preview-tab'
 
 describe('defaultTabForProject', () => {
   test('managed + canvas-enabled (default) → canvas', () => {
@@ -54,5 +54,51 @@ describe('defaultTabForProject', () => {
   test('null/undefined settings are tolerated', () => {
     expect(defaultTabForProject({ settings: null })).toBe('canvas')
     expect(defaultTabForProject({ settings: undefined })).toBe('canvas')
+  })
+})
+
+describe('canvasDisabledRedirect', () => {
+  test('does nothing when canvas is enabled', () => {
+    expect(
+      canvasDisabledRedirect({
+        canvasEnabled: true,
+        previewTab: 'canvas',
+        isExternalProject: false,
+        userRequestedCanvas: false,
+      }),
+    ).toBeNull()
+  })
+
+  test('bounces an unsolicited canvas tab back to chat-fullscreen', () => {
+    expect(
+      canvasDisabledRedirect({
+        canvasEnabled: false,
+        previewTab: 'canvas',
+        isExternalProject: false,
+        userRequestedCanvas: false,
+      }),
+    ).toBe('chat-fullscreen')
+  })
+
+  test('does not bounce after the user asked for canvas', () => {
+    expect(
+      canvasDisabledRedirect({
+        canvasEnabled: false,
+        previewTab: 'canvas',
+        isExternalProject: false,
+        userRequestedCanvas: true,
+      }),
+    ).toBeNull()
+  })
+
+  test('external projects bounce to external-preview, not chat', () => {
+    expect(
+      canvasDisabledRedirect({
+        canvasEnabled: false,
+        previewTab: 'canvas',
+        isExternalProject: true,
+        userRequestedCanvas: false,
+      }),
+    ).toBe('external-preview')
   })
 })

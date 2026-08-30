@@ -16,9 +16,11 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'pm-lc-'))
   delete process.env.PUBLIC_URL
   delete process.env.SHOGO_LOCAL_MODE
+  delete process.env.TECH_STACK_ID
 })
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
+  delete process.env.TECH_STACK_ID
 })
 
 function mk(over: Partial<ConstructorParameters<typeof PreviewManager>[0]> = {}) {
@@ -129,6 +131,24 @@ describe('PreviewManager.resolveDevServer (via getStatus)', () => {
   it('defaults to "vite" when stack id is unknown', () => {
     writeFileSync(join(dir, '.tech-stack'), 'totally-made-up-stack')
     expect(mk().getStatus().devServer).toBe('vite')
+  })
+
+  it('uses metro when .tech-stack is react-app but package.json depends on expo', () => {
+    // Imported Expo projects land with a poisoned react-app marker because
+    // initializeEssentials defaults to react-app when TECH_STACK_ID is
+    // unset. Preview must still drive expo export, not vite-watch.
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ dependencies: { expo: '~57.0.14', 'expo-router': '~57.0.14' } }),
+    )
+    expect(mk().getStatus().devServer).toBe('metro')
+  })
+
+  it('TECH_STACK_ID=expo-app wins over a stale react-app marker', () => {
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    process.env.TECH_STACK_ID = 'expo-app'
+    expect(mk().getStatus().devServer).toBe('metro')
   })
 })
 
