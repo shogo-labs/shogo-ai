@@ -680,6 +680,52 @@ describe('workspaceUsesVite', () => {
   })
 })
 
+describe('resolveWorkspaceTechStackId + applyEnvTechStackMarker', () => {
+  afterEach(() => {
+    delete process.env.TECH_STACK_ID
+  })
+
+  test('TECH_STACK_ID env wins over a stale react-app marker', () => {
+    const dir = makeTmp()
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { expo: '57' } }))
+    process.env.TECH_STACK_ID = 'expo-app'
+    expect(wd.resolveWorkspaceTechStackId(dir)).toBe('expo-app')
+  })
+
+  test('react-app marker on an Expo package.json resolves to expo-app', () => {
+    const dir = makeTmp()
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      dependencies: { expo: '~57.0.14', 'expo-router': '~57.0.14' },
+    }))
+    expect(wd.resolveWorkspaceTechStackId(dir)).toBe('expo-app')
+  })
+
+  test('react-app marker on a real Vite package.json stays react-app', () => {
+    const dir = makeTmp()
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      dependencies: { vite: '5', react: '18' },
+    }))
+    expect(wd.resolveWorkspaceTechStackId(dir)).toBe('react-app')
+  })
+
+  test('empty workspace defaults to react-app', () => {
+    expect(wd.resolveWorkspaceTechStackId(makeTmp())).toBe('react-app')
+  })
+
+  test('applyEnvTechStackMarker writes the env id and is a no-op without env', () => {
+    const dir = makeTmp()
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    expect(wd.applyEnvTechStackMarker(dir)).toBe(false)
+    expect(readFileSync(join(dir, '.tech-stack'), 'utf-8')).toBe('react-app')
+    process.env.TECH_STACK_ID = 'expo-app'
+    expect(wd.applyEnvTechStackMarker(dir)).toBe(true)
+    expect(readFileSync(join(dir, '.tech-stack'), 'utf-8')).toBe('expo-app')
+  })
+})
+
 describe('install-marker helpers', () => {
   test('readPlatformMarker null when missing; write+read round-trip via public re-exports', () => {
     const dir = makeTmp()

@@ -52,3 +52,25 @@ export function defaultTabForProject(project: ProjectTabInput): PreviewTabId {
   // Canvas-capable builders land on the canvas.
   return 'canvas'
 }
+
+/**
+ * Auto-redirect when canvas is disabled. Returns the tab to switch to,
+ * or `null` to leave the current tab alone.
+ *
+ * A user click on Canvas must not bounce back to chat-fullscreen — that
+ * snap-back is what made Settings → Canvas / the Canvas tab unusable on
+ * imported chat-only projects. Callers pass `userRequestedCanvas` when
+ * the current `previewTab === 'canvas'` was an explicit click (or agent-
+ * type switch) this session.
+ */
+export function canvasDisabledRedirect(opts: {
+  canvasEnabled: boolean
+  previewTab: string
+  isExternalProject: boolean
+  userRequestedCanvas: boolean
+}): 'chat-fullscreen' | 'external-preview' | null {
+  if (opts.canvasEnabled) return null
+  if (opts.previewTab !== 'canvas') return null
+  if (opts.userRequestedCanvas) return null
+  return opts.isExternalProject ? 'external-preview' : 'chat-fullscreen'
+}

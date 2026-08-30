@@ -348,6 +348,27 @@ describe('CanvasBuildManager waitForDeps gate', () => {
     await mgr.start()
     expect(completed).toBe(true)
   })
+
+  test('resolves expo bin that appears only after waitForDeps', async () => {
+    // Cloud/metal hydrate: CanvasBuildManager.start() races bun install.
+    // The bin is missing at first; waitForDeps is when it lands. If we
+    // resolveBundler() before the wait we skip forever and the imported
+    // dist/ never updates.
+    freshWorkspace({})
+    let completed = false
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => { completed = true },
+      onBuildError: () => {},
+      waitForDeps: async () => {
+        writeShim(join(TMP, 'node_modules', '.bin'), 'expo', {
+          stagingPayload: '<html>late-bin</html>',
+        })
+      },
+    })
+    await mgr.start()
+    expect(completed).toBe(true)
+    expect(readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8')).toContain('late-bin')
+  })
 })
 
 /**

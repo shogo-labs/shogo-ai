@@ -27,6 +27,8 @@ import {
   ZipPasswordError,
 } from '../lib/zip-encryption'
 import { deriveProjectRuntimeToken } from '../lib/project-runtime-token'
+import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
+import { inferTechStackId, isKnownTechStackId } from '../lib/infer-tech-stack'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
@@ -534,6 +536,43 @@ export async function runImport(
   await emit({ phase: 'parse' })
 
   const bp = bundle.project
+  // Persist settings as a real object (not a JSON string). Stringifying
+  // here made Postgres store a jsonb string scalar, so
+  // `settings?.techStackId` was undefined on cloud even when the bundle
+  // carried a stack id. Also fill a missing stack from the workspace —
+  // older exports and ports that skipped the picker ship Expo/RN trees
+  // with `{ activeMode, canvasEnabled }` only.
+  const bundleSettings = parseProjectSettings(bp.settings)
+  const importedSettings: Record<string, unknown> = {
+    activeMode: 'none',
+    canvasEnabled: false,
+    ...(bundleSettings ?? {}),
+  }
+  const bundleHadKnownStack = isKnownTechStackId(
+    typeof bundleSettings?.techStackId === 'string' ? bundleSettings.techStackId : undefined,
+  )
+  const inferredStack = inferTechStackId({
+    settingsTechStackId: importedSettings.techStackId,
+    files: unzipped,
+  })
+  if (inferredStack) importedSettings.techStackId = inferredStack
+
+  // Bundles that skipped the stack picker ship the chat-only defaults
+  // (`activeMode: none`, `canvasEnabled: false`). Inferring Expo/Vite/…
+  // from the workspace means this is an app, not a chat-only agent —
+  // otherwise import lands in fullscreen chat with the Canvas tab hidden
+  // and Settings → Canvas does not leave that view (layout bug).
+  if (
+    inferredStack &&
+    inferredStack !== 'none' &&
+    !bundleHadKnownStack &&
+    importedSettings.activeMode === 'none' &&
+    importedSettings.canvasEnabled === false
+  ) {
+    importedSettings.activeMode = 'canvas'
+    importedSettings.canvasEnabled = true
+  }
+
   const project = await prisma.project.create({
     data: {
       name: bp.name || 'Imported Project',
@@ -547,14 +586,7 @@ export async function runImport(
       category: (bp.category as any) ?? null,
       siteTitle: bp.siteTitle ?? null,
       siteDescription: bp.siteDescription ?? null,
-      settings: bp.settings
-        ? typeof bp.settings === 'string'
-          ? bp.settings
-          : JSON.stringify(bp.settings)
-        : JSON.stringify({
-            activeMode: 'none',
-            canvasEnabled: false,
-          }),
+      settings: (normalizeProjectSettings(importedSettings) ?? importedSettings) as object,
     },
   })
 
@@ -661,6 +693,21 @@ export async function runImport(
     // client gets a smooth progress bar without flooding the SSE stream.
     if ((i + 1) % 25 === 0 || i === workspaceEntries.length - 1) {
       await emit({ phase: 'writeFiles', done: i + 1, total: totalFiles })
+    }
+  }
+
+  // Keep the workspace marker in lockstep with settings.techStackId so
+  // PreviewManager / seedTechStack don't fall back to Vite when the
+  // bundle omitted `.tech-stack` (the singing-expo import case).
+  if (inferredStack) {
+    try {
+      writeFileSync(join(projectDir, '.tech-stack'), inferredStack, 'utf-8')
+    } catch (err: any) {
+      await emit({
+        phase: 'error',
+        message: `Failed to write .tech-stack: ${err?.message || 'unknown error'}`,
+        fatal: false,
+      })
     }
   }
 
@@ -1036,17 +1083,7 @@ export function projectExportImportRoutes() {
         })
       : []
 
-    let settings: any = null
-    if (project.settings) {
-      try {
-        settings =
-          typeof project.settings === 'string'
-            ? JSON.parse(project.settings)
-            : project.settings
-      } catch {
-        settings = project.settings
-      }
-    }
+    let settings: Record<string, unknown> = parseProjectSettings(project.settings) ?? {}
 
     // Parse channels: Prisma SQLite returns Json columns as strings, while
     // Postgres returns parsed values.
@@ -1129,6 +1166,25 @@ export function projectExportImportRoutes() {
     for (const [relPath, data] of Object.entries(collectedFiles)) {
       zipContents[`workspace/${relPath}`] = data
     }
+
+    // Older projects (and ports) may have a real Expo/RN tree but an empty
+    // settings object. Fill techStackId from `.tech-stack` or workspace
+    // files so the next import doesn't land as "None".
+    if (typeof settings.techStackId !== 'string' || !String(settings.techStackId).trim()) {
+      const inferred = inferTechStackId({
+        settingsTechStackId: settings.techStackId,
+        files: collectedFiles,
+      })
+      if (inferred) settings.techStackId = inferred
+    }
+    if (
+      typeof settings.techStackId === 'string' &&
+      isKnownTechStackId(settings.techStackId) &&
+      zipContents['workspace/.tech-stack'] === undefined
+    ) {
+      zipContents['workspace/.tech-stack'] = strToU8(settings.techStackId)
+    }
+    zipContents['project.json'] = strToU8(JSON.stringify(projectJson, null, 2))
 
     // ─── Context Files seed ────────────────────────────────────────────
     // The 5 Context Files surfaced in the Studio Status panel must always
