@@ -52,6 +52,8 @@ import { API_URL, api } from '../../../../lib/api'
 import { openWebAppSession } from '../../../../lib/openWebAppSession'
 import { chatSessionEvents, chatActivityEvents } from '../../../../lib/chat-session-events'
 import { workspaceProjectFilter } from '../../../../lib/project-load'
+import { canvasDisabledRedirect } from '../../../../lib/project-preview-tab'
+import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
@@ -505,8 +507,12 @@ export default observer(function ProjectLayout() {
     if (!projectId) return
     const merged = { ...projectSettings, ...patch }
     const settingsStr = JSON.stringify(merged)
-    await actions.updateProject(projectId, { settings: settingsStr as any })
+    // Optimistic: the canvasEnabled effect used to snap previewTab back to
+    // chat-fullscreen whenever canvasEnabled was still false. Waiting for the
+    // PATCH before updating local settings left a one-render window where
+    // clicking Canvas bounced immediately.
     setProject((prev: any) => prev ? { ...prev, settings: settingsStr } : prev)
+    await actions.updateProject(projectId, { settings: settingsStr as any })
   }, [projectId, projectSettings, actions])
 
   const handleUpdateCanvasSettings = useCallback(async (themeSettings: Record<string, unknown>) => {
@@ -1512,6 +1518,10 @@ export default observer(function ProjectLayout() {
   // (and thus its `workingMode`) is known. Tracks the project it ran for so a
   // navigation to a different project re-applies.
   const previewTabInitForRef = useRef<string | null>(null)
+  // Set when the user (or Agent Type switch) explicitly asks for canvas this
+  // session. Stops the canvas-disabled effect and a stale `?tab=chat-fullscreen`
+  // from the sidebar from snapping them back to chat-only.
+  const userRequestedCanvasRef = useRef(false)
 
   // Sidebar "open project" tab intent. Clicking a project name in the sidebar
   // deep-links a `tab` param (canvas / chat-fullscreen / external-preview). It
@@ -1538,6 +1548,9 @@ export default observer(function ProjectLayout() {
     }
     const token = `${projectId}:${requested}:${params.tabNonce ?? ''}`
     if (appliedTabIntentRef.current === token) return
+    // A leftover `?tab=chat-fullscreen` from opening this project while it
+    // was still chat-only must not override a Canvas click this session.
+    if (userRequestedCanvasRef.current && requested === 'chat-fullscreen') return
     appliedTabIntentRef.current = token
     previewTabInitForRef.current = projectId
     setPreviewTab(requested)
@@ -1686,18 +1699,18 @@ export default observer(function ProjectLayout() {
       if (
         activeTab === 'canvas' &&
         previewTab !== 'app-preview' &&
+        previewTab !== 'canvas' &&
         !STANDALONE_PANELS.includes(previewTab)
       ) {
         setActiveTab('chat')
       }
-      // Canvas is off. For folder-linked external projects we have a
-      // first-class preview surface (the embedded Electron webview), so
-      // land there by default; users still get chat-fullscreen for
-      // managed-but-canvas-off projects, where there's no preview to
-      // show.
-      if (previewTab === 'canvas') {
-        setPreviewTab(isExternalProject ? 'external-preview' : 'chat-fullscreen')
-      }
+      const bounceTo = canvasDisabledRedirect({
+        canvasEnabled,
+        previewTab,
+        isExternalProject,
+        userRequestedCanvas: userRequestedCanvasRef.current,
+      })
+      if (bounceTo) setPreviewTab(bounceTo)
     } else if (canvasEnabled) {
       if (previewTab === 'app-preview') setPreviewTab('canvas')
     }
@@ -1728,8 +1741,20 @@ export default observer(function ProjectLayout() {
     }
     // Any explicit user navigation cancels an in-flight attention override.
     setAttentionTab(null)
+    if (tabId === 'canvas') {
+      userRequestedCanvasRef.current = true
+      if (!canvasEnabled || activeMode !== 'canvas') {
+        void updateProjectSettings({ activeMode: 'canvas', canvasEnabled: true })
+      }
+    }
     setPreviewTab(tabId)
-  }, [])
+    // Keep the sidebar landing-tab URL in sync. Opening this project while
+    // it was chat-only left `?tab=chat-fullscreen` in the URL; if that
+    // intent effect re-fires it would yank us back off Canvas.
+    if (typeof params.tab === 'string' && params.tab !== tabId) {
+      router.setParams({ tab: tabId } as any)
+    }
+  }, [activeMode, canvasEnabled, params.tab, router, updateProjectSettings])
 
   useEffect(() => {
     subagentStreamStore.onRequestTabSwitch((toolId?: string) => {
@@ -1789,19 +1814,25 @@ export default observer(function ProjectLayout() {
       }
     }
 
+    // Chat-only hides the Canvas tab (`activeMode !== 'canvas'`). Switching
+    // the agent type has to leave `chat-fullscreen` or the user stays
+    // trapped in a full-bleed chat with no preview — the previous branch
+    // only navigated on narrow + Settings, and even then kept `activeTab`
+    // on chat.
+    setAttentionTab(null)
     if (!enableCanvas) {
+      userRequestedCanvasRef.current = false
       setActiveTab('chat')
       setPreviewTab('chat-fullscreen')
-    } else if (
-      !isWide &&
-      previewTab === 'settings' &&
-      enableCanvas &&
-      activeMode === 'none'
-    ) {
-      setActiveTab('chat')
+    } else {
+      userRequestedCanvasRef.current = true
+      setActiveTab('canvas')
       setPreviewTab('canvas')
+      if (typeof params.tab === 'string' && params.tab !== 'canvas') {
+        router.setParams({ tab: 'canvas' } as any)
+      }
     }
-  }, [isWide, updateProjectSettings, agentUrl, nativeHeaders, previewTab, activeMode])
+  }, [updateProjectSettings, agentUrl, nativeHeaders, params.tab, router])
 
   const techStackId = projectSettings.techStackId as string | undefined
 
@@ -3099,6 +3130,10 @@ export default observer(function ProjectLayout() {
                 setAttentionTab(null)
                 setActiveTab(tab)
                 if (tab === 'canvas') {
+                  userRequestedCanvasRef.current = true
+                  if (!canvasEnabled || activeMode !== 'canvas') {
+                    void updateProjectSettings({ activeMode: 'canvas', canvasEnabled: true })
+                  }
                   setPreviewTab('canvas')
                 } else {
                   // Clear standalone preview (files, capabilities, …) so the chat column shows

@@ -81,6 +81,8 @@ import {
   wipeProjectFiles,
   getTechStackPath,
   workspaceUsesVite,
+  resolveWorkspaceTechStackId,
+  applyEnvTechStackMarker,
 } from './workspace-defaults'
 import {
   archiveNeedsSidecarClear,
@@ -95,6 +97,7 @@ import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
+import { staticAssetCacheControl } from './static-asset-cache'
 import {
   walkFilesTree,
   WORKSPACE_TREE_HIDDEN_DIRS,
@@ -964,12 +967,10 @@ function ensureWorkspaceFiles(): void {
   }
 
   // Seed tech stack if specified via env var or marker file.
-  // Projects without an explicit tech stack default to `react-app` (the
-  // canvas v2 Vite + React + Tailwind workspace).
-  const techStackMarker = join(WORKSPACE_DIR, '.tech-stack')
-  const techStackIdFromEnv = process.env.TECH_STACK_ID
-  const techStackIdFromFile = existsSync(techStackMarker) ? readFileSync(techStackMarker, 'utf-8').trim() : undefined
-  let techStackId = techStackIdFromEnv || techStackIdFromFile || 'react-app'
+  // `resolveWorkspaceTechStackId` also recovers imported Expo workspaces
+  // whose boot wrote a false `react-app` marker (no TECH_STACK_ID at
+  // first assign).
+  const techStackId = resolveWorkspaceTechStackId(WORKSPACE_DIR)
 
   if (techStackId) {
     seedTechStack(WORKSPACE_DIR, techStackId)
@@ -2562,6 +2563,27 @@ function getCanvasFileWatcher(): any {
   return _canvasFileWatcher
 }
 
+/**
+ * IDE / SDK file writes go through PUT/DELETE, not gateway-tools.
+ * Firecracker guests often miss chokidar/inotify, so without this
+ * CanvasBuildManager never sees the edit and Expo `dist/` stays stale.
+ */
+function notifyCanvasWorkspaceWrite(relativePath: string, absolutePath: string): void {
+  try {
+    getCanvasFileWatcher().onFileChanged(relativePath, absolutePath)
+  } catch (err) {
+    console.warn('[workspace] canvas watcher write-notify failed:', err)
+  }
+}
+
+function notifyCanvasWorkspaceDelete(relativePath: string): void {
+  try {
+    getCanvasFileWatcher().onFileDeleted(relativePath)
+  } catch (err) {
+    console.warn('[workspace] canvas watcher delete-notify failed:', err)
+  }
+}
+
 app.get('/preview/status', (c) => {
   const pm = getPreviewManager()
   return c.json(pm.getStatus())
@@ -2640,6 +2662,12 @@ function finishHydrate(entries: string[]): void {
     if (removed.length) {
       console.log(`[pool/hydrate] cleared stale SQLite sidecars: ${removed.join(', ')}`)
     }
+  }
+  // Hydrate can restore a `.tech-stack` written on an earlier boot that
+  // lacked TECH_STACK_ID (defaults to react-app). Re-stamp from env so
+  // the subsequent PreviewManager.restart() drives Expo, not vite.
+  if (applyEnvTechStackMarker(WORKSPACE_DIR)) {
+    console.log(`[pool/hydrate] re-applied TECH_STACK_ID=${process.env.TECH_STACK_ID} to .tech-stack`)
   }
   // Rebuild so the served dist reflects everything that was hydrated —
   // debounced, because more overlays are usually still arriving.
@@ -3614,6 +3642,7 @@ app.put('/agent/workspace/files/*', async (c) => {
       return c.json({ error: 'Invalid base64 in contentBase64' }, 400)
     }
     writeFileSync(resolved, buf)
+    notifyCanvasWorkspaceWrite(subPath, resolved)
     return c.json({
       ok: true,
       path: subPath,
@@ -3641,6 +3670,7 @@ app.put('/agent/workspace/files/*', async (c) => {
   }
 
   writeFileSync(resolved, body.content, 'utf-8')
+  notifyCanvasWorkspaceWrite(subPath, resolved)
   return c.json({
     ok: true,
     path: subPath,
@@ -3659,6 +3689,7 @@ app.delete('/agent/workspace/files/*', (c) => {
   if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
 
   unlinkSync(resolved)
+  notifyCanvasWorkspaceDelete(subPath)
   return c.json({ ok: true, deleted: subPath })
 })
 
@@ -3696,6 +3727,7 @@ app.post('/agent/workspace/upload', async (c) => {
 
       const buffer = await file.arrayBuffer()
       writeFileSync(resolved, Buffer.from(buffer))
+      notifyCanvasWorkspaceWrite(filePath, resolved)
       uploaded.push(filePath)
     }
 
@@ -5301,7 +5333,7 @@ function serveDistResponse(
     return new Response(readFileSync(filePath), {
       headers: {
         'Content-Type': mime,
-        'Cache-Control': 'public, max-age=31536000, immutable',
+        'Cache-Control': staticAssetCacheControl(safePath),
         [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
       },
     })
@@ -5507,6 +5539,9 @@ async function initializeEssentials(): Promise<void> {
         ) {
           await s3SyncInstance.markDepsPreSeeded()
         }
+        // Same poison as metal hydrate: the archive may contain a
+        // `react-app` marker written before TECH_STACK_ID was set.
+        applyEnvTechStackMarker(WORKSPACE_DIR)
         logTiming('S3 sync initialized')
       }
     } catch (error: any) {

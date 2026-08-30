@@ -65,6 +65,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { resolveBinInvocation } from '@shogo/shared-runtime'
+import { resolveWorkspaceTechStackId } from './workspace-defaults'
 import {
   commitBuildOutputAsync,
   cleanupStagingOutput,
@@ -274,9 +275,7 @@ export class CanvasBuildManager {
    */
   private preferredBundlerFromMarker(): BundlerKind | null {
     try {
-      const markerPath = join(this.workspaceDir, '.tech-stack')
-      if (!existsSync(markerPath)) return null
-      const stackId = readFileSync(markerPath, 'utf-8').trim()
+      const stackId = resolveWorkspaceTechStackId(this.workspaceDir)
       return STACK_TO_BUNDLER[stackId] ?? null
     } catch {
       return null
@@ -284,14 +283,15 @@ export class CanvasBuildManager {
   }
 
   /**
-   * Returns true when `.tech-stack` explicitly names a Vite stack.
-   * Used by `resolveBundler` to bail without falling through to
-   * `KNOWN_BUNDLERS` scan order — PreviewManager's vite-watch owns
-   * those workspaces. Kept as a tight string-set check so adding a
-   * new vite-flavored stack id only requires one edit (here).
+   * Skip this manager only when the workspace is *actually* a Vite
+   * stack. A missing marker still falls through to the Expo scan so
+   * marker-less workspaces keep working. A poisoned `react-app` marker
+   * on an Expo `package.json` resolves to `expo-app` and must not skip.
    */
   private markerNamesViteStack(): boolean {
     try {
+      const resolved = resolveWorkspaceTechStackId(this.workspaceDir)
+      if (STACK_TO_BUNDLER[resolved]) return false
       const markerPath = join(this.workspaceDir, '.tech-stack')
       if (!existsSync(markerPath)) return false
       const stackId = readFileSync(markerPath, 'utf-8').trim()
@@ -318,17 +318,17 @@ export class CanvasBuildManager {
     if (!existsSync(join(this.workspaceDir, 'package.json'))) {
       return
     }
-    const bundler = this.resolveBundler()
-    if (!bundler) {
-      return
-    }
 
     this.building = true
 
-    // Block the build on `PreviewManager.depsReady` if a gate is wired
-    // in. Critical for VM-isolated sessions on macOS hosts; harmless
-    // (resolves immediately) for cloud/k8s where the install has
-    // already completed by the time the gateway boots.
+    // Wait for deps BEFORE resolving the Expo bin. `start()` used to
+    // call `resolveBundler()` first and silently skip when
+    // `node_modules/.bin/expo` was not on disk yet — typical during
+    // metal hydrate / `bun install`. That skip never retried unless a
+    // later file notify arrived, so the imported `dist/` stayed
+    // frozen. Await `depsReady` first so the bin can appear, then
+    // resolve. Vite stacks still skip after the wait (see
+    // `markerNamesViteStack`).
     if (this.callbacks.waitForDeps) {
       try {
         await Promise.race([
@@ -345,6 +345,19 @@ export class CanvasBuildManager {
           `${LOG_PREFIX} waitForDeps gate did not settle (${err?.message ?? err}) — building anyway, expect platform-native errors if node_modules is incomplete`,
         )
       }
+    }
+
+    const bundler = this.resolveBundler()
+    if (!bundler) {
+      console.warn(
+        `${LOG_PREFIX} skip rebuild — no Expo bundler (missing node_modules/.bin/expo, or stack is Vite)`,
+      )
+      this.building = false
+      if (this.pendingBuild) {
+        this.pendingBuild = false
+        this.runBuild()
+      }
+      return
     }
 
     // Wipe any leftover staging dir from a prior crashed build so the

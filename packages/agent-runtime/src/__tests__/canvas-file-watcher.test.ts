@@ -121,6 +121,16 @@ describe('onFileChanged', () => {
     expect(calls).toBe(2)
   })
 
+  test('calls onRebuild for public/ worklets copied into dist unhashed', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    watcher.onFileChanged('public/captureRelay.worklet.js', join(tmpDir, 'public', 'captureRelay.worklet.js'))
+
+    expect(rebuildCalled).toBe(true)
+  })
+
   test('ignores non-buildable paths', () => {
     const watcher = new CanvasFileWatcher(tmpDir)
     let rebuildCalled = false
@@ -166,6 +176,37 @@ describe('onFileDeleted', () => {
 
     watcher.onFileDeleted('MEMORY.md')
     expect(rebuildCalled).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// HTTP PUT/DELETE — same notifier the IDE uses after saving a file.
+// Firecracker guests often miss chokidar; without this path Expo dist
+// never rebuilds after an IDE save.
+// ---------------------------------------------------------------------------
+
+describe('IDE HTTP file notify', () => {
+  test('PUT-equivalent onFileChanged on src/*.ts triggers rebuild', () => {
+    const watcher = CanvasFileWatcher.getInstance(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    watcher.onFileChanged(
+      'src/hooks/useLiveEngine.web.ts',
+      join(tmpDir, 'src', 'hooks', 'useLiveEngine.web.ts'),
+    )
+
+    expect(rebuildCalled).toBe(true)
+  })
+
+  test('DELETE-equivalent onFileDeleted on src/*.tsx triggers rebuild', () => {
+    const watcher = CanvasFileWatcher.getInstance(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    watcher.onFileDeleted('src/hooks/useLiveEngine.web.ts')
+
+    expect(rebuildCalled).toBe(true)
   })
 })
 

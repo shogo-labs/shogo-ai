@@ -1006,6 +1006,104 @@ export function workspaceUsesVite(dir: string): boolean {
   }
 }
 
+const VITE_STACK_IDS = new Set(['react-app', 'threejs-game', 'phaser-game'])
+
+function readPackageDeps(dir: string): Record<string, unknown> | null {
+  try {
+    const pkgPath = join(dir, 'package.json')
+    if (!existsSync(pkgPath)) return null
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as {
+      dependencies?: Record<string, unknown>
+      devDependencies?: Record<string, unknown>
+    }
+    return { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Infer a first-party stack id from on-disk `package.json` / `app.json`.
+ * Returns `null` when the workspace does not clearly belong to a known
+ * stack — callers fall back to the marker or `react-app`.
+ */
+function inferStackFromWorkspaceFiles(dir: string): string | null {
+  const deps = readPackageDeps(dir)
+  const has = (name: string) => !!(deps && deps[name])
+  let expoConfig = false
+  try {
+    const appJsonPath = join(dir, 'app.json')
+    if (existsSync(appJsonPath)) {
+      const parsed = JSON.parse(readFileSync(appJsonPath, 'utf-8')) as { expo?: unknown }
+      expoConfig = parsed?.expo != null
+    }
+  } catch {
+    /* ignore */
+  }
+  if (existsSync(join(dir, 'app.config.js')) || existsSync(join(dir, 'app.config.ts'))) {
+    expoConfig = true
+  }
+  const expoish = has('expo') || has('expo-router') || expoConfig
+  const threeish =
+    has('three') || has('@react-three/fiber') || has('expo-gl') || has('expo-three')
+  if (expoish) return threeish ? 'expo-three' : 'expo-app'
+  return null
+}
+
+function readTechStackMarker(dir: string): string {
+  try {
+    const markerPath = join(dir, '.tech-stack')
+    if (!existsSync(markerPath)) return ''
+    return readFileSync(markerPath, 'utf-8').trim()
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Resolve the workspace's real tech-stack id.
+ *
+ * Order:
+ *   1. `TECH_STACK_ID` env (set on `/pool/assign` from `settings.techStackId`)
+ *   2. On-disk `.tech-stack`, UNLESS it is a Vite default (`react-app` etc.)
+ *      sitting on a workspace whose `package.json` is clearly Expo — that
+ *      combination is the imported-Expo poison path: boot with no
+ *      TECH_STACK_ID writes `react-app`, hydrate overlays Expo files, and
+ *      both PreviewManager and CanvasBuildManager then refuse to rebuild.
+ *   3. Infer from `package.json` / `app.json`
+ *   4. `react-app` (historic default)
+ */
+export function resolveWorkspaceTechStackId(dir: string): string {
+  const fromEnv = (process.env.TECH_STACK_ID || '').trim()
+  if (fromEnv) return fromEnv
+
+  const fromFile = readTechStackMarker(dir)
+  const inferred = inferStackFromWorkspaceFiles(dir)
+  if (inferred && (!fromFile || VITE_STACK_IDS.has(fromFile))) {
+    return inferred
+  }
+  return fromFile || inferred || 'react-app'
+}
+
+/**
+ * Re-stamp `.tech-stack` from `TECH_STACK_ID` after a hydrate / S3 overlay.
+ * Those restores can resurrect a `react-app` marker written on a previous
+ * boot that lacked the env. Returns true when the marker was written.
+ */
+export function applyEnvTechStackMarker(dir: string): boolean {
+  const fromEnv = (process.env.TECH_STACK_ID || '').trim()
+  if (!fromEnv) return false
+  try {
+    writeFileSync(join(dir, '.tech-stack'), fromEnv, 'utf-8')
+    return true
+  } catch (err: any) {
+    console.warn(
+      `[workspace-defaults] Failed to apply TECH_STACK_ID marker (${err?.message ?? err})`,
+    )
+    return false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Install-marker — sha256(package.json) under `.shogo/install-marker`
 // ---------------------------------------------------------------------------
