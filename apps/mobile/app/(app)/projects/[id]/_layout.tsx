@@ -54,7 +54,6 @@ import { chatSessionEvents, chatActivityEvents } from '../../../../lib/chat-sess
 import { workspaceProjectFilter } from '../../../../lib/project-load'
 import { canvasDisabledRedirect } from '../../../../lib/project-preview-tab'
 import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
-import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
