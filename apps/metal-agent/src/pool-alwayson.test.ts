@@ -29,6 +29,9 @@ class TestPool extends MetalWarmPool {
     ;(this as any).assigned.delete(projectId)
     return { projectId }
   }
+  protected override async isGuestHealthy(): Promise<boolean> {
+    return true
+  }
   seed(projectId: string, lastTouchedAt: number, alwaysOn: boolean) {
     const a: AssignedVm = {
       projectId,

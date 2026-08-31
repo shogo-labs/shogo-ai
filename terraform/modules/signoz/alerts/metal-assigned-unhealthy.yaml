@@ -1,0 +1,75 @@
+# SigNoz alert: metal host has assigned VMs whose guest HTTP is mute
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts` (POST /api/v2/rules).
+#
+# Why: twelve users were stuck on mute metal guests in 2026-08 with no
+# fleet signal — host /metrics only had resume counters, and open() reused
+# any Firecracker process that was still alive. `metal.host.assigned_unhealthy`
+# is the heartbeat gauge of assigned-but-mute guests. A non-zero value for
+# more than a few minutes means users are being routed to a hung runtime.
+#
+# SCHEMA: same as metal-tap-exhaustion.yaml (builder query, dotted OTel name,
+# schemaVersion v2alpha1, channel platform-oncall).
+
+alert: MetalAssignedUnhealthy
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    unit: none
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.host.assigned_unhealthy
+              spaceAggregation: max
+              timeAggregation: max
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          legend: "{{host_id}} assigned_unhealthy"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: on_average
+        target: 0
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 5m
+    frequency: 1m
+labels:
+  severity: critical
+  team: platform
+  incident_class: metal
+notificationSettings:
+  groupBy: [host_id]
+  renotify:
+    enabled: true
+    interval: 1h
+    alertStates: [firing]
+annotations:
+  summary: "Metal host has assigned microVMs whose guest HTTP is mute"
+  description: |
+    One or more assigned Firecracker guests on this host are not answering
+    /health. Chat is being proxied to a hung runtime until the health gate
+    discards them on the next /assign.
+
+    Triage:
+    1. `curl -s localhost:${METAL_AGENT_PORT}/vms | jq '.assigned[] | select(.unhealthy==true)'`
+    2. Confirm host-mediated repo.git.tar.gz is current before discarding.
+    3. Health-gate discards increment metal.host.health_gate_discard_total.
+
+    Runbook: docs/runbooks/metal-fleet.md (wedged guest / health gate).

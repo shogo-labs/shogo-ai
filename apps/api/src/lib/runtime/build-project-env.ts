@@ -81,6 +81,14 @@ export async function buildProjectEnv(
         env.SHOGO_CLOUD_SYNC_MODE = project.cloudSyncMode
       }
 
+      // Metal guests hold no S3 credentials by design. The durable `.git`
+      // persist (persistRepoToStore) would throw without them and skip the
+      // checkpoint row. The host uploads repo.git.tar.gz instead — tell the
+      // guest to skip the direct persist so afterCommit can still record.
+      if (opts?.forMetal) {
+        env.SHOGO_DURABILITY_HOST_MEDIATED = '1'
+      }
+
       // Tell the runtime which scope to use for Composio user IDs.
       // Falls back to 'workspace' (the new default) when the workspace
       // row is missing the column or the join didn't return a value.

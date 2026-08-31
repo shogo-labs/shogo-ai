@@ -67,7 +67,7 @@ describe('pool per-class liveness classification', () => {
 
     const s = pool.status()
 
-    expect(s.liveness).toEqual({ agentActive: 1, appActive: 1, idleTail: 2 })
+    expect(s.liveness).toEqual({ agentActive: 1, appActive: 1, idleTail: 2, unhealthy: 0 })
     expect(s.liveness.agentActive + s.liveness.appActive + s.liveness.idleTail).toBe(s.assigned.length)
   })
 
@@ -97,5 +97,13 @@ describe('pool per-class liveness classification', () => {
     expect(metrics.getGauge(M.assignedAgentActive)).toBe(1)
     expect(metrics.getGauge(M.assignedAppActive)).toBe(1)
     expect(metrics.getGauge(M.assignedIdleTail)).toBe(0)
+  })
+
+  test('counts assigned-but-unhealthy separately from the disjoint buckets', () => {
+    const pool = makePool(dir)
+    pool.seed('mute', { lastHealthOk: false, activeStreams: 0 })
+    pool.status()
+    expect(metrics.getGauge(M.assignedUnhealthy)).toBe(1)
+    expect(metrics.getGauge(M.assignedIdleTail)).toBe(1)
   })
 })

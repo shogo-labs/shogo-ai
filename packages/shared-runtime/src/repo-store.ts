@@ -23,7 +23,7 @@
  */
 
 import { spawn } from 'child_process'
-import { existsSync, mkdirSync, createReadStream, createWriteStream, readFileSync } from 'fs'
+import { existsSync, mkdirSync, createReadStream, createWriteStream, readFileSync, statSync } from 'fs'
 import { unlink } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -226,6 +226,26 @@ export async function repoExistsInStore(cfg: RepoStoreConfig): Promise<boolean> 
 }
 
 /**
+ * Pack `<workspaceDir>/.git` to `destPath`. Shared by the guest's direct
+ * persist and the metal `/pool/export-repo` path (host uploads the bytes).
+ * Returns null when `.git` is absent.
+ */
+export async function packRepoArchive(
+  workspaceDir: string,
+  destPath: string,
+  opts: { excludeLfsObjects?: boolean } = {},
+): Promise<{ bytes: number } | null> {
+  if (!existsSync(join(workspaceDir, '.git'))) return null
+  // `--exclude` must precede the `.git` operand. Paths are matched as they
+  // appear in the archive (`.git/lfs/objects/...`).
+  const tarArgs = ['-czf', destPath, '-C', workspaceDir]
+  if (opts.excludeLfsObjects) tarArgs.push('--exclude=.git/lfs/objects')
+  tarArgs.push('.git')
+  await run('tar', tarArgs)
+  return { bytes: statSync(destPath).size }
+}
+
+/**
  * Persist `<workspaceDir>/.git` to object storage. Called after each
  * local commit and at shutdown. No-op when `.git` is absent.
  *
@@ -248,12 +268,8 @@ export async function persistRepoToStore(
   const client = makeClient(cfg)
   const tmpFile = join(tmpdir(), `repo-${cfg.projectId}-${randomUUID()}.tar.gz`)
   try {
-    // `--exclude` must precede the `.git` operand. Paths are matched as they
-    // appear in the archive (`.git/lfs/objects/...`).
-    const tarArgs = ['-czf', tmpFile, '-C', workspaceDir]
-    if (opts.excludeLfsObjects) tarArgs.push('--exclude=.git/lfs/objects')
-    tarArgs.push('.git')
-    await run('tar', tarArgs)
+    const packed = await packRepoArchive(workspaceDir, tmpFile, opts)
+    if (!packed) return { ok: true, changed: false, reason: 'no-local-git' }
     // Upload a Buffer, NOT a `createReadStream`. Under the bun runtime
     // (`bun run src/server.ts`) a streaming fs body to the OCI S3-compatible
     // endpoint never completes — the PutObject promise hangs forever, so the

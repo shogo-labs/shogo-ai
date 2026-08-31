@@ -68,6 +68,12 @@ export interface SnapshotMeta {
    * before writable-state durability shipped.
    */
   dataEtag?: string
+  /**
+   * ETag of the durable `.git` archive (`{projectId}/repo.git.tar.gz`) current
+   * when this snapshot was taken. Carried back into AssignedVm.repoParentEtag
+   * on resume.
+   */
+  repoEtag?: string
   /** Store schema version, for forward-compat. */
   v: 1
   /**

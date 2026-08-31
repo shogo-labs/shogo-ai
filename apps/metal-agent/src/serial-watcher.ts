@@ -84,6 +84,18 @@ export const SERIAL_SIGNATURES: readonly SerialSignature[] = [
     level: 4,
     re: /INFERENCE_RETRY/,
   },
+  {
+    category: 'oom',
+    metric: M.guestOom,
+    level: 3,
+    re: /Out of memory|oom-kill|invoked oom-killer|Killed process|Cannot allocate memory/i,
+  },
+  {
+    category: 'kernel_panic',
+    metric: M.guestKernelPanic,
+    level: 3,
+    re: /Kernel panic|Kernel BUG|Oops:|BUG: unable to handle/i,
+  },
 ] as const
 
 /** Strip CR, ANSI escapes and other control chars a serial console injects. */
@@ -106,6 +118,29 @@ export function classifySerialLine(line: string): SerialSignature | null {
     if (sig.re.test(line)) return sig
   }
   return null
+}
+
+/**
+ * Last `maxBytes` of a guest serial log. Used on health-gate discard so a
+ * mute guest's kernel/OOM trail is in the journal even if the watcher never
+ * matched a signature while the file was idle.
+ */
+export function readSerialTail(path: string, maxBytes = 8192): string {
+  try {
+    const st = statSync(path)
+    if (!st.size) return ''
+    const start = Math.max(0, st.size - maxBytes)
+    const buf = Buffer.alloc(st.size - start)
+    const fd = openSync(path, 'r')
+    try {
+      readSync(fd, buf, 0, buf.length, start)
+    } finally {
+      closeSync(fd)
+    }
+    return buf.toString('utf8').trim()
+  } catch {
+    return ''
+  }
 }
 
 interface FileState {

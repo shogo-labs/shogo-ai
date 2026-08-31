@@ -55,6 +55,7 @@ import {
   largeFileSyncConfigFromEnv,
   restoreRepoFromStore,
   persistRepoToStore,
+  packRepoArchive,
   seedRepoIfAbsent,
   createTagLocal,
   deleteTagLocal,
@@ -375,8 +376,29 @@ function isLfsActive(): boolean {
  * tarball ONLY when the push succeeded — otherwise the bytes would be durable
  * nowhere, so we keep them in the tarball as a fallback. Shared by the
  * afterCommit, publish-tag, and shutdown durability paths.
+ *
+ * Metal guests set `SHOGO_DURABILITY_HOST_MEDIATED`: they still push LFS
+ * (that path uses RUNTIME_AUTH_SECRET, not S3), but the `.git` tarball is
+ * uploaded by the host. Returning ok here lets persistAndRecordCheckpoint
+ * record the checkpoint row instead of throwing.
  */
+function isHostMediatedDurability(): boolean {
+  const v = process.env.SHOGO_DURABILITY_HOST_MEDIATED
+  return v === '1' || v === 'true'
+}
+
+/** Last `git rev-parse HEAD` the guest reported; refreshed after each commit. */
+let cachedRepoHeadSha: string | null = null
+
 async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; reason?: string }> {
+  if (isHostMediatedDurability()) {
+    if (isLfsActive()) {
+      const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+      if (lfsCfg) await lfsPushAll(lfsCfg)
+    }
+    // LFS bytes are offloaded via the API; the host packs `.git` on export.
+    return { ok: true, changed: false, reason: 'host-mediated' }
+  }
   const repoCfg = repoStoreConfigFromEnv()
   if (!repoCfg) return { ok: true, changed: false, reason: 'no-store-config' }
   let excludeLfsObjects = false
@@ -469,7 +491,8 @@ async function finalizeWorktreeTurn(chatSessionId: string): Promise<void> {
 }
 
 async function persistAndRecordCheckpoint(sha: string): Promise<void> {
-  if (repoStoreConfigFromEnv()) {
+  cachedRepoHeadSha = sha
+  if (repoStoreConfigFromEnv() || isHostMediatedDurability()) {
     // Offload LFS object bytes to OCI (when active) then persist `.git`.
     const res = await persistDurableRepo()
     if (!res.ok) throw new Error(`durable repo persist failed: ${res.reason}`)
@@ -721,7 +744,7 @@ const { app, state, logTiming } = await createRuntimeApp({
       (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
-    return { activeSessions: stats.length, lastActivityAt: lastSessionActivity, activeStreams }
+    return { activeSessions: stats.length, lastActivityAt: lastSessionActivity, activeStreams, repoHeadSha: cachedRepoHeadSha }
   },
   getHealthExtra: () => ({
     gateway: agentGateway?.getStatus() ?? null,
@@ -2791,6 +2814,46 @@ app.post('/pool/export', async (c) => {
     return c.json({ error: err?.message ?? 'export failed' }, 500)
   } finally {
     // The streaming response already unlinked it and owns the descriptor.
+    if (!handedOff) {
+      try {
+        unlinkSync(tmp)
+      } catch {}
+    }
+  }
+})
+
+// Metal write-side durability for the project's `.git` (host-driven).
+//
+// `/pool/export` packs working-tree SOURCE. git_only's per-turn durable
+// artifact is the pod's own `.git` (`<projectId>/repo.git.tar.gz`). Metal
+// guests hold no S3 credentials, so the host pulls this archive and
+// uploads it — the same shape as `/pool/export` / `/pool/export-data`.
+// LFS object bytes are pushed to the API with RUNTIME_AUTH_SECRET first
+// (that path does not need S3) and excluded from the tarball when the
+// push succeeds.
+//
+// Returns 204 when there is no `.git` yet.
+app.post('/pool/export-repo', async (c) => {
+  sweepSpool()
+  const tmp = spoolPath('pool-export-repo.tar.gz')
+  let handedOff = false
+  try {
+    let excludeLfsObjects = false
+    if (isLfsActive()) {
+      const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+      if (lfsCfg) excludeLfsObjects = await lfsPushAll(lfsCfg)
+    }
+    const packed = await packRepoArchive(WORKSPACE_DIR, tmp, { excludeLfsObjects })
+    if (!packed) return c.body(null, 204)
+    const size = statSync(tmp).size
+    console.log(`[pool/export-repo] packed .git for durable backup (${size} bytes)`)
+    const res = await spooledFileResponse(tmp, { 'Content-Type': 'application/gzip' })
+    handedOff = true
+    return res
+  } catch (err: any) {
+    console.error('[pool/export-repo] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'export-repo failed' }, 500)
+  } finally {
     if (!handedOff) {
       try {
         unlinkSync(tmp)
@@ -5579,10 +5642,13 @@ async function initializeEssentials(): Promise<void> {
     const projectId = process.env.PROJECT_ID
     if (cloudApiUrl && runtimeAuthSecret && projectId) {
       try {
-        if (cloudSyncMode === 'git_only') {
+          if (cloudSyncMode === 'git_only') {
           const repoCfg = repoStoreConfigFromEnv()
           let restored = false
-          if (repoCfg) {
+          // Metal: the host hydrates `.git` after assign. Skip the guest's
+          // direct restore (no S3 creds) so we don't seed a throwaway repo
+          // that persistRepoToStore then fails to upload.
+          if (repoCfg && !isHostMediatedDurability()) {
             const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
             restored = res.restored
           }
@@ -5590,7 +5656,7 @@ async function initializeEssentials(): Promise<void> {
             // No durable repo yet (brand-new or legacy s3 project): seed from
             // the on-disk tree and persist so the next cold start hydrates it.
             const seededSha = await seedRepoIfAbsent(WORKSPACE_DIR)
-            if (seededSha && repoCfg) {
+            if (seededSha && repoCfg && !isHostMediatedDurability()) {
               await persistRepoToStore(WORKSPACE_DIR, repoCfg)
               // Record the baseline seed commit so it shows in the checkpoints
               // timeline (not just the git graph).
@@ -5606,6 +5672,8 @@ async function initializeEssentials(): Promise<void> {
                   isAutomatic: true,
                 })
               }
+            } else if (seededSha) {
+              cachedRepoHeadSha = seededSha
             }
             logTiming(`Git repo bootstrap (git_only, restored=false, seeded=${Boolean(seededSha)})`)
           } else {
@@ -5624,6 +5692,12 @@ async function initializeEssentials(): Promise<void> {
         }
       } catch (error: any) {
         console.error('[agent-runtime] git repo bootstrap failed (falling back to S3 durability):', error.message)
+      }
+      try {
+        const sha = await getHeadSha(WORKSPACE_DIR)
+        if (sha) cachedRepoHeadSha = sha
+      } catch {
+        /* HEAD may not exist yet on a brand-new workspace */
       }
       const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
       if (lfCfg) {

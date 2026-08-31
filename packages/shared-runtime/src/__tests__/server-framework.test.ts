@@ -223,6 +223,7 @@ describe('/pool/activity', () => {
     expect(body.activeSessions).toBe(0)
     expect(body.lastRequestAt).toBe(state.lastRequestAt)
     expect(body.poolAssigned).toBe(false)
+    expect(body.repoHeadSha).toBeNull()
   })
 
   test('uses getActivityStats when provided; activeStreams>0 forces idleSeconds=0', async () => {
@@ -242,6 +243,7 @@ describe('/pool/activity', () => {
     expect(body.activeStreams).toBe(2)
     expect(body.idleSeconds).toBe(0)
     expect(body.lastSessionActivityAt).toBe(fixed)
+    expect(body.repoHeadSha).toBeNull()
   })
 
   test('idleSeconds reflects elapsed time when no streams', async () => {

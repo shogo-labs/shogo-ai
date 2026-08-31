@@ -77,6 +77,13 @@ export interface LiveVmEntry {
    * allowed to seed an archive. See AssignedVm.dataUntrustedReason.
    */
   dataUntrustedReason?: string
+  /**
+   * ETag of the durable `.git` archive this VM's repo descends from. Same
+   * adopt-on-restart role as `dataParentEtag`.
+   */
+  repoParentEtag?: string
+  /** Sticky: repo hydrate failed. Must survive adopt so we never launder it. */
+  repoUntrustedReason?: string
   v: 1
 }
 

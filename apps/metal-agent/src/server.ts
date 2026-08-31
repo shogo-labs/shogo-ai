@@ -410,9 +410,14 @@ if (config.projectDataExportIntervalMs > 0) {
     'writable-state export',
     config.projectDataExportIntervalMs,
     () =>
-      pool.exportAllProjectData().then((n) => {
-        if (n) console.log(`[metal-agent] exported writable state for ${n} project(s)`)
-      }),
+      Promise.all([
+        pool.exportAllProjectData().then((n) => {
+          if (n) console.log(`[metal-agent] exported writable state for ${n} project(s)`)
+        }),
+        pool.exportAllRepos().then((n) => {
+          if (n) console.log(`[metal-agent] exported .git for ${n} project(s)`)
+        }),
+      ]),
   )
 }
 

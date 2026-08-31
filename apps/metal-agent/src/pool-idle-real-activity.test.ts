@@ -268,4 +268,27 @@ describe('reapIdle gates on real guest activity, not lastTouchedAt', () => {
     expect(a.lastRealActivityAt).toBe(old)
     expect(await pool.reapIdle(IDLE_MS)).toEqual(['adopted'])
   })
+
+  test('expires frozen activeStreams after a sustained activity-poll failure', async () => {
+    const pool = makePool(dir)
+    const a = pool.seed('mute', { activeStreams: 5 })
+    globalThis.fetch = (() => Promise.reject(new Error('timeout'))) as any
+    a.activityPollFailedAt = Date.now() - 4 * 60_000
+    await pool.pollActivity()
+    expect(a.activeStreams).toBe(0)
+    expect(a.lastHealthOk).toBe(false)
+  })
+
+  test('isBusy is false for a mute guest with a long-failed poll and stale agent turn', async () => {
+    const pool = makePool(dir)
+    const old = Date.now() - 10 * 60_000
+    pool.seed('mute', {
+      activeStreams: 3,
+      lastAgentRequestAt: old,
+      assignedAt: old,
+      activityPollFailedAt: Date.now() - 4 * 60_000,
+    })
+    globalThis.fetch = (() => Promise.reject(new Error('timeout'))) as any
+    expect(await pool.isBusy('mute')).toBe(false)
+  })
 })

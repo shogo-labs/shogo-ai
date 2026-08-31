@@ -229,6 +229,19 @@ describe('buildProjectEnv — proxy URLs', () => {
     expect(env.SHOGO_API_URL).toBe('https://studio.shogo.ai')
   })
 
+  test('forMetal sets SHOGO_DURABILITY_HOST_MEDIATED so the guest skips direct S3 persist', async () => {
+    process.env.SYSTEM_NAMESPACE = 'shogo-prod'
+    process.env.SHOGO_PUBLIC_API_URL = 'https://studio.shogo.ai'
+    const env = await buildProjectEnv('proj-metal-durability', { forMetal: true })
+    expect(env.SHOGO_DURABILITY_HOST_MEDIATED).toBe('1')
+  })
+
+  test('non-metal callers do not set SHOGO_DURABILITY_HOST_MEDIATED', async () => {
+    process.env.SYSTEM_NAMESPACE = 'shogo-prod'
+    const env = await buildProjectEnv('proj-knative-durability')
+    expect(env.SHOGO_DURABILITY_HOST_MEDIATED).toBeUndefined()
+  })
+
   test('forMetal falls back to APP_URL and strips a trailing slash', async () => {
     process.env.SYSTEM_NAMESPACE = 'shogo-prod'
     process.env.APP_URL = 'https://staging.shogo.ai/'

@@ -51,7 +51,13 @@ export interface RuntimeAppConfig {
    * Returns activity stats for the /pool/activity endpoint.
    * If not provided, only HTTP request tracking is used.
    */
-  getActivityStats?: () => { activeSessions: number; lastActivityAt: number | null; activeStreams?: number }
+  getActivityStats?: () => {
+    activeSessions: number
+    lastActivityAt: number | null
+    activeStreams?: number
+    /** Current git HEAD; metal host uses a change to trigger repo.git.tar.gz export. */
+    repoHeadSha?: string | null
+  }
   /**
    * Extra data to include in the /health response.
    */
@@ -657,6 +663,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
         : null,
       lastAgentRequestAt: state.lastAgentRequestAt || null,
       poolAssigned: state.poolAssigned,
+      repoHeadSha: activityStats.repoHeadSha ?? null,
     })
   })
 

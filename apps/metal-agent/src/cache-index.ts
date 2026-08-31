@@ -49,6 +49,10 @@ export interface CacheEntry {
    * taken. Same role as `backupEtag`, for the database + uploads.
    */
   dataEtag?: string
+  /**
+   * ETag of the durable `.git` archive current when this snapshot was taken.
+   */
+  repoEtag?: string
   v: 1
 }
 

@@ -141,6 +141,14 @@ export const M = {
   assignedAppActive: 'metal_assigned_app_active',
   assignedAgentActive: 'metal_assigned_agent_active',
   assignedIdleTail: 'metal_assigned_idle_tail',
+  // Assigned VMs whose guest HTTP is mute (process alive, /health fails).
+  // Should be zero; a non-zero gauge is the 2026-08 wedged-guest fingerprint.
+  assignedUnhealthy: 'metal_assigned_unhealthy',
+  healthGateDiscard: 'metal_health_gate_discard_total',
+  // Host-mediated `.git` durability (see pool.saveRepoToStore).
+  repoConflict: 'metal_repo_conflict_total',
+  repoRefused: 'metal_repo_refused_untrusted_total',
+  repoTooLarge: 'metal_repo_too_large_total',
   // Guest-side failures scraped from the per-VM serial console by serial-watcher.
   // These are the ONLY fleet-wide signal for in-guest breakage that survives a
   // guest too broken to ship its own telemetry (e.g. TLS failing on clock skew).
@@ -149,6 +157,8 @@ export const M = {
   guestProviderError: 'metal_guest_provider_error_total',
   guestConnectionError: 'metal_guest_connection_error_total',
   guestInferenceRetry: 'metal_guest_inference_retry_total',
+  guestOom: 'metal_guest_oom_total',
+  guestKernelPanic: 'metal_guest_kernel_panic_total',
   // Control-plane requests that arrived without a valid bearer, labelled by
   // bucketed path and reason (see auth.ts). This is the gate on enforcement:
   // `METAL_AUTH_MODE=observe` serves these anyway and counts them, so a host is

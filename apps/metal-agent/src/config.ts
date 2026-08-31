@@ -59,7 +59,8 @@ export const config = {
    */
   guestInit: env('METAL_GUEST_INIT', ''),
 
-  /** Default microVM sizing. */
+  /** Default microVM sizing. Production hosts set METAL_MEM_MIB=4096 (above
+   * the `micro` instance-size 2Gi); the 1024 default is local-dev only. */
   vcpus: parseInt(env('METAL_VCPUS', '2'), 10),
   memMiB: parseInt(env('METAL_MEM_MIB', '1024'), 10),
 

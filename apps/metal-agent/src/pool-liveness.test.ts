@@ -36,6 +36,7 @@ import { config } from './config'
 import { MetalWarmPool, type AssignedVm } from './pool'
 import type { FcVmHandle, FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
+import { M, metrics } from './metrics'
 
 /**
  * Pool subclass that stubs the provisioning paths so open() can exercise the
@@ -45,6 +46,7 @@ import type { SnapshotStore } from './snapshot-store'
 class TestPool extends MetalWarmPool {
   assignCalls: string[] = []
   stoppedHandles: string[] = []
+  muteIds = new Set<string>()
 
   constructor(
     private alive: Set<string>,
@@ -52,6 +54,11 @@ class TestPool extends MetalWarmPool {
     cfg: typeof config,
   ) {
     super(mgr, cfg, { kind: 'none' } as unknown as SnapshotStore)
+  }
+
+  /** Fake guests are healthy unless listed in muteIds. */
+  protected override async isGuestHealthy(handle: FcVmHandle): Promise<boolean> {
+    return !this.muteIds.has(handle.id)
   }
 
   /** A snapshot resume is never in play here — force the cold-boot/assign path. */
@@ -146,6 +153,20 @@ describe('pool open() liveness gate', () => {
     expect(r.handle.id).toBe(handle.id)
     expect(pool.assignCalls).toEqual([]) // no cold boot — warm reuse
     expect(pool.stoppedHandles).toEqual([]) // live VM never stopped
+  })
+
+  test('discards a MUTE guest (FC process alive, HTTP hung) and reprovisions', async () => {
+    const { pool } = makePool(dir)
+    const handle = pool.seedAssigned('mute', 'fcvm-mute', true)
+    pool.muteIds.add(handle.id)
+
+    const r = await pool.open('mute', {})
+
+    expect(r.reused).toBeFalsy()
+    expect(pool.assignCalls).toEqual(['mute'])
+    expect(pool.stoppedHandles).toContain('fcvm-mute')
+    expect(r.handle.id).not.toBe('fcvm-mute')
+    expect(metrics.getCounter(M.healthGateDiscard)).toBeGreaterThan(0)
   })
 
   // The core reproduction: a dead tracked VM must NOT be served as a warm hit.
