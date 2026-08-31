@@ -2662,7 +2662,7 @@ jobs:
             REBUILD=true; WHY="baseline $BASE does not resolve here"
           elif ! git diff --quiet "$BASE" "$SHA" -- "${RUNTIME_PATHS[@]}"; then
             REBUILD=true; WHY="guest image changed since baseline $BASE"
-            git diff --name-only "$BASE" "$SHA" -- "${RUNTIME_PATHS[@]}" | sed 's/^/    /' | head -20
+            git diff --name-only "$BASE" "$SHA" -- "${RUNTIME_PATHS[@]}" | sed 's/^/    /' | head -20 || true
           else
             REBUILD=false; WHY="guest image unchanged since baseline $BASE"
           fi
