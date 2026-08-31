@@ -31,6 +31,11 @@ describe('classifySerialLine', () => {
     expect(sig?.level).toBe(4)
   })
 
+  test('detects guest OOM / kernel panic', () => {
+    expect(classifySerialLine('Out of memory: Killed process 12 (node)')?.category).toBe('oom')
+    expect(classifySerialLine('Kernel panic - not syncing: Fatal exception')?.category).toBe('kernel_panic')
+  })
+
   test('returns null for benign lines', () => {
     expect(classifySerialLine('[entrypoint] starting agent-runtime')).toBeNull()
     expect(classifySerialLine('GET /health 200')).toBeNull()

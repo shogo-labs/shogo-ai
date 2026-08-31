@@ -55,6 +55,13 @@ import {
   type DataLineage,
   type DataWriteOutcome,
 } from './project-data-archive'
+import {
+  describeRepoArchive,
+  uploadRepoArchiveGuarded,
+  type RepoLineage,
+  type RepoWriteOutcome,
+} from './repo-archive'
+import { readSerialTail } from './serial-watcher'
 import type { ArchiveRef } from './archive-ref'
 
 /**
@@ -65,6 +72,18 @@ import type { ArchiveRef } from './archive-ref'
  * to guest code, so the bound matters more than the convenience.
  */
 const PRESIGN_TTL_SEC = 30 * 60
+
+/**
+ * After this long without a successful `/pool/activity`, a leftover
+ * `activeStreams > 0` is a frozen turn, not a live one. Expire it so the
+ * reaper and `/stop` can actually act. 3 minutes is comfortably longer than
+ * a poll hiccup and far shorter than the hours mute guests sat pinned.
+ */
+const STALE_STREAM_TTL_MS = 3 * 60_000
+/** Poll-fail + this long since last agent turn → treat as not busy. */
+const MUTE_AGENT_IDLE_MS = 5 * 60_000
+const HEALTH_GATE_TIMEOUT_MS = 1000
+const HEALTH_GATE_RETRIES = 3
 
 export interface PooledVm {
   handle: FcVmHandle
@@ -209,6 +228,20 @@ export interface AssignedVm {
   dataExportFailures?: number
   /** Epoch ms before which the periodic exporter should not retry. */
   dataExportRetryAfter?: number
+  /**
+   * ETag of the durable `.git` archive (`repo.git.tar.gz`) this VM's repo
+   * descends from. Same role as `dataParentEtag`. Host-mediated: the guest
+   * has no S3 creds, so this is what authorizes the next host upload.
+   */
+  repoParentEtag?: string
+  /** Sticky: repo hydrate failed, so exports must not clobber the durable `.git`. */
+  repoUntrustedReason?: string
+  /** Last `repoHeadSha` the guest reported; export when it changes. */
+  repoHeadSha?: string
+  /** First consecutive `/pool/activity` failure (undefined while polls succeed). */
+  activityPollFailedAt?: number
+  /** Last health/activity poll outcome. `false` = assigned-but-unhealthy. */
+  lastHealthOk?: boolean
 }
 
 export interface SuspendedVm {
@@ -230,6 +263,11 @@ export interface SuspendedVm {
    * VM's next export can overwrite the data archive its database derives from.
    */
   dataEtag?: string
+  /**
+   * ETag of the durable `.git` archive current when this snapshot was taken.
+   * Carried back into AssignedVm.repoParentEtag on resume.
+   */
+  repoEtag?: string
   /**
    * Golden-rootfs identity this snapshot was taken against. A Firecracker
    * resume restores the frozen guest RAM verbatim, so it only makes sense on a
@@ -348,6 +386,8 @@ export class MetalWarmPool {
    * usually the fresher database.
    */
   private dataFlight = new Singleflight<boolean>()
+  /** Same serialization for host-mediated `.git` exports (poll vs suspend). */
+  private repoFlight = new Singleflight<boolean>()
   /**
    * Last writable-state change tag the guest reported, per project. Echoed back
    * on the next export so an unchanged project answers 304 without snapshotting
@@ -587,12 +627,14 @@ export class MetalWarmPool {
       }
       // A live firecracker process with its API socket present IS a real microVM
       // holding (possibly unsaved) user state — so we ADOPT it unconditionally and
-      // never let it be reaped. The health probe is advisory only: a transient
-      // unresponsiveness during the restart window (host load, overlapping
-      // restarts) must not cause us to SIGKILL a running VM. A guest that is truly
-      // wedged stays adopted and is handled by the normal idle reaper / next
-      // suspend — it is never killed here. (Only pid-dead / socket-gone entries,
-      // handled above, are dropped so their leftover procs, if any, get reaped.)
+      // never let it be reaped here. The health probe is advisory only: a transient
+      // unresponsiveness during the restart window (host load, overlapping restarts)
+      // must not SIGKILL a running VM. A guest that is truly wedged stays adopted;
+      // `open()`'s health gate discards it on the next assign (once host-mediated
+      // durability has a current copy). The idle reaper and `/stop` still cannot
+      // until stale `activeStreams` expire on poll failure — they are not the
+      // self-heal path. (Only pid-dead / socket-gone entries, handled above, are
+      // dropped so leftover procs, if any, get reaped.)
       let healthy = false
       for (let i = 0; i < 3 && !healthy; i++) {
         healthy = await probeHealth(e.agentUrl, 2000)
@@ -635,6 +677,9 @@ export class MetalWarmPool {
         backupParentEtag: e.backupParentEtag,
         dataParentEtag: e.dataParentEtag,
         dataUntrustedReason: e.dataUntrustedReason,
+        repoParentEtag: e.repoParentEtag,
+        repoUntrustedReason: e.repoUntrustedReason,
+        lastHealthOk: healthy,
       })
       adoptedIds.add(e.vmId)
       adoptedProjects.push(e.projectId)
@@ -685,6 +730,8 @@ export class MetalWarmPool {
       backupParentEtag: a.backupParentEtag,
       dataParentEtag: a.dataParentEtag,
       dataUntrustedReason: a.dataUntrustedReason,
+      repoParentEtag: a.repoParentEtag,
+      repoUntrustedReason: a.repoUntrustedReason,
       v: 1,
     })
   }
@@ -724,6 +771,7 @@ export class MetalWarmPool {
         rootfsIdentity: e.rootfsIdentity,
         backupEtag: e.backupEtag,
         dataEtag: e.dataEtag,
+        repoEtag: e.repoEtag,
       })
       n++
     }
@@ -741,6 +789,28 @@ export class MetalWarmPool {
   }
 
   /**
+   * Guest HTTP liveness. `protected` so tests can stub it without a real guest
+   * (fake 172.16 URLs would otherwise always fail and trip the health gate).
+   * A couple of short retries so a slow-but-live guest is not discarded.
+   */
+  protected async isGuestHealthy(handle: FcVmHandle): Promise<boolean> {
+    for (let i = 0; i < HEALTH_GATE_RETRIES; i++) {
+      if (await probeHealth(handle.agentUrl, HEALTH_GATE_TIMEOUT_MS)) return true
+      if (i + 1 < HEALTH_GATE_RETRIES) await Bun.sleep(150)
+    }
+    return false
+  }
+
+  /** Dump the guest serial tail so a wedge has a forensic record. */
+  private dumpGuestSerial(a: AssignedVm, reason: string): void {
+    const path = a.handle.serialLog
+    if (!path) return
+    const tail = readSerialTail(path)
+    if (!tail) return
+    console.error(`[pool] guest serial tail (${reason}) project=${a.projectId} vm=${a.handle.id}:\n${tail}`)
+  }
+
+  /**
    * Open a project on this host: resume its snapshot if one exists (hot local
    * OR durable store), else claim+assign a warm VM. Concurrent opens for the
    * same project collapse into one via singleflight (no double cold-boot / no
@@ -755,23 +825,32 @@ export class MetalWarmPool {
       const live = this.assigned.get(projectId)
       if (live) {
         // Only hand back the tracked VM if its firecracker process is still
-        // alive. A dead process (crash, OOM-kill, or a lost suspend race) left
-        // in the assigned map is a PHANTOM: we would return its guest URL as a
-        // warm "reused" hit, the control plane would proxy to it and get
-        // ECONNREFUSED/timeout ("Unable to connect" → 502), and because the
-        // wake poll keeps touching the entry the idle reaper never clears it —
-        // the preview then spins on "Waking things up" forever. Discard the
-        // dead entry (reaping its leaked tap/socket) and fall through to a
-        // fresh resume/boot so THIS open self-heals.
-        if (this.mgr.isRunning(live.handle)) {
+        // alive AND the guest still answers HTTP. A dead process (crash, OOM-kill,
+        // or a lost suspend race) left in the assigned map is a PHANTOM: we would
+        // return its guest URL as a warm "reused" hit, the control plane would
+        // proxy to it and get ECONNREFUSED/timeout, and because the wake poll keeps
+        // touching the entry the idle reaper never clears it. A mute guest (FC
+        // process alive, HTTP hung) is the same phantom with a live PID — the
+        // 2026-08 wedged-guest outage. Discard and fall through to resume/boot
+        // so THIS open self-heals.
+        if (this.mgr.isRunning(live.handle) && (await this.isGuestHealthy(live.handle))) {
           live.lastTouchedAt = Date.now()
+          live.lastHealthOk = true
           // `reused`: re-attached an already-running VM (no boot, no resume).
           // The control plane records this as a warm hit, not a cold miss.
           return { handle: live.handle, mode: 'assigned' as const, reused: true }
         }
-        console.warn(
-          `[pool] assigned VM ${live.handle.id} for ${projectId} is dead (fc process gone) — discarding and reprovisioning`,
-        )
+        if (this.mgr.isRunning(live.handle)) {
+          metrics.inc(M.healthGateDiscard)
+          this.dumpGuestSerial(live, 'health-gate')
+          console.warn(
+            `[pool] assigned VM ${live.handle.id} for ${projectId} is running but guest HTTP is mute — discarding and reprovisioning`,
+          )
+        } else {
+          console.warn(
+            `[pool] assigned VM ${live.handle.id} for ${projectId} is dead (fc process gone) — discarding and reprovisioning`,
+          )
+        }
         await this.discardDeadVm(live)
       }
       if (await this.canResume(projectId)) {
@@ -914,6 +993,27 @@ export class MetalWarmPool {
       console.error(
         `[pool] writable-state hydrate failed for ${projectId} — booting with the source's ` +
           `database. This VM is marked UNTRUSTED and will NOT write to the durable archive:`,
+        err?.message ?? err,
+      )
+    }
+
+    // Overlay the project's durable `.git`. git_only's per-turn artifact is
+    // `repo.git.tar.gz`; metal guests cannot persist it themselves (no S3
+    // creds), so the host hydrates it here — after source, before the guest
+    // starts serving chat. A failed overlay must not later overwrite the
+    // durable archive with the template seed `.git`.
+    try {
+      const r = await this.hydrateRepo(projectId, vm.handle, env)
+      if (r.hydrated) {
+        a.repoParentEtag = r.parentEtag
+        this.writeLive(a)
+      }
+    } catch (err: any) {
+      const reason = `repo hydrate failed at assign (${err?.message ?? err})`
+      this.distrustRepo(a, reason)
+      console.error(
+        `[pool] repo hydrate failed for ${projectId} — booting with the source's ` +
+          `.git. This VM is marked UNTRUSTED for repo.git.tar.gz and will NOT overwrite it:`,
         err?.message ?? err,
       )
     }
@@ -1288,6 +1388,128 @@ export class MetalWarmPool {
     return describeProjectDataArchive(projectId, this.cfg, PRESIGN_TTL_SEC)
   }
 
+  private trustedRepoEtag(a: AssignedVm): string | undefined {
+    return a.repoUntrustedReason ? undefined : a.repoParentEtag
+  }
+
+  protected repoLineageOf(a: AssignedVm): RepoLineage {
+    if (a.repoUntrustedReason) return { kind: 'untrusted', reason: a.repoUntrustedReason }
+    if (a.repoParentEtag) return { kind: 'descends', etag: a.repoParentEtag }
+    return { kind: 'create-only' }
+  }
+
+  private distrustRepo(a: AssignedVm, reason: string): void {
+    if (a.repoUntrustedReason === reason) return
+    a.repoUntrustedReason = reason
+    this.writeLive(a)
+  }
+
+  protected async fetchRepoExport(handle: FcVmHandle, token?: string): Promise<Uint8Array | null> {
+    const res = await fetch(`${handle.agentUrl}/pool/export-repo`, {
+      method: 'POST',
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (res.status === 204) return null
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(`/pool/export-repo failed (${res.status}): ${await res.text()}`)
+    const buf = await res.arrayBuffer()
+    return buf.byteLength ? new Uint8Array(buf) : null
+  }
+
+  protected uploadRepoGuarded(
+    projectId: string,
+    bytes: Uint8Array,
+    opts: { lineage: RepoLineage; preserveOnRefusal?: boolean },
+  ): Promise<RepoWriteOutcome> {
+    return uploadRepoArchiveGuarded(projectId, bytes, opts, this.cfg)
+  }
+
+  async saveRepoToStore(a: AssignedVm): Promise<boolean> {
+    return this.repoFlight.run(a.projectId, () => this.saveRepoInner(a))
+  }
+
+  private async saveRepoInner(a: AssignedVm): Promise<boolean> {
+    const lineage = this.repoLineageOf(a)
+    if (lineage.kind === 'untrusted') {
+      metrics.inc(M.repoRefused)
+      return false
+    }
+    const bytes = await this.fetchRepoExport(a.handle, a.runtimeToken)
+    if (!bytes) return false
+    const outcome = await this.uploadRepoGuarded(a.projectId, bytes, {
+      lineage,
+      preserveOnRefusal: true,
+    })
+    switch (outcome.status) {
+      case 'created':
+      case 'written':
+        a.repoParentEtag = outcome.etag ?? a.repoParentEtag
+        this.writeLive(a)
+        console.log(
+          `[pool] saved repo archive for ${a.projectId} (${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
+        )
+        return true
+      case 'conflict':
+        metrics.inc(M.repoConflict)
+        console.error(
+          `[pool] REFUSED to overwrite repo.git.tar.gz for ${a.projectId} — lineage ` +
+            `(etag=${a.repoParentEtag ?? 'none'}) does not match. Quarantined at ${outcome.quarantineKey}.`,
+        )
+        return false
+      case 'refused':
+        metrics.inc(M.repoRefused)
+        return false
+      case 'too-large':
+        metrics.inc(M.repoTooLarge)
+        console.error(
+          `[pool] repo archive for ${a.projectId} is too large (${outcome.bytes} > ${outcome.limit}) — not persisted`,
+        )
+        return false
+      case 'skipped':
+        return false
+    }
+    return false
+  }
+
+  private async hydrateRepo(
+    projectId: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+  ): Promise<{ hydrated: boolean; parentEtag?: string }> {
+    const ref = await this.repoRef(projectId)
+    if (!ref) {
+      console.log(`[pool] no durable repo for ${projectId} — guest keeps its seeded .git`)
+      return { hydrated: false }
+    }
+    await this.applyArchive(handle, env, ref, `${projectId} repo`)
+    console.log(`[pool] hydrated .git for ${projectId} (${ref.bytes} bytes, etag=${ref.etag ?? 'none'})`)
+    return { hydrated: true, parentEtag: ref.etag ?? undefined }
+  }
+
+  protected repoRef(projectId: string): Promise<ArchiveRef | null> {
+    return describeRepoArchive(projectId, this.cfg, PRESIGN_TTL_SEC)
+  }
+
+  /**
+   * Export `.git` for every live VM whose HEAD has moved, or whose last export
+   * is missing. Driven by the same guarded interval as writable-state so a
+   * host that never suspends still persists git_only history.
+   */
+  async exportAllRepos(): Promise<number> {
+    let n = 0
+    for (const a of this.assigned.values()) {
+      if (a.repoUntrustedReason) continue
+      try {
+        const wrote = await this.saveRepoToStore(a)
+        if (wrote) n++
+      } catch (err: any) {
+        console.error(`[pool] repo export failed for ${a.projectId}:`, err?.message ?? err)
+      }
+    }
+    return n
+  }
+
   /**
    * The data ETag safe to freeze into a snapshot — none for an untrusted VM.
    *
@@ -1595,6 +1817,10 @@ export class MetalWarmPool {
         console.error(`[pool] writable-state backup for ${a.projectId} failed:`, err?.message ?? err),
       )
 
+      await this.saveRepoToStore(a).catch((err) =>
+        console.error(`[pool] repo backup for ${a.projectId} failed:`, err?.message ?? err),
+      )
+
       // Server-backed published VM: also flush the live writable state to the
       // published-data bucket so a resume on a DIFFERENT host (snapshot miss)
       // — or a republish/data-push — sees the latest end-user data.
@@ -1621,6 +1847,7 @@ export class MetalWarmPool {
         rootfsIdentity: this.rootfsId,
         backupEtag: a.backupParentEtag,
         dataEtag: this.trustedDataEtag(a),
+        repoEtag: this.trustedRepoEtag(a),
       }
       this.suspended.set(projectId, s)
       this.writeIndex(s)
@@ -1666,6 +1893,7 @@ export class MetalWarmPool {
           rootfsIdentity: this.rootfsId,
           backupEtag: a.backupParentEtag,
           dataEtag: this.trustedDataEtag(a),
+          repoEtag: this.trustedRepoEtag(a),
           v: 1,
         }
         await this.heavy
@@ -1702,6 +1930,7 @@ export class MetalWarmPool {
       rootfsIdentity: this.rootfsId,
       backupEtag: s.backupEtag,
       dataEtag: s.dataEtag,
+      repoEtag: s.repoEtag,
       v: 1,
     }
     this.index.put(e)
@@ -1786,6 +2015,7 @@ export class MetalWarmPool {
         lastAccessAt: Date.now(),
         backupEtag: pulled.meta.backupEtag,
         dataEtag: pulled.meta.dataEtag,
+        repoEtag: pulled.meta.repoEtag,
       }
       source = 'store'
     }
@@ -1834,6 +2064,7 @@ export class MetalWarmPool {
       // The resumed guest's database is the one frozen in the snapshot, which
       // descends from this archive — so its next export may overwrite it.
       dataParentEtag: s.dataEtag,
+      repoParentEtag: s.repoEtag,
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)
@@ -1894,7 +2125,10 @@ export class MetalWarmPool {
             lastAppRequestAt?: number | null
             appRequestCount?: number
             lastAgentRequestAt?: number | null
+            repoHeadSha?: string | null
           }
+          a.lastHealthOk = true
+          a.activityPollFailedAt = undefined
           const last = typeof body.lastRequestAt === 'number' ? body.lastRequestAt : 0
           // Cache live-stream count so reapIdle can skip a project mid-generation
           // even when no new HTTP request has bumped lastRequestAt for a while.
@@ -1949,6 +2183,16 @@ export class MetalWarmPool {
           }
           if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
 
+          const sha = typeof body.repoHeadSha === 'string' && body.repoHeadSha ? body.repoHeadSha : undefined
+          if (sha && sha !== a.repoHeadSha) {
+            a.repoHeadSha = sha
+            void this.saveRepoToStore(a).catch((err) =>
+              console.error(`[pool] repo export on HEAD change failed for ${a.projectId}:`, err?.message ?? err),
+            )
+          }
+
+          // Legacy runtime: no per-class signal exists, so the catch-all is the
+
           // Legacy runtime: no per-class signal exists, so the catch-all is the
           // best available proxy for a user and must keep the VM alive.
           if (!a.perClassActivity && catchAllAdvanced) {
@@ -1956,6 +2200,13 @@ export class MetalWarmPool {
           }
         } catch {
           a.lastTouchedAt = now // fail open: never evict on missing data
+          a.lastHealthOk = false
+          a.activityPollFailedAt = a.activityPollFailedAt ?? now
+          // A leftover activeStreams from the last successful poll pins the VM
+          // as busy forever while the guest is mute. Expire it.
+          if (now - a.activityPollFailedAt >= STALE_STREAM_TTL_MS) {
+            a.activeStreams = 0
+          }
         }
       }),
     )
@@ -1981,6 +2232,14 @@ export class MetalWarmPool {
       const body = (await res.json()) as { activeStreams?: number }
       return (body.activeStreams ?? 0) > 0
     } catch {
+      const now = Date.now()
+      a.lastHealthOk = false
+      a.activityPollFailedAt = a.activityPollFailedAt ?? now
+      const failedFor = now - a.activityPollFailedAt
+      const agentIdle = a.lastAgentRequestAt ? now - a.lastAgentRequestAt : now - a.assignedAt
+      // Mute guest: poll has been failing and the last agent turn is old.
+      // Force-suspend is safe — this is not a live turn we cannot see.
+      if (failedFor >= STALE_STREAM_TTL_MS && agentIdle >= MUTE_AGENT_IDLE_MS) return false
       return true // can't confirm idleness → fail safe (don't suspend)
     }
   }
@@ -2019,12 +2278,11 @@ export class MetalWarmPool {
   }
 
   /**
-   * Tear down a tracked VM whose firecracker process is already gone: drop it
-   * from the assigned map + adopt-on-restart registry, then best-effort stopVM
-   * to reclaim its leaked tap/socket/rootfs (the process is already dead, so
-   * this only reclaims host resources + stale state). Shared by the open()
-   * liveness gate and the dead-VM reaper. NOT for a live VM — that would kill a
-   * running guest; callers must confirm `!isRunning` first.
+   * Tear down a tracked VM: drop it from the assigned map + adopt-on-restart
+   * registry, then stopVM to reclaim tap/socket/rootfs. Shared by the open()
+   * liveness/health gate (dead FC process OR mute guest) and the dead-VM reaper.
+   * For a mute guest the Firecracker process is still alive — stopVM kills it,
+   * which is the intended self-heal once durability has a current copy.
    */
   private async discardDeadVm(a: AssignedVm): Promise<void> {
     this.assigned.delete(a.projectId)
@@ -2505,6 +2763,7 @@ export class MetalWarmPool {
     metrics.gauge(M.assignedAppActive, cls.appActive)
     metrics.gauge(M.assignedAgentActive, cls.agentActive)
     metrics.gauge(M.assignedIdleTail, cls.idleTail)
+    metrics.gauge(M.assignedUnhealthy, cls.unhealthy)
 
     // Only dm mode has exception stores to run out of; the other rootfs modes
     // give each VM its own file and fail with an ordinary ENOSPC.
@@ -2533,16 +2792,20 @@ export class MetalWarmPool {
    * being used nor edited — the 30-min idle-suspend tail). agent-active wins
    * when a VM is both, so the buckets are disjoint and sum to `assigned.size`.
    */
-  private classifyAssigned(now = Date.now()): { appActive: number; agentActive: number; idleTail: number } {
+  private classifyAssigned(
+    now = Date.now(),
+  ): { appActive: number; agentActive: number; idleTail: number; unhealthy: number } {
     let appActive = 0
     let agentActive = 0
     let idleTail = 0
+    let unhealthy = 0
     for (const a of this.assigned.values()) {
+      if (a.lastHealthOk === false) unhealthy++
       if ((a.activeStreams ?? 0) > 0) agentActive++
       else if (a.lastAppRequestAt && now - a.lastAppRequestAt <= APP_ACTIVE_WINDOW_MS) appActive++
       else idleTail++
     }
-    return { appActive, agentActive, idleTail }
+    return { appActive, agentActive, idleTail, unhealthy }
   }
 
   /**
@@ -2678,6 +2941,7 @@ export class MetalWarmPool {
         appIdleMs: a.lastAppRequestAt ? now - a.lastAppRequestAt : null,
         appRequestCount: a.appRequestCount ?? 0,
         agentIdleMs: a.lastAgentRequestAt ? now - a.lastAgentRequestAt : null,
+        unhealthy: a.lastHealthOk === false,
       })),
       suspended: [...this.suspended.values()].map((s) => ({
         projectId: s.projectId,

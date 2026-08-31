@@ -145,7 +145,7 @@ export function resolveProgressAfterVisibilityChange(opts: {
 }
 
 /** Shown when the stall watchdog aborts a turn that never produced a byte. */
-export const STALL_TIMEOUT_USER_MESSAGE = 'Request timed out — tap retry'
+export const STALL_TIMEOUT_USER_MESSAGE = 'Runtime unreachable — tap retry'
 
 /** Shown when the agent run finished with no text and no tool calls. */
 export const EMPTY_AGENT_RESPONSE_MESSAGE = 'The agent returned no content.'

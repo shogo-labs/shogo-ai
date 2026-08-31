@@ -128,6 +128,12 @@ const hostAgentActiveGauge = meter.createObservableGauge('metal.host.agent_activ
 const hostIdleTailGauge = meter.createObservableGauge('metal.host.idle_tail', {
   description: 'Assigned microVMs that are running but neither used nor mid-turn — the idle-suspend tail',
 })
+const hostUnhealthyGauge = meter.createObservableGauge('metal.host.assigned_unhealthy', {
+  description: 'Assigned microVMs whose guest HTTP is mute (process alive, health fails)',
+})
+const hostHealthGateDiscardGauge = meter.createObservableGauge('metal.host.health_gate_discard_total', {
+  description: 'Cumulative health-gate discards reported by a metal host (mute guests torn down on open)',
+})
 
 let fleetGaugesRegistered = false
 
@@ -173,6 +179,13 @@ function ensureFleetGauges(): void {
           obs.observe(hostAppActiveGauge, h.load.liveness.appActive, attrs)
           obs.observe(hostAgentActiveGauge, h.load.liveness.agentActive, attrs)
           obs.observe(hostIdleTailGauge, h.load.liveness.idleTail, attrs)
+          if (typeof h.load.liveness.unhealthy === 'number') {
+            obs.observe(hostUnhealthyGauge, h.load.liveness.unhealthy, attrs)
+          }
+        }
+        const discards = h.metrics?.metal_health_gate_discard_total
+        if (typeof discards === 'number') {
+          obs.observe(hostHealthGateDiscardGauge, discards, attrs)
         }
       }
     },
@@ -192,6 +205,8 @@ function ensureFleetGauges(): void {
       hostAppActiveGauge,
       hostAgentActiveGauge,
       hostIdleTailGauge,
+      hostUnhealthyGauge,
+      hostHealthGateDiscardGauge,
     ],
   )
 }
@@ -228,7 +243,7 @@ export interface MetalHostRegistration {
      * agents (pre this build) and on guests still running the old rootfs (they
      * report no per-class activity, so the agent buckets them as idleTail).
      */
-    liveness?: { appActive: number; agentActive: number; idleTail: number }
+    liveness?: { appActive: number; agentActive: number; idleTail: number; unhealthy?: number }
     /**
      * Per-VM /30 consumption: `inUse` tap devices out of `capacity` (16384 on the
      * standard 172.16.0.0/16 base). Absent on agents predating tap reporting.

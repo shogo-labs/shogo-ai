@@ -30,6 +30,7 @@ import { enrichWorkspaceReferences, enrichProjectReferences } from "../lib/chat-
 import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
+import { isMetalEligibleProject } from "../lib/metal-eligibility"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -1197,7 +1198,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const MAX_RETRIES = 30
       const BASE_DELAY_MS = 500
       const MAX_DELAY_MS = 4000
-      const FETCH_TIMEOUT_MS = parseInt(process.env.CHAT_UPSTREAM_FETCH_TIMEOUT_MS || '14400000', 10)
+      const metalChat = isMetalEligibleProject(projectId)
+      // Metal guests currently hang rather than refuse — a 4h fetch timeout
+      // never fires before the client aborts, so we never invalidate the
+      // placement. A 90s budget is long enough for a healthy wake and short
+      // enough that a mute guest is detected.
+      const FETCH_TIMEOUT_MS = metalChat
+        ? parseInt(process.env.METAL_CHAT_FETCH_TIMEOUT_MS || '90000', 10)
+        : parseInt(process.env.CHAT_UPSTREAM_FETCH_TIMEOUT_MS || '14400000', 10)
       let lastError: Error | null = null
       let consecutiveConnectionErrors = 0
       // Threshold for forcing a runtime restart when the same URL keeps
@@ -1478,6 +1486,44 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           const isTransientError = isConnectionError && attempt <= CONNECTION_RETRY_LIMIT
 
           const isClientAbort = fetchError.name === 'AbortError' && clientSignal?.aborted
+          // AbortSignal.timeout() rejects as TimeoutError (Node/undici) or as
+          // AbortError with fetchSignal.aborted. A client disconnect is a
+          // different AbortError and must not be treated as an upstream hang.
+          const isUpstreamTimeout =
+            fetchError.name === 'TimeoutError' ||
+            (fetchError.name === 'AbortError' && fetchSignal.aborted && !clientSignal?.aborted)
+
+          if (isUpstreamTimeout && metalChat) {
+            // Invalidate + destroy so the next client retry cold-boots. Do
+            // not await destroy in a way a later 499 can cancel — fire and
+            // forget after cache invalidation.
+            console.warn(
+              `[ProjectChat] Metal upstream timeout for ${projectId} against ${podUrl} — invalidating placement`,
+            )
+            try {
+              const { getMetalWarmPoolController, destroyMetalProject } = await import(
+                '../lib/metal-warm-pool-controller'
+              )
+              getMetalWarmPoolController().invalidateUrlCache(projectId)
+              void destroyMetalProject(projectId).catch((err) =>
+                console.error(`[ProjectChat] destroy after timeout failed for ${projectId}:`, err),
+              )
+            } catch (err: any) {
+              console.error(`[ProjectChat] failed to invalidate metal placement:`, err?.message ?? err)
+            }
+            if (isClientAbort) {
+              chatSpan.setStatus({ code: SpanStatusCode.OK, message: "client_disconnected" })
+              chatSpan.end()
+              return new Response(null, { status: 499 })
+            }
+            chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "metal_runtime_unreachable" })
+            chatSpan.end()
+            return c.json(
+              { error: { code: "runtime_unreachable", message: "Runtime unreachable — please retry.", retryable: true } },
+              503,
+            )
+          }
+
           if (isClientAbort) {
             console.log(`[ProjectChat] Client disconnected, stopping retry loop`)
             chatSpan.setStatus({ code: SpanStatusCode.OK, message: "client_disconnected" })

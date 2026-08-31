@@ -44,6 +44,7 @@ export {
 
 export {
   persistRepoToStore,
+  packRepoArchive,
   restoreRepoFromStore,
   seedRepoIfAbsent,
   createTagLocal,
