@@ -246,6 +246,7 @@ model Project {
   attachments            ProjectAttachment[]     @relation("ProjectAttachmentAnchor")
   attachedTo             ProjectAttachment[]     @relation("ProjectAttachmentTarget")
   customDomains          CustomDomain[]
+  a2aApiKeys             A2aApiKey[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -1383,6 +1384,46 @@ model ApiKey {
   @@index([userId])
   @@index([workspaceId, deviceId])
   @@map("api_keys")
+}
+
+// =============================================================================
+// A2A PROTOCOL (Agent2Agent — see prisma/schema.prisma for the canonical
+// comment; mirrored here for local/desktop mode)
+// =============================================================================
+
+model A2aApiKey {
+  id           String    @id @default(cuid())
+  name         String
+  keyId        String    @unique
+  hashedSecret String
+  projectId    String
+  workspaceId  String
+  createdBy    String
+  lastUsedAt   DateTime?
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("a2a_api_keys")
+}
+
+model A2aTask {
+  id            String   @id
+  contextId     String
+  projectId     String
+  state         String
+  taskJson      String
+  chatSessionId String?
+  lastSeq       Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([projectId, contextId])
+  @@index([projectId, updatedAt])
+  @@map("a2a_tasks")
 }
 
 // =============================================================================

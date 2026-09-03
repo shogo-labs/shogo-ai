@@ -62,6 +62,7 @@ import { voiceRoutes } from './routes/voice'
 import { chatRoutes } from './routes/chat'
 import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { toolsProxyRoutes } from './routes/tools-proxy'
+import { a2aProtocolRoutes, a2aKeyRoutes } from './routes/a2a'
 import {
   generateTitleCompletion,
   setTitleGenerationModelId,
@@ -7699,6 +7700,36 @@ app.route('/api', voiceRoutes())
 // (`shogo_sk_*`) or session cookie. Runtime-token callers are
 // rejected — see runtime-token.md §7 for the rationale.
 app.route('/api', chatRoutes())
+
+// =============================================================================
+// A2A (Agent2Agent) protocol — external callers reach a project's runtime
+// pod via JSON-RPC bearer keys. See apps/api/src/lib/a2a/* and
+// apps/api/src/routes/a2a.ts for the implementation.
+// =============================================================================
+
+// Key management (mint/list/revoke `shogo_a2a_*` keys) is session-authed —
+// mounted under /api so it inherits authMiddleware + the global /api/*
+// rate limiter above, same as every other project-scoped /api/projects/*
+// route.
+app.route('/api', a2aKeyRoutes())
+
+// Kill switch: unset or 'false' disables the protocol surface entirely
+// (key management above stays up either way, since minting a key that
+// can't be used yet is harmless and avoids a chicken-and-egg rollout).
+if (process.env.A2A_ENABLED === 'true') {
+  // The protocol router is mounted OUTSIDE /api/* — it self-authenticates
+  // with shogo_a2a_* bearer keys (see routes/a2a.ts), not session/runtime-
+  // token auth, so it must not go through authMiddleware or the /api/*
+  // rate limiter. It gets its own limiter here instead.
+  app.use(
+    '/a2a/*',
+    rateLimiter('a2a', {
+      max: Number(process.env.RATE_LIMIT_A2A_MAX) || 300,
+      windowMs: Number(process.env.RATE_LIMIT_A2A_WINDOW_MS) || 60_000,
+    }),
+  )
+  app.route('/a2a', a2aProtocolRoutes())
+}
 
 // =============================================================================
 // Domain API routes - For APIPersistence layer

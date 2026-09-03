@@ -315,6 +315,7 @@ model Project {
   attachments            ProjectAttachment[]     @relation("ProjectAttachmentAnchor")
   attachedTo             ProjectAttachment[]     @relation("ProjectAttachmentTarget")
   customDomains          CustomDomain[]
+  a2aApiKeys             A2aApiKey[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -1927,6 +1928,57 @@ model ApiKey {
   @@index([userId])
   @@index([workspaceId, deviceId])
   @@map("api_keys")
+}
+
+// =============================================================================
+// A2A PROTOCOL (Agent2Agent — external callers reach a project's runtime
+// pod via JSON-RPC bearer keys; see apps/api/src/lib/a2a/*)
+// =============================================================================
+
+/// `shogo_a2a_<keyId>.<secret>` bearer keys, one per project. Verified in
+/// apps/api/src/lib/a2a/auth.ts by SHA-256-hashing the presented secret
+/// (mirroring `hashApiKey` from lib/api-keys-mint.ts) and comparing against
+/// `hashedSecret` with a timing-safe compare.
+model A2aApiKey {
+  id           String    @id @default(cuid())
+  name         String
+  keyId        String    @unique
+  hashedSecret String
+  projectId    String
+  workspaceId  String
+  createdBy    String
+  lastUsedAt   DateTime?
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("a2a_api_keys")
+}
+
+/// One row per A2A `Task`, persisted by `PrismaA2ATaskStore`
+/// (apps/api/src/lib/a2a/task-store.ts). `taskJson` is the full serialized
+/// `@a2a-js/sdk` `Task` object — deliberately `String`, not `Json`, so this
+/// model never enters the `wrapForSqlite` translation layer (see
+/// apps/api/src/lib/prisma.ts) and both schemas stay byte-identical.
+/// `contextId` is scoped to `projectId`, not globally unique, since the
+/// same external caller could reuse a `contextId` shape across projects.
+model A2aTask {
+  id            String   @id
+  contextId     String
+  projectId     String
+  state         String
+  taskJson      String
+  chatSessionId String?
+  lastSeq       Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([projectId, contextId])
+  @@index([projectId, updatedAt])
+  @@map("a2a_tasks")
 }
 
 // =============================================================================

@@ -347,6 +347,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason: 'Random key + hash; collision cryptographically impossible.',
   },
   {
+    key: 'A2aApiKey.keyId',
+    category: 'random_secret',
+    reason:
+      '12 random bytes hex-encoded (mintA2aApiKey in lib/a2a/auth.ts) — a plaintext lookup key, not the hashed secret; collision cryptographically impossible.',
+  },
+  {
     key: 'Instance.(hostname,userId,workspaceId)',
     category: 'single_tenant_upsert',
     reason:
