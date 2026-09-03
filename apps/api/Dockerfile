@@ -27,7 +27,7 @@ FROM ${WORKSPACE_DEPS} AS workspace
 # =============================================================================
 # Production image (debian-slim, glibc — matches workspace-deps libc)
 # =============================================================================
-FROM node:25-slim
+FROM node:26-slim
 
 WORKDIR /app
 
