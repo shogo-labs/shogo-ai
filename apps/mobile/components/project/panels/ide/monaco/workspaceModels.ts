@@ -24,6 +24,7 @@ let monacoRef: MonacoT | null = null;
 const modelsByRoot: Map<string, Set<string>> = new Map();
 
 const SUPPORTED_EXTS = /\.(tsx?|jsx?|d\.ts|json)$/;
+const MAX_MODELS_PER_ROOT = 64;
 
 export function setMonacoRef(m: MonacoT) {
   monacoRef = m;
@@ -45,6 +46,19 @@ function languageForPath(path: string): string {
   if (path.endsWith(".js")) return "javascript";
   if (path.endsWith(".json")) return "json";
   return "plaintext";
+}
+
+function enforceModelLimit(rootId: string, set: Set<string>): void {
+  const m = monacoRef;
+  if (!m) return;
+  while (set.size > MAX_MODELS_PER_ROOT) {
+    const uriStr = set.values().next().value as string | undefined;
+    if (!uriStr) return;
+    set.delete(uriStr);
+    const model = m.editor.getModel(m.Uri.parse(uriStr));
+    if (model) model.dispose();
+  }
+  if (set.size === 0) modelsByRoot.delete(rootId);
 }
 
 /**
@@ -95,9 +109,15 @@ export function upsertModel(
   if (!SUPPORTED_EXTS.test(path)) return;
 
   const uri = uriFor(m, rootId, path);
+  const uriStr = uri.toString();
   const existing = m.editor.getModel(uri);
   if (existing) {
     if (existing.getValue() !== content) existing.setValue(content);
+    const set = modelsByRoot.get(rootId);
+    if (set) {
+      set.delete(uriStr);
+      set.add(uriStr);
+    }
     return;
   }
   m.editor.createModel(content, language ?? languageForPath(path), uri);
@@ -106,7 +126,8 @@ export function upsertModel(
     set = new Set();
     modelsByRoot.set(rootId, set);
   }
-  set.add(uri.toString());
+  set.add(uriStr);
+  enforceModelLimit(rootId, set);
 }
 
 /** Remove a single model (file deleted). */
