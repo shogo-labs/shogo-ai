@@ -26,8 +26,17 @@ import {
   isMetalDrainMode as metalDrainMode,
 } from './metal-eligibility'
 import type { KnativeStatusProbe } from './metal-drain'
+import type { ResolveWorkspaceRuntimeOpts } from './resolve-workspace-runtime-url'
 
 export type PodMode = 'k8s' | 'host' | 'metal'
+
+/** Spawn options for a project-anchored merged-root workspace runtime. */
+export type AnchoredProjectRuntimeArgs = {
+  workspaceId: string
+  attachedProjectIds: string[]
+  localFolders: string[]
+  readonlyProjectIds: string[]
+}
 
 export type ResolvedPod =
   | { mode: 'k8s'; url: string }
@@ -108,6 +117,84 @@ export interface ResolvePodUrlOpts {
    */
   _isMetalDrainMode?: () => boolean
   _knativeStatus?: KnativeStatusProbe
+
+  /**
+   * Test-only override for loading anchored workspace spawn args
+   * (`workspaceId`, attachments, linked folders). Production uses
+   * `RuntimeManager.resolveAnchorSpawnOpts`.
+   */
+  _loadAnchoredArgs?: (projectId: string) => Promise<AnchoredProjectRuntimeArgs | null>
+
+  /** Test-only passthrough for `resolveWorkspaceRuntimeUrl`'s spawn lease. */
+  _spawnLease?: <T>(leaseKey: string, fn: () => Promise<T>) => Promise<T>
+
+  /** Test-only overrides forwarded to `resolveWorkspaceRuntimeUrl`. */
+  _workspaceK8sResolver?: ResolveWorkspaceRuntimeOpts['_k8sResolver']
+  _workspaceMetalResolver?: ResolveWorkspaceRuntimeOpts['_metalResolver']
+  _hostStartProject?: ResolveWorkspaceRuntimeOpts['_hostStartProject']
+}
+
+function isWorkspaceRuntimeEnabled(): boolean {
+  return process.env.SHOGO_WORKSPACE_RUNTIME === 'true'
+}
+
+async function defaultLoadAnchoredProjectRuntimeArgs(
+  projectId: string,
+): Promise<AnchoredProjectRuntimeArgs | null> {
+  const { getRuntimeManager } = await import('./runtime/index')
+  const manager = getRuntimeManager() as { resolveAnchorSpawnOpts?: (id: string) => Promise<AnchoredProjectRuntimeArgs | null> }
+  if (typeof manager.resolveAnchorSpawnOpts !== 'function') return null
+  return manager.resolveAnchorSpawnOpts(projectId)
+}
+
+/**
+ * When the universal workspace-runtime model is on, every project-scoped
+ * caller (agent-proxy, sandbox/url, project-chat) must hit the same
+ * project-anchored merged-root pod (`workspace-proj-<id>`) that
+ * `/api/workspaces/:id/chat` uses — not the legacy single-project pod
+ * (`project-<id>`).
+ */
+async function tryResolveAnchoredWorkspacePodUrl(
+  projectId: string,
+  opts: ResolvePodUrlOpts,
+): Promise<ResolvedPod | null> {
+  const load = opts._loadAnchoredArgs ?? defaultLoadAnchoredProjectRuntimeArgs
+  const args = await load(projectId)
+  if (!args) return null
+
+  const { resolveWorkspaceRuntimeUrl, WorkspaceRuntimeNotEnabledError } =
+    await import('./resolve-workspace-runtime-url')
+
+  const spawnLease =
+    opts._spawnLease ??
+    (async <T>(leaseKey: string, fn: () => Promise<T>) => {
+      const { withWorkspaceSpawnLease } = await import('./runtime/workspace-spawn-lease')
+      return withWorkspaceSpawnLease(leaseKey, fn, { logTag: opts.logTag ?? 'PodResolver' })
+    })
+
+  try {
+    const resolved = await resolveWorkspaceRuntimeUrl(args.workspaceId, {
+      attachedProjectIds: args.attachedProjectIds,
+      anchorProjectId: projectId,
+      localFolders: args.localFolders,
+      readonlyProjectIds: args.readonlyProjectIds,
+      logTag: opts.logTag ?? 'PodResolver',
+      runtimeManager: opts.runtimeManager,
+      _isKubernetes: opts._isKubernetes,
+      _isMetalEnabled: opts._isMetalEnabled,
+      _k8sResolver: opts._workspaceK8sResolver,
+      _metalResolver: opts._workspaceMetalResolver,
+      _hostStartProject: opts._hostStartProject,
+      _spawnLease: spawnLease,
+    })
+    if (resolved.mode === 'host') {
+      return { mode: 'host', url: resolved.url, runtime: resolved.runtime }
+    }
+    return { mode: resolved.mode, url: resolved.url }
+  } catch (err: unknown) {
+    if (err instanceof WorkspaceRuntimeNotEnabledError) return null
+    throw err
+  }
 }
 
 /**
@@ -168,6 +255,11 @@ export async function resolveProjectPodUrl(
 ): Promise<ResolvedPod> {
   const tag = opts.logTag ?? 'PodResolver'
   const isKubernetes = opts._isKubernetes ?? defaultIsKubernetes
+
+  if (isWorkspaceRuntimeEnabled()) {
+    const anchored = await tryResolveAnchoredWorkspacePodUrl(projectId, opts)
+    if (anchored) return anchored
+  }
 
   // Metal microVM substrate (cloud-agnostic bare-metal, reached over the mesh).
   //
