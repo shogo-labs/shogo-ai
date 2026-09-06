@@ -414,6 +414,22 @@ describe('transcribeCloud', () => {
     expect(receivedAuth).toBe('Bearer proxy-tok')
   })
 
+  it('strips a trailing /v1 from AI_PROXY_URL so the real proxy path (.../api/ai/v1/audio/transcriptions) is not doubled up', async () => {
+    // Production AI_PROXY_URL is always `${apiBase}/api/ai/v1` (see
+    // build-workspace-env.ts / build-project-env.ts / internal-proxy-config.ts).
+    // Appending `/v1/audio/transcriptions` naively would 404 against
+    // `.../api/ai/v1/v1/audio/transcriptions` instead of the real route.
+    process.env.AI_PROXY_URL = 'https://api.internal.example/api/ai/v1'
+    process.env.AI_PROXY_TOKEN = 'proxy-tok'
+    let receivedUrl = ''
+    fetchMock = async (url: string) => {
+      receivedUrl = url
+      return new Response(JSON.stringify({ text: 't', segments: [], language: 'en', duration: 0 }))
+    }
+    await svc.transcribeCloud(audioFile)
+    expect(receivedUrl).toBe('https://api.internal.example/api/ai/v1/audio/transcriptions')
+  })
+
   it('forwards the language hint as a form field', async () => {
     process.env.OPENAI_API_KEY = 'sk-test'
     let body: FormData | null = null

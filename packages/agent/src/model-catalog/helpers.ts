@@ -174,6 +174,17 @@ export function getMaxOutputTokens(id: string): number {
   return DEFAULT_MAX_OUTPUT_TOKENS
 }
 
+/**
+ * Whether a model accepts `input_audio` content blocks natively (see
+ * `ModelCapabilities.supportsAudioInput`). Unknown/unrated models (incl.
+ * DB-defined and OpenRouter models not in the static catalog) return
+ * `false` — they go through the Whisper-transcription fallback instead.
+ */
+export function modelSupportsAudioInput(id: string): boolean {
+  const entry = getModelEntry(id)
+  return entry?.capabilities?.supportsAudioInput === true
+}
+
 // ---------------------------------------------------------------------------
 // Family (for UI color coding)
 // ---------------------------------------------------------------------------

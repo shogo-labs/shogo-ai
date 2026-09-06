@@ -56,6 +56,7 @@ export {
   getModelBillingModel,
   getModelFamily,
   getMaxOutputTokens,
+  modelSupportsAudioInput,
   getAvailableModels,
   getModelsByProvider,
   getProviderLabel,

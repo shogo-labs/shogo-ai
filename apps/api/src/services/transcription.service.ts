@@ -192,7 +192,14 @@ export async function transcribeCloud(
   const proxyUrl = process.env.AI_PROXY_URL
   const proxyToken = process.env.AI_PROXY_TOKEN
 
-  const baseUrl = proxyUrl || 'https://api.openai.com'
+  // AI_PROXY_URL is set to `${apiBase}/api/ai/v1` (see build-workspace-env.ts /
+  // build-project-env.ts / internal-proxy-config.ts). Strip a trailing `/v1`
+  // before appending our own `/v1/audio/transcriptions` suffix below, so we
+  // don't double up on the version segment (`.../api/ai/v1/v1/audio/...`),
+  // which would 404 against the real `/ai/v1/audio/transcriptions` route.
+  // Mirrors the same stripping the `transcribe_audio` tool already does in
+  // packages/agent-runtime/src/gateway-tools.ts.
+  const baseUrl = proxyUrl ? proxyUrl.replace(/\/v1$/, '') : 'https://api.openai.com'
   const authHeader = proxyToken
     ? `Bearer ${proxyToken}`
     : apiKey

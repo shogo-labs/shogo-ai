@@ -84,7 +84,7 @@ import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
 import type { FilePart } from './file-attachment-utils'
-import { parseFileAttachments } from './file-attachment-utils'
+import { parseFileAttachments, transcribeAudioParts } from './file-attachment-utils'
 import {
   SELF_EVOLUTION_GUIDE,
   BROWSER_TOOL_GUIDE,
@@ -1592,10 +1592,20 @@ export class AgentGateway {
         images = parsed.images
         this.emitLog(`Attached ${parsed.images.length} image(s) for vision`)
       }
-      if (parsed.textContext) {
+      let textContext = parsed.textContext
+      if (parsed.audioParts.length > 0) {
+        // No model reachable from this loop accepts native audio content
+        // blocks (pi-ai's `Model.input` type only allows `"text" | "image"`),
+        // so every audio attachment is auto-transcribed via Whisper and
+        // injected as text context, regardless of which model is selected.
+        this.emitLog(`Transcribing ${parsed.audioParts.length} audio attachment(s)...`)
+        const audioTranscripts = await transcribeAudioParts(parsed.audioParts)
+        textContext = [textContext, audioTranscripts].filter(Boolean).join('\n\n')
+      }
+      if (textContext) {
         effectiveText = text
-          ? `${text}\n\n${parsed.textContext}`
-          : parsed.textContext
+          ? `${text}\n\n${textContext}`
+          : textContext
       }
     }
 

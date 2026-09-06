@@ -161,3 +161,22 @@ export function calculateImageUsageCost(
 
   return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
 }
+
+// =============================================================================
+// Audio Transcription Usage Costs
+// =============================================================================
+
+/** OpenAI Whisper API list price: $0.006 per minute of audio, billed per second. */
+const WHISPER_USD_PER_SECOND = 0.006 / 60
+
+/**
+ * Calculate USD cost for a Whisper transcription call from the audio
+ * duration (seconds) reported by the API response. Falls back to a
+ * one-second minimum when duration is unavailable (e.g. non-JSON
+ * `response_format`) so a call is never billed at exactly $0.
+ */
+export function calculateTranscriptionUsageCost(durationSeconds: number | undefined): UsageCostResult {
+  const seconds = durationSeconds && durationSeconds > 0 ? durationSeconds : 1
+  const rawUsd = seconds * WHISPER_USD_PER_SECOND
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+}
