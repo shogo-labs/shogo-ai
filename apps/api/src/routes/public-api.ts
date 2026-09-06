@@ -207,15 +207,16 @@ async function checkBalance(
   payload: ProxyTokenPayload,
 ): Promise<Response | null> {
   if (isLocalDev) return null
-  if (await billingService.hasBalance(payload.workspaceId)) return null
+  const balanceCheck = await billingService.checkUsageBalance(payload.workspaceId)
+  if (balanceCheck.ok) return null
+  const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
   const usageLimit = await buildUsageLimitInfo(payload.workspaceId)
   return c.json(
     {
       error: {
-        message:
-          'Usage limit reached. Enable usage-based pricing or upgrade your plan.',
+        message,
         type: 'billing_error',
-        code: 'usage_limit_reached',
+        code,
         ...usageLimit,
       },
     },

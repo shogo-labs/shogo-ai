@@ -2558,19 +2558,23 @@ export function aiProxyRoutes() {
     // Pre-check: reject if workspace has no included USD left (skip in local dev
     // and for internal, non-billable completions). An already-admitted chat turn
     // that is still in flight is never re-gated mid-message (see isTurnInFlight).
-    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
-      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
-      return c.json(
-        {
-          error: {
-            message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.',
-            type: 'billing_error',
-            code: 'usage_limit_reached',
-            ...usageLimit,
+    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload)) {
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        return c.json(
+          {
+            error: {
+              message,
+              type: 'billing_error',
+              code,
+              ...usageLimit,
+            },
           },
-        },
-        402
-      )
+          402
+        )
+      }
     }
 
     try {
@@ -2796,12 +2800,16 @@ export function aiProxyRoutes() {
     // chat/completions for the credit-ledger FK rationale).
     const internalUsage = resolveInternalUsage(c, tokenPayload)
 
-    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
-      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
-      return c.json(
-        { error: { message: 'Usage limit reached.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
-        402
-      )
+    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload)) {
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        return c.json(
+          { error: { message, type: 'billing_error', code, ...usageLimit } },
+          402
+        )
+      }
     }
 
     try {
@@ -3122,12 +3130,16 @@ export function aiProxyRoutes() {
 
     // Pre-check usage balance (skip in local dev and for internal usage). An
     // already-admitted chat turn still in flight is never re-gated mid-message.
-    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
-      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
-      return c.json(
-        { type: 'error', error: { type: 'billing_error', message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', ...usageLimit } },
-        402
-      )
+    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload)) {
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        return c.json(
+          { type: 'error', error: { type: 'billing_error', code, message, ...usageLimit } },
+          402
+        )
+      }
     }
 
     try {
@@ -3547,12 +3559,16 @@ export function aiProxyRoutes() {
 
     // An already-admitted chat turn still in flight is never re-gated
     // mid-message — a build that generates images mid-turn isn't interrupted.
-    if (!isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
-      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
-      return c.json(
-        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
-        402
-      )
+    if (!isTurnInFlight(c, tokenPayload)) {
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        return c.json(
+          { error: { message, type: 'billing_error', code, ...usageLimit } },
+          402
+        )
+      }
     }
 
     try {
@@ -3643,12 +3659,16 @@ export function aiProxyRoutes() {
 
     // An already-admitted chat turn still in flight is never re-gated
     // mid-message — a build that edits images mid-turn isn't interrupted.
-    if (!isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
-      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
-      return c.json(
-        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
-        402
-      )
+    if (!isTurnInFlight(c, tokenPayload)) {
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        return c.json(
+          { error: { message, type: 'billing_error', code, ...usageLimit } },
+          402
+        )
+      }
     }
 
     try {

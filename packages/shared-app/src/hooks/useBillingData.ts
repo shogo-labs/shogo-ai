@@ -16,7 +16,23 @@ export interface EffectiveBalance {
   monthlyIncludedUsd: number
   monthlyIncludedAllocationUsd: number
   overageAccumulatedUsd: number
+  /**
+   * Raw persisted wallet preference — what the user last set the on-demand
+   * toggle to. Prefer `overageActive` for "is on-demand usage actually in
+   * effect right now": this can be stale (`true`) after a subscription
+   * lapses or a license grant expires, since nothing walks the column back
+   * automatically (see `billingService.checkUsageBalance` server-side).
+   */
   overageEnabled: boolean
+  /**
+   * Whether on-demand usage will actually apply the next time a rolling
+   * window is exhausted (`overageEnabled && paidTier`). This mirrors the
+   * server's enforcement in `checkUsageBalance`, so the UI never shows
+   * on-demand as "on" while every request is actually getting blocked.
+   */
+  overageActive: boolean
+  /** Whether a live paid entitlement (subscription or grant) backs the workspace right now. */
+  paidTier: boolean
   overageHardLimitUsd: number | null
   total: number
 }
@@ -113,6 +129,10 @@ export function useBillingData(
   // UI as the current plan.
   const [effectivePlan, setEffectivePlan] = useState<{ planId: string; source: PlanSource } | null>(null)
   const [usageWindows, setUsageWindows] = useState<UsageWindows | undefined>(undefined)
+  // `null` = not yet loaded. Kept separate from `effectivePlan` so callers
+  // can distinguish "still loading" from "definitely not paid" and avoid a
+  // flash of "entitlement expired" before the first fetch resolves.
+  const [paidTier, setPaidTier] = useState<boolean | null>(null)
 
   useEffect(() => {
     if (!workspaceId || !store?.subscriptionCollection) { setIsLoadingSubscription(false); return }
@@ -126,7 +146,7 @@ export function useBillingData(
     Promise.all([
       store.subscriptionCollection.loadAll({ workspaceId }),
       http
-        .get<{ ok?: boolean; planId?: string; source?: PlanSource; usageWindows?: UsageWindows }>(
+        .get<{ ok?: boolean; planId?: string; source?: PlanSource; usageWindows?: UsageWindows; paidTier?: boolean }>(
           `/api/billing/workspace-plan?workspaceId=${encodeURIComponent(workspaceId)}`,
         )
         .then((res) => {
@@ -138,6 +158,7 @@ export function useBillingData(
               source: (data.source as PlanSource) ?? (data.planId === "free" ? "free" : "subscription"),
             })
             if (data.usageWindows) setUsageWindows(data.usageWindows as UsageWindows)
+            if (typeof data.paidTier === "boolean") setPaidTier(data.paidTier)
           }
         })
         .catch(() => {
@@ -259,17 +280,24 @@ export function useBillingData(
       const overageAccumulated = usageWallet.overageAccumulatedUsd ?? 0
       const overageEnabled = usageWallet.overageEnabled === true
       const overageHardLimit = typeof usageWallet.overageHardLimitUsd === 'number' ? usageWallet.overageHardLimitUsd : null
+      // While the workspace-plan fetch hasn't resolved yet, don't claim the
+      // entitlement is gone — fall back to the raw flag so the UI doesn't
+      // flash a false "expired" state on load. Once resolved, this is the
+      // authoritative "is on-demand usage actually on" signal.
+      const overageActive = overageEnabled && (paidTier ?? true)
       return {
         dailyIncludedUsd: daily,
         monthlyIncludedUsd: monthly,
         monthlyIncludedAllocationUsd: monthlyAllocation,
         overageAccumulatedUsd: overageAccumulated,
         overageEnabled,
+        overageActive,
+        paidTier: paidTier ?? overageEnabled,
         overageHardLimitUsd: overageHardLimit,
         total: daily + monthly,
       }
     } catch { return undefined }
-  }, [usageWallet, effectivePlan, walletUpdatedAt, walletOverageHardLimitUsd, walletOverageEnabled, walletOverageAccumulatedUsd])
+  }, [usageWallet, effectivePlan, paidTier, walletUpdatedAt, walletOverageHardLimitUsd, walletOverageEnabled, walletOverageAccumulatedUsd])
 
   // Live-derive the rolling windows from the wallet so the usage bars refresh
   // on every `refetchUsageWallet()` (e.g. after each completed chat message)

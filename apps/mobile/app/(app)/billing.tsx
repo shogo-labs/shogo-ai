@@ -132,12 +132,18 @@ export default observer(function BillingPage() {
   const usageLimitNotice = getUsageLimitNotice({
     atLimit: usageWindowDisplays.fiveHour.atLimit || usageWindowDisplays.weekly.atLimit,
     overage: effectiveBalance
-      ? { enabled: effectiveBalance.overageEnabled, accumulatedUsd: effectiveBalance.overageAccumulatedUsd }
+      ? {
+          enabled: effectiveBalance.overageEnabled,
+          active: effectiveBalance.overageActive,
+          accumulatedUsd: effectiveBalance.overageAccumulatedUsd,
+        }
       : undefined,
     countdown: usageWindowDisplays.weekly.atLimit
       ? usageWindowDisplays.weekly.countdown
       : usageWindowDisplays.fiveHour.countdown,
   })
+  // Surface the expired-entitlement state even before a window is exhausted.
+  const overageEntitlementExpired = !!effectiveBalance?.overageEnabled && effectiveBalance.overageActive === false
 
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
   const [proSeats, setProSeats] = useState(1)
@@ -737,20 +743,27 @@ export default observer(function BillingPage() {
             <View
               className={cn(
                 'flex-row items-center gap-2 rounded-md p-3',
-                usageLimitNotice.tone === 'overage' ? 'bg-destructive/10' : 'bg-muted',
+                usageLimitNotice.tone === 'overage' || usageLimitNotice.tone === 'expired' ? 'bg-destructive/10' : 'bg-muted',
               )}
             >
               <Info
                 size={16}
-                className={usageLimitNotice.tone === 'overage' ? 'text-destructive' : 'text-muted-foreground'}
+                className={usageLimitNotice.tone === 'overage' || usageLimitNotice.tone === 'expired' ? 'text-destructive' : 'text-muted-foreground'}
               />
               <Text
                 className={cn(
                   'flex-1 text-sm',
-                  usageLimitNotice.tone === 'overage' ? 'text-foreground font-medium' : 'text-muted-foreground',
+                  usageLimitNotice.tone === 'overage' || usageLimitNotice.tone === 'expired' ? 'text-foreground font-medium' : 'text-muted-foreground',
                 )}
               >
                 {usageLimitNotice.text}
+              </Text>
+            </View>
+          ) : !usageLimitNotice && overageEntitlementExpired ? (
+            <View className="flex-row items-center gap-2 rounded-md p-3 bg-destructive/10">
+              <Info size={16} className="text-destructive" />
+              <Text className="flex-1 text-sm text-foreground font-medium">
+                Your on-demand billing entitlement has expired. Reactivate your subscription or license to keep using on-demand usage.
               </Text>
             </View>
           ) : null}

@@ -631,6 +631,37 @@ export interface UsageWindowSnapshot {
 }
 
 /**
+ * On-demand ("overage") usage status for a workspace, resolved the same
+ * way `checkUsageBalance` gates a request. Callers that only read
+ * `usage_wallets.overageEnabled` directly (e.g. the workspace-plan API)
+ * report a stale "on" state once the paid entitlement backing it lapses —
+ * see `resolveEffectivePlan`'s `paidTier` doc comment. Use this instead so
+ * the client shows the same on/off state the backend actually enforces.
+ */
+export async function getOverageStatus(
+  workspaceId: string,
+  now: Date = new Date(),
+): Promise<{
+  /** Raw persisted preference — what the user last set the toggle to. */
+  overageEnabled: boolean
+  /** Whether the workspace currently has a live paid entitlement (active
+   * Stripe subscription or unexpired paid-tier grant) backing overage. */
+  paidTier: boolean
+  /** `overageEnabled && paidTier` — whether overage will actually apply
+   * the next time a rolling window is exhausted. This is the value the UI
+   * should treat as "is on-demand usage on". */
+  overageActive: boolean
+}> {
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId)
+  const [wallet, { paidTier }] = await Promise.all([
+    prisma.usageWallet.findUnique({ where: { workspaceId: billingWorkspaceId } }),
+    resolveEffectivePlan(prisma, billingWorkspaceId, now),
+  ])
+  const overageEnabled = wallet?.overageEnabled ?? false
+  return { overageEnabled, paidTier, overageActive: overageEnabled && paidTier }
+}
+
+/**
  * Compute the current state of a workspace's rolling windows, applying the
  * same lazy reset semantics as `consumeUsage` (without persisting). Returns
  * `null` per-window limit for uncapped plans.
@@ -672,15 +703,61 @@ export async function getUsageWindows(
 }
 
 /**
- * Check if workspace can spend at least `minimumRequiredUsd`. True when
- * either rolling window still has room, when the plan is uncapped, or when
- * metered overage is enabled and within its hard cap.
+ * Why a balance check failed, in enough detail for the HTTP layer to return
+ * an accurate error code/message instead of the one-size-fits-all
+ * `usage_limit_reached`:
+ *
+ *   - `entitlement_expired`: `usage_wallets.overageEnabled` is still `true`
+ *     (the user turned on / has on-demand usage) but the paid entitlement
+ *     backing it (Stripe subscription or grant) has lapsed. This is the
+ *     "user sees on-demand enabled but still gets blocked" bug — see
+ *     `resolveEffectivePlan`'s `paidTier` doc comment for why the column
+ *     alone can't be trusted (incident 2026-08-06 / 2026-09-02).
+ *   - `overage_cap_reached`: overage is genuinely active, but the
+ *     workspace's own spending cap (`overageHardLimitUsd`) is exhausted.
+ *   - `usage_limit_reached`: the generic case — no overage configured at
+ *     all (or an uncapped/free wallet was never found), so the window is
+ *     just the hard stop.
  */
-export async function hasBalance(
+export type UsageBlockReason = 'entitlement_expired' | 'overage_cap_reached' | 'usage_limit_reached'
+
+export interface BalanceCheck {
+  ok: boolean
+  /** Only set when `ok` is `false`. */
+  reason?: UsageBlockReason
+}
+
+/**
+ * Best-effort, fire-and-forget clear of a wallet's stale `overageEnabled`
+ * flag once we've determined the entitlement behind it is gone. Nothing
+ * else walks this column back (see `resolveEffectivePlan`), so without this
+ * the wallet snapshot returned to the client (`GET /api/billing/workspace-plan`)
+ * would keep reporting on-demand usage as "on" forever, even though every
+ * request will keep getting blocked. Not awaited by callers — it must never
+ * add latency or failure modes to the balance-check hot path.
+ */
+function healStaleOverageFlag(billingWorkspaceId: string): void {
+  prisma.usageWallet
+    .update({ where: { workspaceId: billingWorkspaceId }, data: { overageEnabled: false } })
+    .catch((err) => {
+      console.warn(
+        `[billing] healStaleOverageFlag: failed to clear stale overageEnabled for ${billingWorkspaceId}:`,
+        (err as any)?.message ?? err,
+      )
+    })
+}
+
+/**
+ * Check if workspace can spend at least `minimumRequiredUsd`, with the
+ * reason when it can't. True when either rolling window still has room,
+ * when the plan is uncapped, or when metered overage is enabled and within
+ * its hard cap *and* the paid entitlement behind it is still live.
+ */
+export async function checkUsageBalance(
   workspaceId: string,
   minimumRequiredUsd = 0.001,
-): Promise<boolean> {
-  if (isLocalMode) return true
+): Promise<BalanceCheck> {
+  if (isLocalMode) return { ok: true }
 
   // Child workspaces draw against the parent's pooled wallet.
   const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId);
@@ -699,28 +776,74 @@ export async function hasBalance(
         `[billing] hasBalance: could not allocate wallet for workspace ${workspaceId}:`,
         (err as any)?.message ?? err,
       )
-      return false;
+      return { ok: false, reason: 'usage_limit_reached' };
     }
   }
-  if (!wallet) return false;
+  if (!wallet) return { ok: false, reason: 'usage_limit_reached' };
 
   const now = new Date();
   const { limits, paidTier } = await resolveEffectivePlan(prisma, billingWorkspaceId, now);
 
   // Uncapped plan (enterprise): always has balance.
-  if (limits == null) return true;
+  if (limits == null) return { ok: true };
 
   const five = rollWindow(wallet.fiveHourWindowStart, wallet.fiveHourUsedUsd, now, FIVE_HOUR_MS);
   const week = rollWindow(wallet.weeklyWindowStart, wallet.weeklyUsedUsd, now, SEVEN_DAY_MS);
   const windowRoom = Math.min(limits.fiveHourUsd - five.used, limits.weeklyUsd - week.used);
-  if (windowRoom >= minimumRequiredUsd) return true;
+  if (windowRoom >= minimumRequiredUsd) return { ok: true };
 
   // Windows exhausted — overage is the fallback when enabled and uncapped,
   // and only while the paid entitlement behind it is still live.
-  if (!wallet.overageEnabled || !paidTier) return false;
-  if (wallet.overageHardLimitUsd == null) return true;
+  if (!wallet.overageEnabled) return { ok: false, reason: 'usage_limit_reached' };
+  if (!paidTier) {
+    healStaleOverageFlag(billingWorkspaceId);
+    return { ok: false, reason: 'entitlement_expired' };
+  }
+  if (wallet.overageHardLimitUsd == null) return { ok: true };
   const overageRoom = Math.max(0, wallet.overageHardLimitUsd - wallet.overageAccumulatedUsd);
-  return overageRoom >= minimumRequiredUsd;
+  if (overageRoom >= minimumRequiredUsd) return { ok: true };
+  return { ok: false, reason: 'overage_cap_reached' };
+}
+
+/**
+ * Check if workspace can spend at least `minimumRequiredUsd`. Thin boolean
+ * wrapper over `checkUsageBalance` for call sites that don't need to
+ * distinguish *why* the balance check failed.
+ */
+export async function hasBalance(
+  workspaceId: string,
+  minimumRequiredUsd = 0.001,
+): Promise<boolean> {
+  return (await checkUsageBalance(workspaceId, minimumRequiredUsd)).ok
+}
+
+/**
+ * Map a balance-check failure reason to the HTTP error code/message the
+ * client should see. Centralized so every route (chat, AI proxy, public
+ * API, voice) reports the same accurate reason instead of the generic
+ * "Enable usage-based pricing" message even when the user already has
+ * on-demand usage turned on.
+ */
+export function usageLimitErrorPayload(reason: UsageBlockReason | undefined): { code: string; message: string } {
+  switch (reason) {
+    case 'entitlement_expired':
+      return {
+        code: 'entitlement_expired',
+        message:
+          "Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.",
+      }
+    case 'overage_cap_reached':
+      return {
+        code: 'overage_cap_reached',
+        message:
+          "You've reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue.",
+      }
+    default:
+      return {
+        code: 'usage_limit_reached',
+        message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
+      }
+  }
 }
 
 
@@ -761,6 +884,8 @@ export interface ConsumeUsageParams {
 export interface ConsumeUsageResult {
   success: boolean
   error?: string
+  /** Machine-readable reason for a failure; see `UsageBlockReason`. */
+  reason?: UsageBlockReason
   /**
    * Remaining USD before the gating limit after the debit. For the window
    * path this is the smaller of the two windows' remaining room; for overage
@@ -1153,6 +1278,7 @@ async function _consumeUsageTransaction(
             return {
               success: false,
               error: 'Usage hard limit reached',
+              reason: 'overage_cap_reached',
               remainingIncludedUsd: 0,
               source: 'overage',
               window,
@@ -1167,9 +1293,26 @@ async function _consumeUsageTransaction(
           balanceAfter = overageAccumulatedUsd;
           overageCharged = billedUsd;
         } else {
+          // `wallet.overageEnabled` alone doesn't mean overage actually
+          // applies — see `resolveEffectivePlan`'s `paidTier` doc comment.
+          // Capture the reason *before* self-healing below: the update
+          // mutates this same in-memory `wallet` record (the mock and
+          // Prisma's own row cache both do), so reading `overageEnabled`
+          // after the write would always see the just-cleared `false`.
+          const isStaleOverageFlag = wallet.overageEnabled && !paidTier;
+          if (isStaleOverageFlag) {
+            // When the flag is stale (entitlement lapsed) clear it in the
+            // same transaction so the wallet snapshot returned to clients
+            // stops lying about on-demand usage being on.
+            await tx.usageWallet.update({
+              where: { workspaceId: billingWorkspaceId },
+              data: { overageEnabled: false },
+            });
+          }
           return {
             success: false,
             error: 'Usage limit reached',
+            reason: isStaleOverageFlag ? 'entitlement_expired' : 'usage_limit_reached',
             remainingIncludedUsd: 0,
             window,
             resetsAt,

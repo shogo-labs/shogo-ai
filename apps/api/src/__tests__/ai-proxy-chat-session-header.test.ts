@@ -37,6 +37,11 @@ mock.module('../services/billing.service', () => ({
     return { success: true, remainingIncludedUsd: 100 }
   },
   hasBalance: async () => hasBalanceResult,
+  checkUsageBalance: async () => (hasBalanceResult ? { ok: true } : { ok: false, reason: 'usage_limit_reached' }),
+  usageLimitErrorPayload: (reason?: string) => ({
+    code: reason ?? 'usage_limit_reached',
+    message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
+  }),
   hasAdvancedModelAccess: async () => true,
   // buildUsageLimitInfo (the 402 detail builder) calls this.
   getUsageWindows: async () => ({

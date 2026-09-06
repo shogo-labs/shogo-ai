@@ -57,6 +57,15 @@ describe('classifyChatError', () => {
     expect(classifyChatError(new Error('{"error":{"code":"rate_limit_exceeded"}}'))).toBe('expected')
     expect(classifyChatError(new Error("You're sending messages too quickly. Please wait a moment and try again.")))
       .toBe('expected')
+    // On-demand usage was on, but the entitlement backing it expired — also
+    // an expected business state, not a defect to page on.
+    expect(classifyChatError(new Error('{"error":{"code":"entitlement_expired"}}'))).toBe('expected')
+    expect(classifyChatError(new Error('{"error":{"code":"overage_cap_reached"}}'))).toBe('expected')
+    expect(
+      classifyChatError(
+        new Error('Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.'),
+      ),
+    ).toBe('expected')
   })
 
   test('AI SDK stream parse failures → "parse" (not misfiled as "connection")', () => {

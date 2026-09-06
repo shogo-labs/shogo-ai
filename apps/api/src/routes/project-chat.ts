@@ -913,8 +913,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       let parsedBody: any = {}
       try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
 
-      if (!await billingService.hasBalance(project.workspaceId)) {
-        chatSpan.setAttribute("error.type", "usage_limit_reached")
+      const balanceCheck = await billingService.checkUsageBalance(project.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        chatSpan.setAttribute("error.type", code)
         chatSpan.end()
         // FIRE-AND-FORGET: track usage limit hit for conversion campaign C1
         const limitUserId = (parsedBody as any)?.userId || c.req.header("X-Billing-User-Id")
@@ -922,7 +924,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           trackEvent(limitUserId, 'usage_limit_hit', { project_id: projectId }).catch(() => {})
         }
         return c.json(
-          { error: { code: "usage_limit_reached", message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue." } },
+          { error: { code, message } },
           402
         )
       }

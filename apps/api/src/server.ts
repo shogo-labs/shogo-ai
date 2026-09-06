@@ -6489,11 +6489,12 @@ app.get('/api/billing/workspace-plan', async (c) => {
     if (!await verifyWorkspaceMembership(c, workspaceId)) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
-    const [sub, wallet, effective, usageWindows] = await Promise.all([
+    const [sub, wallet, effective, usageWindows, overageStatus] = await Promise.all([
       billingService.getSubscription(workspaceId),
       billingService.getUsageWallet(workspaceId),
       billingService.getEffectivePlanId(workspaceId),
       billingService.getUsageWindows(workspaceId),
+      billingService.getOverageStatus(workspaceId),
     ])
     const source: 'subscription' | 'grant' | 'free' =
       sub ? 'subscription' : effective !== 'free' ? 'grant' : 'free'
@@ -6510,7 +6511,24 @@ app.get('/api/billing/workspace-plan', async (c) => {
       monthlyIncludedUsd: wallet?.monthlyIncludedUsd ?? 0,
       dailyIncludedUsd: wallet?.dailyIncludedUsd ?? 0,
       monthlyIncludedAllocationUsd: wallet?.monthlyIncludedAllocationUsd ?? 0,
+      // Raw persisted toggle value — kept for back-compat with clients that
+      // read this as "what did the user set". Prefer `overageActive` for
+      // "is on-demand usage actually in effect right now", since this can
+      // be stale once the paid entitlement backing it lapses (see
+      // `billingService.getOverageStatus`).
       overageEnabled: wallet?.overageEnabled ?? false,
+      // Whether overage will actually apply the next time a window is
+      // exhausted — `overageEnabled && paidTier`. This is what the "usage
+      // limit reached" enforcement in `checkUsageBalance` actually checks,
+      // so the UI should treat this (not `overageEnabled`) as the signal
+      // for whether on-demand usage is on.
+      overageActive: overageStatus.overageActive,
+      // Whether a live paid entitlement (subscription or grant) backs the
+      // workspace right now. When this is `false` but `overageEnabled` is
+      // `true`, the user turned on-demand usage on but their entitlement
+      // has since expired — surface a reactivate prompt instead of "enable
+      // usage-based pricing".
+      paidTier: overageStatus.paidTier,
       overageHardLimitUsd: wallet?.overageHardLimitUsd ?? null,
       overageAccumulatedUsd: wallet?.overageAccumulatedUsd ?? 0,
       // Rolling usage windows (time-gated "unlimited"). `limitUsd: null`

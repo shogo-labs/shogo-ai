@@ -66,6 +66,11 @@ const consumeUsageCalls: any[] = []
 
 mock.module('../services/billing.service', () => ({
   hasBalance: async () => hasBalanceValue,
+  checkUsageBalance: async () => (hasBalanceValue ? { ok: true } : { ok: false, reason: 'usage_limit_reached' }),
+  usageLimitErrorPayload: (reason?: string) => ({
+    code: reason ?? 'usage_limit_reached',
+    message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
+  }),
   hasAdvancedModelAccess: async () => hasAdvancedValue,
   consumeUsage: async (args: any) => {
     consumeUsageCalls.push(args)

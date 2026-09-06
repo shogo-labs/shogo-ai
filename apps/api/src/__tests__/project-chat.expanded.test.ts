@@ -116,6 +116,11 @@ let hasAdvancedModelAccessResult = true
 mock.module('../services/billing.service', () => ({
   consumeUsage: async () => ({ success: true, remainingIncludedUsd: 99 }),
   hasBalance: async () => hasBalanceResult,
+  checkUsageBalance: async () => (hasBalanceResult ? { ok: true } : { ok: false, reason: 'usage_limit_reached' }),
+  usageLimitErrorPayload: (reason?: string) => ({
+    code: reason ?? 'usage_limit_reached',
+    message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
+  }),
   hasAdvancedModelAccess: async () => hasAdvancedModelAccessResult,
 }))
 

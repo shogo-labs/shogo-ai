@@ -119,7 +119,7 @@ export function CompactUsageWindows({
         <Text
           className={cn(
             'text-xs',
-            notice.tone === 'overage' ? 'text-foreground' : 'text-muted-foreground',
+            notice.tone === 'overage' || notice.tone === 'expired' ? 'text-foreground' : 'text-muted-foreground',
           )}
         >
           {notice.text}

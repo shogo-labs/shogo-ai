@@ -27,6 +27,7 @@ import {
   formatUsd,
   formatCurrencyPrice,
   getPlanDisplayName,
+  getUsageLimitNotice,
 } from '../billing-config'
 
 describe('getWindowLimitsForPlan', () => {
@@ -284,5 +285,41 @@ describe('formatCurrencyPrice', () => {
 
   test('formats suffix-symbol locale', () => {
     expect(formatCurrencyPrice(12.5, EUR)).toBe('12.50 €')
+  })
+})
+
+describe('getUsageLimitNotice', () => {
+  test('returns null when not at limit, regardless of overage state', () => {
+    expect(getUsageLimitNotice({ atLimit: false, overage: { enabled: true, active: true } })).toBeNull()
+    expect(getUsageLimitNotice({ atLimit: false, overage: undefined })).toBeNull()
+  })
+
+  test('tone "paused" when overage was never enabled', () => {
+    const notice = getUsageLimitNotice({ atLimit: true, overage: { enabled: false }, countdown: '2h' })
+    expect(notice?.tone).toBe('paused')
+    expect(notice?.text).toMatch(/paused/i)
+    expect(notice?.text).toMatch(/2h/)
+  })
+
+  test('tone "overage" when overage is enabled and active', () => {
+    const notice = getUsageLimitNotice({ atLimit: true, overage: { enabled: true, active: true, accumulatedUsd: 12.5 } })
+    expect(notice?.tone).toBe('overage')
+    expect(notice?.text).toMatch(/billed as overage/i)
+    expect(notice?.text).toMatch(/\$12\.50/)
+  })
+
+  test('a legacy caller that omits `active` is treated as active (back-compat)', () => {
+    const notice = getUsageLimitNotice({ atLimit: true, overage: { enabled: true } })
+    expect(notice?.tone).toBe('overage')
+  })
+
+  // The core regression: on-demand usage is enabled, but the entitlement
+  // (subscription/license grant) backing it has expired. Must not claim
+  // usage is "billed as overage" when every request is actually blocked.
+  test('tone "expired" when overage is enabled but not active (entitlement lapsed)', () => {
+    const notice = getUsageLimitNotice({ atLimit: true, overage: { enabled: true, active: false, accumulatedUsd: 3 } })
+    expect(notice?.tone).toBe('expired')
+    expect(notice?.text).toMatch(/expired/i)
+    expect(notice?.text).not.toMatch(/billed as overage/i)
   })
 })

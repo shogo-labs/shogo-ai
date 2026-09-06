@@ -714,6 +714,114 @@ describe('hasBalance (rolling windows)', () => {
   })
 })
 
+// ============================================================================
+// checkUsageBalance / usageLimitErrorPayload / getOverageStatus
+//
+// Covers the "user sees usage limit reached despite on-demand usage being
+// on" bug: `hasBalance`/`consumeUsage` correctly gate on the live paid
+// entitlement (`paidTier`), but until this fix nothing told the caller *why*
+// it was blocked, so every route emitted the generic "enable usage-based
+// pricing" message even when `overageEnabled` was already `true`. These
+// tests assert the richer reason is surfaced, and that the stale wallet
+// flag is self-healed once detected so the client's own on-demand status
+// (`getOverageStatus`) stops lying about it.
+// ============================================================================
+describe('checkUsageBalance', () => {
+  it('returns ok:true with no reason when a window has room', async () => {
+    wallets.set('w1', freshWallet())
+    expect(await billing.checkUsageBalance('w1', 0.1)).toEqual({ ok: true })
+  })
+
+  it('reason "usage_limit_reached" when overage was never enabled', async () => {
+    wallets.set('w1', freshWallet({
+      overageEnabled: false,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 2,
+    }))
+    expect(await billing.checkUsageBalance('w1', 0.4)).toEqual({ ok: false, reason: 'usage_limit_reached' })
+  })
+
+  it('reason "overage_cap_reached" when overage is live but the spend cap is exhausted', async () => {
+    setPlan('pro')
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: 10, overageAccumulatedUsd: 10,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 50,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 50,
+    }))
+    expect(await billing.checkUsageBalance('w1', 5)).toEqual({ ok: false, reason: 'overage_cap_reached' })
+  })
+
+  // The core regression: `overageEnabled: true` (the user's on-demand toggle
+  // reads as "on") but the grant backing it expired, so `paidTier` is false.
+  it('reason "entitlement_expired" when overageEnabled is true but the paid grant has expired, and self-heals the flag', async () => {
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000)
+    const lastWeek = new Date(Date.now() - 8 * 24 * 3600 * 1000)
+    grants.set('w1', [{ id: 'g', workspaceId: 'w1', freeSeats: 1, monthlyIncludedUsd: 0, planId: 'pro', startsAt: lastWeek, expiresAt: yesterday }])
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: null,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 50,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 50,
+    }))
+    expect(await billing.checkUsageBalance('w1', 1)).toEqual({ ok: false, reason: 'entitlement_expired' })
+    // The self-heal write is fire-and-forget; give its microtask a tick.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wallets.get('w1')!.overageEnabled).toBe(false)
+  })
+
+  it('does not touch overageEnabled when overage is off entirely (nothing stale to heal)', async () => {
+    wallets.set('w1', freshWallet({
+      overageEnabled: false,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 0.5,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 2,
+    }))
+    await billing.checkUsageBalance('w1', 0.4)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wallets.get('w1')!.overageEnabled).toBe(false)
+  })
+})
+
+describe('usageLimitErrorPayload', () => {
+  it('maps entitlement_expired to a reactivate-oriented message, not "enable usage-based pricing"', () => {
+    const { code, message } = billing.usageLimitErrorPayload('entitlement_expired')
+    expect(code).toBe('entitlement_expired')
+    expect(message).not.toMatch(/enable usage-based pricing/i)
+    expect(message).toMatch(/expired/i)
+  })
+
+  it('maps overage_cap_reached to a spending-cap message', () => {
+    const { code, message } = billing.usageLimitErrorPayload('overage_cap_reached')
+    expect(code).toBe('overage_cap_reached')
+    expect(message).toMatch(/spending cap/i)
+  })
+
+  it('defaults unknown/undefined reasons to usage_limit_reached', () => {
+    expect(billing.usageLimitErrorPayload(undefined).code).toBe('usage_limit_reached')
+  })
+})
+
+describe('getOverageStatus', () => {
+  it('overageActive is true only when both overageEnabled and paidTier are true', async () => {
+    setPlan('pro')
+    wallets.set('w1', freshWallet({ overageEnabled: true }))
+    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: true, paidTier: true, overageActive: true })
+  })
+
+  // This is exactly the client-visible symptom of the bug: the raw wallet
+  // flag still reads "on" after the entitlement expires, so a naive read of
+  // `overageEnabled` alone (as the workspace-plan API used to expose it)
+  // would show on-demand usage as enabled while every request is blocked.
+  it('overageActive is false when overageEnabled is true but there is no live paid entitlement', async () => {
+    wallets.set('w1', freshWallet({ overageEnabled: true }))
+    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: true, paidTier: false, overageActive: false })
+  })
+
+  it('overageActive is false when overageEnabled is false, regardless of paidTier', async () => {
+    setPlan('pro')
+    wallets.set('w1', freshWallet({ overageEnabled: false }))
+    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: false, paidTier: true, overageActive: false })
+  })
+})
+
 describe('ensureSystemWorkspace', () => {
   it('idempotently creates the system sentinel workspace row', async () => {
     await billing.ensureSystemWorkspace()
@@ -819,7 +927,36 @@ describe('consumeUsage (rolling windows)', () => {
     const r = await billing.consumeUsage({ ...base, billedUsd: 5 })
     expect(r.success).toBe(false)
     expect(r.error).toBe('Usage limit reached')
+    expect(r.reason).toBe('entitlement_expired')
     expect(wallets.get('w1')!.overageAccumulatedUsd).toBe(0)
+    // Self-heals the stale wallet flag in the same transaction so the
+    // client's on-demand status stops reporting it as still on.
+    expect(wallets.get('w1')!.overageEnabled).toBe(false)
+  })
+
+  it('reason is "usage_limit_reached" (not entitlement_expired) when overage was never enabled', async () => {
+    const start = now0()
+    wallets.set('w1', freshWallet({
+      overageEnabled: false,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 50,
+      weeklyWindowStart: start, weeklyUsedUsd: 50,
+    }))
+    const r = await billing.consumeUsage({ ...base, billedUsd: 5 })
+    expect(r.success).toBe(false)
+    expect(r.reason).toBe('usage_limit_reached')
+  })
+
+  it('reason is "overage_cap_reached" on the hard-limit branch', async () => {
+    setPlan('pro')
+    const start = now0()
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: 3, overageAccumulatedUsd: 0,
+      fiveHourWindowStart: start, fiveHourUsedUsd: 50,
+      weeklyWindowStart: start, weeklyUsedUsd: 50,
+    }))
+    const r = await billing.consumeUsage({ ...base, billedUsd: 5 })
+    expect(r.success).toBe(false)
+    expect(r.reason).toBe('overage_cap_reached')
   })
 
   it('scales window per seat (pro x3 seats → 3x the 5h cap)', async () => {

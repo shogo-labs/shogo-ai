@@ -383,7 +383,11 @@ const WorkspaceCard = observer(function WorkspaceCard({
                 <CompactUsageWindows
                   windows={usageWindows}
                   overage={effectiveBalance
-                    ? { enabled: effectiveBalance.overageEnabled, accumulatedUsd: effectiveBalance.overageAccumulatedUsd }
+                    ? {
+                        enabled: effectiveBalance.overageEnabled,
+                        active: effectiveBalance.overageActive,
+                        accumulatedUsd: effectiveBalance.overageAccumulatedUsd,
+                      }
                     : undefined}
                 />
                 {effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 ? (
