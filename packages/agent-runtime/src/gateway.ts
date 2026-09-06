@@ -270,6 +270,22 @@ export function describeTurnFailure(
   const { reason } = classifyRetryability({ message: raw })
   switch (reason) {
     case 'billing':
+      // `classifyRetryability` only buckets by coarse reason, not the specific
+      // `UsageBlockReason` billing.service returns — but `parseProviderError`
+      // (agent-loop.ts) preserves the JSON body's `error.message` verbatim, so
+      // the specific text billing.service's `usageLimitErrorPayload` chose
+      // survives into `raw`. Sniff for it here rather than threading the
+      // structured code through the whole retry-classifier pipeline. Without
+      // this, a user with on-demand usage ON but an expired entitlement (or
+      // one who's genuinely hit their configured spend cap) sees the same
+      // "enable usage-based pricing" text as someone who never turned it on
+      // at all — see the 2026-09-02 on-demand-usage incident.
+      if (/entitlement.*expired|reactivate your (subscription|license)/i.test(raw)) {
+        return 'Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.'
+      }
+      if (/spending cap/i.test(raw)) {
+        return "You've reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue."
+      }
       return 'Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.'
     case 'network':
       return "I couldn't reach the model just now — the connection dropped. Please try again in a moment."
@@ -390,7 +406,14 @@ async function runMockAndUnwrap(
 
 export class AgentGateway {
   private workspaceDir: string
-  private projectId: string
+  /**
+   * Value passed to the constructor. In pool mode this is a snapshot of
+   * `state.currentProjectId` taken when `startGateway()` ran — which can be
+   * (or can have been) the warm-pool placeholder (`__POOL__`) if the
+   * gateway was constructed around a pool-assign race. See the `projectId`
+   * getter below: it never uses this directly.
+   */
+  private _constructedProjectId: string
   private config: GatewayConfig
   private currentUserId: string | undefined
   private channels: Map<string, ChannelAdapter> = new Map()
@@ -553,9 +576,35 @@ export class AgentGateway {
    */
   private repoPersistHook: (() => Promise<void> | void) | null = null
 
+  /**
+   * Live project identity. `_constructedProjectId` is a one-time snapshot
+   * taken when the gateway object was built — in pool mode that can be, or
+   * can have been, the `__POOL__` placeholder if construction raced a
+   * `/pool/assign` in flight. `process.env.PROJECT_ID` is kept current by
+   * `/pool/assign` and `/pool/refresh-env` (server-framework.ts) for the
+   * life of the process, so prefer it whenever it's set — this is the same
+   * pattern already used by checkpoint recording (server.ts reads
+   * `process.env.PROJECT_ID` fresh rather than a captured field) and by
+   * `getInternalHeaders()`'s `RUNTIME_AUTH_SECRET` lookup (internal-api.ts).
+   *
+   * Without this, every outbound call that self-identifies via this field
+   * — `updateHeartbeatConfig`'s heartbeat-config PUT, the webchat widget
+   * embed URL, Composio session init — stays pinned to whatever value was
+   * captured at construction, forever, even after the runtime is correctly
+   * (re)assigned. The API then HMAC-verifies the (correctly refreshed)
+   * runtime token, decodes the real project id from it, compares it to the
+   * stale path segment built from this field, and rejects with
+   * `runtime_token_project_mismatch tokenProject=<real> projectId=__POOL__`
+   * — see apps/api/src/routes/internal.ts's `authenticate()`. Reproduced in
+   * `__tests__/gateway-stale-pool-projectid.test.ts`.
+   */
+  private get projectId(): string {
+    return process.env.PROJECT_ID || this._constructedProjectId
+  }
+
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
-    this.projectId = projectId
+    this._constructedProjectId = projectId
     this.config = this.loadConfig()
     this.sessionManager = new SessionManager(this.config.session)
     this.fileStateCache.setWorkspaceDir(workspaceDir)
