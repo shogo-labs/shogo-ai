@@ -54,6 +54,7 @@ import {
   OPENROUTER_MODEL_PREFIX,
   resolveAgentModeDefault,
   getMaxOutputTokens,
+  modelSupportsAudioInput,
   isOpenRouterModel,
   stripOpenRouterPrefix,
   type Provider,
@@ -84,6 +85,11 @@ interface ChatCompletionContentBlock {
   type: string
   text?: string
   image_url?: { url: string }
+  /** OpenAI Chat Completions audio-input shape. Only forwarded as-is to
+   *  upstream OpenAI; only models with `capabilities.supportsAudioInput`
+   *  (currently `gpt-audio`) accept it — see the `input_audio` validation
+   *  in the `/ai/v1/chat/completions` handler below. */
+  input_audio?: { data: string; format: string }
   /** Anthropic-native passthrough (used when client pre-translated). */
   cache_control?: AnthropicCacheControl
   /** Vercel AI SDK style; translated to wire `cache_control` in convertToAnthropicFormat. */
@@ -2134,7 +2140,7 @@ async function generateImageLocal(
   return await response.json() as ImageGenerationResponse
 }
 
-import { calculateImageUsageCost } from '../lib/usage-cost'
+import { calculateImageUsageCost, calculateTranscriptionUsageCost } from '../lib/usage-cost'
 
 async function recordImageUsage(
   tokenPayload: ProxyTokenPayload,
@@ -2178,6 +2184,45 @@ async function recordImageUsage(
     }
   } catch (err) {
     console.error('[AI Proxy] Failed to charge image usage:', err)
+  }
+}
+
+/**
+ * Record billing for a Whisper transcription call. Priced per-second of
+ * audio duration (see `calculateTranscriptionUsageCost`), independent of the
+ * chat-turn billing session — transcription is usually a standalone tool
+ * call (`transcribe_audio`) or attachment-processing step, not part of the
+ * per-message LLM cost accumulator used by `recordUsage`/`accumulateImageUsage`.
+ */
+async function recordTranscriptionUsage(
+  tokenPayload: ProxyTokenPayload,
+  model: string,
+  durationSeconds: number | undefined,
+) {
+  try {
+    const { rawUsd, billedUsd } = calculateTranscriptionUsageCost(durationSeconds)
+    if (billedUsd === 0) return
+
+    const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
+    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+
+    const result = await billingService.consumeUsage({
+      workspaceId: tokenPayload.workspaceId,
+      projectId: billingProjectId,
+      memberId: billingUserId,
+      actionType: 'ai_audio_transcription',
+      rawUsd,
+      billedUsd,
+      actionMetadata: { model, durationSeconds, rawUsd },
+    })
+
+    if (result.success) {
+      console.log(`[AI Proxy] 🎙️ Charged $${billedUsd.toFixed(4)} (transcription, model: ${model}, ${durationSeconds?.toFixed(1) ?? '?'}s) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
+    } else {
+      console.warn(`[AI Proxy] ⚠️ Could not charge transcription usage: ${result.error}`)
+    }
+  } catch (err) {
+    console.error('[AI Proxy] Failed to charge transcription usage:', err)
   }
 }
 
@@ -2569,6 +2614,31 @@ export function aiProxyRoutes() {
           },
           400
         )
+      }
+
+      // Reject `input_audio` content blocks up front with a clear, actionable
+      // error instead of letting them reach OpenAI/Anthropic and bounce back
+      // with a generic "content blocks are expected to be text or image_url"
+      // message. Only audio-native models (capabilities.supportsAudioInput,
+      // currently `gpt-audio`) accept input_audio blocks.
+      if (!modelSupportsAudioInput(request.model)) {
+        const hasAudioBlock = request.messages.some(
+          (msg) =>
+            Array.isArray(msg.content) &&
+            msg.content.some((block) => block.type === 'input_audio')
+        )
+        if (hasAudioBlock) {
+          return c.json(
+            {
+              error: {
+                message: `Model '${request.model}' does not accept audio input. Use an audio-native model (e.g. 'gpt-audio') for input_audio content blocks, or transcribe the audio to text first.`,
+                type: 'invalid_request_error',
+                code: 'audio_input_not_supported',
+              },
+            },
+            400
+          )
+        }
       }
 
       // Enforce workspace model visibility: a workspace admin may restrict the
@@ -3645,6 +3715,122 @@ export function aiProxyRoutes() {
       const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
       return c.json(
         { error: { message: error.message || 'Image edit failed', type: 'server_error', code: 'edit_error' } },
+        statusCode
+      )
+    }
+  })
+
+  /**
+   * POST /ai/v1/audio/transcriptions - Whisper transcription proxy
+   *
+   * Accepts multipart/form-data with an audio `file` (+ optional `model`,
+   * `language`, `prompt` fields) and forwards it to OpenAI's Whisper API
+   * using this server's own OPENAI_API_KEY, so transcription goes through
+   * the same auth/billing path as every other `/ai/v1/*` route instead of
+   * requiring callers to hold a raw OpenAI key.
+   *
+   * Internal callers (the `transcribe_audio` agent tool and the meetings
+   * transcription service) hit this route rather than OpenAI directly —
+   * see `packages/agent-runtime/src/gateway-tools.ts` and
+   * `apps/api/src/services/transcription.service.ts`.
+   *
+   * Always requests `verbose_json` from upstream (regardless of what the
+   * caller asked for) so the response includes `duration`, which is
+   * required to bill the call — both current callers already expect this
+   * shape.
+   */
+  const WHISPER_MAX_FILE_BYTES = 25 * 1024 * 1024 // OpenAI's documented Whisper upload cap
+
+  router.post('/ai/v1/audio/transcriptions', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    // An already-admitted chat turn still in flight is never re-gated
+    // mid-message — e.g. the transcribe_audio tool running inside a turn.
+    if (!isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+      return c.json(
+        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
+        402
+      )
+    }
+
+    try {
+      const formData = await c.req.formData()
+      const file = formData.get('file') as File | null
+      const model = (formData.get('model') as string) || 'whisper-1'
+      const language = formData.get('language') as string | null
+      const prompt = formData.get('prompt') as string | null
+
+      if (!file) {
+        return c.json(
+          { error: { message: 'file is required', type: 'invalid_request_error', code: 'missing_file' } },
+          400
+        )
+      }
+
+      if (file.size > WHISPER_MAX_FILE_BYTES) {
+        return c.json(
+          {
+            error: {
+              message: `Audio file is ${(file.size / (1024 * 1024)).toFixed(1)}MB, which exceeds the ${WHISPER_MAX_FILE_BYTES / (1024 * 1024)}MB Whisper upload limit.`,
+              type: 'invalid_request_error',
+              code: 'file_too_large',
+            },
+          },
+          400
+        )
+      }
+
+      const openaiKey = process.env.OPENAI_API_KEY
+      if (!openaiKey) {
+        return c.json(
+          { error: { message: 'OpenAI is not configured on this server (required for audio transcription).', type: 'server_error', code: 'provider_not_configured' } },
+          503
+        )
+      }
+
+      console.log(`[AI Proxy] 🎙️ Transcription: ${tokenPayload.projectId} → openai/${model}`)
+
+      const forwardForm = new FormData()
+      forwardForm.append('file', file, file.name || 'audio')
+      forwardForm.append('model', model)
+      forwardForm.append('response_format', 'verbose_json')
+      if (language) forwardForm.append('language', language)
+      if (prompt) forwardForm.append('prompt', prompt)
+
+      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${openaiKey}` },
+        body: forwardForm,
+        signal: c.req.raw.signal,
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`OpenAI transcription error (${response.status}): ${errorText}`)
+      }
+
+      const result = await response.json() as {
+        text: string
+        language?: string
+        duration?: number
+        segments?: Array<{ start: number; end: number; text: string }>
+      }
+
+      recordTranscriptionUsage(tokenPayload, model, result.duration)
+
+      return c.json(result)
+    } catch (error: any) {
+      console.error('[AI Proxy] Transcription error:', error.message)
+      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      return c.json(
+        { error: { message: error.message || 'Audio transcription failed', type: 'server_error', code: 'transcription_error' } },
         statusCode
       )
     }

@@ -53,6 +53,14 @@ export interface ModelCapabilities {
    * specific failure mode.
    */
   subagentOrchestration?: CapabilityReliability
+  /**
+   * Whether this model accepts `input_audio` content blocks natively over
+   * the OpenAI-compatible chat/completions wire format (as opposed to
+   * requiring audio to be transcribed to text before it reaches the model).
+   * Absent/`undefined` means "no native audio input" — callers should fall
+   * back to Whisper transcription (see `transcribeAudioParts`).
+   */
+  supportsAudioInput?: boolean
 }
 
 /**
@@ -325,6 +333,31 @@ export const MODEL_CATALOG = {
     // workflows that fan out to children.
     capabilities: { subagentOrchestration: 'flaky' },
   },
+
+  // OpenAI — audio-native (accepts `input_audio` content blocks directly;
+  // see packages/agent-runtime/src/file-attachment-utils.ts for the
+  // Whisper-transcription fallback used by every other model).
+  'gpt-audio': {
+    id: 'gpt-audio',
+    provider: 'openai',
+    apiModel: 'gpt-audio',
+    displayName: 'GPT Audio',
+    shortDisplayName: 'GPT Audio',
+    tier: 'standard',
+    family: 'gpt',
+    generation: 'current',
+    // NOTE: OpenAI bills audio input/output tokens at a much higher
+    // per-token rate than text (no bucket in MODEL_DOLLAR_COSTS
+    // differentiates audio tokens from text tokens today). Using the
+    // most expensive existing bucket ('opus') as a conservative
+    // placeholder so audio usage isn't underbilled; replace with a
+    // dedicated audio billing bucket before shipping this broadly.
+    billingModel: 'opus',
+    maxOutputTokens: 4_096,
+    description: 'Accepts spoken audio directly as input (input_audio content blocks) and can respond in text or generated speech.',
+    capabilities: { supportsAudioInput: true },
+  },
+
   // OpenAI — legacy
   'gpt-4.1': {
     id: 'gpt-4.1',
