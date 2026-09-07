@@ -314,7 +314,14 @@ describe('getInstance', () => {
 import { writeFileSync } from 'fs'
 import { __testInternals } from '../canvas-file-watcher'
 
-const { buildIgnoreGlobs, loadSimpleIgnoredDirsFromGitignore, shouldIgnore, isNoisyFileBasename } = __testInternals
+const {
+  buildIgnoreGlobs,
+  loadSimpleIgnoredDirsFromGitignore,
+  shouldIgnore,
+  isNoisyFileBasename,
+  isBuildableFile,
+  normalizeRelativePath,
+} = __testInternals
 
 describe('loadSimpleIgnoredDirsFromGitignore (gitignore parser)', () => {
   test('returns [] when no ignore files exist', async () => {
@@ -510,6 +517,76 @@ describe('isNoisyFileBasename (basename regex)', () => {
     expect(isNoisyFileBasename('src/db.config.ts')).toBe(false)
     // `~` only at end-of-basename, not in the middle.
     expect(isNoisyFileBasename('src/My~File.tsx')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Path normalization on the explicit notifier path (2026-09-06)
+// ---------------------------------------------------------------------------
+//
+// Origin: a production project's canvas preview stopped rebuilding after
+// any edit, forever, with zero errors anywhere in the runtime logs — even
+// `[CanvasBuildManager]` went completely silent. `isBuildableFile()` /
+// `shouldIgnore()` are plain `startsWith()` checks anchored on shapes like
+// `'src/'`. The chokidar path always produces a clean `path.relative()`
+// shape, but the *explicit* notifier (`onFileChanged`/`onFileDeleted`) is
+// fed straight from gateway-tools.ts' write_file/edit_file `path` tool
+// argument — a model- or client-supplied string with no normalization
+// guarantee. A `./`-prefixed (or, in principle, leading-`/` or
+// backslash-only) path silently fails every prefix check: `isBuildableFile`
+// returns false, `onRebuildCallback` never fires, and the preview is
+// permanently stale until something unrelated (VM recreate) resets state.
+describe('normalizeRelativePath (explicit-notifier path hygiene)', () => {
+  test('strips a leading "./"', () => {
+    expect(isBuildableFile(normalizeRelativePath('./src/components/MicButton.tsx'))).toBe(true)
+  })
+
+  test('strips a leading "/"', () => {
+    expect(isBuildableFile(normalizeRelativePath('/src/components/MicButton.tsx'))).toBe(true)
+  })
+
+  test('strips repeated leading "./" / "/" combinations', () => {
+    expect(normalizeRelativePath('././src/App.tsx')).toBe('src/App.tsx')
+    expect(normalizeRelativePath('//src/App.tsx')).toBe('src/App.tsx')
+  })
+
+  test('converts backslash separators to forward slashes', () => {
+    expect(normalizeRelativePath('src\\components\\MicButton.tsx')).toBe('src/components/MicButton.tsx')
+  })
+
+  test('leaves an already-clean relative path untouched', () => {
+    expect(normalizeRelativePath('src/components/MicButton.tsx')).toBe('src/components/MicButton.tsx')
+  })
+
+  test('regression: onFileChanged still triggers rebuild for a "./"-prefixed path', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    // This is the exact shape that went silently un-rebuilt in production.
+    watcher.onFileChanged('./src/components/MicButton.tsx', join(tmpDir, 'src', 'components', 'MicButton.tsx'))
+
+    expect(rebuildCalled).toBe(true)
+  })
+
+  test('regression: onFileDeleted still triggers rebuild for a "./"-prefixed path', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    watcher.onFileDeleted('./src/components/MicButton.tsx')
+
+    expect(rebuildCalled).toBe(true)
+  })
+
+  test('a "./"-prefixed non-buildable path is still ignored', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    watcher.onFileChanged('./MEMORY.md', join(tmpDir, 'MEMORY.md'))
+
+    expect(rebuildCalled).toBe(false)
   })
 })
 
