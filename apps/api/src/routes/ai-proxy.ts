@@ -252,6 +252,22 @@ export function resolveModelTier(model: string): ModelTier {
 }
 
 /**
+ * Whether a model accepts `input_audio` content blocks natively, honoring
+ * DB-defined models (incl. custom OpenAI-compatible providers like MiMo v2.5,
+ * which backs the `hoshi-1.0` public alias) over the static catalog.
+ *
+ * `modelSupportsAudioInput` (from `@shogo/model-catalog`) only knows about
+ * the static `MODEL_CATALOG` (e.g. `gpt-audio`) — it can't see admin-entered
+ * `capabilities` on `ModelDefinition` rows, since that package can't depend
+ * on `model-registry.service.ts`. Mirrors the `resolveModelTier` pattern above.
+ */
+export function resolveModelSupportsAudioInput(model: string): boolean {
+  const dbEntry = getMergedModelEntrySync(model)
+  if (dbEntry) return dbEntry.capabilities?.supportsAudioInput === true
+  return modelSupportsAudioInput(model)
+}
+
+/**
  * Get the API key for a provider.
  */
 function getProviderApiKey(provider: Provider): string | null {
@@ -2623,9 +2639,10 @@ export function aiProxyRoutes() {
       // Reject `input_audio` content blocks up front with a clear, actionable
       // error instead of letting them reach OpenAI/Anthropic and bounce back
       // with a generic "content blocks are expected to be text or image_url"
-      // message. Only audio-native models (capabilities.supportsAudioInput,
-      // currently `gpt-audio`) accept input_audio blocks.
-      if (!modelSupportsAudioInput(request.model)) {
+      // message. Only audio-native models (capabilities.supportsAudioInput —
+      // e.g. `gpt-audio`, or a DB-defined custom model like `mimo-v2.5`)
+      // accept input_audio blocks; see `resolveModelSupportsAudioInput`.
+      if (!resolveModelSupportsAudioInput(request.model)) {
         const hasAudioBlock = request.messages.some(
           (msg) =>
             Array.isArray(msg.content) &&
@@ -2635,7 +2652,7 @@ export function aiProxyRoutes() {
           return c.json(
             {
               error: {
-                message: `Model '${request.model}' does not accept audio input. Use an audio-native model (e.g. 'gpt-audio') for input_audio content blocks, or transcribe the audio to text first.`,
+                message: `Model '${request.model}' does not accept audio input. Use an audio-native model (e.g. 'gpt-audio' or 'mimo-v2.5') for input_audio content blocks, or transcribe the audio to text first.`,
                 type: 'invalid_request_error',
                 code: 'audio_input_not_supported',
               },

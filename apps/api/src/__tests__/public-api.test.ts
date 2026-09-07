@@ -30,6 +30,10 @@ const VALID_KEY = 'shogo_sk_test1234567890abcdef'
 const PUBLIC_MODELS_JSON = JSON.stringify([
   { publicId: 'hoshi-1.0', displayName: 'Hoshi 1.0', backingModelId: 'gpt-5.5', enabled: true },
   { publicId: 'hidden-1.0', displayName: 'Hidden', backingModelId: 'gpt-5.5', enabled: false },
+  // Backed by the one static-catalog model with `capabilities.supportsAudioInput`
+  // (see packages/agent/src/model-catalog/models.ts), for the input_audio
+  // pass-through test below.
+  { publicId: 'hoshi-audio-1.0', displayName: 'Hoshi Audio', backingModelId: 'gpt-audio', enabled: true },
 ])
 
 mock.module('../lib/prisma', () => withPrismaExports({
@@ -257,6 +261,75 @@ describe('Public API /v1', () => {
       expect(consumeUsageCalls.length).toBe(1)
       expect(consumeUsageCalls[0].workspaceId).toBe('ws-1')
       expect(consumeUsageCalls[0].actionMetadata.model).toBe('gpt-5.5')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  // ---- chat completions: input_audio validation ---------------------------
+  // Mirrors the internal `/api/ai/v1/chat/completions` guard (see
+  // ai-proxy-audio-input.test.ts) on the public surface, keyed off the
+  // *backing* model's capability rather than the public id.
+
+  test('POST /v1/chat/completions rejects input_audio for a public model backed by a non-audio model', async () => {
+    const res = await app.fetch(
+      new Request('http://localhost/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${VALID_KEY}` },
+        body: JSON.stringify({
+          model: 'hoshi-1.0',
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'input_audio', input_audio: { data: 'ZmFrZQ==', format: 'wav' } }],
+            },
+          ],
+        }),
+      }),
+    )
+    expect(res.status).toBe(400)
+    const data = (await res.json()) as any
+    expect(data.error.code).toBe('audio_input_not_supported')
+    // The error is reported under the public id, not the masked backing model.
+    expect(data.error.message).toContain('hoshi-1.0')
+  })
+
+  test('POST /v1/chat/completions accepts and forwards input_audio for a public model backed by an audio-native model', async () => {
+    const originalFetch = globalThis.fetch
+    let upstreamBody: any = null
+    globalThis.fetch = (async (_url: any, init: any) => {
+      upstreamBody = init?.body ? JSON.parse(init.body) : null
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-audio-test',
+          object: 'chat.completion',
+          model: 'gpt-audio',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as any
+
+    try {
+      const res = await app.fetch(
+        new Request('http://localhost/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${VALID_KEY}` },
+          body: JSON.stringify({
+            model: 'hoshi-audio-1.0',
+            messages: [
+              {
+                role: 'user',
+                content: [{ type: 'input_audio', input_audio: { data: 'ZmFrZQ==', format: 'wav' } }],
+              },
+            ],
+          }),
+        }),
+      )
+      expect(res.status).toBe(200)
+      expect(upstreamBody.messages[0].content[0].type).toBe('input_audio')
+      expect(upstreamBody.messages[0].content[0].input_audio.data).toBe('ZmFrZQ==')
     } finally {
       globalThis.fetch = originalFetch
     }
