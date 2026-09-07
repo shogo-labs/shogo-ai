@@ -5960,7 +5960,10 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
   // outlive the failed assign's response if the caller doesn't tear this VM
   // down fast enough. Bail and let the caller's error path (or a future,
   // clean assign) handle it.
-  if (state.currentProjectId !== targetProjectId || !state.poolAssigned) {
+  if (
+    state.currentProjectId !== targetProjectId ||
+    (state.isPoolMode && !state.poolAssigned)
+  ) {
     console.error(
       `[agent-runtime] startGateway() aborting: project identity changed mid-start ` +
         `(expected ${targetProjectId}, now ${state.currentProjectId}, poolAssigned=${state.poolAssigned}). ` +
