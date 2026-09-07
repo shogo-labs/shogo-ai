@@ -34,6 +34,7 @@ import {
 import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
 import { ContextTracker } from "./ContextTracker"
+import { ContextBreakdownPanel, type ContextBreakdownData } from "./ContextBreakdownPanel"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
 import { ModelPickerMenu, getNativeModelMenuWidth } from "./ModelPickerMenu"
 import {
@@ -366,6 +367,8 @@ export interface ChatInputProps {
   dualPlan?: boolean
   onDualPlanChange?: (enabled: boolean) => void
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
+  /** Per-turn category rollup from `data-prompt-breakdown`, shown in the popover opened by clicking the context ring. Null before the first turn. */
+  contextBreakdown?: ContextBreakdownData | null
   quickActions?: { label: string; prompt: string }[]
   onQuickActionClick?: (prompt: string) => void
   restoreDraftRequest?: RestoreDraftRequest | null
@@ -442,6 +445,7 @@ function ChatInputImpl({
   dualPlan = false,
   onDualPlanChange,
   contextUsage,
+  contextBreakdown,
   quickActions = [],
   onQuickActionClick,
   restoreDraftRequest,
@@ -514,6 +518,7 @@ function ChatInputImpl({
   // `group-hover:`) rather than React-state driven — see the comment above
   // the row Pressable below for why.
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  const [contextPopoverOpen, setContextPopoverOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
 
@@ -2433,10 +2438,35 @@ function ChatInputImpl({
           ) : (
           <View className="flex-row flex-shrink-0 items-center gap-1">
             {contextUsage && (
-              <ContextTracker
-                inputTokens={contextUsage.inputTokens}
-                contextWindowTokens={contextUsage.contextWindowTokens}
-              />
+              <Popover
+                placement="top"
+                size="xs"
+                isOpen={contextPopoverOpen}
+                onOpen={() => setContextPopoverOpen(true)}
+                onClose={() => setContextPopoverOpen(false)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    hitSlop={isNative ? 6 : 4}
+                    role="button"
+                    accessibilityLabel="Context usage"
+                  >
+                    <ContextTracker
+                      inputTokens={contextUsage.inputTokens}
+                      contextWindowTokens={contextUsage.contextWindowTokens}
+                    />
+                  </Pressable>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="w-auto p-0">
+                  <ContextBreakdownPanel
+                    breakdown={contextBreakdown ?? null}
+                    inputTokens={contextUsage.inputTokens}
+                    contextWindowTokens={contextUsage.contextWindowTokens}
+                  />
+                </PopoverContent>
+              </Popover>
             )}
 
             <Pressable

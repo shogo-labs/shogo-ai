@@ -196,6 +196,18 @@ export interface PromptBreakdownSection {
   estTokens: number
 }
 
+/**
+ * UI-facing category rollup (mirrors the client's context-usage popover):
+ * System prompt, Tool definitions, Skills, MCP & dynamic tools, Subagent
+ * definitions, Conversation. Additive to `PromptBreakdown` — optional so
+ * older gateway builds / mocked SSE fixtures without it still type-check.
+ */
+export interface PromptBreakdownCategory {
+  key: string
+  label: string
+  estTokens: number
+}
+
 export interface PromptBreakdown {
   sections: PromptBreakdownSection[]
   totalChars: number
@@ -203,6 +215,7 @@ export interface PromptBreakdown {
   toolSchemaChars: number
   toolSchemaEstTokens: number
   toolCount: number
+  categories?: PromptBreakdownCategory[]
   grandEstTokens: number
 }
 

@@ -2731,6 +2731,43 @@ export class AgentGateway {
           perTool: sortedToolResultEntries,
         })
 
+        // ---- 5) UI-facing category rollup ----
+        // Collapses the detailed breakdown above into the 6 buckets the
+        // client's context-usage popover renders (mirrors Cursor's own
+        // "Context Usage" popup): System prompt, Tool definitions, Skills,
+        // MCP & dynamic tools, Subagent definitions, Conversation. Additive
+        // to the payload — every field above stays as-is so the evals
+        // runner (which reads `sections`/`grandEstTokens` etc.) is unaffected.
+        const SKILL_SECTION_LABELS = new Set(['skills', 'skill-server'])
+        const SUBAGENT_TOOL_NAMES = new Set(['agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result'])
+
+        let systemPromptCatTokens = 0
+        let skillsCatTokens = 0
+        let dynamicOtherCatTokens = 0
+        for (const sec of breakdown) {
+          if (sec.zone === 'stable') systemPromptCatTokens += sec.estTokens
+          else if (SKILL_SECTION_LABELS.has(sec.label)) skillsCatTokens += sec.estTokens
+          else dynamicOtherCatTokens += sec.estTokens
+        }
+
+        let toolDefCatTokens = 0
+        let mcpToolCatTokens = 0
+        let subagentToolCatTokens = 0
+        for (const t of toolSchemasPerTool) {
+          if (t.name.startsWith('mcp_')) mcpToolCatTokens += t.estTokens
+          else if (SUBAGENT_TOOL_NAMES.has(t.name)) subagentToolCatTokens += t.estTokens
+          else toolDefCatTokens += t.estTokens
+        }
+
+        const categories = [
+          { key: 'system-prompt', label: 'System prompt', estTokens: systemPromptCatTokens },
+          { key: 'tool-definitions', label: 'Tool definitions', estTokens: toolDefCatTokens },
+          { key: 'skills', label: 'Skills', estTokens: skillsCatTokens },
+          { key: 'mcp-dynamic-tools', label: 'MCP & dynamic tools', estTokens: mcpToolCatTokens + dynamicOtherCatTokens },
+          { key: 'subagent-definitions', label: 'Subagent definitions', estTokens: subagentToolCatTokens },
+          { key: 'conversation', label: 'Conversation', estTokens: chatContextEstTokens },
+        ]
+
         const breakdownPayload = {
           sections: breakdown,
           totalChars,
@@ -2747,6 +2784,7 @@ export class AgentGateway {
             currentPromptChars,
             currentPromptEstTokens: Math.ceil(currentPromptChars / 4),
           },
+          categories,
           grandEstTokens,
         }
 

@@ -85,6 +85,7 @@ import { authClient } from "../../lib/auth-client"
 import { useActiveInstance } from "../../contexts/active-instance"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
+import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import {
   ChatInput,
   DEFAULT_MODEL_PRO,
@@ -1396,6 +1397,10 @@ export const ChatPanel = observer(function ChatPanel({
   const [contextUsage, setContextUsage] = useState<{ inputTokens: number; contextWindowTokens: number } | null>(null)
   const contextUsageThrottleRef = useRef<{ inputTokens: number; contextWindowTokens: number } | null>(null)
   const contextUsageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Per-turn category rollup from `data-prompt-breakdown` — powers the
+  // context-usage popover opened by clicking the ContextTracker ring.
+  // Not persisted; recomputed by the gateway every turn.
+  const [contextBreakdown, setContextBreakdown] = useState<ContextBreakdownData | null>(null)
 
   useEffect(() => {
     if (!toolErrorBanner) return
@@ -2199,6 +2204,13 @@ export const ChatPanel = observer(function ChatPanel({
           }
         }
 
+      }
+
+      if ((dataPart as any).type === "data-prompt-breakdown") {
+        const bd = (dataPart as any).data
+        if (bd?.categories) {
+          setContextBreakdown(bd)
+        }
       }
     },
     onFinish: async ({ message, isAbort }: { message: any; isAbort?: boolean }) => {
@@ -5827,6 +5839,7 @@ export const ChatPanel = observer(function ChatPanel({
               dualPlan={dualPlan}
               onDualPlanChange={handleDualPlanChange}
               contextUsage={contextUsage}
+              contextBreakdown={contextBreakdown}
               quickActions={quickActions}
               onQuickActionClick={handleQuickActionClick}
               restoreDraftRequest={restoreDraftRequest}
