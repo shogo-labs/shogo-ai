@@ -216,6 +216,15 @@ export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
   'gpt-5.4-mini': { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
   sonnet:         { inputPerMillion: 3.00, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
   opus:           { inputPerMillion: 5.00, cacheWritePerMillion: 6.25, cachedInputPerMillion: 0.50, outputPerMillion: 25.00 },
+  // OpenAI-published input/output rates as of launch. Cache write/read
+  // rates aren't broken out in OpenAI's public pricing pages yet — these
+  // follow the same ratio as the existing gpt-5.4-mini/nano buckets
+  // (cache write ~1.25x input, cached input ~0.1x input) as a placeholder
+  // until OpenAI publishes dedicated cache pricing for these models.
+  'gpt-5.6-luna':  { inputPerMillion: 1.00,  cacheWritePerMillion: 1.25,  cachedInputPerMillion: 0.10, outputPerMillion: 6.00 },
+  'gpt-5.6-terra': { inputPerMillion: 2.50,  cacheWritePerMillion: 3.125, cachedInputPerMillion: 0.25, outputPerMillion: 15.00 },
+  'gpt-5.6-sol':   { inputPerMillion: 5.00,  cacheWritePerMillion: 6.25,  cachedInputPerMillion: 0.50, outputPerMillion: 30.00 },
+  'gpt-6-astra':   { inputPerMillion: 10.00, cacheWritePerMillion: 12.50, cachedInputPerMillion: 1.00, outputPerMillion: 50.00 },
 }
 
 /**

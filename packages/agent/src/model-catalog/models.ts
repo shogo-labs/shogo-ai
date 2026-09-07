@@ -25,7 +25,9 @@ export type ImageProvider = 'openai' | 'google' | 'local'
 export type ModelTier = 'economy' | 'standard' | 'premium'
 export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
-export type BillingModel = 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus'
+export type BillingModel =
+  | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus'
+  | 'gpt-6-astra' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna'
 export type AgentMode = 'basic' | 'advanced'
 
 /**
@@ -278,60 +280,47 @@ export const MODEL_CATALOG = {
   },
 
   // OpenAI — current generation
-  'gpt-5.5': {
-    id: 'gpt-5.5',
+  'gpt-6-astra': {
+    id: 'gpt-6-astra',
     provider: 'openai',
-    apiModel: 'gpt-5.5',
-    displayName: 'GPT-5.5',
-    shortDisplayName: 'GPT-5.5',
+    apiModel: 'gpt-6-astra',
+    displayName: 'GPT-6 Astra',
+    shortDisplayName: 'Astra',
     tier: 'premium',
     family: 'gpt',
     generation: 'current',
-    billingModel: 'opus',
+    billingModel: 'gpt-6-astra',
     maxOutputTokens: 128_000,
-    capabilities: { subagentOrchestration: 'reliable' },
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
   },
-  'gpt-5.4-mini': {
-    id: 'gpt-5.4-mini',
+  'gpt-5.6-terra': {
+    id: 'gpt-5.6-terra',
     provider: 'openai',
-    apiModel: 'gpt-5.4-mini',
-    displayName: 'GPT-5.4 Mini',
-    shortDisplayName: 'GPT-5.4 Mini',
-    tier: 'economy',
-    family: 'gpt',
-    generation: 'current',
-    billingModel: 'gpt-5.4-mini',
-    maxOutputTokens: 128_000,
-    capabilities: { subagentOrchestration: 'reliable' },
-  },
-  'gpt-5-mini': {
-    id: 'gpt-5-mini',
-    provider: 'openai',
-    apiModel: 'gpt-5-mini',
-    displayName: 'GPT-5 Mini',
-    shortDisplayName: 'GPT-5 Mini',
+    apiModel: 'gpt-5.6-terra',
+    displayName: 'GPT-5.6 Terra',
+    shortDisplayName: 'Terra',
     tier: 'standard',
     family: 'gpt',
     generation: 'current',
-    billingModel: 'sonnet',
+    billingModel: 'gpt-5.6-terra',
     maxOutputTokens: 128_000,
-    capabilities: { subagentOrchestration: 'reliable' },
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
   },
-  'gpt-5.4-nano': {
-    id: 'gpt-5.4-nano',
+  'gpt-5.6-luna': {
+    id: 'gpt-5.6-luna',
     provider: 'openai',
-    apiModel: 'gpt-5.4-nano',
-    displayName: 'GPT-5.4 Nano',
-    shortDisplayName: 'GPT-5.4 Nano',
+    apiModel: 'gpt-5.6-luna',
+    displayName: 'GPT-5.6 Luna',
+    shortDisplayName: 'Luna',
     tier: 'economy',
     family: 'gpt',
     generation: 'current',
-    billingModel: 'gpt-5.4-nano',
+    billingModel: 'gpt-5.6-luna',
     maxOutputTokens: 128_000,
-    // Nano routinely fails the subagent-smoke eval (skips agent_result).
-    // Flag as flaky so admins see a warning before allowlisting it for
-    // workflows that fan out to children.
-    capabilities: { subagentOrchestration: 'flaky' },
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
   },
 
   // OpenAI — audio-native (accepts `input_audio` content blocks directly;
@@ -359,6 +348,73 @@ export const MODEL_CATALOG = {
   },
 
   // OpenAI — legacy
+  'gpt-5.6-sol': {
+    id: 'gpt-5.6-sol',
+    provider: 'openai',
+    apiModel: 'gpt-5.6-sol',
+    displayName: 'GPT-5.6 Sol',
+    shortDisplayName: 'Sol',
+    tier: 'premium',
+    family: 'gpt',
+    generation: 'legacy',
+    billingModel: 'gpt-5.6-sol',
+    maxOutputTokens: 128_000,
+  },
+  'gpt-5.5': {
+    id: 'gpt-5.5',
+    provider: 'openai',
+    apiModel: 'gpt-5.5',
+    displayName: 'GPT-5.5',
+    shortDisplayName: 'GPT-5.5',
+    tier: 'premium',
+    family: 'gpt',
+    generation: 'legacy',
+    billingModel: 'opus',
+    maxOutputTokens: 128_000,
+    capabilities: { subagentOrchestration: 'reliable' },
+  },
+  'gpt-5-mini': {
+    id: 'gpt-5-mini',
+    provider: 'openai',
+    apiModel: 'gpt-5-mini',
+    displayName: 'GPT-5 Mini',
+    shortDisplayName: 'GPT-5 Mini',
+    tier: 'standard',
+    family: 'gpt',
+    generation: 'legacy',
+    billingModel: 'sonnet',
+    maxOutputTokens: 128_000,
+    capabilities: { subagentOrchestration: 'reliable' },
+  },
+  'gpt-5.4-mini': {
+    id: 'gpt-5.4-mini',
+    provider: 'openai',
+    apiModel: 'gpt-5.4-mini',
+    displayName: 'GPT-5.4 Mini',
+    shortDisplayName: 'GPT-5.4 Mini',
+    tier: 'economy',
+    family: 'gpt',
+    generation: 'legacy',
+    billingModel: 'gpt-5.4-mini',
+    maxOutputTokens: 128_000,
+    capabilities: { subagentOrchestration: 'reliable' },
+  },
+  'gpt-5.4-nano': {
+    id: 'gpt-5.4-nano',
+    provider: 'openai',
+    apiModel: 'gpt-5.4-nano',
+    displayName: 'GPT-5.4 Nano',
+    shortDisplayName: 'GPT-5.4 Nano',
+    tier: 'economy',
+    family: 'gpt',
+    generation: 'legacy',
+    billingModel: 'gpt-5.4-nano',
+    maxOutputTokens: 128_000,
+    // Nano routinely fails the subagent-smoke eval (skips agent_result).
+    // Flag as flaky so admins see a warning before allowlisting it for
+    // workflows that fan out to children.
+    capabilities: { subagentOrchestration: 'flaky' },
+  },
   'gpt-4.1': {
     id: 'gpt-4.1',
     provider: 'openai',
