@@ -20,13 +20,10 @@ import { MessageContent, extractTextContent } from "./MessageContent"
 import { AssistantContent } from "./AssistantContent"
 import { EditableUserMessage } from "./EditableUserMessage"
 import { ToolTimeline } from "../tools"
-import { SubagentPanel, type SubagentProgress, type RecentTool } from "../subagent"
 
 export interface TurnGroupProps {
   turn: ConversationTurn
   phase?: string | null
-  activeSubagents?: SubagentProgress[]
-  recentTools?: RecentTool[]
   showToolTimeline?: boolean
   className?: string
 }
@@ -125,8 +122,6 @@ export const TurnGroup = memo(
   function TurnGroup({
     turn,
     phase,
-    activeSubagents = [],
-    recentTools = [],
     showToolTimeline = false,
     className,
   }: TurnGroupProps) {
@@ -163,15 +158,6 @@ export const TurnGroup = memo(
         />
       )}
 
-      {/* Subagent panel */}
-      {activeSubagents.length > 0 && (
-        <SubagentPanel
-          subagents={activeSubagents}
-          recentTools={recentTools}
-          defaultExpanded
-        />
-      )}
-
       {/* Assistant message with interleaved tools (default) or plain content (legacy) */}
       {turn.assistantMessage && (
         <View className="gap-0.5">
@@ -205,8 +191,6 @@ export const TurnGroup = memo(
   (prev, next) =>
     prev.turn === next.turn &&
     prev.phase === next.phase &&
-    prev.activeSubagents === next.activeSubagents &&
-    prev.recentTools === next.recentTools &&
     prev.showToolTimeline === next.showToolTimeline &&
     prev.className === next.className,
 )

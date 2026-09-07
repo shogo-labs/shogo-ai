@@ -34,9 +34,13 @@ import {
 import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
 import { ContextTracker } from "./ContextTracker"
-import { ContextBreakdownPanel, type ContextBreakdownData } from "./ContextBreakdownPanel"
+import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
 import { ModelPickerMenu, getNativeModelMenuWidth } from "./ModelPickerMenu"
+import { DockChip } from "./dock/DockChip"
+import { DockChipRail } from "./dock/DockChipRail"
+import { QueueDockPanel } from "./dock/panels/QueueDockPanel"
+import { ContextUsageDockPanel } from "./dock/panels/ContextUsageDockPanel"
 import {
   ArrowUp,
   Plus,
@@ -49,10 +53,6 @@ import {
   FolderGit2,
   Image as ImageIcon,
   ChevronDown,
-  ChevronUp,
-  Trash2,
-  Pencil,
-  SendHorizontal,
   Bot,
   ClipboardList,
   MessageCircleQuestion,
@@ -61,7 +61,6 @@ import {
   Sparkles,
   Languages,
   Play,
-  WifiOff,
 } from "lucide-react-native"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
@@ -79,8 +78,6 @@ import { ImagePreviewModal } from "./ImagePreviewModal"
 import { VideoPreviewModal } from "./VideoPreviewModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
-import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
-import type { ToolCallData } from "./tools/types"
 import { AgentClient } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../lib/agent-fetch"
 import { useChatContextSafe } from "./ChatContext"
@@ -349,14 +346,6 @@ export interface ChatInputProps {
   onModelChange?: (modelId: string) => void
   isPro?: boolean
   onUpgradeClick?: () => void
-  /**
-   * Pending ask_user tool call to render as an interactive question widget
-   * attached above the composer (instead of inline in the message stream).
-   * Null when there is no open question.
-   */
-  pendingQuestion?: { messageId: string; tool: ToolCallData } | null
-  /** Called with the formatted response when the attached question is submitted. */
-  onSubmitQuestionResponse?: (response: string) => void
   queuedMessages?: QueuedMessage[]
   onRemoveQueuedMessage?: (messageId: string) => void
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
@@ -433,8 +422,6 @@ function ChatInputImpl({
   onModelChange,
   isPro = false,
   onUpgradeClick,
-  pendingQuestion,
-  onSubmitQuestionResponse,
   queuedMessages = [],
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
@@ -513,12 +500,7 @@ function ChatInputImpl({
   const [fileError, setFileError] = useState<string | null>(null)
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
-  const [queueExpanded, setQueueExpanded] = useState(true)
-  // Row hover & action-icon visibility are now CSS-driven (Tailwind `group` /
-  // `group-hover:`) rather than React-state driven — see the comment above
-  // the row Pressable below for why.
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
-  const [contextPopoverOpen, setContextPopoverOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
 
@@ -1424,317 +1406,19 @@ function ChatInputImpl({
         <Text className="text-sm text-destructive mb-2">{voiceInput.error}</Text>
       )}
 
-      {/* Pending question — interactive answer UI attached above the composer.
-          Stays expanded while pending; submitting persists the answer and
-          clears `pendingQuestion`, unmounting this panel. */}
-      {pendingQuestion && (
-        <View className="mb-2">
-          <AskUserQuestionWidget
-            tool={pendingQuestion.tool}
-            onSubmitResponse={(response) => onSubmitQuestionResponse?.(response)}
-          />
-        </View>
-      )}
-
-      {/* Queued messages */}
-      {queuedMessages.length > 0 && (() => {
-        const offlineCount = queuedMessages.filter((m) => m.offline).length
-        return (
-        <View className={cn(
-          "rounded-t-lg border-x border-t overflow-hidden",
-          offlineCount > 0
-            ? "border-orange-400/50 bg-orange-50 dark:bg-orange-950/30"
-            : "border-border/60 bg-muted/30",
-        )}>
-          <Pressable
-            onPress={() => setQueueExpanded((prev) => !prev)}
-            className="w-full flex-row items-center justify-between px-2 py-1"
-          >
-            <View className="flex-row items-center gap-2">
-              <ChevronDown
-                className={cn(
-                  "h-4 w-4",
-                  offlineCount > 0 ? "text-orange-600 dark:text-orange-400" : "text-muted-foreground",
-                  !queueExpanded && "-rotate-90"
-                )}
-                size={16}
-              />
-              {offlineCount > 0 && (
-                <WifiOff size={13} className="text-orange-600 dark:text-orange-400" />
-              )}
-              <Text className={cn(
-                "text-sm",
-                offlineCount > 0 ? "text-orange-700 dark:text-orange-300" : "text-foreground",
-              )}>
-                {offlineCount > 0
-                  ? `${offlineCount} waiting to send${queuedMessages.length > offlineCount ? ` \u00b7 ${queuedMessages.length - offlineCount} queued` : ""}`
-                  : `${queuedMessages.length} Queued`}
-              </Text>
-            </View>
-          </Pressable>
-          {queueExpanded && (
-            <View className="border-t border-border/60">
-              {queuedMessages.map((msg, index) => {
-                const files = msg.files ?? []
-                const imageFiles = files.filter((f) => f.type?.startsWith("image/"))
-                const otherFiles = files.filter((f) => !f.type?.startsWith("image/"))
-                const previewImage = imageFiles[0]
-                const trimmedContent = msg.content?.trim() ?? ""
-                const attachmentLabel =
-                  files.length > 0
-                    ? `${files.length} ${files.length === 1 ? "attachment" : "attachments"}`
-                    : ""
-                const primaryText = trimmedContent
-                  ? trimmedContent
-                  : attachmentLabel || "Empty message"
-                return (
-                  // CSS `group` + `hover:` / `group-hover:` (instead of a
-                  // React `hoveredQueuedId` state) for both row background
-                  // and action-icon visibility. The earlier state-driven
-                  // approach flickered when the cursor crossed from the
-                  // row body onto a nested action Pressable: RN-Web fires
-                  // the row's `onHoverOut` on that child-enter transition,
-                  // which collapsed `isHovered` to false — fading the
-                  // actions to opacity-0 *and* dropping the row's hover
-                  // bg — then the row re-asserted hover a frame later and
-                  // the cycle repeated. CSS `:hover` doesn't suffer this:
-                  // it stays true as long as the cursor is over the
-                  // element or any descendant, so the row bg + action
-                  // group remain stable while the pointer is on a button.
-                  // Native has no hover, so `group-hover:` simply never
-                  // activates — the explicit `Platform.OS === "web"` gate
-                  // on the opacity classes keeps the actions always
-                  // visible there, matching the prior behavior.
-                  <Pressable
-                    key={msg.id}
-                    onPress={() => onEditQueuedMessage?.(msg.id)}
-                    accessibilityLabel="Queued message"
-                    className={cn(
-                      "group flex-row items-center gap-2 px-2 py-1.5 border-b border-border/40 last:border-b-0",
-                      Platform.OS === "web" && "hover:bg-muted/40"
-                    )}
-                  >
-                    {msg.offline ? (
-                      <WifiOff size={11} className="text-orange-600 dark:text-orange-400 flex-shrink-0" />
-                    ) : (
-                      <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
-                    )}
-                    {previewImage && (
-                      <Image
-                        source={{ uri: previewImage.dataUrl }}
-                        className="h-7 w-7 rounded border border-border flex-shrink-0"
-                        resizeMode="cover"
-                      />
-                    )}
-                    <View className="flex-1 min-w-0">
-                      <Text className="text-xs text-foreground" numberOfLines={1}>
-                        {primaryText}
-                      </Text>
-                      {trimmedContent && files.length > 0 && (
-                        <View className="flex-row items-center gap-1 mt-0.5">
-                          <ImageIcon
-                            className="h-3 w-3 text-muted-foreground"
-                            size={10}
-                          />
-                          <Text
-                            className="text-[10px] text-muted-foreground"
-                            numberOfLines={1}
-                          >
-                            {imageFiles.length > 0 && otherFiles.length > 0
-                              ? `${imageFiles.length} image${imageFiles.length === 1 ? "" : "s"} + ${otherFiles.length} file${otherFiles.length === 1 ? "" : "s"}`
-                              : imageFiles.length > 0
-                                ? `${imageFiles.length} image${imageFiles.length === 1 ? "" : "s"}`
-                                : `${otherFiles.length} file${otherFiles.length === 1 ? "" : "s"}`}
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                    <View
-                      className={cn(
-                        "flex-row items-center gap-0.5",
-                        // Fade in on row hover via CSS group-hover so
-                        // crossing onto a child button doesn't tear the
-                        // visibility state down. Native always shows them
-                        // (no hover concept), same as before.
-                        Platform.OS === "web" &&
-                          "opacity-0 group-hover:opacity-100",
-                      )}
-                    >
-                      {/*
-                        Each action button uses Pressable's children-as-
-                        function API to read `{ hovered, pressed }` from
-                        RN-Web directly, rather than relying on NativeWind
-                        `hover:` / `group-hover:` variants. The variants
-                        don't reliably produce visible styling on these
-                        nested Pressables in our setup (the row hover
-                        works, but per-button hover never landed any
-                        background or icon-color swap on the user's
-                        screen — see chat thread). State-from-children is
-                        the documented Pressable API and gives us a
-                        boolean we can fan out to both the wrapper bg and
-                        the lucide icon's text color in one place. Native
-                        platforms have no hover concept; `hovered` is
-                        simply undefined there, so the icons read as the
-                        default muted-foreground, matching prior behavior.
-                      */}
-                      {onReorderQueuedMessage && queuedMessages.length > 1 && (
-                        <>
-                          {index > 0 && (
-                            <Pressable
-                              accessibilityLabel="Move queued message up"
-                              onPress={(e) => {
-                                if (e?.stopPropagation) e.stopPropagation()
-                                onReorderQueuedMessage(msg.id, "up")
-                              }}
-                            >
-                              {(state: any) => {
-                                const active = state.hovered || state.pressed
-                                return (
-                                  <View
-                                    className={cn(
-                                      "h-6 w-6 items-center justify-center rounded",
-                                      active && "bg-muted-foreground/25",
-                                    )}
-                                  >
-                                    <ChevronUp
-                                      className={cn(
-                                        "h-3 w-3",
-                                        active ? "text-foreground" : "text-muted-foreground",
-                                      )}
-                                      size={12}
-                                    />
-                                  </View>
-                                )
-                              }}
-                            </Pressable>
-                          )}
-                          {index < queuedMessages.length - 1 && (
-                            <Pressable
-                              accessibilityLabel="Move queued message down"
-                              onPress={(e) => {
-                                if (e?.stopPropagation) e.stopPropagation()
-                                onReorderQueuedMessage(msg.id, "down")
-                              }}
-                            >
-                              {(state: any) => {
-                                const active = state.hovered || state.pressed
-                                return (
-                                  <View
-                                    className={cn(
-                                      "h-6 w-6 items-center justify-center rounded",
-                                      active && "bg-muted-foreground/25",
-                                    )}
-                                  >
-                                    <ChevronDown
-                                      className={cn(
-                                        "h-3 w-3",
-                                        active ? "text-foreground" : "text-muted-foreground",
-                                      )}
-                                      size={12}
-                                    />
-                                  </View>
-                                )
-                              }}
-                            </Pressable>
-                          )}
-                        </>
-                      )}
-                      {onSendQueuedMessageNow && (
-                        <Pressable
-                          accessibilityLabel="Send queued message now"
-                          onPress={(e) => {
-                            if (e?.stopPropagation) e.stopPropagation()
-                            onSendQueuedMessageNow(msg.id)
-                          }}
-                        >
-                          {(state: any) => {
-                            const active = state.hovered || state.pressed
-                            return (
-                              <View
-                                className={cn(
-                                  "h-6 w-6 items-center justify-center rounded",
-                                  active && "bg-muted-foreground/25",
-                                )}
-                              >
-                                <SendHorizontal
-                                  className={cn(
-                                    "h-3 w-3",
-                                    active ? "text-foreground" : "text-muted-foreground",
-                                  )}
-                                  size={12}
-                                />
-                              </View>
-                            )
-                          }}
-                        </Pressable>
-                      )}
-                      {onEditQueuedMessage && (
-                        <Pressable
-                          accessibilityLabel="Edit queued message"
-                          onPress={(e) => {
-                            if (e?.stopPropagation) e.stopPropagation()
-                            onEditQueuedMessage(msg.id)
-                          }}
-                        >
-                          {(state: any) => {
-                            const active = state.hovered || state.pressed
-                            return (
-                              <View
-                                className={cn(
-                                  "h-6 w-6 items-center justify-center rounded",
-                                  active && "bg-muted-foreground/25",
-                                )}
-                              >
-                                <Pencil
-                                  className={cn(
-                                    "h-3 w-3",
-                                    active ? "text-foreground" : "text-muted-foreground",
-                                  )}
-                                  size={12}
-                                />
-                              </View>
-                            )
-                          }}
-                        </Pressable>
-                      )}
-                      {onRemoveQueuedMessage && (
-                        <Pressable
-                          accessibilityLabel="Delete queued message"
-                          onPress={(e) => {
-                            if (e?.stopPropagation) e.stopPropagation()
-                            onRemoveQueuedMessage(msg.id)
-                          }}
-                        >
-                          {(state: any) => {
-                            const active = state.hovered || state.pressed
-                            return (
-                              <View
-                                className={cn(
-                                  "h-6 w-6 items-center justify-center rounded",
-                                  active && "bg-destructive/20",
-                                )}
-                              >
-                                <Trash2
-                                  className={cn(
-                                    "h-3 w-3",
-                                    active ? "text-destructive" : "text-muted-foreground",
-                                  )}
-                                  size={12}
-                                />
-                              </View>
-                            )
-                          }}
-                        </Pressable>
-                      )}
-                    </View>
-                  </Pressable>
-                )
-              })}
-            </View>
-          )}
-        </View>
-        )
-      })()}
+      {/* Queued messages, live browser, running tasks, plan, checklist,
+          changed files, worktree, and context usage all render inside the
+          floating chat dock now (see ChatPanel's <ChatDock />) instead of
+          inline here. This registers the queue's dock panel + composer
+          chip; the row UI itself lives in QueueDockPanel. */}
+      <QueueDockPanel
+        queuedMessages={queuedMessages}
+        onRemoveQueuedMessage={onRemoveQueuedMessage}
+        onReorderQueuedMessage={onReorderQueuedMessage}
+        onEditQueuedMessage={onEditQueuedMessage}
+        onSendQueuedMessageNow={onSendQueuedMessageNow}
+      />
+      <ContextUsageDockPanel contextUsage={contextUsage} contextBreakdown={contextBreakdown} />
 
       {/* Dropdown + input layer.
 
@@ -1854,8 +1538,7 @@ function ChatInputImpl({
         <View
           ref={dropZoneRef as any}
           className={cn(
-            "relative border bg-muted/30 overflow-hidden",
-            queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl",
+            "relative border bg-muted/30 overflow-hidden rounded-xl",
             isDragOver ? "border-primary border-dashed" : "border-border/60",
             // Accent ring for the inline-edit "active edit target"
             // state. Drag-over still takes precedence (its dashed
@@ -2437,36 +2120,14 @@ function ChatInputImpl({
             </View>
           ) : (
           <View className="flex-row flex-shrink-0 items-center gap-1">
+            <DockChipRail isNative={isNative} />
             {contextUsage && (
-              <Popover
-                placement="top"
-                size="xs"
-                isOpen={contextPopoverOpen}
-                onOpen={() => setContextPopoverOpen(true)}
-                onClose={() => setContextPopoverOpen(false)}
-                trigger={(triggerProps) => (
-                  <Pressable
-                    {...triggerProps}
-                    hitSlop={isNative ? 6 : 4}
-                    role="button"
-                    accessibilityLabel="Context usage"
-                  >
-                    <ContextTracker
-                      inputTokens={contextUsage.inputTokens}
-                      contextWindowTokens={contextUsage.contextWindowTokens}
-                    />
-                  </Pressable>
-                )}
-              >
-                <PopoverBackdrop />
-                <PopoverContent className="w-auto p-0">
-                  <ContextBreakdownPanel
-                    breakdown={contextBreakdown ?? null}
-                    inputTokens={contextUsage.inputTokens}
-                    contextWindowTokens={contextUsage.contextWindowTokens}
-                  />
-                </PopoverContent>
-              </Popover>
+              <DockChip panelId="context-usage" accessibilityLabel="Context usage">
+                <ContextTracker
+                  inputTokens={contextUsage.inputTokens}
+                  contextWindowTokens={contextUsage.contextWindowTokens}
+                />
+              </DockChip>
             )}
 
             <Pressable

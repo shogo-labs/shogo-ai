@@ -44,6 +44,8 @@ import { EditFileWidget } from "./EditFileWidget"
 import { PlanCard, type PlanData } from "../PlanCard"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 import { useTodoStateStore, parseTodos as parseTodosForStore } from "../../../lib/todo-state-store"
+import { useFileChangeStore, classifyFileToolName, extractFilePath } from "../../../lib/file-change-store"
+import { useChatDockStore } from "../../../lib/chat-dock-store"
 import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
@@ -628,6 +630,13 @@ export const AssistantContent = memo(
   // Per-chat TodoWrite store, provided by the enclosing ChatPanel so
   // sibling tabs don't share `latestTodos` / `orderedToolIds`.
   const todoStateStore = useTodoStateStore()
+  // Per-chat changed-files store feeding the dock's "Changes" panel — see
+  // file-change-store.ts for why this uses the canonical write_file /
+  // edit_file / delete_file names rather than ChatPanel's legacy helper.
+  const fileChangeStore = useFileChangeStore()
+  // Lets the in-stream PlanCard deep-link into the floating PlanDockPanel
+  // via `openPanel("plan")` once this message has scrolled away.
+  const dockStore = useChatDockStore()
 
   // Throttle the streaming message to ~30fps so markdown re-parsing and part
   // extraction don't run per-token. When streaming ends, the final value is
@@ -648,6 +657,13 @@ export const AssistantContent = memo(
           todoStateStore.registerWrite(part.tool.id, todos)
         }
         continue
+      }
+      if (part.type === "tool") {
+        const fileKind = classifyFileToolName(part.tool.toolName)
+        if (fileKind && part.tool.state === "success") {
+          const path = extractFilePath(part.tool.args as Record<string, unknown> | undefined)
+          if (path) fileChangeStore.registerChange(part.tool.id, path, fileKind)
+        }
       }
       if (part.type !== "tool" || !TASK_TOOL_NAMES.has(part.tool.toolName)) continue
       const tool = part.tool
@@ -685,7 +701,7 @@ export const AssistantContent = memo(
         subagentStreamStore.setModel(tool.id, model)
       }
     }
-  }, [orderedParts, todoStateStore])
+  }, [orderedParts, todoStateStore, fileChangeStore])
 
   const groupedParts = useMemo(
     () => groupConsecutiveParts(orderedParts),
@@ -893,6 +909,7 @@ export const AssistantContent = memo(
                     : undefined
                 }
                 isConfirmed={isConfirmed}
+                onOpenInDock={() => dockStore.openPanel("plan")}
               />
             )
           }

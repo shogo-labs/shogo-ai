@@ -18,21 +18,10 @@ import { type ToolCallData, getToolKeyArg, formatToolName } from "../tools/types
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 import { stopSubagent } from "../../../lib/subagent-stop"
 import { resolveShortName } from "../../../lib/visible-models"
-import { LiveBrowserView } from "../LiveBrowserView"
-import { useChatContextSafe } from "../ChatContext"
-import { useChatBridgeOptional } from "../../voice-mode/ChatBridgeContext"
 
 export interface SubagentCardProps {
   tool: ToolCallData
   className?: string
-  /**
-   * Override the agent runtime base URL used for the live browser
-   * preview. Defaults to the value resolved from `ChatContext` (when
-   * mounted under `ChatPanel`) or the `ChatBridge` (when mounted under
-   * the EZ Mode overlay). Tests / standalone surfaces can pass it
-   * explicitly.
-   */
-  agentUrl?: string | null
 }
 
 const SPINNER_DURATION = 1200
@@ -151,10 +140,8 @@ function getStatusText(tool: ToolCallData, elapsed: number, output: SubagentOutp
   return `Running... ${mins}m ${rem}s${suffix}`
 }
 
-export function SubagentCard({ tool, className, agentUrl: agentUrlProp }: SubagentCardProps) {
+export function SubagentCard({ tool, className }: SubagentCardProps) {
   const [elapsed, setElapsed] = useState(0)
-  const chatContext = useChatContextSafe()
-  const bridge = useChatBridgeOptional()
 
   const isRunning = tool.state === "streaming"
   const isDone = tool.state === "success"
@@ -203,10 +190,6 @@ export function SubagentCard({ tool, className, agentUrl: agentUrlProp }: Subage
     () => deriveLatestActivityLabel(streamData?.parts),
     [streamData?.parts],
   )
-
-  const resolvedAgentUrl =
-    agentUrlProp ?? chatContext?.agentUrl ?? bridge?.agentUrl ?? null
-  const showLivePreview = isRunning && !!instanceId && !!resolvedAgentUrl
 
   return (
     <Pressable
@@ -263,18 +246,6 @@ export function SubagentCard({ tool, className, agentUrl: agentUrlProp }: Subage
           </Text>
           <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/50" size={14} />
         </View>
-
-        {/* Live browser viewport — visible while the subagent is running
-            and we have an AgentManager instance id to subscribe to. */}
-        {showLivePreview && (
-          <View className="mt-1">
-            <LiveBrowserView
-              instanceId={instanceId!}
-              active={isRunning}
-              agentUrl={resolvedAgentUrl}
-            />
-          </View>
-        )}
       </View>
     </Pressable>
   )

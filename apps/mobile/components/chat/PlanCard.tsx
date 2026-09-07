@@ -3,7 +3,7 @@
 import { memo, useState } from "react"
 import { ActivityIndicator, View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp, ChevronRight, Languages } from "lucide-react-native"
+import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp, ChevronRight, Languages, PanelTop } from "lucide-react-native"
 import { MarkdownText } from "./MarkdownText"
 
 export type PlanSummaryStatus = "idle" | "pending" | "ready" | "error"
@@ -38,6 +38,11 @@ interface PlanCardProps {
   /** Triggers an on-demand summary generation for a plan that does not yet
    *  have one. Surfaced when summary is missing and idle. */
   onGenerateSummary?: () => void | Promise<void>
+  /** Set only on the in-stream render: expands the same plan's live
+   *  `PlanDockPanel` (via `ChatDockStore.openPanel`) so the user can keep
+   *  acting on it even after this message has scrolled away. Omitted on
+   *  the dock's own copy, which is already the thing being deep-linked to. */
+  onOpenInDock?: () => void
 }
 
 // `AssistantContent` rebuilds the `plan` object literal on every commit while
@@ -53,6 +58,7 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   if (prev.onOpenPlan !== next.onOpenPlan) return false
   if (prev.onViewFull !== next.onViewFull) return false
   if (prev.onGenerateSummary !== next.onGenerateSummary) return false
+  if (prev.onOpenInDock !== next.onOpenInDock) return false
   const a = prev.plan
   const b = next.plan
   if (a === b) return true
@@ -75,7 +81,7 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   return true
 }
 
-function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed, onGenerateSummary }: PlanCardProps) {
+function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed, onGenerateSummary, onOpenInDock }: PlanCardProps) {
   const [expanded, setExpanded] = useState(false)
   const [tasksExpanded, setTasksExpanded] = useState(false)
   const [activeTab, setActiveTab] = useState<PlanTab>("technical")
@@ -134,6 +140,18 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
             </Text>
           ) : null}
         </View>
+        {onOpenInDock && (
+          <Pressable
+            onPress={onOpenInDock}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Open plan in dock"
+            className="flex-row items-center gap-1 rounded-md border border-border/60 px-2 py-1 active:opacity-60"
+          >
+            <PanelTop className="h-3 w-3 text-muted-foreground" size={12} />
+            <Text className="text-[10px] text-muted-foreground">Dock</Text>
+          </Pressable>
+        )}
       </View>
 
       {/* Tab strip — only visible when a summary exists or is in flight */}
