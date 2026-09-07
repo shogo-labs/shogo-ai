@@ -66,6 +66,32 @@ function isBuildableFile(relativePath: string): boolean {
   return false
 }
 
+/**
+ * Normalize a caller-supplied relative path before it's matched against
+ * `BUILDABLE_PREFIXES` / `IGNORED_PATH_PREFIXES`, both of which are plain
+ * `startsWith()` checks anchored on e.g. `'src/'`.
+ *
+ * The chokidar path (`handleChokidarFileEvent`) already comes out of
+ * `path.relative()` in the exact `foo/bar.ts` shape those checks expect.
+ * The *explicit* notifier path (`onFileChanged`/`onFileDeleted`, fed by
+ * gateway-tools.ts' write_file/edit_file `path` tool argument, and by the
+ * `PUT`/`DELETE /agent/workspace/files/*` HTTP handlers) has no such
+ * guarantee — a model or client emitting `./src/components/Foo.tsx` (or,
+ * on Windows-authored tool calls, `\src\...` / a leading `/`) silently
+ * fails every prefix check with no error anywhere: `isBuildableFile()`
+ * returns false, `onRebuildCallback` never fires, and the canvas preview
+ * is permanently stale for that project until something else (VM
+ * recreate, manual restart) happens to reset it. Reproduced against
+ * `src/components/MicButton.tsx`-shaped edits going silently un-rebuilt
+ * in production; see `__tests__/canvas-file-watcher-path-normalization.test.ts`.
+ */
+function normalizeRelativePath(relativePath: string): string {
+  let path = relativePath.split('\\').join('/')
+  while (path.startsWith('./')) path = path.slice(2)
+  while (path.startsWith('/')) path = path.slice(1)
+  return path
+}
+
 // Paths under these prefixes are ignored by the chokidar watcher. They're
 // either agent-runtime internals, build artefacts, or user-invisible state
 // that would flood the event stream.
@@ -336,6 +362,8 @@ export const __testInternals = {
   loadSimpleIgnoredDirsFromGitignore,
   shouldIgnore,
   isNoisyFileBasename,
+  isBuildableFile,
+  normalizeRelativePath,
 }
 
 export type CanvasEvent =
@@ -441,7 +469,7 @@ export class CanvasFileWatcher {
   private handleChokidarFileEvent(op: 'add' | 'change' | 'unlink', absPath: string): void {
     const rel = relative(this.workspaceDir, absPath)
     if (shouldIgnore(rel)) return
-    const path = rel.split('\\').join('/')
+    const path = normalizeRelativePath(rel)
 
     if (op === 'unlink') {
       // LSP bridge fires regardless of dedupe — the deletion event is
@@ -515,7 +543,7 @@ export class CanvasFileWatcher {
    * and survives watcher init failures / silent inotify on Firecracker.
    */
   onFileChanged(relativePath: string, _absolutePath: string): void {
-    const path = relativePath.split('\\').join('/')
+    const path = normalizeRelativePath(relativePath)
     if (this.shouldDedupe('file.changed', path)) return
     this.broadcast({ type: 'file.changed', path, mtime: Date.now() })
     if (isBuildableFile(path)) {
@@ -524,7 +552,7 @@ export class CanvasFileWatcher {
   }
 
   onFileDeleted(relativePath: string): void {
-    const path = relativePath.split('\\').join('/')
+    const path = normalizeRelativePath(relativePath)
     if (this.shouldDedupe('file.deleted', path)) return
     this.broadcast({ type: 'file.deleted', path })
     if (isBuildableFile(path)) {
