@@ -1296,7 +1296,7 @@ model ModelDefinition {
   enabled          Boolean @default(true)
   sortOrder        Int?
   aliases          String? // JSON-encoded string[] of alias ids
-  capabilities     String? // JSON-encoded { subagentOrchestration?: ... }
+  capabilities     String? // JSON-encoded { subagentOrchestration?: ..., supportsAudioInput?: boolean }
 
   // User-facing picker metadata.
   description    String? // Short blurb shown in the model picker info panel.

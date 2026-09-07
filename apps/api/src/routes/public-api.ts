@@ -36,6 +36,7 @@ import {
   resolveModel,
   resolveModelTier,
   resolveModelApiKey,
+  resolveModelSupportsAudioInput,
   recordUsage,
   buildUsageLimitInfo,
   proxyOpenAIStream,
@@ -330,6 +331,31 @@ export function publicApiRoutes() {
 
     const tierError = await checkTier(c, payload, modelConfig, backingId, publicId)
     if (tierError) return tierError
+
+    // Mirror the internal `/api/ai/v1/chat/completions` guard: reject
+    // `input_audio` blocks up front for public models whose backing model
+    // isn't audio-native (see `resolveModelSupportsAudioInput`), instead of
+    // letting them reach the upstream provider and bounce back with a
+    // generic error under the wrong (public) model id.
+    if (!resolveModelSupportsAudioInput(backingId)) {
+      const hasAudioBlock = request.messages.some(
+        (msg) =>
+          Array.isArray(msg.content) &&
+          msg.content.some((block) => block.type === 'input_audio'),
+      )
+      if (hasAudioBlock) {
+        return c.json(
+          {
+            error: {
+              message: `Model '${publicId}' does not accept audio input. Use an audio-native model for input_audio content blocks, or transcribe the audio to text first.`,
+              type: 'invalid_request_error',
+              code: 'audio_input_not_supported',
+            },
+          },
+          400,
+        )
+      }
+    }
 
     const apiKey = resolveModelApiKey(modelConfig)
     if (!apiKey) {
