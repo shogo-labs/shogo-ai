@@ -61,7 +61,7 @@ const PREVIEW_CONTENT_TIMEOUT_MS = 60_000
  */
 async function ensureAuthenticated(page: Page, user: TestUser): Promise<void> {
   await page.goto("/")
-  const home = page.getByText("What's on your mind", { exact: false }).first()
+  const home = page.getByText("What are we building", { exact: false }).first()
   const signUpTab = page.getByRole("tab", { name: "Sign Up" })
   await Promise.race([
     home.waitFor({ state: "visible", timeout: 60_000 }).catch(() => {}),
@@ -119,7 +119,7 @@ async function stopAgentStreamIfRunning(page: Page): Promise<void> {
  */
 async function createProjectAndStop(page: Page, prompt: string): Promise<string> {
   await page.goto("/")
-  await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+  await page.waitForSelector("text=What are we building", { timeout: 30_000 })
   const input = homeComposerInput(page)
   await input.click()
   await input.fill(prompt)

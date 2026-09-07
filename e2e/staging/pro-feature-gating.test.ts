@@ -50,7 +50,7 @@ test.describe("Pro Feature Gating", () => {
 
   test("sidebar hides Upgrade CTA for Pro users", async () => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
     // The "Upgrade to Pro" button in the sidebar bottom should be gone
     const upgradeCTA = page.locator("text=Upgrade to Pro")
@@ -61,7 +61,7 @@ test.describe("Pro Feature Gating", () => {
 
   test("Advanced model is selectable for Pro users", async () => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 15_000 })
 
     const input = homeComposerInput(page)
     await input.click()

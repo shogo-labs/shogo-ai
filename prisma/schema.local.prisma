@@ -832,12 +832,35 @@ model ChatMessage {
   /// Stamped on assistant messages; null for legacy rows.
   model     String?
 
-  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session  ChatSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  feedback MessageFeedback[]
 
   @@index([sessionId])
   @@index([sessionId, createdAt])
   @@index([sessionId, agent, createdAt])
   @@map("chat_messages")
+}
+
+/// A user's thumbs up/down reaction to one assistant `ChatMessage` (one
+/// completed turn). Powers the footer feedback buttons under each
+/// assistant turn in the mobile/web chat UI. One row per (messageId,
+/// userId) — re-tapping the same thumb clears it (DELETE), tapping the
+/// other thumb flips it (upsert), matching a typical single-reaction
+/// feedback widget rather than a tally-style vote count.
+model MessageFeedback {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  /// "up" | "down"
+  thumbs    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([messageId])
+  @@map("message_feedback")
 }
 
 model ToolCallLog {

@@ -51,7 +51,7 @@ function stopButton(page: Page) {
  */
 async function ensureAuthenticated(page: Page, user: TestUser): Promise<void> {
   await page.goto("/")
-  const home = page.getByText("What's on your mind", { exact: false }).first()
+  const home = page.getByText("What are we building", { exact: false }).first()
   const signUpTab = page.getByRole("tab", { name: "Sign Up" })
   await Promise.race([
     home.waitFor({ state: "visible", timeout: 60_000 }).catch(() => {}),
@@ -80,7 +80,7 @@ test("new project boots and the preview iframe shows the template", async ({ pag
 
   // Create a project from the home composer.
   await page.goto("/")
-  await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+  await page.waitForSelector("text=What are we building", { timeout: 30_000 })
   const input = homeComposerInput(page)
   await input.click()
   await input.fill("A simple starter project for preview smoke testing")

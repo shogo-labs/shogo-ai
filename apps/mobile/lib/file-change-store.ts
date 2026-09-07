@@ -13,7 +13,7 @@
  * Deliberately keyed on the canonical tool names the agent runtime actually
  * emits (`write_file` / `edit_file` / `delete_file`, plus the legacy
  * `Write` / `Edit` / `StrReplace` / `Delete` aliases the UI still renders
- * for older sessions) — the same set `EditingGroup.tsx` and
+ * for older sessions) — the same set `WorkGroup.tsx` and
  * `tool-categories.ts` group on. This supersedes `getModifiedFilePaths` in
  * `ChatPanel.tsx`, which matched `Write`/`Edit`/`StrReplace` but not the
  * `write_file`/`edit_file` names the agent actually emits, and whose

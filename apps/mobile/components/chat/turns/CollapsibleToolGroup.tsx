@@ -112,6 +112,26 @@ export interface CollapsibleToolGroupProps {
    * same page don't share animation state. Pass e.g. the group id.
    */
   contentKey?: string
+  /**
+   * Whether the group should auto-expand while `isStreaming` is true
+   * (uncontrolled mode only). Defaults to `true`, preserving the
+   * original "auto-open while live, auto-close on completion"
+   * behaviour used by `ThinkingWidget`'s reasoning body and the
+   * turn-level "Worked for X" wrapper. `WorkGroup` passes `false` so
+   * individual work runs stay collapsed with a live one-line label
+   * while running — matching the Cursor-style reference screenshots —
+   * and only the user tapping the chevron expands them mid-stream.
+   */
+  defaultExpandedWhileStreaming?: boolean
+  /** Optional trailing element rendered after the label, before the chevron (e.g. a +N/-N diff badge). */
+  badge?: ReactNode
+  /**
+   * When true, renders the label (+ optional badge) as a static row
+   * with no chevron and no expandable body — used when there's
+   * nothing to expand (e.g. a "Worked for X" header on a turn with no
+   * earlier work log).
+   */
+  disabled?: boolean
   children: ReactNode
 }
 
@@ -122,9 +142,14 @@ function CollapsibleToolGroupImpl({
   onToggle,
   className,
   contentKey = "collapsible-tool-content",
+  defaultExpandedWhileStreaming = true,
+  badge,
+  disabled = false,
   children,
 }: CollapsibleToolGroupProps) {
-  const [internalExpanded, setInternalExpanded] = useState(isStreaming)
+  const [internalExpanded, setInternalExpanded] = useState(
+    isStreaming && defaultExpandedWhileStreaming,
+  )
   const userClosedRef = useRef(false)
   const [measuredHeight, setMeasuredHeight] = useState(0)
   const colorScheme = useColorScheme()
@@ -134,7 +159,7 @@ function CollapsibleToolGroupImpl({
   const isControlled = controlledExpanded !== undefined
   const isOpen = isControlled
     ? !!controlledExpanded
-    : isStreaming && !userClosedRef.current
+    : isStreaming && defaultExpandedWhileStreaming && !userClosedRef.current
       ? true
       : internalExpanded
 
@@ -142,14 +167,14 @@ function CollapsibleToolGroupImpl({
     if (isControlled) return
     if (isStreaming) {
       userScrolledRef.current = false
-      if (!userClosedRef.current) {
+      if (!userClosedRef.current && defaultExpandedWhileStreaming) {
         setInternalExpanded(true)
       }
     } else {
       setInternalExpanded(false)
       userClosedRef.current = false
     }
-  }, [isStreaming, isControlled])
+  }, [isStreaming, isControlled, defaultExpandedWhileStreaming])
 
   const toggleOpen = useCallback(() => {
     if (onToggle) {
@@ -220,6 +245,15 @@ function CollapsibleToolGroupImpl({
     [measuredHeight, isStreaming],
   )
 
+  if (disabled) {
+    return (
+      <View className={cn("flex-row items-center gap-1.5", className)}>
+        <Text className="text-[11px] text-muted-foreground">{label}</Text>
+        {badge}
+      </View>
+    )
+  }
+
   return (
     <View className={cn("", className)}>
       <Pressable
@@ -229,6 +263,7 @@ function CollapsibleToolGroupImpl({
         accessibilityLabel={label}
       >
         <Text className="text-[11px] text-muted-foreground">{label}</Text>
+        {badge}
         <Motion.View
           animate={isOpen ? ROTATE_OPEN : ROTATE_CLOSED}
           transition={ROTATE_TRANSITION}

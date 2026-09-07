@@ -23,6 +23,7 @@ import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown } from "lucide-react-native"
 import { MarkdownText } from "../MarkdownText"
+import { formatThoughtLabel } from "./workSummary"
 
 const ANIM_DURATION = 500
 const STREAM_MAX_HEIGHT = 200
@@ -183,11 +184,7 @@ function ThinkingWidgetImpl({
     })
   }, [isStreaming, clearCloseTimer])
 
-  const label = isStreaming
-    ? "Thinking…"
-    : duration !== undefined
-      ? `Thought for ${duration}s`
-      : "Thought"
+  const label = formatThoughtLabel(duration, isStreaming)
 
   const hasText = text.length > 0
   // Always cap at STREAM_MAX_HEIGHT with the inner ScrollView handling

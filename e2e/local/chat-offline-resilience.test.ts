@@ -192,7 +192,7 @@ async function waitForAgentIdle(page: Page, timeoutMs = 30_000) {
 
 async function createProjectAndWait(page: Page, prompt: string) {
   await page.goto("/")
-  await page.waitForSelector("text=What's on your mind", { timeout: 20_000 })
+  await page.waitForSelector("text=What are we building", { timeout: 20_000 })
 
   const input = homeComposerInput(page)
   await input.click()

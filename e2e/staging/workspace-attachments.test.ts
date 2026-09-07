@@ -72,7 +72,7 @@ async function ensureAuthenticated(page: Page, user: TestUser): Promise<void> {
   // with a generous budget: the authenticated home (local mode, or an
   // already-signed-in staging session) vs. the sign-in screen's "Sign Up" tab
   // (fresh staging account).
-  const home = page.getByText("What's on your mind", { exact: false }).first()
+  const home = page.getByText("What are we building", { exact: false }).first()
   const signUpTab = page.getByRole("tab", { name: "Sign Up" })
   await Promise.race([
     home.waitFor({ state: "visible", timeout: 60_000 }).catch(() => {}),
