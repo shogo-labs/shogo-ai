@@ -574,9 +574,10 @@ describe('AI proxy model listing and token generation', () => {
     // chat picker's unseeded-instance fallback) — not every id the static
     // MODEL_CATALOG has ever shipped.
     expect(data.data.some((model: any) => model.id === 'claude-haiku-4-5-20251001' && model.available === true)).toBe(true)
-    expect(data.data.some((model: any) => model.id === 'gpt-5.4-nano' && model.available === true)).toBe(true)
+    expect(data.data.some((model: any) => model.id === 'gpt-5.6-luna' && model.available === true)).toBe(true)
     // Legacy catalog entries are routable but no longer listed by default.
     expect(data.data.some((model: any) => model.id === 'gpt-4o-mini')).toBe(false)
+    expect(data.data.some((model: any) => model.id === 'gpt-5.4-nano')).toBe(false)
     expect(data.data.some((model: any) => model.id === 'claude-3-haiku-20240307')).toBe(false)
   })
 
