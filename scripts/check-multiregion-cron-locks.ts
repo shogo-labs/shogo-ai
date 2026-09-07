@@ -513,6 +513,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'cost-analytics.service.ts:1217 find-then-create/update keyed on the composite; admin request path.',
   },
   {
+    key: 'MessageFeedback.(messageId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'chat-message-feedback.ts upserts on (messageId,userId) from the authenticated caller\'s PUT /api/chat-messages/:id/feedback request; one writer (the reacting user) per row, DELETE is a deleteMany on the same pair.',
+  },
+  {
     key: 'LicenseKey.codeHash',
     category: 'random_secret',
     reason:

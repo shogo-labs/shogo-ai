@@ -929,7 +929,7 @@ const HomeScreen = observer(function HomeScreen() {
             className={`text-center font-bold text-foreground ${isNativePhone ? 'mb-3' : 'mb-2'}`}
             style={heroTitleStyle}
           >
-            What's on your mind, {firstName}?
+            What are we building, {firstName}?
           </Text>
 
           <View className="w-full rounded-2xl" style={composerWrapperStyle}>

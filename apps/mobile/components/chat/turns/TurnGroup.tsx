@@ -7,11 +7,9 @@
  * Renders tool calls interleaved within assistant content.
  */
 
-import { memo, useState, useCallback } from "react"
-import { View, Text, Pressable, Platform, type ViewStyle } from "react-native"
+import { memo } from "react"
+import { View, Platform, type ViewStyle } from "react-native"
 import { Motion } from "@legendapp/motion"
-import * as Clipboard from "expo-clipboard"
-import { Copy, Check } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
 import type { ConversationTurn } from "./types"
@@ -19,6 +17,8 @@ import { TurnHeader } from "./TurnHeader"
 import { MessageContent, extractTextContent } from "./MessageContent"
 import { AssistantContent } from "./AssistantContent"
 import { EditableUserMessage } from "./EditableUserMessage"
+import { TurnFooter } from "./TurnFooter"
+import { extractTurnTiming } from "./turnShaping"
 import { ToolTimeline } from "../tools"
 
 export interface TurnGroupProps {
@@ -26,38 +26,6 @@ export interface TurnGroupProps {
   phase?: string | null
   showToolTimeline?: boolean
   className?: string
-}
-
-function CopyButton({ text, className }: { text: string; className?: string }) {
-  const [copied, setCopied] = useState(false)
-
-  const handleCopy = useCallback(async () => {
-    if (!text) return
-    try {
-      await Clipboard.setStringAsync(text)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // Silently fail on copy error
-    }
-  }, [text])
-
-  return (
-    <Pressable
-      onPress={handleCopy}
-      className={cn(
-        "items-center justify-center rounded-lg p-1",
-        className
-      )}
-      accessibilityLabel={copied ? "Copied" : "Copy message"}
-    >
-      {copied ? (
-        <Check className="h-4 w-4 text-green-500" />
-      ) : (
-        <Copy className="h-4 w-4 text-muted-foreground" />
-      )}
-    </Pressable>
-  )
 }
 
 const DOT_DURATION = 600
@@ -174,9 +142,11 @@ export const TurnGroup = memo(
             />
           )}
           {!turn.isStreaming && (
-            <View className="flex-row justify-start pl-3">
-              <CopyButton text={extractTextContent(turn.assistantMessage)} />
-            </View>
+            <TurnFooter
+              messageId={turn.assistantMessage.id}
+              text={extractTextContent(turn.assistantMessage)}
+              completedAt={extractTurnTiming(turn.assistantMessage).completedAt}
+            />
           )}
         </View>
       )}

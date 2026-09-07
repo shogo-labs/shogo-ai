@@ -53,3 +53,14 @@ export {
   type RollbackResult,
   type FilesRevertedDetail,
 } from './message-edit-api'
+
+export {
+  setMessageFeedback,
+  clearMessageFeedback,
+  getSessionFeedback,
+  type MessageFeedbackThumbs,
+  type SetMessageFeedbackResult,
+  type SessionFeedbackResult,
+} from './feedback-api'
+
+export { forkChatSession, type ForkSessionResult } from './fork-api'

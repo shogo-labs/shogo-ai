@@ -61,6 +61,8 @@ import { publicApiRoutes } from './routes/public-api'
 import { voiceRoutes } from './routes/voice'
 import { chatRoutes } from './routes/chat'
 import { createChatMessageEditRoutes } from './routes/chat-message-edits'
+import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from './routes/chat-message-feedback'
+import { createChatSessionForkRoutes } from './routes/chat-session-fork'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import {
   generateTitleCompletion,
@@ -8412,6 +8414,19 @@ app.get('/api/invite-links/:token/info', async (c) => {
 // more specific `/:id/truncate-from` here instead of falling through
 // to the generated `/:id` PATCH/DELETE handlers in chat-message.routes.ts.
 app.route('/api/chat-messages', createChatMessageEditRoutes())
+
+// Turn feedback (thumbs up/down) — PUT/DELETE /:id/feedback on a message,
+// GET /:id/feedback on a session (the caller's own reactions, keyed by
+// messageId). Both MUST be mounted BEFORE their respective generated
+// routers for the same `/:id/...` matching reason as chat-message-edits above.
+app.route('/api/chat-messages', createChatMessageFeedbackRoutes())
+app.route('/api/chat-sessions', createChatSessionFeedbackRoutes())
+
+// Conversation forking — POST /api/chat-sessions/:id/fork { messageId }
+// clones a session's messages up to and including `messageId` into a new
+// session. MUST be mounted BEFORE the generated chat-session router for
+// the same `/:id/...` matching reason as above.
+app.route('/api/chat-sessions', createChatSessionForkRoutes())
 
 // Unread notification count for the in-app inbox bell/badge. MUST be mounted
 // BEFORE the generated routes so Hono matches `/notifications/unread-count`

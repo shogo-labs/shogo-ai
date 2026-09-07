@@ -66,9 +66,19 @@ import {
   truncateMessagesFrom,
   getPrecedingCheckpoint,
   rollbackProjectToCheckpoint,
+  setMessageFeedback,
+  clearMessageFeedback,
+  getSessionFeedback,
+  forkChatSession,
   type PrecedingCheckpointResult,
+  type MessageFeedbackThumbs,
 } from "@shogo/shared-app/chat"
-import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession, useProjectCollection } from "@shogo/shared-app/domain"
+import {
+  useSDKDomains,
+  useDomainActions,
+  useChatMessageCollectionForSession,
+  useProjectCollection,
+} from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import { probeChatTurnStatus, shouldAttachLiveStream, type ChatTurnStatus } from "./probe-turn-status"
@@ -82,6 +92,7 @@ import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } 
 
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
+import { chatSessionEvents } from "../../lib/chat-session-events"
 import { useActiveInstance } from "../../contexts/active-instance"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
@@ -147,6 +158,7 @@ import {
   MessageEditProvider,
   type MessageEditOptions,
 } from "./turns/MessageEditContext"
+import { TurnFooterProvider } from "./turns/TurnFooterContext"
 import { EditConfirmDialogHost } from "./turns/EditConfirmDialog"
 import { PhaseEmptyState } from "./empty"
 import {
@@ -1215,6 +1227,31 @@ export const ChatPanel = observer(function ChatPanel({
   // Per-session MST collection: isolated from sibling ChatPanels. Reads never
   // flip to 0 because another session's `loadPage` clobbered the singleton.
   const sessionMessages = useChatMessageCollectionForSession(currentSessionId)
+
+  // Caller's own thumbs up/down reactions for this session, keyed by
+  // messageId — powers the `TurnFooter` initial thumb state. Loaded
+  // once per session (below) and updated optimistically by
+  // `handleSetFeedback` / `handleClearFeedback`.
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, MessageFeedbackThumbs>>({})
+
+  useEffect(() => {
+    if (!currentSessionId) {
+      setFeedbackMap({})
+      return
+    }
+    let cancelled = false
+    setFeedbackMap({})
+    getSessionFeedback(studioChat.chatSessionCollection, currentSessionId)
+      .then((feedback) => {
+        if (!cancelled) setFeedbackMap(feedback)
+      })
+      .catch((err) => {
+        console.warn("[ChatPanel] Failed to load session feedback:", err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentSessionId, studioChat])
 
   // Loading state for Effect 1. Kept as *both* a ref (for synchronous reads
   // elsewhere) AND state (so changes to it can retrigger Effect 1 via deps,
@@ -3268,6 +3305,11 @@ export const ChatPanel = observer(function ChatPanel({
             id: msg.id,
             role: msg.role as "user" | "assistant",
             content: msg.content,
+            // Carried through so `extractTurnTiming`'s createdAt fallback
+            // and the `TurnFooter` relative-time label ("2m ago") have a
+            // real timestamp for historical (pre-`data-turn-timing`)
+            // messages loaded from the server.
+            createdAt: msg.createdAt,
           }
           if (msg.parts) {
             try {
@@ -3467,6 +3509,7 @@ export const ChatPanel = observer(function ChatPanel({
           id: msg.id,
           role: msg.role as "user" | "assistant",
           content: msg.content,
+          createdAt: msg.createdAt,
         }
         if (msg.parts) {
           try {
@@ -5052,6 +5095,93 @@ export const ChatPanel = observer(function ChatPanel({
     ],
   )
 
+  // Same optimistic-id guard as `canEditMessage` above — a message that
+  // hasn't round-tripped to the server yet has no row for
+  // `MessageFeedback`/`fork` to act on.
+  const canActOnTurnMessage = useCallback((messageId: string) => {
+    if (!messageId) return false
+    if (messageId.startsWith("temp-")) return false
+    if (messageId.startsWith("optimistic-")) return false
+    return true
+  }, [])
+
+  const handleSetFeedback = useCallback(
+    async (messageId: string, thumbs: MessageFeedbackThumbs) => {
+      if (!sessionMessages) return
+      const previous = feedbackMap[messageId]
+      setFeedbackMap((prev) => ({ ...prev, [messageId]: thumbs }))
+      try {
+        await setMessageFeedback(sessionMessages, messageId, thumbs)
+      } catch (err) {
+        console.error("[ChatPanel] Failed to set message feedback:", err)
+        setFeedbackMap((prev) => {
+          const next = { ...prev }
+          if (previous) next[messageId] = previous
+          else delete next[messageId]
+          return next
+        })
+        throw err
+      }
+    },
+    [sessionMessages, feedbackMap],
+  )
+
+  const handleClearFeedback = useCallback(
+    async (messageId: string) => {
+      if (!sessionMessages) return
+      const previous = feedbackMap[messageId]
+      setFeedbackMap((prev) => {
+        const next = { ...prev }
+        delete next[messageId]
+        return next
+      })
+      try {
+        await clearMessageFeedback(sessionMessages, messageId)
+      } catch (err) {
+        console.error("[ChatPanel] Failed to clear message feedback:", err)
+        if (previous) {
+          setFeedbackMap((prev) => ({ ...prev, [messageId]: previous }))
+        }
+        throw err
+      }
+    },
+    [sessionMessages, feedbackMap],
+  )
+
+  // Fork the current session at `messageId` into a brand-new session, then
+  // hand control to the parent (`onChatSessionChange`, e.g. the project
+  // layout's tab state) and broadcast on `chatSessionEvents` so the
+  // sidebar's chat list refreshes to include the new chat and any other
+  // mounted listener (cross-tab, IDE embed) highlights it as active. See
+  // `handleCreateNewSession` in the project layout for the same
+  // emit-after-create pattern this mirrors.
+  const handleForkFromMessage = useCallback(
+    async (messageId: string) => {
+      if (!currentSessionId) return
+      const result = await forkChatSession(
+        studioChat.chatSessionCollection,
+        currentSessionId,
+        messageId,
+      )
+      if (projectId) {
+        chatSessionEvents.emit({ projectId, activeSessionId: result.sessionId, refresh: true })
+      }
+      onChatSessionChange?.(result.sessionId)
+    },
+    [currentSessionId, studioChat, projectId, onChatSessionChange],
+  )
+
+  const turnFooterValue = useMemo(
+    () => ({
+      feedback: feedbackMap,
+      setFeedback: handleSetFeedback,
+      clearFeedback: handleClearFeedback,
+      forkFromMessage: handleForkFromMessage,
+      canActOnMessage: canActOnTurnMessage,
+    }),
+    [feedbackMap, handleSetFeedback, handleClearFeedback, handleForkFromMessage, canActOnTurnMessage],
+  )
+
   const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
 
   // Generate a stakeholder summary for a plan that doesn't have one yet.
@@ -5696,12 +5826,14 @@ export const ChatPanel = observer(function ChatPanel({
             )}
             {displayMessages.length > 0 ? (
               <MessageEditProvider {...messageEditValue}>
-                <TurnList
-                  messages={displayMessages}
-                  isStreaming={isStreaming}
-                  phase={phase}
-                  subagentToolCalls={accumulatedSubagentTools}
-                />
+                <TurnFooterProvider {...turnFooterValue}>
+                  <TurnList
+                    messages={displayMessages}
+                    isStreaming={isStreaming}
+                    phase={phase}
+                    subagentToolCalls={accumulatedSubagentTools}
+                  />
+                </TurnFooterProvider>
               </MessageEditProvider>
             ) : !isStreaming && !isInitialLoadComplete && currentSessionId ? (
               <View className="flex-col items-center justify-center flex-1 gap-3">

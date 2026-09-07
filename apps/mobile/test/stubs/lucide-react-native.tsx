@@ -258,6 +258,7 @@ export {
   Icon as Tag,
   Icon as Terminal,
   Icon as TestTube,
+  Icon as ThumbsDown,
   Icon as ThumbsUp,
   Icon as Ticket,
   Icon as Timer,
