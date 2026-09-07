@@ -1,20 +1,35 @@
 # [Shogo AI](https://shogo.ai)
 
-<!-- coverage-badge:backend -->
-[![Backend coverage](https://img.shields.io/badge/backend%20coverage-84.30%25-yellow)](./coverage/lcov.info)
-<!-- /coverage-badge:backend -->
-<!-- coverage-badge:frontend -->
-[![Frontend coverage](https://img.shields.io/badge/frontend%20coverage-67.82%25-orange)](./coverage/frontend-lcov.info)
-<!-- /coverage-badge:frontend -->
-
-AI-first agent builder for chat-driven apps, persistent agents, and dynamic
-workspaces.
+Shogo is an open-source platform for building AI agents that do real work:
+reading from your systems, taking actions, and running workflows end to
+end. TypeScript throughout. Self-host it or use Shogo Cloud.
 
 **[Website](https://shogo.ai)** &middot; **[Launch Studio](https://studio.shogo.ai)** &middot; **[Documentation](https://shogo.ai/docs)**
 
 Shogo combines a Hono API, Expo-based clients, agent runtimes, project
 runtimes, and a developer SDK into one platform for building and operating
 agentic products.
+
+**License:** the SDK and client libraries you actually integrate
+(`@shogo-ai/*`, plus the mobile/desktop clients) are MIT. The server
+components behind Shogo Cloud (`apps/api/`, `packages/agent-runtime/`,
+`packages/shared-runtime/`) are AGPL-3.0-or-later — a moat against hosted
+resellers, not a restriction on your own use, modification, or
+self-hosting. Full breakdown in [Open Source Model](#open-source-model)
+below and [docs/LICENSING.md](./docs/LICENSING.md).
+
+There's no one-command quickstart yet. Running Shogo locally means
+cloning the repo, installing with Bun, starting Postgres/Redis/MinIO in
+Docker, and running migrations — realistically a few minutes, not 60
+seconds. The real steps are in [Local development](#local-development)
+below.
+
+<!-- coverage-badge:backend -->
+[![Backend coverage](https://img.shields.io/badge/backend%20coverage-84.30%25-yellow)](./coverage/lcov.info)
+<!-- /coverage-badge:backend -->
+<!-- coverage-badge:frontend -->
+[![Frontend coverage](https://img.shields.io/badge/frontend%20coverage-67.82%25-orange)](./coverage/frontend-lcov.info)
+<!-- /coverage-badge:frontend -->
 
 ## Open Source Model
 
