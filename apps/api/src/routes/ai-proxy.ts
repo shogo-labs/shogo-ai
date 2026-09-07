@@ -1528,6 +1528,35 @@ function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): R
 }
 
 /**
+ * Build the JSON body sent to an OpenAI-compatible endpoint, translating the
+ * client-facing `max_tokens` field to whatever the upstream provider expects.
+ *
+ * OpenAI's GPT-5+ generation (gpt-5-mini, gpt-5.4-mini/nano, gpt-5.5,
+ * gpt-5.6-sol/terra/luna, gpt-6-astra, o1/o3/o4, ...) rejects `max_tokens`
+ * with a 400 ("Unsupported parameter: 'max_tokens' is not supported with
+ * this model. Use 'max_completion_tokens' instead"). `max_completion_tokens`
+ * is accepted by every current OpenAI model — including the legacy
+ * gpt-4/gpt-4o/gpt-4-turbo family that still accepts `max_tokens` too — so
+ * it's safe to always rewrite the field when calling native OpenAI. Other
+ * OpenAI-*compatible* backends routed through this same function (local
+ * runtimes, OpenRouter, admin-configured custom providers) generally only
+ * understand `max_tokens`, so leave those untouched.
+ */
+function buildOpenAICompatibleBody(
+  request: ChatCompletionRequest,
+  modelConfig: ModelConfig,
+  extra: Record<string, unknown>,
+): Record<string, unknown> {
+  const { max_tokens, ...rest } = request
+  const body: Record<string, unknown> = { ...rest, model: modelConfig.apiModel, ...extra }
+  if (max_tokens !== undefined) {
+    if (modelConfig.provider === 'openai') body.max_completion_tokens = max_tokens
+    else body.max_tokens = max_tokens
+  }
+  return body
+}
+
+/**
  * Proxy a streaming request to an OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio).
  */
 export async function proxyOpenAIStream(
@@ -1543,12 +1572,10 @@ export async function proxyOpenAIStream(
   const response = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      ...request,
-      model: modelConfig.apiModel,
+    body: JSON.stringify(buildOpenAICompatibleBody(request, modelConfig, {
       stream: true,
       stream_options: { include_usage: true },
-    }),
+    })),
     signal,
   })
 
@@ -1647,11 +1674,7 @@ export async function proxyOpenAINonStream(
   const response = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      ...request,
-      model: modelConfig.apiModel,
-      stream: false,
-    }),
+    body: JSON.stringify(buildOpenAICompatibleBody(request, modelConfig, { stream: false })),
     signal,
   })
 
