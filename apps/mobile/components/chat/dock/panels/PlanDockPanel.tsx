@@ -3,8 +3,9 @@
 
 /**
  * Dock panel for the session's latest plan — reuses the existing `PlanCard`
- * unchanged, fed by the same `pendingPlan` / `confirmedPlan` state `ChatPanel`
- * already tracks. No new runtime plumbing.
+ * in `embedded` mode (no outer rounded/border/bg card of its own, since
+ * `DockPanel` already provides one), fed by the same `pendingPlan` /
+ * `confirmedPlan` state `ChatPanel` already tracks. No new runtime plumbing.
  */
 
 import { useMemo } from "react"
@@ -41,6 +42,7 @@ export function PlanDockPanel({ pendingPlan, confirmedPlan, onBuild, onOpenPlan,
       render: () => (
         <PlanCard
           plan={plan}
+          embedded
           onBuild={!isConfirmed && onBuild ? () => onBuild(plan) : undefined}
           onOpenPlan={onOpenPlan && plan.filepath ? () => onOpenPlan(plan.filepath!) : undefined}
           onGenerateSummary={

@@ -18,6 +18,17 @@
  * `ChatPanel` reads `store.getHeight()` (reported here via `onLayout`) to
  * pad the message list so the dock never permanently hides the newest
  * message.
+ *
+ * Horizontal padding matches `ChatInput`'s own outer padding (`px-3` web /
+ * `px-2` native) so the dock's edges line up with the composer's visible
+ * bordered box below it, rather than the wider positioning wrapper both
+ * sit in.
+ *
+ * Each zone (status, blocking) renders as exactly ONE rounded card —
+ * `rounded-xl` on all four corners, always, regardless of how many panels
+ * are stacked inside or whether the status zone is mid-scroll — with
+ * individual panels separated by hairline dividers (`DockPanel`'s
+ * `isFirst`) rather than each being its own nested card.
  */
 
 import { useCallback, useSyncExternalStore } from "react"
@@ -37,6 +48,13 @@ const styles = StyleSheet.create({
   topFade: { position: "absolute", top: 0, left: 0, right: 0, height: FADE_HEIGHT, pointerEvents: "none" },
   scrollContent: { paddingTop: 2, paddingBottom: 2 },
 })
+
+// Matches ChatInput's own outer horizontal padding (`px-3` web / `px-2`
+// native) — see the file header comment.
+const HORIZONTAL_PADDING_CLASS = Platform.OS !== "web" ? "px-2" : "px-3"
+// `rounded-xl` matches ChatInput's own bordered box directly below, so the
+// dock reads as the same card language stacked on top of the composer.
+const ZONE_CARD_CLASS = "overflow-hidden rounded-xl border border-border/60 bg-popover/95 shadow-md"
 
 export interface ChatDockProps {
   /** Available height above the composer, used to cap the status zone at ~45%. */
@@ -77,39 +95,38 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
   return (
     <View
       style={styles.container}
-      className={cn("mb-1.5 w-full max-w-3xl self-center gap-1.5", className)}
+      className={cn("mb-1.5 w-full max-w-3xl self-center gap-1.5", HORIZONTAL_PADDING_CLASS, className)}
       pointerEvents="box-none"
       onLayout={handleLayout}
     >
       {statusPanels.length > 0 && (
-        <View style={styles.relative}>
+        <View style={styles.relative} className={ZONE_CARD_CLASS}>
           <ScrollView
             style={{ maxHeight: maxStatusHeight }}
             contentContainerStyle={styles.scrollContent}
             nestedScrollEnabled
             showsVerticalScrollIndicator={false}
           >
-            <View className="gap-1.5">
-              {statusPanels.map((panel) => {
-                const expanded = store.isExpanded(panel.id)
-                return (
-                  <DockPanel
-                    key={panel.id}
-                    title={panel.title}
-                    icon={panel.icon}
-                    summary={panel.summary}
-                    accent={panel.accent}
-                    headerActions={panel.headerActions}
-                    onDismiss={panel.onDismiss}
-                    expanded={expanded}
-                    collapsible
-                    onToggle={() => store.toggle(panel.id)}
-                  >
-                    {panel.render({ expanded })}
-                  </DockPanel>
-                )
-              })}
-            </View>
+            {statusPanels.map((panel, index) => {
+              const expanded = store.isExpanded(panel.id)
+              return (
+                <DockPanel
+                  key={panel.id}
+                  title={panel.title}
+                  icon={panel.icon}
+                  summary={panel.summary}
+                  accent={panel.accent}
+                  headerActions={panel.headerActions}
+                  onDismiss={panel.onDismiss}
+                  expanded={expanded}
+                  collapsible
+                  onToggle={() => store.toggle(panel.id)}
+                  isFirst={index === 0}
+                >
+                  {panel.render({ expanded })}
+                </DockPanel>
+              )
+            })}
           </ScrollView>
           {Platform.OS !== "web" && statusPanels.length > 1 && (
             <LinearGradient colors={[fadeColor, fadeColorTransparent]} style={styles.topFade} />
@@ -118,8 +135,8 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
       )}
 
       {blockingPanels.length > 0 && (
-        <View className="gap-1.5">
-          {blockingPanels.map((panel) => (
+        <View className={ZONE_CARD_CLASS}>
+          {blockingPanels.map((panel, index) => (
             <DockPanel
               key={panel.id}
               title={panel.title}
@@ -130,6 +147,7 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
               expanded
               collapsible={false}
               onToggle={() => {}}
+              isFirst={index === 0}
             >
               {panel.render({ expanded: true })}
             </DockPanel>

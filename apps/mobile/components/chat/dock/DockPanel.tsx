@@ -16,6 +16,13 @@
  * store already reports them as always-expanded and refuses to toggle
  * them, but `collapsible={false}` here is a second line of defense against
  * a stray tap collapsing something the agent turn is blocked on.
+ *
+ * Deliberately chromeless at the panel level (no rounded/border/bg/shadow
+ * of its own) — `ChatDock` wraps each zone's stack of panels in ONE
+ * rounded card, so nesting a second card here would read as "a card
+ * within a card". `isFirst` suppresses the inter-panel divider for the
+ * top panel in a zone, since the zone card's own border already closes
+ * that edge.
  */
 
 import { useMemo, type ReactNode } from "react"
@@ -51,6 +58,9 @@ export interface DockPanelProps {
   collapsible: boolean
   onToggle: () => void
   children: ReactNode
+  /** Suppresses the top divider — set on the first panel stacked inside a
+   *  zone card so it doesn't double up with the card's own top edge. */
+  isFirst?: boolean
 }
 
 export function DockPanel({
@@ -64,11 +74,12 @@ export function DockPanel({
   collapsible,
   onToggle,
   children,
+  isFirst = false,
 }: DockPanelProps) {
   const rotateAnimate = useMemo(() => (expanded ? ROTATE_OPEN : ROTATE_CLOSED), [expanded])
 
   return (
-    <View className="w-full overflow-hidden rounded-lg border border-border/60 bg-popover/95 shadow-md">
+    <View className={cn("w-full overflow-hidden", !isFirst && "border-t border-border/50")}>
       <Pressable
         onPress={collapsible ? onToggle : undefined}
         disabled={!collapsible}
