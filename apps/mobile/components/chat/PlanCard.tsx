@@ -38,6 +38,10 @@ interface PlanCardProps {
   /** Triggers an on-demand summary generation for a plan that does not yet
    *  have one. Surfaced when summary is missing and idle. */
   onGenerateSummary?: () => void | Promise<void>
+  /** Set by `PlanDockPanel`: drops the outer rounded/border/bg card so this
+   *  doesn't nest a card inside `DockPanel`'s own zone-level card — see
+   *  `ChatDock`'s file header comment. Internal section dividers are kept. */
+  embedded?: boolean
 }
 
 // `AssistantContent` rebuilds the `plan` object literal on every commit while
@@ -53,6 +57,7 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   if (prev.onOpenPlan !== next.onOpenPlan) return false
   if (prev.onViewFull !== next.onViewFull) return false
   if (prev.onGenerateSummary !== next.onGenerateSummary) return false
+  if (prev.embedded !== next.embedded) return false
   const a = prev.plan
   const b = next.plan
   if (a === b) return true
@@ -75,7 +80,7 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   return true
 }
 
-function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed, onGenerateSummary }: PlanCardProps) {
+function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed, onGenerateSummary, embedded = false }: PlanCardProps) {
   const [expanded, setExpanded] = useState(false)
   const [tasksExpanded, setTasksExpanded] = useState(false)
   const [activeTab, setActiveTab] = useState<PlanTab>("technical")
@@ -121,9 +126,9 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
   const viewFullExpands = handleViewFull !== undefined && !onViewFull && !canNavigateToPlan
 
   return (
-    <View className="mx-2 my-3 rounded-xl border border-border bg-card overflow-hidden">
+    <View className={cn(!embedded && "mx-2 my-3 rounded-xl border border-border bg-card overflow-hidden")}>
       {/* Header */}
-      <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border bg-muted/30">
+      <View className={cn("flex-row items-center gap-2 px-4 py-3", !embedded && "border-b border-border bg-muted/30")}>
         <ClipboardList className="h-4 w-4 text-primary" size={16} />
         <View className="flex-1">
           <Text className="font-semibold text-sm text-foreground">{plan.name}</Text>

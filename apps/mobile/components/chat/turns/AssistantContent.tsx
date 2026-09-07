@@ -24,11 +24,17 @@ import { AskUserQuestionWidget, AskUserQuestionBar } from "./AskUserQuestionWidg
 import { askUserStreamVariant } from "./pendingQuestion"
 import { TodoWidget } from "./TodoWidget"
 import { ToolCallGroup } from "./ToolCallGroup"
-import { ExplorationGroup } from "./ExplorationGroup"
-import { EditingGroup } from "./EditingGroup"
+import { WorkGroup } from "./WorkGroup"
+import { WorkedForGroup } from "./WorkedForGroup"
+import { PlanningStatusLine } from "./PlanningStatusLine"
 import type { MessagePart, GroupedMessagePart } from "./types"
-import { type ToolCallData } from "../tools/types"
-import { getToolSummary } from "../tools/summary"
+import {
+  groupWorkParts,
+  partitionTurn,
+  extractTurnTiming,
+  shouldShowPlanningStatus,
+} from "./turnShaping"
+import { buildFallbackWorkedLabel } from "./workSummary"
 import {
   TASK_TOOL_NAMES,
   extractOrderedParts,
@@ -41,9 +47,11 @@ import { NotifyErrorWidget } from "./NotifyErrorWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
-import { PlanCard, type PlanData } from "../PlanCard"
+import type { PlanData } from "../PlanCard"
+import { PlanReferenceCard } from "./PlanReferenceCard"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 import { useTodoStateStore, parseTodos as parseTodosForStore } from "../../../lib/todo-state-store"
+import { useFileChangeStore, classifyFileToolName, extractFilePath } from "../../../lib/file-change-store"
 import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
@@ -157,31 +165,6 @@ export interface AssistantContentProps {
   className?: string
 }
 
-const UNGROUPABLE_TOOLS = new Set([
-  "ask_user",
-  "notify_user_error",
-  "TodoWrite",
-  "todo_write",
-  "connect",
-  // Legacy: keep so historical install turns still render ungrouped
-  "tool_install",
-  "mcp_install",
-  "generate_image",
-  "exec",
-  "Bash",
-  "task",
-  "Task",
-  "agent_spawn",
-  "team_create",
-  "browser",
-  "create_plan",
-  // keep styled widgets even when consecutive:
-  "write_file",
-  "Write",
-  "edit_file",
-  "Edit",
-  "StrReplace",
-])
 const TEAM_TOOL_NAMES = new Set(["team_create"])
 
 // "Low-information" tools that render as a chrome-less, hover-highlighted
@@ -198,197 +181,6 @@ const MINIMAL_TOOL_NAMES = new Set([
   "Delete",
   "exec_wait",
 ])
-const MIN_GROUP_SIZE = 2
-
-// Verbs (from tools/summary.ts) that classify a tool call as an
-// "exploration" action — read-only investigation that the agent is
-// likely doing in bursts. The set deliberately omits destructive verbs
-// (Move, Remove, Install, etc.) so they keep their dedicated widgets,
-// and omits "Read lints" since the user asked for ReadLints to stay
-// inline rather than fold into the exploration roll-up.
-const EXPLORATION_VERBS = new Set([
-  "Read",
-  "List",
-  "Search for",
-  "Find in",
-  "Find files matching",
-  "Search the web for",
-  "Fetch",
-  "pwd",
-])
-const MIN_EXPLORATION_GROUP_SIZE = 2
-
-// Tool names that fold into the "Editing…" group. write_file / Write
-// and edit_file / Edit / StrReplace stay in UNGROUPABLE_TOOLS so the
-// generic same-name `ToolCallGroup` ignores them — the editing pass
-// below handles them instead with a richer mixed-name run.
-const EDITING_TOOL_NAMES = new Set([
-  "write_file",
-  "Write",
-  "edit_file",
-  "Edit",
-  "StrReplace",
-])
-const MIN_EDITING_GROUP_SIZE = 2
-
-function isExplorationTool(tool: ToolCallData): boolean {
-  const { verb } = getToolSummary(tool.toolName, tool.args)
-  return EXPLORATION_VERBS.has(verb)
-}
-
-function isEditingTool(tool: ToolCallData): boolean {
-  return EDITING_TOOL_NAMES.has(tool.toolName)
-}
-
-/**
- * Shell command (`exec` / `Bash`) whose verb is *not* a pure
- * exploration verb — typically a generic `Run` (bun test, node x.js,
- * unknown commands), `Install`, `git X`, or mutating ops like
- * `Move` / `Remove` / `Copy` / `Touch`. These fold into the Editing
- * group alongside writes/edits since they're actions, not pure
- * inspection.
- */
-function isShellRunCommand(tool: ToolCallData): boolean {
-  if (tool.toolName !== "exec" && tool.toolName !== "Bash") return false
-  const { verb } = getToolSummary(tool.toolName, tool.args)
-  return !EXPLORATION_VERBS.has(verb)
-}
-
-/**
- * Walk forward from `start` collecting tool parts that match
- * `accept`, treating `reasoning` parts as transparent (consumed into
- * the run but not counted toward the tool threshold). Returns the
- * exclusive end of the *trimmed* slice (trailing reasoning excluded)
- * and the tool count.
- */
-function scanTransparentRun(
-  parts: MessagePart[],
-  start: number,
-  accept: (tool: ToolCallData) => boolean,
-): { endIdx: number; toolCount: number } {
-  let j = start + 1
-  let toolCount = 1
-  let lastToolIdx = start
-  while (j < parts.length) {
-    const next = parts[j]
-    if (next.type === "reasoning") {
-      j++
-      continue
-    }
-    if (next.type === "tool" && accept(next.tool)) {
-      toolCount++
-      lastToolIdx = j
-      j++
-      continue
-    }
-    break
-  }
-  return { endIdx: lastToolIdx + 1, toolCount }
-}
-
-function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
-  const result: GroupedMessagePart[] = []
-  let i = 0
-
-  while (i < parts.length) {
-    const part = parts[i]
-
-    if (part.type !== "tool") {
-      result.push(part)
-      i++
-      continue
-    }
-
-    // Work pass: greedy run of mixed read + edit + write tools. We
-    // intentionally bypass UNGROUPABLE_TOOLS here so a `cat foo` /
-    // `ls` / `grep` exec can join the run alongside a Read/Grep —
-    // the verb classifier in tools/summary.ts already filters out
-    // destructive exec verbs.
-    //
-    // Reasoning parts are "transparent": a read → thought → read →
-    // thought → edit sequence still counts as 3 tools, with the
-    // thoughts rendered inline inside the group body. Trailing
-    // reasoning is trimmed so it belongs to the next response.
-    //
-    // After scanning, the run is classified:
-    //   - any edit/write tool or non-read shell command  → editing-group
-    //   - reads + read-only shell commands only          → exploration-group
-    const isWorkTool = (t: ToolCallData) =>
-      isExplorationTool(t) || isEditingTool(t) || isShellRunCommand(t)
-
-    if (isWorkTool(part.tool)) {
-      const { endIdx, toolCount } = scanTransparentRun(parts, i, isWorkTool)
-      const slice = parts.slice(i, endIdx)
-      const hasEditing = slice.some(
-        (p) =>
-          p.type === "tool" &&
-          (isEditingTool(p.tool) || isShellRunCommand(p.tool)),
-      )
-      if (hasEditing && toolCount >= MIN_EDITING_GROUP_SIZE) {
-        result.push({
-          type: "editing-group",
-          items: slice,
-          id: `edit-${parts[i].id}`,
-        })
-        i = endIdx
-        continue
-      }
-      if (!hasEditing && toolCount >= MIN_EXPLORATION_GROUP_SIZE) {
-        result.push({
-          type: "exploration-group",
-          items: slice,
-          id: `explore-${parts[i].id}`,
-        })
-        i = endIdx
-        continue
-      }
-      // Run below threshold — fall through to passthrough / same-name
-      // grouping so 1 lone tool still renders as a plain inline row.
-    }
-
-    if (UNGROUPABLE_TOOLS.has(part.tool.toolName)) {
-      result.push(part)
-      i++
-      continue
-    }
-
-    const toolName = part.tool.toolName
-    let j = i + 1
-    while (
-      j < parts.length &&
-      parts[j].type === "tool" &&
-      !UNGROUPABLE_TOOLS.has(
-        (parts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName
-      ) &&
-      (parts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName ===
-        toolName
-    ) {
-      j++
-    }
-
-    const runLength = j - i
-    if (runLength >= MIN_GROUP_SIZE) {
-      const groupTools = parts.slice(i, j).map((p) => ({
-        tool: (p as { type: "tool"; tool: ToolCallData; id: string }).tool,
-        id: p.id,
-      }))
-      result.push({
-        type: "tool-group",
-        toolName,
-        tools: groupTools,
-        id: `group-${parts[i].id}`,
-      })
-    } else {
-      result.push(part)
-    }
-
-    i = j
-  }
-
-  return result
-}
-
-
 const GROUP_FALLING_EDGE_DELAY_MS = 1500
 
 function isItemActive(item: MessagePart): boolean {
@@ -402,33 +194,35 @@ interface GroupSlotProps {
   id: string
   messageIsStreaming: boolean
   isLastGroup: boolean
+  isExpanded?: boolean
+  onToggle?: () => void
 }
 
-// Slots intentionally do NOT thread a controlled `isExpanded`/`onToggle`
-// down — they let `CollapsibleToolGroup` run in its uncontrolled mode so
-// the group auto-expands while `stableActive` is true and auto-collapses
-// (with the height-spring animation) once it falls. The user can still
-// toggle the chevron to override during either phase.
-const EditingGroupSlot = memo(function EditingGroupSlot({
+// Slot intentionally does NOT thread a controlled `isExpanded`/`onToggle`
+// down by default — it lets `CollapsibleToolGroup` run in its
+// uncontrolled mode so the label keeps updating live (present tense,
+// ticking counts) while `stableActive` is true, and flips to the past
+// tense + diff badge once it falls. The user can still toggle the
+// chevron to override during either phase (an explicit `onToggle` is
+// honored so an already-expanded row stays expanded across renders).
+const WorkGroupSlot = memo(function WorkGroupSlot({
   items,
   messageIsStreaming,
   isLastGroup,
+  isExpanded,
+  onToggle,
 }: GroupSlotProps) {
   const isAnyItemActive = items.some(isItemActive)
   const rawActive = isAnyItemActive || (messageIsStreaming && isLastGroup)
   const stableActive = useDelayedFalse(rawActive, GROUP_FALLING_EDGE_DELAY_MS)
-  return <EditingGroup items={items} isStreaming={stableActive} />
-})
-
-const ExplorationGroupSlot = memo(function ExplorationGroupSlot({
-  items,
-  messageIsStreaming,
-  isLastGroup,
-}: GroupSlotProps) {
-  const isAnyItemActive = items.some(isItemActive)
-  const rawActive = isAnyItemActive || (messageIsStreaming && isLastGroup)
-  const stableActive = useDelayedFalse(rawActive, GROUP_FALLING_EDGE_DELAY_MS)
-  return <ExplorationGroup items={items} isStreaming={stableActive} />
+  return (
+    <WorkGroup
+      items={items}
+      isStreaming={stableActive}
+      isExpanded={isExpanded}
+      onToggle={onToggle}
+    />
+  )
 })
 
 function ImageThumbnail({
@@ -628,6 +422,10 @@ export const AssistantContent = memo(
   // Per-chat TodoWrite store, provided by the enclosing ChatPanel so
   // sibling tabs don't share `latestTodos` / `orderedToolIds`.
   const todoStateStore = useTodoStateStore()
+  // Per-chat changed-files store feeding the dock's "Changes" panel — see
+  // file-change-store.ts for why this uses the canonical write_file /
+  // edit_file / delete_file names rather than ChatPanel's legacy helper.
+  const fileChangeStore = useFileChangeStore()
 
   // Throttle the streaming message to ~30fps so markdown re-parsing and part
   // extraction don't run per-token. When streaming ends, the final value is
@@ -648,6 +446,13 @@ export const AssistantContent = memo(
           todoStateStore.registerWrite(part.tool.id, todos)
         }
         continue
+      }
+      if (part.type === "tool") {
+        const fileKind = classifyFileToolName(part.tool.toolName)
+        if (fileKind && part.tool.state === "success") {
+          const path = extractFilePath(part.tool.args as Record<string, unknown> | undefined)
+          if (path) fileChangeStore.registerChange(part.tool.id, path, fileKind)
+        }
       }
       if (part.type !== "tool" || !TASK_TOOL_NAMES.has(part.tool.toolName)) continue
       const tool = part.tool
@@ -685,26 +490,51 @@ export const AssistantContent = memo(
         subagentStreamStore.setModel(tool.id, model)
       }
     }
-  }, [orderedParts, todoStateStore])
+  }, [orderedParts, todoStateStore, fileChangeStore])
 
   const groupedParts = useMemo(
-    () => groupConsecutiveParts(orderedParts),
+    () => groupWorkParts(orderedParts),
     [orderedParts],
+  )
+
+  const { workLog, finalSegment } = useMemo(
+    () => partitionTurn(groupedParts),
+    [groupedParts],
+  )
+
+  const timing = useMemo(() => extractTurnTiming(message), [message])
+
+  const lastGroupId = useMemo(() => {
+    const last = groupedParts[groupedParts.length - 1]
+    return last && (last.type === "work-group" || last.type === "tool-group") ? last.id : null
+  }, [groupedParts])
+
+  const showPlanningStatus = useMemo(
+    () => shouldShowPlanningStatus(orderedParts, isStreaming),
+    [orderedParts, isStreaming],
+  )
+
+  const fallbackWorkedLabel = useMemo(
+    () => buildFallbackWorkedLabel(workLog),
+    [workLog],
   )
 
   if (groupedParts.length === 0) {
     return null
   }
 
-  return (
-    <View className={cn("gap-y-1", className)}>
-      {groupedParts.map((part, index) => {
+  function renderPart(part: GroupedMessagePart, index: number) {
         if (part.type === "reasoning") {
+          // Streaming reasoning renders as the turn-level "Planning next
+          // moves" status line instead of a live ThinkingWidget — see
+          // `shouldShowPlanningStatus`. Once it completes it becomes the
+          // collapsed "Thought briefly" / "Thought for Ns" row.
+          if (part.isStreaming) return null
           return (
             <ThinkingWidget
               key={part.id}
               text={part.text}
-              isStreaming={part.isStreaming}
+              isStreaming={false}
               durationSeconds={part.durationSeconds}
             />
           )
@@ -723,26 +553,16 @@ export const AssistantContent = memo(
           )
         }
 
-        if (part.type === "exploration-group") {
+        if (part.type === "work-group") {
           return (
-            <ExplorationGroupSlot
+            <WorkGroupSlot
               key={part.id}
               items={part.items}
               id={part.id}
               messageIsStreaming={isStreaming}
-              isLastGroup={index === groupedParts.length - 1}
-            />
-          )
-        }
-
-        if (part.type === "editing-group") {
-          return (
-            <EditingGroupSlot
-              key={part.id}
-              items={part.items}
-              id={part.id}
-              messageIsStreaming={isStreaming}
-              isLastGroup={index === groupedParts.length - 1}
+              isLastGroup={part.id === lastGroupId}
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={getToggle(part.id)}
             />
           )
         }
@@ -876,23 +696,17 @@ export const AssistantContent = memo(
               !!matchingConfirmedPlan &&
               ((matchingConfirmedPlan.toolCallId && matchingConfirmedPlan.toolCallId === toolCallId) ||
                 (!!matchingConfirmedPlan.filepath && matchingConfirmedPlan.filepath === planData.filepath))
-            const isPending = part.tool.state === "success" && !!chatContext?.buildPlan && !!matchingPendingPlan && !isConfirmed
             return (
-              <PlanCard
+              <PlanReferenceCard
                 key={part.id}
                 plan={planData}
-                onBuild={isPending ? () => chatContext!.buildPlan!(planData) : undefined}
-                onOpenPlan={
+                isConfirmed={isConfirmed}
+                isUpdate={part.tool.toolName === "update_plan"}
+                onPress={
                   chatContext?.openPlan && planData.filepath
                     ? () => chatContext.openPlan?.(planData.filepath)
                     : undefined
                 }
-                onGenerateSummary={
-                  chatContext?.generateSummary && planData.filepath
-                    ? () => chatContext.generateSummary!(planData.filepath!)
-                    : undefined
-                }
-                isConfirmed={isConfirmed}
               />
             )
           }
@@ -992,7 +806,33 @@ export const AssistantContent = memo(
         }
 
         return null
-      })}
+  }
+
+  // Collapse rule: everything before the turn's last text block folds
+  // under "Worked for X" once the turn is done. While streaming, the
+  // work log renders flat (same as today) — the reference screenshots
+  // show no header at all mid-stream, just the live one-line group
+  // labels ticking as work happens; the collapse only settles once the
+  // turn completes.
+  return (
+    <View className={cn("gap-y-1", className)}>
+      {!isStreaming && workLog.length > 0 && (
+        <WorkedForGroup
+          startedAt={timing.startedAt}
+          completedAt={timing.completedAt}
+          fallbackLabel={fallbackWorkedLabel}
+          isExpanded={expandedTools.has("worked-for")}
+          onToggle={getToggle("worked-for")}
+          hasBody
+        >
+          <View className="gap-y-1">
+            {workLog.map((part, index) => renderPart(part, index))}
+          </View>
+        </WorkedForGroup>
+      )}
+      {isStreaming && workLog.map((part, index) => renderPart(part, index))}
+      {finalSegment.map((part, index) => renderPart(part, workLog.length + index))}
+      {showPlanningStatus && <PlanningStatusLine />}
     </View>
   )
   },

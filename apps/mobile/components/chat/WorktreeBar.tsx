@@ -20,33 +20,40 @@ interface WorktreesResponse {
   worktrees?: WorktreeStatus[]
 }
 
-type MergeState = 'idle' | 'merging' | 'merged' | 'conflict'
+export type MergeState = 'idle' | 'merging' | 'merged' | 'conflict'
 
-export interface WorktreeBarProps {
-  /** Resolved agent runtime URL (localAgentUrl or the agent-proxy base). */
-  agentUrl: string | null
-  /** This chat's session id (used as the worktree key). */
-  chatSessionId: string | null
-  /** Whether a turn is currently streaming — used to refresh after turns. */
-  isStreaming: boolean
-  /** Send a chat message (used to ask the agent to resolve merge conflicts). */
-  onSendMessage: (text: string) => void
+export interface UseWorktreeStatusResult {
+  /** True once the running agent reports per-chat worktrees are turned on. */
+  enabled: boolean
+  /** This chat's own worktree row, or null if it doesn't have one (yet). */
+  status: WorktreeStatus | null
+  /** Other chats' worktrees in the same project. */
+  siblings: WorktreeStatus[]
+  mergeState: MergeState
+  error: string | null
+  /** True when the panel should be shown at all — mirrors the old
+   *  `WorktreeBar` early-return guard so callers can decide dock visibility. */
+  visible: boolean
+  handleMerge: () => Promise<void>
 }
 
 /**
- * BETA: per-chat git worktrees. Shows this chat's branch + status and a
- * "Mark done & merge" action above the composer. On a clean merge it confirms
- * inline; on conflicts it asks the agent to resolve them in its worktree (the
- * runtime auto-finishes the merge once conflicts are gone, falling back to
- * ask_user for genuinely ambiguous ones).
+ * BETA: per-chat git worktrees — polls this chat's worktree status and
+ * exposes the merge action, decoupled from any UI so a dock panel can decide
+ * whether to show itself without needing to mount the presentational view
+ * first (which would create a chicken-and-egg problem: the view is what used
+ * to decide "am I enabled?").
  */
-export function WorktreeBar({ agentUrl, chatSessionId, isStreaming, onSendMessage }: WorktreeBarProps) {
+export function useWorktreeStatus(
+  agentUrl: string | null,
+  chatSessionId: string | null,
+  isStreaming: boolean,
+  onSendMessage: (text: string) => void,
+): UseWorktreeStatusResult {
   const [status, setStatus] = useState<WorktreeStatus | null>(null)
   const [siblings, setSiblings] = useState<WorktreeStatus[]>([])
   const [enabled, setEnabled] = useState(false)
   const [mergeState, setMergeState] = useState<MergeState>('idle')
-  const [confirming, setConfirming] = useState(false)
-  const [expanded, setExpanded] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const prevStreaming = useRef(isStreaming)
 
@@ -73,7 +80,6 @@ export function WorktreeBar({ agentUrl, chatSessionId, isStreaming, onSendMessag
   // Initial load + reload whenever the chat changes.
   useEffect(() => {
     setMergeState('idle')
-    setConfirming(false)
     setError(null)
     void refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -90,7 +96,6 @@ export function WorktreeBar({ agentUrl, chatSessionId, isStreaming, onSendMessag
 
   const handleMerge = useCallback(async () => {
     if (!agentUrl || !chatSessionId) return
-    setConfirming(false)
     setError(null)
     setMergeState('merging')
     try {
@@ -130,15 +135,32 @@ export function WorktreeBar({ agentUrl, chatSessionId, isStreaming, onSendMessag
     }
   }, [agentUrl, chatSessionId, onSendMessage, refresh])
 
-  // Nothing to show until this chat has an isolated worktree.
-  if (!enabled || (!status && mergeState === 'idle')) return null
+  return {
+    enabled,
+    status,
+    siblings,
+    mergeState,
+    error,
+    visible: enabled || mergeState !== 'idle',
+    handleMerge,
+  }
+}
+
+export interface WorktreeBarViewProps extends UseWorktreeStatusResult {
+  isStreaming: boolean
+}
+
+/** Pure presentational body — no data fetching of its own. */
+export function WorktreeBarView({ status, siblings, mergeState, error, isStreaming, handleMerge }: WorktreeBarViewProps) {
+  const [confirming, setConfirming] = useState(false)
+  const [expanded, setExpanded] = useState(false)
 
   const branchShort = status?.branch?.replace(/^shogo\/chat\//, '') ?? ''
   const ahead = status?.ahead ?? 0
   const changed = status ? status.changedFiles.length + status.dirtyFiles : 0
 
   return (
-    <View className="mb-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5">
+    <View>
       <View className="flex-row items-center gap-2">
         <Pressable
           onPress={() => siblings.length > 0 && setExpanded(e => !e)}
@@ -187,7 +209,10 @@ export function WorktreeBar({ agentUrl, chatSessionId, isStreaming, onSendMessag
         ) : confirming ? (
           <View className="flex-row items-center gap-1.5">
             <Pressable
-              onPress={handleMerge}
+              onPress={() => {
+                setConfirming(false)
+                void handleMerge()
+              }}
               className="px-2 py-1 rounded-md bg-primary active:bg-primary/80"
             >
               <Text className="text-[10px] font-semibold text-primary-foreground">Merge</Text>
