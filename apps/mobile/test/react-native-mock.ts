@@ -62,6 +62,16 @@ export const reactNativeMockBase = {
     getColorScheme: () => 'light',
     addChangeListener: () => ({ remove: () => {} }),
   },
+  // `CollapsibleToolGroup` / `ThinkingWidget` read this directly (not via
+  // `Appearance`) to pick scroll-fade gradient colors. Mocking it here
+  // (rather than per-file) matters more than usual: once a file's
+  // `mock.module('react-native', ...)` registers a shape WITHOUT this key,
+  // a later file's `mock.module` call adding it back can lose to Bun's
+  // module cache for that shared specifier — surfacing as a bogus
+  // "Export named 'useColorScheme' not found in module react-native/index.js"
+  // (the REAL, un-mocked file) instead of a clean override. Keeping every
+  // transitive export in this ONE base object sidesteps that entirely.
+  useColorScheme: () => 'light',
   Easing: {
     linear: (t: number) => t,
     ease: (t: number) => t,

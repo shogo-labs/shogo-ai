@@ -14,6 +14,12 @@
  * block was the very first part), renders as a static row with no
  * chevron per the spec: "the header still renders with the time but
  * has nothing to expand".
+ *
+ * Passes `scrollBody={false}` — unlike the per-run `WorkGroup`
+ * accordions inside it, this outer wrapper opens/closes inline to its
+ * full content height with no inner scroll region of its own; the
+ * page's own scroll carries the expanded work log, and any long
+ * individual file/code widgets inside it keep their own internal caps.
  */
 
 import { memo, type ReactNode } from "react"
@@ -64,6 +70,7 @@ function WorkedForGroupImpl({
       isExpanded={isExpanded}
       onToggle={onToggle}
       contentKey="worked-for-content"
+      scrollBody={false}
     >
       {children}
     </CollapsibleToolGroup>
