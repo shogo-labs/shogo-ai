@@ -132,6 +132,23 @@ export interface CollapsibleToolGroupProps {
    * earlier work log).
    */
   disabled?: boolean
+  /**
+   * When true (default), the expanded body is a `ScrollView` capped
+   * at `STREAM_MAX_HEIGHT` with top/bottom fade overlays — used by
+   * individual work runs, whose body can be arbitrarily long while a
+   * long tool call streams in.
+   *
+   * When false, the body renders as a plain `View` animated to its
+   * full, uncapped content height instead — no inner scroll, no
+   * fades. Used by the turn-level "Worked for X" wrapper: expanding
+   * the final summary should reveal the whole work log inline in the
+   * page's own scroll, not open a nested scroll region the user has
+   * to notice and scroll separately. Individual file/code widgets
+   * inside that body (e.g. `EditFileWidget`) still scroll internally
+   * via their own capped `ScrollView`s — this only removes the OUTER
+   * cap that `CollapsibleToolGroup` itself would otherwise impose.
+   */
+  scrollBody?: boolean
   children: ReactNode
 }
 
@@ -145,6 +162,7 @@ function CollapsibleToolGroupImpl({
   defaultExpandedWhileStreaming = true,
   badge,
   disabled = false,
+  scrollBody = true,
   children,
 }: CollapsibleToolGroupProps) {
   const [internalExpanded, setInternalExpanded] = useState(
@@ -197,7 +215,13 @@ function CollapsibleToolGroupImpl({
   // "expand to full content height" jump on the falling edge of the
   // stream, then a separate close animation 1.5s later — the same
   // wasted-motion path we eliminated in ThinkingWidget.
-  const targetHeight = Math.min(measuredHeight, STREAM_MAX_HEIGHT)
+  //
+  // `scrollBody === false` skips the cap entirely — the animated
+  // height tracks the full measured content height so the body opens
+  // inline with no nested scroll region (see `WorkedForGroup`).
+  const targetHeight = scrollBody
+    ? Math.min(measuredHeight, STREAM_MAX_HEIGHT)
+    : measuredHeight
 
   const fadeColor =
     colorScheme === "dark" ? "rgb(25, 25, 25)" : "rgb(252, 252, 252)"
@@ -219,8 +243,11 @@ function CollapsibleToolGroupImpl({
   )
 
   const heightAnimate = useMemo(
-    () => ({ opacity: 1, height: targetHeight || STREAM_MAX_HEIGHT }),
-    [targetHeight],
+    () => ({
+      opacity: 1,
+      height: targetHeight || (scrollBody ? STREAM_MAX_HEIGHT : 0),
+    }),
+    [targetHeight, scrollBody],
   )
 
   const handleHiddenLayout = useCallback((e: LayoutChangeEvent) => {
@@ -243,6 +270,17 @@ function CollapsibleToolGroupImpl({
       }
     },
     [measuredHeight, isStreaming],
+  )
+
+  // `scrollBody === false` body layout — mirrors `handleContentSizeChange`
+  // above but for a plain `View` (no `onContentSizeChange` to hook into),
+  // and with no auto-scroll-to-end since there's no inner scroll.
+  const handleBodyLayout = useCallback(
+    (e: LayoutChangeEvent) => {
+      const next = Math.ceil(e.nativeEvent.layout.height)
+      if (Math.abs(next - measuredHeight) > 1) setMeasuredHeight(next)
+    },
+    [measuredHeight],
   )
 
   if (disabled) {
@@ -293,19 +331,30 @@ function CollapsibleToolGroupImpl({
             style={styles.overflowHidden}
           >
             <View style={styles.relative}>
-              <ScrollView
-                ref={innerScrollRef}
-                className="ml-2 pl-2 border-l border-border/40 pt-2.5 pb-1"
-                style={scrollStyle}
-                scrollEnabled
-                nestedScrollEnabled
-                onScrollBeginDrag={handleScrollBeginDrag}
-                onContentSizeChange={handleContentSizeChange}
-              >
-                {children}
-              </ScrollView>
+              {scrollBody ? (
+                <ScrollView
+                  ref={innerScrollRef}
+                  testID="collapsible-scroll-body"
+                  className="ml-2 pl-2 border-l border-border/40 pt-2.5 pb-1"
+                  style={scrollStyle}
+                  scrollEnabled
+                  nestedScrollEnabled
+                  onScrollBeginDrag={handleScrollBeginDrag}
+                  onContentSizeChange={handleContentSizeChange}
+                >
+                  {children}
+                </ScrollView>
+              ) : (
+                <View
+                  testID="collapsible-plain-body"
+                  className="ml-2 pl-2 border-l border-border/40 pt-2.5 pb-1"
+                  onLayout={handleBodyLayout}
+                >
+                  {children}
+                </View>
+              )}
 
-              {Platform.OS !== "web" && (
+              {scrollBody && Platform.OS !== "web" && (
                 <>
                   <LinearGradient
                     colors={topFadeColors}
