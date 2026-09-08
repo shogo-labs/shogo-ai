@@ -37,6 +37,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { CHATGPT_COMPOSER } from '../../components/chat/ComposerPlusMenu'
 import {
+  nativeComposerDockBottomPad,
   nativeComposerKeyboardDuration,
   nativeComposerKeyboardOpenFromSource,
 } from '../../lib/native-composer-keyboard'
@@ -124,7 +125,12 @@ export default observer(function SearchPage() {
     const keyboardOpen = nativeComposerKeyboardOpenFromSource(source, overlap, restKeyboardPad)
     if (keyboardOpen == null) return
     Animated.timing(composerKeyboardPad, {
-      toValue: keyboardOpen ? overlap : restKeyboardPad,
+      toValue: nativeComposerDockBottomPad({
+        keyboardOpen,
+        overlap,
+        restPad: restKeyboardPad,
+        iosKeyboardAvoiding: false,
+      }),
       duration: nativeComposerKeyboardDuration(event.duration),
       easing: nativeComposerKeyboardEasing(),
       useNativeDriver: false,

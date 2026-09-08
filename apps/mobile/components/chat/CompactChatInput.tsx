@@ -166,10 +166,6 @@ export interface CompactChatInputProps {
    * accordion sections inside the left-side + button. Ignored on web.
    */
   plusMenuExtras?: React.ReactNode
-  /** 0–1: home composer expands to keyboard width and squares its bottom corners. */
-  keyboardExpand?: Animated.Value
-  /** Native home: start the keyboard-dock morph as soon as the field is focused. */
-  onFocusChange?: (focused: boolean) => void
   /** Native phone polish for the Home composer: larger touch targets, brighter text, and focus styling. */
   prominentMobile?: boolean
   /** Resolved native Home color scheme for the prominent composer surface. */
@@ -199,8 +195,6 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       agentPlaceholderActive = false,
       leadingControls,
       plusMenuExtras,
-      keyboardExpand,
-      onFocusChange,
       prominentMobile = false,
       prominentColorScheme = "dark",
     },
@@ -234,12 +228,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const [isFocused, setIsFocused] = useState(false)
     const handleComposerFocus = useCallback(() => {
       setIsFocused(true)
-      onFocusChange?.(true)
-    }, [onFocusChange])
+    }, [])
     const handleComposerBlur = useCallback(() => {
       setIsFocused(false)
-      onFocusChange?.(false)
-    }, [onFocusChange])
+    }, [])
     const focusProgress = useRef(new Animated.Value(0)).current
     const textInputRef = useRef<TextInput>(null)
     const pasteHandledRef = useRef(false)
@@ -650,42 +642,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       return <File className="h-4 w-4 text-muted-foreground" size={16} />
     }, [])
 
-    const keyboardBottomRadius = useMemo(
-      () =>
-        keyboardExpand
-          ? keyboardExpand.interpolate({
-              inputRange: [0, 1],
-              outputRange: [COMPACT_INPUT_PROMINENT_RADIUS, 0],
-              extrapolate: "clamp",
-            })
-          : COMPACT_INPUT_PROMINENT_RADIUS,
-      [keyboardExpand],
-    )
-    const keyboardBorderWidth = useMemo(
-      () =>
-        keyboardExpand
-          ? keyboardExpand.interpolate({
-              inputRange: [0, 1],
-              outputRange: [1, 0],
-              extrapolate: "clamp",
-            })
-          : 1,
-      [keyboardExpand],
-    )
-    const keyboardBorderColor = useMemo(
-      () =>
-        keyboardExpand
-          ? keyboardExpand.interpolate({
-              inputRange: [0, 1],
-              outputRange: [chatgptComposer.border, "transparent"],
-              extrapolate: "clamp",
-            })
-          : focusProgress.interpolate({
-              inputRange: [0, 1],
-              outputRange: [chatgptComposer.border, chatgptComposer.borderFocus],
-            }),
-      [chatgptComposer.border, chatgptComposer.borderFocus, focusProgress, keyboardExpand],
-    )
+    const keyboardBorderColor = focusProgress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [chatgptComposer.border, chatgptComposer.borderFocus],
+    })
 
     return (
       <View ref={ref} className={cn("w-full", className)}>
@@ -701,9 +661,9 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   overflow: "hidden" as const,
                   borderTopLeftRadius: COMPACT_INPUT_PROMINENT_RADIUS,
                   borderTopRightRadius: COMPACT_INPUT_PROMINENT_RADIUS,
-                  borderBottomLeftRadius: keyboardBottomRadius,
-                  borderBottomRightRadius: keyboardBottomRadius,
-                  borderWidth: keyboardBorderWidth,
+                  borderBottomLeftRadius: COMPACT_INPUT_PROMINENT_RADIUS,
+                  borderBottomRightRadius: COMPACT_INPUT_PROMINENT_RADIUS,
+                  borderWidth: 1,
                   borderColor: keyboardBorderColor,
                   backgroundColor: chatgptComposer.fill,
                 }

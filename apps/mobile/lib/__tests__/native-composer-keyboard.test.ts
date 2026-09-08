@@ -66,7 +66,7 @@ describe('nativeComposerKeyboardOpenFromSource', () => {
 })
 
 describe('nativeComposerDockBottomPad', () => {
-  test('is flush when iOS KeyboardAvoidingView is lifting, overlap otherwise', () => {
+  test('keeps a gap above the keyboard so the pill stays oval', () => {
     expect(nativeComposerDockBottomPad({
       keyboardOpen: false,
       overlap: 336,
@@ -78,12 +78,12 @@ describe('nativeComposerDockBottomPad', () => {
       overlap: 336,
       restPad: 34,
       iosKeyboardAvoiding: true,
-    })).toBe(0)
+    })).toBe(NATIVE_COMPOSER_KEYBOARD_GAP)
     expect(nativeComposerDockBottomPad({
       keyboardOpen: true,
       overlap: 336,
       restPad: 34,
       iosKeyboardAvoiding: false,
-    })).toBe(336)
+    })).toBe(336 + NATIVE_COMPOSER_KEYBOARD_GAP)
   })
 })

@@ -1,22 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-/** ChatGPT docks flush on the keyboard. A gap leaves the pill looking sliced. */
-export const NATIVE_COMPOSER_KEYBOARD_GAP = 0
+/** Space between the pill/search bar and the keyboard so the oval stays readable. */
+export const NATIVE_COMPOSER_KEYBOARD_GAP = 12
 /** Ignore tiny pad deltas so rest safe-area padding is not treated as a keyboard. */
 export const NATIVE_COMPOSER_KEYBOARD_OPEN_SLOP = 8
 /** Fallback when iOS omits duration or reports it as 0. */
 export const NATIVE_COMPOSER_KEYBOARD_DEFAULT_DURATION = 250
 /** iOS keyboard curve (matches `keyboardWillShow` / ChatGPT dock). */
 export const NATIVE_COMPOSER_KEYBOARD_EASING = [0.17, 0.59, 0.4, 0.77] as const
-/**
- * Dock fill behind the home pill. `#212121` / white, matching
- * `CHATGPT_COMPOSER` fill so the keyboard morph does not flash the canvas.
- */
-export const NATIVE_COMPOSER_DOCK_FILL = {
-  dark: ['rgba(33,33,33,0)', 'rgba(33,33,33,1)'],
-  light: ['rgba(255,255,255,0)', 'rgba(255,255,255,1)'],
-} as const
 
 export type NativeComposerKeyboardSource = 'show' | 'hide' | 'change'
 
@@ -91,6 +83,6 @@ export function nativeComposerDockBottomPad(opts: {
   iosKeyboardAvoiding: boolean
 }): number {
   if (!opts.keyboardOpen) return opts.restPad
-  if (opts.iosKeyboardAvoiding) return 0
-  return opts.overlap
+  if (opts.iosKeyboardAvoiding) return NATIVE_COMPOSER_KEYBOARD_GAP
+  return opts.overlap + NATIVE_COMPOSER_KEYBOARD_GAP
 }

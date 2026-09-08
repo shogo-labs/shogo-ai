@@ -24,7 +24,7 @@ import {
   type CreatorTier,
 } from '../../../../components/marketplace'
 import { findCategory } from '@shogo/shared-app'
-import { useGridColumns } from '../../../../hooks/useGridColumns'
+import { useMarketplaceGridLayout, MARKETPLACE_GRID_PAD_X, marketplaceGridCellClass } from '../../../../hooks/useGridColumns'
 import { overlayScrollbarProps } from '../../../../lib/overlay-scrollbar'
 
 interface ListingFromAPI {
@@ -108,7 +108,7 @@ export default observer(function CategoryLandingScreen() {
   const router = useRouter()
   const { slug } = useLocalSearchParams<{ slug: string }>()
   const http = useDomainHttp()
-  const numColumns = useGridColumns()
+  const { numColumns, cellStyle } = useMarketplaceGridLayout()
 
   const category = useMemo(() => findCategory(slug), [slug])
 
@@ -232,16 +232,18 @@ export default observer(function CategoryLandingScreen() {
         data={padded}
         keyExtractor={(item, index) => item?.slug ?? `spacer-${index}`}
         numColumns={numColumns}
-        contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 32 }}
+        contentContainerStyle={{ paddingHorizontal: MARKETPLACE_GRID_PAD_X, paddingBottom: 32 }}
         {...overlayScrollbarProps}
         renderItem={({ item }) => {
-          if (!item) return <View className="flex-1 m-1.5" />
+          if (!item) return <View className="flex-1 m-1.5" style={cellStyle} />
           return (
-            <AgentTile
-              size="medium"
-              listing={item}
-              onPress={() => router.push(`/(app)/marketplace/${item.slug}` as any)}
-            />
+            <View style={cellStyle} className={marketplaceGridCellClass(cellStyle)}>
+              <AgentTile
+                size="medium"
+                listing={item}
+                onPress={() => router.push(`/(app)/marketplace/${item.slug}` as any)}
+              />
+            </View>
           )
         }}
         onEndReached={handleLoadMore}

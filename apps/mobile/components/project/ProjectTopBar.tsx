@@ -82,7 +82,7 @@ import { CompactUsageWindows } from '../billing/UsageWindows'
 import { PublishDropdown } from './PublishDropdown'
 import { CloudSyncStatusPill } from './CloudSyncStatusPill'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
+import { isNativePhoneIntegrationsLayout, NATIVE_PHONE_CONTROL_SIZE } from '../../lib/native-phone-layout'
 import { api } from '../../lib/api'
 import { requestIdeActivity } from '../../lib/ide-activity-bus'
 import { ProjectExportModal } from './ProjectExportModal'
@@ -218,6 +218,8 @@ function useWebTitle(title?: string) {
   return ref
 }
 
+const NATIVE_CIRCLE_ICON_SIZE = 22
+
 function NativeCircleButton({
   icon: Icon,
   onPress,
@@ -239,11 +241,12 @@ function NativeCircleButton({
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       className={cn(
-        'h-10 w-10 items-center justify-center rounded-full',
+        'items-center justify-center rounded-full',
         active ? 'bg-primary' : 'bg-muted',
       )}
+      style={{ width: NATIVE_PHONE_CONTROL_SIZE, height: NATIVE_PHONE_CONTROL_SIZE }}
     >
-      <Icon size={20} className={active ? 'text-primary-foreground' : 'text-foreground'} />
+      <Icon size={NATIVE_CIRCLE_ICON_SIZE} className={active ? 'text-primary-foreground' : 'text-foreground'} />
     </Pressable>
   )
 }

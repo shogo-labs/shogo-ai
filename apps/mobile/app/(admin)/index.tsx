@@ -36,8 +36,8 @@ import { nativeActivePill } from '../../lib/native-active-shadow'
 import {
   nativeEqualChipWidths,
   nativeTwoColumnCardWidth,
+  nativeContentWidth,
   isNativePlatform,
-  NATIVE_PHONE_GUTTER,
   NATIVE_WIND_SPACE_0_5,
 } from '../../lib/native-phone-layout'
 import {
@@ -647,7 +647,7 @@ export default function AdminDashboard() {
   const isWide = width >= 900
   const cardWidth = isNativeNarrow ? nativeTwoColumnCardWidth(width) : undefined
   const periodRowWidth = isNativeNarrow
-    ? Math.max(0, width - NATIVE_PHONE_GUTTER * 2)
+    ? nativeContentWidth(width)
     : undefined
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [refreshing, setRefreshing] = useState(false)

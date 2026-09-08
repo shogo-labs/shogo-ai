@@ -140,6 +140,12 @@ function filenameFromPlanPath(filepath?: string | null): string | null {
 
 export function PlansPanel({ visible, projectId, agentUrl, selectedModel, requestedPlanPath, onBuildPlan }: PlansPanelProps) {
   const isNative = Platform.OS !== "web"
+  const planHitClass = isNative ? "h-11 w-11" : "h-8 w-8"
+  const planTabPadClass = isNative ? "py-2.5" : "py-2"
+  const planTabLabelClass = isNative ? "text-sm font-semibold" : "text-xs font-semibold"
+  const planIconMd = isNative ? 20 : 16
+  const planIconSm = isNative ? 16 : 12
+  const planPlayIcon = isNative ? 18 : 14
   const planStream = usePlanStreamSafe()
   const [plans, setPlans] = useState<AgentPlanSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -393,9 +399,12 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               setPlanContent(null)
               setShowModelPicker(false)
             }}
-            className="h-8 w-8 items-center justify-center rounded-lg"
+            className={cn(
+              "items-center justify-center rounded-lg",
+              planHitClass,
+            )}
           >
-            <ArrowLeft className="h-4 w-4 text-foreground" size={16} />
+            <ArrowLeft className="text-foreground" size={planIconMd} />
           </Pressable>
           <View className="flex-1 min-w-0">
             <View className="flex-row items-center gap-2">
@@ -422,7 +431,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               <Text className="text-xs font-medium text-foreground">
                 {resolveShortName(buildMode)}
               </Text>
-              <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />
+              <ChevronDown className="text-muted-foreground" size={planIconSm} />
             </Pressable>
 
             {showModelPicker && (
@@ -506,16 +515,19 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               !isBuildDisabled ? "bg-amber-400 dark:bg-amber-500 active:bg-amber-500 dark:active:bg-amber-600" : "bg-muted opacity-50"
             )}
           >
-            <Play className="h-3.5 w-3.5 text-black" size={14} />
+            <Play className="text-black" size={planPlayIcon} />
             <Text className="text-xs font-bold text-black">{buildStarted ? "Building..." : "Build"}</Text>
           </Pressable>
 
           {!isStreamingDetail && (
             <Pressable
               onPress={() => handleDelete(selectedPlan)}
-              className="h-8 w-8 items-center justify-center rounded-lg"
+              className={cn(
+                "items-center justify-center rounded-lg",
+                planHitClass,
+              )}
             >
-              <Trash2 className="h-4 w-4 text-destructive" size={16} />
+              <Trash2 className="text-destructive" size={planIconMd} />
             </Pressable>
           )}
         </View>
@@ -526,13 +538,14 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             <Pressable
               onPress={() => setActiveTab("technical")}
               className={cn(
-                "flex-1 items-center justify-center py-2",
+                "flex-1 items-center justify-center",
+                planTabPadClass,
                 activeTab === "technical" && "border-b-2 border-primary"
               )}
             >
               <Text
                 className={cn(
-                  "text-xs font-semibold",
+                  planTabLabelClass,
                   activeTab === "technical"
                     ? "text-foreground"
                     : "text-muted-foreground"
@@ -544,13 +557,14 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             <Pressable
               onPress={() => setActiveTab("summary")}
               className={cn(
-                "flex-1 flex-row items-center justify-center gap-1.5 py-2",
+                "flex-1 flex-row items-center justify-center gap-1.5",
+                planTabPadClass,
                 activeTab === "summary" && "border-b-2 border-sky-400"
               )}
             >
               <Text
                 className={cn(
-                  "text-xs font-semibold",
+                  planTabLabelClass,
                   activeTab === "summary"
                     ? "text-sky-400"
                     : "text-muted-foreground"

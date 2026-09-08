@@ -52,7 +52,6 @@ import {
   nativeComposerDockBottomPad,
   nativeComposerKeyboardDuration,
   nativeComposerKeyboardOpenFromSource,
-  NATIVE_COMPOSER_DOCK_FILL,
   type NativeComposerKeyboardEvent,
   type NativeComposerKeyboardSource,
 } from '../../lib/native-composer-keyboard'
@@ -286,18 +285,8 @@ const HomeScreen = observer(function HomeScreen() {
   const restComposerPadRef = useRef(restComposerPad)
   restComposerPadRef.current = restComposerPad
   const composerKeyboardPad = useRef(new Animated.Value(restComposerPad)).current
-  const composerSidePad = useRef(new Animated.Value(restComposerSidePad)).current
-  const composerKeyboardExpand = useRef(new Animated.Value(0)).current
   const keyboardOpenRef = useRef(false)
   const iosComposerAvoiding = Platform.OS === 'ios'
-  const composerDockFillAnim = useMemo(
-    () =>
-      composerKeyboardExpand.interpolate({
-        inputRange: [0, 1],
-        outputRange: isDark ? NATIVE_COMPOSER_DOCK_FILL.dark : NATIVE_COMPOSER_DOCK_FILL.light,
-      }),
-    [composerKeyboardExpand, isDark],
-  )
 
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
@@ -332,31 +321,15 @@ const HomeScreen = observer(function HomeScreen() {
   }, [homeEntrance, isNativePhone])
 
   const animateComposer = useCallback(
-    (opts: { pad: number; sidePad: number; expand: number; duration?: number }) => {
-      const duration = nativeComposerKeyboardDuration(opts.duration)
-      const easing = nativeComposerKeyboardEasing()
-      Animated.parallel([
-        Animated.timing(composerKeyboardPad, {
-          toValue: opts.pad,
-          duration,
-          easing,
-          useNativeDriver: false,
-        }),
-        Animated.timing(composerSidePad, {
-          toValue: opts.sidePad,
-          duration,
-          easing,
-          useNativeDriver: false,
-        }),
-        Animated.timing(composerKeyboardExpand, {
-          toValue: opts.expand,
-          duration,
-          easing,
-          useNativeDriver: false,
-        }),
-      ]).start()
+    (opts: { pad: number; duration?: number }) => {
+      Animated.timing(composerKeyboardPad, {
+        toValue: opts.pad,
+        duration: nativeComposerKeyboardDuration(opts.duration),
+        easing: nativeComposerKeyboardEasing(),
+        useNativeDriver: false,
+      }).start()
     },
-    [composerKeyboardExpand, composerKeyboardPad, composerSidePad],
+    [composerKeyboardPad],
   )
 
   const dockComposer = useCallback(
@@ -373,34 +346,17 @@ const HomeScreen = observer(function HomeScreen() {
           restPad,
           iosKeyboardAvoiding: iosComposerAvoiding,
         }),
-        sidePad: keyboardOpen ? 0 : restComposerSidePad,
-        expand: keyboardOpen ? 1 : 0,
         duration: event.duration,
       })
     },
-    [animateComposer, iosComposerAvoiding, restComposerSidePad],
-  )
-
-  const handleComposerFocusChange = useCallback(
-    (focused: boolean) => {
-      if (!isNativePhone || !focused) return
-      keyboardOpenRef.current = true
-      animateComposer({
-        pad: restComposerPadRef.current,
-        sidePad: 0,
-        expand: 1,
-      })
-    },
-    [animateComposer, isNativePhone],
+    [animateComposer, iosComposerAvoiding],
   )
 
   useEffect(() => {
     if (!keyboardOpenRef.current) {
       composerKeyboardPad.setValue(restComposerPad)
-      composerSidePad.setValue(restComposerSidePad)
-      composerKeyboardExpand.setValue(0)
     }
-  }, [composerKeyboardExpand, composerKeyboardPad, composerSidePad, restComposerPad, restComposerSidePad])
+  }, [composerKeyboardPad, restComposerPad])
 
   useNativeComposerKeyboard(isNativePhone, dockComposer)
 
@@ -1001,8 +957,6 @@ const HomeScreen = observer(function HomeScreen() {
         }
         prominentMobile={isNativePhone}
         prominentColorScheme={isDark ? 'dark' : 'light'}
-        keyboardExpand={isNativePhone ? composerKeyboardExpand : undefined}
-        onFocusChange={isNativePhone ? handleComposerFocusChange : undefined}
         leadingControls={
           isNativePhone ? undefined : (
             <View className="flex-row items-center gap-1">
@@ -1083,8 +1037,7 @@ const HomeScreen = observer(function HomeScreen() {
           <Animated.View
             style={{
               paddingBottom: composerKeyboardPad,
-              paddingHorizontal: composerSidePad,
-              backgroundColor: composerDockFillAnim,
+              paddingHorizontal: restComposerSidePad,
             }}
           >
             {composer}

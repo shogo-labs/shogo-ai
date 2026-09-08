@@ -37,7 +37,7 @@ import {
 } from '@shogo/model-catalog'
 import { resolveShortName, resolveFamily } from '../../lib/visible-models'
 import { nativeActivePill } from '../../lib/native-active-shadow'
-import { nativeGridChipWidth, NATIVE_PHONE_GUTTER, NATIVE_WIND_SPACE_4, isNativePlatform } from '../../lib/native-phone-layout'
+import { nativeContentWidth, nativeGridChipWidth, NATIVE_WIND_SPACE_4, isNativePlatform } from '../../lib/native-phone-layout'
 import {
   StackedAreaChart,
   STACKED_PALETTE,
@@ -1798,7 +1798,7 @@ export function MetricTrendChart({
   const { width } = useWindowDimensions()
   const isNativeNarrow = isNativePlatform()
   const toggleWidth = isNativeNarrow
-    ? Math.max(0, width - NATIVE_PHONE_GUTTER * 2 - NATIVE_WIND_SPACE_4 * 2)
+    ? Math.max(0, nativeContentWidth(width) - NATIVE_WIND_SPACE_4 * 2)
     : undefined
   const [selected, setSelected] = useState<string>(metrics[0]?.id ?? '')
   const [mode, setMode] = useState<'daily' | 'cumulative'>('daily')
