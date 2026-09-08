@@ -1,6 +1,6 @@
 {
   "id": "python-data",
-  "name": "Python Data Science",
+  "name": "Data Science",
   "description": "Data analysis and visualization with Python, Jupyter, pandas, matplotlib, and plotly. Write notebooks or scripts to explore, transform, and visualize data.",
   "tags": ["python", "data", "jupyter", "pandas", "matplotlib", "plotly", "analysis"],
   "target": "data",

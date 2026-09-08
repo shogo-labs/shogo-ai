@@ -1,6 +1,6 @@
 {
   "id": "unity-game",
-  "name": "Unity Game Builder",
+  "name": "Game (Unity)",
   "description": "Build games with Unity and C#. Requires .NET SDK (future runtime layer).",
   "tags": ["unity", "csharp", "3d", "2d", "games", "gamedev"],
   "target": "native",
