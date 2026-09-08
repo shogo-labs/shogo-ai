@@ -3,17 +3,39 @@
 /**
  * Admin Layout - Responsive admin shell with persistent sidebar on desktop.
  *
- * Wide screens (>= 900px): persistent sidebar + scrollable content area
- * Narrow screens (< 900px): hamburger header + drawer sidebar overlay
+ * Wide web (>= 900px): persistent sidebar + scrollable content.
+ * Narrow web: hamburger header + overlay drawer.
+ * Native phone: two-layer sheet drawer (sidebar underneath, screen slides).
  *
  * Auth guard checks admin role via /api/me and redirects non-admins.
  * Wraps in DomainProvider since (admin) is a separate route group from (app).
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { View, Text, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native'
+import {
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+  ActivityIndicator,
+  useWindowDimensions,
+  Platform,
+  Animated,
+  StyleSheet,
+} from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
+import {
+  nativeDrawerPanelWidth,
+  snapNativeDrawer,
+  useNativeDrawerSheetSwipe,
+  useNativeDrawerSheetStyle,
+  nativeDrawerUnderlayStyle,
+  nativeDrawerTopInset,
+  nativeDrawerSideInset,
+  nativeDrawerFooterInset,
+  NATIVE_DRAWER_UNDERLAY_BACKGROUND,
+} from '../../lib/use-native-drawer-swipe'
 import {
   LayoutDashboard,
   Users,
@@ -251,6 +273,7 @@ function AdminSidebar({
   userName,
   userEmail,
   isDrawer,
+  isNativeDrawer,
   onClose,
   infraHealth = 'unknown',
   isSuperAdmin = true,
@@ -259,6 +282,7 @@ function AdminSidebar({
   userName?: string | null
   userEmail?: string | null
   isDrawer?: boolean
+  isNativeDrawer?: boolean
   onClose?: () => void
   infraHealth?: HealthStatus
   isSuperAdmin?: boolean
@@ -266,10 +290,8 @@ function AdminSidebar({
 }) {
   const router = useRouter()
   const pathname = usePathname()
-  const { features, localMode } = usePlatformConfig()
-  // Non-local: group nav into sections, filter each by access, and drop any
-  // section left with no visible items. Local mode promotes everyone to
-  // super_admin and uses its own flat nav below.
+  const insets = useSafeAreaInsets()
+  const { localMode } = usePlatformConfig()
   const visibleSections = NAV_SECTIONS
     .map((section) => ({
       title: section.title,
@@ -292,89 +314,110 @@ function AdminSidebar({
         role="button"
         accessibilityLabel={item.label}
         className={cn(
-          'flex-row items-center gap-2 rounded-md px-2 py-1',
+          'flex-row items-center rounded-md px-2',
+          isNativeDrawer ? 'min-h-11 gap-2.5 py-2' : 'gap-2 py-1',
           active ? 'bg-accent' : 'active:bg-accent/50',
         )}
       >
-        <Icon size={12} className={active ? 'text-foreground' : 'text-muted-foreground'} />
-        <Text className={cn('text-xs flex-1', active ? 'text-foreground' : 'text-muted-foreground')}>
+        <Icon
+          size={isNativeDrawer ? 18 : 12}
+          className={active ? 'text-foreground' : 'text-muted-foreground'}
+        />
+        <Text className={cn(isNativeDrawer ? 'text-base flex-1' : 'text-xs flex-1', active ? 'text-foreground' : 'text-muted-foreground')}>
           {item.label}
         </Text>
         {item.label === 'Infrastructure' && infraHealth !== 'unknown' && (
-          <View className={cn('h-2 w-2 rounded-full', HEALTH_DOT_COLOR[infraHealth])} />
+          <View className={cn('rounded-full', isNativeDrawer ? 'h-2.5 w-2.5' : 'h-2 w-2', HEALTH_DOT_COLOR[infraHealth])} />
         )}
       </Pressable>
     )
   }
 
+  const sectionLabelClass = cn(
+    'px-1 pb-1 font-semibold uppercase tracking-wider text-muted-foreground',
+    isNativeDrawer ? 'text-sm' : 'text-[11px]',
+  )
+
   const sidebar = (
-    <View className={cn(
-      'bg-card border-r border-border h-full w-64',
-    )}>
-      {/* Header */}
-      <View className="border-b border-border flex-row items-center justify-between px-3 py-2">
-        <View className="flex-row items-center gap-2">
-          <Shield size={12} className="text-primary" />
+    <View
+      className={cn('h-full', isNativeDrawer ? 'w-full' : 'w-64 bg-card border-r border-border')}
+      style={
+        isNativeDrawer
+          ? {
+              backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND,
+              paddingLeft: nativeDrawerSideInset(insets.left),
+              paddingRight: 4,
+            }
+          : undefined
+      }
+    >
+      {isNativeDrawer ? <View style={{ height: nativeDrawerTopInset(insets.top) }} /> : null}
+      <View className={cn(
+        'border-b border-border flex-row items-center justify-between px-3',
+        isNativeDrawer ? 'h-16' : 'py-2',
+      )}>
+        <View className={cn('flex-row items-center', isNativeDrawer ? 'gap-3' : 'gap-2')}>
+          <Shield size={isNativeDrawer ? 18 : 12} className="text-primary" />
           <View>
-            <Text className="text-sm font-semibold text-foreground">Admin</Text>
-            <Text className="text-xs text-muted-foreground">
+            <Text className={cn('font-semibold text-foreground', isNativeDrawer ? 'text-lg' : 'text-sm')}>Admin</Text>
+            <Text className={cn('text-muted-foreground', isNativeDrawer ? 'text-sm' : 'text-xs')}>
               {isSuperAdmin ? 'Super Admin Portal' : 'Admin Portal'}
             </Text>
           </View>
         </View>
-        {isDrawer && (
+        {isDrawer && !isNativeDrawer && (
           <Pressable onPress={onClose} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
             <X size={12} className="text-muted-foreground" />
           </Pressable>
         )}
       </View>
 
-      {/* Nav Items */}
-      <ScrollView className="flex-1 pt-2" contentContainerStyle={{ paddingHorizontal: 8 }} showsVerticalScrollIndicator={false}>
+      <ScrollView className="flex-1 pt-2" contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 12 }} showsVerticalScrollIndicator={false}>
         {localMode ? (
           <View className="gap-0.5 px-2">
             {LOCAL_MAIN_ITEMS.map(renderNavRow)}
             <View className="mx-1 mt-4 mb-2 border-t border-border" />
-            <Text className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Settings
-            </Text>
+            <Text className={sectionLabelClass}>Settings</Text>
             {LOCAL_SETTINGS_ITEMS.map(renderNavRow)}
           </View>
         ) : (
           visibleSections.map((section, idx) => (
-            <View key={section.title} className={cn('gap-0.5 px-2', idx > 0 && 'mt-3')}>
-              <Text className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                {section.title}
-              </Text>
+            <View key={section.title} className={cn('gap-0.5 px-2', idx > 0 && (isNativeDrawer ? 'mt-5' : 'mt-3'))}>
+              <Text className={sectionLabelClass}>{section.title}</Text>
               {section.items.map(renderNavRow)}
             </View>
           ))
         )}
       </ScrollView>
 
-      {/* Footer */}
-      <View className="border-t border-border p-2 gap-0.5">
+      <View
+        className="border-t border-border p-2 gap-0.5"
+        style={isNativeDrawer ? { paddingBottom: nativeDrawerFooterInset(insets.bottom) } : undefined}
+      >
         <Pressable
           onPress={() => { router.replace('/(app)'); onClose?.() }}
           role="link"
           accessibilityLabel="Back to App"
-          className="flex-row items-center gap-2 rounded-md px-2 py-1 active:bg-accent/50"
+          className={cn(
+            'flex-row items-center rounded-md px-2 active:bg-accent/50',
+            isNativeDrawer ? 'min-h-11 gap-2.5 py-2' : 'gap-2 py-1',
+          )}
         >
-          <ArrowLeft size={12} className="text-muted-foreground" />
-          <Text className="text-xs text-muted-foreground">Back to App</Text>
+          <ArrowLeft size={isNativeDrawer ? 18 : 12} className="text-muted-foreground" />
+          <Text className={cn('text-muted-foreground', isNativeDrawer ? 'text-base' : 'text-xs')}>Back to App</Text>
         </Pressable>
 
-        <View className="flex-row items-center gap-2 px-2 py-1.5">
-          <View className="h-7 w-7 rounded bg-primary/20 items-center justify-center">
-            <Text className="text-[11px] font-bold text-primary">
+        <View className={cn('flex-row items-center px-2', isNativeDrawer ? 'min-h-14 gap-3 py-2' : 'gap-2 py-1.5')}>
+          <View className={cn('rounded bg-primary/20 items-center justify-center', isNativeDrawer ? 'h-11 w-11' : 'h-7 w-7')}>
+            <Text className={cn('font-bold text-primary', isNativeDrawer ? 'text-base' : 'text-[11px]')}>
               {userName?.charAt(0)?.toUpperCase() || 'A'}
             </Text>
           </View>
           <View className="flex-1 min-w-0">
-            <Text className="text-sm text-foreground" numberOfLines={1}>
+            <Text className={cn('text-foreground', isNativeDrawer ? 'text-base' : 'text-sm')} numberOfLines={1}>
               {userName || 'Admin'}
             </Text>
-            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+            <Text className={cn('text-muted-foreground', isNativeDrawer ? 'text-sm' : 'text-xs')} numberOfLines={1}>
               {userEmail}
             </Text>
           </View>
@@ -386,19 +429,61 @@ function AdminSidebar({
   if (!isDrawer) return sidebar
 
   return (
-    <View className="absolute inset-0 z-50 flex-row" style={{ elevation: 10 }}>
+    <View style={overlayStyles.root}>
       <Pressable
         onPress={onClose}
-        className="absolute inset-0 bg-black/40"
+        style={overlayStyles.backdrop}
+        accessibilityLabel="Dismiss menu"
+        accessibilityRole="button"
       />
-      <View className="z-10">
+      <View style={overlayStyles.panel}>
         {sidebar}
       </View>
     </View>
   )
 }
 
-function MobileHeader({ onMenuPress, title }: { onMenuPress: () => void; title: string }) {
+function MobileHeader({
+  onMenuPress,
+  title,
+  menuOpen = false,
+  isNative = false,
+}: {
+  onMenuPress: () => void
+  title: string
+  menuOpen?: boolean
+  isNative?: boolean
+}) {
+  const insets = useSafeAreaInsets()
+  if (isNative) {
+    return (
+      <View
+        style={{
+          paddingTop: insets.top + 6,
+          paddingBottom: 6,
+          paddingHorizontal: 14,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <Pressable
+          onPress={onMenuPress}
+          accessibilityRole="button"
+          accessibilityLabel={menuOpen ? 'Close menu' : 'Open menu'}
+          hitSlop={4}
+          className="h-10 w-10 items-center justify-center rounded-full bg-muted"
+        >
+          <Menu size={22} className="text-foreground" />
+        </Pressable>
+        <Text className="flex-1 px-3 text-center text-base font-semibold text-foreground" numberOfLines={1}>
+          {title}
+        </Text>
+        <View className="h-10 w-10" />
+      </View>
+    )
+  }
+
   return (
     <View className="flex-row items-center h-12 px-3 border-b border-border bg-card">
       <Pressable onPress={onMenuPress} role="button" accessibilityLabel="Open menu" className="p-2 -ml-1 rounded-md active:bg-muted">
@@ -454,11 +539,51 @@ function AdminLayoutInner() {
   const router = useRouter()
   const pathname = usePathname()
   const { width } = useWindowDimensions()
-  const isWide = width >= 900
+  const isNativeApp = Platform.OS !== 'web'
+  const isWide = !isNativeApp && width >= 900
+  const nativeSheetDrawer = isNativeApp
+  const nativeDrawerWidth = nativeDrawerPanelWidth(width)
+  const drawerProgress = useRef(new Animated.Value(0)).current
   const { isSuperAdmin, scopes, hasAdminAccess, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
   const { localMode } = usePlatformConfig()
   const infraHealth = useInfraHealth(isSuperAdmin)
   const [drawerOpen, setDrawerOpen] = useState(false)
+
+  const resetDrawer = useCallback(() => {
+    drawerProgress.setValue(0)
+    setDrawerOpen(false)
+  }, [drawerProgress])
+  const openDrawer = useCallback(() => {
+    setDrawerOpen(true)
+    snapNativeDrawer(drawerProgress, true)
+  }, [drawerProgress])
+  const closeDrawer = useCallback(() => {
+    snapNativeDrawer(drawerProgress, false, (open) => {
+      if (!open) resetDrawer()
+    })
+  }, [drawerProgress, resetDrawer])
+  const toggleDrawer = useCallback(() => {
+    if (drawerOpen) closeDrawer()
+    else if (nativeSheetDrawer) openDrawer()
+    else setDrawerOpen(true)
+  }, [closeDrawer, drawerOpen, nativeSheetDrawer, openDrawer])
+
+  const sheetSwipeHandlers = useNativeDrawerSheetSwipe({
+    enabled: nativeSheetDrawer,
+    drawerWidth: nativeDrawerWidth,
+    drawerProgress,
+    isOpen: drawerOpen,
+    onOpenChange: setDrawerOpen,
+  })
+  const { sheetStyle, sheetClipStyle } = useNativeDrawerSheetStyle(drawerProgress, nativeDrawerWidth)
+
+  const sidebarProps = {
+    userName,
+    userEmail,
+    infraHealth,
+    isSuperAdmin,
+    scopes,
+  } as const
 
   // Portal entry: must be authenticated AND have some admin access.
   useEffect(() => {
@@ -491,8 +616,8 @@ function AdminLayoutInner() {
   }, [localMode, isPending, hasAdminAccess, pathname, router])
 
   useEffect(() => {
-    if (isWide) setDrawerOpen(false)
-  }, [isWide])
+    if (isWide) resetDrawer()
+  }, [isWide, resetDrawer])
 
   if (isPending) {
     return (
@@ -510,42 +635,69 @@ function AdminLayoutInner() {
   if (!isAuthenticated || !hasAdminAccess) return null
 
   return (
-    <SafeAreaView className="flex-1 bg-background">
+    <SafeAreaView
+      className="flex-1 bg-background"
+      style={nativeSheetDrawer ? { backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND } : undefined}
+      edges={nativeSheetDrawer ? ['left', 'right'] : undefined}
+    >
       <View className="flex-1 flex-row">
-        {isWide && (
-          <AdminSidebar
-            userName={userName}
-            userEmail={userEmail}
-            infraHealth={infraHealth}
-            isSuperAdmin={isSuperAdmin}
-            scopes={scopes}
-          />
-        )}
+        {isWide && <AdminSidebar {...sidebarProps} />}
 
-        <View className="flex-1">
-          {!isWide && (
-            <MobileHeader
-              onMenuPress={() => setDrawerOpen(true)}
-              title={getPageTitle(pathname)}
-            />
-          )}
-          <View className="flex-1">
-            <Slot />
-          </View>
+        <View style={{ flex: 1, overflow: 'hidden' }} collapsable={false}>
+          {nativeSheetDrawer ? (
+            <View
+              pointerEvents={drawerOpen ? 'auto' : 'none'}
+              accessibilityElementsHidden={!drawerOpen}
+              importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
+              style={nativeDrawerUnderlayStyle(nativeDrawerWidth)}
+            >
+              <AdminSidebar {...sidebarProps} isNativeDrawer onClose={closeDrawer} />
+            </View>
+          ) : null}
+          <Animated.View
+            collapsable={false}
+            {...sheetSwipeHandlers}
+            style={[{ flex: 1, zIndex: 1 }, nativeSheetDrawer ? sheetStyle : undefined]}
+          >
+            <Animated.View style={nativeSheetDrawer ? sheetClipStyle : { flex: 1, overflow: 'hidden' }}>
+              <View className="flex-1 bg-background">
+                {!isWide && (
+                  <MobileHeader
+                    onMenuPress={toggleDrawer}
+                    title={getPageTitle(pathname)}
+                    menuOpen={drawerOpen}
+                    isNative={isNativeApp}
+                  />
+                )}
+                <View className="flex-1">
+                  <Slot />
+                </View>
+              </View>
+            </Animated.View>
+          </Animated.View>
         </View>
       </View>
 
-      {!isWide && drawerOpen && (
-        <AdminSidebar
-          userName={userName}
-          userEmail={userEmail}
-          isDrawer
-          onClose={() => setDrawerOpen(false)}
-          infraHealth={infraHealth}
-          isSuperAdmin={isSuperAdmin}
-          scopes={scopes}
-        />
+      {!isWide && !nativeSheetDrawer && drawerOpen && (
+        <AdminSidebar {...sidebarProps} isDrawer onClose={resetDrawer} />
       )}
     </SafeAreaView>
   )
 }
+
+const overlayStyles = StyleSheet.create({
+  root: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 50,
+    flexDirection: 'row',
+    elevation: 10,
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  panel: {
+    zIndex: 10,
+    height: '100%',
+  },
+})

@@ -108,7 +108,7 @@ import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { NATIVE_DRAWER_UNDERLAY_BACKGROUND } from '../../lib/use-native-drawer-swipe'
+import { NATIVE_DRAWER_UNDERLAY_BACKGROUND, nativeDrawerFooterInset, nativeDrawerSideInset, nativeDrawerTopInset } from '../../lib/use-native-drawer-swipe'
 import {
   fetchProjectChatSessions,
   PROJECT_CHAT_PAGE_SIZE,
@@ -1812,12 +1812,12 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const insets = useSafeAreaInsets()
   const isWide = Platform.OS === 'web' && width >= 768
   const isNativeDrawer = Platform.OS !== 'web' && !isWide
-  const drawerTopInset = isNativeDrawer ? Math.max(insets.top, 56) : insets.top
+  const drawerTopInset = isNativeDrawer ? nativeDrawerTopInset(insets.top) : insets.top
   const drawerBottomInset = isNativeDrawer ? Math.max(insets.bottom, 18) : insets.bottom
   // Sit above the home indicator / rounded corner without the extra min-height
   // padding that used to look like a second empty row.
-  const drawerFooterInset = isNativeDrawer ? Math.max(insets.bottom, 12) : insets.bottom
-  const drawerSideInset = isNativeDrawer ? Math.max(insets.left, 4) : 0
+  const drawerFooterInset = isNativeDrawer ? nativeDrawerFooterInset(insets.bottom) : insets.bottom
+  const drawerSideInset = isNativeDrawer ? nativeDrawerSideInset(insets.left) : 0
   const { features, localMode } = usePlatformConfig()
 
   const { user, signOut } = useAuth()
@@ -2149,7 +2149,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       {/* ── Logo Row ── */}
       <View
         className={cn(
-          'border-b border-border flex-row items-center',
+          'flex-row items-center',
+          !isNativeDrawer && 'border-b border-border',
           isNativeDrawer ? 'h-16' : 'h-12',
           collapsed ? 'justify-center px-2' : 'justify-between px-3'
         )}

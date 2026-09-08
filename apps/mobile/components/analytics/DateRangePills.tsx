@@ -11,10 +11,10 @@
  * stays in sync with what the server queries.
  */
 
-import { Platform } from 'react-native'
 import { View, Text, Pressable } from 'react-native'
 import { ChevronDown } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { nativeActivePill } from '../../lib/native-active-shadow'
 import type { AnalyticsPeriod } from './SharedAnalytics'
 
 const PILLS: { id: AnalyticsPeriod; label: string }[] = [
@@ -24,12 +24,6 @@ const PILLS: { id: AnalyticsPeriod; label: string }[] = [
   { id: 'mtd', label: 'MTD' },
   { id: 'last_month', label: 'Last month' },
 ]
-
-const periodActiveNativeShadow = Platform.select({
-  ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 1 },
-  android: { elevation: 1 },
-  default: undefined,
-})
 
 function periodWindow(period: AnalyticsPeriod): { from: Date; to: Date } {
   const now = new Date()
@@ -81,15 +75,16 @@ export function DateRangePills({
       <View className="flex-row items-center bg-muted rounded-md p-0.5 gap-0.5">
         {PILLS.map((p) => {
           const isActive = value === p.id
+          const pill = nativeActivePill(isActive, { webShadow: false })
           return (
             <Pressable
               key={p.id}
               onPress={() => onChange(p.id)}
               className={cn(
                 'px-3 h-8 items-center justify-center rounded',
-                isActive ? 'bg-background' : '',
+                pill.className,
               )}
-              style={isActive ? periodActiveNativeShadow : undefined}
+              style={pill.style}
             >
               <Text
                 className={cn(

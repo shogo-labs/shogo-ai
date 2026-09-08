@@ -131,7 +131,7 @@ export default observer(function NotificationsScreen() {
   return (
     <View className="flex-1 bg-background">
       {/* Header */}
-      <View className={cn('flex-row items-center gap-2 px-4 border-b border-border', isNative ? 'py-4' : 'py-3')}>
+      <View className={cn('flex-row items-center gap-2 px-4', isNative ? 'py-4' : 'border-b border-border py-3')}>
         <Pressable
           onPress={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
           accessibilityLabel="Back"

@@ -43,6 +43,7 @@ import {
   ArrowUpRight,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { nativeActivePill } from '../../../lib/native-active-shadow'
 
 import { fetchAdminJson, postAdmin, formatCents, formatRelative } from './_helpers'
 
@@ -662,14 +663,16 @@ export default function MarketplacePayoutsPage() {
           ] as const).map((opt) => {
             const Icon = opt.icon
             const active = tab === opt.id
+            const pill = nativeActivePill(active)
             return (
               <Pressable
                 key={opt.id}
                 onPress={() => setTab(opt.id)}
                 className={cn(
                   'flex-row items-center gap-1.5 px-3 py-1.5 rounded-md',
-                  active ? 'bg-background shadow-sm' : '',
+                  pill.className,
                 )}
+                style={pill.style}
               >
                 <Icon size={13} className={active ? 'text-foreground' : 'text-muted-foreground'} />
                 <Text

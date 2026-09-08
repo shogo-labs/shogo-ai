@@ -5,6 +5,7 @@ import { View, Text, Pressable, ScrollView, ActivityIndicator, TextInput } from 
 import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight, Search, Globe, FileCode } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { nativeActivePill } from '../../../lib/native-active-shadow'
 import { GroupedToolTags } from './GroupedToolTags'
 import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
 
@@ -59,6 +60,8 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
   const [loadingContent, setLoadingContent] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [libraryTab, setLibraryTab] = useState<'bundled' | 'community'>('community')
+  const communityPill = nativeActivePill(libraryTab === 'community')
+  const bundledPill = nativeActivePill(libraryTab === 'bundled')
 
   const toggleSkillDetail = useCallback(
     async (skillName: string) => {
@@ -335,8 +338,9 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 className={cn(
                   'flex-1 flex-row items-center justify-center gap-1.5 rounded-md',
                   comfortable ? 'min-h-11' : 'py-1.5',
-                  libraryTab === 'community' ? 'bg-background shadow-sm' : '',
+                  communityPill.className,
                 )}
+                style={communityPill.style}
               >
                 <Globe size={comfortable ? 16 : 12} className={libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground'} />
                 <Text className={cn(comfortable ? 'text-sm font-medium flex-1 text-center' : 'text-xs font-medium', libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>
@@ -351,8 +355,9 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 className={cn(
                   'flex-1 flex-row items-center justify-center gap-1.5 rounded-md',
                   comfortable ? 'min-h-11' : 'py-1.5',
-                  libraryTab === 'bundled' ? 'bg-background shadow-sm' : '',
+                  bundledPill.className,
                 )}
+                style={bundledPill.style}
               >
                 <BookOpen size={comfortable ? 16 : 12} className={libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground'} />
                 <Text className={cn(comfortable ? 'text-sm font-medium flex-1 text-center' : 'text-xs font-medium', libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>

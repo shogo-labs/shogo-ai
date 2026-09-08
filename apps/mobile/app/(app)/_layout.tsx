@@ -37,7 +37,8 @@ import {
   nativeDrawerPanelWidth,
   snapNativeDrawer,
   useNativeDrawerSheetSwipe,
-  NATIVE_DRAWER_SHEET_RADIUS,
+  useNativeDrawerSheetStyle,
+  nativeDrawerUnderlayStyle,
   NATIVE_DRAWER_UNDERLAY_BACKGROUND,
 } from '../../lib/use-native-drawer-swipe'
 
@@ -176,6 +177,8 @@ export default function AppLayout() {
     isOpen: drawerOpen,
     onOpenChange: setDrawerOpen,
   })
+  const nativeSheetDrawer = isNativeApp && !isWide && !isIdeEmbed
+  const { sheetStyle, sheetClipStyle } = useNativeDrawerSheetStyle(drawerProgress, nativeDrawerWidth)
 
   useEffect(() => {
     if (!isWide) return
@@ -243,51 +246,6 @@ export default function AppLayout() {
 
   const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
   const nativeHomeChrome = isNativeApp && isHomePage && !isIdeEmbed
-  const nativeSheetDrawer = isNativeApp && !isWide && !isIdeEmbed
-  const sheetRadius = useMemo(
-    () =>
-      drawerProgress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, NATIVE_DRAWER_SHEET_RADIUS],
-      }),
-    [drawerProgress],
-  )
-  const sheetShadow = useMemo(
-    () =>
-      drawerProgress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, 0.12],
-      }),
-    [drawerProgress],
-  )
-  const sheetTranslateX = useMemo(
-    () =>
-      drawerProgress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, nativeDrawerWidth],
-      }),
-    [drawerProgress, nativeDrawerWidth],
-  )
-  const sheetElevation = useMemo(
-    () =>
-      drawerProgress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, 4],
-      }),
-    [drawerProgress],
-  )
-  const sheetStyle = nativeSheetDrawer
-    ? {
-        transform: [{ translateX: sheetTranslateX }],
-        borderTopLeftRadius: sheetRadius,
-        borderBottomLeftRadius: sheetRadius,
-        shadowColor: '#000',
-        shadowOffset: { width: -1, height: 0 },
-        shadowOpacity: sheetShadow,
-        shadowRadius: 8,
-        elevation: sheetElevation,
-      }
-    : undefined
 
   return (
     <DomainProvider>
@@ -312,15 +270,7 @@ export default function AppLayout() {
                 pointerEvents={drawerOpen ? 'auto' : 'none'}
                 accessibilityElementsHidden={!drawerOpen}
                 importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
-                style={{
-                  position: 'absolute',
-                  left: 0,
-                  top: 0,
-                  bottom: 0,
-                  width: nativeDrawerWidth,
-                  zIndex: 0,
-                  backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND,
-                }}
+                style={nativeDrawerUnderlayStyle(nativeDrawerWidth)}
               >
                 <AppSidebar
                   isOpen={drawerOpen}
@@ -331,16 +281,9 @@ export default function AppLayout() {
             <Animated.View
               collapsable={false}
               {...sheetSwipeHandlers}
-              style={[{ flex: 1, zIndex: 1 }, sheetStyle]}
+              style={[{ flex: 1, zIndex: 1 }, nativeSheetDrawer ? sheetStyle : undefined]}
             >
-              <Animated.View
-                style={{
-                  flex: 1,
-                  overflow: 'hidden',
-                  borderTopLeftRadius: sheetRadius,
-                  borderBottomLeftRadius: sheetRadius,
-                }}
-              >
+              <Animated.View style={sheetClipStyle}>
                 <View className="flex-1 bg-background">
                   {!isWide && !isIdeEmbed && !suppressNarrowAppHeader && (
                     <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />

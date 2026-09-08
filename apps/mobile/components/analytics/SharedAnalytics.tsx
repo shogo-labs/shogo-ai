@@ -37,6 +37,7 @@ import {
   type ModelFamily,
 } from '@shogo/model-catalog'
 import { resolveShortName, resolveFamily } from '../../lib/visible-models'
+import { nativeActivePill } from '../../lib/native-active-shadow'
 import {
   StackedAreaChart,
   STACKED_PALETTE,
@@ -195,15 +196,6 @@ export const getModelDisplayName = resolveShortName
 // Components
 // =============================================================================
 
-// On native, conditionally toggling NativeWind's `shadow-*` classes triggers a
-// CSS-interop race condition that crashes with "Couldn't find a navigation context".
-// Use an inline style for the shadow on native to avoid the issue.
-const periodActiveNativeShadow = Platform.select({
-  ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 1 },
-  android: { elevation: 1 },
-  default: undefined,
-})
-
 function useNativeComfortable() {
   const { width } = useWindowDimensions()
   return Platform.OS !== 'web' && width < 600
@@ -225,6 +217,7 @@ export function PeriodSelector({
     <View className={cn("flex-row items-center bg-muted rounded-lg gap-0.5", comfortable ? "p-1" : "p-0.5")}>
       {legacyPeriods.map((period) => {
         const isActive = value === period
+        const pill = nativeActivePill(isActive, { webShadow: false })
         return (
           <Pressable
             key={period}
@@ -232,9 +225,9 @@ export function PeriodSelector({
             className={cn(
               'flex-1 items-center rounded-md',
               comfortable ? 'px-2 py-2.5' : 'px-3 py-1.5',
-              isActive ? 'bg-background' : ''
+              pill.className,
             )}
-            style={isActive ? periodActiveNativeShadow : undefined}
+            style={pill.style}
           >
             <Text
               className={cn(

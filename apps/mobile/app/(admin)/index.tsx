@@ -13,6 +13,7 @@ import {
   Pressable,
   RefreshControl,
   useWindowDimensions,
+  Platform,
 } from 'react-native'
 import {
   Users,
@@ -32,6 +33,7 @@ import {
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
+import { nativeActivePill } from '../../lib/native-active-shadow'
 import {
   PlatformGrowthChart,
   ActiveUsersTrendChart,
@@ -52,6 +54,8 @@ const PERIOD_LABELS: Record<AnalyticsPeriod, string> = {
   '90d': '90 days',
   '1y': '1 year',
 }
+
+const NATIVE_STACK_METRICS_MAX_WIDTH = 600
 
 interface OverviewData {
   totalUsers: number
@@ -174,25 +178,29 @@ function PeriodSelector({
 }) {
   return (
     <View className="flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5">
-      {(Object.keys(PERIOD_LABELS) as AnalyticsPeriod[]).map((period) => (
-        <Pressable
-          key={period}
-          onPress={() => onChange(period)}
-          className={cn(
-            'px-3 py-1.5 rounded-md',
-            value === period ? 'bg-background shadow-sm' : ''
-          )}
-        >
-          <Text
+      {(Object.keys(PERIOD_LABELS) as AnalyticsPeriod[]).map((period) => {
+        const pill = nativeActivePill(value === period)
+        return (
+          <Pressable
+            key={period}
+            onPress={() => onChange(period)}
             className={cn(
-              'text-xs font-medium',
-              value === period ? 'text-foreground' : 'text-muted-foreground'
+              'px-3 py-1.5 rounded-md',
+              pill.className,
             )}
+            style={pill.style}
           >
-            {PERIOD_LABELS[period]}
-          </Text>
-        </Pressable>
-      ))}
+            <Text
+              className={cn(
+                'text-xs font-medium',
+                value === period ? 'text-foreground' : 'text-muted-foreground'
+              )}
+            >
+              {PERIOD_LABELS[period]}
+            </Text>
+          </Pressable>
+        )
+      })}
     </View>
   )
 }
@@ -231,11 +239,13 @@ function StatCard({
 }
 
 function ActiveUsersCard({ data, loading }: { data: ActiveUsersData | null; loading: boolean }) {
+  const { width } = useWindowDimensions()
+  const stackMetrics = Platform.OS !== 'web' && width < NATIVE_STACK_METRICS_MAX_WIDTH
   if (loading) {
     return (
       <View className="rounded-xl border border-border bg-card p-5">
         <View className="h-4 w-32 bg-muted rounded mb-4" />
-        <View className="flex-row gap-3">
+        <View className={cn(stackMetrics ? 'gap-3' : 'flex-row gap-3')}>
           {[1, 2, 3].map((i) => (
             <View key={i} className="flex-1 h-20 bg-muted/50 rounded-lg" />
           ))}
@@ -253,7 +263,7 @@ function ActiveUsersCard({ data, loading }: { data: ActiveUsersData | null; load
   return (
     <View className="rounded-xl border border-border bg-card p-5">
       <Text className="text-sm font-semibold text-foreground mb-4">Active Users</Text>
-      <View className="flex-row gap-3">
+      <View className={cn(stackMetrics ? 'gap-3' : 'flex-row gap-3')}>
         {metrics.map((m) => {
           const Icon = m.icon
           return (
