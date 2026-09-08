@@ -8928,6 +8928,43 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
   }, 3000)
 }
 
+// Prewarm workspace runtimes on startup (local dev + shipped desktop app —
+// both run this same entry point with SHOGO_LOCAL_MODE=true). Without this,
+// the merged-root runtime for a workspace only cold-boots (bun install +
+// Vite build + agent-runtime boot, ~25-30s) the first time it's needed —
+// i.e. on the user's first chat message of the session. Firing that same
+// boot here instead means it happens in the background while the app is
+// still loading, so by the time the user sends a message it's already warm.
+// Prewarms the `workspacePreviewMax` (default 3, see runtime/manager.ts)
+// most recently active workspaces so they don't evict each other on open.
+if (process.env.SHOGO_LOCAL_MODE === 'true' && process.env.SHOGO_WORKSPACE_RUNTIME === 'true' && !isKubernetes()) {
+  setTimeout(async () => {
+    try {
+      const { resolveWorkspaceRuntimeUrl } = await import('./lib/resolve-workspace-runtime-url')
+      const previewMax = parseInt(process.env.WORKSPACE_PREVIEW_MAX || '3', 10)
+      const take = Number.isFinite(previewMax) && previewMax > 0 ? previewMax : 3
+      const workspaces = await prisma.workspace.findMany({
+        orderBy: { updatedAt: 'desc' },
+        take,
+        select: { id: true },
+      })
+      for (const ws of workspaces) {
+        resolveWorkspaceRuntimeUrl(ws.id, {
+          attachedProjectIds: [],
+          logTag: 'StartupPrewarm',
+          runtimeManager: getRuntimeManager(),
+        })
+          .then(() => console.log(`[StartupPrewarm] Workspace ${ws.id} runtime warmed`))
+          .catch((err: any) =>
+            console.warn(`[StartupPrewarm] Failed to warm workspace ${ws.id} (non-fatal):`, err?.message ?? err),
+          )
+      }
+    } catch (err: any) {
+      console.error('[StartupPrewarm] Failed to start workspace prewarm (non-fatal):', err?.message ?? err)
+    }
+  }, 4000)
+}
+
 // Storage usage recalculation (Kubernetes only, every 6 hours)
 if (isKubernetes()) {
   const STORAGE_RECALC_INTERVAL = 6 * 60 * 60 * 1000

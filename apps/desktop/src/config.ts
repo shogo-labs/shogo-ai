@@ -5,7 +5,7 @@ import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
-import { computeDefaultRuntimeMemoryMB } from './runtime-memory'
+import { computeDefaultRuntimeMemoryMB, computeDefaultWarmPoolSize } from './runtime-memory'
 
 export interface HostRuntimeConfig {
   /** Per-project RAM ceiling in MB for the host-spawned agent-runtime process
@@ -65,10 +65,14 @@ export function getCloudUrl(): string {
 }
 
 function getDefaultHostRuntimeConfig(): HostRuntimeConfig {
+  const totalMemMB = Math.round(os.totalmem() / 1024 / 1024)
   return {
-    memoryMB: computeDefaultRuntimeMemoryMB(Math.round(os.totalmem() / 1024 / 1024)),
+    memoryMB: computeDefaultRuntimeMemoryMB(totalMemMB),
     cpuPercent: 0,  // 0 = no CPU cap
-    warmPoolSize: 0,  // 0 = warm pool disabled
+    // Pre-boot 1 generic runtime on machines with RAM to spare, so the first
+    // project opened after launch skips the cold agent-runtime spawn. See
+    // computeDefaultWarmPoolSize for the RAM threshold and trade-off.
+    warmPoolSize: computeDefaultWarmPoolSize(totalMemMB),
   }
 }
 

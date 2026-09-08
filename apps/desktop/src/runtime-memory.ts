@@ -31,3 +31,26 @@ export function computeDefaultRuntimeMemoryMB(totalMemMB: number): number {
   if (!Number.isFinite(totalMemMB) || totalMemMB <= 0) return 3072
   return Math.min(8192, Math.max(3072, Math.floor(totalMemMB * 0.4)))
 }
+
+/**
+ * Default number of generic runtimes the Host Warm Pool (see
+ * `host-warm-pool-controller.ts`) should keep pre-booted, scaled to the
+ * host's total RAM.
+ *
+ * Cold-opening a project on desktop pays a real one-time cost — spawning
+ * the agent-runtime process, JIT warm-up, LSP init — on top of the
+ * per-project `bun install`/build. A pre-booted pool of 1 lets that first
+ * open claim an already-running runtime instead of paying the spawn cost
+ * inline, at the price of one extra idle runtime's RAM footprint
+ * (`computeDefaultRuntimeMemoryMB`) sitting around before any project is
+ * opened.
+ *
+ * That trade-off only makes sense once the machine has headroom to spare,
+ * so this defaults to 0 (disabled — matches the historical behavior) below
+ * 8GB total RAM and 1 at/above it. Users who want more can still opt in via
+ * `HOST_WARM_POOL_SIZE`.
+ */
+export function computeDefaultWarmPoolSize(totalMemMB: number): number {
+  if (!Number.isFinite(totalMemMB) || totalMemMB <= 0) return 0
+  return totalMemMB >= 8192 ? 1 : 0
+}
