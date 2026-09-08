@@ -80,6 +80,7 @@ export default function AppLayout() {
   const isApiKeysPage = pathname === '/api-keys' || pathname === '/(app)/api-keys'
   const isProfilePage = pathname === '/profile' || pathname === '/(app)/profile'
   const isSearchPage = pathname === '/search' || pathname === '/(app)/search'
+  const isProjectChatsPage = pathname === '/project-chats' || pathname === '/(app)/project-chats'
 
   usePostHogIdentify()
   const posthog = usePostHogSafe()
@@ -159,7 +160,15 @@ export default function AppLayout() {
     if (drawerOpen) closeDrawer()
     else openDrawer()
   }, [closeDrawer, drawerOpen, openDrawer])
-  const nativeDrawerSwipe = isNativeApp && !isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && !isApiKeysPage && !isProfilePage && !isSearchPage
+  const suppressNarrowAppHeader =
+    isProjectDetail ||
+    isBillingPage ||
+    isNotificationsPage ||
+    isApiKeysPage ||
+    isProfilePage ||
+    isSearchPage ||
+    isProjectChatsPage
+  const nativeDrawerSwipe = isNativeApp && !isWide && !isIdeEmbed && !suppressNarrowAppHeader
   const sheetSwipeHandlers = useNativeDrawerSheetSwipe({
     enabled: nativeDrawerSwipe,
     drawerWidth: nativeDrawerWidth,
@@ -235,34 +244,48 @@ export default function AppLayout() {
   const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
   const nativeHomeChrome = isNativeApp && isHomePage && !isIdeEmbed
   const nativeSheetDrawer = isNativeApp && !isWide && !isIdeEmbed
-  const sheetRadius = drawerProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, NATIVE_DRAWER_SHEET_RADIUS],
-  })
-  const sheetShadow = drawerProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 0.12],
-  })
+  const sheetRadius = useMemo(
+    () =>
+      drawerProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, NATIVE_DRAWER_SHEET_RADIUS],
+      }),
+    [drawerProgress],
+  )
+  const sheetShadow = useMemo(
+    () =>
+      drawerProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, 0.12],
+      }),
+    [drawerProgress],
+  )
+  const sheetTranslateX = useMemo(
+    () =>
+      drawerProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, nativeDrawerWidth],
+      }),
+    [drawerProgress, nativeDrawerWidth],
+  )
+  const sheetElevation = useMemo(
+    () =>
+      drawerProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, 4],
+      }),
+    [drawerProgress],
+  )
   const sheetStyle = nativeSheetDrawer
     ? {
-        transform: [
-          {
-            translateX: drawerProgress.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0, nativeDrawerWidth],
-            }),
-          },
-        ],
+        transform: [{ translateX: sheetTranslateX }],
         borderTopLeftRadius: sheetRadius,
         borderBottomLeftRadius: sheetRadius,
         shadowColor: '#000',
         shadowOffset: { width: -1, height: 0 },
         shadowOpacity: sheetShadow,
         shadowRadius: 8,
-        elevation: drawerProgress.interpolate({
-          inputRange: [0, 1],
-          outputRange: [0, 4],
-        }),
+        elevation: sheetElevation,
       }
     : undefined
 
@@ -319,7 +342,7 @@ export default function AppLayout() {
                 }}
               >
                 <View className="flex-1 bg-background">
-                  {!isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && !isApiKeysPage && !isProfilePage && !isSearchPage && (
+                  {!isWide && !isIdeEmbed && !suppressNarrowAppHeader && (
                     <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
                   )}
                   <View className="flex-1">

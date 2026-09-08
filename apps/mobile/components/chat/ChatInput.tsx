@@ -37,7 +37,7 @@ import { AttachSourceSheet } from "./AttachSourceSheet"
 import { ContextTracker } from "./ContextTracker"
 import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
-import { ModelPickerMenu, getNativeModelMenuWidth } from "./ModelPickerMenu"
+import { ComposerModelPicker } from "./ModelPickerMenu"
 import { DockChip } from "./dock/DockChip"
 import { DockChipRail } from "./dock/DockChipRail"
 import { QueueDockPanel } from "./dock/panels/QueueDockPanel"
@@ -53,7 +53,6 @@ import {
   FileText,
   FolderGit2,
   Image as ImageIcon,
-  ChevronDown,
   Bot,
   ClipboardList,
   MessageCircleQuestion,
@@ -472,8 +471,6 @@ function ChatInputImpl({
   const modelTriggerMaxWidth = useProminentComposer
     ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
     : Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
-  const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
-
   const bridge = useChatBridgeOptional()
   const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
   const ezActive = bridge?.ezModeActive ?? false
@@ -518,7 +515,6 @@ function ChatInputImpl({
   const [fileError, setFileError] = useState<string | null>(null)
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
-  const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
@@ -2225,59 +2221,33 @@ function ChatInputImpl({
               </>
             )}
 
-            {/* Model selector */}
-            <Popover
-              placement="top"
-              size="xs"
-              isOpen={modelPickerOpen}
-              onOpen={() => setModelPickerOpen(true)}
-              onClose={() => setModelPickerOpen(false)}
-              trigger={(triggerProps) => (
-                <Pressable
-                  {...triggerProps}
-                  hitSlop={isNative ? 6 : undefined}
-                  disabled={disabled}
-                  className={cn(
-                    useProminentComposer
-                      ? "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
-                      : isNative
-                        ? "h-8 flex-row items-center gap-1 rounded-lg px-2"
-                        : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
-                    isNativePhone && !useProminentComposer && "min-w-0"
-                  )}
-                  style={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
-                >
-                  <Text
-                    className={
-                      useProminentComposer
-                        ? "text-[12px] text-foreground/90"
-                        : isNative
-                          ? "text-sm text-muted-foreground"
-                          : "text-xs text-muted-foreground"
-                    }
-                    numberOfLines={1}
-                  >
-                    {isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
-                  </Text>
-                  <ChevronDown className="h-2 w-2 flex-shrink-0 text-muted-foreground/60" size={isNative ? 12 : 8} />
-                </Pressable>
+            {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
+            <ComposerModelPicker
+              currentModelId={currentModelId}
+              effectiveIsPro={effectiveIsPro}
+              disabled={disabled}
+              nativeSheet={isNativePhone}
+              triggerClassName={cn(
+                useProminentComposer
+                  ? "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
+                  : isNative
+                    ? "h-8 flex-row items-center gap-1 rounded-lg px-2"
+                    : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                isNativePhone && !useProminentComposer && "min-w-0"
               )}
-            >
-              <PopoverBackdrop />
-              <PopoverContent
-                className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
-                style={isNativePhone ? { width: nativeModelMenuWidth } : undefined}
-              >
-                <ModelPickerMenu
-                  currentModelId={currentModelId}
-                  effectiveIsPro={effectiveIsPro}
-                  onSelect={(modelId) => {
-                    handleModelChange(modelId)
-                    setModelPickerOpen(false)
-                  }}
-                />
-              </PopoverContent>
-            </Popover>
+              triggerStyle={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
+              labelClassName={
+                useProminentComposer
+                  ? "text-[12px] text-foreground/90"
+                  : isNative
+                    ? "text-sm text-muted-foreground"
+                    : "text-xs text-muted-foreground"
+              }
+              chevronSize={isNative ? 12 : 8}
+              hitSlop={isNative ? 6 : undefined}
+              label={isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
+              onSelect={handleModelChange}
+            />
 
             {useProminentComposer ? (
               <View

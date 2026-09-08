@@ -109,6 +109,13 @@ import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { NATIVE_DRAWER_UNDERLAY_BACKGROUND } from '../../lib/use-native-drawer-swipe'
+import {
+  fetchProjectChatSessions,
+  PROJECT_CHAT_PAGE_SIZE,
+  projectChatLabel,
+  visibleProjectChatItems,
+  type ProjectChatListItem,
+} from '../../lib/project-chat-sessions'
 import { invitationEvents } from '../../lib/invitation-events'
 import { chatSessionEvents, chatActivityEvents } from '../../lib/chat-session-events'
 import {
@@ -215,14 +222,6 @@ function NavItem({
 
 // ─── ChatTreeItem (a single chat nested under a project) ────
 
-function chatLabel(session: any): string {
-  const name = typeof session.name === 'string' ? session.name.trim() : ''
-  if (name) return name
-  if (session.inferredName) return session.inferredName
-  const created = session.createdAt ? new Date(session.createdAt) : new Date()
-  return `Chat · ${created.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
-}
-
 function ChatTreeItem({
   session,
   active,
@@ -247,21 +246,22 @@ function ChatTreeItem({
   onMeasureHeight?: (height: number) => void
 }) {
   const isNative = Platform.OS !== 'web'
+  const label = projectChatLabel(session)
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
   // Web-only right-click menu anchor (viewport coords).
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
   const startEdit = useCallback(() => {
-    setEditValue(chatLabel(session))
+    setEditValue(label)
     setEditing(true)
-  }, [session])
+  }, [label])
 
   const saveEdit = useCallback(() => {
     const trimmed = editValue.trim()
-    if (trimmed && trimmed !== chatLabel(session)) onRename(session.id, trimmed)
+    if (trimmed && trimmed !== label) onRename(session.id, trimmed)
     setEditing(false)
-  }, [editValue, session, onRename])
+  }, [editValue, label, session.id, onRename])
 
   // Swallow the row's select press so tapping an action icon doesn't also
   // open the chat (RN-Web bubbles the nested Pressable's click to the row).
@@ -338,7 +338,7 @@ function ChatTreeItem({
       onPress={() => onSelect(session.id)}
       onLayout={handleLayout}
       role="link"
-      accessibilityLabel={`Chat: ${chatLabel(session)}`}
+      accessibilityLabel={`Chat: ${label}`}
       aria-current={active ? 'page' : undefined}
       className={cn(
         'group flex-row items-center rounded-md',
@@ -358,7 +358,7 @@ function ChatTreeItem({
         className={cn(isNative ? 'text-base flex-1' : 'text-xs flex-1', active ? 'text-foreground' : 'text-muted-foreground')}
         numberOfLines={1}
       >
-        {chatLabel(session)}
+        {label}
       </Text>
       {/* Hover-reveal actions (web). Always mounted; visibility is purely
           CSS-driven via the row's `group` + `group-hover:flex` so moving the
@@ -367,7 +367,7 @@ function ChatTreeItem({
         <Pressable
           onPress={(e) => { stop(e); onTogglePin(session.id, !session.isPinned) }}
           className="p-0.5"
-          accessibilityLabel={session.isPinned ? `Unpin ${chatLabel(session)}` : `Pin ${chatLabel(session)}`}
+          accessibilityLabel={session.isPinned ? `Unpin ${label}` : `Pin ${label}`}
         >
           {session.isPinned ? (
             <PinOff size={11} className="text-muted-foreground" />
@@ -378,7 +378,7 @@ function ChatTreeItem({
         <Pressable
           onPress={(e) => { stop(e); onToggleArchive(session.id, !session.isArchived) }}
           className="p-0.5"
-          accessibilityLabel={session.isArchived ? `Unarchive ${chatLabel(session)}` : `Archive ${chatLabel(session)}`}
+          accessibilityLabel={session.isArchived ? `Unarchive ${label}` : `Archive ${label}`}
         >
           {session.isArchived ? (
             <ArchiveRestore size={11} className="text-muted-foreground" />
@@ -389,7 +389,7 @@ function ChatTreeItem({
         <Pressable
           onPress={(e) => { stop(e); startEdit() }}
           className="p-0.5"
-          accessibilityLabel={`Rename ${chatLabel(session)}`}
+          accessibilityLabel={`Rename ${label}`}
         >
           <Pencil size={11} className="text-muted-foreground" />
         </Pressable>
@@ -411,7 +411,6 @@ function ChatTreeItem({
 
 // Cap the per-project chat scroll area to 5 visible chat rows.
 const MAX_VISIBLE_CHATS = 5
-const CHAT_SESSION_PAGE_SIZE = 50
 const ARCHIVED_CHAT_ROW_ID = 'archived-chats' as const
 const SIDEBAR_CHAT_SCROLL_DATASET = { sidebarChatScroll: 'true' } as const
 const SIDEBAR_CHAT_SCROLL_CONTENT_STYLE = { paddingRight: 2 } as const
@@ -595,7 +594,7 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   // chat-session collection) because the collection's loaders prune items
   // from other contexts — expanding a second project would otherwise wipe
   // the first project's chats out of the cache.
-  const [sessions, setSessions] = useState<any[]>([])
+  const [sessions, setSessions] = useState<ProjectChatListItem[]>([])
   const [loaded, setLoaded] = useState(false)
   const [hasMoreChats, setHasMoreChats] = useState(false)
   const [loadingMoreChats, setLoadingMoreChats] = useState(false)
@@ -631,8 +630,8 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
     if (routeChatId) setActiveOverride(routeChatId)
   }, [routeChatId])
 
-  const loadChats = useCallback(async (limit = CHAT_SESSION_PAGE_SIZE) => {
-    const loadingMore = limit > CHAT_SESSION_PAGE_SIZE
+  const loadChats = useCallback(async (limit = PROJECT_CHAT_PAGE_SIZE) => {
+    const loadingMore = limit > PROJECT_CHAT_PAGE_SIZE
     if (!http) return
     if (!loadingMore) {
       if (seededRef.current) return
@@ -642,23 +641,9 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
       setLoadingMoreChats(true)
     }
     try {
-      const res = await http.get<{ ok: boolean; items?: any[] }>(
-        `/api/chat-sessions?contextId=${encodeURIComponent(project.id)}&limit=${limit}`,
-      )
-      const items = Array.isArray(res.data?.items) ? res.data!.items! : []
-      const normalized = items
-        .map((s: any) => ({
-          id: s.id,
-          name: typeof s.name === 'string' ? s.name : '',
-          inferredName: s.inferredName ?? '',
-          createdAt: s.createdAt ? new Date(s.createdAt).getTime() : 0,
-          activity: new Date(s.lastActiveAt || s.updatedAt || s.createdAt || 0).getTime(),
-          isPinned: !!s.isPinned,
-          isArchived: !!s.isArchived,
-        }))
-        .sort((a, b) => b.activity - a.activity)
-      setSessions(normalized)
-      setHasMoreChats(items.length >= limit)
+      const result = await fetchProjectChatSessions(http, project.id, limit)
+      setSessions(result.sessions)
+      setHasMoreChats(result.hasMore)
     } catch (e) {
       console.error('[AppSidebar] Failed to load chats:', e)
       if (!loadingMore) seededRef.current = false
@@ -688,7 +673,7 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
       if (!hasMoreChats || loadingMoreChats) return
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
       const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height)
-      if (distanceFromBottom <= 24) void loadChats(sessions.length + CHAT_SESSION_PAGE_SIZE)
+      if (distanceFromBottom <= 24) void loadChats(sessions.length + PROJECT_CHAT_PAGE_SIZE)
     },
     [hasMoreChats, loadingMoreChats, loadChats, sessions.length],
   )
@@ -709,12 +694,12 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
     return chatSessionEvents.subscribe(({ projectId, activeSessionId, refresh }) => {
       if (projectId !== project.id) return
       if (refresh) {
-        setExpanded(true)
+        if (!mobileProjectFirstTapShowsChats) setExpanded(true)
         refreshChats()
       }
       if (activeSessionId) setActiveOverride(activeSessionId)
     })
-  }, [project.id, refreshChats])
+  }, [project.id, refreshChats, mobileProjectFirstTapShowsChats])
 
   // Mirror the open workspace's live streaming / new-activity state so chat
   // rows can show a spinner / activity dot. Decoupled from the refresh events
@@ -730,11 +715,12 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   // When this project is the one open in the content pane, reveal its chats
   // automatically so the active chat is visible without a manual expand.
   useEffect(() => {
+    if (mobileProjectFirstTapShowsChats) return
     if (isActive && !collapsed) {
       setExpanded(true)
       void loadChats()
     }
-  }, [isActive, collapsed, loadChats])
+  }, [isActive, collapsed, loadChats, mobileProjectFirstTapShowsChats])
 
   const openProject = useCallback(() => {
     // Clicking a project name is an explicit "take me to this project's main
@@ -761,13 +747,16 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
   }, [router, project, onNavPress, isActive, mobileProjectFirstTapShowsChats])
 
   const handleProjectPress = useCallback(() => {
-    if (mobileProjectFirstTapShowsChats && !isActive && !expanded) {
-      setExpanded(true)
-      void loadChats()
+    if (mobileProjectFirstTapShowsChats) {
+      router.push({
+        pathname: '/(app)/project-chats',
+        params: { id: project.id },
+      } as any)
+      onNavPress?.()
       return
     }
     openProject()
-  }, [expanded, isActive, loadChats, mobileProjectFirstTapShowsChats, openProject])
+  }, [mobileProjectFirstTapShowsChats, onNavPress, openProject, project.id, router])
 
   // Select a chat. If its project is already open, switch IN PLACE via the
   // event bus (no navigation / remount). Otherwise navigate to the project
@@ -976,20 +965,13 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
             role="link"
             accessibilityLabel={`Project: ${project.name || 'Untitled'}`}
             accessibilityHint={
-              mobileProjectFirstTapShowsChats && !isActive && !expanded
-                ? 'Shows chats for this project. Tap again to open the project.'
+              mobileProjectFirstTapShowsChats
+                ? 'Opens chats for this project'
                 : undefined
             }
             className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70 min-w-0"
             {...(Platform.OS === 'web' ? ({ onContextMenu: handleContextMenu } as any) : {})}
           >
-            {mobileProjectFirstTapShowsChats && (
-              expanded ? (
-                <ChevronDown size={isNative ? 16 : 10} className="text-muted-foreground shrink-0" />
-              ) : (
-                <ChevronRight size={isNative ? 16 : 10} className="text-muted-foreground shrink-0" />
-              )
-            )}
             <Folder size={isNative ? 18 : 12} className={isActive ? 'text-foreground' : 'text-muted-foreground'} />
             <Text
               className={cn(isNative ? 'text-base flex-1' : 'text-xs flex-1', isActive ? 'text-foreground' : 'text-foreground')}
@@ -997,6 +979,9 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
             >
               {project.name || 'Untitled'}
             </Text>
+            {mobileProjectFirstTapShowsChats ? (
+              <ChevronRight size={16} className="text-muted-foreground shrink-0" />
+            ) : null}
           </Pressable>
           {/* Persistent pin glyph when pinned (hidden while hovering so the
               hover actions can take its place). */}
@@ -1029,10 +1014,8 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
           </View>
         </View>
       )}
-      {expanded && (() => {
-        const activeSessions = sessions
-          .filter((s: any) => !s.isArchived)
-          .sort((a: any, b: any) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0))
+      {expanded && !mobileProjectFirstTapShowsChats && (() => {
+        const activeSessions = visibleProjectChatItems(sessions)
         const archivedSessions = sessions.filter((s: any) => s.isArchived)
         const renderChat = (s: any, key = s.id) => (
           <ChatTreeItem
@@ -1046,7 +1029,7 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
             onRename={handleRename}
             onToggleArchive={handleToggleArchive}
             onRequestDelete={(id) =>
-              setConfirmDelete({ kind: 'chat', id, label: chatLabel(s) })
+              setConfirmDelete({ kind: 'chat', id, label: projectChatLabel(s) })
             }
             onMeasureHeight={handleChatRowHeight}
           />

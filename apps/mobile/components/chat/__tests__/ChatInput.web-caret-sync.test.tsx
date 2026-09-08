@@ -90,6 +90,7 @@ mock.module("../../../lib/visible-models", () => ({
 }))
 mock.module("../ModelPickerMenu", () => ({
   ModelPickerMenu: () => null,
+  ComposerModelPicker: () => null,
   getNativeModelMenuWidth: () => 280,
 }))
 mock.module("../FileViewerModal", () => ({ FileViewerModal: () => null }))

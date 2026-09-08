@@ -48,6 +48,7 @@ import { api, getOnboardingMessage } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
 import { getPendingLicenseCode, clearPendingLicenseCode } from '../../lib/pending-license'
+import { isNativeComposerKeyboardOpen, nativeComposerKeyboardPad } from '../../lib/native-composer-keyboard'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 import { TechStackPicker } from '../../components/chat/TechStackPicker'
@@ -311,13 +312,10 @@ const HomeScreen = observer(function HomeScreen() {
       composerSidePad.setValue(restComposerSidePad)
       composerKeyboardExpand.setValue(0)
     }
-  }, [composerKeyboardExpand, composerKeyboardPad, composerSidePad, restComposerPad])
+  }, [composerKeyboardExpand, composerKeyboardPad, composerSidePad, restComposerPad, restComposerSidePad])
 
   useEffect(() => {
     if (!isNativePhone) return
-
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
 
     const animateComposer = (opts: {
       pad: number
@@ -349,19 +347,31 @@ const HomeScreen = observer(function HomeScreen() {
       ]).start()
     }
 
-    const showSub = Keyboard.addListener(showEvent, (event) => {
-      keyboardOpenRef.current = true
-      const windowHeight = Dimensions.get('window').height
-      const keyboardTop = event.endCoordinates?.screenY ?? windowHeight
-      const overlap = Math.max(0, windowHeight - keyboardTop)
+    const applyKeyboardFrame = (event: { duration?: number; endCoordinates?: { height?: number; screenY?: number } }) => {
+      const screenHeight = Dimensions.get('screen').height
+      const pad = nativeComposerKeyboardPad(event.endCoordinates, screenHeight)
+      const keyboardVisible = isNativeComposerKeyboardOpen(pad, restComposerPad)
+      keyboardOpenRef.current = keyboardVisible
+      if (!keyboardVisible) {
+        animateComposer({
+          pad: restComposerPad,
+          sidePad: restComposerSidePad,
+          expand: 0,
+          duration: event.duration,
+        })
+        return
+      }
       animateComposer({
-        pad: Math.max(8, overlap),
+        pad,
         sidePad: 0,
         expand: 1,
         duration: event.duration,
       })
-    })
+    }
 
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
+    const showSub = Keyboard.addListener(showEvent, applyKeyboardFrame)
     const hideSub = Keyboard.addListener(hideEvent, (event) => {
       keyboardOpenRef.current = false
       animateComposer({
@@ -371,12 +381,17 @@ const HomeScreen = observer(function HomeScreen() {
         duration: event.duration,
       })
     })
+    const changeSub =
+      Platform.OS === 'ios'
+        ? Keyboard.addListener('keyboardWillChangeFrame', applyKeyboardFrame)
+        : undefined
 
     return () => {
       showSub.remove()
       hideSub.remove()
+      changeSub?.remove()
     }
-  }, [composerKeyboardExpand, composerKeyboardPad, composerSidePad, isNativePhone, restComposerPad])
+  }, [composerKeyboardExpand, composerKeyboardPad, composerSidePad, isNativePhone, restComposerPad, restComposerSidePad])
 
   /**
    * Draft project the homepage opens behind the scenes for a creation
@@ -1034,6 +1049,7 @@ const HomeScreen = observer(function HomeScreen() {
               {
                 alignSelf: 'center',
                 width: '100%',
+                minHeight: 0,
                 paddingTop: insets.top + 56,
                 paddingHorizontal: 32,
                 paddingBottom: 16,

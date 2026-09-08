@@ -22,7 +22,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
-import { ModelPickerMenu, getNativeModelMenuWidth } from "./ModelPickerMenu"
+import { ComposerModelPicker } from "./ModelPickerMenu"
 import {
   ArrowUp,
   Plus,
@@ -31,7 +31,6 @@ import {
   File,
   FileText,
   Image as ImageIcon,
-  ChevronDown,
   Mic,
   Square,
   Languages,
@@ -91,6 +90,7 @@ const COMPACT_INPUT_MAX_HEIGHT = 200
 const COMPACT_INPUT_PROMINENT_MIN_HEIGHT = 24
 const COMPACT_INPUT_PROMINENT_MAX_HEIGHT = 100
 const COMPACT_INPUT_PROMINENT_LINE_HEIGHT = 22
+const COMPACT_INPUT_PROMINENT_RADIUS = 28
 const COMPACT_INPUT_NATIVE_MIN_HEIGHT = 48
 const COMPACT_INPUT_NATIVE_MAX_HEIGHT = 144
 
@@ -225,8 +225,6 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const modelTriggerMaxWidth = useProminentComposer
       ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
       : Math.max(50, Math.min(62, Math.floor(windowWidth * 0.16)))
-    const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
-
     const [internalValue, setInternalValue] = useState("")
     const [inputHeight, setInputHeight] = useState(inputMinHeight)
     const [isFocused, setIsFocused] = useState(false)
@@ -240,7 +238,6 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const [plusMenuOpen, setPlusMenuOpen] = useState(false)
     const [plusExpandedId, setPlusExpandedId] = useState<string | null>(null)
     const [interactionModeOpen, setInteractionModeOpen] = useState(false)
-    const [modelPickerOpen, setModelPickerOpen] = useState(false)
     const [internalInteractionMode, setInternalInteractionMode] =
       useState<InteractionMode>("agent")
     const interactionMode = controlledInteractionMode ?? internalInteractionMode
@@ -641,6 +638,40 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       return <File className="h-4 w-4 text-muted-foreground" size={16} />
     }, [])
 
+    const keyboardBottomRadius = useMemo(
+      () =>
+        keyboardExpand
+          ? keyboardExpand.interpolate({
+              inputRange: [0, 1],
+              outputRange: [COMPACT_INPUT_PROMINENT_RADIUS, 0],
+            })
+          : COMPACT_INPUT_PROMINENT_RADIUS,
+      [keyboardExpand],
+    )
+    const keyboardBorderWidth = useMemo(
+      () =>
+        keyboardExpand
+          ? keyboardExpand.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 0],
+            })
+          : 1,
+      [keyboardExpand],
+    )
+    const keyboardBorderColor = useMemo(
+      () =>
+        keyboardExpand
+          ? keyboardExpand.interpolate({
+              inputRange: [0, 1],
+              outputRange: [chatgptComposer.border, "transparent"],
+            })
+          : focusProgress.interpolate({
+              inputRange: [0, 1],
+              outputRange: [chatgptComposer.border, chatgptComposer.borderFocus],
+            }),
+      [chatgptComposer.border, chatgptComposer.borderFocus, focusProgress, keyboardExpand],
+    )
+
     return (
       <View ref={ref} className={cn("w-full", className)}>
         <Animated.View
@@ -653,25 +684,12 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             useProminentComposer
               ? {
                   overflow: "hidden" as const,
-                  borderTopLeftRadius: 28,
-                  borderTopRightRadius: 28,
-                  borderBottomLeftRadius: keyboardExpand
-                    ? keyboardExpand.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [28, 0],
-                      })
-                    : 28,
-                  borderBottomRightRadius: keyboardExpand
-                    ? keyboardExpand.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [28, 0],
-                      })
-                    : 28,
-                  borderWidth: 1,
-                  borderColor: focusProgress.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [chatgptComposer.border, chatgptComposer.borderFocus],
-                  }),
+                  borderTopLeftRadius: COMPACT_INPUT_PROMINENT_RADIUS,
+                  borderTopRightRadius: COMPACT_INPUT_PROMINENT_RADIUS,
+                  borderBottomLeftRadius: keyboardBottomRadius,
+                  borderBottomRightRadius: keyboardBottomRadius,
+                  borderWidth: keyboardBorderWidth,
+                  borderColor: keyboardBorderColor,
                   backgroundColor: chatgptComposer.fill,
                 }
               : undefined
@@ -1039,57 +1057,31 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 </>
               )}
 
-              {/* Model selector */}
-              <Popover
-                placement="top"
-                size="xs"
-                isOpen={modelPickerOpen}
-                onOpen={() => setModelPickerOpen(true)}
-                onClose={() => setModelPickerOpen(false)}
-                trigger={(triggerProps) => (
-                  <Pressable
-                    {...triggerProps}
-                    hitSlop={useCurrentNativeSizing ? 6 : undefined}
-                    disabled={disabled}
-                    className={cn(
-                      useProminentComposer
-                        ? "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
-                        : useCurrentNativeSizing
-                          ? "h-8 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-2"
-                        : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
-                      isNativePhone && !useProminentComposer && "min-w-0"
-                    )}
-                    style={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
-                  >
-                    <Text
-                      className={useProminentComposer
-                        ? "text-[12px] text-foreground/90"
-                        : useCurrentNativeSizing
-                          ? "text-[13px] text-foreground/85"
-                          : "text-xs text-muted-foreground"}
-                      numberOfLines={1}
-                    >
-                      {isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
-                    </Text>
-                    <ChevronDown className="flex-shrink-0 text-muted-foreground/70" size={useCurrentNativeSizing ? 10 : 8} />
-                  </Pressable>
+              {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
+              <ComposerModelPicker
+                currentModelId={currentModelId}
+                effectiveIsPro={effectiveIsPro}
+                disabled={disabled}
+                nativeSheet={isNativePhone}
+                triggerClassName={cn(
+                  useProminentComposer
+                    ? "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
+                    : useCurrentNativeSizing
+                      ? "h-8 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-2"
+                    : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                  isNativePhone && !useProminentComposer && "min-w-0"
                 )}
-              >
-                <PopoverBackdrop />
-                <PopoverContent
-                  className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
-                  style={isNativePhone ? { width: nativeModelMenuWidth } : undefined}
-                >
-                  <ModelPickerMenu
-                    currentModelId={currentModelId}
-                    effectiveIsPro={effectiveIsPro}
-                    onSelect={(modelId) => {
-                      handleModelChange(modelId)
-                      setModelPickerOpen(false)
-                    }}
-                  />
-                </PopoverContent>
-              </Popover>
+                triggerStyle={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
+                labelClassName={useProminentComposer
+                  ? "text-[12px] text-foreground/90"
+                  : useCurrentNativeSizing
+                    ? "text-[13px] text-foreground/85"
+                    : "text-xs text-muted-foreground"}
+                chevronSize={useCurrentNativeSizing ? 10 : 8}
+                hitSlop={useCurrentNativeSizing ? 6 : undefined}
+                label={isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
+                onSelect={handleModelChange}
+              />
             </View>
 
             {useProminentComposer ? (

@@ -13,12 +13,12 @@
  * admin-configured catalog (sortOrder, description, contextWindow,
  * reasoningEffort) served by `/api/platform/visible-models`.
  */
-import React, { useState } from "react"
-import { View, Text, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native"
+import React, { useCallback, useState } from "react"
+import { View, Text, Pressable, ScrollView, Platform, useWindowDimensions, Keyboard, type StyleProp, type ViewStyle } from "react-native"
 import { useRouter } from "expo-router"
 import { cn } from "@shogo/shared-ui/primitives"
 import { AUTO_MODEL_ID } from "@shogo/model-catalog"
-import { Check, Lock, Settings2, ChevronRight } from "lucide-react-native"
+import { Check, Lock, Settings2, ChevronRight, ChevronDown } from "lucide-react-native"
 import { AutoModelOption } from "./AutoModelOption"
 import {
   useModelPickerList,
@@ -26,6 +26,12 @@ import {
   type ReasoningEffort,
 } from "../../lib/visible-models"
 import { useIsSuperAdmin } from "../../lib/use-is-super-admin"
+import { NativeActivitySheet } from "./NativeActivitySheet"
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverContent,
+} from "@/components/ui/popover"
 
 /** Compact label shown on each row (right side). */
 const EFFORT_SHORT: Record<ReasoningEffort, string> = {
@@ -85,19 +91,26 @@ interface ModelPickerMenuProps {
   effectiveIsPro: boolean
   /** Called with the chosen model id (or AUTO_MODEL_ID). */
   onSelect: (modelId: string) => void
+  /** Close the wrapping sheet/popover (e.g. before routing to admin). */
+  onDismiss?: () => void
+  /** Full-width list for the native bottom sheet (no nested scroll/width cap). */
+  presentation?: "menu" | "sheet"
 }
 
 export function ModelPickerMenu({
   currentModelId,
   effectiveIsPro,
   onSelect,
+  onDismiss,
+  presentation = "menu",
 }: ModelPickerMenuProps) {
   const router = useRouter()
   const models = useModelPickerList()
   const isAdmin = useIsSuperAdmin()
   const isWeb = Platform.OS === "web"
+  const isSheet = presentation === "sheet"
   const { width: windowWidth } = useWindowDimensions()
-  const menuWidth = isWeb ? WEB_MENU_WIDTH : getNativeModelMenuWidth(windowWidth)
+  const menuWidth = isSheet ? undefined : isWeb ? WEB_MENU_WIDTH : getNativeModelMenuWidth(windowWidth)
 
   // Web: which row is hovered (drives the side info panel). Native: which row
   // is expanded inline (tap the chevron to toggle).
@@ -123,7 +136,7 @@ export function ModelPickerMenu({
           onHoverOut={isWeb ? () => setHoveredId((id) => (id === model.id ? null : id)) : undefined}
           className={cn(
             "flex-row items-center gap-2.5 px-3",
-            isWeb ? "py-2" : "min-h-12 py-2.5",
+            isSheet ? "min-h-14 py-3" : isWeb ? "py-2" : "min-h-12 py-2.5",
             isSelected && "bg-accent",
             isLocked && "opacity-50",
           )}
@@ -182,25 +195,39 @@ export function ModelPickerMenu({
     )
   }
 
+  const rows = (
+    <>
+      <AutoModelOption
+        currentModelId={currentModelId}
+        presentation={presentation}
+        onSelect={() => onSelect(AUTO_MODEL_ID)}
+      />
+      <View className="h-px bg-border/50 mx-2" />
+      {models.map(renderRow)}
+    </>
+  )
+
   const list = (
-    <View style={{ width: menuWidth }}>
-      <ScrollView
-        style={{ maxHeight: 340 }}
-        showsVerticalScrollIndicator={!isWeb}
-        nestedScrollEnabled={!isWeb}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={!isWeb ? { paddingBottom: 8 } : undefined}
-      >
-        <AutoModelOption
-          currentModelId={currentModelId}
-          onSelect={() => onSelect(AUTO_MODEL_ID)}
-        />
-        <View className="h-px bg-border/50 mx-2" />
-        {models.map(renderRow)}
-      </ScrollView>
+    <View style={isSheet ? { width: "100%" } : { width: menuWidth }}>
+      {isSheet ? (
+        rows
+      ) : (
+        <ScrollView
+          style={{ maxHeight: 340 }}
+          showsVerticalScrollIndicator={!isWeb}
+          nestedScrollEnabled={!isWeb}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={!isWeb ? { paddingBottom: 8 } : undefined}
+        >
+          {rows}
+        </ScrollView>
+      )}
       {isAdmin ? (
         <Pressable
-          onPress={() => router.push("/(admin)/settings" as any)}
+          onPress={() => {
+            onDismiss?.()
+            router.push("/(admin)/settings" as any)
+          }}
           onHoverIn={isWeb ? () => setHoveredId(null) : undefined}
           className="flex-row items-center gap-2 px-3 py-2.5 border-t border-border/50"
         >
@@ -234,3 +261,137 @@ export function ModelPickerMenu({
     </View>
   )
 }
+
+function ModelPickerTrigger({
+  disabled,
+  hitSlop,
+  triggerClassName,
+  triggerStyle,
+  labelClassName,
+  label,
+  chevronSize,
+  onPress,
+  pressableProps,
+}: {
+  disabled?: boolean
+  hitSlop?: number
+  triggerClassName: string
+  triggerStyle?: StyleProp<ViewStyle>
+  labelClassName: string
+  label: string
+  chevronSize: number
+  onPress?: () => void
+  pressableProps?: Record<string, unknown>
+}) {
+  return (
+    <Pressable
+      {...pressableProps}
+      disabled={disabled}
+      hitSlop={hitSlop}
+      accessibilityRole="button"
+      accessibilityLabel="Choose model"
+      className={triggerClassName}
+      style={triggerStyle}
+      {...(onPress ? { onPress } : {})}
+    >
+      <Text className={labelClassName} numberOfLines={1}>
+        {label}
+      </Text>
+      <ChevronDown className="flex-shrink-0 text-muted-foreground/70" size={chevronSize} />
+    </Pressable>
+  )
+}
+
+export function ComposerModelPicker({
+  currentModelId,
+  effectiveIsPro,
+  disabled,
+  nativeSheet,
+  triggerClassName,
+  labelClassName,
+  triggerStyle,
+  chevronSize,
+  hitSlop,
+  label,
+  onSelect,
+}: {
+  currentModelId: string
+  effectiveIsPro: boolean
+  disabled?: boolean
+  nativeSheet: boolean
+  triggerClassName: string
+  labelClassName: string
+  triggerStyle?: StyleProp<ViewStyle>
+  chevronSize: number
+  hitSlop?: number
+  label: string
+  onSelect: (modelId: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+
+  const handleSelect = useCallback((modelId: string) => {
+    onSelect(modelId)
+    setOpen(false)
+  }, [onSelect])
+
+  const close = useCallback(() => setOpen(false), [])
+
+  const menu = (
+    <ModelPickerMenu
+      currentModelId={currentModelId}
+      effectiveIsPro={effectiveIsPro}
+      presentation={nativeSheet ? "sheet" : "menu"}
+      onSelect={handleSelect}
+      onDismiss={close}
+    />
+  )
+
+  const triggerProps = {
+    disabled,
+    hitSlop,
+    triggerClassName,
+    triggerStyle,
+    labelClassName,
+    label,
+    chevronSize,
+  }
+
+  if (nativeSheet) {
+    return (
+      <>
+        <ModelPickerTrigger
+          {...triggerProps}
+          onPress={() => {
+            Keyboard.dismiss()
+            setOpen(true)
+          }}
+        />
+        <NativeActivitySheet visible={open} title="Model" onClose={close}>
+          {menu}
+        </NativeActivitySheet>
+      </>
+    )
+  }
+
+  return (
+    <Popover
+      placement="top"
+      size="xs"
+      isOpen={open}
+      onOpen={() => setOpen(true)}
+      onClose={close}
+      trigger={(popoverTriggerProps) => (
+        <ModelPickerTrigger
+          {...triggerProps}
+          pressableProps={popoverTriggerProps as Record<string, unknown>}
+        />
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none">
+        {menu}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
