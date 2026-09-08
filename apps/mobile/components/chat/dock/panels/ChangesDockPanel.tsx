@@ -49,8 +49,15 @@ function ChangesBody({ files }: { files: { path: string; kind: FileChangeKind }[
 
 export function ChangesDockPanel() {
   const store = useFileChangeStore()
-  useSyncExternalStore(store.subscribe, store.getVersion, store.getVersion)
-  const files = store.getAll()
+  // `store.getAll()` returns a cached array that's only reallocated when
+  // `version` changes, so gating on `version` here (rather than calling
+  // `getAll()` directly in the dep array) keeps `files` — and therefore
+  // `descriptor` below — referentially stable across renders that don't
+  // touch this store, e.g. ones forced by `ChatPanel`'s own subscription
+  // to the *dock* store's version. See `chat-dock-store.ts`'s
+  // `panelsObservablyEqual` for why that stability matters.
+  const version = useSyncExternalStore(store.subscribe, store.getVersion, store.getVersion)
+  const files = useMemo(() => store.getAll(), [store, version])
 
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (files.length === 0) return null
