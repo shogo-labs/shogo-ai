@@ -1,6 +1,6 @@
 {
   "id": "expo-app",
-  "name": "Expo (React Native)",
+  "name": "Mobile App",
   "description": "Build cross-platform mobile apps with Expo + React Native + TypeScript. Metro bundler is supervised by the runtime; web preview is rendered via react-native-web. Real-device preview is exposed via an Expo tunnel + QR.",
   "tags": ["expo", "react-native", "mobile", "ios", "android", "metro", "typescript"],
   "target": "mobile",
