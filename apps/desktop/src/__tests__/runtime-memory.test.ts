@@ -10,7 +10,7 @@
  * flat 2048MB default with one scaled to the host's actual RAM.
  */
 import { describe, expect, test } from 'bun:test'
-import { computeDefaultRuntimeMemoryMB } from '../runtime-memory'
+import { computeDefaultRuntimeMemoryMB, computeDefaultWarmPoolSize } from '../runtime-memory'
 
 describe('computeDefaultRuntimeMemoryMB', () => {
   test('REPRO: no longer returns the flat 2048MB that caused the restart-loop incident', () => {
@@ -36,5 +36,23 @@ describe('computeDefaultRuntimeMemoryMB', () => {
     expect(computeDefaultRuntimeMemoryMB(0)).toBe(3072)
     expect(computeDefaultRuntimeMemoryMB(-1)).toBe(3072)
     expect(computeDefaultRuntimeMemoryMB(NaN)).toBe(3072)
+  })
+})
+
+describe('computeDefaultWarmPoolSize', () => {
+  test('disabled (0) below the 8GB threshold', () => {
+    expect(computeDefaultWarmPoolSize(4 * 1024)).toBe(0)
+    expect(computeDefaultWarmPoolSize(8 * 1024 - 1)).toBe(0)
+  })
+
+  test('enables a single pre-booted runtime at/above 8GB total RAM', () => {
+    expect(computeDefaultWarmPoolSize(8 * 1024)).toBe(1)
+    expect(computeDefaultWarmPoolSize(32 * 1024)).toBe(1)
+  })
+
+  test('falls back to disabled for invalid input', () => {
+    expect(computeDefaultWarmPoolSize(0)).toBe(0)
+    expect(computeDefaultWarmPoolSize(-1)).toBe(0)
+    expect(computeDefaultWarmPoolSize(NaN)).toBe(0)
   })
 })
