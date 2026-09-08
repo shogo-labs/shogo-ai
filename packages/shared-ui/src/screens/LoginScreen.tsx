@@ -243,11 +243,17 @@ function openExternalUrl(url: string) {
 
 function ConsentNotice({ className }: { className?: string } = {}) {
   return (
-    <Text className={cn('text-xs text-muted-foreground mt-1', className)} style={{ flexWrap: 'wrap' }}>
+    <Text
+      className={cn('text-muted-foreground mt-1', className)}
+      numberOfLines={1}
+      adjustsFontSizeToFit
+      minimumFontScale={0.7}
+      style={{ fontSize: 11, lineHeight: 14, textAlign: 'center' }}
+    >
       By continuing, you agree to our{' '}
       <Text
         className="text-brand-landing"
-        style={{ textDecorationLine: 'underline', fontWeight: '600' }}
+        style={{ fontWeight: '600' }}
         onPress={() => openExternalUrl(PRIVACY_URL)}
         accessibilityRole="link"
         accessibilityLabel="Privacy Policy"
@@ -257,7 +263,7 @@ function ConsentNotice({ className }: { className?: string } = {}) {
       {' '}and{' '}
       <Text
         className="text-brand-landing"
-        style={{ textDecorationLine: 'underline', fontWeight: '600' }}
+        style={{ fontWeight: '600' }}
         onPress={() => openExternalUrl(TERMS_URL)}
         accessibilityRole="link"
         accessibilityLabel="Terms of Use"
@@ -839,14 +845,17 @@ function NativeMobileLoginPanel({
             </Text>
           </Pressable>
           <Text
-            maxFontSizeMultiplier={1.3}
-            style={{ color: '#98989D', fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: isCompactHeight ? 10 : 14 }}
+            maxFontSizeMultiplier={1.1}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.7}
+            style={{ color: '#98989D', fontSize: 11, lineHeight: 14, textAlign: 'center', marginTop: isCompactHeight ? 10 : 14 }}
           >
             By continuing, you agree to Shogo&apos;s{' '}
             <Text
               onPress={() => openExternalUrl(PRIVACY_URL)}
               accessibilityRole="link"
-              style={{ color: '#C7C7CC', textDecorationLine: 'underline' }}
+              style={{ color: '#C7C7CC' }}
             >
               Privacy Policy
             </Text>
@@ -854,7 +863,7 @@ function NativeMobileLoginPanel({
             <Text
               onPress={() => openExternalUrl(TERMS_URL)}
               accessibilityRole="link"
-              style={{ color: '#C7C7CC', textDecorationLine: 'underline' }}
+              style={{ color: '#C7C7CC' }}
             >
               Terms of Use
             </Text>
@@ -1022,7 +1031,7 @@ function NativeMobileLoginPanel({
           )}
 
           <View className="mt-5">
-            <ConsentNotice className="text-sm leading-5" />
+            <ConsentNotice />
           </View>
         </View>
       </ScrollView>

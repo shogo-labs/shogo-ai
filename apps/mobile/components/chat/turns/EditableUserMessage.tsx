@@ -22,7 +22,7 @@
  *   - DISPLAY (web / tablet): full-width Pressable. Clicking the row
  *     enters edit mode. On web a hover-revealed "Retry from here" icon
  *     sits on the right; on native tablet it is always visible.
- *   - DISPLAY (native phone): ChatGPT-style right-aligned navy bubble.
+ *   - DISPLAY (native phone): ChatGPT-style right-aligned gray bubble.
  *     Long-press opens Copy / Edit / Retry. Edit and Retry still use
  *     the existing rewind confirmation dialogs.
  *   - EDIT: full ChatInput. ChatInput's send button (or ⌘↩) triggers
@@ -502,7 +502,7 @@ export const EditableUserMessage = memo(function EditableUserMessage({
 
   // ─── DISPLAY MODE ─────────────────────────────────────────────
   // Web / tablet: full-width Pressable. Click anywhere on the row →
-  // edit mode. Native phone: ChatGPT-style right-aligned navy bubble;
+  // edit mode. Native phone: ChatGPT-style right-aligned gray bubble;
   // long-press opens Copy / Edit / Retry (existing rewind dialogs
   // still run after Edit or Retry). Image / file thumbnails inside
   // MessageContent each own a Pressable, so opening an attachment

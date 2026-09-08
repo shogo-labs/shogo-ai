@@ -27,7 +27,7 @@ export interface MessageContentProps {
   isStreaming?: boolean
   className?: string
   /**
-   * Native ChatGPT-style user bubble: attachments sit above a navy
+   * Native ChatGPT-style user bubble: attachments sit above a gray
    * pill, body text is white. Web/desktop keep the default `default`.
    */
   variant?: "default" | "userBubble"
@@ -352,7 +352,7 @@ export function MessageContent({
   // the bubble chrome (bg, rounding, click target) — see
   // `apps/mobile/components/chat/turns/EditableUserMessage.tsx`.
   // Native phone passes `variant="userBubble"` so attachments sit
-  // above a navy ChatGPT-style pill.
+  // above a gray ChatGPT-style pill.
   const baseClasses = cn(
     isUser
       ? "w-full bg-transparent"
@@ -411,7 +411,7 @@ export function MessageContent({
             <View
               className="px-4 py-2.5"
               style={{
-                backgroundColor: "#2a4365",
+                backgroundColor: "#2a2a2a",
                 borderTopLeftRadius: 20,
                 borderTopRightRadius: 20,
                 borderBottomLeftRadius: 20,
