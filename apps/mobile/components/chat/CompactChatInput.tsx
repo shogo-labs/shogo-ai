@@ -14,7 +14,7 @@
  */
 
 import React, { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
-import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, useWindowDimensions, Animated, Easing, Modal } from "react-native"
+import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, useWindowDimensions, Animated, Easing } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   Popover,
@@ -72,10 +72,10 @@ import {
 import { AttachSourceSheet } from "./AttachSourceSheet"
 import {
   CHATGPT_COMPOSER,
-  ComposerPlusCloseContext,
+  ComposerPlusModeList,
   ComposerPlusSection,
-  PLUS_ATTACH_ROWS,
-  PlusAccordionContext,
+  ComposerPlusSheet,
+  compactNativeModelLabel,
 } from "./ComposerPlusMenu"
 
 export { ComposerPlusSection } from "./ComposerPlusMenu"
@@ -93,17 +93,6 @@ const COMPACT_INPUT_PROMINENT_MAX_HEIGHT = 100
 const COMPACT_INPUT_PROMINENT_LINE_HEIGHT = 22
 const COMPACT_INPUT_NATIVE_MIN_HEIGHT = 48
 const COMPACT_INPUT_NATIVE_MAX_HEIGHT = 144
-
-function compactNativeModelLabel(modelId: string): string {
-  const label = resolveShortName(modelId)
-  const lower = label.toLowerCase()
-  if (lower.includes("haiku")) return "Haiku"
-  if (lower.includes("sonnet")) return "Sonnet"
-  if (lower.includes("opus")) return "Opus"
-  if (lower.includes("gemini")) return "Gemini"
-  if (lower.includes("gpt")) return "GPT"
-  return label.length > 12 ? `${label.slice(0, 9)}…` : label
-}
 
 /**
  * Show a native browser tooltip on hover (web only). Wraps children in a
@@ -866,166 +855,44 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     strokeWidth={2}
                   />
                 </Pressable>
-                <Modal
+                <ComposerPlusSheet
                   visible={plusMenuOpen}
-                  transparent
-                  animationType="fade"
-                  statusBarTranslucent
-                  onRequestClose={closePlusMenu}
+                  onClose={closePlusMenu}
+                  expandedId={plusExpandedId}
+                  onToggleSection={togglePlusSection}
+                  maxHeight={Math.round(windowHeight * 0.72)}
+                  onAttach={handlePlusAttach}
+                  attachDisabled={pendingFiles.length >= MAX_FILES}
                 >
-                  <View className="flex-1 justify-end">
-                    <Pressable
-                      className="absolute left-0 right-0 top-0 bottom-0 bg-black/50"
-                      onPress={closePlusMenu}
-                      accessibilityLabel="Dismiss menu"
+                  {plusMenuExtras}
+                  <ComposerPlusSection
+                    id="mode"
+                    label="Mode"
+                    value={currentInteractionConfig.label}
+                    Icon={currentInteractionConfig.Icon}
+                  >
+                    <ComposerPlusModeList
+                      modes={INTERACTION_MODES}
+                      selectedId={interactionMode}
+                      onSelect={handleInteractionModeChange}
+                      dualPlan={dualPlan}
+                      onDualPlanChange={onDualPlanChange}
+                      dualPlanDisabled={disabled}
+                      dualPlanTestId="home-dual-plan-toggle"
                     />
-                    <View
-                      className="z-10 mx-3 mb-3 overflow-hidden rounded-2xl border border-border bg-card"
-                      style={{ maxHeight: Math.round(windowHeight * 0.72) }}
-                    >
-                    <ComposerPlusCloseContext.Provider value={closePlusMenu}>
-                      <PlusAccordionContext.Provider
-                        value={{ expandedId: plusExpandedId, toggle: togglePlusSection }}
-                      >
-                        <ScrollView
-                          bounces={false}
-                          keyboardShouldPersistTaps="handled"
-                          style={{ maxHeight: Math.round(windowHeight * 0.72) }}
-                        >
-                          {plusMenuExtras}
-                          <ComposerPlusSection
-                            id="mode"
-                            label="Mode"
-                            value={currentInteractionConfig.label}
-                            Icon={currentInteractionConfig.Icon}
-                          >
-                            <View className="py-1">
-                              {INTERACTION_MODES.map((mode) => {
-                                const isSelected = mode.id === interactionMode
-                                return (
-                                  <Pressable
-                                    key={mode.id}
-                                    onPress={() => {
-                                      handleInteractionModeChange(mode.id)
-                                    }}
-                                    className={cn(
-                                      "flex-row items-center gap-3 p-3 rounded-lg mb-1",
-                                      isSelected &&
-                                        mode.id === "agent" &&
-                                        "bg-accent",
-                                      isSelected &&
-                                        mode.id === "plan" &&
-                                        "border border-amber-500/35 bg-amber-500/12",
-                                      isSelected &&
-                                        mode.id === "ask" &&
-                                        "border border-emerald-500/35 bg-emerald-500/12"
-                                    )}
-                                  >
-                                    <View className="w-8 items-center">
-                                      <mode.Icon
-                                        className={cn(
-                                          "h-3.5 w-3.5",
-                                          isSelected &&
-                                            mode.id === "plan" &&
-                                            "text-amber-400",
-                                          isSelected &&
-                                            mode.id === "ask" &&
-                                            "text-emerald-400",
-                                          (!isSelected || mode.id === "agent") &&
-                                            "text-muted-foreground"
-                                        )}
-                                        size={14}
-                                      />
-                                    </View>
-                                    <View className="flex-1">
-                                      <Text
-                                        className={cn(
-                                          "font-medium text-sm",
-                                          isSelected &&
-                                            mode.id === "plan" &&
-                                            "text-amber-400",
-                                          isSelected &&
-                                            mode.id === "ask" &&
-                                            "text-emerald-400",
-                                          (!isSelected || mode.id === "agent") &&
-                                            "text-foreground"
-                                        )}
-                                      >
-                                        {mode.label}
-                                      </Text>
-                                      <Text className="text-xs text-muted-foreground">
-                                        {mode.description}
-                                      </Text>
-                                    </View>
-                                  </Pressable>
-                                )
-                              })}
-                              {interactionMode === "plan" ? (
-                                <Pressable
-                                  testID="home-dual-plan-toggle"
-                                  disabled={disabled}
-                                  onPress={() => onDualPlanChange?.(!dualPlan)}
-                                  accessibilityLabel="Also generate a stakeholder summary"
-                                  className={cn(
-                                    "mx-1 mb-1 flex-row items-center gap-3 rounded-lg p-3",
-                                    dualPlan
-                                      ? "border border-sky-500/35 bg-sky-500/12"
-                                      : "bg-muted/40",
-                                  )}
-                                >
-                                  <View className="w-8 items-center">
-                                    <Languages
-                                      className={dualPlan ? "text-sky-400" : "text-muted-foreground"}
-                                      size={14}
-                                    />
-                                  </View>
-                                  <View className="flex-1">
-                                    <Text className="text-sm font-medium text-foreground">
-                                      Stakeholder summary
-                                    </Text>
-                                    <Text className="text-xs text-muted-foreground">
-                                      Also generate a summary for stakeholders
-                                    </Text>
-                                  </View>
-                                </Pressable>
-                              ) : null}
-                            </View>
-                          </ComposerPlusSection>
-                          <ComposerPlusSection
-                            id="environment"
-                            label="Environment"
-                            Icon={Cloud}
-                          >
-                            <EnvironmentPicker
-                              disabled={disabled || isLoading}
-                              presentation="list"
-                              listActive={plusExpandedId === "environment"}
-                            />
-                          </ComposerPlusSection>
-                          <View className="border-t border-border/50 pt-1 pb-1">
-                            {PLUS_ATTACH_ROWS.map(({ action, label, hint, Icon }) => (
-                              <Pressable
-                                key={action}
-                                onPress={() => handlePlusAttach(action)}
-                                disabled={pendingFiles.length >= MAX_FILES}
-                                className="flex-row items-center gap-3 px-3 py-3 active:bg-muted/50"
-                              >
-                                <View className="h-8 w-8 items-center justify-center rounded-lg bg-muted/40">
-                                  <Icon size={16} className="text-foreground" />
-                                </View>
-                                <View className="min-w-0 flex-1">
-                                  <Text className="text-sm font-medium text-foreground">{label}</Text>
-                                  <Text className="text-xs text-muted-foreground">{hint}</Text>
-                                </View>
-                              </Pressable>
-                            ))}
-                          </View>
-                        </ScrollView>
-                      </PlusAccordionContext.Provider>
-                    </ComposerPlusCloseContext.Provider>
-                    </View>
-                  </View>
-                </Modal>
+                  </ComposerPlusSection>
+                  <ComposerPlusSection
+                    id="environment"
+                    label="Environment"
+                    Icon={Cloud}
+                  >
+                    <EnvironmentPicker
+                      disabled={disabled || isLoading}
+                      presentation="list"
+                      listActive={plusExpandedId === "environment"}
+                    />
+                  </ComposerPlusSection>
+                </ComposerPlusSheet>
                 </>
               ) : (
                 <>

@@ -36,6 +36,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown } from "lucide-react-native"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { NativeActivitySheet, useInsideActivitySheet } from "../NativeActivitySheet"
+import { NativeWorkedSessionExtras } from "../NativeWorkedSessionExtras"
 
 const ANIM_DURATION = 500
 const STREAM_MAX_HEIGHT = 200
@@ -288,7 +289,9 @@ function CollapsibleToolGroupImpl({
     [measuredHeight],
   )
 
-  if (disabled) {
+  const isTurnWorkedGroup = contentKey === "worked-for-content"
+
+  if (disabled && !(nativePhone && isTurnWorkedGroup)) {
     return (
       <View className={cn("flex-row items-center gap-1.5", className)}>
         <Text className="text-[11px] text-muted-foreground">{label}</Text>
@@ -315,6 +318,7 @@ function CollapsibleToolGroupImpl({
           title={label}
           onClose={() => setSheetOpen(false)}
         >
+          {isTurnWorkedGroup ? <NativeWorkedSessionExtras /> : null}
           {children}
         </NativeActivitySheet>
       </View>

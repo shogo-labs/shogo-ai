@@ -91,6 +91,19 @@ mock.module('expo-modules-core', () => ({
     removeListeners() {}
   },
   uuid: { v4: () => 'test-uuid' },
+  PermissionStatus: { GRANTED: 'granted', DENIED: 'denied', UNDETERMINED: 'undetermined' },
+}))
+
+mock.module('expo-image-picker', () => ({
+  PermissionStatus: { GRANTED: 'granted', DENIED: 'denied', UNDETERMINED: 'undetermined' },
+  launchImageLibraryAsync: async () => ({ canceled: true, assets: [] }),
+  launchCameraAsync: async () => ({ canceled: true, assets: [] }),
+  requestCameraPermissionsAsync: async () => ({ granted: false }),
+  requestMediaLibraryPermissionsAsync: async () => ({ granted: false }),
+}))
+
+mock.module('../lib/native-attachment-picker', () => ({
+  executeNativeAttachAction: () => {},
 }))
 
 // Replace `agent-fetch` with a global handler ref. Tests assign a

@@ -133,6 +133,9 @@ mock.module("../useVoiceInput", () => ({
 
 mock.module("../VoiceWaveform", () => ({ VoiceWaveform: () => null }))
 mock.module("../AttachSourceSheet", () => ({ AttachSourceSheet: () => null }))
+mock.module("../../../lib/native-attachment-picker", () => ({
+  executeNativeAttachAction: () => {},
+}))
 mock.module("../ContextTracker", () => ({
   ContextTracker: () => null,
   // `ContextBreakdownPanel` (rendered by the dock's `ContextUsageDockPanel`,

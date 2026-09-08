@@ -103,13 +103,34 @@ mock.module("@shogo/shared-ui/primitives", () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
 }))
 
+// `mock.module` is process-global. Isolated test batches share a process,
+// so an incomplete mock here would strip exports FoldersPanel and others
+// still import (e.g. `useNativePhoneWindow`).
 mock.module("../../../../lib/native-phone-layout", () => ({
   useIsNativePhoneLayout: () => false,
+  useNativePhoneWindow: () => ({ isPhone: false, width: 1024, height: 768 }),
+  isNativePhoneIntegrationsLayout: () => false,
+  nativePhoneFillStyle: (width: number) => ({
+    position: "absolute" as const,
+    top: 0,
+    left: 0,
+    bottom: 0,
+    width,
+    maxWidth: width,
+  }),
+  nativeContentWidth: (windowWidth: number, pad = 32) => Math.max(0, windowWidth - pad),
+  NATIVE_PHONE_GUTTER: 16,
+  NATIVE_PHONE_SECTION_INSET: 32,
+  NATIVE_PHONE_PICKER_INSET: 24,
 }))
 
 mock.module("../../NativeActivitySheet", () => ({
   NativeActivitySheet: () => null,
   useInsideActivitySheet: () => false,
+}))
+
+mock.module("../../NativeWorkedSessionExtras", () => ({
+  NativeWorkedSessionExtras: () => null,
 }))
 
 mock.module("react-native-safe-area-context", () => ({

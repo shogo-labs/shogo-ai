@@ -14,7 +14,7 @@
  * Native: Expo ImagePicker + DocumentPicker (AttachSourceSheet + native-attachment-picker).
  */
 
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react"
 import {
   View,
   Text,
@@ -24,6 +24,7 @@ import {
   ScrollView,
   Platform,
   useWindowDimensions,
+  useColorScheme,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -61,6 +62,7 @@ import {
   Sparkles,
   Languages,
   Play,
+  Cloud,
 } from "lucide-react-native"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
@@ -87,6 +89,17 @@ export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
 
 import { EnvironmentPicker } from "./EnvironmentPicker"
+import {
+  executeNativeAttachAction,
+  type NativePickedAttachment,
+} from "../../lib/native-attachment-picker"
+import {
+  CHATGPT_COMPOSER,
+  ComposerPlusModeList,
+  ComposerPlusSection,
+  ComposerPlusSheet,
+  compactNativeModelLabel,
+} from "./ComposerPlusMenu"
 
 export type InteractionMode = "agent" | "plan" | "ask"
 
@@ -94,7 +107,7 @@ export interface InteractionModeConfig {
   id: InteractionMode
   label: string
   description: string
-  Icon: React.ElementType
+  Icon: ComponentType<{ size?: number; className?: string }>
 }
 
 export const INTERACTION_MODES: InteractionModeConfig[] = [
@@ -145,17 +158,9 @@ const CHAT_INPUT_MIN_HEIGHT = 60
 const CHAT_INPUT_MAX_HEIGHT = 200
 const CHAT_INPUT_NATIVE_MIN_HEIGHT = 52
 const CHAT_INPUT_NATIVE_MAX_HEIGHT = 160
-
-function compactNativeModelLabel(modelId: string): string {
-  const label = resolveShortName(modelId)
-  const lower = label.toLowerCase()
-  if (lower.includes("haiku")) return "Haiku"
-  if (lower.includes("sonnet")) return "Sonnet"
-  if (lower.includes("opus")) return "Opus"
-  if (lower.includes("gemini")) return "Gemini"
-  if (lower.includes("gpt")) return "GPT"
-  return label.length > 12 ? `${label.slice(0, 9)}…` : label
-}
+const CHAT_INPUT_PROMINENT_MIN_HEIGHT = 24
+const CHAT_INPUT_PROMINENT_MAX_HEIGHT = 100
+const CHAT_INPUT_PROMINENT_LINE_HEIGHT = 22
 
 interface AttachedFile {
   id: string
@@ -447,13 +452,26 @@ function ChatInputImpl({
   flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
-  const { width: windowWidth } = useWindowDimensions()
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const colorScheme = useColorScheme()
   const effectiveIsPro = features.billing ? isPro : true
   const isNative = Platform.OS !== "web"
   const isNativePhone = Platform.OS !== "web" && windowWidth < 600
-  const inputMinHeight = isNative ? CHAT_INPUT_NATIVE_MIN_HEIGHT : CHAT_INPUT_MIN_HEIGHT
-  const inputMaxHeight = isNative ? CHAT_INPUT_NATIVE_MAX_HEIGHT : CHAT_INPUT_MAX_HEIGHT
-  const modelTriggerMaxWidth = Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
+  const useProminentComposer = isNativePhone && !flush
+  const chatgptComposer = colorScheme === "light" ? CHATGPT_COMPOSER.light : CHATGPT_COMPOSER.dark
+  const inputMinHeight = useProminentComposer
+    ? CHAT_INPUT_PROMINENT_MIN_HEIGHT
+    : isNative
+      ? CHAT_INPUT_NATIVE_MIN_HEIGHT
+      : CHAT_INPUT_MIN_HEIGHT
+  const inputMaxHeight = useProminentComposer
+    ? CHAT_INPUT_PROMINENT_MAX_HEIGHT
+    : isNative
+      ? CHAT_INPUT_NATIVE_MAX_HEIGHT
+      : CHAT_INPUT_MAX_HEIGHT
+  const modelTriggerMaxWidth = useProminentComposer
+    ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
+    : Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
   const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
 
   const bridge = useChatBridgeOptional()
@@ -503,6 +521,8 @@ function ChatInputImpl({
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false)
+  const [plusExpandedId, setPlusExpandedId] = useState<string | null>(null)
 
   useEffect(() => {
     inputValueRef.current = inputValue
@@ -937,6 +957,46 @@ function ChatInputImpl({
     setAttachSheetOpen(true)
   }, [])
 
+  const applyPickedFiles = useCallback((picked: NativePickedAttachment[]) => {
+    setPendingFiles((prev) => {
+      const room = MAX_FILES - prev.length
+      if (room <= 0) return prev
+      const added = picked.slice(0, room).map((f) => ({
+        id: f.id,
+        dataUrl: f.dataUrl,
+        name: f.name,
+        type: f.type,
+        size: f.size,
+      }))
+      if (picked.length > room) {
+        setFileError(`Maximum ${MAX_FILES} files allowed`)
+      } else {
+        setFileError(null)
+      }
+      return [...prev, ...added]
+    })
+  }, [])
+
+  const closePlusMenu = useCallback(() => {
+    setPlusMenuOpen(false)
+    setPlusExpandedId(null)
+  }, [])
+
+  const togglePlusSection = useCallback((id: string) => {
+    setPlusExpandedId((current) => (current === id ? null : id))
+  }, [])
+
+  const handlePlusAttach = useCallback((action: Parameters<typeof executeNativeAttachAction>[0]) => {
+    closePlusMenu()
+    executeNativeAttachAction(action, {
+      currentCount: pendingFiles.length,
+      maxFiles: MAX_FILES,
+      maxFileSizeBytes: MAX_FILE_SIZE,
+      onFiles: applyPickedFiles,
+      onError: (message) => setFileError(message),
+    })
+  }, [applyPickedFiles, closePlusMenu, pendingFiles.length])
+
   const processFiles = useCallback((files: FileList | File[]) => {
     Array.from(files).forEach((file: File) => {
       const lowerName = file.name.toLowerCase()
@@ -1109,6 +1169,7 @@ function ChatInputImpl({
     voiceInput.isRecording && voiceInput.liveTranscript
       ? voiceInput.liveTranscript
       : pendingTextChangeRef.current?.text ?? inputValue
+  const composerEmpty = !composerDisplayValue.trim()
   const mentionLabels = useMemo(
     () => references.map((r) => r.label).filter((l): l is string => !!l),
     [references]
@@ -1340,7 +1401,7 @@ function ChatInputImpl({
     // composer from whatever sits beneath it (file previews,
     // toolbar dropdowns, etc.).
     <View className={cn(
-      flush ? "pb-3" : isNative ? "px-2 pb-4 pt-0" : "p-3 pt-0",
+      flush ? "pb-3" : useProminentComposer ? "px-3 pb-2 pt-0" : isNative ? "px-2 pb-4 pt-0" : "p-3 pt-0",
     )}>
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
@@ -1538,15 +1599,21 @@ function ChatInputImpl({
         <View
           ref={dropZoneRef as any}
           className={cn(
-            "relative border bg-muted/30 overflow-hidden rounded-xl",
-            isDragOver ? "border-primary border-dashed" : "border-border/60",
-            // Accent ring for the inline-edit "active edit target"
-            // state. Drag-over still takes precedence (its dashed
-            // primary border is more important to surface than the
-            // edit-target highlight). The inner border stays at
-            // 1px so toggling `highlighted` doesn't shift layout.
-            highlighted && !isDragOver && "ring-2 ring-primary/70"
+            "relative overflow-hidden",
+            !useProminentComposer && "border bg-muted/30 rounded-xl",
+            !useProminentComposer && (isDragOver ? "border-primary border-dashed" : "border-border/60"),
+            !useProminentComposer && highlighted && !isDragOver && "ring-2 ring-primary/70"
           )}
+          style={
+            useProminentComposer
+              ? {
+                  borderRadius: 28,
+                  borderWidth: 1,
+                  borderColor: chatgptComposer.border,
+                  backgroundColor: chatgptComposer.fill,
+                }
+              : undefined
+          }
         >
         {/* Hidden file input for web (including mobile-web on Android/iOS browsers) */}
         {Platform.OS === "web" && (
@@ -1654,6 +1721,7 @@ function ChatInputImpl({
             the highlight overlay below, so the old chip row above the box is
             gone. References themselves are still tracked + sent on submit. */}
 
+        {!useProminentComposer ? (
         <View className="relative">
           {/* Highlight backdrop: a transparent mirror of the composer text that
               paints a pill behind each "@mention". The real TextInput sits on
@@ -1792,23 +1860,125 @@ function ChatInputImpl({
           textAlignVertical="top"
         />
         </View>
+        ) : null}
 
         {/* Bottom toolbar */}
         <View
           className={cn(
             "flex-row items-center justify-between",
-            isNative ? "min-h-12 px-2 py-1" : "p-1.5",
-            isNativePhone && "items-end gap-y-1"
+            useProminentComposer
+              ? "min-h-[48px] py-1 pl-2.5 pr-1.5 overflow-hidden"
+              : isNative
+                ? "min-h-12 px-2 py-1"
+                : "p-1.5",
+            !useProminentComposer && isNativePhone && "items-end gap-y-1"
           )}
         >
           {/* Left side buttons */}
           <View
             className={cn(
               "flex-row items-center",
-              isNative ? "gap-1.5" : "gap-1",
-              isNativePhone && "min-w-0 flex-1 flex-wrap"
+              useProminentComposer
+                ? "min-w-0 flex-1 gap-1"
+                : isNative
+                  ? "gap-1.5"
+                  : "gap-1",
+              !useProminentComposer && isNativePhone && "min-w-0 flex-1 flex-wrap"
             )}
           >
+            {useProminentComposer ? (
+              <>
+                {/* Capsule plus-menu: attach, mode, environment */}
+                <Pressable
+                  onPress={() => setPlusMenuOpen(true)}
+                  hitSlop={6}
+                  disabled={disabled || isProcessingFiles}
+                  role="button"
+                  accessibilityLabel="Add"
+                  className={cn(
+                    "h-8 w-8 items-center justify-center active:opacity-70",
+                    (disabled || isProcessingFiles) && "opacity-40",
+                  )}
+                  testID="project-composer-plus"
+                >
+                  <Plus
+                    color={chatgptComposer.icon}
+                    size={22}
+                    strokeWidth={2}
+                  />
+                </Pressable>
+                <ComposerPlusSheet
+                  visible={plusMenuOpen}
+                  onClose={closePlusMenu}
+                  expandedId={plusExpandedId}
+                  onToggleSection={togglePlusSection}
+                  maxHeight={Math.round(windowHeight * 0.72)}
+                  onAttach={handlePlusAttach}
+                  attachDisabled={pendingFiles.length >= MAX_FILES}
+                >
+                  <ComposerPlusSection
+                    id="mode"
+                    label="Mode"
+                    value={currentInteractionConfig.label}
+                    Icon={currentInteractionConfig.Icon}
+                  >
+                    <ComposerPlusModeList
+                      modes={INTERACTION_MODES}
+                      selectedId={interactionMode}
+                      onSelect={handleInteractionModeChange}
+                      dualPlan={dualPlan}
+                      onDualPlanChange={onDualPlanChange}
+                      dualPlanDisabled={disabled}
+                      dualPlanTestId="dual-plan-toggle"
+                    />
+                  </ComposerPlusSection>
+                  <ComposerPlusSection
+                    id="environment"
+                    label="Environment"
+                    Icon={Cloud}
+                  >
+                    <EnvironmentPicker
+                      disabled={disabled}
+                      presentation="list"
+                      listActive={plusExpandedId === "environment"}
+                    />
+                  </ComposerPlusSection>
+                  {quickActions.length > 0 ? (
+                    <ComposerPlusSection
+                      id="quick-actions"
+                      label="Quick actions"
+                      Icon={Zap}
+                    >
+                      <View className="py-1">
+                        {quickActions.map((action) => (
+                          <Pressable
+                            key={action.label}
+                            onPress={() => {
+                              onQuickActionClick?.(action.prompt)
+                              closePlusMenu()
+                            }}
+                            className="flex-row items-center gap-3 p-3 rounded-lg mb-1"
+                          >
+                            <View className="w-8 items-center">
+                              <Zap className="h-3.5 w-3.5 text-amber-400" size={14} />
+                            </View>
+                            <View className="flex-1">
+                              <Text className="font-medium text-sm text-foreground">
+                                {action.label}
+                              </Text>
+                              <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                                {action.prompt}
+                              </Text>
+                            </View>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </ComposerPlusSection>
+                  ) : null}
+                </ComposerPlusSheet>
+              </>
+            ) : (
+              <>
             {/* Interaction mode selector (Agent / Plan / Ask) */}
             <Popover
               placement="top"
@@ -2052,6 +2222,8 @@ function ChatInputImpl({
 
             {/* Environment selector — pick Cloud or a paired machine */}
             <EnvironmentPicker disabled={disabled} prominentMobile={isNative} />
+              </>
+            )}
 
             {/* Model selector */}
             <Popover
@@ -2066,15 +2238,23 @@ function ChatInputImpl({
                   hitSlop={isNative ? 6 : undefined}
                   disabled={disabled}
                   className={cn(
-                    isNative
-                      ? "h-8 flex-row items-center gap-1 rounded-lg px-2"
-                      : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
-                    isNativePhone && "min-w-0"
+                    useProminentComposer
+                      ? "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
+                      : isNative
+                        ? "h-8 flex-row items-center gap-1 rounded-lg px-2"
+                        : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                    isNativePhone && !useProminentComposer && "min-w-0"
                   )}
                   style={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
                 >
                   <Text
-                    className={isNative ? "text-sm text-muted-foreground" : "text-xs text-muted-foreground"}
+                    className={
+                      useProminentComposer
+                        ? "text-[12px] text-foreground/90"
+                        : isNative
+                          ? "text-sm text-muted-foreground"
+                          : "text-xs text-muted-foreground"
+                    }
                     numberOfLines={1}
                   >
                     {isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
@@ -2099,6 +2279,91 @@ function ChatInputImpl({
               </PopoverContent>
             </Popover>
 
+            {useProminentComposer ? (
+              <View
+                className="min-w-0 flex-1 justify-center"
+                style={{
+                  minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                  overflow: "hidden",
+                  marginLeft: 4,
+                  marginRight: 4,
+                }}
+              >
+                {composerEmpty ? (
+                  <Text
+                    pointerEvents="none"
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                    style={{
+                      position: "absolute",
+                      left: 4,
+                      right: 4,
+                      top: 0,
+                      height: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                      fontSize: 16,
+                      lineHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                      color: chatgptComposer.placeholder,
+                    }}
+                  >
+                    {placeholder}
+                  </Text>
+                ) : null}
+                <TextInput
+                  ref={textInputRef}
+                  testID="project-composer-input"
+                  placeholder=""
+                  accessibilityLabel="Chat message input"
+                  value={composerDisplayValue}
+                  selection={selectionOverride}
+                  onChangeText={handleChangeText}
+                  onSelectionChange={(e) => {
+                    updateMentionState(inputValueRef.current, e.nativeEvent.selection.start)
+                  }}
+                  onSubmitEditing={handleSubmitEditing}
+                  editable={!disabled && !voiceInput.isRecording}
+                  multiline
+                  scrollEnabled={inputHeight > CHAT_INPUT_PROMINENT_MIN_HEIGHT}
+                  blurOnSubmit
+                  returnKeyType="done"
+                  onContentSizeChange={(e) => {
+                    if (composerEmpty) {
+                      if (inputHeight !== CHAT_INPUT_PROMINENT_MIN_HEIGHT) {
+                        setInputHeight(CHAT_INPUT_PROMINENT_MIN_HEIGHT)
+                      }
+                      return
+                    }
+                    const h = e.nativeEvent.contentSize.height
+                    const next = h <= CHAT_INPUT_PROMINENT_LINE_HEIGHT + 8
+                      ? CHAT_INPUT_PROMINENT_MIN_HEIGHT
+                      : Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
+                    if (next !== inputHeight) {
+                      setInputHeight(next)
+                    }
+                  }}
+                  style={{
+                    width: "100%",
+                    minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                    height: Math.max(
+                      composerEmpty ? CHAT_INPUT_PROMINENT_MIN_HEIGHT : inputHeight,
+                      CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                    ),
+                    color: chatgptComposer.text,
+                    fontSize: 16,
+                    lineHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                    paddingHorizontal: 4,
+                    paddingTop: 0,
+                    paddingBottom: 0,
+                    margin: 0,
+                    backgroundColor: "transparent",
+                    ...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" } : null),
+                  }}
+                  className={cn(
+                    disabled && dimWhenDisabled && "opacity-50",
+                  )}
+                />
+              </View>
+            ) : null}
+
           </View>
 
           {/* Right side buttons */}
@@ -2119,7 +2384,9 @@ function ChatInputImpl({
               </Pressable>
             </View>
           ) : (
-          <View className="flex-row flex-shrink-0 items-center gap-1">
+          <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "ml-1 gap-1" : "gap-1")}>
+            {useProminentComposer ? null : (
+              <>
             <DockChipRail isNative={isNative} />
             {contextUsage && (
               <DockChip panelId="context-usage" accessibilityLabel="Context usage">
@@ -2152,6 +2419,8 @@ function ChatInputImpl({
                 size={isNative ? 18 : 12}
               />
             </Pressable>
+              </>
+            )}
 
             {isStreaming ? (
               <>
@@ -2162,7 +2431,7 @@ function ChatInputImpl({
                   testID="stop-streaming"
                   className={cn(
                     "rounded-full bg-destructive items-center justify-center active:opacity-70",
-                    isNative ? "h-9 w-9" : "h-5 w-5",
+                    useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
                   )}
                 >
                   <Square
@@ -2178,11 +2447,17 @@ function ChatInputImpl({
                     role="button"
                     accessibilityLabel="Queue message"
                     className={cn(
-                      "rounded-full items-center justify-center bg-primary",
-                      isNative ? "h-9 w-9" : "h-5 w-5",
+                      "rounded-full items-center justify-center",
+                      !useProminentComposer && "bg-primary",
+                      useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
                     )}
+                    style={useProminentComposer ? { backgroundColor: chatgptComposer.sendFill } : undefined}
                   >
-                    <ArrowUp className="h-3 w-3 text-primary-foreground" size={isNative ? 18 : 12} />
+                    <ArrowUp
+                      className={cn("h-3 w-3", !useProminentComposer && "text-primary-foreground")}
+                      color={useProminentComposer ? chatgptComposer.sendIcon : undefined}
+                      size={useProminentComposer ? 14 : isNative ? 18 : 12}
+                    />
                   </Pressable>
                 )}
               </>
@@ -2194,12 +2469,18 @@ function ChatInputImpl({
                 role="button"
                 accessibilityLabel="Send message"
                 className={cn(
-                  "rounded-full items-center justify-center bg-primary",
-                  isNative ? "h-9 w-9" : "h-5 w-5",
+                  "rounded-full items-center justify-center",
+                  !useProminentComposer && "bg-primary",
+                  useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
                   (disabled || isProcessingFiles) && "opacity-50"
                 )}
+                style={useProminentComposer ? { backgroundColor: chatgptComposer.sendFill } : undefined}
               >
-                <ArrowUp className="h-3 w-3 text-primary-foreground" size={isNative ? 18 : 12} />
+                <ArrowUp
+                  className={cn("h-3 w-3", !useProminentComposer && "text-primary-foreground")}
+                  color={useProminentComposer ? chatgptComposer.sendIcon : undefined}
+                  size={useProminentComposer ? 14 : isNative ? 18 : 12}
+                />
               </Pressable>
             ) : voiceInput.canRecord ? (
               <Pressable
@@ -2213,17 +2494,22 @@ function ChatInputImpl({
                 accessibilityLabel="Start voice recording"
                 className={cn(
                   "rounded-full items-center justify-center active:opacity-70",
-                  isNative ? "h-9 w-9 border border-border/45 bg-muted/30" : "h-5 w-5",
+                  useProminentComposer
+                    ? "h-8 w-8"
+                    : isNative
+                      ? "h-9 w-9 border border-border/45 bg-muted/30"
+                      : "h-5 w-5",
                 )}
               >
                 <Mic
                   className={cn(
                     "h-4 w-4",
-                    disabled || isProcessingFiles
+                    !useProminentComposer && (disabled || isProcessingFiles
                       ? "text-muted-foreground/40"
-                      : "text-muted-foreground"
+                      : "text-muted-foreground")
                   )}
-                  size={isNative ? 18 : 14}
+                  color={useProminentComposer ? (disabled || isProcessingFiles ? chatgptComposer.placeholder : chatgptComposer.icon) : undefined}
+                  size={useProminentComposer ? 20 : isNative ? 18 : 14}
                 />
               </Pressable>
             ) : null}
@@ -2260,32 +2546,14 @@ function ChatInputImpl({
         />
       )}
 
-      {Platform.OS !== "web" && (
+      {Platform.OS !== "web" && !useProminentComposer && (
         <AttachSourceSheet
           open={attachSheetOpen}
           onOpenChange={setAttachSheetOpen}
           currentCount={pendingFiles.length}
           maxFiles={MAX_FILES}
           maxFileSizeBytes={MAX_FILE_SIZE}
-          onFiles={(picked) => {
-            setPendingFiles((prev) => {
-              const room = MAX_FILES - prev.length
-              if (room <= 0) return prev
-              const added = picked.slice(0, room).map((f) => ({
-                id: f.id,
-                dataUrl: f.dataUrl,
-                name: f.name,
-                type: f.type,
-                size: f.size,
-              }))
-              if (picked.length > room) {
-                setFileError(`Maximum ${MAX_FILES} files allowed`)
-              } else {
-                setFileError(null)
-              }
-              return [...prev, ...added]
-            })
-          }}
+          onFiles={applyPickedFiles}
           onError={(message) => setFileError(message)}
         />
       )}
