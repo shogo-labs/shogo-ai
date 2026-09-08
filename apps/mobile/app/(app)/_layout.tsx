@@ -4,7 +4,9 @@
  * (app) layout - Responsive app shell
  *
  * Wide screens (>= 768px): persistent sidebar + content side by side
- * Narrow screens (< 768px): header with hamburger + drawer sidebar overlay
+ * Narrow screens (< 768px):
+ *  - Native: hamburger + two-layer sheet drawer (sidebar under the moving screen)
+ *  - Web: header with hamburger + overlay sidebar
  *
  * Route-aware visibility:
  *  - Home page (wide): sidebar visible, NO header
@@ -17,7 +19,7 @@
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
-import { ActivityIndicator, Animated, Easing, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator, Animated, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
@@ -31,7 +33,13 @@ import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
 import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
 import { mark as csMark } from '../../lib/cold-start-timing'
-import { nativeDrawerPanelWidth, useNativeDrawerOpenSwipe } from '../../lib/use-native-drawer-swipe'
+import {
+  nativeDrawerPanelWidth,
+  snapNativeDrawer,
+  useNativeDrawerSheetSwipe,
+  NATIVE_DRAWER_SHEET_RADIUS,
+  NATIVE_DRAWER_UNDERLAY_BACKGROUND,
+} from '../../lib/use-native-drawer-swipe'
 
 csMark('app:layout:module-load')
 
@@ -58,7 +66,6 @@ export default function AppLayout() {
   const isNativeApp = Platform.OS !== 'web'
   const isWide = !isNativeApp && width >= 768
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [drawerGestureActive, setDrawerGestureActive] = useState(false)
   const drawerProgress = useRef(new Animated.Value(0)).current
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
 
@@ -138,37 +145,27 @@ export default function AppLayout() {
   const resetDrawer = useCallback(() => {
     drawerProgress.setValue(0)
     setDrawerOpen(false)
-    setDrawerGestureActive(false)
   }, [drawerProgress])
   const openDrawer = useCallback(() => {
-    setDrawerGestureActive(false)
     setDrawerOpen(true)
-    Animated.timing(drawerProgress, {
-      toValue: 1,
-      duration: 230,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start()
+    snapNativeDrawer(drawerProgress, true)
   }, [drawerProgress])
   const closeDrawer = useCallback(() => {
-    Animated.timing(drawerProgress, {
-      toValue: 0,
-      duration: 170,
-      easing: Easing.in(Easing.cubic),
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (!finished) return
-      resetDrawer()
+    snapNativeDrawer(drawerProgress, false, (open) => {
+      if (!open) resetDrawer()
     })
   }, [drawerProgress, resetDrawer])
+  const toggleDrawer = useCallback(() => {
+    if (drawerOpen) closeDrawer()
+    else openDrawer()
+  }, [closeDrawer, drawerOpen, openDrawer])
   const nativeDrawerSwipe = isNativeApp && !isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && !isApiKeysPage && !isProfilePage && !isSearchPage
-  const openSwipeHandlers = useNativeDrawerOpenSwipe({
+  const sheetSwipeHandlers = useNativeDrawerSheetSwipe({
     enabled: nativeDrawerSwipe,
     drawerWidth: nativeDrawerWidth,
     drawerProgress,
     isOpen: drawerOpen,
     onOpenChange: setDrawerOpen,
-    onGestureChange: setDrawerGestureActive,
   })
 
   useEffect(() => {
@@ -237,33 +234,43 @@ export default function AppLayout() {
 
   const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
   const nativeHomeChrome = isNativeApp && isHomePage && !isIdeEmbed
-  const shouldShiftHomeForDrawer = nativeHomeChrome
-  const drawerVisible = drawerOpen || drawerGestureActive
-  const drawerContentStyle = shouldShiftHomeForDrawer
-    ? drawerVisible
-      ? {
-          transform: [
-            {
-              translateX: drawerProgress.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0, Math.min(64, Math.max(48, width * 0.14))],
-              }),
-            },
-            {
-              scale: drawerProgress.interpolate({
-                inputRange: [0, 1],
-                outputRange: [1, 0.97],
-              }),
-            },
-          ],
-        }
-      : { transform: [{ translateX: 0 }, { scale: 1 }] }
+  const nativeSheetDrawer = isNativeApp && !isWide && !isIdeEmbed
+  const sheetRadius = drawerProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, NATIVE_DRAWER_SHEET_RADIUS],
+  })
+  const sheetShadow = drawerProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.12],
+  })
+  const sheetStyle = nativeSheetDrawer
+    ? {
+        transform: [
+          {
+            translateX: drawerProgress.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, nativeDrawerWidth],
+            }),
+          },
+        ],
+        borderTopLeftRadius: sheetRadius,
+        borderBottomLeftRadius: sheetRadius,
+        shadowColor: '#000',
+        shadowOffset: { width: -1, height: 0 },
+        shadowOpacity: sheetShadow,
+        shadowRadius: 8,
+        elevation: drawerProgress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, 4],
+        }),
+      }
     : undefined
 
   return (
     <DomainProvider>
       <SafeAreaView
         className="flex-1 bg-background"
+        style={nativeSheetDrawer ? { backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND } : undefined}
         edges={nativeHomeChrome ? ['left', 'right'] : undefined}
       >
         <View className="flex-1 flex-row">
@@ -276,19 +283,57 @@ export default function AppLayout() {
             content width. Pass `flex: 1` via `style` instead, which works
             regardless of NativeWind interop registration.
           */}
-          <View style={{ flex: 1 }} collapsable={false} {...openSwipeHandlers}>
-            <Animated.View style={[{ flex: 1 }, drawerContentStyle]}>
-              {!isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && !isApiKeysPage && !isProfilePage && !isSearchPage && <AppHeader onMenuPress={openDrawer} />}
-              <View className="flex-1">
-                {localMode && !isIdeEmbed && <RecordingIndicator />}
-                <Slot />
+          <View style={{ flex: 1, overflow: 'hidden' }} collapsable={false}>
+            {nativeSheetDrawer ? (
+              <View
+                pointerEvents={drawerOpen ? 'auto' : 'none'}
+                accessibilityElementsHidden={!drawerOpen}
+                importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: nativeDrawerWidth,
+                  zIndex: 0,
+                  backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND,
+                }}
+              >
+                <AppSidebar
+                  isOpen={drawerOpen}
+                  onClose={closeDrawer}
+                />
               </View>
+            ) : null}
+            <Animated.View
+              collapsable={false}
+              {...sheetSwipeHandlers}
+              style={[{ flex: 1, zIndex: 1 }, sheetStyle]}
+            >
+              <Animated.View
+                style={{
+                  flex: 1,
+                  overflow: 'hidden',
+                  borderTopLeftRadius: sheetRadius,
+                  borderBottomLeftRadius: sheetRadius,
+                }}
+              >
+                <View className="flex-1 bg-background">
+                  {!isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && !isApiKeysPage && !isProfilePage && !isSearchPage && (
+                    <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
+                  )}
+                  <View className="flex-1">
+                    {localMode && !isIdeEmbed && <RecordingIndicator />}
+                    <Slot />
+                  </View>
+                </View>
+              </Animated.View>
             </Animated.View>
           </View>
         </View>
 
-        {!isWide && (
-          <AppSidebar isOpen={drawerOpen} visible={drawerVisible} onClose={closeDrawer} drawerProgress={drawerProgress} />
+        {!isWide && !isNativeApp && (
+          <AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />
         )}
       </SafeAreaView>
     </DomainProvider>

@@ -42,9 +42,10 @@ const overlayControlClass =
 
 interface AppHeaderProps {
   onMenuPress?: () => void
+  menuOpen?: boolean
 }
 
-export function AppHeader({ onMenuPress }: AppHeaderProps) {
+export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const insets = useSafeAreaInsets()
@@ -86,7 +87,7 @@ export function AppHeader({ onMenuPress }: AppHeaderProps) {
         <Pressable
           onPress={onMenuPress}
           accessibilityRole="button"
-          accessibilityLabel="Open menu"
+          accessibilityLabel={menuOpen ? 'Close menu' : 'Open menu'}
           hitSlop={4}
           className={overlayControlClass}
         >
@@ -108,6 +109,8 @@ export function AppHeader({ onMenuPress }: AppHeaderProps) {
     <View className="h-14 flex-row items-center border-b border-border bg-card px-4 gap-3">
       <Pressable
         onPress={onMenuPress}
+        accessibilityRole="button"
+        accessibilityLabel={menuOpen ? 'Close menu' : 'Open menu'}
         className="p-1.5 -ml-1.5 rounded-md active:bg-muted"
       >
         <Menu size={22} className="text-foreground" />

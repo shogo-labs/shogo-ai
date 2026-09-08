@@ -1,102 +1,135 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * ChatGPT-style left-edge swipe to open the native app drawer.
- * The drawer tracks the thumb; release snaps open or closed.
+ * Native two-layer drawer: the sidebar sits underneath; the current screen
+ * is a foreground sheet the user drags to the right. One progress value
+ * (0 closed → 1 open) drives sheet translation and left-corner radius.
  */
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import {
   Animated,
-  Easing,
   PanResponder,
   type GestureResponderHandlers,
 } from 'react-native'
 
-const EDGE_WIDTH = 40
+const EDGE_WIDTH = 28
 const OPEN_RATIO = 0.32
 const OPEN_VELOCITY = 0.7
+/** Left-corner radius of the moving foreground sheet when fully open (pt). */
+export const NATIVE_DRAWER_SHEET_RADIUS = 52
+/** Sidebar / navigation background. */
+export const NATIVE_DRAWER_UNDERLAY_BACKGROUND = '#000000'
+/** Target sidebar width as a fraction of the viewport. */
+export const NATIVE_DRAWER_WIDTH_RATIO = 0.75
+
+const SETTLE_SPRING = {
+  stiffness: 340,
+  damping: 38,
+  mass: 0.72,
+  overshootClamping: true,
+  restDisplacementThreshold: 0.002,
+  restSpeedThreshold: 0.02,
+  // Radius / shadow must stay on the JS thread with translateX.
+  useNativeDriver: false,
+} as const
 
 export function nativeDrawerPanelWidth(windowWidth: number): number {
-  return Math.min(288, Math.max(264, windowWidth - 48))
+  return Math.round(windowWidth * NATIVE_DRAWER_WIDTH_RATIO)
 }
 
-function snapDrawer(
+export function nativeDrawerProgressFromDelta(start: number, dx: number, width: number): number {
+  return Math.min(1, Math.max(0, start + dx / Math.max(1, width)))
+}
+
+/**
+ * Snap to open or closed. `start` is progress when the finger went down, so a
+ * close drag only needs the same ~32% travel as an open drag — not a trip all
+ * the way back below 0.32.
+ */
+export function nativeDrawerShouldSettleOpen(
+  progress: number,
+  vx: number,
+  start = 0,
+): boolean {
+  if (vx > OPEN_VELOCITY) return true
+  if (vx < -OPEN_VELOCITY) return false
+  if (start >= 0.5) return progress > 1 - OPEN_RATIO
+  return progress > OPEN_RATIO
+}
+
+export function snapNativeDrawer(
   drawerProgress: Animated.Value,
   open: boolean,
-  onSettled: (open: boolean) => void,
+  onSettled?: (open: boolean) => void,
 ) {
-  Animated.timing(drawerProgress, {
+  Animated.spring(drawerProgress, {
     toValue: open ? 1 : 0,
-    duration: open ? 200 : 160,
-    easing: open ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
-    useNativeDriver: true,
+    ...SETTLE_SPRING,
   }).start(({ finished }) => {
-    if (finished) onSettled(open)
+    if (finished) onSettled?.(open)
   })
 }
 
-export function useNativeDrawerOpenSwipe({
+export function useNativeDrawerSheetSwipe({
   enabled,
   drawerWidth,
   drawerProgress,
   isOpen,
   onOpenChange,
-  onGestureChange,
 }: {
   enabled: boolean
   drawerWidth: number
   drawerProgress: Animated.Value
   isOpen: boolean
   onOpenChange: (open: boolean) => void
-  onGestureChange?: (active: boolean) => void
 }): GestureResponderHandlers | undefined {
   const enabledRef = useRef(enabled)
   const isOpenRef = useRef(isOpen)
   const widthRef = useRef(drawerWidth)
   const onOpenChangeRef = useRef(onOpenChange)
-  const onGestureChangeRef = useRef(onGestureChange)
+  const startProgressRef = useRef(0)
+  const currentProgressRef = useRef(0)
   enabledRef.current = enabled
   isOpenRef.current = isOpen
   widthRef.current = drawerWidth
   onOpenChangeRef.current = onOpenChange
-  onGestureChangeRef.current = onGestureChange
+
+  useEffect(() => {
+    const id = drawerProgress.addListener(({ value }) => {
+      currentProgressRef.current = value
+    })
+    return () => drawerProgress.removeListener(id)
+  }, [drawerProgress])
 
   const pan = useMemo(
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponderCapture: (evt, gesture) => {
-          if (!enabledRef.current || isOpenRef.current) return false
+          if (!enabledRef.current) return false
+          const horizontal = Math.abs(gesture.dx) > Math.abs(gesture.dy)
+          if (!horizontal) return false
+          if (isOpenRef.current) {
+            return gesture.dx < -8
+          }
           const startX = evt.nativeEvent.pageX - gesture.dx
           if (startX > EDGE_WIDTH) return false
-          return gesture.dx > 6 && Math.abs(gesture.dx) > Math.abs(gesture.dy)
+          return gesture.dx > 6
         },
         onPanResponderGrant: () => {
           drawerProgress.stopAnimation()
-          onGestureChangeRef.current?.(true)
+          startProgressRef.current = currentProgressRef.current
         },
         onPanResponderTerminationRequest: () => false,
         onPanResponderMove: (_evt, gesture) => {
-          const width = Math.max(1, widthRef.current)
-          const progress = Math.min(1, Math.max(0, gesture.dx / width))
-          drawerProgress.setValue(progress)
+          drawerProgress.setValue(
+            nativeDrawerProgressFromDelta(startProgressRef.current, gesture.dx, widthRef.current),
+          )
         },
         onPanResponderRelease: (_evt, gesture) => {
-          const width = Math.max(1, widthRef.current)
-          const progress = Math.min(1, Math.max(0, gesture.dx / width))
-          const open = progress > OPEN_RATIO || gesture.vx > OPEN_VELOCITY
-          snapDrawer(drawerProgress, open, (next) => {
-            onGestureChangeRef.current?.(false)
-            onOpenChangeRef.current(next)
-          })
+          settleSheet(drawerProgress, startProgressRef.current, gesture.dx, gesture.vx, widthRef.current, onOpenChangeRef.current)
         },
         onPanResponderTerminate: (_evt, gesture) => {
-          const width = Math.max(1, widthRef.current)
-          const progress = Math.min(1, Math.max(0, gesture.dx / width))
-          const open = progress > OPEN_RATIO
-          snapDrawer(drawerProgress, open, (next) => {
-            onGestureChangeRef.current?.(false)
-            onOpenChangeRef.current(next)
-          })
+          settleSheet(drawerProgress, startProgressRef.current, gesture.dx, 0, widthRef.current, onOpenChangeRef.current)
         },
       }),
     [drawerProgress],
@@ -106,69 +139,16 @@ export function useNativeDrawerOpenSwipe({
   return pan.panHandlers
 }
 
-export function useNativeDrawerCloseSwipe({
-  enabled,
-  drawerWidth,
-  drawerProgress,
-  onClose,
-  onCancelClose,
-  closeOnTap = false,
-}: {
-  enabled: boolean
-  drawerWidth: number
-  drawerProgress: Animated.Value
-  onClose: () => void
-  onCancelClose: () => void
-  closeOnTap?: boolean
-}): GestureResponderHandlers | undefined {
-  const enabledRef = useRef(enabled)
-  const widthRef = useRef(drawerWidth)
-  const onCloseRef = useRef(onClose)
-  const onCancelCloseRef = useRef(onCancelClose)
-  const closeOnTapRef = useRef(closeOnTap)
-  enabledRef.current = enabled
-  widthRef.current = drawerWidth
-  onCloseRef.current = onClose
-  onCancelCloseRef.current = onCancelClose
-  closeOnTapRef.current = closeOnTap
-
-  const pan = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => !!closeOnTapRef.current && enabledRef.current,
-        onMoveShouldSetPanResponder: (_evt, gesture) => {
-          if (!enabledRef.current) return false
-          return gesture.dx < -10 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.15
-        },
-        onPanResponderGrant: () => {
-          drawerProgress.stopAnimation()
-        },
-        onPanResponderMove: (_evt, gesture) => {
-          const width = Math.max(1, widthRef.current)
-          const progress = Math.min(1, Math.max(0, 1 + gesture.dx / width))
-          drawerProgress.setValue(progress)
-        },
-        onPanResponderRelease: (_evt, gesture) => {
-          if (closeOnTapRef.current && Math.abs(gesture.dx) < 6 && Math.abs(gesture.dy) < 6) {
-            onCloseRef.current()
-            return
-          }
-          const width = Math.max(1, widthRef.current)
-          const progress = Math.min(1, Math.max(0, 1 + gesture.dx / width))
-          const close = progress < 1 - OPEN_RATIO || gesture.vx < -OPEN_VELOCITY
-          if (close) onCloseRef.current()
-          else onCancelCloseRef.current()
-        },
-        onPanResponderTerminate: (_evt, gesture) => {
-          const width = Math.max(1, widthRef.current)
-          const progress = Math.min(1, Math.max(0, 1 + gesture.dx / width))
-          if (progress < 1 - OPEN_RATIO) onCloseRef.current()
-          else onCancelCloseRef.current()
-        },
-      }),
-    [drawerProgress],
-  )
-
-  if (!enabled) return undefined
-  return pan.panHandlers
+function settleSheet(
+  drawerProgress: Animated.Value,
+  start: number,
+  dx: number,
+  vx: number,
+  width: number,
+  onOpenChange: (open: boolean) => void,
+) {
+  const progress = nativeDrawerProgressFromDelta(start, dx, width)
+  const open = nativeDrawerShouldSettleOpen(progress, vx, start)
+  if (open) onOpenChange(true)
+  snapNativeDrawer(drawerProgress, open, onOpenChange)
 }

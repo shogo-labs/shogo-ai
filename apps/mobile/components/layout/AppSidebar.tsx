@@ -4,7 +4,9 @@
  * AppSidebar - Responsive navigation sidebar matching staging design
  *
  * Wide screens (>= 768px): persistent sidebar pinned to the left (w-64, collapsible to w-16)
- * Narrow screens (< 768px): slide-over drawer with backdrop overlay
+ * Narrow screens (< 768px):
+ *  - Native: static underlay revealed by the moving foreground sheet
+ *  - Web: slide-over drawer with backdrop overlay
  *
  * Sections:
  *  - Logo row: wordmark + collapse toggle (web) or search (native drawer)
@@ -24,8 +26,6 @@ import {
   Linking,
   TextInput,
   Modal,
-  Animated,
-  Easing,
   BackHandler,
   useWindowDimensions,
   Platform,
@@ -108,7 +108,7 @@ import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { useNativeDrawerCloseSwipe } from '../../lib/use-native-drawer-swipe'
+import { NATIVE_DRAWER_UNDERLAY_BACKGROUND } from '../../lib/use-native-drawer-swipe'
 import { invitationEvents } from '../../lib/invitation-events'
 import { chatSessionEvents, chatActivityEvents } from '../../lib/chat-session-events'
 import {
@@ -1819,13 +1819,10 @@ function CreateWorkspaceModal({
 
 interface AppSidebarProps {
   isOpen?: boolean
-  /** Keep the drawer mounted while a swipe is in progress (isOpen may still be false). */
-  visible?: boolean
   onClose?: () => void
-  drawerProgress?: Animated.Value
 }
 
-export const AppSidebar = observer(function AppSidebar({ isOpen, visible, onClose, drawerProgress: externalDrawerProgress }: AppSidebarProps) {
+export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const router = useRouter()
@@ -1838,10 +1835,6 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, visible, onClos
   // padding that used to look like a second empty row.
   const drawerFooterInset = isNativeDrawer ? Math.max(insets.bottom, 12) : insets.bottom
   const drawerSideInset = isNativeDrawer ? Math.max(insets.left, 4) : 0
-  const drawerPanelWidth = isNativeDrawer ? Math.min(288, Math.max(264, width - 48)) : undefined
-  const animatedDrawerWidth = drawerPanelWidth ?? 288
-  const internalDrawerProgress = useRef(new Animated.Value(0)).current
-  const drawerProgress = externalDrawerProgress ?? internalDrawerProgress
   const { features, localMode } = usePlatformConfig()
 
   const { user, signOut } = useAuth()
@@ -2054,31 +2047,6 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, visible, onClos
     onClose?.()
   }, [onClose])
 
-  const reopenNativeDrawer = useCallback(() => {
-    Animated.timing(drawerProgress, {
-      toValue: 1,
-      duration: 180,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start()
-  }, [drawerProgress])
-
-  const closeSwipeHandlers = useNativeDrawerCloseSwipe({
-    enabled: isNativeDrawer && !!isOpen,
-    drawerWidth: animatedDrawerWidth,
-    drawerProgress,
-    onClose: closeNativeDrawer,
-    onCancelClose: reopenNativeDrawer,
-  })
-  const backdropSwipeHandlers = useNativeDrawerCloseSwipe({
-    enabled: isNativeDrawer && !!isOpen,
-    drawerWidth: animatedDrawerWidth,
-    drawerProgress,
-    onClose: closeNativeDrawer,
-    onCancelClose: reopenNativeDrawer,
-    closeOnTap: true,
-  })
-
   useEffect(() => {
     if (!isNativeDrawer || !isOpen) return
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -2160,7 +2128,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, visible, onClos
     if (prevPathnameRef.current === pathname) return
     prevPathnameRef.current = pathname
     if (isOpen && isNativeDrawer) onClose?.()
-  }, [drawerProgress, isNativeDrawer, isOpen, onClose, pathname])
+  }, [isNativeDrawer, isOpen, onClose, pathname])
 
   const handleSearchPress = useCallback(() => {
     if (isNativeDrawer) {
@@ -2179,8 +2147,20 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, visible, onClos
     <View
       role="navigation"
       accessibilityLabel="App sidebar"
-      className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}
-      style={isNativeDrawer ? { paddingLeft: drawerSideInset, paddingRight: 4 } : undefined}
+      className={cn(
+        'flex-1',
+        isNativeDrawer ? undefined : 'bg-card border-r border-border',
+        collapsed ? 'w-16' : isNativeDrawer ? 'w-full' : 'w-64',
+      )}
+      style={
+        isNativeDrawer
+          ? {
+              paddingLeft: drawerSideInset,
+              paddingRight: 4,
+              backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND,
+            }
+          : undefined
+      }
     >
       {isNativeDrawer && <View style={{ height: drawerTopInset }} />}
       {/* ── Logo Row ── */}
@@ -2654,45 +2634,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, visible, onClos
   }
 
   if (isNativeDrawer) {
-    if (!visible && !isOpen) return null
-
-    const drawerTranslateX = drawerProgress.interpolate({
-      inputRange: [0, 1],
-      outputRange: [-animatedDrawerWidth, 0],
-    })
-
     return (
-      <View
-        pointerEvents={isOpen ? 'box-none' : 'none'}
-        style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 50 }}
-      >
-        <View
-          {...backdropSwipeHandlers}
-          accessibilityRole="button"
-          accessibilityLabel="Close sidebar"
-          style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
-        >
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(0,0,0,0.58)' },
-              { opacity: drawerProgress },
-            ]}
-          />
-        </View>
-        <Animated.View
-          {...closeSwipeHandlers}
-          style={[
-            {
-              height: '100%',
-              zIndex: 10,
-              width: animatedDrawerWidth,
-              transform: [{ translateX: drawerTranslateX }],
-            },
-          ]}
-        >
-          {sidebarContent}
-        </Animated.View>
+      <View style={{ flex: 1, backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND }}>
+        {sidebarContent}
       </View>
     )
   }
@@ -2707,7 +2651,6 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, visible, onClos
       <Pressable onPress={onClose} className="absolute inset-0 bg-black/50" />
       <View
         className="w-72 h-full z-10"
-        style={drawerPanelWidth ? { width: drawerPanelWidth } : undefined}
       >
         {sidebarContent}
       </View>
