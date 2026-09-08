@@ -24,10 +24,6 @@ import {
   ScrollView,
   Platform,
   useWindowDimensions,
-  useColorScheme,
-  Animated,
-  Easing,
-  Modal,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -37,17 +33,14 @@ import {
 } from "@/components/ui/popover"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
-import {
-  CHATGPT_COMPOSER,
-  ComposerPlusCloseContext,
-  ComposerPlusSection,
-  PLUS_ATTACH_ROWS,
-  PlusAccordionContext,
-} from "./ComposerPlusMenu"
-import type { NativePickedAttachment } from "../../lib/native-attachment-picker"
 import { ContextTracker } from "./ContextTracker"
+import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
 import { ModelPickerMenu, getNativeModelMenuWidth } from "./ModelPickerMenu"
+import { DockChip } from "./dock/DockChip"
+import { DockChipRail } from "./dock/DockChipRail"
+import { QueueDockPanel } from "./dock/panels/QueueDockPanel"
+import { ContextUsageDockPanel } from "./dock/panels/ContextUsageDockPanel"
 import {
   ArrowUp,
   Plus,
@@ -60,10 +53,6 @@ import {
   FolderGit2,
   Image as ImageIcon,
   ChevronDown,
-  ChevronUp,
-  Trash2,
-  Pencil,
-  SendHorizontal,
   Bot,
   ClipboardList,
   MessageCircleQuestion,
@@ -72,8 +61,6 @@ import {
   Sparkles,
   Languages,
   Play,
-  WifiOff,
-  Cloud,
 } from "lucide-react-native"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
@@ -91,8 +78,6 @@ import { ImagePreviewModal } from "./ImagePreviewModal"
 import { VideoPreviewModal } from "./VideoPreviewModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
-import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
-import type { ToolCallData } from "./tools/types"
 import { AgentClient } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../lib/agent-fetch"
 import { useChatContextSafe } from "./ChatContext"
@@ -160,9 +145,6 @@ const CHAT_INPUT_MIN_HEIGHT = 60
 const CHAT_INPUT_MAX_HEIGHT = 200
 const CHAT_INPUT_NATIVE_MIN_HEIGHT = 52
 const CHAT_INPUT_NATIVE_MAX_HEIGHT = 160
-const CHAT_INPUT_PROMINENT_MIN_HEIGHT = 24
-const CHAT_INPUT_PROMINENT_MAX_HEIGHT = 100
-const CHAT_INPUT_PROMINENT_LINE_HEIGHT = 22
 
 function compactNativeModelLabel(modelId: string): string {
   const label = resolveShortName(modelId)
@@ -364,14 +346,6 @@ export interface ChatInputProps {
   onModelChange?: (modelId: string) => void
   isPro?: boolean
   onUpgradeClick?: () => void
-  /**
-   * Pending ask_user tool call to render as an interactive question widget
-   * attached above the composer (instead of inline in the message stream).
-   * Null when there is no open question.
-   */
-  pendingQuestion?: { messageId: string; tool: ToolCallData } | null
-  /** Called with the formatted response when the attached question is submitted. */
-  onSubmitQuestionResponse?: (response: string) => void
   queuedMessages?: QueuedMessage[]
   onRemoveQueuedMessage?: (messageId: string) => void
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
@@ -382,6 +356,8 @@ export interface ChatInputProps {
   dualPlan?: boolean
   onDualPlanChange?: (enabled: boolean) => void
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
+  /** Per-turn category rollup from `data-prompt-breakdown`, shown in the popover opened by clicking the context ring. Null before the first turn. */
+  contextBreakdown?: ContextBreakdownData | null
   quickActions?: { label: string; prompt: string }[]
   onQuickActionClick?: (prompt: string) => void
   restoreDraftRequest?: RestoreDraftRequest | null
@@ -446,8 +422,6 @@ function ChatInputImpl({
   onModelChange,
   isPro = false,
   onUpgradeClick,
-  pendingQuestion,
-  onSubmitQuestionResponse,
   queuedMessages = [],
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
@@ -458,6 +432,7 @@ function ChatInputImpl({
   dualPlan = false,
   onDualPlanChange,
   contextUsage,
+  contextBreakdown,
   quickActions = [],
   onQuickActionClick,
   restoreDraftRequest,
@@ -472,28 +447,13 @@ function ChatInputImpl({
   flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
-  const colorScheme = useColorScheme()
+  const { width: windowWidth } = useWindowDimensions()
   const effectiveIsPro = features.billing ? isPro : true
   const isNative = Platform.OS !== "web"
   const isNativePhone = Platform.OS !== "web" && windowWidth < 600
-  const useProminentComposer = isNativePhone && !flush
-  const chatgptComposer = useProminentComposer && colorScheme !== "light"
-    ? CHATGPT_COMPOSER.dark
-    : CHATGPT_COMPOSER.light
-  const inputMinHeight = useProminentComposer
-    ? CHAT_INPUT_PROMINENT_MIN_HEIGHT
-    : isNative
-      ? CHAT_INPUT_NATIVE_MIN_HEIGHT
-      : CHAT_INPUT_MIN_HEIGHT
-  const inputMaxHeight = useProminentComposer
-    ? CHAT_INPUT_PROMINENT_MAX_HEIGHT
-    : isNative
-      ? CHAT_INPUT_NATIVE_MAX_HEIGHT
-      : CHAT_INPUT_MAX_HEIGHT
-  const modelTriggerMaxWidth = useProminentComposer
-    ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
-    : Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
+  const inputMinHeight = isNative ? CHAT_INPUT_NATIVE_MIN_HEIGHT : CHAT_INPUT_MIN_HEIGHT
+  const inputMaxHeight = isNative ? CHAT_INPUT_NATIVE_MAX_HEIGHT : CHAT_INPUT_MAX_HEIGHT
+  const modelTriggerMaxWidth = Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
   const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
 
   const bridge = useChatBridgeOptional()
@@ -540,36 +500,13 @@ function ChatInputImpl({
   const [fileError, setFileError] = useState<string | null>(null)
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
-  const [queueExpanded, setQueueExpanded] = useState(true)
-  // Row hover & action-icon visibility are now CSS-driven (Tailwind `group` /
-  // `group-hover:`) rather than React-state driven — see the comment above
-  // the row Pressable below for why.
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
-  const [plusMenuOpen, setPlusMenuOpen] = useState(false)
-  const [plusExpandedId, setPlusExpandedId] = useState<string | null>(null)
-  const [isFocused, setIsFocused] = useState(false)
-  const focusProgress = useRef(new Animated.Value(0)).current
 
   useEffect(() => {
     inputValueRef.current = inputValue
   }, [inputValue])
-
-  useEffect(() => {
-    if (!useProminentComposer) return
-    setInputHeight((h) => Math.min(inputMaxHeight, Math.max(inputMinHeight, h)))
-  }, [inputMaxHeight, inputMinHeight, useProminentComposer])
-
-  useEffect(() => {
-    if (!useProminentComposer) return
-    Animated.timing(focusProgress, {
-      toValue: isFocused ? 1 : 0,
-      duration: isFocused ? 170 : 140,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start()
-  }, [focusProgress, isFocused, useProminentComposer])
 
   const [internalModel, setInternalModel] = useState<string>(
     effectiveIsPro ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
@@ -1000,48 +937,6 @@ function ChatInputImpl({
     setAttachSheetOpen(true)
   }, [])
 
-  const applyPickedFiles = useCallback((picked: NativePickedAttachment[]) => {
-    setPendingFiles((prev) => {
-      const room = MAX_FILES - prev.length
-      if (room <= 0) return prev
-      const added = picked.slice(0, room).map((f) => ({
-        id: f.id,
-        dataUrl: f.dataUrl,
-        name: f.name,
-        type: f.type,
-        size: f.size,
-      }))
-      if (picked.length > room) {
-        setFileError(`Maximum ${MAX_FILES} files allowed`)
-      } else {
-        setFileError(null)
-      }
-      return [...prev, ...added]
-    })
-  }, [])
-
-  const closePlusMenu = useCallback(() => {
-    setPlusMenuOpen(false)
-    setPlusExpandedId(null)
-  }, [])
-
-  const togglePlusSection = useCallback((id: string) => {
-    setPlusExpandedId((current) => (current === id ? null : id))
-  }, [])
-
-  const handlePlusAttach = useCallback((action: (typeof PLUS_ATTACH_ROWS)[number]["action"]) => {
-    closePlusMenu()
-    void import("../../lib/native-attachment-picker").then(({ executeNativeAttachAction }) => {
-      executeNativeAttachAction(action, {
-        currentCount: pendingFiles.length,
-        maxFiles: MAX_FILES,
-        maxFileSizeBytes: MAX_FILE_SIZE,
-        onFiles: applyPickedFiles,
-        onError: (message) => setFileError(message),
-      })
-    })
-  }, [applyPickedFiles, closePlusMenu, pendingFiles.length])
-
   const processFiles = useCallback((files: FileList | File[]) => {
     Array.from(files).forEach((file: File) => {
       const lowerName = file.name.toLowerCase()
@@ -1437,8 +1332,6 @@ function ChatInputImpl({
     return <File className="h-4 w-4 text-muted-foreground" size={16} />
   }, [])
 
-  const ComposerShell = useProminentComposer ? Animated.View : View
-
   return (
     // `flush` callers (EditableUserMessage's inline edit) want the
     // bordered input box to extend to the parent's left/right
@@ -1447,7 +1340,7 @@ function ChatInputImpl({
     // composer from whatever sits beneath it (file previews,
     // toolbar dropdowns, etc.).
     <View className={cn(
-      flush ? "pb-3" : useProminentComposer ? "px-3 pb-0 pt-0" : isNative ? "px-2 pb-4 pt-0" : "p-3 pt-0",
+      flush ? "pb-3" : isNative ? "px-2 pb-4 pt-0" : "p-3 pt-0",
     )}>
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
@@ -1513,337 +1406,19 @@ function ChatInputImpl({
         <Text className="text-sm text-destructive mb-2">{voiceInput.error}</Text>
       )}
 
-      {/* Pending question — interactive answer UI attached above the composer.
-          Stays expanded while pending; submitting persists the answer and
-          clears `pendingQuestion`, unmounting this panel. */}
-      {pendingQuestion && (
-        <View className="mb-2">
-          <AskUserQuestionWidget
-            tool={pendingQuestion.tool}
-            onSubmitResponse={(response) => onSubmitQuestionResponse?.(response)}
-          />
-        </View>
-      )}
-
-      {/* Queued messages */}
-      {queuedMessages.length > 0 && (() => {
-        const offlineCount = queuedMessages.filter((m) => m.offline).length
-        const queueComfortable = isNativePhone
-        const qIconWrap = queueComfortable
-          ? "h-11 w-11 items-center justify-center rounded-xl"
-          : "h-6 w-6 items-center justify-center rounded"
-        const qIconSize = queueComfortable ? 20 : 12
-        return (
-        <View className={cn(
-          "rounded-t-lg border-x border-t overflow-hidden",
-          offlineCount > 0
-            ? "border-orange-400/50 bg-orange-50 dark:bg-orange-950/30"
-            : "border-border/60 bg-muted/30",
-        )}>
-          <Pressable
-            onPress={() => setQueueExpanded((prev) => !prev)}
-            className={cn(
-              "w-full flex-row items-center justify-between",
-              queueComfortable ? "min-h-12 px-3 py-3" : "px-2 py-1",
-            )}
-          >
-            <View className={cn("flex-row items-center", queueComfortable ? "gap-3" : "gap-2")}>
-              <ChevronDown
-                className={cn(
-                  "h-4 w-4",
-                  offlineCount > 0 ? "text-orange-600 dark:text-orange-400" : "text-muted-foreground",
-                  !queueExpanded && "-rotate-90"
-                )}
-                size={queueComfortable ? 20 : 16}
-              />
-              {offlineCount > 0 && (
-                <WifiOff size={queueComfortable ? 18 : 13} className="text-orange-600 dark:text-orange-400" />
-              )}
-              <Text className={cn(
-                queueComfortable ? "text-base font-medium" : "text-sm",
-                offlineCount > 0 ? "text-orange-700 dark:text-orange-300" : "text-foreground",
-              )}>
-                {offlineCount > 0
-                  ? `${offlineCount} waiting to send${queuedMessages.length > offlineCount ? ` \u00b7 ${queuedMessages.length - offlineCount} queued` : ""}`
-                  : `${queuedMessages.length} Queued`}
-              </Text>
-            </View>
-          </Pressable>
-          {queueExpanded && (
-            <View className="border-t border-border/60">
-              {queuedMessages.map((msg, index) => {
-                const files = msg.files ?? []
-                const imageFiles = files.filter((f) => f.type?.startsWith("image/"))
-                const otherFiles = files.filter((f) => !f.type?.startsWith("image/"))
-                const previewImage = imageFiles[0]
-                const trimmedContent = msg.content?.trim() ?? ""
-                const attachmentLabel =
-                  files.length > 0
-                    ? `${files.length} ${files.length === 1 ? "attachment" : "attachments"}`
-                    : ""
-                const primaryText = trimmedContent
-                  ? trimmedContent
-                  : attachmentLabel || "Empty message"
-                return (
-                  // CSS `group` + `hover:` / `group-hover:` (instead of a
-                  // React `hoveredQueuedId` state) for both row background
-                  // and action-icon visibility. The earlier state-driven
-                  // approach flickered when the cursor crossed from the
-                  // row body onto a nested action Pressable: RN-Web fires
-                  // the row's `onHoverOut` on that child-enter transition,
-                  // which collapsed `isHovered` to false — fading the
-                  // actions to opacity-0 *and* dropping the row's hover
-                  // bg — then the row re-asserted hover a frame later and
-                  // the cycle repeated. CSS `:hover` doesn't suffer this:
-                  // it stays true as long as the cursor is over the
-                  // element or any descendant, so the row bg + action
-                  // group remain stable while the pointer is on a button.
-                  // Native has no hover, so `group-hover:` simply never
-                  // activates — the explicit `Platform.OS === "web"` gate
-                  // on the opacity classes keeps the actions always
-                  // visible there, matching the prior behavior.
-                  <Pressable
-                    key={msg.id}
-                    onPress={() => onEditQueuedMessage?.(msg.id)}
-                    accessibilityLabel="Queued message"
-                    className={cn(
-                      "group flex-row items-center border-b border-border/40 last:border-b-0",
-                      queueComfortable ? "min-h-14 gap-3 px-3 py-2.5" : "gap-2 px-2 py-1.5",
-                      Platform.OS === "web" && "hover:bg-muted/40"
-                    )}
-                  >
-                    {msg.offline ? (
-                      <WifiOff size={queueComfortable ? 16 : 11} className="text-orange-600 dark:text-orange-400 flex-shrink-0" />
-                    ) : (
-                      <View className={cn(
-                        "rounded-full border border-muted-foreground/30 flex-shrink-0",
-                        queueComfortable ? "h-4 w-4" : "h-3 w-3",
-                      )} />
-                    )}
-                    {previewImage && (
-                      <Image
-                        source={{ uri: previewImage.dataUrl }}
-                        className={cn(
-                          "rounded border border-border flex-shrink-0",
-                          queueComfortable ? "h-10 w-10" : "h-7 w-7",
-                        )}
-                        resizeMode="cover"
-                      />
-                    )}
-                    <View className="flex-1 min-w-0">
-                      <Text
-                        className={cn("text-foreground", queueComfortable ? "text-base" : "text-xs")}
-                        numberOfLines={1}
-                        ellipsizeMode="tail"
-                      >
-                        {primaryText}
-                      </Text>
-                      {trimmedContent && files.length > 0 && (
-                        <View className="flex-row items-center gap-1 mt-0.5">
-                          <ImageIcon
-                            className="h-3 w-3 text-muted-foreground"
-                            size={queueComfortable ? 14 : 10}
-                          />
-                          <Text
-                            className={cn("text-muted-foreground", queueComfortable ? "text-sm" : "text-[10px]")}
-                            numberOfLines={1}
-                          >
-                            {imageFiles.length > 0 && otherFiles.length > 0
-                              ? `${imageFiles.length} image${imageFiles.length === 1 ? "" : "s"} + ${otherFiles.length} file${otherFiles.length === 1 ? "" : "s"}`
-                              : imageFiles.length > 0
-                                ? `${imageFiles.length} image${imageFiles.length === 1 ? "" : "s"}`
-                                : `${otherFiles.length} file${otherFiles.length === 1 ? "" : "s"}`}
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                    <View
-                      className={cn(
-                        "flex-row items-center flex-shrink-0",
-                        queueComfortable ? "gap-1" : "gap-0.5",
-                        // Fade in on row hover via CSS group-hover so
-                        // crossing onto a child button doesn't tear the
-                        // visibility state down. Native always shows them
-                        // (no hover concept), same as before.
-                        Platform.OS === "web" &&
-                          "opacity-0 group-hover:opacity-100",
-                      )}
-                    >
-                      {/*
-                        Each action button uses Pressable's children-as-
-                        function API to read `{ hovered, pressed }` from
-                        RN-Web directly, rather than relying on NativeWind
-                        `hover:` / `group-hover:` variants. The variants
-                        don't reliably produce visible styling on these
-                        nested Pressables in our setup (the row hover
-                        works, but per-button hover never landed any
-                        background or icon-color swap on the user's
-                        screen — see chat thread). State-from-children is
-                        the documented Pressable API and gives us a
-                        boolean we can fan out to both the wrapper bg and
-                        the lucide icon's text color in one place. Native
-                        platforms have no hover concept; `hovered` is
-                        simply undefined there, so the icons read as the
-                        default muted-foreground, matching prior behavior.
-                      */}
-                      {onReorderQueuedMessage && queuedMessages.length > 1 && (
-                        <>
-                          {index > 0 && (
-                            <Pressable
-                              accessibilityLabel="Move queued message up"
-                              onPress={(e) => {
-                                if (e?.stopPropagation) e.stopPropagation()
-                                onReorderQueuedMessage(msg.id, "up")
-                              }}
-                            >
-                              {(state: any) => {
-                                const active = state.hovered || state.pressed
-                                return (
-                                  <View
-                                    className={cn(
-                                      qIconWrap,
-                                      active && "bg-muted-foreground/25",
-                                    )}
-                                  >
-                                    <ChevronUp
-                                      className={cn(
-                                        "h-3 w-3",
-                                        active ? "text-foreground" : "text-muted-foreground",
-                                      )}
-                                      size={qIconSize}
-                                    />
-                                  </View>
-                                )
-                              }}
-                            </Pressable>
-                          )}
-                          {index < queuedMessages.length - 1 && (
-                            <Pressable
-                              accessibilityLabel="Move queued message down"
-                              onPress={(e) => {
-                                if (e?.stopPropagation) e.stopPropagation()
-                                onReorderQueuedMessage(msg.id, "down")
-                              }}
-                            >
-                              {(state: any) => {
-                                const active = state.hovered || state.pressed
-                                return (
-                                  <View
-                                    className={cn(
-                                      qIconWrap,
-                                      active && "bg-muted-foreground/25",
-                                    )}
-                                  >
-                                    <ChevronDown
-                                      className={cn(
-                                        "h-3 w-3",
-                                        active ? "text-foreground" : "text-muted-foreground",
-                                      )}
-                                      size={qIconSize}
-                                    />
-                                  </View>
-                                )
-                              }}
-                            </Pressable>
-                          )}
-                        </>
-                      )}
-                      {onSendQueuedMessageNow && (
-                        <Pressable
-                          accessibilityLabel="Send queued message now"
-                          onPress={(e) => {
-                            if (e?.stopPropagation) e.stopPropagation()
-                            onSendQueuedMessageNow(msg.id)
-                          }}
-                        >
-                          {(state: any) => {
-                            const active = state.hovered || state.pressed
-                            return (
-                              <View
-                                className={cn(
-                                  qIconWrap,
-                                  active && "bg-muted-foreground/25",
-                                )}
-                              >
-                                <SendHorizontal
-                                  className={cn(
-                                    "h-3 w-3",
-                                    active ? "text-foreground" : "text-muted-foreground",
-                                  )}
-                                  size={qIconSize}
-                                />
-                              </View>
-                            )
-                          }}
-                        </Pressable>
-                      )}
-                      {onEditQueuedMessage && (
-                        <Pressable
-                          accessibilityLabel="Edit queued message"
-                          onPress={(e) => {
-                            if (e?.stopPropagation) e.stopPropagation()
-                            onEditQueuedMessage(msg.id)
-                          }}
-                        >
-                          {(state: any) => {
-                            const active = state.hovered || state.pressed
-                            return (
-                              <View
-                                className={cn(
-                                  qIconWrap,
-                                  active && "bg-muted-foreground/25",
-                                )}
-                              >
-                                <Pencil
-                                  className={cn(
-                                    "h-3 w-3",
-                                    active ? "text-foreground" : "text-muted-foreground",
-                                  )}
-                                  size={qIconSize}
-                                />
-                              </View>
-                            )
-                          }}
-                        </Pressable>
-                      )}
-                      {onRemoveQueuedMessage && (
-                        <Pressable
-                          accessibilityLabel="Delete queued message"
-                          onPress={(e) => {
-                            if (e?.stopPropagation) e.stopPropagation()
-                            onRemoveQueuedMessage(msg.id)
-                          }}
-                        >
-                          {(state: any) => {
-                            const active = state.hovered || state.pressed
-                            return (
-                              <View
-                                className={cn(
-                                  qIconWrap,
-                                  active && "bg-destructive/20",
-                                )}
-                              >
-                                <Trash2
-                                  className={cn(
-                                    "h-3 w-3",
-                                    active ? "text-destructive" : "text-muted-foreground",
-                                  )}
-                                  size={qIconSize}
-                                />
-                              </View>
-                            )
-                          }}
-                        </Pressable>
-                      )}
-                    </View>
-                  </Pressable>
-                )
-              })}
-            </View>
-          )}
-        </View>
-        )
-      })()}
+      {/* Queued messages, live browser, running tasks, plan, checklist,
+          changed files, worktree, and context usage all render inside the
+          floating chat dock now (see ChatPanel's <ChatDock />) instead of
+          inline here. This registers the queue's dock panel + composer
+          chip; the row UI itself lives in QueueDockPanel. */}
+      <QueueDockPanel
+        queuedMessages={queuedMessages}
+        onRemoveQueuedMessage={onRemoveQueuedMessage}
+        onReorderQueuedMessage={onReorderQueuedMessage}
+        onEditQueuedMessage={onEditQueuedMessage}
+        onSendQueuedMessageNow={onSendQueuedMessageNow}
+      />
+      <ContextUsageDockPanel contextUsage={contextUsage} contextBreakdown={contextBreakdown} />
 
       {/* Dropdown + input layer.
 
@@ -1960,32 +1535,18 @@ function ChatInputImpl({
         )}
 
         {/* Main input container */}
-        <ComposerShell
+        <View
           ref={dropZoneRef as any}
           className={cn(
-            "relative overflow-hidden",
-            !useProminentComposer && "border bg-muted/30",
-            !useProminentComposer && (queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl"),
-            !useProminentComposer && (isDragOver ? "border-primary border-dashed" : "border-border/60"),
+            "relative border bg-muted/30 overflow-hidden rounded-xl",
+            isDragOver ? "border-primary border-dashed" : "border-border/60",
+            // Accent ring for the inline-edit "active edit target"
+            // state. Drag-over still takes precedence (its dashed
+            // primary border is more important to surface than the
+            // edit-target highlight). The inner border stays at
+            // 1px so toggling `highlighted` doesn't shift layout.
             highlighted && !isDragOver && "ring-2 ring-primary/70"
           )}
-          style={
-            useProminentComposer
-              ? {
-                  overflow: "hidden" as const,
-                  borderTopLeftRadius: 28,
-                  borderTopRightRadius: 28,
-                  borderBottomLeftRadius: 28,
-                  borderBottomRightRadius: 28,
-                  borderWidth: 1,
-                  borderColor: focusProgress.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [chatgptComposer.border, chatgptComposer.borderFocus],
-                  }),
-                  backgroundColor: chatgptComposer.fill,
-                }
-              : undefined
-          }
         >
         {/* Hidden file input for web (including mobile-web on Android/iOS browsers) */}
         {Platform.OS === "web" && (
@@ -2093,282 +1654,7 @@ function ChatInputImpl({
             the highlight overlay below, so the old chip row above the box is
             gone. References themselves are still tracked + sent on submit. */}
 
-        <View
-          className={
-            useProminentComposer
-              ? "flex-row items-center justify-between min-h-[48px] overflow-hidden py-1 pl-2.5 pr-1.5"
-              : undefined
-          }
-        >
-        {useProminentComposer ? (
-          <>
-            <Pressable
-              onPress={() => setPlusMenuOpen(true)}
-              hitSlop={6}
-              disabled={disabled || isProcessingFiles}
-              role="button"
-              accessibilityLabel="Add"
-              className={cn(
-                "h-8 w-8 items-center justify-center active:opacity-70",
-                (disabled || isProcessingFiles) && "opacity-40",
-              )}
-              testID="project-composer-plus"
-            >
-              <Plus
-                color={chatgptComposer.icon}
-                size={22}
-                strokeWidth={2}
-              />
-            </Pressable>
-            <Modal
-              visible={plusMenuOpen}
-              transparent
-              animationType="fade"
-              statusBarTranslucent
-              onRequestClose={closePlusMenu}
-            >
-              <View className="flex-1 justify-end">
-                <Pressable
-                  className="absolute left-0 right-0 top-0 bottom-0 bg-black/50"
-                  onPress={closePlusMenu}
-                  accessibilityLabel="Dismiss menu"
-                />
-                <View
-                  className="z-10 mx-3 mb-3 overflow-hidden rounded-2xl border border-border bg-card"
-                  style={{ maxHeight: Math.round(windowHeight * 0.72) }}
-                >
-                <ComposerPlusCloseContext.Provider value={closePlusMenu}>
-                  <PlusAccordionContext.Provider
-                    value={{ expandedId: plusExpandedId, toggle: togglePlusSection }}
-                  >
-                    <ScrollView
-                      bounces={false}
-                      keyboardShouldPersistTaps="handled"
-                      style={{ maxHeight: Math.round(windowHeight * 0.72) }}
-                    >
-                      <ComposerPlusSection
-                        id="mode"
-                        label="Mode"
-                        value={currentInteractionConfig.label}
-                        Icon={currentInteractionConfig.Icon}
-                      >
-                        <View className="py-1">
-                          {INTERACTION_MODES.map((mode) => {
-                            const isSelected = mode.id === interactionMode
-                            return (
-                              <Pressable
-                                key={mode.id}
-                                onPress={() => {
-                                  handleInteractionModeChange(mode.id)
-                                }}
-                                className={cn(
-                                  "flex-row items-center gap-3 p-3 rounded-lg mb-1",
-                                  isSelected &&
-                                    mode.id === "agent" &&
-                                    "bg-accent",
-                                  isSelected &&
-                                    mode.id === "plan" &&
-                                    "border border-amber-500/35 bg-amber-500/12",
-                                  isSelected &&
-                                    mode.id === "ask" &&
-                                    "border border-emerald-500/35 bg-emerald-500/12"
-                                )}
-                              >
-                                <View className="w-8 items-center">
-                                  <mode.Icon
-                                    className={cn(
-                                      "h-3.5 w-3.5",
-                                      isSelected &&
-                                        mode.id === "plan" &&
-                                        "text-amber-400",
-                                      isSelected &&
-                                        mode.id === "ask" &&
-                                        "text-emerald-400",
-                                      (!isSelected || mode.id === "agent") &&
-                                        "text-muted-foreground"
-                                    )}
-                                    size={14}
-                                  />
-                                </View>
-                                <View className="flex-1">
-                                  <Text
-                                    className={cn(
-                                      "font-medium text-sm",
-                                      isSelected &&
-                                        mode.id === "plan" &&
-                                        "text-amber-400",
-                                      isSelected &&
-                                        mode.id === "ask" &&
-                                        "text-emerald-400",
-                                      (!isSelected || mode.id === "agent") &&
-                                        "text-foreground"
-                                    )}
-                                  >
-                                    {mode.label}
-                                  </Text>
-                                  <Text className="text-xs text-muted-foreground">
-                                    {mode.description}
-                                  </Text>
-                                </View>
-                              </Pressable>
-                            )
-                          })}
-                          {interactionMode === "plan" ? (
-                            <Pressable
-                              testID="dual-plan-toggle"
-                              disabled={disabled}
-                              onPress={() => onDualPlanChange?.(!dualPlan)}
-                              accessibilityLabel="Also generate a stakeholder summary"
-                              className={cn(
-                                "mx-1 mb-1 flex-row items-center gap-3 rounded-lg p-3",
-                                dualPlan
-                                  ? "border border-sky-500/35 bg-sky-500/12"
-                                  : "bg-muted/40",
-                              )}
-                            >
-                              <View className="w-8 items-center">
-                                <Languages
-                                  className={dualPlan ? "text-sky-400" : "text-muted-foreground"}
-                                  size={14}
-                                />
-                              </View>
-                              <View className="flex-1">
-                                <Text className="text-sm font-medium text-foreground">
-                                  Stakeholder summary
-                                </Text>
-                                <Text className="text-xs text-muted-foreground">
-                                  Also generate a summary for stakeholders
-                                </Text>
-                              </View>
-                            </Pressable>
-                          ) : null}
-                        </View>
-                      </ComposerPlusSection>
-                      <ComposerPlusSection
-                        id="environment"
-                        label="Environment"
-                        Icon={Cloud}
-                      >
-                        <EnvironmentPicker
-                          disabled={disabled || isProcessingFiles}
-                          presentation="list"
-                          listActive={plusExpandedId === "environment"}
-                        />
-                      </ComposerPlusSection>
-                      {quickActions.length > 0 ? (
-                        <ComposerPlusSection
-                          id="quick-actions"
-                          label="Quick actions"
-                          Icon={Zap}
-                        >
-                          <View className="py-1">
-                            {quickActions.map((action) => (
-                              <Pressable
-                                key={action.label}
-                                onPress={() => {
-                                  onQuickActionClick?.(action.prompt)
-                                  closePlusMenu()
-                                }}
-                                className="flex-row items-center gap-3 p-3 rounded-lg mb-1"
-                              >
-                                <View className="w-8 items-center">
-                                  <Zap className="h-3.5 w-3.5 text-amber-400" size={14} />
-                                </View>
-                                <View className="flex-1">
-                                  <Text className="font-medium text-sm text-foreground">
-                                    {action.label}
-                                  </Text>
-                                  <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-                                    {action.prompt}
-                                  </Text>
-                                </View>
-                              </Pressable>
-                            ))}
-                          </View>
-                        </ComposerPlusSection>
-                      ) : null}
-                      <View className="border-t border-border/50 pt-1 pb-1">
-                        {PLUS_ATTACH_ROWS.map(({ action, label, hint, Icon }) => (
-                          <Pressable
-                            key={action}
-                            onPress={() => handlePlusAttach(action)}
-                            disabled={pendingFiles.length >= MAX_FILES}
-                            className="flex-row items-center gap-3 px-3 py-3 active:bg-muted/50"
-                          >
-                            <View className="h-8 w-8 items-center justify-center rounded-lg bg-muted/40">
-                              <Icon size={16} className="text-foreground" />
-                            </View>
-                            <View className="min-w-0 flex-1">
-                              <Text className="text-sm font-medium text-foreground">{label}</Text>
-                              <Text className="text-xs text-muted-foreground">{hint}</Text>
-                            </View>
-                          </Pressable>
-                        ))}
-                      </View>
-                    </ScrollView>
-                  </PlusAccordionContext.Provider>
-                </ComposerPlusCloseContext.Provider>
-                </View>
-              </View>
-            </Modal>
-            <Popover
-              placement="top"
-              size="xs"
-              isOpen={modelPickerOpen}
-              onOpen={() => setModelPickerOpen(true)}
-              onClose={() => setModelPickerOpen(false)}
-              trigger={(triggerProps) => (
-                <Pressable
-                  {...triggerProps}
-                  hitSlop={6}
-                  disabled={disabled}
-                  className="h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
-                  style={{ maxWidth: modelTriggerMaxWidth }}
-                >
-                  <Text
-                    className="text-[12px] text-foreground/90"
-                    numberOfLines={1}
-                  >
-                    {compactNativeModelLabel(currentModelId)}
-                  </Text>
-                  <ChevronDown className="flex-shrink-0 text-muted-foreground/70" size={10} />
-                </Pressable>
-              )}
-            >
-              <PopoverBackdrop />
-              <PopoverContent
-                className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
-                style={{ width: nativeModelMenuWidth }}
-              >
-                <ModelPickerMenu
-                  currentModelId={currentModelId}
-                  effectiveIsPro={effectiveIsPro}
-                  onSelect={(modelId) => {
-                    handleModelChange(modelId)
-                    setModelPickerOpen(false)
-                  }}
-                />
-              </PopoverContent>
-            </Popover>
-          </>
-        ) : null}
-
-        <View
-          className={cn(
-            "relative",
-            useProminentComposer && "min-w-0 flex-1",
-          )}
-          style={
-            useProminentComposer
-              ? {
-                  minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
-                  overflow: "hidden",
-                  marginLeft: 4,
-                  marginRight: 4,
-                }
-              : undefined
-          }
-        >
+        <View className="relative">
           {/* Highlight backdrop: a transparent mirror of the composer text that
               paints a pill behind each "@mention". The real TextInput sits on
               top (zIndex) so typed text stays crisp and the caret is native;
@@ -2378,9 +1664,8 @@ function ChatInputImpl({
           <View
             pointerEvents="none"
             className={cn(
-              "absolute top-0 bottom-0 left-0 right-0 overflow-hidden",
-              useProminentComposer ? "px-1" : "px-4",
-              useProminentComposer ? undefined : isNative ? "pt-3" : "pt-4",
+              "absolute top-0 bottom-0 left-0 right-0 overflow-hidden px-4",
+              isNative ? "pt-3" : "pt-4",
             )}
             style={{ zIndex: 0 }}
           >
@@ -2434,8 +1719,6 @@ function ChatInputImpl({
             setOverlayScrollY((e.nativeEvent as any)?.contentOffset?.y ?? 0)
           }}
           onSubmitEditing={handleSubmitEditing}
-          onFocus={useProminentComposer ? () => setIsFocused(true) : undefined}
-          onBlur={useProminentComposer ? () => setIsFocused(false) : undefined}
           onKeyPress={(e: any) => {
             // While the "@" menu is open, intercept navigation keys so they
             // drive the menu instead of the textarea / message submit.
@@ -2478,62 +1761,35 @@ function ChatInputImpl({
             }
           }}
           placeholder={placeholder}
-          placeholderTextColor={useProminentComposer ? chatgptComposer.placeholder : "#9ca3af"}
+          placeholderTextColor="#9ca3af"
           testID="project-composer-input"
           accessibilityLabel="Chat message input"
           editable={!disabled && !voiceInput.isRecording}
           multiline
-          {...(useProminentComposer
-            ? { scrollEnabled: inputHeight > CHAT_INPUT_PROMINENT_MIN_HEIGHT }
-            : null)}
-          blurOnSubmit={useProminentComposer || Platform.OS !== "web"}
+          blurOnSubmit={Platform.OS !== "web"}
           returnKeyType={Platform.OS === "web" ? undefined : "done"}
           onContentSizeChange={(e) => {
-            if (useProminentComposer && !composerDisplayValue) {
-              if (inputHeight !== CHAT_INPUT_PROMINENT_MIN_HEIGHT) {
-                setInputHeight(CHAT_INPUT_PROMINENT_MIN_HEIGHT)
-              }
-              return
-            }
             const h = e.nativeEvent.contentSize.height
-            const next = useProminentComposer && h <= CHAT_INPUT_PROMINENT_LINE_HEIGHT + 8
-              ? CHAT_INPUT_PROMINENT_MIN_HEIGHT
-              : Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
-            if (next !== inputHeight) {
-              setInputHeight(next)
+            const clamped = Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
+            if (clamped !== inputHeight) {
+              setInputHeight(clamped)
             }
           }}
           style={{
-            height: useProminentComposer
-              ? Math.max(
-                  composerDisplayValue ? inputHeight : CHAT_INPUT_PROMINENT_MIN_HEIGHT,
-                  CHAT_INPUT_PROMINENT_MIN_HEIGHT,
-                )
-              : inputHeight,
+            height: inputHeight,
             zIndex: 1,
-            ...(isNative ? { fontSize: 16, lineHeight: useProminentComposer ? CHAT_INPUT_PROMINENT_MIN_HEIGHT : 22 } : {}),
-            ...(useProminentComposer
-              ? {
-                  color: chatgptComposer.text,
-                  paddingHorizontal: 4,
-                  paddingTop: 0,
-                  paddingBottom: 0,
-                  margin: 0,
-                  backgroundColor: "transparent",
-                  ...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" } : null),
-                }
-              : {}),
+            ...(isNative ? { fontSize: 16, lineHeight: 22 } : {}),
           }}
           className={cn(
-            useProminentComposer
-              ? "w-full bg-transparent"
-              : isNative
-                ? "min-h-[52px] max-h-[160px] w-full bg-transparent px-4 pt-3 text-base text-foreground"
-                : "min-h-[60px] max-h-[200px] w-full bg-transparent px-4 pt-4 text-xs text-foreground",
+            isNative
+              ? "min-h-[52px] max-h-[160px] w-full"
+              : "min-h-[60px] max-h-[200px] w-full",
+            "bg-transparent",
+            isNative ? "px-4 pt-3 text-base text-foreground" : "px-4 pt-4 text-xs text-foreground",
             disabled && dimWhenDisabled && "opacity-50",
             Platform.OS === "web" && "outline-none no-focus-ring"
           )}
-          textAlignVertical={useProminentComposer ? "center" : "top"}
+          textAlignVertical="top"
         />
         </View>
 
@@ -2541,16 +1797,11 @@ function ChatInputImpl({
         <View
           className={cn(
             "flex-row items-center justify-between",
-            useProminentComposer
-              ? "flex-shrink-0"
-              : isNative
-                ? "min-h-12 px-2 py-1"
-                : "p-1.5",
-            !useProminentComposer && isNativePhone && "items-end gap-y-1"
+            isNative ? "min-h-12 px-2 py-1" : "p-1.5",
+            isNativePhone && "items-end gap-y-1"
           )}
         >
           {/* Left side buttons */}
-          {useProminentComposer ? null : (
           <View
             className={cn(
               "flex-row items-center",
@@ -2849,7 +2100,6 @@ function ChatInputImpl({
             </Popover>
 
           </View>
-          )}
 
           {/* Right side buttons */}
           {voiceInput.isRecording ? (
@@ -2869,15 +2119,17 @@ function ChatInputImpl({
               </Pressable>
             </View>
           ) : (
-          <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "ml-1 gap-1" : "gap-1")}>
-            {contextUsage && !useProminentComposer && (
-              <ContextTracker
-                inputTokens={contextUsage.inputTokens}
-                contextWindowTokens={contextUsage.contextWindowTokens}
-              />
+          <View className="flex-row flex-shrink-0 items-center gap-1">
+            <DockChipRail isNative={isNative} />
+            {contextUsage && (
+              <DockChip panelId="context-usage" accessibilityLabel="Context usage">
+                <ContextTracker
+                  inputTokens={contextUsage.inputTokens}
+                  contextWindowTokens={contextUsage.contextWindowTokens}
+                />
+              </DockChip>
             )}
 
-            {useProminentComposer ? null : (
             <Pressable
               onPress={handleAttachClick}
               hitSlop={isNative ? 4 : undefined}
@@ -2900,7 +2152,6 @@ function ChatInputImpl({
                 size={isNative ? 18 : 12}
               />
             </Pressable>
-            )}
 
             {isStreaming ? (
               <>
@@ -2911,12 +2162,12 @@ function ChatInputImpl({
                   testID="stop-streaming"
                   className={cn(
                     "rounded-full bg-destructive items-center justify-center active:opacity-70",
-                    useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
+                    isNative ? "h-9 w-9" : "h-5 w-5",
                   )}
                 >
                   <Square
                     className="text-destructive-foreground m-auto"
-                    size={useProminentComposer ? 10 : isNative ? 14 : 10}
+                    size={isNative ? 14 : 10}
                   />
                 </Pressable>
                 {(inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) && (
@@ -2927,17 +2178,11 @@ function ChatInputImpl({
                     role="button"
                     accessibilityLabel="Queue message"
                     className={cn(
-                      "rounded-full items-center justify-center",
-                      !useProminentComposer && "bg-primary",
-                      useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
+                      "rounded-full items-center justify-center bg-primary",
+                      isNative ? "h-9 w-9" : "h-5 w-5",
                     )}
-                    style={useProminentComposer ? { backgroundColor: chatgptComposer.sendFill } : undefined}
                   >
-                    <ArrowUp
-                      className={cn("h-3 w-3", !useProminentComposer && "text-primary-foreground")}
-                      color={useProminentComposer ? chatgptComposer.sendIcon : undefined}
-                      size={useProminentComposer ? 14 : isNative ? 18 : 12}
-                    />
+                    <ArrowUp className="h-3 w-3 text-primary-foreground" size={isNative ? 18 : 12} />
                   </Pressable>
                 )}
               </>
@@ -2949,18 +2194,12 @@ function ChatInputImpl({
                 role="button"
                 accessibilityLabel="Send message"
                 className={cn(
-                  "rounded-full items-center justify-center",
-                  !useProminentComposer && "bg-primary",
-                  useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
+                  "rounded-full items-center justify-center bg-primary",
+                  isNative ? "h-9 w-9" : "h-5 w-5",
                   (disabled || isProcessingFiles) && "opacity-50"
                 )}
-                style={useProminentComposer ? { backgroundColor: chatgptComposer.sendFill } : undefined}
               >
-                <ArrowUp
-                  className={cn("h-3 w-3", !useProminentComposer && "text-primary-foreground")}
-                  color={useProminentComposer ? chatgptComposer.sendIcon : undefined}
-                  size={useProminentComposer ? 14 : isNative ? 18 : 12}
-                />
+                <ArrowUp className="h-3 w-3 text-primary-foreground" size={isNative ? 18 : 12} />
               </Pressable>
             ) : voiceInput.canRecord ? (
               <Pressable
@@ -2974,22 +2213,17 @@ function ChatInputImpl({
                 accessibilityLabel="Start voice recording"
                 className={cn(
                   "rounded-full items-center justify-center active:opacity-70",
-                  useProminentComposer
-                    ? "h-8 w-8"
-                    : isNative
-                      ? "h-9 w-9 border border-border/45 bg-muted/30"
-                      : "h-5 w-5",
+                  isNative ? "h-9 w-9 border border-border/45 bg-muted/30" : "h-5 w-5",
                 )}
               >
                 <Mic
                   className={cn(
                     "h-4 w-4",
-                    !useProminentComposer && (disabled || isProcessingFiles
+                    disabled || isProcessingFiles
                       ? "text-muted-foreground/40"
-                      : "text-muted-foreground")
+                      : "text-muted-foreground"
                   )}
-                  color={useProminentComposer ? (disabled || isProcessingFiles ? chatgptComposer.placeholder : chatgptComposer.icon) : undefined}
-                  size={useProminentComposer ? 20 : isNative ? 18 : 14}
+                  size={isNative ? 18 : 14}
                 />
               </Pressable>
             ) : null}
@@ -2997,7 +2231,6 @@ function ChatInputImpl({
           )}
         </View>
         </View>
-        </ComposerShell>
       </View>
 
       <ImagePreviewModal
@@ -3027,14 +2260,32 @@ function ChatInputImpl({
         />
       )}
 
-      {Platform.OS !== "web" && !useProminentComposer && (
+      {Platform.OS !== "web" && (
         <AttachSourceSheet
           open={attachSheetOpen}
           onOpenChange={setAttachSheetOpen}
           currentCount={pendingFiles.length}
           maxFiles={MAX_FILES}
           maxFileSizeBytes={MAX_FILE_SIZE}
-          onFiles={applyPickedFiles}
+          onFiles={(picked) => {
+            setPendingFiles((prev) => {
+              const room = MAX_FILES - prev.length
+              if (room <= 0) return prev
+              const added = picked.slice(0, room).map((f) => ({
+                id: f.id,
+                dataUrl: f.dataUrl,
+                name: f.name,
+                type: f.type,
+                size: f.size,
+              }))
+              if (picked.length > room) {
+                setFileError(`Maximum ${MAX_FILES} files allowed`)
+              } else {
+                setFileError(null)
+              }
+              return [...prev, ...added]
+            })
+          }}
           onError={(message) => setFileError(message)}
         />
       )}

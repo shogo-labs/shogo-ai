@@ -949,7 +949,7 @@ const HomeScreen = observer(function HomeScreen() {
       className={`text-center text-foreground ${isNativePhone ? 'font-semibold' : 'font-bold mb-2'}`}
       style={heroTitleStyle}
     >
-      {isNativePhone ? `What's on your mind,\n${firstName}?` : `What's on your mind, ${firstName}?`}
+      {isNativePhone ? `What are we building,\n${firstName}?` : `What are we building, ${firstName}?`}
     </Text>
   )
 

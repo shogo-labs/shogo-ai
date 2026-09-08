@@ -52,11 +52,25 @@ describe('extractTextContent', () => {
 describe('ERROR_CODE_MESSAGES', () => {
   it('has messages for all known error codes', () => {
     const codes = ['pod_unavailable', 'rate_limit_exceeded', 'usage_limit_reached',
-      'insufficient_credits', 'session_expired', 'internal_error', 'shutting_down', 'offline']
+      'insufficient_credits', 'session_expired', 'internal_error', 'shutting_down', 'offline',
+      'entitlement_expired', 'overage_cap_reached']
     for (const code of codes) {
       expect(ERROR_CODE_MESSAGES[code]).toBeDefined()
       expect(typeof ERROR_CODE_MESSAGES[code]).toBe('string')
     }
+  })
+
+  // Regression: a user who already turned on-demand usage on must not be
+  // told to "enable" it again when their entitlement (subscription/license)
+  // expires — that's the "usage limit reached despite on-demand being on"
+  // bug this fixes. See `billingService.checkUsageBalance` server-side.
+  it('entitlement_expired message does not repeat the generic "enable usage-based pricing" copy', () => {
+    expect(ERROR_CODE_MESSAGES.entitlement_expired).not.toMatch(/enable usage-based pricing/i)
+    expect(ERROR_CODE_MESSAGES.entitlement_expired).toMatch(/expired/i)
+  })
+
+  it('overage_cap_reached message references the spending cap', () => {
+    expect(ERROR_CODE_MESSAGES.overage_cap_reached).toMatch(/spending cap/i)
   })
 })
 

@@ -174,19 +174,30 @@ export function getWindowDisplays(windows: UsageWindows | undefined): {
 /** Overage context needed to phrase the at-limit notice. */
 export interface UsageOverageContext {
   enabled: boolean
+  /**
+   * Whether overage will actually apply right now (`enabled && paidTier`
+   * server-side). Omit/`undefined` is treated as `true` (legacy callers that
+   * haven't been updated to pass it yet). Pass `false` when the user turned
+   * on-demand usage on but the paid entitlement behind it (subscription or
+   * license grant) has since expired — this is what produces the `'expired'`
+   * tone instead of incorrectly telling them usage is billed as overage.
+   */
+  active?: boolean
   accumulatedUsd?: number
 }
 
 /** A user-facing notice shown when a usage window is exhausted. */
 export interface UsageLimitNotice {
-  tone: 'overage' | 'paused'
+  tone: 'overage' | 'paused' | 'expired'
   text: string
 }
 
 /**
  * Build the at-limit notice. Returns `null` when not at limit. When overage is
- * enabled the user keeps working and is billed for overage; otherwise usage is
- * paused until the soonest window resets.
+ * active the user keeps working and is billed for overage; when it's enabled
+ * but the entitlement behind it has expired, usage is paused with a
+ * reactivate prompt (not the generic "enable usage-based pricing" message);
+ * otherwise usage is paused until the soonest window resets.
  */
 export function getUsageLimitNotice(opts: {
   atLimit: boolean
@@ -194,6 +205,13 @@ export function getUsageLimitNotice(opts: {
   countdown?: string
 }): UsageLimitNotice | null {
   if (!opts.atLimit) return null
+
+  if (opts.overage?.enabled && opts.overage.active === false) {
+    return {
+      tone: 'expired',
+      text: 'Limit reached — your on-demand billing entitlement has expired. Reactivate your subscription or license to continue.',
+    }
+  }
 
   if (opts.overage?.enabled) {
     const accumulated = opts.overage.accumulatedUsd ?? 0

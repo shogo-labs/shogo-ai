@@ -15,8 +15,9 @@ export { AssistantContent, type AssistantContentProps } from "./AssistantContent
 export { InlineToolWidget, type InlineToolWidgetProps } from "./InlineToolWidget"
 export { ExecWidget, type ExecWidgetProps } from "./ExecWidget"
 export { ToolCallGroup, type ToolCallGroupProps } from "./ToolCallGroup"
-export { ExplorationGroup, type ExplorationGroupProps } from "./ExplorationGroup"
-export { EditingGroup, type EditingGroupProps } from "./EditingGroup"
+export { WorkGroup, type WorkGroupProps } from "./WorkGroup"
+export { WorkedForGroup, type WorkedForGroupProps } from "./WorkedForGroup"
+export { PlanningStatusLine } from "./PlanningStatusLine"
 export {
   CollapsibleToolGroup,
   type CollapsibleToolGroupProps,
@@ -28,4 +29,35 @@ export {
   AskUserQuestionBar,
   type AskUserQuestionBarProps,
 } from "./AskUserQuestionWidget"
-export { type ConversationTurn, type TurnBoundary, type MessagePart } from "./types"
+export { type ConversationTurn, type TurnBoundary, type MessagePart, type GroupedMessagePart } from "./types"
+export {
+  groupWorkParts,
+  partitionTurn,
+  extractTurnTiming,
+  formatWorkedDuration,
+  formatRelativeTime,
+  shouldShowPlanningStatus,
+  type TurnPartition,
+  type TurnTiming,
+} from "./turnShaping"
+export {
+  TurnFooter,
+  type TurnFooterProps,
+} from "./TurnFooter"
+export {
+  TurnFooterProvider,
+  useTurnFooterContext,
+  type TurnFooterContextValue,
+  type TurnFooterProviderProps,
+  type MessageFeedbackThumbs,
+} from "./TurnFooterContext"
+export {
+  summarizeWork,
+  summarizeTurn,
+  buildFallbackWorkedLabel,
+  formatThoughtLabel,
+  type WorkKind,
+  type WorkTense,
+  type WorkSummary,
+  type WorkCounts,
+} from "./workSummary"

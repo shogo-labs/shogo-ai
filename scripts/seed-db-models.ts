@@ -21,7 +21,11 @@
  *     (xiaomimimo). Only seeded when the staging key is provided via the
  *     `MIMO_API_KEY` env var AND `SECRETS_ENCRYPTION_KEY` is configured, so the
  *     key is never committed to source. Otherwise add it from the super-admin
- *     "Custom Providers" form instead.
+ *     "Custom Providers" form instead. Marked `capabilities.supportsAudioInput`
+ *     since MiMo v2.5 accepts `input_audio` content blocks natively — this is
+ *     the model backing the public `hoshi-1.0` alias, so re-running this
+ *     script also flips on audio support for Hoshi (see
+ *     `resolveModelSupportsAudioInput` in apps/api/src/routes/ai-proxy.ts).
  *
  * Idempotent — safe to re-run (upserts by id / by provider label).
  *
@@ -215,6 +219,12 @@ async function seedMimo(): Promise<void> {
     maxOutputTokens: 128_000,
     enabled: true,
     aliases: ['mimo-v2.5', 'mimo', 'mimo-2.5'],
+    // MiMo v2.5 accepts `input_audio` content blocks natively over the
+    // OpenAI-compatible chat/completions wire format — see
+    // `resolveModelSupportsAudioInput` (apps/api/src/routes/ai-proxy.ts),
+    // which checks this DB-defined capability (the static MODEL_CATALOG
+    // only knows about `gpt-audio`).
+    capabilities: { supportsAudioInput: true },
     // Placeholder pricing — update from the MiMo pricing page via admin UI.
     inputPerMillion: 0,
     cachedInputPerMillion: 0,
@@ -224,7 +234,7 @@ async function seedMimo(): Promise<void> {
   }
   await upsertModel(
     { provider: 'custom', apiModel: 'mimo-v2.5' },
-    { sortOrder: 1, capabilities: null, ...modelCommon },
+    { sortOrder: 1, ...modelCommon },
     modelCommon,
   )
   console.log('[seed-db-models] Upserted MiMo v2.5 (apiModel=mimo-v2.5)')

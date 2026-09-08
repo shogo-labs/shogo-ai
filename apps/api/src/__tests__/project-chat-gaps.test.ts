@@ -74,6 +74,14 @@ mock.module('../lib/prisma', () => ({
 mock.module('../services/billing.service', () => ({
   consumeUsage: async () => ({ success: true, remainingIncludedUsd: 99 }),
   hasBalance: async (...args: any[]) => hasBalanceImpl(),
+  checkUsageBalance: async (...args: any[]) => {
+    const ok = await hasBalanceImpl()
+    return ok ? { ok: true } : { ok: false, reason: 'usage_limit_reached' }
+  },
+  usageLimitErrorPayload: (reason?: string) => ({
+    code: reason ?? 'usage_limit_reached',
+    message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
+  }),
   hasAdvancedModelAccess: async () => true,
 }))
 

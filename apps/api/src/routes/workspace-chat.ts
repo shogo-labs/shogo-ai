@@ -504,15 +504,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const workspaceId = c.req.param('workspaceId')
 
     // Usage gate (workspace-level balance) — mirrors project-chat.
-    if (!(await billingService.hasBalance(workspaceId))) {
+    const balanceCheck = await billingService.checkUsageBalance(workspaceId)
+    if (!balanceCheck.ok) {
+      const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
       return c.json(
-        {
-          error: {
-            code: 'usage_limit_reached',
-            message:
-              "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
-          },
-        },
+        { error: { code, message } },
         402,
       )
     }

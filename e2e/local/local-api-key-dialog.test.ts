@@ -22,26 +22,26 @@ test.describe("Local Mode — API Key Dialog & Integrations", () => {
   test("auto-sign-in and navigate to home", async ({ page }) => {
     await page.goto("/")
     // Local mode auto-signs in — wait for home or sign-in redirect
-    const signedIn = await page.waitForSelector("text=What's on your mind", { timeout: 20_000 }).catch(() => null)
+    const signedIn = await page.waitForSelector("text=What are we building", { timeout: 20_000 }).catch(() => null)
     if (!signedIn) {
       // May need to trigger auto-sign-in
       await page.goto("/sign-in")
       await page.waitForTimeout(3_000)
       await page.goto("/")
-      await page.waitForSelector("text=What's on your mind", { timeout: 20_000 })
+      await page.waitForSelector("text=What are we building", { timeout: 20_000 })
     }
   })
 
   test("API Keys page loads", async ({ page }) => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 15_000 })
     await page.goto("/api-keys")
     await page.waitForSelector("text=API Keys", { timeout: 15_000 })
   })
 
   test("Create Key modal has role='dialog'", async ({ page }) => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 15_000 })
     await page.goto("/api-keys")
     await page.waitForSelector("text=API Keys", { timeout: 15_000 })
 
@@ -77,7 +77,7 @@ test.describe("Local Mode — API Key Dialog & Integrations", () => {
 
   test("Create Key modal button is clickable via dialog selector", async ({ page }) => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 15_000 })
     await page.goto("/api-keys")
     await page.waitForSelector("text=API Keys", { timeout: 15_000 })
 

@@ -47,6 +47,29 @@ describe('describeTurnFailure', () => {
     )
   })
 
+  // Regression: a user with on-demand usage already ON (but whose paid
+  // entitlement lapsed, or who genuinely hit their configured spend cap) was
+  // shown the exact same "enable usage-based pricing" text as someone who
+  // never turned it on — confusing since they'd already done what the
+  // message asked. `billing.service.ts`'s `usageLimitErrorPayload` now
+  // returns a distinct message per reason; this pipeline must not collapse
+  // them back into one generic string (2026-09-02 incident).
+  test('entitlement-expired billing errors surface the reactivate message, not the generic one', () => {
+    const raw =
+      '402 {"error":{"message":"Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.","code":"entitlement_expired"}}'
+    expect(describeTurnFailure(raw)).toBe(
+      'Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.',
+    )
+  })
+
+  test('overage-cap-reached billing errors surface the spend-cap message, not the generic one', () => {
+    const raw =
+      '402 {"error":{"message":"You\'ve reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue.","code":"overage_cap_reached"}}'
+    expect(describeTurnFailure(raw)).toBe(
+      "You've reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue.",
+    )
+  })
+
   test('auth failures ask the user to check provider settings (no model switch)', () => {
     const out = describeTurnFailure('401 Unauthorized: invalid API key')
     expect(out).toMatch(/provider settings/i)

@@ -61,9 +61,32 @@ mock.module('../lib/prisma', () => ({
 
 let hasBalanceResult = true
 let hasAdvancedModelAccessResult = true
+// Reason surfaced when `hasBalanceResult` is false — defaults to the
+// generic code; flipped per-test to cover the entitlement-expired path
+// (on-demand usage was on, but the paid entitlement backing it lapsed).
+let balanceBlockReason: 'usage_limit_reached' | 'entitlement_expired' | 'overage_cap_reached' = 'usage_limit_reached'
 mock.module('../services/billing.service', () => ({
   consumeUsage: async () => ({ success: true, remainingIncludedUsd: 99 }),
   hasBalance: async () => hasBalanceResult,
+  checkUsageBalance: async () => (hasBalanceResult ? { ok: true } : { ok: false, reason: balanceBlockReason }),
+  usageLimitErrorPayload: (reason?: string) => {
+    if (reason === 'entitlement_expired') {
+      return {
+        code: 'entitlement_expired',
+        message: 'Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.',
+      }
+    }
+    if (reason === 'overage_cap_reached') {
+      return {
+        code: 'overage_cap_reached',
+        message: "You've reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue.",
+      }
+    }
+    return {
+      code: 'usage_limit_reached',
+      message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
+    }
+  },
   hasAdvancedModelAccess: async () => hasAdvancedModelAccessResult,
 }))
 
@@ -133,6 +156,7 @@ beforeEach(() => {
   projectFixture = { id: 'p-1', name: 'Test', workspaceId: 'w-1' }
   memberFixture = { id: 'member-1' }
   hasBalanceResult = true
+  balanceBlockReason = 'usage_limit_reached'
   hasAdvancedModelAccessResult = true
   resolvePodUrlResult = { url: 'http://runtime-p-1.local' }
   lastFetchUrl = null
@@ -173,6 +197,7 @@ describe('POST /projects/:projectId/chat', () => {
 
   test('402 when the workspace has no remaining balance', async () => {
     hasBalanceResult = false
+    balanceBlockReason = 'usage_limit_reached'
     const app = buildApp()
     const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
       method: 'POST',
@@ -180,6 +205,25 @@ describe('POST /projects/:projectId/chat', () => {
     }))
     expect(res.status).toBe(402)
     expect((await res.json() as any).error.code).toBe('usage_limit_reached')
+  })
+
+  // Regression: a user with on-demand usage turned on (overageEnabled=true)
+  // whose paid entitlement (subscription or license grant) has since
+  // expired must NOT see the generic "enable usage-based pricing" message —
+  // they already enabled it. See `billingService.checkUsageBalance`.
+  test('402 with entitlement_expired (not the generic message) when on-demand usage was on but the entitlement lapsed', async () => {
+    hasBalanceResult = false
+    balanceBlockReason = 'entitlement_expired'
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      body: '{}',
+    }))
+    expect(res.status).toBe(402)
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('entitlement_expired')
+    expect(body.error.message).not.toMatch(/enable usage-based pricing/i)
+    expect(body.error.message).toMatch(/expired/i)
   })
 
   test('503 with pod_starting when runtime URL resolution times out', async () => {

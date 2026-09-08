@@ -317,7 +317,7 @@ test.describe("Streaming Relay Latency — E2E", () => {
     streamConfig = { numChunks: 10, intervalMs: 100, chunkSize: 50 }
 
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     const metrics: any = await page.evaluate(
       async ({ id }) => {

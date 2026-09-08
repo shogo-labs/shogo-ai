@@ -38,6 +38,13 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   // migration) still render a friendly message when the API surfaces the old
   // error code. New code should emit `usage_limit_reached`.
   insufficient_credits: "Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.",
+  // On-demand usage was turned on, but the paid entitlement backing it
+  // (subscription or license grant) has since expired — distinct from
+  // `usage_limit_reached` so the user isn't told to "enable" a toggle that's
+  // already on (the bug this fixes: see `checkUsageBalance` in billing.service.ts).
+  entitlement_expired: "Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.",
+  // Overage is active, but the workspace's own spending cap is exhausted.
+  overage_cap_reached: "You've reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue.",
   session_expired: 'Your session has expired. Please refresh the page.',
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',

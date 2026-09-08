@@ -67,6 +67,11 @@ mock.module('../lib/prisma', () => withPrismaExports({
 // Stub billing service so the auth/billing gates fire deterministically.
 mock.module('../services/billing.service', () => ({
   hasBalance: async () => true,
+  checkUsageBalance: async () => ({ ok: true }),
+  usageLimitErrorPayload: (reason?: string) => ({
+    code: reason ?? 'usage_limit_reached',
+    message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
+  }),
   hasAdvancedModelAccess: async (workspaceId: string) => workspaceId === 'ws-pro',
   consumeUsage: async () => ({ success: true, remainingIncludedUsd: 100 }),
   getSubscription: async () => subStub,
@@ -569,9 +574,10 @@ describe('AI proxy model listing and token generation', () => {
     // chat picker's unseeded-instance fallback) — not every id the static
     // MODEL_CATALOG has ever shipped.
     expect(data.data.some((model: any) => model.id === 'claude-haiku-4-5-20251001' && model.available === true)).toBe(true)
-    expect(data.data.some((model: any) => model.id === 'gpt-5.4-nano' && model.available === true)).toBe(true)
+    expect(data.data.some((model: any) => model.id === 'gpt-5.6-luna' && model.available === true)).toBe(true)
     // Legacy catalog entries are routable but no longer listed by default.
     expect(data.data.some((model: any) => model.id === 'gpt-4o-mini')).toBe(false)
+    expect(data.data.some((model: any) => model.id === 'gpt-5.4-nano')).toBe(false)
     expect(data.data.some((model: any) => model.id === 'claude-3-haiku-20240307')).toBe(false)
   })
 

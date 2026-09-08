@@ -2714,12 +2714,19 @@ function BillingTab() {
   const billingUsageLimitNotice = getUsageLimitNotice({
     atLimit: billingWindowDisplays.fiveHour.atLimit || billingWindowDisplays.weekly.atLimit,
     overage: effectiveBalance
-      ? { enabled: effectiveBalance.overageEnabled, accumulatedUsd: effectiveBalance.overageAccumulatedUsd }
+      ? {
+          enabled: effectiveBalance.overageEnabled,
+          active: effectiveBalance.overageActive,
+          accumulatedUsd: effectiveBalance.overageAccumulatedUsd,
+        }
       : undefined,
     countdown: billingWindowDisplays.weekly.atLimit
       ? billingWindowDisplays.weekly.countdown
       : billingWindowDisplays.fiveHour.countdown,
   })
+  // Surface the expired-entitlement state even before a window is exhausted,
+  // so the user isn't only told about it once they hit the wall.
+  const overageEntitlementExpired = !!effectiveBalance?.overageEnabled && effectiveBalance.overageActive === false
 
   useEffect(() => {
     if (!workspace?.id) return
@@ -2824,12 +2831,19 @@ function BillingTab() {
               <Text
                 className={cn(
                   'text-xs',
-                  billingUsageLimitNotice.tone === 'overage' ? 'text-foreground font-medium' : 'text-muted-foreground',
+                  billingUsageLimitNotice.tone === 'overage' || billingUsageLimitNotice.tone === 'expired'
+                    ? 'text-foreground font-medium'
+                    : 'text-muted-foreground',
                 )}
               >
                 {billingUsageLimitNotice.text}
               </Text>
             ) : null}
+            {!billingUsageLimitNotice && overageEntitlementExpired && (
+              <Text className="text-xs text-foreground font-medium">
+                Your on-demand billing entitlement has expired. Reactivate your subscription or license to keep using on-demand usage.
+              </Text>
+            )}
             {Platform.OS !== 'ios' && !billingUsageLimitNotice && effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 && (
               <Text className="text-xs text-muted-foreground">
                 Overage this period: {formatUsd(effectiveBalance.overageAccumulatedUsd)} (billed in trust blocks: $100 → $500)

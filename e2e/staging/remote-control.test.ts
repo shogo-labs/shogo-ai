@@ -316,7 +316,7 @@ test.describe("Remote Control — E2E", () => {
 
   test("2a — sidebar shows 'This device' as default in instance picker area", async () => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     // The InstancePicker should display "This device" when no remote instance is active.
     // On wide screens the sidebar is visible; on narrow screens we need to open it.
@@ -354,7 +354,7 @@ test.describe("Remote Control — E2E", () => {
 
   test("2b — instance picker trigger is visible in sidebar", async () => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     // Look for the instance picker trigger (shows "This device" or instance name)
     const trigger = page
@@ -378,7 +378,7 @@ test.describe("Remote Control — E2E", () => {
 
   test("2c — empty state shows setup instructions when no instances exist", async () => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     // Try to open the instance picker
     const trigger = page.locator('[aria-label="Instance selector"]')
@@ -444,7 +444,7 @@ test.describe("Remote Control — E2E", () => {
 
   test("3b — instance picker shows registered instance in dropdown", async () => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     // Try to open the instance picker
     const trigger = page.locator('[aria-label="Instance selector"]')
@@ -505,7 +505,7 @@ test.describe("Remote Control — E2E", () => {
 
     // Reload and check persistence
     await page.reload()
-    await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     const stored = await page.evaluate(() =>
       window.localStorage.getItem("shogo:activeInstance"),
@@ -525,7 +525,7 @@ test.describe("Remote Control — E2E", () => {
       window.localStorage.removeItem("shogo:activeInstance")
     })
     await page.reload()
-    await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     const stored = await page.evaluate(() =>
       window.localStorage.getItem("shogo:activeInstance"),

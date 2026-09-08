@@ -116,6 +116,11 @@ let hasAdvancedModelAccessResult = true
 mock.module('../services/billing.service', () => ({
   consumeUsage: async () => ({ success: true, remainingIncludedUsd: 99 }),
   hasBalance: async () => hasBalanceResult,
+  checkUsageBalance: async () => (hasBalanceResult ? { ok: true } : { ok: false, reason: 'usage_limit_reached' }),
+  usageLimitErrorPayload: (reason?: string) => ({
+    code: reason ?? 'usage_limit_reached',
+    message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
+  }),
   hasAdvancedModelAccess: async () => hasAdvancedModelAccessResult,
 }))
 
@@ -346,6 +351,45 @@ describe('trackUsageFromStream — processLine branches', () => {
     ])
     await trackUsageFromStream(stream, { chatSessionId: 's-2' }, { id: 'p-1', workspaceId: 'w-1' })
     expect(prismaCalls.chatMessageCreate[0]?.data.content).toBe('hi')
+  })
+
+  test('persists a data-turn-timing part with startedAt/completedAt read off data-turn-start/data-turn-complete', async () => {
+    chatSessionFixture = { id: 's-timing' }
+    const stream = streamFromChunks([
+      'data: {"type":"data-turn-start","data":{"turnId":"t-1","startedAt":1000}}\n',
+      'data: {"type":"text-delta","delta":"hi"}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed","completedAt":5000}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-timing' }, { id: 'p-1', workspaceId: 'w-1' })
+    const parts = JSON.parse(prismaCalls.chatMessageCreate[0].data.parts)
+    const timing = parts.find((p: any) => p.type === 'data-turn-timing')
+    expect(timing).toBeDefined()
+    expect(timing.data).toEqual({ startedAt: 1000, completedAt: 5000 })
+  })
+
+  test('persists a data-turn-timing part with only startedAt when the turn never completes (partial/cut stream)', async () => {
+    chatSessionFixture = { id: 's-timing-partial' }
+    const stream = streamFromChunks([
+      'data: {"type":"data-turn-start","data":{"turnId":"t-2","startedAt":2000}}\n',
+      'data: {"type":"text-delta","delta":"partial"}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-timing-partial' }, { id: 'p-1', workspaceId: 'w-1' })
+    const parts = JSON.parse(prismaCalls.chatMessageCreate[0].data.parts)
+    const timing = parts.find((p: any) => p.type === 'data-turn-timing')
+    expect(timing).toBeDefined()
+    expect(timing.data.startedAt).toBe(2000)
+    expect(timing.data.completedAt).toBeUndefined()
+  })
+
+  test('does not persist a data-turn-timing part when data-turn-start was never observed', async () => {
+    chatSessionFixture = { id: 's-timing-none' }
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"hi"}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed","completedAt":5000}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-timing-none' }, { id: 'p-1', workspaceId: 'w-1' })
+    const parts = JSON.parse(prismaCalls.chatMessageCreate[0].data.parts)
+    expect(parts.some((p: any) => p.type === 'data-turn-timing')).toBe(false)
   })
 
   test('ignores [DONE], event:, id:, retry:, blank lines, and garbage non-JSON', async () => {

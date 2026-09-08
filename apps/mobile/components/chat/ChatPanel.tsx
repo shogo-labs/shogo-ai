@@ -27,7 +27,7 @@
  * - No document/window DOM APIs
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from "react"
 import * as Sentry from "@sentry/react-native"
 import {
   Alert,
@@ -48,9 +48,9 @@ import {
 import { observer } from "mobx-react-lite"
 import { useChat, type UIMessage } from "@ai-sdk/react"
 import { useRouter } from "expo-router"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { DefaultChatTransport } from "ai"
 import AsyncStorage from "@react-native-async-storage/async-storage"
-import { useSafeAreaInsets } from "react-native-safe-area-context"
 import {
   extractTextContent,
   formatErrorMessage,
@@ -67,9 +67,19 @@ import {
   truncateMessagesFrom,
   getPrecedingCheckpoint,
   rollbackProjectToCheckpoint,
+  setMessageFeedback,
+  clearMessageFeedback,
+  getSessionFeedback,
+  forkChatSession,
   type PrecedingCheckpointResult,
+  type MessageFeedbackThumbs,
 } from "@shogo/shared-app/chat"
-import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession, useProjectCollection } from "@shogo/shared-app/domain"
+import {
+  useSDKDomains,
+  useDomainActions,
+  useChatMessageCollectionForSession,
+  useProjectCollection,
+} from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import { probeChatTurnStatus, shouldAttachLiveStream, type ChatTurnStatus } from "./probe-turn-status"
@@ -83,9 +93,11 @@ import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } 
 
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
+import { chatSessionEvents } from "../../lib/chat-session-events"
 import { useActiveInstance } from "../../contexts/active-instance"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
+import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import {
   ChatInput,
   DEFAULT_MODEL_PRO,
@@ -111,6 +123,16 @@ import {
   DEFAULT_STREAMING_STALL_MS,
 } from "../../lib/chat-stall-watchdog"
 import { createTodoStateStore, TodoStateStoreContext } from "../../lib/todo-state-store"
+import { createFileChangeStore, FileChangeStoreContext } from "../../lib/file-change-store"
+import { createChatDockStore, ChatDockStoreContext, useChatDockStore, type DockPanelDescriptor } from "../../lib/chat-dock-store"
+import { useDockPanel } from "./dock/useDockPanel"
+import { ChatDock } from "./dock/ChatDock"
+import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
+import { ChecklistDockPanel } from "./dock/panels/ChecklistDockPanel"
+import { RunningDockPanel } from "./dock/panels/RunningDockPanel"
+import { BrowserDockPanel } from "./dock/panels/BrowserDockPanel"
+import { WorktreeDockPanel } from "./dock/panels/WorktreeDockPanel"
+import { ChangesDockPanel } from "./dock/panels/ChangesDockPanel"
 import {
   loadModelPreference,
   saveModelPreference,
@@ -118,7 +140,6 @@ import {
 import { useReconcileStaleModelSelection } from "../../lib/visible-models"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExecutionBadge } from "./ExecutionBadge"
-import { WorktreeBar } from "./WorktreeBar"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
 import {
@@ -139,14 +160,14 @@ import {
   dispatchNativeInlineEditTap,
   type MessageEditOptions,
 } from "./turns/MessageEditContext"
+import { TurnFooterProvider } from "./turns/TurnFooterContext"
 import { EditConfirmDialogHost } from "./turns/EditConfirmDialog"
 import { PhaseEmptyState } from "./empty"
 import {
-  SubagentPanel,
   type SubagentProgress as SubagentProgressType,
   type RecentTool as RecentToolType,
 } from "./subagent"
-import { ProcessPanel, type RunningProcess } from "./ProcessPanel"
+import { type RunningProcess } from "./ProcessPanel"
 import {
   type ToolCallData,
   getToolCategory as getToolCategoryFromTools,
@@ -154,7 +175,7 @@ import {
 import { subagentStreamStore } from "../../lib/subagent-stream-store"
 import { teamStore } from "../../lib/team-store"
 import * as ExpoLinking from "expo-linking"
-import { AlertCircle, RefreshCw, WifiOff, X, ChevronDown } from "lucide-react-native"
+import { AlertCircle, RefreshCw, WifiOff, X, ChevronDown, Shield, MessageCircleQuestion } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
 import { usePlanStreamSafe } from "./PlanStreamContext"
 import { AgentClient } from "@shogo-ai/sdk/agent"
@@ -166,6 +187,7 @@ import { configureSubagentStop } from "../../lib/subagent-stop"
 import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
 import { extractTaskToolsFromMessages } from "./turns/messageParts"
 import { derivePendingQuestion } from "./turns/pendingQuestion"
+import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
 import {
   FIX_IN_AGENT_EVENT,
   buildFixPrompt,
@@ -332,7 +354,6 @@ export interface ChatPanelProps {
   onCompactValueChange?: (value: string) => void
   onChatError?: (error: Error | null) => void
   injectMessage?: string | null
-  onFilesChanged?: (paths: string[]) => void
   onActiveToolCall?: (toolName: string | null) => void
   selectedThemeId?: string
   onSelectTheme?: (themeId: string) => void
@@ -592,45 +613,6 @@ function requiresSchemaRefresh(toolCall: ExtractedToolCall): boolean {
   return normalizedToolName === "schema_set" || normalizedToolName === "schema_load"
 }
 
-const FILE_OPERATION_TOOLS = new Set([
-  "Write",
-  "Edit",
-  "StrReplace",
-  "Delete",
-  "template_copy",
-  "template.copy",
-])
-
-function getModifiedFilePaths(toolCalls: ExtractedToolCall[]): string[] {
-  const paths: string[] = []
-
-  for (const toolCall of toolCalls) {
-    if (toolCall.state !== "output-available") {
-      continue
-    }
-
-    const normalizedToolName = toolCall.toolName.includes("__")
-      ? toolCall.toolName.split("__").pop() || toolCall.toolName
-      : toolCall.toolName
-
-    if (!FILE_OPERATION_TOOLS.has(normalizedToolName)) {
-      continue
-    }
-
-    const args = toolCall.args as Record<string, unknown> | undefined
-    const filePath = (args?.file_path ?? args?.path ?? args?.filePath) as string | undefined
-    if (filePath && typeof filePath === "string") {
-      paths.push(filePath)
-    }
-
-    if (normalizedToolName === "template_copy" || normalizedToolName === "template.copy") {
-      paths.push("*")
-    }
-  }
-
-  return [...new Set(paths)]
-}
-
 async function refreshCollections(
   domain: any,
   collectionNames: string[],
@@ -770,7 +752,6 @@ export const ChatPanel = observer(function ChatPanel({
   onCompactValueChange,
   onChatError,
   injectMessage,
-  onFilesChanged,
   onActiveToolCall,
   selectedThemeId,
   onSelectTheme,
@@ -920,7 +901,6 @@ export const ChatPanel = observer(function ChatPanel({
   const isUserAtBottomRef = useRef(true)
   /** Native only: true = follow new content; set false the instant the user drags */
   const stickToBottomRef = useRef(true)
-  const nativeEditTapStartRef = useRef<{ x: number; y: number } | null>(null)
   const isLoadingOlderRef = useRef(false)
   const contentHeightBeforeLoadRef = useRef(0)
   const prevDisplayLengthRef = useRef(0)
@@ -935,6 +915,7 @@ export const ChatPanel = observer(function ChatPanel({
   const programmaticScrollUntilRef = useRef(0)
   const MESSAGE_PAGE_SIZE = 50
   const isNative = Platform.OS !== "web"
+  const nativeEditTapStartRef = useRef<{ x: number; y: number } | null>(null)
   /** Native re-engage threshold: distance from bottom (px) on drag/momentum end
    * within which we treat the user as having returned to the bottom and resume
    * follow. 40px is forgiving enough that a soft release after a peek-up does
@@ -966,6 +947,7 @@ export const ChatPanel = observer(function ChatPanel({
    * pill. Source of truth for streaming follow remains the refs above. */
   const [isFollowing, setIsFollowing] = useState(true)
   const [nativeInlineEditing, setNativeInlineEditing] = useState(false)
+  const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false)
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
@@ -1021,8 +1003,6 @@ export const ChatPanel = observer(function ChatPanel({
     markProgrammaticScroll()
     scrollViewRef.current?.scrollToEnd({ animated: true })
   }, [markProgrammaticScroll])
-
-  const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false)
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
@@ -1227,6 +1207,13 @@ export const ChatPanel = observer(function ChatPanel({
   // for the panel's lifetime; the clear() below is a defensive
   // reset for the rare case where a panel switches sessions.
   const todoStateStore = useMemo(() => createTodoStateStore(), [])
+  // Per-chat store for the files-changed dock panel — see file-change-store.ts.
+  const fileChangeStore = useMemo(() => createFileChangeStore(), [])
+  // The chat dock's panel registry (context breakdown, plan, checklist,
+  // changed files, live browser, running tasks, queue, worktree, plus the
+  // blocking permission/question/connectivity panels). One per ChatPanel —
+  // see chat-dock-store.ts.
+  const chatDockStore = useMemo(() => createChatDockStore(), [])
 
   useEffect(() => {
     pendingPlanRef.current = null
@@ -1234,7 +1221,9 @@ export const ChatPanel = observer(function ChatPanel({
     setConfirmedPlan(null)
     confirmedPlanRef.current = null
     todoStateStore.clear()
-  }, [currentSessionId, todoStateStore])
+    fileChangeStore.clear()
+    chatDockStore.reset()
+  }, [currentSessionId, todoStateStore, fileChangeStore, chatDockStore])
 
   // Load session metadata from API if not already cached. Gated on
   // `isActive` so the N-1 hidden sibling ChatPanels mounted for every
@@ -1256,6 +1245,31 @@ export const ChatPanel = observer(function ChatPanel({
   // Per-session MST collection: isolated from sibling ChatPanels. Reads never
   // flip to 0 because another session's `loadPage` clobbered the singleton.
   const sessionMessages = useChatMessageCollectionForSession(currentSessionId)
+
+  // Caller's own thumbs up/down reactions for this session, keyed by
+  // messageId — powers the `TurnFooter` initial thumb state. Loaded
+  // once per session (below) and updated optimistically by
+  // `handleSetFeedback` / `handleClearFeedback`.
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, MessageFeedbackThumbs>>({})
+
+  useEffect(() => {
+    if (!currentSessionId) {
+      setFeedbackMap({})
+      return
+    }
+    let cancelled = false
+    setFeedbackMap({})
+    getSessionFeedback(studioChat.chatSessionCollection, currentSessionId)
+      .then((feedback) => {
+        if (!cancelled) setFeedbackMap(feedback)
+      })
+      .catch((err) => {
+        console.warn("[ChatPanel] Failed to load session feedback:", err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentSessionId, studioChat])
 
   // Loading state for Effect 1. Kept as *both* a ref (for synchronous reads
   // elsewhere) AND state (so changes to it can retrigger Effect 1 via deps,
@@ -1415,6 +1429,10 @@ export const ChatPanel = observer(function ChatPanel({
   const [contextUsage, setContextUsage] = useState<{ inputTokens: number; contextWindowTokens: number } | null>(null)
   const contextUsageThrottleRef = useRef<{ inputTokens: number; contextWindowTokens: number } | null>(null)
   const contextUsageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Per-turn category rollup from `data-prompt-breakdown` — powers the
+  // context-usage popover opened by clicking the ContextTracker ring.
+  // Not persisted; recomputed by the gateway every turn.
+  const [contextBreakdown, setContextBreakdown] = useState<ContextBreakdownData | null>(null)
 
   useEffect(() => {
     if (!toolErrorBanner) return
@@ -2219,6 +2237,13 @@ export const ChatPanel = observer(function ChatPanel({
         }
 
       }
+
+      if ((dataPart as any).type === "data-prompt-breakdown") {
+        const bd = (dataPart as any).data
+        if (bd?.categories) {
+          setContextBreakdown(bd)
+        }
+      }
     },
     onFinish: async ({ message, isAbort }: { message: any; isAbort?: boolean }) => {
       const contentLength = (message as any).content?.length ?? message.parts?.length ?? 0
@@ -2385,14 +2410,6 @@ export const ChatPanel = observer(function ChatPanel({
             })
           }
 
-          if (onFilesChanged) {
-            const modifiedPaths = getModifiedFilePaths(toolCalls)
-            if (modifiedPaths.length > 0) {
-              console.log("[ChatPanel] Files modified by agent:", modifiedPaths)
-              filesChangedFiredRef.current = true
-              onFilesChanged(modifiedPaths)
-            }
-          }
         }
       }
 
@@ -2527,7 +2544,6 @@ export const ChatPanel = observer(function ChatPanel({
   }
 
   const isStreaming = (status === "streaming" || status === "submitted") && stoppedMessages === null
-  const filesChangedFiredRef = useRef(false)
 
   // Watch messages for tool-invocation state transitions during a live
   // turn and emit `tool-activity` events so the EZ Mode overlay can
@@ -3006,29 +3022,16 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [isStreaming, messages, handleStop])
 
-  // Fallback: detect file changes when streaming ends
+  // Clear the tool-error banner at the start of each new turn.
   const prevStreamingForScanRef = useRef(false)
   useEffect(() => {
     const wasStreaming = prevStreamingForScanRef.current
     prevStreamingForScanRef.current = isStreaming
 
-    if (wasStreaming && !isStreaming && !filesChangedFiredRef.current && onFilesChanged) {
-      const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant")
-      if (latestAssistant) {
-        const toolCalls = extractToolCalls(latestAssistant)
-        const modifiedPaths = getModifiedFilePaths(toolCalls)
-        if (modifiedPaths.length > 0) {
-          console.log("[ChatPanel] Fallback: Files modified by agent (onFinish missed):", modifiedPaths)
-          onFilesChanged(modifiedPaths)
-        }
-      }
-    }
-
     if (isStreaming && !wasStreaming) {
-      filesChangedFiredRef.current = false
       setToolErrorBanner(null)
     }
-  }, [isStreaming, messages, onFilesChanged])
+  }, [isStreaming])
 
   // Process progress events from message parts
   useEffect(() => {
@@ -3320,6 +3323,11 @@ export const ChatPanel = observer(function ChatPanel({
             id: msg.id,
             role: msg.role as "user" | "assistant",
             content: msg.content,
+            // Carried through so `extractTurnTiming`'s createdAt fallback
+            // and the `TurnFooter` relative-time label ("2m ago") have a
+            // real timestamp for historical (pre-`data-turn-timing`)
+            // messages loaded from the server.
+            createdAt: msg.createdAt,
           }
           if (msg.parts) {
             try {
@@ -3519,6 +3527,7 @@ export const ChatPanel = observer(function ChatPanel({
           id: msg.id,
           role: msg.role as "user" | "assistant",
           content: msg.content,
+          createdAt: msg.createdAt,
         }
         if (msg.parts) {
           try {
@@ -5104,6 +5113,93 @@ export const ChatPanel = observer(function ChatPanel({
     ],
   )
 
+  // Same optimistic-id guard as `canEditMessage` above — a message that
+  // hasn't round-tripped to the server yet has no row for
+  // `MessageFeedback`/`fork` to act on.
+  const canActOnTurnMessage = useCallback((messageId: string) => {
+    if (!messageId) return false
+    if (messageId.startsWith("temp-")) return false
+    if (messageId.startsWith("optimistic-")) return false
+    return true
+  }, [])
+
+  const handleSetFeedback = useCallback(
+    async (messageId: string, thumbs: MessageFeedbackThumbs) => {
+      if (!sessionMessages) return
+      const previous = feedbackMap[messageId]
+      setFeedbackMap((prev) => ({ ...prev, [messageId]: thumbs }))
+      try {
+        await setMessageFeedback(sessionMessages, messageId, thumbs)
+      } catch (err) {
+        console.error("[ChatPanel] Failed to set message feedback:", err)
+        setFeedbackMap((prev) => {
+          const next = { ...prev }
+          if (previous) next[messageId] = previous
+          else delete next[messageId]
+          return next
+        })
+        throw err
+      }
+    },
+    [sessionMessages, feedbackMap],
+  )
+
+  const handleClearFeedback = useCallback(
+    async (messageId: string) => {
+      if (!sessionMessages) return
+      const previous = feedbackMap[messageId]
+      setFeedbackMap((prev) => {
+        const next = { ...prev }
+        delete next[messageId]
+        return next
+      })
+      try {
+        await clearMessageFeedback(sessionMessages, messageId)
+      } catch (err) {
+        console.error("[ChatPanel] Failed to clear message feedback:", err)
+        if (previous) {
+          setFeedbackMap((prev) => ({ ...prev, [messageId]: previous }))
+        }
+        throw err
+      }
+    },
+    [sessionMessages, feedbackMap],
+  )
+
+  // Fork the current session at `messageId` into a brand-new session, then
+  // hand control to the parent (`onChatSessionChange`, e.g. the project
+  // layout's tab state) and broadcast on `chatSessionEvents` so the
+  // sidebar's chat list refreshes to include the new chat and any other
+  // mounted listener (cross-tab, IDE embed) highlights it as active. See
+  // `handleCreateNewSession` in the project layout for the same
+  // emit-after-create pattern this mirrors.
+  const handleForkFromMessage = useCallback(
+    async (messageId: string) => {
+      if (!currentSessionId) return
+      const result = await forkChatSession(
+        studioChat.chatSessionCollection,
+        currentSessionId,
+        messageId,
+      )
+      if (projectId) {
+        chatSessionEvents.emit({ projectId, activeSessionId: result.sessionId, refresh: true })
+      }
+      onChatSessionChange?.(result.sessionId)
+    },
+    [currentSessionId, studioChat, projectId, onChatSessionChange],
+  )
+
+  const turnFooterValue = useMemo(
+    () => ({
+      feedback: feedbackMap,
+      setFeedback: handleSetFeedback,
+      clearFeedback: handleClearFeedback,
+      forkFromMessage: handleForkFromMessage,
+      canActOnMessage: canActOnTurnMessage,
+    }),
+    [feedbackMap, handleSetFeedback, handleClearFeedback, handleForkFromMessage, canActOnTurnMessage],
+  )
+
   const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
 
   // Generate a stakeholder summary for a plan that doesn't have one yet.
@@ -5321,6 +5417,275 @@ export const ChatPanel = observer(function ChatPanel({
     [handleSendMessage],
   )
 
+  // Re-render when the dock's registered panels / expand state / measured
+  // height change so `dockHeight` (used to pad the message list) and the
+  // dock-height-dependent JSX below stay current.
+  useSyncExternalStore(chatDockStore.subscribe, chatDockStore.getVersion, chatDockStore.getVersion)
+  const dockHeight = chatDockStore.getHeight()
+  // Measured height of the scrollable message area, used to cap the dock's
+  // status zone at ~45% of the space actually available above the composer.
+  const [messagesAreaHeight, setMessagesAreaHeight] = useState(0)
+
+  // ---------------------------------------------------------------------
+  // Chat dock: blocking panels (permission approval / pending question /
+  // connectivity wait) and status banners (tool error / general error).
+  // These stay inline here — rather than as separate dock/panels files —
+  // since they're tightly coupled to ChatPanel's own countdown, retry, and
+  // dismiss state. The countdown/auto-deny inside `PermissionApprovalDialog`
+  // and the auto-hide timers below are untouched; only *where* they render
+  // (a dock panel instead of a fixed slot above the composer) changed.
+  // ---------------------------------------------------------------------
+
+  const permissionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (!pendingPermissionRequest) return null
+    return {
+      id: "permission",
+      kind: "blocking",
+      order: 0,
+      title: "Permission required",
+      icon: Shield,
+      render: () => (
+        <PermissionApprovalDialog
+          request={pendingPermissionRequest}
+          onRespond={async (response) => {
+            setPendingPermissionRequest(null)
+            try {
+              if (projectId) {
+                const http = createHttpClient()
+                await api.sendPermissionResponse(http, projectId, response)
+              }
+            } catch (err) {
+              console.error("[ChatPanel] Failed to send permission response:", err)
+            }
+          }}
+        />
+      ),
+    }
+  }, [pendingPermissionRequest, projectId])
+  useDockPanel(permissionDockDescriptor)
+
+  const questionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (!pendingQuestion) return null
+    return {
+      id: "question",
+      kind: "blocking",
+      order: 1,
+      title: "Question",
+      icon: MessageCircleQuestion,
+      render: () => (
+        <AskUserQuestionWidget
+          tool={pendingQuestion.tool}
+          onSubmitResponse={(response) => handleSubmitQuestionResponse(response)}
+        />
+      ),
+    }
+  }, [pendingQuestion, handleSubmitQuestionResponse])
+  useDockPanel(questionDockDescriptor)
+
+  const connectivityDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (!((connectivityWait || justReconnected) && !errorDismissed)) return null
+    return {
+      id: "connectivity",
+      kind: "blocking",
+      order: 2,
+      title: justReconnected ? "Back online" : "Waiting for connection",
+      icon: WifiOff,
+      accent: "warning",
+      headerActions: !justReconnected ? (
+        <Pressable
+          onPress={handleStop}
+          accessibilityRole="button"
+          accessibilityLabel="Cancel and stop waiting for connection"
+          className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
+        >
+          <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">Cancel</Text>
+        </Pressable>
+      ) : undefined,
+      render: () => (
+        <View className="flex-row items-start gap-1.5">
+          {justReconnected ? (
+            <RefreshCw size={14} className="h-3.5 w-3.5 shrink-0 mt-0.5 text-orange-600 dark:text-orange-400" />
+          ) : (
+            <WifiOff size={14} className="h-3.5 w-3.5 shrink-0 mt-0.5 text-orange-600 dark:text-orange-400" />
+          )}
+          <Text className="flex-1 text-xs text-orange-700 dark:text-orange-300">
+            {justReconnected
+              ? "Back online — resuming\u2026"
+              : `No internet connection. Waiting to resume${connectivityWaitElapsedLabel ? ` (${connectivityWaitElapsedLabel})` : ""}\u2026`}
+          </Text>
+        </View>
+      ),
+    }
+  }, [connectivityWait, justReconnected, errorDismissed, connectivityWaitElapsedLabel, handleStop])
+  useDockPanel(connectivityDockDescriptor)
+
+  const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (!toolErrorBanner) return null
+    return {
+      id: "tool-error",
+      kind: "status",
+      order: 15,
+      title: toolErrorBanner.isAuthError
+        ? `${toolErrorBanner.toolkitName} connection expired`
+        : `${toolErrorBanner.toolkitName} error`,
+      icon: AlertCircle,
+      accent: "warning",
+      defaultExpanded: true,
+      onDismiss: () => setToolErrorBanner(null),
+      headerActions:
+        toolErrorBanner.isAuthError && projectId ? (
+          <Pressable
+            onPress={async () => {
+              const toolkit = toolErrorBanner.toolkitName.toLowerCase()
+              setReconnecting(true)
+              const preWindow = Platform.OS === "web" ? preCreateAuthWindow() : null
+              console.info("[ChatPanel] Reconnecting", toolkit)
+              try {
+                const http = createHttpClient()
+                const isNativePlatform = Platform.OS !== "web"
+                let redirect: string | undefined
+                if (isNativePlatform) {
+                  redirect = ExpoLinking.createURL("integrations-callback")
+                } else {
+                  const returnUrl = new URL(window.location.href)
+                  returnUrl.searchParams.set("fromOAuth", "1")
+                  redirect = returnUrl.toString()
+                }
+                const callbackUrl = redirect
+                  ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
+                  : `${API_URL}/api/integrations/callback`
+                const data = await api.connectIntegration(http, toolkit, projectId, callbackUrl)
+                const redirectUrl = data.data?.redirectUrl
+                if (redirectUrl) {
+                  await openAuthFlow(redirectUrl, { preCreatedWindow: preWindow })
+                  setToolErrorBanner(null)
+                }
+              } catch (err) {
+                console.error("[ChatPanel] Reconnect error:", err)
+              } finally {
+                setReconnecting(false)
+                try {
+                  if (preWindow && !preWindow.closed) {
+                    const loc = preWindow.location.href
+                    if (loc === "about:blank" || loc === "") preWindow.close()
+                  }
+                } catch {
+                  /* COOP */
+                }
+              }
+            }}
+            disabled={reconnecting}
+            className={cn(
+              "flex-row items-center gap-1.5 rounded-md border border-orange-400/50 bg-orange-100 dark:bg-orange-800/30 px-1.5 py-1 active:opacity-70",
+              reconnecting && "opacity-50",
+            )}
+          >
+            {reconnecting ? (
+              <ActivityIndicator size="small" />
+            ) : (
+              <RefreshCw size={12} className="text-orange-700 dark:text-orange-300" />
+            )}
+            <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">Reconnect</Text>
+          </Pressable>
+        ) : undefined,
+      render: () => <Text className="text-xs text-muted-foreground">{toolErrorBanner.error}</Text>,
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toolErrorBanner, projectId, reconnecting])
+  useDockPanel(toolErrorDockDescriptor)
+
+  const errorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (!(((error || emptyResponseError) && !errorDismissed) || streamAutoRecovering)) return null
+    return {
+      id: "error",
+      kind: "status",
+      order: 16,
+      title: isTunnelError ? "Connection lost" : "Error",
+      icon: AlertCircle,
+      accent: "warning",
+      defaultExpanded: true,
+      onDismiss: () => {
+        setEmptyResponseError(null)
+        setErrorDismissed(true)
+      },
+      headerActions:
+        tunnelReconnecting || streamAutoRecovering ? (
+          <Text className={cn("text-xs font-medium", isTunnelError ? "text-orange-600 dark:text-orange-400" : "text-destructive")}>
+            Reconnecting…
+          </Text>
+        ) : (
+          <View className="flex-row items-center gap-1">
+            {isTunnelError && (
+              <Pressable
+                onPress={() => {
+                  clearActiveInstance()
+                  setTimeout(() => handleRetry(), 0)
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Continue this conversation in the cloud sandbox"
+                className="rounded-md border border-orange-400/30 px-2 py-1"
+              >
+                <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">Continue in cloud</Text>
+              </Pressable>
+            )}
+            <Pressable
+              onPress={handleRetry}
+              className={cn("rounded-md border px-2 py-1", isTunnelError ? "border-orange-400/30" : "border-destructive/30")}
+            >
+              <Text className={cn("text-xs font-medium", isTunnelError ? "text-orange-600 dark:text-orange-400" : "text-destructive")}>
+                {isTunnelError ? "Reconnect" : "Retry"}
+              </Text>
+            </Pressable>
+          </View>
+        ),
+      render: () => (
+        <View>
+          {errorBannerExpanded ? (
+            <ScrollView nestedScrollEnabled className="max-h-40" showsVerticalScrollIndicator>
+              <Text className={cn("text-xs", isTunnelError ? "text-orange-700 dark:text-orange-300" : "text-destructive")} selectable>
+                {errorBannerText}
+              </Text>
+            </ScrollView>
+          ) : (
+            <Text
+              className={cn("text-xs", isTunnelError ? "text-orange-700 dark:text-orange-300" : "text-destructive")}
+              numberOfLines={2}
+              selectable
+            >
+              {errorBannerText}
+            </Text>
+          )}
+          {errorBannerNeedsReadMore && (
+            <Pressable
+              onPress={() => setErrorBannerExpanded((e) => !e)}
+              className="mt-1 self-start py-0.5"
+              role="button"
+              accessibilityLabel={errorBannerExpanded ? "Show less error detail" : "Read full error message"}
+            >
+              <Text className={cn("text-[11px] font-semibold", isTunnelError ? "text-orange-700 dark:text-orange-300" : "text-destructive")}>
+                {errorBannerExpanded ? "Show less" : "Read more"}
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      ),
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    error,
+    emptyResponseError,
+    errorDismissed,
+    streamAutoRecovering,
+    isTunnelError,
+    tunnelReconnecting,
+    errorBannerExpanded,
+    errorBannerText,
+    errorBannerNeedsReadMore,
+    handleRetry,
+    clearActiveInstance,
+  ])
+  useDockPanel(errorDockDescriptor)
+
   // Render compact mode (homepage)
   if (mode === "compact") {
     return (
@@ -5353,12 +5718,41 @@ export const ChatPanel = observer(function ChatPanel({
 
   return (
     <TodoStateStoreContext.Provider value={todoStateStore}>
+    <FileChangeStoreContext.Provider value={fileChangeStore}>
+    <ChatDockStoreContext.Provider value={chatDockStore}>
     <ChatContextProvider value={contextValue}>
       {/* Hosts the destructive-confirmation modal for in-place message
           edit and "retry from here". Rendered once per ChatPanel and
           accepts requests pushed from any nested EditableUserMessage
           via the module-level subscriber in EditConfirmDialog.tsx. */}
       <EditConfirmDialogHost />
+      {/* Dock panels that don't need a fixed spot in the JSX tree — each
+          is a no-render component that registers itself with
+          `chatDockStore` (see chat-dock-store.ts) and unregisters when its
+          data disappears. */}
+      <PlanDockPanel
+        pendingPlan={pendingPlan}
+        confirmedPlan={confirmedPlan}
+        onBuild={pendingPlan ? handleConfirmPlan : null}
+        onOpenPlan={onOpenPlan}
+        onGenerateSummary={handleGenerateSummary}
+      />
+      <ChecklistDockPanel />
+      <RunningDockPanel
+        processes={runningProcesses}
+        onKillProcess={handleKillProcess}
+        killingProcesses={killingProcesses}
+        subagents={activeSubagentsList}
+        recentTools={recentToolsList}
+      />
+      <BrowserDockPanel />
+      <WorktreeDockPanel
+        agentUrl={resolvedAgentUrl}
+        chatSessionId={currentSessionId}
+        isStreaming={isStreaming}
+        onSendMessage={(text) => handleInputSubmit(text)}
+      />
+      <ChangesDockPanel />
       <View className={cn("flex-row flex-1", className)}>
         {/* Main content area */}
         {children && (
@@ -5372,7 +5766,7 @@ export const ChatPanel = observer(function ChatPanel({
           keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 50}
         >
           {/* Messages with Turn Grouping */}
-          <View className="flex-1">
+          <View className="flex-1" onLayout={(e) => setMessagesAreaHeight(e.nativeEvent.layout.height)}>
           <ScrollView
             ref={scrollViewRef}
             className="flex-1"
@@ -5475,14 +5869,14 @@ export const ChatPanel = observer(function ChatPanel({
                   Platform.OS === "web" ? undefined : setNativeInlineEditing
                 }
               >
-                <TurnList
-                  messages={displayMessages}
-                  isStreaming={isStreaming}
-                  phase={phase}
-                  activeSubagents={activeSubagentsList}
-                  recentTools={recentToolsList}
-                  subagentToolCalls={accumulatedSubagentTools}
-                />
+                <TurnFooterProvider {...turnFooterValue}>
+                  <TurnList
+                    messages={displayMessages}
+                    isStreaming={isStreaming}
+                    phase={phase}
+                    subagentToolCalls={accumulatedSubagentTools}
+                  />
+                </TurnFooterProvider>
               </MessageEditProvider>
             ) : !isStreaming && !isInitialLoadComplete && currentSessionId ? (
               <View className="flex-col items-center justify-center flex-1 gap-3">
@@ -5496,22 +5890,17 @@ export const ChatPanel = observer(function ChatPanel({
             ) : !isStreaming ? (
               <PhaseEmptyState phase={phase} onSuggestionClick={handleSendMessage} quickActions={quickActions} />
             ) : (
-              <View className="gap-3">
-                {activeSubagents.size > 0 && (
-                  <SubagentPanel
-                    subagents={activeSubagentsList}
-                    recentTools={recentToolsList}
-                    defaultExpanded
-                  />
-                )}
-                <View className="flex-row items-center gap-1 p-2">
-                  <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-50" />
-                  <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-50" />
-                  <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-50" />
-                </View>
+              <View className="flex-row items-center gap-1 p-2">
+                <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-50" />
+                <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-50" />
+                <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-50" />
               </View>
             )}
 
+            {/* Reserves space for the floating chat dock so it never
+                permanently covers the newest message — ChatDock reports its
+                measured height into `chatDockStore`, read reactively above. */}
+            {dockHeight > 0 && <View style={{ height: dockHeight }} />}
           </ScrollView>
 
           {/* "Jump to latest" pill — shown when the user has scrolled away
@@ -5539,301 +5928,13 @@ export const ChatPanel = observer(function ChatPanel({
           )}
           </View>
 
-          {/* Running background processes (visible regardless of streaming) */}
-          {runningProcesses.length > 0 && (
-            <View className="px-4 pb-2 w-full items-center">
-              <ProcessPanel
-                processes={runningProcesses}
-                onKill={handleKillProcess}
-                killing={killingProcesses}
-              />
-            </View>
-          )}
-
-          {/* Tool Error Banner */}
-          {toolErrorBanner && (
-            <View className="px-4 pb-2 w-full items-center">
-              <View className={cn(
-                "flex-row items-start gap-2 rounded-lg p-3",
-                toolErrorBanner.isAuthError
-                  ? "border border-orange-400/50 bg-orange-50 dark:bg-orange-900/20"
-                  : "border border-yellow-400/50 bg-yellow-50 dark:bg-yellow-900/20",
-              )}>
-                <AlertCircle
-                  className={cn(
-                    "shrink-0 mt-0.5",
-                    toolErrorBanner.isAuthError
-                      ? "text-orange-600 dark:text-orange-400"
-                      : "text-yellow-600 dark:text-yellow-400",
-                  )}
-                  size={16}
-                />
-                <View className="flex-1 gap-1.5">
-                  <View className="flex-row items-center justify-between">
-                    <Text className={cn(
-                      "text-sm font-medium",
-                      toolErrorBanner.isAuthError
-                        ? "text-orange-800 dark:text-orange-200"
-                        : "text-yellow-800 dark:text-yellow-200",
-                    )}>
-                      {toolErrorBanner.isAuthError
-                        ? `${toolErrorBanner.toolkitName} Connection Expired`
-                        : `${toolErrorBanner.toolkitName} Error`}
-                    </Text>
-                    <Pressable
-                      onPress={() => setToolErrorBanner(null)}
-                      className="p-1 -mr-1 -mt-1 rounded active:bg-black/10"
-                      hitSlop={8}
-                    >
-                      <X size={14} className={cn(
-                        toolErrorBanner.isAuthError
-                          ? "text-orange-600 dark:text-orange-400"
-                          : "text-yellow-600 dark:text-yellow-400",
-                      )} />
-                    </Pressable>
-                  </View>
-                  <Text className={cn(
-                    "text-xs",
-                    toolErrorBanner.isAuthError
-                      ? "text-orange-700 dark:text-orange-300"
-                      : "text-yellow-700 dark:text-yellow-300",
-                  )}>
-                    {toolErrorBanner.error}
-                  </Text>
-                  {toolErrorBanner.isAuthError && projectId && (
-                    <Pressable
-                      onPress={async () => {
-                        const toolkit = toolErrorBanner.toolkitName.toLowerCase()
-                        setReconnecting(true)
-
-                        const preWindow = Platform.OS === 'web' ? preCreateAuthWindow() : null
-                        console.info('[ChatPanel] Reconnecting', toolkit)
-
-                        try {
-                          const http = createHttpClient()
-                          const isNative = Platform.OS !== 'web'
-                          let redirect: string | undefined
-                          if (isNative) {
-                            redirect = ExpoLinking.createURL('integrations-callback')
-                          } else {
-                            // Web (desktop browser, mobile web, Electron):
-                            // always pass our own URL so the OAuth callback
-                            // returns here instead of OS-routing through a
-                            // `shogo://` protocol handler. See
-                            // ConnectToolWidget.tsx for the full rationale.
-                            const returnUrl = new URL(window.location.href)
-                            returnUrl.searchParams.set('fromOAuth', '1')
-                            redirect = returnUrl.toString()
-                          }
-
-                          const callbackUrl = redirect
-                            ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
-                            : `${API_URL}/api/integrations/callback`
-                          const data = await api.connectIntegration(http, toolkit, projectId, callbackUrl)
-                          const redirectUrl = data.data?.redirectUrl
-                          if (redirectUrl) {
-                            await openAuthFlow(redirectUrl, { preCreatedWindow: preWindow })
-                            setToolErrorBanner(null)
-                          }
-                        } catch (err) {
-                          console.error('[ChatPanel] Reconnect error:', err)
-                          // Connection attempt failed — banner stays visible
-                        } finally {
-                          setReconnecting(false)
-                          try {
-                            if (preWindow && !preWindow.closed) {
-                              const loc = preWindow.location.href
-                              if (loc === 'about:blank' || loc === '') preWindow.close()
-                            }
-                          } catch { /* COOP */ }
-                        }
-                      }}
-                      disabled={reconnecting}
-                      className={cn(
-                        "self-start flex-row items-center gap-1.5 rounded-md border border-orange-400/50 bg-orange-100 dark:bg-orange-800/30 px-1 py-1.5 active:opacity-70",
-                        reconnecting && "opacity-50",
-                      )}
-                    >
-                      {reconnecting ? (
-                        <ActivityIndicator size="small" />
-                      ) : (
-                        <RefreshCw size={12} className="text-orange-700 dark:text-orange-300" />
-                      )}
-                      <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
-                        Reconnect
-                      </Text>
-                    </Pressable>
-                  )}
-                </View>
-              </View>
-            </View>
-          )}
-
-          {/* Connectivity park banner — the runtime's model call couldn't reach
-              its upstream health endpoint and is polling with backoff instead
-              of failing the turn (see `data-connectivity-wait` in `onData`).
-              Rendered ahead of the generic error banner since a parked turn
-              is still alive, not failed — the user should see "waiting", not
-              an error, and Cancel maps to the same `handleStop` as everywhere
-              else. `justReconnected` shows a brief confirmation once the
-              runtime resumes rather than snapping straight back to nothing. */}
-          {(connectivityWait || justReconnected) && !errorDismissed ? (
-            <View className="px-4 pb-2 max-w-3xl w-full self-center">
-              <View className="flex-row items-start gap-1.5 rounded-md border border-orange-400/50 bg-orange-50 dark:bg-orange-950/30 px-3 py-2">
-                {justReconnected ? (
-                  <RefreshCw size={14} className="h-3.5 w-3.5 shrink-0 mt-0.5 text-orange-600 dark:text-orange-400" />
-                ) : (
-                  <WifiOff size={14} className="h-3.5 w-3.5 shrink-0 mt-0.5 text-orange-600 dark:text-orange-400" />
-                )}
-                <View className="flex-1 min-w-0 flex-row items-center justify-between gap-1.5">
-                  <Text className="flex-1 text-xs text-orange-700 dark:text-orange-300">
-                    {justReconnected
-                      ? 'Back online — resuming\u2026'
-                      : `No internet connection. Waiting to resume${connectivityWaitElapsedLabel ? ` (${connectivityWaitElapsedLabel})` : ''}\u2026`}
-                  </Text>
-                  {!justReconnected && (
-                    <Pressable
-                      onPress={handleStop}
-                      accessibilityRole="button"
-                      accessibilityLabel="Cancel and stop waiting for connection"
-                      className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
-                    >
-                      <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">Cancel</Text>
-                    </Pressable>
-                  )}
-                </View>
-              </View>
-            </View>
-          ) : null}
-
-          {/* Error Alert — cap long messages so the sidebar layout stays usable.
-              Also surfaces while auto-recovery is reconnecting, even when the
-              SDK left no `error`/`emptyResponseError` behind (the silent-stall
-              case), so the user sees "Reconnecting…" rather than nothing. */}
-          {((error || emptyResponseError) && !errorDismissed) || streamAutoRecovering ? (
-            <View className="px-4 pb-2 max-w-3xl w-full self-center">
-              <View className={`flex-row items-start gap-1.5 rounded-md border px-3 py-2 ${
-                isTunnelError
-                  ? 'border-orange-400/50 bg-orange-50 dark:bg-orange-950/30'
-                  : 'border-destructive/50 bg-destructive/10'
-              }`}>
-                <AlertCircle className={`h-3.5 w-3.5 shrink-0 mt-0.5 ${
-                  isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
-                }`} size={14} />
-                <View className="flex-1 min-w-0 flex-row items-start justify-between gap-1.5">
-                  <View className="flex-1 min-w-0 pr-1">
-                    {errorBannerExpanded ? (
-                      <ScrollView
-                        nestedScrollEnabled
-                        className="max-h-40"
-                        showsVerticalScrollIndicator
-                      >
-                        <Text className={`text-xs ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`} selectable>
-                          {errorBannerText}
-                        </Text>
-                      </ScrollView>
-                    ) : (
-                      <Text
-                        className={`text-xs ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}
-                        numberOfLines={2}
-                        selectable
-                      >
-                        {errorBannerText}
-                      </Text>
-                    )}
-                    {errorBannerNeedsReadMore && (
-                      <Pressable
-                        onPress={() => setErrorBannerExpanded((e) => !e)}
-                        className="mt-1 self-start py-0.5"
-                        role="button"
-                        accessibilityLabel={
-                          errorBannerExpanded ? 'Show less error detail' : 'Read full error message'
-                        }
-                      >
-                        <Text className={`text-[11px] font-semibold ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}>
-                          {errorBannerExpanded ? 'Show less' : 'Read more'}
-                        </Text>
-                      </Pressable>
-                    )}
-                  </View>
-                  {tunnelReconnecting || streamAutoRecovering ? (
-                    <View className={`shrink-0 rounded-md border px-2 py-1 self-start ${isTunnelError ? 'border-orange-400/30' : 'border-destructive/30'}`}>
-                      <Text className={`text-xs font-medium ${isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'}`}>Reconnecting…</Text>
-                    </View>
-                  ) : (
-                    <View className="shrink-0 flex-row items-center gap-1 self-start">
-                      {isTunnelError && (
-                        <Pressable
-                          onPress={() => {
-                            clearActiveInstance()
-                            // Defer so the context update flushes and localAgentUrl
-                            // becomes null before the retry fires — otherwise the
-                            // retry would still hit the (now-offline) tunnel URL.
-                            setTimeout(() => handleRetry(), 0)
-                          }}
-                          accessibilityRole="button"
-                          accessibilityLabel="Continue this conversation in the cloud sandbox"
-                          className="rounded-md border border-orange-400/30 px-2 py-1"
-                        >
-                          <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">Continue in cloud</Text>
-                        </Pressable>
-                      )}
-                      <Pressable
-                        onPress={handleRetry}
-                        className={`rounded-md border px-2 py-1 ${
-                          isTunnelError
-                            ? 'border-orange-400/30'
-                            : 'border-destructive/30'
-                        }`}
-                      >
-                        <Text className={`text-xs font-medium ${
-                          isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
-                        }`}>{isTunnelError ? 'Reconnect' : 'Retry'}</Text>
-                      </Pressable>
-                      <Pressable
-                        onPress={() => {
-                          setEmptyResponseError(null)
-                          setErrorDismissed(true)
-                        }}
-                        accessibilityRole="button"
-                        accessibilityLabel="Dismiss error"
-                        hitSlop={8}
-                        className="rounded-md p-1"
-                      >
-                        <X size={14} className={isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'} />
-                      </Pressable>
-                    </View>
-                  )}
-                </View>
-              </View>
-            </View>
-          ) : null}
-
-          {/* Permission Approval Dialog (Local Mode Security) */}
-          {pendingPermissionRequest && (
-            <PermissionApprovalDialog
-              request={pendingPermissionRequest}
-              onRespond={async (response) => {
-                setPendingPermissionRequest(null)
-                try {
-                  if (projectId) {
-                    const http = createHttpClient()
-                    await api.sendPermissionResponse(http, projectId, response)
-                  }
-                } catch (err) {
-                  console.error('[ChatPanel] Failed to send permission response:', err)
-                }
-              }}
-            />
-          )}
 
           {/* Input — hidden on native while a historical bubble is being
               edited so taps go to the transcript (cancel) instead of a
-              second composer, matching ChatGPT. Web keeps both and uses
-              the existing document mousedown handler. */}
+              second composer, matching ChatGPT. Web keeps both. */}
           {!(isNative && nativeInlineEditing) ? (
           <View
-            className="bg-transparent max-w-3xl w-full self-center mt-1"
+            className="relative bg-transparent max-w-3xl w-full self-center mt-1"
             style={[
               nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined,
               isNativePhoneLayout
@@ -5845,12 +5946,7 @@ export const ChatPanel = observer(function ChatPanel({
                 : undefined,
             ]}
           >
-            <WorktreeBar
-              agentUrl={resolvedAgentUrl}
-              chatSessionId={currentSessionId}
-              isStreaming={isStreaming}
-              onSendMessage={(text) => handleInputSubmit(text)}
-            />
+            <ChatDock availableHeight={messagesAreaHeight} />
             <ExecutionBadge />
             <ChatInput
               onSubmit={handleInputSubmit}
@@ -5872,8 +5968,6 @@ export const ChatPanel = observer(function ChatPanel({
               onModelChange={handleModelChange}
               isPro={hasAdvancedModelAccess}
               onUpgradeClick={handleUpgradeClick}
-              pendingQuestion={pendingQuestion}
-              onSubmitQuestionResponse={handleSubmitQuestionResponse}
               queuedMessages={messageQueue}
               onRemoveQueuedMessage={handleRemoveQueuedMessage}
               onReorderQueuedMessage={handleReorderQueuedMessage}
@@ -5884,6 +5978,7 @@ export const ChatPanel = observer(function ChatPanel({
               dualPlan={dualPlan}
               onDualPlanChange={handleDualPlanChange}
               contextUsage={contextUsage}
+              contextBreakdown={contextBreakdown}
               quickActions={quickActions}
               onQuickActionClick={handleQuickActionClick}
               restoreDraftRequest={restoreDraftRequest}
@@ -5909,6 +6004,8 @@ export const ChatPanel = observer(function ChatPanel({
         </KeyboardAvoidingView>
       </View>
     </ChatContextProvider>
+    </ChatDockStoreContext.Provider>
+    </FileChangeStoreContext.Provider>
     </TodoStateStoreContext.Provider>
   )
 })

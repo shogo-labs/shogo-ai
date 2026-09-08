@@ -688,6 +688,276 @@ describe("getToolSummary — Grep regex prettify", () => {
   })
 })
 
+describe("parseShellCommand — hardened fallback (no more 'Run <garbage>')", () => {
+  test("leading env assignment is stripped", () => {
+    expect(parseShellCommand("FOO=bar bun test")).toEqual({ verb: "Run", target: "test" })
+  })
+
+  test("multiple leading env assignments are stripped", () => {
+    expect(parseShellCommand("FOO=bar BAZ=qux node script.js")).toEqual({
+      verb: "Run",
+      target: "script.js",
+    })
+  })
+
+  test("env assignment with an unrecognized command falls back to 'Run command', not 'Run FOO=bar'", () => {
+    expect(parseShellCommand("FOO=bar xyzzy")).toEqual({ verb: "Run", target: "xyzzy" })
+  })
+
+  test("bare env assignment with nothing after it falls back to 'Run script'", () => {
+    expect(parseShellCommand("FOO=bar")).toEqual({ verb: "Run", target: "script" })
+  })
+
+  test("sudo wrapper is stripped", () => {
+    expect(parseShellCommand("sudo rm -rf /tmp/foo")).toEqual({ verb: "Remove", target: "foo" })
+  })
+
+  test("sudo -u wrapper (flag + value) is stripped", () => {
+    expect(parseShellCommand("sudo -u root bun test")).toEqual({ verb: "Run", target: "test" })
+  })
+
+  test("time wrapper is stripped", () => {
+    expect(parseShellCommand("time bun test")).toEqual({ verb: "Run", target: "test" })
+  })
+
+  test("env wrapper is stripped", () => {
+    expect(parseShellCommand("env bun test")).toEqual({ verb: "Run", target: "test" })
+  })
+
+  test("nohup wrapper is stripped", () => {
+    expect(parseShellCommand("nohup bun run dev")).toEqual({ verb: "Run", target: "dev" })
+  })
+
+  test("command wrapper is stripped", () => {
+    expect(parseShellCommand("command ls /tmp")).toEqual({ verb: "List", target: "tmp" })
+  })
+
+  test("nice wrapper is stripped", () => {
+    expect(parseShellCommand("nice bun test")).toEqual({ verb: "Run", target: "test" })
+  })
+
+  test("nice -n wrapper (flag + value) is stripped", () => {
+    expect(parseShellCommand("nice -n 10 bun test")).toEqual({ verb: "Run", target: "test" })
+  })
+
+  test("timeout N wrapper is stripped", () => {
+    expect(parseShellCommand("timeout 30 bun test")).toEqual({ verb: "Run", target: "test" })
+  })
+
+  test("timeout with a combined-form flag before the duration is stripped", () => {
+    expect(parseShellCommand("timeout --signal=KILL 30 bun test")).toEqual({ verb: "Run", target: "test" })
+  })
+
+  test("chained wrappers all strip (sudo nice -n 10 bun test)", () => {
+    expect(parseShellCommand("sudo nice -n 10 bun test")).toEqual({ verb: "Run", target: "test" })
+  })
+
+  test("leading subshell paren (glued) is stripped", () => {
+    expect(parseShellCommand("(bun test)")).toEqual({ verb: "Run", target: "test)" })
+  })
+
+  test("leading subshell paren (own token) is stripped", () => {
+    const tokens = parseShellCommand("( bun test )")
+    expect(tokens.verb).toBe("Run")
+    expect(tokens.target).toBe("test")
+  })
+
+  test("bare leading paren with nothing after it falls back to 'Run script'", () => {
+    expect(parseShellCommand("(")).toEqual({ verb: "Run", target: "script" })
+  })
+
+  test("for loop keyword resolves to 'Run script', not 'Run for'", () => {
+    expect(parseShellCommand("for f in *.ts; do echo $f; done")).toEqual({
+      verb: "Run",
+      target: "script",
+    })
+  })
+
+  test("while loop keyword resolves to 'Run script'", () => {
+    expect(parseShellCommand("while true; do sleep 1; done")).toEqual({
+      verb: "Run",
+      target: "script",
+    })
+  })
+
+  test("if keyword resolves to 'Run script'", () => {
+    expect(parseShellCommand("if [ -f foo ]; then cat foo; fi")).toEqual({
+      verb: "Run",
+      target: "script",
+    })
+  })
+
+  test("case keyword resolves to 'Run script'", () => {
+    expect(parseShellCommand("case $x in a) echo a;; esac")).toEqual({
+      verb: "Run",
+      target: "script",
+    })
+  })
+
+  test("bare [ test keyword resolves to 'Run script'", () => {
+    expect(parseShellCommand("[ -f foo ] && echo yes")).toEqual({
+      verb: "Run",
+      target: "script",
+    })
+  })
+
+  test("export with assignment resolves to 'Set <VAR>'", () => {
+    expect(parseShellCommand("export PATH=/usr/bin:$PATH")).toEqual({ verb: "Set", target: "PATH" })
+  })
+
+  test("export without assignment resolves to 'Set <VAR>'", () => {
+    expect(parseShellCommand("export PATH")).toEqual({ verb: "Set", target: "PATH" })
+  })
+
+  test("source resolves to 'Source <file>'", () => {
+    expect(parseShellCommand("source ./scripts/env.sh")).toEqual({ verb: "Source", target: "env.sh" })
+  })
+
+  test(". (dot) resolves to 'Source <file>'", () => {
+    expect(parseShellCommand(". ./env.sh")).toEqual({ verb: "Source", target: "env.sh" })
+  })
+
+  test("heredoc write via cat resolves to 'Write <file>'", () => {
+    expect(parseShellCommand("cat > notes.txt << EOF")).toEqual({ verb: "Write", target: "notes.txt" })
+  })
+
+  test("cat with an existing input file before the redirect stays 'Read' (output redirect is incidental)", () => {
+    expect(parseShellCommand("cat foo.txt > out.txt")).toEqual({ verb: "Read", target: "foo.txt" })
+  })
+
+  test("echo with nothing but a redirect resolves to 'Write <file>'", () => {
+    expect(parseShellCommand("echo > notes.txt")).toEqual({ verb: "Write", target: "notes.txt" })
+  })
+
+  test("bun with flags before the subcommand skips them (bun --no-env-file test)", () => {
+    expect(parseShellCommand("bun --no-env-file test")).toEqual({ verb: "Run", target: "test" })
+  })
+
+  test("bunx resolves to 'Run <pkg>'", () => {
+    expect(parseShellCommand("bunx tsc --noEmit")).toEqual({ verb: "Run", target: "tsc" })
+  })
+
+  test("npx resolves to 'Run <pkg>'", () => {
+    expect(parseShellCommand("npx create-react-app my-app")).toEqual({
+      verb: "Run",
+      target: "create-react-app",
+    })
+  })
+
+  test("bun x <pkg> (subcommand form) resolves to 'Run <pkg>'", () => {
+    expect(parseShellCommand("bun x cowsay hello")).toEqual({ verb: "Run", target: "cowsay" })
+  })
+
+  test("git -C <dir> skips the flag+value (git -C /path status)", () => {
+    expect(parseShellCommand("git -C /path/to/repo status")).toEqual({ verb: "git status" })
+  })
+
+  test("docker compose resolves to 'docker compose <sub>'", () => {
+    expect(parseShellCommand("docker compose up -d")).toEqual({ verb: "docker compose up" })
+  })
+
+  test("bare docker compose (no sub) resolves without a dangling target", () => {
+    expect(parseShellCommand("docker compose")).toEqual({ verb: "docker compose" })
+  })
+
+  test("docker (non-compose) resolves to 'docker <sub>'", () => {
+    expect(parseShellCommand("docker ps -a")).toEqual({ verb: "docker ps" })
+  })
+
+  test("kubectl resolves to 'kubectl <sub>' + target", () => {
+    expect(parseShellCommand("kubectl get pods")).toEqual({ verb: "kubectl get", target: "pods" })
+  })
+
+  test("make resolves to 'Run <target>'", () => {
+    expect(parseShellCommand("make build")).toEqual({ verb: "Run", target: "build" })
+  })
+
+  test("bare make falls back to 'Run make'", () => {
+    expect(parseShellCommand("make")).toEqual({ verb: "Run", target: "make" })
+  })
+
+  test("cargo resolves to 'cargo <sub>'", () => {
+    expect(parseShellCommand("cargo build --release")).toEqual({ verb: "cargo build" })
+  })
+
+  test("go resolves to 'go <sub>'", () => {
+    expect(parseShellCommand("go test ./...")).toEqual({ verb: "go test" })
+  })
+
+  test("pytest resolves to 'Run <path>'", () => {
+    expect(parseShellCommand("pytest tests/test_foo.py")).toEqual({
+      verb: "Run",
+      target: "test_foo.py",
+    })
+  })
+
+  test("bunx tsc --noEmit with no positional target falls back to the tool name", () => {
+    expect(parseShellCommand("tsc --noEmit")).toEqual({ verb: "Run", target: "tsc" })
+  })
+
+  test("eslint resolves to 'Run <path>'", () => {
+    expect(parseShellCommand("eslint src/")).toEqual({ verb: "Run", target: "src" })
+  })
+
+  test("prettier with no path falls back to the tool name", () => {
+    expect(parseShellCommand("prettier --check .")).toEqual({ verb: "Run", target: "." })
+  })
+
+  test("sed -n '1,20p' f resolves to 'Run <file>'", () => {
+    expect(parseShellCommand("sed -n '1,20p' foo.txt")).toEqual({ verb: "Run", target: "foo.txt" })
+  })
+
+  test("awk resolves to 'Run <file>'", () => {
+    expect(parseShellCommand("awk '{print $1}' foo.txt")).toEqual({ verb: "Run", target: "foo.txt" })
+  })
+
+  test("wc resolves to 'Count lines in <file>'", () => {
+    expect(parseShellCommand("wc -l foo.txt")).toEqual({ verb: "Count lines in", target: "foo.txt" })
+  })
+
+  test("diff resolves to 'Diff <file>'", () => {
+    expect(parseShellCommand("diff a.txt b.txt")).toEqual({ verb: "Diff", target: "a.txt" })
+  })
+
+  test("tree resolves to 'List <dir>'", () => {
+    expect(parseShellCommand("tree src")).toEqual({ verb: "List", target: "src" })
+  })
+
+  test("chmod resolves to 'Change permissions of <file>'", () => {
+    expect(parseShellCommand("chmod 755 script.sh")).toEqual({
+      verb: "Change permissions of",
+      target: "script.sh",
+    })
+  })
+
+  test("kill resolves to 'Kill process <pid>'", () => {
+    expect(parseShellCommand("kill -9 1234")).toEqual({ verb: "Kill process", target: "1234" })
+  })
+
+  test("open resolves to 'Open <target>'", () => {
+    expect(parseShellCommand("open /Applications/Foo.app")).toEqual({ verb: "Open", target: "Foo.app" })
+  })
+
+  test("which resolves to 'Locate <name>'", () => {
+    expect(parseShellCommand("which node")).toEqual({ verb: "Locate", target: "node" })
+  })
+
+  test("multi-line script uses the first line (for loop) — still 'Run script'", () => {
+    expect(parseShellCommand("for f in *.ts\ndo\n  cat $f\ndone")).toEqual({
+      verb: "Run",
+      target: "script",
+    })
+  })
+
+  test("unrecognized command starting with $ falls back to 'Run command'", () => {
+    expect(parseShellCommand("$SOME_VAR --flag")).toEqual({ verb: "Run", target: "command" })
+  })
+
+  test("a bare flag with no command falls back to 'Run command'", () => {
+    expect(parseShellCommand("--verbose")).toEqual({ verb: "Run", target: "command" })
+  })
+})
+
 describe("sepLabel", () => {
   test("&& maps to 'and'", () => {
     expect(sepLabel("&&")).toBe("and")

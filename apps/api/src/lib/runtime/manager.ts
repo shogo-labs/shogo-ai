@@ -1326,7 +1326,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * module's static dependency graph — `manager.ts` is imported very early
    * and `restartAnchorRuntime` already lazy-imports the same modules.
    */
-  private async resolveAnchorSpawnOpts(anchorProjectId: string): Promise<{
+  async resolveAnchorSpawnOpts(anchorProjectId: string): Promise<{
     workspaceId: string
     attachedProjectIds: string[]
     localFolders: string[]

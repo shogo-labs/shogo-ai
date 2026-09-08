@@ -78,7 +78,7 @@ async function signUpAndOnboard(page: Page, user: TestUser): Promise<void> {
     await page.getByRole("button", { name: "Enter Shogo" }).click()
   } catch {}
 
-  await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+  await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 }
 
 async function navigateToSettingsAnalytics(page: Page) {

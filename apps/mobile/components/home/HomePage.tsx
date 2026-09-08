@@ -145,7 +145,7 @@ export const HomePage = observer(function HomePage({
             size="3xl"
             className="text-center mb-8 text-typography-900"
           >
-            What's on your mind, {firstName}?
+            What are we building, {firstName}?
           </Heading>
 
           <View className="w-full max-w-2xl">

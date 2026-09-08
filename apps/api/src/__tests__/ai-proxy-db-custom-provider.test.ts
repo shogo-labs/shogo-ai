@@ -191,6 +191,11 @@ mock.module('../lib/prisma', () => withPrismaExports({
 
 mock.module('../services/billing.service', () => ({
   hasBalance: async () => true,
+  checkUsageBalance: async () => ({ ok: true }),
+  usageLimitErrorPayload: (reason?: string) => ({
+    code: reason ?? 'usage_limit_reached',
+    message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
+  }),
   hasAdvancedModelAccess: async () => hasAdvanced,
   consumeUsage: async () => ({ success: true, remainingIncludedUsd: 100 }),
   getSubscription: async () => ({ planId: 'pro', status: 'active' }),
@@ -345,6 +350,59 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(res.status).toBe(400)
     const data = await res.json() as any
     expect(data.error.code).toBe('model_not_found')
+  })
+
+  // ── `input_audio` capability sourced from the DB (Hoshi / MiMo) ────────────
+  // `resolveModelSupportsAudioInput` (apps/api/src/routes/ai-proxy.ts) must
+  // consult the merged model-registry entry, not just the static
+  // `MODEL_CATALOG`, since MiMo v2.5 (the model backing the public
+  // `hoshi-1.0` alias) is DB-defined and its audio capability is set via
+  // `capabilities.supportsAudioInput` on its `ModelDefinition` row.
+  describe('input_audio capability sourced from the DB', () => {
+    function postChatWithContent(app: any, model: string, content: unknown) {
+      return app.fetch(new Request('http://x/api/ai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content }] }),
+      }))
+    }
+
+    const audioContent = [
+      { type: 'input_audio', input_audio: { data: 'ZmFrZS1hdWRpby1kYXRh', format: 'wav' } },
+      { type: 'text', text: 'What is said here?' },
+    ]
+
+    test('rejects input_audio for a DB model without capabilities.supportsAudioInput', async () => {
+      // seed()'s default mimo-v2.5 row has capabilities: null.
+      const res = await postChatWithContent(buildApp(), 'mimo-v2.5', audioContent)
+      expect(res.status).toBe(400)
+      const data = await res.json() as any
+      expect(data.error.code).toBe('audio_input_not_supported')
+      expect(lastFetchUrl).toBeNull()
+    })
+
+    test('accepts and forwards input_audio once the DB row sets capabilities.supportsAudioInput', async () => {
+      MODELS = MODELS.map((m) =>
+        m.id === 'mimo-v2.5' ? { ...m, capabilities: { supportsAudioInput: true } } : m,
+      )
+      await invalidateModelRegistry()
+      const res = await postChatWithContent(buildApp(), 'mimo-v2.5', audioContent)
+      expect(res.status).toBe(200)
+      expect(lastFetchUrl).toBe('https://api.xiaomimimo.com/v1/chat/completions')
+      const forwardedBlock = lastForwardedBody()?.messages?.[0]?.content?.[0]
+      expect(forwardedBlock.type).toBe('input_audio')
+      expect(forwardedBlock.input_audio.data).toBe('ZmFrZS1hdWRpby1kYXRh')
+    })
+
+    test('the capability resolves through the "mimo" DB alias too', async () => {
+      MODELS = MODELS.map((m) =>
+        m.id === 'mimo-v2.5' ? { ...m, capabilities: { supportsAudioInput: true } } : m,
+      )
+      await invalidateModelRegistry()
+      const res = await postChatWithContent(buildApp(), 'mimo', audioContent)
+      expect(res.status).toBe(200)
+      expect(lastFetchUrl).toBe('https://api.xiaomimimo.com/v1/chat/completions')
+    })
   })
 
   // ── UUID-addressed native models (the actual production bug) ──────────────

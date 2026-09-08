@@ -731,8 +731,12 @@ const { app, state, logTiming } = await createRuntimeApp({
     // Run essential initialization (workspace files, S3 sync, config)
     await initializeEssentials()
 
-    // Start gateway in background — don't block the assign response
-    startGateway().catch((error) => {
+    // Start gateway in background — don't block the assign response. Pass
+    // `projectId` explicitly (closure-captured, immune to a later
+    // `rollbackToPool()`) rather than letting startGateway() read
+    // `state.currentProjectId` fresh after its own first await — see the
+    // `expectedProjectId` doc on startGateway() for why that matters.
+    startGateway(projectId).catch((error) => {
       console.error(`[agent-runtime] Background gateway start failed for ${projectId}:`, error.message)
     })
   },
@@ -5878,9 +5882,30 @@ async function initializeEssentials(): Promise<void> {
 /**
  * Start the agent gateway (heavy: loads skills, MCP servers, sessions, BOOT.md).
  * Called after essentials are done — can run in background for warm pool assigns.
+ *
+ * `expectedProjectId` closes a TOCTOU race with `/pool/assign`'s rollback path
+ * (server-framework.ts). `onAssign` fires this function fire-and-forget as its
+ * last statement, so the assign HTTP handler's `await config.onAssign(...)`
+ * resolves (one microtask hop) well before this function's first `await`
+ * (a dynamic `import()`, which takes several engine-internal microtask hops
+ * even for an already-cached module) has a chance to run. If anything in the
+ * handler's post-onAssign continuation throws in that window — e.g. the
+ * ungated `ensureTokenRefreshLoop()` call — it runs `rollbackToPool()`, which
+ * resets BOTH `state.currentProjectId` and `process.env.PROJECT_ID` back to
+ * the warm-pool placeholder (`__POOL__`) before this function ever reads
+ * either one. Reading `state.currentProjectId` fresh at that point (the old
+ * behavior) would silently construct `AgentGateway` for the placeholder
+ * instead of the project `onAssign` was actually called for — see
+ * `__tests__/start-gateway-rollback-race.test.ts`.
+ *
+ * `onAssign(projectId, ...)` already has the correct id as a closure-captured
+ * parameter, immune to any later rollback, so it's threaded through here and
+ * re-checked against live state right after the `import()` resolves: if the
+ * two disagree, a rollback (or some other reassignment) raced us and we must
+ * abort rather than build a gateway around stale/wrong identity.
  */
 let gatewayStarting = false
-async function startGateway(): Promise<void> {
+async function startGateway(expectedProjectId?: string): Promise<void> {
   if (gatewayStarting) {
     console.warn('[agent-runtime] startGateway() called while already starting — skipping')
     return
@@ -5901,6 +5926,13 @@ async function startGateway(): Promise<void> {
     return
   }
 
+  // Snapshot the identity we're starting for BEFORE the first await below.
+  // For the pool-assign fire-and-forget call site this is the projectId
+  // `onAssign` was invoked with (passed in); for the non-pool cold-start path
+  // (no override) it's whatever is live right now, which is safe there
+  // because nothing can roll it back before this line on that path.
+  const targetProjectId = expectedProjectId ?? state.currentProjectId!
+
   gatewayStarting = true
   logTiming('Starting agent gateway...')
 
@@ -5919,7 +5951,32 @@ async function startGateway(): Promise<void> {
   }
 
   const { AgentGateway } = await import('./gateway')
-  agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
+
+  // The await above is exactly the window `/pool/assign`'s rollback can land
+  // in. If project identity changed (or the assignment was rolled back
+  // entirely) while we were suspended there, do NOT construct a gateway —
+  // it would be permanently pinned to the wrong identity (see the fire-and-
+  // -forget race described in the docstring above), and worse, it can
+  // outlive the failed assign's response if the caller doesn't tear this VM
+  // down fast enough. Bail and let the caller's error path (or a future,
+  // clean assign) handle it.
+  if (
+    state.currentProjectId !== targetProjectId ||
+    (state.isPoolMode && !state.poolAssigned)
+  ) {
+    console.error(
+      `[agent-runtime] startGateway() aborting: project identity changed mid-start ` +
+        `(expected ${targetProjectId}, now ${state.currentProjectId}, poolAssigned=${state.poolAssigned}). ` +
+        `A concurrent /pool/assign rollback likely raced this background start.`,
+    )
+    gatewayStarting = false
+    gatewayReadyResolve?.()
+    gatewayReadyResolve = null
+    gatewayReadyPromise = null
+    return
+  }
+
+  agentGateway = new AgentGateway(WORKSPACE_DIR, targetProjectId)
   // Gate the gateway's deps-dependent work (the LSP) on the background install
   // kicked off above / in essentials, instead of blocking the whole start.
   agentGateway.setWorkspaceDepsReady(() => workspaceDepsReadyPromise)

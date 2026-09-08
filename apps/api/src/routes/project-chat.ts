@@ -183,6 +183,16 @@ export async function trackUsageFromStream(
   // Currently we resume with fromSeq=0 (full replay) for simplicity, but
   // we keep this around for diagnostics and for future delta-resume.
   let lastObservedSeq = 0
+  // Turn-level wall-clock timing, read off the runtime's `data-turn-start` /
+  // `data-turn-complete` SSE frames (see server.ts). Persisted as a
+  // `data-turn-timing` part on the assistant message below so the mobile
+  // client's "Worked for X" header can render an exact duration on reload
+  // instead of falling back to a count-only label. `turnStartedAt` also
+  // survives an auto-resume (it isn't reset by `resetAccumulatedState`,
+  // which only clears text/tool accumulators for a fresh replay) since the
+  // turn's actual start time doesn't change across a resume.
+  let turnStartedAt: number | undefined
+  let turnCompletedAt: number | undefined
 
   const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(process.env.CHAT_STREAM_IDLE_TIMEOUT_MS || '3600000', 10)
 
@@ -204,6 +214,12 @@ export async function trackUsageFromStream(
     turnCompleteStatus = null
     usageRef.value = null
     qualitySignals = {}
+    // Deliberately NOT resetting `turnStartedAt` — it's the same turn's
+    // real start time regardless of how many times we resume-replay its
+    // buffer. `turnCompletedAt` is safe to drop since it's only ever set
+    // once the terminal frame is observed, which can't have happened yet
+    // if we're about to re-consume a resumed replay.
+    turnCompletedAt = undefined
   }
 
   /**
@@ -410,6 +426,15 @@ export async function trackUsageFromStream(
       return
     }
 
+    // The runtime writes `data-turn-start` once at the top of the turn
+    // with the wall-clock time it began working. Only capture it the
+    // first time we see it (a resume replays the full buffer from
+    // seq 0, so a later replay must not clobber the original start).
+    if (type === 'data-turn-start' && turnStartedAt === undefined) {
+      const startedAt = data?.data?.startedAt
+      if (typeof startedAt === 'number') turnStartedAt = startedAt
+    }
+
     // The runtime writes `data-turn-complete` exactly once at the tail
     // of every successfully-streamed turn (including failed turns it
     // caught and reported). Its presence confirms the agent reached a
@@ -421,6 +446,8 @@ export async function trackUsageFromStream(
       if (status === 'completed' || status === 'failed') {
         turnCompleteStatus = status
       }
+      const completedAt = data?.data?.completedAt
+      if (typeof completedAt === 'number') turnCompletedAt = completedAt
     }
 
     // Heartbeat the runtime emits every ~250ms with the buffer's lastSeq.
@@ -651,6 +678,20 @@ export async function trackUsageFromStream(
         const parts = orderedParts.filter(
           (p) => !((p.type === 'text' || p.type === 'reasoning') && (!p.text || !p.text.trim()))
         )
+
+        // Persist turn-level wall-clock timing so the mobile client's
+        // "Worked for X" header renders an exact duration on reload
+        // instead of falling back to a count-only label (see
+        // `extractTurnTiming` in apps/mobile/components/chat/turns/turnShaping.ts).
+        // Only recorded when we actually captured a start; a partial
+        // turn that never got `completedAt` (stop/crash) still records
+        // `startedAt` alone so the client can show elapsed-to-persist time.
+        if (turnStartedAt !== undefined) {
+          parts.push({
+            type: 'data-turn-timing',
+            data: { startedAt: turnStartedAt, completedAt: turnCompletedAt },
+          })
+        }
 
         const message = await prisma.chatMessage.create({
           data: {
@@ -913,8 +954,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       let parsedBody: any = {}
       try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
 
-      if (!await billingService.hasBalance(project.workspaceId)) {
-        chatSpan.setAttribute("error.type", "usage_limit_reached")
+      const balanceCheck = await billingService.checkUsageBalance(project.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        chatSpan.setAttribute("error.type", code)
         chatSpan.end()
         // FIRE-AND-FORGET: track usage limit hit for conversion campaign C1
         const limitUserId = (parsedBody as any)?.userId || c.req.header("X-Billing-User-Id")
@@ -922,7 +965,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           trackEvent(limitUserId, 'usage_limit_hit', { project_id: projectId }).catch(() => {})
         }
         return c.json(
-          { error: { code: "usage_limit_reached", message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue." } },
+          { error: { code, message } },
           402
         )
       }

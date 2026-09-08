@@ -6419,6 +6419,10 @@ function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
       const proxyToken = ctx.aiProxyToken || process.env.AI_PROXY_TOKEN
       const directKey = process.env.OPENAI_API_KEY
 
+      // AI_PROXY_URL is `${apiBase}/api/ai/v1`; stripping the trailing `/v1`
+      // and re-appending it below lands on `.../api/ai/v1/audio/transcriptions`
+      // — the proxy's own transcription route (apps/api/src/routes/ai-proxy.ts)
+      // — rather than calling OpenAI directly with the proxy token.
       const apiBase = proxyUrl ? proxyUrl.replace(/\/v1$/, '') : 'https://api.openai.com'
       const apiKey = proxyToken || directKey
       if (!apiKey) {

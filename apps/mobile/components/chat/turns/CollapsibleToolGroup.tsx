@@ -114,6 +114,43 @@ export interface CollapsibleToolGroupProps {
    * same page don't share animation state. Pass e.g. the group id.
    */
   contentKey?: string
+  /**
+   * Whether the group should auto-expand while `isStreaming` is true
+   * (uncontrolled mode only). Defaults to `true`, preserving the
+   * original "auto-open while live, auto-close on completion"
+   * behaviour used by `ThinkingWidget`'s reasoning body and the
+   * turn-level "Worked for X" wrapper. `WorkGroup` passes `false` so
+   * individual work runs stay collapsed with a live one-line label
+   * while running — matching the Cursor-style reference screenshots —
+   * and only the user tapping the chevron expands them mid-stream.
+   */
+  defaultExpandedWhileStreaming?: boolean
+  /** Optional trailing element rendered after the label, before the chevron (e.g. a +N/-N diff badge). */
+  badge?: ReactNode
+  /**
+   * When true, renders the label (+ optional badge) as a static row
+   * with no chevron and no expandable body — used when there's
+   * nothing to expand (e.g. a "Worked for X" header on a turn with no
+   * earlier work log).
+   */
+  disabled?: boolean
+  /**
+   * When true (default), the expanded body is a `ScrollView` capped
+   * at `STREAM_MAX_HEIGHT` with top/bottom fade overlays — used by
+   * individual work runs, whose body can be arbitrarily long while a
+   * long tool call streams in.
+   *
+   * When false, the body renders as a plain `View` animated to its
+   * full, uncapped content height instead — no inner scroll, no
+   * fades. Used by the turn-level "Worked for X" wrapper: expanding
+   * the final summary should reveal the whole work log inline in the
+   * page's own scroll, not open a nested scroll region the user has
+   * to notice and scroll separately. Individual file/code widgets
+   * inside that body (e.g. `EditFileWidget`) still scroll internally
+   * via their own capped `ScrollView`s — this only removes the OUTER
+   * cap that `CollapsibleToolGroup` itself would otherwise impose.
+   */
+  scrollBody?: boolean
   children: ReactNode
 }
 
@@ -124,9 +161,15 @@ function CollapsibleToolGroupImpl({
   onToggle,
   className,
   contentKey = "collapsible-tool-content",
+  defaultExpandedWhileStreaming = true,
+  badge,
+  disabled = false,
+  scrollBody = true,
   children,
 }: CollapsibleToolGroupProps) {
-  const [internalExpanded, setInternalExpanded] = useState(isStreaming)
+  const [internalExpanded, setInternalExpanded] = useState(
+    isStreaming && defaultExpandedWhileStreaming,
+  )
   const userClosedRef = useRef(false)
   const [measuredHeight, setMeasuredHeight] = useState(0)
   const colorScheme = useColorScheme()
@@ -139,7 +182,7 @@ function CollapsibleToolGroupImpl({
   const isControlled = controlledExpanded !== undefined
   const isOpen = isControlled
     ? !!controlledExpanded
-    : isStreaming && !userClosedRef.current
+    : isStreaming && defaultExpandedWhileStreaming && !userClosedRef.current
       ? true
       : internalExpanded
 
@@ -147,14 +190,14 @@ function CollapsibleToolGroupImpl({
     if (isControlled) return
     if (isStreaming) {
       userScrolledRef.current = false
-      if (!userClosedRef.current) {
+      if (!userClosedRef.current && defaultExpandedWhileStreaming) {
         setInternalExpanded(true)
       }
     } else {
       setInternalExpanded(false)
       userClosedRef.current = false
     }
-  }, [isStreaming, isControlled])
+  }, [isStreaming, isControlled, defaultExpandedWhileStreaming])
 
   const toggleOpen = useCallback(() => {
     if (onToggle) {
@@ -177,7 +220,13 @@ function CollapsibleToolGroupImpl({
   // "expand to full content height" jump on the falling edge of the
   // stream, then a separate close animation 1.5s later — the same
   // wasted-motion path we eliminated in ThinkingWidget.
-  const targetHeight = Math.min(measuredHeight, STREAM_MAX_HEIGHT)
+  //
+  // `scrollBody === false` skips the cap entirely — the animated
+  // height tracks the full measured content height so the body opens
+  // inline with no nested scroll region (see `WorkedForGroup`).
+  const targetHeight = scrollBody
+    ? Math.min(measuredHeight, STREAM_MAX_HEIGHT)
+    : measuredHeight
 
   const fadeColor =
     colorScheme === "dark" ? "rgb(25, 25, 25)" : "rgb(252, 252, 252)"
@@ -199,8 +248,11 @@ function CollapsibleToolGroupImpl({
   )
 
   const heightAnimate = useMemo(
-    () => ({ opacity: 1, height: targetHeight || STREAM_MAX_HEIGHT }),
-    [targetHeight],
+    () => ({
+      opacity: 1,
+      height: targetHeight || (scrollBody ? STREAM_MAX_HEIGHT : 0),
+    }),
+    [targetHeight, scrollBody],
   )
 
   const handleHiddenLayout = useCallback((e: LayoutChangeEvent) => {
@@ -225,17 +277,38 @@ function CollapsibleToolGroupImpl({
     [measuredHeight, isStreaming],
   )
 
+  // `scrollBody === false` body layout — mirrors `handleContentSizeChange`
+  // above but for a plain `View` (no `onContentSizeChange` to hook into),
+  // and with no auto-scroll-to-end since there's no inner scroll.
+  const handleBodyLayout = useCallback(
+    (e: LayoutChangeEvent) => {
+      const next = Math.ceil(e.nativeEvent.layout.height)
+      if (Math.abs(next - measuredHeight) > 1) setMeasuredHeight(next)
+    },
+    [measuredHeight],
+  )
+
+  if (disabled) {
+    return (
+      <View className={cn("flex-row items-center gap-1.5", className)}>
+        <Text className="text-[11px] text-muted-foreground">{label}</Text>
+        {badge}
+      </View>
+    )
+  }
+
   if (nativePhone && !insideSheet) {
     const chatLabel = isStreaming ? "Working…" : "Worked"
     return (
       <View className={cn("py-0.5", className)}>
         <Pressable
           onPress={() => setSheetOpen(true)}
-          className="self-start py-1"
+          className="flex-row items-center gap-1.5 self-start py-1"
           role="button"
           accessibilityLabel={label}
         >
           <Text className="text-[15px] text-muted-foreground">{chatLabel}</Text>
+          {badge}
         </Pressable>
         <NativeActivitySheet
           visible={sheetOpen}
@@ -257,6 +330,7 @@ function CollapsibleToolGroupImpl({
         accessibilityLabel={label}
       >
         <Text className="text-[11px] text-muted-foreground">{label}</Text>
+        {badge}
         <Motion.View
           animate={isOpen ? ROTATE_OPEN : ROTATE_CLOSED}
           transition={ROTATE_TRANSITION}
@@ -286,19 +360,30 @@ function CollapsibleToolGroupImpl({
             style={styles.overflowHidden}
           >
             <View style={styles.relative}>
-              <ScrollView
-                ref={innerScrollRef}
-                className="ml-2 pl-2 border-l border-border/40 pt-2.5 pb-1"
-                style={scrollStyle}
-                scrollEnabled
-                nestedScrollEnabled
-                onScrollBeginDrag={handleScrollBeginDrag}
-                onContentSizeChange={handleContentSizeChange}
-              >
-                {children}
-              </ScrollView>
+              {scrollBody ? (
+                <ScrollView
+                  ref={innerScrollRef}
+                  testID="collapsible-scroll-body"
+                  className="ml-2 pl-2 border-l border-border/40 pt-2.5 pb-1"
+                  style={scrollStyle}
+                  scrollEnabled
+                  nestedScrollEnabled
+                  onScrollBeginDrag={handleScrollBeginDrag}
+                  onContentSizeChange={handleContentSizeChange}
+                >
+                  {children}
+                </ScrollView>
+              ) : (
+                <View
+                  testID="collapsible-plain-body"
+                  className="ml-2 pl-2 border-l border-border/40 pt-2.5 pb-1"
+                  onLayout={handleBodyLayout}
+                >
+                  {children}
+                </View>
+              )}
 
-              {Platform.OS !== "web" && (
+              {scrollBody && Platform.OS !== "web" && (
                 <>
                   <LinearGradient
                     colors={topFadeColors}

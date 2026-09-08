@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, it, mock, test } from 'bun:test'
 import { resolveProjectPodUrl, type ResolvePodUrlOpts } from '../resolve-pod-url'
+import { resolveWorkspaceRuntimeUrl } from '../resolve-workspace-runtime-url'
 
 function fakeRuntime(overrides: Partial<any> = {}) {
   return {
@@ -409,6 +410,112 @@ describe('resolveProjectPodUrl', () => {
       })
       expect(res.url).toBe('http://0.0.0.0:38500')
     })
+  })
+})
+
+describe('SHOGO_WORKSPACE_RUNTIME — anchored workspace pod routing', () => {
+  const origFlag = process.env.SHOGO_WORKSPACE_RUNTIME
+  const passthroughLease = <T>(_id: string, fn: () => Promise<T>) => fn()
+
+  const anchoredArgs = {
+    workspaceId: 'ws-abc',
+    attachedProjectIds: ['proj-anchor', 'proj-attached'],
+    localFolders: [] as string[],
+    readonlyProjectIds: ['proj-attached'],
+  }
+
+  afterEach(() => {
+    if (origFlag === undefined) delete process.env.SHOGO_WORKSPACE_RUNTIME
+    else process.env.SHOGO_WORKSPACE_RUNTIME = origFlag
+  })
+
+  it('routes agent-proxy to workspace-proj pod instead of legacy project pod (k8s)', async () => {
+    process.env.SHOGO_WORKSPACE_RUNTIME = 'true'
+    const legacyK8s = mock(async () => 'http://project-legacy.pod/v1')
+    const workspaceK8s = mock(async (wsId: string, ids: string[], o?: { anchorProjectId?: string }) => {
+      expect(wsId).toBe('ws-abc')
+      expect(ids).toEqual(['proj-anchor', 'proj-attached'])
+      expect(o?.anchorProjectId).toBe('proj-anchor')
+      return `http://workspace-proj-proj-anchor.${wsId}.svc.cluster.local`
+    })
+
+    const res = await resolveProjectPodUrl('proj-anchor', {
+      _isKubernetes: () => true,
+      _k8sResolver: legacyK8s,
+      _loadAnchoredArgs: async () => anchoredArgs,
+      _workspaceK8sResolver: workspaceK8s,
+      _spawnLease: passthroughLease,
+    })
+
+    expect(res).toEqual({
+      mode: 'k8s',
+      url: 'http://workspace-proj-proj-anchor.ws-abc.svc.cluster.local',
+    })
+    expect(legacyK8s).not.toHaveBeenCalled()
+    expect(workspaceK8s).toHaveBeenCalledTimes(1)
+  })
+
+  it('agent-proxy and workspace-chat resolve to the same pod URL (plans fix)', async () => {
+    process.env.SHOGO_WORKSPACE_RUNTIME = 'true'
+    const sharedUrl = 'http://workspace-proj-proj-anchor.ws-abc.svc.cluster.local'
+    const workspaceK8s = mock(async () => sharedUrl)
+
+    const agentProxy = await resolveProjectPodUrl('proj-anchor', {
+      _isKubernetes: () => true,
+      _k8sResolver: async () => 'http://project-legacy.pod/v1',
+      _loadAnchoredArgs: async () => anchoredArgs,
+      _workspaceK8sResolver: workspaceK8s,
+      _spawnLease: passthroughLease,
+      logTag: 'AgentProxy',
+    })
+
+    const workspaceChat = await resolveWorkspaceRuntimeUrl('ws-abc', {
+      attachedProjectIds: anchoredArgs.attachedProjectIds,
+      anchorProjectId: 'proj-anchor',
+      readonlyProjectIds: anchoredArgs.readonlyProjectIds,
+      _isEnabled: () => true,
+      _isKubernetes: () => true,
+      _k8sResolver: workspaceK8s,
+      _spawnLease: passthroughLease,
+      logTag: 'WorkspaceChat',
+    })
+
+    expect(agentProxy.url).toBe(sharedUrl)
+    expect(workspaceChat.url).toBe(sharedUrl)
+    expect(agentProxy.mode).toBe('k8s')
+    expect(workspaceChat.mode).toBe('k8s')
+  })
+
+  it('falls back to legacy routing when the project has no workspaceId anchor', async () => {
+    process.env.SHOGO_WORKSPACE_RUNTIME = 'true'
+    const legacyK8s = mock(async () => 'http://project-legacy.pod/v1')
+
+    const res = await resolveProjectPodUrl('proj-legacy', {
+      _isKubernetes: () => true,
+      _k8sResolver: legacyK8s,
+      _loadAnchoredArgs: async () => null,
+      _spawnLease: passthroughLease,
+    })
+
+    expect(res).toEqual({ mode: 'k8s', url: 'http://project-legacy.pod/v1' })
+    expect(legacyK8s).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not change routing when SHOGO_WORKSPACE_RUNTIME is off', async () => {
+    delete process.env.SHOGO_WORKSPACE_RUNTIME
+    const legacyK8s = mock(async () => 'http://project-legacy.pod/v1')
+    const workspaceK8s = mock(async () => 'http://workspace-proj.pod/v1')
+
+    const res = await resolveProjectPodUrl('proj-anchor', {
+      _isKubernetes: () => true,
+      _k8sResolver: legacyK8s,
+      _loadAnchoredArgs: async () => anchoredArgs,
+      _workspaceK8sResolver: workspaceK8s,
+      _spawnLease: passthroughLease,
+    })
+
+    expect(res.url).toBe('http://project-legacy.pod/v1')
+    expect(workspaceK8s).not.toHaveBeenCalled()
   })
 })
 

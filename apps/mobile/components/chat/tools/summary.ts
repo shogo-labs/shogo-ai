@@ -370,6 +370,16 @@ export function parseShellCommand(
   command: string,
   state?: ToolExecutionState,
 ): ToolSummary {
+  // Shell control-flow keywords (for/while/if/case/…) compound the WHOLE
+  // first line into one statement — splitting it into `;`/`&&` segments
+  // like a normal command chain would misread "do"/"then"/"done" as
+  // chained follow-up commands. Short-circuit to a single "Run script"
+  // before segment splitting even runs.
+  const firstLineHead = tokenize(command.split("\n")[0] ?? "")[0]
+  if (firstLineHead && SHELL_KEYWORDS.has(firstLineHead)) {
+    return { verb: "Run", target: "script" }
+  }
+
   const segments = splitSegmentsWithSep(command)
   if (segments.length === 0) return { verb: "Run" }
 
@@ -406,20 +416,127 @@ export function parseShellCommand(
   return primary
 }
 
+/** Wrapper commands that pass through to a real command — never the interesting verb themselves. */
+const WRAPPER_COMMANDS = new Set(["sudo", "time", "env", "nohup", "command", "nice", "exec"])
+
+/** Shell control-flow keywords — no single "target" makes sense for these, so we just say "Run script". */
+const SHELL_KEYWORDS = new Set(["for", "while", "until", "if", "case", "select", "function", "[", "[["])
+
+/**
+ * Strip leading noise that isn't the actual command: environment-variable
+ * assignments (`FOO=bar cmd`), wrapper commands (`sudo`, `time`, `env`,
+ * `nohup`, `command`, `nice`, `exec`, `timeout N`), and a leading
+ * subshell/group punctuation (`(`, `{`) whether it's its own token or
+ * glued onto the next one (`(cmd`). Repeats until nothing more strips so
+ * chained wrappers (`sudo nice -n 10 bun test`) resolve to the real
+ * command.
+ */
+function stripLeadingNoise(tokens: string[]): string[] {
+  let out = tokens
+  for (;;) {
+    const head = out[0]
+    if (head === undefined) break
+
+    if (head[0] === "(" || head[0] === "{") {
+      const trimmed = head.replace(/^[({]+/, "")
+      out = trimmed ? [trimmed, ...out.slice(1)] : out.slice(1)
+      continue
+    }
+
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head)) {
+      out = out.slice(1)
+      continue
+    }
+
+    if (head === "timeout") {
+      out = out.slice(1)
+      while (out.length > 0 && out[0].startsWith("-")) out = out.slice(1)
+      out = out.slice(1) // duration arg
+      continue
+    }
+
+    if (WRAPPER_COMMANDS.has(head)) {
+      out = out.slice(1)
+      // A couple of wrappers commonly carry a flag+value we should also
+      // skip so the underlying command becomes the new head.
+      if ((head === "nice" || head === "sudo") && (out[0] === "-n" || out[0] === "-u")) {
+        out = out.slice(2)
+      }
+      continue
+    }
+
+    break
+  }
+  return out
+}
+
+/** True unless `word` is clearly not a real command name (an env assignment, a bare flag, or stray punctuation). */
+function isPlausibleCommandWord(word: string): boolean {
+  if (!word) return false
+  if (word.includes("=")) return false
+  if (/^[$({[-]/.test(word)) return false
+  return true
+}
+
+/**
+ * Detect a pure output-redirect write — `cat > f <<EOF`, `echo > f` —
+ * where the command has no OTHER positional argument before the `>` /
+ * `>>` token, meaning the whole point of the invocation is writing `f`
+ * (typically followed by heredoc content). Deliberately does NOT fire
+ * for `cat foo.txt > out.txt` (a real input file precedes the
+ * redirect) — that's still primarily a read of `foo.txt`.
+ */
+function findRedirectWriteTarget(rest: string[]): string | undefined {
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]
+    if (t.startsWith("-")) continue
+    if (t === ">" || t === ">>") {
+      const target = rest[i + 1]
+      return target && !isRedirection(target) ? dequote(target) : undefined
+    }
+    if (isRedirection(t)) continue
+    // A real positional arg appears before any redirect — not a pure write.
+    return undefined
+  }
+  return undefined
+}
+
 function parseSingleSegment(segment: string): ToolSummary {
   if (!segment) return { verb: "Run" }
-  const tokens = tokenize(segment)
-  if (tokens.length === 0) return { verb: "Run" }
+  const rawTokens = tokenize(segment)
+  if (rawTokens.length === 0) return { verb: "Run" }
+
+  const tokens = stripLeadingNoise(rawTokens)
+  if (tokens.length === 0) return { verb: "Run", target: "script" }
 
   const head = tokens[0]
   const rest = tokens.slice(1)
 
+  if (SHELL_KEYWORDS.has(head)) {
+    return { verb: "Run", target: "script" }
+  }
+
   switch (head) {
+    case "export": {
+      const assignment = rest[0]
+      const eq = assignment ? assignment.indexOf("=") : -1
+      if (assignment && eq > 0) {
+        return { verb: "Set", target: assignment.slice(0, eq) }
+      }
+      return { verb: "Set", target: assignment ? dequote(assignment) : undefined }
+    }
+    case "source":
+    case ".": {
+      const target = firstNonFlagArg(rest, 0)
+      return { verb: "Source", target: target ? basename(target) : undefined }
+    }
     case "cat":
     case "head":
     case "tail":
     case "less":
     case "more": {
+      const writeTarget = findRedirectWriteTarget(rest)
+      if (writeTarget) return { verb: "Write", target: basename(writeTarget) }
       const target = firstNonFlagArg(rest, 0)
       return { verb: "Read", target: target ? basename(target) : undefined }
     }
@@ -466,6 +583,8 @@ function parseSingleSegment(segment: string): ToolSummary {
       return { verb: "Find in", target: target ? truncate(basename(target)) : undefined }
     }
     case "echo": {
+      const writeTarget = findRedirectWriteTarget(rest)
+      if (writeTarget) return { verb: "Write", target: basename(writeTarget) }
       const stopIdx = rest.findIndex(isRedirection)
       const args = stopIdx === -1 ? rest : rest.slice(0, stopIdx)
       const target = args.length > 0 ? dequote(args.join(" ")) : undefined
@@ -493,22 +612,44 @@ function parseSingleSegment(segment: string): ToolSummary {
       return { verb: "Fetch", target: url ? (urlHost(url) ?? truncate(url)) : undefined }
     }
     case "git": {
-      const sub = rest[0]
+      // Skip global flags that take a value (`-C <dir>`, `-c <key=val>`)
+      // so `git -C /path status` resolves to "git status", not "git -C".
+      let i = 0
+      while (i < rest.length && rest[i].startsWith("-")) {
+        const flag = rest[i]
+        i++
+        if (flag === "-C" || flag === "-c") i++
+      }
+      const sub = rest[i]
       return { verb: sub ? `git ${sub}` : "git" }
+    }
+    case "bunx":
+    case "npx":
+    case "pnpx": {
+      const pkg = firstNonFlagArg(rest, 0)
+      return { verb: "Run", target: pkg ? truncate(pkg, 30) : head }
     }
     case "npm":
     case "bun":
     case "pnpm":
     case "yarn": {
-      const sub = rest[0]
+      // Skip flags before the subcommand: `bun --no-env-file test` -> sub="test".
+      let subIdx = 0
+      while (subIdx < rest.length && rest[subIdx].startsWith("-")) subIdx++
+      const sub = rest[subIdx]
       if (!sub) return { verb: "Run", target: head }
-      if (sub === "install" || sub === "add" || (head === "yarn" && sub === "add")) {
-        const pkg = firstNonFlagArg(rest, 1)
+      if (sub === "install" || sub === "add" || sub === "i") {
+        const pkg = firstNonFlagArg(rest, subIdx + 1)
         return { verb: "Install", target: pkg ? truncate(pkg, 30) : undefined }
       }
       if (sub === "run") {
-        const script = firstNonFlagArg(rest, 1)
+        const script = firstNonFlagArg(rest, subIdx + 1)
         return { verb: "Run", target: script ? truncate(script, 30) : undefined }
+      }
+      // `bun x <pkg>` / `bunx <pkg>` equivalent subcommand form.
+      if (head === "bun" && sub === "x") {
+        const pkg = firstNonFlagArg(rest, subIdx + 1)
+        return { verb: "Run", target: pkg ? truncate(pkg, 30) : undefined }
       }
       // `bun foo.ts`, `bun test`, etc.
       if (head === "bun" && sub) {
@@ -527,9 +668,93 @@ function parseSingleSegment(segment: string): ToolSummary {
       const target = firstNonFlagArg(rest, 0)
       return { verb: "Run", target: target ? basename(target) : head }
     }
+    case "make": {
+      const target = firstNonFlagArg(rest, 0)
+      return { verb: "Run", target: target ? truncate(target, 30) : "make" }
+    }
+    case "cargo":
+    case "go": {
+      const sub = firstNonFlagArg(rest, 0)
+      return { verb: sub ? `${head} ${sub}` : head }
+    }
+    case "docker": {
+      if (rest[0] === "compose") {
+        const sub = firstNonFlagArg(rest, 1)
+        return { verb: sub ? `docker compose ${sub}` : "docker compose" }
+      }
+      const sub = firstNonFlagArg(rest, 0)
+      return { verb: sub ? `docker ${sub}` : "docker" }
+    }
+    case "kubectl": {
+      let i = 0
+      while (i < rest.length && rest[i].startsWith("-")) i++
+      const sub = rest[i]
+      i++
+      while (i < rest.length && rest[i].startsWith("-")) i++
+      const target = rest[i]
+      return {
+        verb: sub ? `kubectl ${sub}` : "kubectl",
+        target: target ? truncate(basename(target), 30) : undefined,
+      }
+    }
+    case "pytest":
+    case "tsc":
+    case "eslint":
+    case "prettier": {
+      const target = firstNonFlagArg(rest, 0)
+      return { verb: "Run", target: target ? truncate(basename(target), 30) : head }
+    }
+    case "sed":
+    case "awk": {
+      // `sed/awk [flags] SCRIPT [FILE...]` — the script/pattern itself
+      // isn't a useful target, so skip flags, then the script, then look
+      // for the file that follows.
+      let i = 0
+      while (i < rest.length && rest[i].startsWith("-")) i++
+      i++ // skip the script/pattern argument
+      while (i < rest.length && rest[i].startsWith("-")) i++
+      const target = rest[i]
+      return { verb: "Run", target: target ? truncate(basename(target), 30) : head }
+    }
+    case "wc": {
+      const target = firstNonFlagArg(rest, 0)
+      return { verb: "Count lines in", target: target ? basename(target) : undefined }
+    }
+    case "diff": {
+      const target = firstNonFlagArg(rest, 0)
+      return { verb: "Diff", target: target ? basename(target) : undefined }
+    }
+    case "tree": {
+      const target = firstNonFlagArg(rest, 0)
+      return { verb: "List", target: target ? truncate(basename(target)) : undefined }
+    }
+    case "chmod": {
+      // `chmod [flags] MODE PATH` — the mode itself isn't a useful target.
+      const target = firstNonFlagArg(rest, 1)
+      return { verb: "Change permissions of", target: target ? basename(target) : undefined }
+    }
+    case "kill":
+    case "pkill": {
+      const target = firstNonFlagArg(rest, 0)
+      return { verb: "Kill process", target: target ? dequote(target) : undefined }
+    }
+    case "open": {
+      const target = firstNonFlagArg(rest, 0)
+      return { verb: "Open", target: target ? basename(target) : undefined }
+    }
+    case "which": {
+      const target = firstNonFlagArg(rest, 0)
+      return { verb: "Locate", target: target ? dequote(target) : undefined }
+    }
     default: {
       // Unknown verb — keep the command name as the verb so it's still
-      // identifiable, no target.
+      // identifiable, UNLESS it doesn't look like a plausible command
+      // word at all (an env assignment, bare flag, or stray punctuation
+      // that slipped through `stripLeadingNoise`) — then a generic
+      // "Run command" beats echoing garbage like "Run FOO=bar" / "Run (".
+      if (!isPlausibleCommandWord(head)) {
+        return { verb: "Run", target: "command" }
+      }
       return { verb: "Run", target: truncate(head, 30) }
     }
   }

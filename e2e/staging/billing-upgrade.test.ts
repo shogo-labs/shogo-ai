@@ -71,7 +71,7 @@ test.describe("Billing & Upgrade Flow", () => {
   test("sign up creates account and redirects to home", async () => {
     await signUpAndOnboard(page, TEST_USER)
 
-    await expect(page.getByText(/What's on your mind/)).toBeVisible()
+    await expect(page.getByText(/What are we building/)).toBeVisible()
     await expect(page.getByText(/Personal/)).toBeVisible()
   })
 
@@ -93,7 +93,7 @@ test.describe("Billing & Upgrade Flow", () => {
 
   test("free plan: sidebar shows Upgrade to Pro CTA", async () => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
     await expect(page.getByText("Upgrade to Pro")).toBeVisible()
     await expect(
@@ -196,7 +196,7 @@ test.describe("Billing & Upgrade Flow", () => {
 
   test.skip("post-upgrade: sidebar hides Upgrade to Pro CTA", async () => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
     await expect(page.getByText("Upgrade to Pro")).not.toBeVisible()
   })
@@ -205,7 +205,7 @@ test.describe("Billing & Upgrade Flow", () => {
 
   test.skip("post-upgrade: Advanced model is available for Pro users", async () => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
     const input = homeComposerInput(page)
     await input.click()

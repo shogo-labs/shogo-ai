@@ -12,7 +12,7 @@ export interface ContextTrackerProps {
   contextWindowTokens: number
 }
 
-function formatTokenCount(tokens: number): string {
+export function formatTokenCount(tokens: number): string {
   if (tokens >= 1_000_000) {
     const m = tokens / 1_000_000
     return m % 1 === 0 ? `${m}M` : `${m.toFixed(1)}M`

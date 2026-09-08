@@ -84,7 +84,7 @@ import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
 import type { FilePart } from './file-attachment-utils'
-import { parseFileAttachments } from './file-attachment-utils'
+import { parseFileAttachments, transcribeAudioParts } from './file-attachment-utils'
 import {
   SELF_EVOLUTION_GUIDE,
   BROWSER_TOOL_GUIDE,
@@ -270,6 +270,22 @@ export function describeTurnFailure(
   const { reason } = classifyRetryability({ message: raw })
   switch (reason) {
     case 'billing':
+      // `classifyRetryability` only buckets by coarse reason, not the specific
+      // `UsageBlockReason` billing.service returns — but `parseProviderError`
+      // (agent-loop.ts) preserves the JSON body's `error.message` verbatim, so
+      // the specific text billing.service's `usageLimitErrorPayload` chose
+      // survives into `raw`. Sniff for it here rather than threading the
+      // structured code through the whole retry-classifier pipeline. Without
+      // this, a user with on-demand usage ON but an expired entitlement (or
+      // one who's genuinely hit their configured spend cap) sees the same
+      // "enable usage-based pricing" text as someone who never turned it on
+      // at all — see the 2026-09-02 on-demand-usage incident.
+      if (/entitlement.*expired|reactivate your (subscription|license)/i.test(raw)) {
+        return 'Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.'
+      }
+      if (/spending cap/i.test(raw)) {
+        return "You've reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue."
+      }
       return 'Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.'
     case 'network':
       return "I couldn't reach the model just now — the connection dropped. Please try again in a moment."
@@ -390,7 +406,14 @@ async function runMockAndUnwrap(
 
 export class AgentGateway {
   private workspaceDir: string
-  private projectId: string
+  /**
+   * Value passed to the constructor. In pool mode this is a snapshot of
+   * `state.currentProjectId` taken when `startGateway()` ran — which can be
+   * (or can have been) the warm-pool placeholder (`__POOL__`) if the
+   * gateway was constructed around a pool-assign race. See the `projectId`
+   * getter below: it never uses this directly.
+   */
+  private _constructedProjectId: string
   private config: GatewayConfig
   private currentUserId: string | undefined
   private channels: Map<string, ChannelAdapter> = new Map()
@@ -553,9 +576,35 @@ export class AgentGateway {
    */
   private repoPersistHook: (() => Promise<void> | void) | null = null
 
+  /**
+   * Live project identity. `_constructedProjectId` is a one-time snapshot
+   * taken when the gateway object was built — in pool mode that can be, or
+   * can have been, the `__POOL__` placeholder if construction raced a
+   * `/pool/assign` in flight. `process.env.PROJECT_ID` is kept current by
+   * `/pool/assign` and `/pool/refresh-env` (server-framework.ts) for the
+   * life of the process, so prefer it whenever it's set — this is the same
+   * pattern already used by checkpoint recording (server.ts reads
+   * `process.env.PROJECT_ID` fresh rather than a captured field) and by
+   * `getInternalHeaders()`'s `RUNTIME_AUTH_SECRET` lookup (internal-api.ts).
+   *
+   * Without this, every outbound call that self-identifies via this field
+   * — `updateHeartbeatConfig`'s heartbeat-config PUT, the webchat widget
+   * embed URL, Composio session init — stays pinned to whatever value was
+   * captured at construction, forever, even after the runtime is correctly
+   * (re)assigned. The API then HMAC-verifies the (correctly refreshed)
+   * runtime token, decodes the real project id from it, compares it to the
+   * stale path segment built from this field, and rejects with
+   * `runtime_token_project_mismatch tokenProject=<real> projectId=__POOL__`
+   * — see apps/api/src/routes/internal.ts's `authenticate()`. Reproduced in
+   * `__tests__/gateway-stale-pool-projectid.test.ts`.
+   */
+  private get projectId(): string {
+    return process.env.PROJECT_ID || this._constructedProjectId
+  }
+
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
-    this.projectId = projectId
+    this._constructedProjectId = projectId
     this.config = this.loadConfig()
     this.sessionManager = new SessionManager(this.config.session)
     this.fileStateCache.setWorkspaceDir(workspaceDir)
@@ -1592,10 +1641,20 @@ export class AgentGateway {
         images = parsed.images
         this.emitLog(`Attached ${parsed.images.length} image(s) for vision`)
       }
-      if (parsed.textContext) {
+      let textContext = parsed.textContext
+      if (parsed.audioParts.length > 0) {
+        // No model reachable from this loop accepts native audio content
+        // blocks (pi-ai's `Model.input` type only allows `"text" | "image"`),
+        // so every audio attachment is auto-transcribed via Whisper and
+        // injected as text context, regardless of which model is selected.
+        this.emitLog(`Transcribing ${parsed.audioParts.length} audio attachment(s)...`)
+        const audioTranscripts = await transcribeAudioParts(parsed.audioParts)
+        textContext = [textContext, audioTranscripts].filter(Boolean).join('\n\n')
+      }
+      if (textContext) {
         effectiveText = text
-          ? `${text}\n\n${parsed.textContext}`
-          : parsed.textContext
+          ? `${text}\n\n${textContext}`
+          : textContext
       }
     }
 
@@ -2672,6 +2731,43 @@ export class AgentGateway {
           perTool: sortedToolResultEntries,
         })
 
+        // ---- 5) UI-facing category rollup ----
+        // Collapses the detailed breakdown above into the 6 buckets the
+        // client's context-usage popover renders (mirrors Cursor's own
+        // "Context Usage" popup): System prompt, Tool definitions, Skills,
+        // MCP & dynamic tools, Subagent definitions, Conversation. Additive
+        // to the payload — every field above stays as-is so the evals
+        // runner (which reads `sections`/`grandEstTokens` etc.) is unaffected.
+        const SKILL_SECTION_LABELS = new Set(['skills', 'skill-server'])
+        const SUBAGENT_TOOL_NAMES = new Set(['agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result'])
+
+        let systemPromptCatTokens = 0
+        let skillsCatTokens = 0
+        let dynamicOtherCatTokens = 0
+        for (const sec of breakdown) {
+          if (sec.zone === 'stable') systemPromptCatTokens += sec.estTokens
+          else if (SKILL_SECTION_LABELS.has(sec.label)) skillsCatTokens += sec.estTokens
+          else dynamicOtherCatTokens += sec.estTokens
+        }
+
+        let toolDefCatTokens = 0
+        let mcpToolCatTokens = 0
+        let subagentToolCatTokens = 0
+        for (const t of toolSchemasPerTool) {
+          if (t.name.startsWith('mcp_')) mcpToolCatTokens += t.estTokens
+          else if (SUBAGENT_TOOL_NAMES.has(t.name)) subagentToolCatTokens += t.estTokens
+          else toolDefCatTokens += t.estTokens
+        }
+
+        const categories = [
+          { key: 'system-prompt', label: 'System prompt', estTokens: systemPromptCatTokens },
+          { key: 'tool-definitions', label: 'Tool definitions', estTokens: toolDefCatTokens },
+          { key: 'skills', label: 'Skills', estTokens: skillsCatTokens },
+          { key: 'mcp-dynamic-tools', label: 'MCP & dynamic tools', estTokens: mcpToolCatTokens + dynamicOtherCatTokens },
+          { key: 'subagent-definitions', label: 'Subagent definitions', estTokens: subagentToolCatTokens },
+          { key: 'conversation', label: 'Conversation', estTokens: chatContextEstTokens },
+        ]
+
         const breakdownPayload = {
           sections: breakdown,
           totalChars,
@@ -2688,6 +2784,7 @@ export class AgentGateway {
             currentPromptChars,
             currentPromptEstTokens: Math.ceil(currentPromptChars / 4),
           },
+          categories,
           grandEstTokens,
         }
 

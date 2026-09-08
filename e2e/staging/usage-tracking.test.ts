@@ -56,7 +56,7 @@ test.describe("Usage Tracking", () => {
 
   test("model selector shows per-request USD cost hint", async () => {
     await page.goto("/")
-    await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
+    await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
     const input = homeComposerInput(page)
     await input.click()

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { afterEach, describe, test, expect } from 'bun:test'
+import { afterEach, beforeEach, describe, test, expect } from 'bun:test'
 import {
   _fileAttachmentSeamForTests,
   extractFilePartsAsText,
   parseFileAttachments,
+  transcribeAudioParts,
   type FilePart,
 } from '../file-attachment-utils'
 
@@ -111,6 +112,174 @@ describe('parseFileAttachments', () => {
     const { textContext, images } = parseFileAttachments(parts)
     expect(textContext).toBe('')
     expect(images).toEqual([])
+  })
+
+  test('routes audio/* parts to audioParts instead of inlining or images, and leaves textContext untouched', () => {
+    const parts: FilePart[] = [
+      {
+        type: 'file',
+        mediaType: 'audio/wav',
+        url: dataUrl('audio/wav', Buffer.from([1, 2, 3, 4])),
+        name: 'memo.wav',
+        savedPath: 'files/memo.wav',
+      },
+    ]
+    const { images, textContext, audioParts } = parseFileAttachments(parts)
+    expect(images).toEqual([])
+    // Audio is deferred for async transcription, not inlined synchronously —
+    // parseFileAttachments itself never mentions the audio attachment.
+    expect(textContext).toBe('')
+    expect(audioParts).toHaveLength(1)
+    expect(audioParts[0].name).toBe('memo.wav')
+    expect(audioParts[0].mediaType).toBe('audio/wav')
+  })
+
+  test('handles a mix of image, text, and audio parts in one call', () => {
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'image/png', url: dataUrl('image/png', Buffer.from([0x89])), name: 'a.png' },
+      { type: 'file', mediaType: 'text/plain', url: dataUrl('text/plain', 'hi'), name: 'b.txt' },
+      { type: 'file', mediaType: 'audio/mpeg', url: dataUrl('audio/mpeg', Buffer.from([1])), name: 'c.mp3' },
+    ]
+    const { images, textContext, audioParts } = parseFileAttachments(parts)
+    expect(images).toHaveLength(1)
+    expect(audioParts).toHaveLength(1)
+    expect(audioParts[0].name).toBe('c.mp3')
+    expect(textContext).toContain('b.txt')
+    expect(textContext).not.toContain('c.mp3')
+  })
+})
+
+describe('transcribeAudioParts', () => {
+  const originalFetch = globalThis.fetch
+  const originalProxyUrl = process.env.AI_PROXY_URL
+  const originalProxyToken = process.env.AI_PROXY_TOKEN
+  const originalOpenAIKey = process.env.OPENAI_API_KEY
+
+  beforeEach(() => {
+    delete process.env.AI_PROXY_URL
+    delete process.env.AI_PROXY_TOKEN
+    delete process.env.OPENAI_API_KEY
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    if (originalProxyUrl === undefined) delete process.env.AI_PROXY_URL
+    else process.env.AI_PROXY_URL = originalProxyUrl
+    if (originalProxyToken === undefined) delete process.env.AI_PROXY_TOKEN
+    else process.env.AI_PROXY_TOKEN = originalProxyToken
+    if (originalOpenAIKey === undefined) delete process.env.OPENAI_API_KEY
+    else process.env.OPENAI_API_KEY = originalOpenAIKey
+  })
+
+  test('returns empty string for an empty batch (no network call)', async () => {
+    let called = false
+    globalThis.fetch = (async () => { called = true; return new Response('{}') }) as any
+    const result = await transcribeAudioParts([])
+    expect(result).toBe('')
+    expect(called).toBe(false)
+  })
+
+  test('emits a placeholder when no API key is configured', async () => {
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'audio/wav', url: dataUrl('audio/wav', Buffer.from([1, 2])), name: 'x.wav' },
+    ]
+    const result = await transcribeAudioParts(parts)
+    expect(result).toContain('[Attached Audio (x.wav (audio/wav))]:')
+    expect(result).toContain('no OpenAI API key configured')
+  })
+
+  test('transcribes via the AI proxy URL, stripping a trailing /v1 before appending /v1/audio/transcriptions', async () => {
+    process.env.AI_PROXY_URL = 'https://api.internal.example/api/ai/v1'
+    process.env.AI_PROXY_TOKEN = 'proxy-tok'
+
+    let capturedUrl = ''
+    let capturedAuth = ''
+    globalThis.fetch = (async (url: string, init: any) => {
+      capturedUrl = url
+      capturedAuth = init.headers.Authorization
+      return new Response(JSON.stringify({ text: 'hello from whisper' }), { status: 200 })
+    }) as any
+
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'audio/wav', url: dataUrl('audio/wav', Buffer.from([1, 2, 3])), name: 'memo.wav' },
+    ]
+    const result = await transcribeAudioParts(parts)
+
+    expect(capturedUrl).toBe('https://api.internal.example/api/ai/v1/audio/transcriptions')
+    expect(capturedAuth).toBe('Bearer proxy-tok')
+    expect(result).toBe('[Attached Audio (memo.wav (audio/wav)) — auto-transcribed]: hello from whisper')
+  })
+
+  test('falls back to OpenAI directly when no proxy is configured', async () => {
+    process.env.OPENAI_API_KEY = 'sk-direct'
+    let capturedUrl = ''
+    globalThis.fetch = (async (url: string) => {
+      capturedUrl = url
+      return new Response(JSON.stringify({ text: 'direct transcript' }), { status: 200 })
+    }) as any
+
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'audio/mpeg', url: dataUrl('audio/mpeg', Buffer.from([9])), name: 'clip.mp3' },
+    ]
+    const result = await transcribeAudioParts(parts)
+    expect(capturedUrl).toBe('https://api.openai.com/v1/audio/transcriptions')
+    expect(result).toContain('direct transcript')
+  })
+
+  test('emits a size-limit placeholder for audio over the 25MB Whisper cap, without calling fetch', async () => {
+    process.env.OPENAI_API_KEY = 'sk-direct'
+    let called = false
+    globalThis.fetch = (async () => { called = true; return new Response('{}') }) as any
+
+    // ~26MB of raw bytes, base64-encoded.
+    const bigBuffer = Buffer.alloc(26 * 1024 * 1024)
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'audio/wav', url: dataUrl('audio/wav', bigBuffer), name: 'huge.wav' },
+    ]
+    const result = await transcribeAudioParts(parts)
+    expect(called).toBe(false)
+    expect(result).toContain('exceeds the 25MB Whisper upload limit')
+  })
+
+  test('emits a failure placeholder on a non-2xx upstream response', async () => {
+    process.env.OPENAI_API_KEY = 'sk-direct'
+    globalThis.fetch = (async () => new Response('rate limited', { status: 429 })) as any
+
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'audio/wav', url: dataUrl('audio/wav', Buffer.from([1])), name: 'y.wav' },
+    ]
+    const result = await transcribeAudioParts(parts)
+    expect(result).toContain('Transcription failed (429)')
+    expect(result).toContain('rate limited')
+  })
+
+  test('emits a failure placeholder when fetch throws', async () => {
+    process.env.OPENAI_API_KEY = 'sk-direct'
+    globalThis.fetch = (async () => { throw new Error('network down') }) as any
+
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'audio/wav', url: dataUrl('audio/wav', Buffer.from([1])), name: 'z.wav' },
+    ]
+    const result = await transcribeAudioParts(parts)
+    expect(result).toContain('Transcription failed: network down')
+  })
+
+  test('handles multiple audio parts, joining announcements with a blank line', async () => {
+    process.env.OPENAI_API_KEY = 'sk-direct'
+    let call = 0
+    globalThis.fetch = (async () => {
+      call++
+      return new Response(JSON.stringify({ text: `clip ${call}` }), { status: 200 })
+    }) as any
+
+    const parts: FilePart[] = [
+      { type: 'file', mediaType: 'audio/wav', url: dataUrl('audio/wav', Buffer.from([1])), name: 'a.wav' },
+      { type: 'file', mediaType: 'audio/wav', url: dataUrl('audio/wav', Buffer.from([2])), name: 'b.wav' },
+    ]
+    const result = await transcribeAudioParts(parts)
+    expect(result).toContain('clip 1')
+    expect(result).toContain('clip 2')
+    expect(result.split('\n\n')).toHaveLength(2)
   })
 })
 

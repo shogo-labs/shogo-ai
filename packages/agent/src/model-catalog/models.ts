@@ -25,7 +25,9 @@ export type ImageProvider = 'openai' | 'google' | 'local'
 export type ModelTier = 'economy' | 'standard' | 'premium'
 export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
-export type BillingModel = 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus'
+export type BillingModel =
+  | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus'
+  | 'gpt-6-astra' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna'
 export type AgentMode = 'basic' | 'advanced'
 
 /**
@@ -53,6 +55,14 @@ export interface ModelCapabilities {
    * specific failure mode.
    */
   subagentOrchestration?: CapabilityReliability
+  /**
+   * Whether this model accepts `input_audio` content blocks natively over
+   * the OpenAI-compatible chat/completions wire format (as opposed to
+   * requiring audio to be transcribed to text before it reaches the model).
+   * Absent/`undefined` means "no native audio input" — callers should fall
+   * back to Whisper transcription (see `transcribeAudioParts`).
+   */
+  supportsAudioInput?: boolean
 }
 
 /**
@@ -270,6 +280,86 @@ export const MODEL_CATALOG = {
   },
 
   // OpenAI — current generation
+  'gpt-6-astra': {
+    id: 'gpt-6-astra',
+    provider: 'openai',
+    apiModel: 'gpt-6-astra',
+    displayName: 'GPT-6 Astra',
+    shortDisplayName: 'Astra',
+    tier: 'premium',
+    family: 'gpt',
+    generation: 'current',
+    billingModel: 'gpt-6-astra',
+    maxOutputTokens: 128_000,
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
+  },
+  'gpt-5.6-terra': {
+    id: 'gpt-5.6-terra',
+    provider: 'openai',
+    apiModel: 'gpt-5.6-terra',
+    displayName: 'GPT-5.6 Terra',
+    shortDisplayName: 'Terra',
+    tier: 'standard',
+    family: 'gpt',
+    generation: 'current',
+    billingModel: 'gpt-5.6-terra',
+    maxOutputTokens: 128_000,
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
+  },
+  'gpt-5.6-luna': {
+    id: 'gpt-5.6-luna',
+    provider: 'openai',
+    apiModel: 'gpt-5.6-luna',
+    displayName: 'GPT-5.6 Luna',
+    shortDisplayName: 'Luna',
+    tier: 'economy',
+    family: 'gpt',
+    generation: 'current',
+    billingModel: 'gpt-5.6-luna',
+    maxOutputTokens: 128_000,
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
+  },
+
+  // OpenAI — audio-native (accepts `input_audio` content blocks directly;
+  // see packages/agent-runtime/src/file-attachment-utils.ts for the
+  // Whisper-transcription fallback used by every other model).
+  'gpt-audio': {
+    id: 'gpt-audio',
+    provider: 'openai',
+    apiModel: 'gpt-audio',
+    displayName: 'GPT Audio',
+    shortDisplayName: 'GPT Audio',
+    tier: 'standard',
+    family: 'gpt',
+    generation: 'current',
+    // NOTE: OpenAI bills audio input/output tokens at a much higher
+    // per-token rate than text (no bucket in MODEL_DOLLAR_COSTS
+    // differentiates audio tokens from text tokens today). Using the
+    // most expensive existing bucket ('opus') as a conservative
+    // placeholder so audio usage isn't underbilled; replace with a
+    // dedicated audio billing bucket before shipping this broadly.
+    billingModel: 'opus',
+    maxOutputTokens: 4_096,
+    description: 'Accepts spoken audio directly as input (input_audio content blocks) and can respond in text or generated speech.',
+    capabilities: { supportsAudioInput: true },
+  },
+
+  // OpenAI — legacy
+  'gpt-5.6-sol': {
+    id: 'gpt-5.6-sol',
+    provider: 'openai',
+    apiModel: 'gpt-5.6-sol',
+    displayName: 'GPT-5.6 Sol',
+    shortDisplayName: 'Sol',
+    tier: 'premium',
+    family: 'gpt',
+    generation: 'legacy',
+    billingModel: 'gpt-5.6-sol',
+    maxOutputTokens: 128_000,
+  },
   'gpt-5.5': {
     id: 'gpt-5.5',
     provider: 'openai',
@@ -278,21 +368,8 @@ export const MODEL_CATALOG = {
     shortDisplayName: 'GPT-5.5',
     tier: 'premium',
     family: 'gpt',
-    generation: 'current',
+    generation: 'legacy',
     billingModel: 'opus',
-    maxOutputTokens: 128_000,
-    capabilities: { subagentOrchestration: 'reliable' },
-  },
-  'gpt-5.4-mini': {
-    id: 'gpt-5.4-mini',
-    provider: 'openai',
-    apiModel: 'gpt-5.4-mini',
-    displayName: 'GPT-5.4 Mini',
-    shortDisplayName: 'GPT-5.4 Mini',
-    tier: 'economy',
-    family: 'gpt',
-    generation: 'current',
-    billingModel: 'gpt-5.4-mini',
     maxOutputTokens: 128_000,
     capabilities: { subagentOrchestration: 'reliable' },
   },
@@ -304,8 +381,21 @@ export const MODEL_CATALOG = {
     shortDisplayName: 'GPT-5 Mini',
     tier: 'standard',
     family: 'gpt',
-    generation: 'current',
+    generation: 'legacy',
     billingModel: 'sonnet',
+    maxOutputTokens: 128_000,
+    capabilities: { subagentOrchestration: 'reliable' },
+  },
+  'gpt-5.4-mini': {
+    id: 'gpt-5.4-mini',
+    provider: 'openai',
+    apiModel: 'gpt-5.4-mini',
+    displayName: 'GPT-5.4 Mini',
+    shortDisplayName: 'GPT-5.4 Mini',
+    tier: 'economy',
+    family: 'gpt',
+    generation: 'legacy',
+    billingModel: 'gpt-5.4-mini',
     maxOutputTokens: 128_000,
     capabilities: { subagentOrchestration: 'reliable' },
   },
@@ -317,7 +407,7 @@ export const MODEL_CATALOG = {
     shortDisplayName: 'GPT-5.4 Nano',
     tier: 'economy',
     family: 'gpt',
-    generation: 'current',
+    generation: 'legacy',
     billingModel: 'gpt-5.4-nano',
     maxOutputTokens: 128_000,
     // Nano routinely fails the subagent-smoke eval (skips agent_result).
@@ -325,7 +415,6 @@ export const MODEL_CATALOG = {
     // workflows that fan out to children.
     capabilities: { subagentOrchestration: 'flaky' },
   },
-  // OpenAI — legacy
   'gpt-4.1': {
     id: 'gpt-4.1',
     provider: 'openai',

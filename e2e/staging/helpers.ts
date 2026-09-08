@@ -36,7 +36,7 @@ export const STRIPE_CARDS = {
  *
  *   welcome (auto-advance) → features → complete → home
  *
- * Leaves the browser on the home screen with "What's on your mind" visible.
+ * Leaves the browser on the home screen with "What are we building" visible.
  */
 export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void> {
   // ── Sign up ────────────────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void
   }
 
   // ── Home screen ────────────────────────────────────────────────────────────
-  await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+  await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 }
 
 /**
@@ -266,7 +266,7 @@ export async function waitForAgentIdle(page: Page, timeoutMs = 240_000) {
 
 export async function createProjectAndWait(page: Page, prompt: string) {
   await page.goto("/")
-  await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
+  await page.waitForSelector("text=What are we building", { timeout: 15_000 })
 
   const input = homeComposerInput(page)
   await input.click()

@@ -39,7 +39,7 @@ function createTestTextFile(filename: string, content: string): string {
 
 async function createProjectAndWait(page: Page, prompt: string) {
   await page.goto("/")
-  await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
+  await page.waitForSelector("text=What are we building", { timeout: 15_000 })
 
   const input = homeComposerInput(page)
   await input.click()

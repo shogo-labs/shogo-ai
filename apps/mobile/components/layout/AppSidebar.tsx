@@ -1411,7 +1411,11 @@ function WorkspaceMenuSection({
             <CompactUsageWindows
               windows={billingData.usageWindows}
               overage={billingData.effectiveBalance
-                ? { enabled: billingData.effectiveBalance.overageEnabled, accumulatedUsd: billingData.effectiveBalance.overageAccumulatedUsd }
+                ? {
+                    enabled: billingData.effectiveBalance.overageEnabled,
+                    active: billingData.effectiveBalance.overageActive,
+                    accumulatedUsd: billingData.effectiveBalance.overageAccumulatedUsd,
+                  }
                 : undefined}
               comfortable={isNative}
             />
