@@ -25,6 +25,7 @@ import {
 } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
+import { nativePhoneCanvas } from '../../lib/native-phone-layout'
 import {
   nativeDrawerPanelWidth,
   snapNativeDrawer,
@@ -34,7 +35,6 @@ import {
   nativeDrawerTopInset,
   nativeDrawerSideInset,
   nativeDrawerFooterInset,
-  NATIVE_DRAWER_UNDERLAY_BACKGROUND,
 } from '../../lib/use-native-drawer-swipe'
 import {
   LayoutDashboard,
@@ -64,6 +64,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import { DomainProvider, useDomainHttp } from '../../contexts/domain'
+import { useResolvedTheme } from '../../contexts/theme'
 import { api, API_URL } from '../../lib/api'
 import { usePlatformConfig } from '../../lib/platform-config'
 
@@ -291,6 +292,7 @@ function AdminSidebar({
   const router = useRouter()
   const pathname = usePathname()
   const insets = useSafeAreaInsets()
+  const isDark = useResolvedTheme() === 'dark'
   const { localMode } = usePlatformConfig()
   const visibleSections = NAV_SECTIONS
     .map((section) => ({
@@ -344,7 +346,7 @@ function AdminSidebar({
       style={
         isNativeDrawer
           ? {
-              backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND,
+              backgroundColor: nativePhoneCanvas(isDark),
               paddingLeft: nativeDrawerSideInset(insets.left),
               paddingRight: 4,
             }
@@ -540,6 +542,8 @@ function AdminLayoutInner() {
   const pathname = usePathname()
   const { width } = useWindowDimensions()
   const isNativeApp = Platform.OS !== 'web'
+  const isDark = useResolvedTheme() === 'dark'
+  const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const isWide = !isNativeApp && width >= 900
   const nativeSheetDrawer = isNativeApp
   const nativeDrawerWidth = nativeDrawerPanelWidth(width)
@@ -637,7 +641,7 @@ function AdminLayoutInner() {
   return (
     <SafeAreaView
       className="flex-1 bg-background"
-      style={nativeSheetDrawer ? { backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND } : undefined}
+      style={nativeSheetDrawer ? { backgroundColor: nativeDrawerCanvas } : undefined}
       edges={nativeSheetDrawer ? ['left', 'right'] : undefined}
     >
       <View className="flex-1 flex-row">
@@ -649,7 +653,7 @@ function AdminLayoutInner() {
               pointerEvents={drawerOpen ? 'auto' : 'none'}
               accessibilityElementsHidden={!drawerOpen}
               importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
-              style={nativeDrawerUnderlayStyle(nativeDrawerWidth)}
+              style={nativeDrawerUnderlayStyle(nativeDrawerWidth, isDark)}
             >
               <AdminSidebar {...sidebarProps} isNativeDrawer onClose={closeDrawer} />
             </View>

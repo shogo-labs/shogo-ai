@@ -12,7 +12,6 @@ import {
   Animated,
   Easing,
   TouchableWithoutFeedback,
-  useColorScheme,
   useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
@@ -60,12 +59,12 @@ import {
   nativeComposerKeyboardOverlapFromEvent,
   useNativeComposerKeyboard,
 } from '../../lib/use-native-composer-keyboard'
-import { NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
+import { nativePhoneCanvas, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 import { TechStackPicker } from '../../components/chat/TechStackPicker'
 import { techStackDisplayName } from '../../lib/tech-stack-catalog'
-import { useTheme } from '../../contexts/theme'
+import { useResolvedTheme } from '../../contexts/theme'
 import { Layers } from 'lucide-react-native'
 
 /**
@@ -83,29 +82,6 @@ const DEFAULT_TECH_STACK_ID = 'react-app'
  * comes from the same listings the marketplace browse surface uses.
  */
 type HomeListing = AgentTileListing & { description?: string }
-
-/** Resolves the selected app theme on native and the active DOM theme on web. */
-function useDarkMode() {
-  const systemColorScheme = useColorScheme()
-  const { theme } = useTheme()
-  const [isWebDark, setIsWebDark] = useState(() => {
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      return document.documentElement.classList.contains('dark')
-    }
-    return false
-  })
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') return
-    setIsWebDark(document.documentElement.classList.contains('dark'))
-    const obs = new MutationObserver(() => {
-      setIsWebDark(document.documentElement.classList.contains('dark'))
-    })
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
-    return () => obs.disconnect()
-  }, [])
-  if (Platform.OS === 'web') return isWebDark
-  return theme === 'dark' || (theme === 'system' && systemColorScheme === 'dark')
-}
 
 const GRADIENT_CSS = `
 @keyframes lovable-drift {
@@ -274,7 +250,7 @@ const HomeScreen = observer(function HomeScreen() {
   const membersColl = useMemberCollection()
   const http = useDomainHttp()
   const actions = useDomainActions()
-  const isDark = useDarkMode()
+  const isDark = useResolvedTheme() === 'dark'
   const { width: screenWidth } = useWindowDimensions()
   const insets = useSafeAreaInsets()
   const isMobile = screenWidth < 640
@@ -1007,7 +983,7 @@ const HomeScreen = observer(function HomeScreen() {
 
   const nativeHome = (
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: isDark ? '#000000' : '#ffffff' }}
+      style={{ flex: 1, backgroundColor: nativePhoneCanvas(isDark) }}
       behavior={iosComposerAvoiding ? 'padding' : undefined}
       keyboardVerticalOffset={0}
     >
@@ -1050,7 +1026,7 @@ const HomeScreen = observer(function HomeScreen() {
   const screen = (
     <View
       className="flex-1 bg-background"
-      style={isNativePhone ? { backgroundColor: isDark ? '#000000' : '#ffffff' } : undefined}
+      style={isNativePhone ? { backgroundColor: nativePhoneCanvas(isDark) } : undefined}
     >
       {isNativePhone ? (
         nativeHome

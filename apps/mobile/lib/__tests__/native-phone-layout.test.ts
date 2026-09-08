@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { nativeContentWidth, nativePhoneFillStyle, nativeSettingsPaneFill, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth } from '../native-phone-layout'
+import { nativeContentWidth, nativePhoneCanvas, nativePhoneFillStyle, nativeSettingsPaneFill, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, NATIVE_PHONE_CANVAS } from '../native-phone-layout'
 
 describe('nativeContentWidth', () => {
   test('subtracts the default section inset', () => {
@@ -80,5 +80,13 @@ describe('nativePhoneFillStyle', () => {
       width: 402,
       maxWidth: 402,
     })
+  })
+})
+
+describe('nativePhoneCanvas', () => {
+  test('matches the ChatGPT light and dark canvases', () => {
+    expect(nativePhoneCanvas(true)).toBe(NATIVE_PHONE_CANVAS.dark)
+    expect(nativePhoneCanvas(false)).toBe(NATIVE_PHONE_CANVAS.light)
+    expect(NATIVE_PHONE_CANVAS).toEqual({ dark: '#000000', light: '#ffffff' })
   })
 })

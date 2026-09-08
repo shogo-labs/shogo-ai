@@ -11,14 +11,13 @@ import {
   PanResponder,
   type GestureResponderHandlers,
 } from 'react-native'
+import { nativePhoneCanvas } from './native-phone-layout'
 
 const EDGE_WIDTH = 28
 const OPEN_RATIO = 0.32
 const OPEN_VELOCITY = 0.7
 /** Left-corner radius of the moving foreground sheet when fully open (pt). */
 export const NATIVE_DRAWER_SHEET_RADIUS = 52
-/** Sidebar / navigation background. */
-export const NATIVE_DRAWER_UNDERLAY_BACKGROUND = '#000000'
 /** Target sidebar width as a fraction of the viewport. */
 export const NATIVE_DRAWER_WIDTH_RATIO = 0.75
 export const NATIVE_DRAWER_SHEET_SHADOW_COLOR = '#000000'
@@ -57,7 +56,7 @@ export function nativeDrawerFooterInset(safeBottom: number): number {
   return Math.max(safeBottom, NATIVE_DRAWER_MIN_FOOTER_INSET)
 }
 
-export function nativeDrawerUnderlayStyle(drawerWidth: number) {
+export function nativeDrawerUnderlayStyle(drawerWidth: number, isDark: boolean) {
   return {
     position: 'absolute' as const,
     left: 0,
@@ -65,7 +64,7 @@ export function nativeDrawerUnderlayStyle(drawerWidth: number) {
     bottom: 0,
     width: drawerWidth,
     zIndex: 0,
-    backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND,
+    backgroundColor: nativePhoneCanvas(isDark),
   }
 }
 

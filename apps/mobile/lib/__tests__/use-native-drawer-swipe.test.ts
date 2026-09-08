@@ -8,6 +8,7 @@ import {
   nativeDrawerTopInset,
   nativeDrawerSideInset,
   nativeDrawerFooterInset,
+  nativeDrawerUnderlayStyle,
   NATIVE_DRAWER_SHEET_RADIUS,
   NATIVE_DRAWER_SHEET_SHADOW_OPACITY,
   NATIVE_DRAWER_SHEET_ELEVATION,
@@ -16,6 +17,7 @@ import {
   NATIVE_DRAWER_MIN_SIDE_INSET,
   NATIVE_DRAWER_MIN_FOOTER_INSET,
 } from '../use-native-drawer-swipe'
+import { NATIVE_PHONE_CANVAS } from '../native-phone-layout'
 
 describe('native drawer progress', () => {
   const width = 280
@@ -77,5 +79,20 @@ describe('native drawer insets', () => {
     expect(nativeDrawerSideInset(0)).toBe(NATIVE_DRAWER_MIN_SIDE_INSET)
     expect(nativeDrawerFooterInset(8)).toBe(NATIVE_DRAWER_MIN_FOOTER_INSET)
     expect(nativeDrawerFooterInset(34)).toBe(34)
+  })
+})
+
+describe('nativeDrawerUnderlayStyle', () => {
+  test('fills the sidebar lane with the theme canvas', () => {
+    expect(nativeDrawerUnderlayStyle(300, true).backgroundColor).toBe(NATIVE_PHONE_CANVAS.dark)
+    expect(nativeDrawerUnderlayStyle(300, false).backgroundColor).toBe(NATIVE_PHONE_CANVAS.light)
+    expect(nativeDrawerUnderlayStyle(300, false)).toMatchObject({
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: 300,
+      zIndex: 0,
+    })
   })
 })

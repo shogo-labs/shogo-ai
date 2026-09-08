@@ -36,6 +36,7 @@ import { API_URL } from "../../../lib/api"
 import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
 import { useDualPlan } from "../../../lib/dual-plan-preference"
+import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
@@ -46,7 +47,6 @@ const TIER_LABELS: Record<ModelTier, string> = {
   standard: "Standard",
   economy: "Economy",
 }
-import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
 
 interface PlansPanelProps {
   visible: boolean

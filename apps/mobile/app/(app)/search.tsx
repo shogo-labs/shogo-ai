@@ -15,7 +15,6 @@ import {
   ScrollView,
   Text,
   TextInput,
-  useColorScheme,
   View,
 } from 'react-native'
 import { useRouter } from 'expo-router'
@@ -25,7 +24,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { Folder, Key, Search, Star, Users, X } from 'lucide-react-native'
 import { PlatformApi, type ApiKeyInfo } from '@shogo-ai/sdk'
 import { useAuth } from '../../contexts/auth'
-import { useTheme } from '../../contexts/theme'
+import { useResolvedTheme } from '../../contexts/theme'
 import {
   useDomainHttp,
   useMemberCollection,
@@ -46,7 +45,7 @@ import {
   nativeComposerKeyboardOverlapFromEvent,
   useNativeComposerKeyboard,
 } from '../../lib/use-native-composer-keyboard'
-import { isNativePlatform, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
+import { isNativePlatform, nativePhoneCanvas, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
 
 const SEARCH_MIN_KEYBOARD_PAD = 8
 const SEARCH_TAB_ROW_HEIGHT = 52
@@ -54,7 +53,6 @@ const SEARCH_PILL_HEIGHT = 36
 const SEARCH_PILL_RADIUS = 18
 const SEARCH_PILL_GAP = 8
 const SEARCH_PILL_PAD_X = 14
-const SEARCH_CANVAS = { dark: '#000000', light: '#ffffff' } as const
 const SEARCH_PILL_IDLE = { dark: '#2a2a2a', light: '#f4f4f5' } as const
 const SEARCH_PILL_COUNT_IDLE = CHATGPT_COMPOSER.dark.placeholder
 const SEARCH_PILL_COUNT_ACTIVE = {
@@ -87,10 +85,8 @@ function timeAgo(timestamp?: number | string | null): string {
 export default observer(function SearchPage() {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
-  const { theme } = useTheme()
-  const systemColorScheme = useColorScheme()
-  const isDark = theme === 'dark' || (theme === 'system' && systemColorScheme === 'dark')
-  const pageBg = isDark ? SEARCH_CANVAS.dark : SEARCH_CANVAS.light
+  const isDark = useResolvedTheme() === 'dark'
+  const pageBg = nativePhoneCanvas(isDark)
   const { localMode } = usePlatformConfig()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()

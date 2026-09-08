@@ -36,7 +36,7 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native'
 import { usePostHogSafe } from '../../contexts/posthog'
-import { useTheme } from '../../contexts/theme'
+import { useTheme, useResolvedTheme } from '../../contexts/theme'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { formatModKey } from '../../lib/keyboard-shortcuts'
 import {
@@ -108,7 +108,8 @@ import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { NATIVE_DRAWER_UNDERLAY_BACKGROUND, nativeDrawerFooterInset, nativeDrawerSideInset, nativeDrawerTopInset } from '../../lib/use-native-drawer-swipe'
+import { nativePhoneCanvas } from '../../lib/native-phone-layout'
+import { nativeDrawerFooterInset, nativeDrawerSideInset, nativeDrawerTopInset } from '../../lib/use-native-drawer-swipe'
 import {
   fetchProjectChatSessions,
   PROJECT_CHAT_PAGE_SIZE,
@@ -1812,6 +1813,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const insets = useSafeAreaInsets()
   const isWide = Platform.OS === 'web' && width >= 768
   const isNativeDrawer = Platform.OS !== 'web' && !isWide
+  const isDark = useResolvedTheme() === 'dark'
+  const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const drawerTopInset = isNativeDrawer ? nativeDrawerTopInset(insets.top) : insets.top
   const drawerBottomInset = isNativeDrawer ? Math.max(insets.bottom, 18) : insets.bottom
   // Sit above the home indicator / rounded corner without the extra min-height
@@ -2140,7 +2143,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           ? {
               paddingLeft: drawerSideInset,
               paddingRight: 4,
-              backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND,
+              backgroundColor: nativeDrawerCanvas,
             }
           : undefined
       }
@@ -2619,7 +2622,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   if (isNativeDrawer) {
     return (
-      <View style={{ flex: 1, backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND }}>
+      <View style={{ flex: 1, backgroundColor: nativeDrawerCanvas }}>
         {sidebarContent}
       </View>
     )

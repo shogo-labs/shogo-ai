@@ -43,6 +43,15 @@ export const NATIVE_PHONE_CONTROL_SIZE = 44
 export const NATIVE_PHONE_ROW_GAP = 8
 /** Wrap-row gap between two-column stat cards (`gap-3`). */
 export const NATIVE_PHONE_CARD_GAP = 12
+/**
+ * Native ChatGPT canvas (`nativeChatGptSurfaces` in the Gluestack provider).
+ * Use for style props where NativeWind `bg-background` is not applied.
+ */
+export const NATIVE_PHONE_CANVAS = { dark: '#000000', light: '#ffffff' } as const
+
+export function nativePhoneCanvas(isDark: boolean): string {
+  return isDark ? NATIVE_PHONE_CANVAS.dark : NATIVE_PHONE_CANVAS.light
+}
 
 /**
  * True only on iPhone / Android phones — not web, not iPad, not Android tablets.

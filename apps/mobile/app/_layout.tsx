@@ -69,7 +69,7 @@ import { AuthProvider } from '../contexts/auth'
 import { ActiveInstanceProvider } from '../contexts/active-instance'
 import { InstanceOfflineWatcher } from '../components/instance/InstanceOfflineWatcher'
 import { PostHogProvider } from '../contexts/posthog'
-import { ThemeProvider, useTheme } from '../contexts/theme'
+import { ThemeProvider, useTheme, resolveThemeMode } from '../contexts/theme'
 import { AccentThemeProvider } from '../contexts/accent-theme'
 import { AppearanceProvider } from '../contexts/appearance'
 import { RootErrorBoundary } from '../components/RootErrorBoundary'
@@ -187,9 +187,7 @@ function RootLayoutInner() {
   const systemColorScheme = useColorScheme()
   const { theme, isLoaded } = useTheme()
 
-  const statusBarScheme = theme === 'system'
-    ? (systemColorScheme === 'dark' ? 'dark' : 'light')
-    : theme
+  const statusBarScheme = resolveThemeMode(theme, systemColorScheme)
 
   if (!isLoaded) return null
 

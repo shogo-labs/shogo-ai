@@ -28,18 +28,19 @@ import { API_URL } from '../../lib/api'
 import { trackSignUp, trackLogin } from '../../lib/tracking'
 import { usePostHogIdentify, usePostHogSafe } from '../../contexts/posthog'
 import { DomainProvider } from '../../contexts/domain'
+import { useResolvedTheme } from '../../contexts/theme'
 import { AppSidebar } from '../../components/layout/AppSidebar'
 import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
 import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
 import { mark as csMark } from '../../lib/cold-start-timing'
+import { nativePhoneCanvas } from '../../lib/native-phone-layout'
 import {
   nativeDrawerPanelWidth,
   snapNativeDrawer,
   useNativeDrawerSheetSwipe,
   useNativeDrawerSheetStyle,
   nativeDrawerUnderlayStyle,
-  NATIVE_DRAWER_UNDERLAY_BACKGROUND,
 } from '../../lib/use-native-drawer-swipe'
 
 csMark('app:layout:module-load')
@@ -65,6 +66,8 @@ export default function AppLayout() {
   const ideAutoSignInAttempted = useRef(false)
   const { width } = useWindowDimensions()
   const isNativeApp = Platform.OS !== 'web'
+  const isDark = useResolvedTheme() === 'dark'
+  const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const isWide = !isNativeApp && width >= 768
   const [drawerOpen, setDrawerOpen] = useState(false)
   const drawerProgress = useRef(new Animated.Value(0)).current
@@ -251,7 +254,7 @@ export default function AppLayout() {
     <DomainProvider>
       <SafeAreaView
         className="flex-1 bg-background"
-        style={nativeSheetDrawer ? { backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND } : undefined}
+        style={nativeSheetDrawer ? { backgroundColor: nativeDrawerCanvas } : undefined}
         edges={nativeEdgeToEdgeChrome ? ['left', 'right'] : undefined}
       >
         <View className="flex-1 flex-row">
@@ -270,7 +273,7 @@ export default function AppLayout() {
                 pointerEvents={drawerOpen ? 'auto' : 'none'}
                 accessibilityElementsHidden={!drawerOpen}
                 importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
-                style={nativeDrawerUnderlayStyle(nativeDrawerWidth)}
+                style={nativeDrawerUnderlayStyle(nativeDrawerWidth, isDark)}
               >
                 <AppSidebar
                   isOpen={drawerOpen}
