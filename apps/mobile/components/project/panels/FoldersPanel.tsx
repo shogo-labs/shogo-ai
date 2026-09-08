@@ -39,7 +39,7 @@ import {
 } from 'lucide-react-native'
 import { useDomainHttp, useProjectCollection } from '../../../contexts/domain'
 import { api, API_URL } from '../../../lib/api'
-import { useNativePhoneWindow, nativeContentWidth, NATIVE_PHONE_SECTION_INSET } from '../../../lib/native-phone-layout'
+import { useNativePhoneWindow, nativeContentWidth, nativeSettingsPaneStyle, NATIVE_PHONE_SECTION_INSET, NATIVE_PHONE_ROW_GAP } from '../../../lib/native-phone-layout'
 
 interface ProjectFolder {
   id: string
@@ -362,22 +362,23 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
   return (
     <View
       testID="folders-panel"
-      className="absolute inset-0 flex-col bg-background"
+      collapsable={false}
+      className={comfortable ? 'flex-col bg-background' : 'absolute inset-0 flex-col bg-background'}
       style={{
         display: visible ? 'flex' : 'none',
-        ...(comfortable ? { width: pageWidth, maxWidth: pageWidth } : null),
+        ...(comfortable ? nativeSettingsPaneStyle(pageWidth) : null),
       }}
     >
       <View
         className={cn('border-b border-border flex-row items-center justify-between gap-2', comfortable ? 'px-4 py-3.5' : 'px-4 py-3')}
         style={comfortable ? { width: pageWidth } : undefined}
       >
-        <View className={comfortable ? undefined : 'flex-1 min-w-0 flex-row items-center gap-2'} style={comfortable ? { flexDirection: 'row', alignItems: 'center', gap: 8, width: pageWidth - 32 } : undefined}>
+        <View className={comfortable ? undefined : 'flex-1 min-w-0 flex-row items-center gap-2'} style={comfortable ? { flexDirection: 'row', alignItems: 'center', gap: NATIVE_PHONE_ROW_GAP, width: contentWidth } : undefined}>
           <FolderTree size={comfortable ? 20 : 16} className="text-muted-foreground" />
           <Text
             className={cn('font-semibold text-foreground', comfortable ? 'text-lg' : 'text-sm flex-1')}
             numberOfLines={1}
-            style={comfortable ? { width: Math.max(0, pageWidth - 32 - 28) } : undefined}
+            style={comfortable ? { width: Math.max(0, contentWidth - 20 - NATIVE_PHONE_ROW_GAP) } : undefined}
           >
             Folders & projects
           </Text>
@@ -397,7 +398,10 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
       ) : (
         <ScrollView
           className="flex-1"
-          style={comfortable ? { width: pageWidth } : undefined}
+          nestedScrollEnabled
+          keyboardShouldPersistTaps="handled"
+          alwaysBounceVertical={comfortable}
+          style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
           contentContainerStyle={{
             paddingBottom: comfortable ? 40 : 24,
             flexGrow: 1,

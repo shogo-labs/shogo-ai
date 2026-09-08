@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
-import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
-import { useNativePhoneWindow, nativeContentWidth, NATIVE_PHONE_SECTION_INSET } from '../../../lib/native-phone-layout'
-
-const AGENT_TYPE_ICON = 22
-const STACK_ICON_BOX = 44
-const ROW_GAP = 12
+import { View, Text, Pressable, ScrollView, ActivityIndicator, TextInput } from 'react-native'
 import {
   Globe,
   Monitor,
@@ -32,7 +27,20 @@ import {
   Package,
   GitBranch,
 } from 'lucide-react-native'
-import { TextInput } from 'react-native'
+import {
+  useNativePhoneWindow,
+  useIsNativePhoneLayout,
+  nativeContentWidth,
+  nativeSettingsPaneFill,
+  NATIVE_PHONE_SECTION_INSET,
+} from '../../../lib/native-phone-layout'
+
+import { agentFetch } from '../../../lib/agent-fetch'
+import { AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
+import { useModelPickerGroups } from '../../../lib/visible-models'
+import { SkillsPanel } from './SkillsPanel'
+import { ToolsPanel } from './ToolsPanel'
+import { api, createHttpClient, type TechStackSummary } from '../../../lib/api'
 import { cn } from '@shogo/shared-ui/primitives'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { Switch } from '@/components/ui/switch'
@@ -42,12 +50,10 @@ import {
   PopoverBody,
   PopoverContent,
 } from '@/components/ui/popover'
-import { agentFetch } from '../../../lib/agent-fetch'
-import { AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
-import { useModelPickerGroups } from '../../../lib/visible-models'
-import { SkillsPanel } from './SkillsPanel'
-import { ToolsPanel } from './ToolsPanel'
-import { api, createHttpClient, type TechStackSummary } from '../../../lib/api'
+
+const AGENT_TYPE_ICON = 22
+const STACK_ICON_BOX = 44
+const ROW_GAP = 12
 
 export interface CapabilitySettings {
   canvasEnabled: boolean
@@ -446,7 +452,7 @@ export function CapabilitiesConfigPane({
 
   return (
     <ScrollView
-      style={comfortable ? { width: pageWidth, flex: 1 } : undefined}
+      style={comfortable ? { width: pageWidth, flex: 1, minHeight: 0 } : undefined}
       className={comfortable ? undefined : 'flex-1'}
       contentContainerStyle={{
         paddingBottom: comfortable ? 40 : 24,
@@ -987,9 +993,14 @@ export function CapabilitiesSkillsPane({
   agentUrl: string | null
   visible: boolean
 }) {
+  const comfortable = useIsNativePhoneLayout()
   if (!visible) return null
   return (
-    <View className="flex-1 relative">
+    <View
+      collapsable={false}
+      className={comfortable ? undefined : 'flex-1 relative'}
+      style={comfortable ? nativeSettingsPaneFill : undefined}
+    >
       <SkillsPanel projectId={projectId} agentUrl={agentUrl} visible />
     </View>
   )
@@ -1008,9 +1019,14 @@ export function CapabilitiesIntegrationsPane({
   agentUrl: string | null
   visible: boolean
 }) {
+  const comfortable = useIsNativePhoneLayout()
   if (!visible) return null
   return (
-    <View className="flex-1 relative">
+    <View
+      collapsable={false}
+      className={comfortable ? undefined : 'flex-1 relative'}
+      style={comfortable ? nativeSettingsPaneFill : undefined}
+    >
       <ToolsPanel projectId={projectId} agentUrl={agentUrl} visible />
     </View>
   )

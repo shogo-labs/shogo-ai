@@ -30,11 +30,11 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
-import { useNativePhoneWindow, nativeContentWidth } from '../../../lib/native-phone-layout'
-
-const LOG_PREFIX = '[ToolsPanel]'
+import { useNativePhoneWindow, nativeContentWidth, nativeSettingsPaneFill, nativeSettingsPaneStyle, NATIVE_PHONE_CONTROL_SIZE, NATIVE_PHONE_ROW_GAP } from '../../../lib/native-phone-layout'
 import { useDomainHttp } from '../../../contexts/domain'
 import { agentFetch } from '../../../lib/agent-fetch'
+
+const LOG_PREFIX = '[ToolsPanel]'
 
 interface InstalledTool {
   id: string
@@ -343,7 +343,11 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
 
   if (!agentUrl) {
     return (
-      <View className="absolute inset-0 flex-col">
+      <View
+        collapsable={false}
+        className={comfortable ? undefined : 'absolute inset-0 flex-col'}
+        style={comfortable ? nativeSettingsPaneFill : undefined}
+      >
         <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
           <Wrench size={16} className="text-muted-foreground" />
           <Text className="text-sm font-medium text-foreground">Integrations</Text>
@@ -363,15 +367,16 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
 
   return (
     <View
-      className="absolute inset-0 flex-col"
-      style={comfortable ? { width: pageWidth, maxWidth: pageWidth } : undefined}
+      collapsable={false}
+      className={comfortable ? undefined : 'absolute inset-0 flex-col'}
+      style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
     >
       <View
         className={cn('border-b border-border flex-row items-center gap-2', comfortable ? 'px-4 py-3.5' : 'px-4 py-3')}
         style={comfortable ? { width: pageWidth } : undefined}
       >
         <Wrench size={comfortable ? 20 : 16} className="text-muted-foreground" />
-        <View style={comfortable ? { width: Math.max(0, pageWidth - 32 - 20 - 44 - 16) } : undefined} className={comfortable ? undefined : 'flex-1 min-w-0'}>
+        <View style={comfortable ? { width: Math.max(0, contentWidth - 20 - NATIVE_PHONE_CONTROL_SIZE - NATIVE_PHONE_ROW_GAP * 2) } : undefined} className={comfortable ? undefined : 'flex-1 min-w-0'}>
           <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')} numberOfLines={1}>Integrations</Text>
           <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
             {installedTools.length} installed
@@ -392,10 +397,14 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       )}
 
       <ScrollView
-        className="flex-1"
-        style={comfortable ? { width: pageWidth } : undefined}
+        className={comfortable ? undefined : 'flex-1'}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        alwaysBounceVertical={comfortable}
+        style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
         contentContainerStyle={{
           padding: 16,
+          flexGrow: 1,
           width: comfortable ? pageWidth : undefined,
         }}
       >

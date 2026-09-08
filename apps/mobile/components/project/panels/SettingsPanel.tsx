@@ -35,7 +35,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Check, ChevronDown, X } from 'lucide-react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cn } from '@shogo/shared-ui/primitives'
-import { isNativePhoneIntegrationsLayout, NATIVE_PHONE_PICKER_INSET } from '../../../lib/native-phone-layout'
+import { isNativePhoneIntegrationsLayout, nativeSettingsPaneStyle, NATIVE_PHONE_PICKER_INSET } from '../../../lib/native-phone-layout'
 
 export interface SettingsSectionItem {
   id: string
@@ -155,6 +155,7 @@ export function SettingsPanel({ visible, groups, requestedItem }: SettingsPanelP
           bottom: 0,
           width,
           maxWidth: width,
+          overflow: 'hidden',
         }}
       >
         <NativePhoneSidebar
@@ -164,7 +165,7 @@ export function SettingsPanel({ visible, groups, requestedItem }: SettingsPanelP
           screenWidth={width}
           windowHeight={height}
         />
-        <View collapsable={false} style={{ flex: 1, width, maxWidth: width }}>
+        <View collapsable={false} style={{ ...nativeSettingsPaneStyle(width), overflow: 'hidden' }}>
           {activeItem ? activeItem.render() : (
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }}>
               <Text className="text-sm text-muted-foreground">

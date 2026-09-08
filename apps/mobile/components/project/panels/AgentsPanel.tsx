@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useMemo, useSyncExternalStore, useState, useCallback, useEffect, useRef } from "react"
-import { View, Text, ScrollView, Pressable } from "react-native"
+import { View, Text, ScrollView, Pressable, StyleSheet } from "react-native"
 import {
   Bot,
   CheckCircle2,
@@ -23,7 +23,14 @@ import {
 } from "lucide-react-native"
 import { Motion } from "@legendapp/motion"
 import { cn } from "@shogo/shared-ui/primitives"
-import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import {
+  useIsNativePhoneLayout,
+  useNativePhoneWindow,
+  nativeSettingsPaneStyle,
+  nativeEqualChipWidths,
+  NATIVE_PHONE_PICKER_INSET,
+  NATIVE_PHONE_ROW_GAP,
+} from "../../../lib/native-phone-layout"
 import { subagentStreamStore, type SubagentStreamData } from "../../../lib/subagent-stream-store"
 import { stopSubagent } from "../../../lib/subagent-stop"
 import { resolveShortName } from "../../../lib/visible-models"
@@ -815,8 +822,12 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: "registry", label: "Registry" },
 ]
 
+const NATIVE_TAB_GAP = NATIVE_PHONE_ROW_GAP
+
 export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelProps) {
-  const comfortable = useIsNativePhoneLayout()
+  const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const gutter = comfortable ? NATIVE_PHONE_PICKER_INSET / 2 : 16
+  const chips = comfortable ? nativeEqualChipWidths(pageWidth, SUB_TABS.length, NATIVE_TAB_GAP) : { row: 0, chip: 0, lastChip: 0 }
   const [subTab, setSubTab] = useState<SubTab>("activity")
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [expandedMemberIds, setExpandedMemberIds] = useState<Set<string>>(new Set())
@@ -848,29 +859,58 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
   if (!visible) return null
 
   return (
-    <View className="absolute inset-0 flex-col" style={{ display: visible ? "flex" : "none" }}>
+    <View
+      collapsable={false}
+      className={comfortable ? undefined : "absolute inset-0 flex-col"}
+      style={
+        comfortable
+          ? { ...nativeSettingsPaneStyle(pageWidth), display: visible ? "flex" : "none" }
+          : { display: visible ? "flex" : "none" }
+      }
+    >
       {/* Sub-tab toggle */}
-      <View className={cn("border-b border-border", comfortable ? "px-3 py-2.5" : "px-4 py-2 flex-row items-center gap-2")}>
-        <View className={cn(comfortable ? "flex-row gap-2" : "flex-row rounded-md border border-border")} role="tablist">
-          {SUB_TABS.map((tab) => (
+      <View
+        collapsable={false}
+        className={comfortable ? undefined : "border-b border-border px-4 py-2 flex-row items-center gap-2"}
+        style={
+          comfortable
+            ? [nativeChrome.tabBar, { width: pageWidth, paddingHorizontal: gutter }]
+            : undefined
+        }
+      >
+        <View
+          className={comfortable ? undefined : "flex-row rounded-md border border-border"}
+          role="tablist"
+          style={comfortable ? [nativeChrome.tabRow, { width: chips.row }] : undefined}
+        >
+          {SUB_TABS.map((tab, index) => (
             <Pressable
               key={tab.id}
               onPress={() => setSubTab(tab.id)}
               role="tab"
               accessibilityLabel={tab.label}
               accessibilityState={{ selected: subTab === tab.id }}
-              className={cn(
+              className={
                 comfortable
-                  ? "min-h-11 min-w-0 flex-1 items-center justify-center rounded-full px-2"
-                  : "px-3 py-1.5 rounded-md",
-                subTab === tab.id
-                  ? comfortable ? "bg-muted" : "bg-primary"
-                  : comfortable ? "bg-muted/40 active:bg-muted" : "active:bg-muted",
-              )}
+                  ? undefined
+                  : cn(
+                      "px-3 py-1.5 rounded-md",
+                      subTab === tab.id ? "bg-primary" : "active:bg-muted",
+                    )
+              }
+              style={
+                comfortable
+                  ? [
+                      nativeChrome.tab,
+                      { width: index === SUB_TABS.length - 1 ? chips.lastChip : chips.chip },
+                      subTab === tab.id ? nativeChrome.tabActive : nativeChrome.tabIdle,
+                    ]
+                  : undefined
+              }
             >
               <Text
                 className={cn(
-                  comfortable ? "text-[14px]" : "text-xs font-medium",
+                  comfortable ? "text-[13px]" : "text-xs font-medium",
                   subTab === tab.id
                     ? comfortable ? "font-semibold text-foreground" : "text-primary-foreground"
                     : "text-muted-foreground",
@@ -885,7 +925,10 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
       </View>
 
       {/* Sub-tab content */}
-      <View className="flex-1 relative">
+      <View
+        className={comfortable ? undefined : "flex-1 relative"}
+        style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+      >
         {subTab === "activity" && (
           <ActivitySubTab expandedIds={expandedIds} toggleExpanded={toggleExpanded} agentUrl={agentUrl} />
         )}
@@ -901,3 +944,29 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
     </View>
   )
 }
+
+const nativeChrome = StyleSheet.create({
+  tabBar: {
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(127,127,127,0.35)",
+  },
+  tabRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: NATIVE_TAB_GAP,
+  },
+  tab: {
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 999,
+    paddingHorizontal: 4,
+  },
+  tabActive: {
+    backgroundColor: "rgba(120,120,128,0.32)",
+  },
+  tabIdle: {
+    backgroundColor: "rgba(120,120,128,0.16)",
+  },
+})

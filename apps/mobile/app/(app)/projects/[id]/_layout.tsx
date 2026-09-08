@@ -57,7 +57,7 @@ import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout, nativePhoneFillStyle } from '../../../../lib/native-phone-layout'
-import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas, isPreviewFailed } from '../../../../lib/preview-gate'
+import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas, isPreviewFailed, previewStatusPollBase, nativeCanvasBaseReady, projectIdFromAgentProxyUrl, previewWakeUrl } from '../../../../lib/preview-gate'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
 import {
@@ -2815,6 +2815,7 @@ export default observer(function ProjectLayout() {
     <CanvasPanel
       agentUrl={agentUrl}
       canvasBaseUrl={canvasBaseUrl}
+      previewUrl={previewUrl}
       onRefresh={reconnect}
       // True whenever the canvas owns the entire viewport (chat fullscreen
       // / collapsed in wide split, or narrow with the canvas tab active).
@@ -4084,6 +4085,7 @@ function usePreviewReadiness(
 function CanvasPanel({
   agentUrl,
   canvasBaseUrl,
+  previewUrl,
   onRefresh,
   fullBleed = false,
   iframeRefreshKey = 0,
@@ -4092,6 +4094,7 @@ function CanvasPanel({
 }: {
   agentUrl: string | null
   canvasBaseUrl?: string | null
+  previewUrl?: string | null
   onRefresh?: () => void
   fullBleed?: boolean
   iframeRefreshKey?: number
@@ -4106,31 +4109,32 @@ function CanvasPanel({
   ) => void
 }) {
   // Phase-level visibility into what the runtime is doing while we wait
-  // (installing deps, building, starting the API server, …). Drives the
-  // user-facing "what's happening" label below in place of the previous
-  // generic "Connecting to agent runtime…" + misleading "Send a message
-  // in the Chat tab to wake the agent" hint (the runtime already starts
-  // via `runtime/prewarm`; chat sends are not what wakes it).
+  // (installing deps, building, starting the API server, …).
   //
-  // This poll is same-origin (via the agent-proxy), so it also serves as the
-  // canvas readiness signal below — avoiding a cross-origin probe of the
-  // preview host that would spam the console with CORS errors while booting.
-  //
-  // In workspace-runtime mode `canvasBaseUrl` carries a `/p/<id>` suffix, so
-  // the per-project preview status lives at `${canvasBaseUrl}/preview/status`
-  // (the global manager stays idle there). Detect that and override the poll
-  // base so the phase label reflects the project actually being previewed.
-  const workspacePreviewBase =
-    canvasBaseUrl && /\/p\/[^/]+$/.test(canvasBaseUrl) ? canvasBaseUrl : null
+  // Always poll `/preview/status` through the authenticated agent-proxy.
+  // Native fetch does not send cookies, so hitting the public preview host
+  // (or the proxy without a Cookie header) 401s forever and the gate shows
+  // "Connection timed out — The agent runtime could not be reached".
   const { phase: previewPhase, running: previewRunning, apiReady } = usePreviewPhase(
     agentUrl,
-    workspacePreviewBase,
+    canvasBaseUrl,
   )
 
   // Gate the canvas iframe on the same-origin `running` signal (no cross-origin
   // probe of the preview host → no CORS console noise). Until ready, this is
   // null so the loading screen stays visible.
   const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl, previewRunning)
+
+  // iPhone: do not wait for `running`. `/sandbox/url` already returned a
+  // tokenized preview URL; loading it is what wakes a sleeping preview.
+  // Waiting on the status poll deadlocks (WebView never mounts → preview
+  // never wakes → 60s "Connection timed out" while chat already works).
+  const nativeBaseReady = nativeCanvasBaseReady({
+    native: Platform.OS !== 'web',
+    agentUrl,
+    previewUrl,
+    canvasBaseUrl,
+  })
 
   // Don't load the app UI until the project's API sidecar is responding —
   // otherwise the SPA renders and fires `/api/*` calls into a server that
@@ -4142,11 +4146,23 @@ function CanvasPanel({
   // we don't want a live preview to flash back to a spinner on every save.
   const [apiLatched, setApiLatched] = useState(false)
   useEffect(() => {
-    if (apiReady) setApiLatched(true)
-  }, [apiReady])
+    if (apiReady || nativeBaseReady) setApiLatched(true)
+  }, [apiReady, nativeBaseReady])
+
+  // Resume a sleeping metal/Knative preview the same way a browser tab does.
+  // `/preview/start` is kicked from usePreviewPhase when status is not running —
+  // do not POST it again here.
+  useEffect(() => {
+    if (Platform.OS === 'web' || !agentUrl) return
+    const id = projectIdFromAgentProxyUrl(agentUrl)
+    if (id && API_URL) {
+      void fetch(previewWakeUrl(API_URL, id), { cache: 'no-store' }).catch(() => {})
+    }
+  }, [agentUrl])
 
   // Dev server reachable (non-404 root) AND the agent runtime is up.
-  const baseReady = !!agentUrl && !!readyCanvasBaseUrl
+  // Native skips the `running` poll and loads the tokenized document instead.
+  const baseReady = nativeBaseReady || (!!agentUrl && !!readyCanvasBaseUrl)
 
   // Two independent fallbacks, deliberately kept separate:
   //
@@ -4240,7 +4256,9 @@ function CanvasPanel({
               Connection timed out
             </Text>
             <Text className="text-muted-foreground text-center text-sm">
-              The agent runtime could not be reached. This may be a temporary issue — try refreshing or come back later.
+              {agentUrl
+                ? 'The live preview did not become ready. Try Retry, or send a chat message and open Previews again.'
+                : 'The agent runtime could not be reached. This may be a temporary issue — try refreshing or come back later.'}
             </Text>
             {onRefresh && (
               <Pressable
@@ -4281,7 +4299,8 @@ function CanvasPanel({
     >
       <CanvasWebView
         agentUrl={agentUrl}
-        canvasBaseUrl={readyCanvasBaseUrl}
+        canvasBaseUrl={nativeBaseReady ? (canvasBaseUrl ?? readyCanvasBaseUrl) : readyCanvasBaseUrl}
+        previewUrl={previewUrl}
         refreshKey={iframeRefreshKey}
         onCanvasCapabilities={onCanvasCapabilities}
         onCanvasError={onCanvasError}
@@ -4331,11 +4350,7 @@ const PHASE_LABELS: Record<string, string> = {
  */
 function usePreviewPhase(
   agentUrl: string | null,
-  // Workspace runtimes host each project under `/p/<id>/`, so the global
-  // `${agentUrl}/preview/status` (the shared runtime's idle global manager)
-  // reports a stale phase. When set, this overrides the status base so the
-  // poll targets the per-project `/p/<id>/preview/status` instead.
-  statusBaseOverride?: string | null,
+  canvasBaseUrl?: string | null,
 ): { phase: string; running: boolean; apiReady: boolean; apiServerPhase: string } {
   const [phase, setPhase] = useState<string>('idle')
   const [running, setRunning] = useState<boolean>(false)
@@ -4346,7 +4361,10 @@ function usePreviewPhase(
   const [apiReady, setApiReady] = useState<boolean>(false)
   const [apiServerPhase, setApiServerPhase] = useState<string>('idle')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const statusBase = statusBaseOverride || agentUrl
+  const inFlightRef = useRef(false)
+  const kickedStartRef = useRef(false)
+  const statusBase = previewStatusPollBase(agentUrl, canvasBaseUrl)
+  const pollTimeoutMs = Platform.OS === 'web' ? 5_000 : 20_000
 
   useEffect(() => {
     // Reset on status-base change so consumers see a fresh "idle" phase on
@@ -4356,15 +4374,17 @@ function usePreviewPhase(
     setRunning(false)
     setApiReady(false)
     setApiServerPhase('idle')
+    kickedStartRef.current = false
 
     if (!statusBase) return
 
     let cancelled = false
     const poll = async () => {
+      if (inFlightRef.current) return
+      inFlightRef.current = true
       try {
-        const resp = await fetch(`${statusBase}/preview/status`, {
-          credentials: Platform.OS === 'web' ? 'include' : 'omit',
-          signal: AbortSignal.timeout(5000),
+        const resp = await agentFetch(`${statusBase}/preview/status`, {
+          signal: AbortSignal.timeout(pollTimeoutMs),
         })
         if (cancelled) return
         if (resp.ok) {
@@ -4373,6 +4393,10 @@ function usePreviewPhase(
           if (data.apiServerPhase) setApiServerPhase(data.apiServerPhase)
           setApiReady(resolveApiReady(data))
           if (data.running) setRunning(true)
+          if (!data.running && !kickedStartRef.current) {
+            kickedStartRef.current = true
+            void agentFetch(`${statusBase}/preview/start`, { method: 'POST' }).catch(() => {})
+          }
           // Stop only once the preview is running AND the API is ready — the
           // prebuilt-dist path reports `running` before the sidecar binds, so
           // `running` alone would stop the poll too early.
@@ -4382,9 +4406,14 @@ function usePreviewPhase(
               pollRef.current = null
             }
           }
+        } else {
+          console.warn('[preview/status]', resp.status, statusBase)
         }
-      } catch {
-        // Pod may not be reachable yet
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.warn('[preview/status] poll failed', message)
+      } finally {
+        inFlightRef.current = false
       }
     }
 
@@ -4398,7 +4427,7 @@ function usePreviewPhase(
         pollRef.current = null
       }
     }
-  }, [statusBase])
+  }, [statusBase, pollTimeoutMs])
 
   return { phase, running, apiReady, apiServerPhase }
 }

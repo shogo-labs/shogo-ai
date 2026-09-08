@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { View, Text, Pressable, ScrollView, ActivityIndicator, TextInput } from 'react-native'
+import { View, Text, Pressable, ScrollView, ActivityIndicator, TextInput, StyleSheet } from 'react-native'
 import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight, Search, Globe, FileCode } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { nativeActivePill } from '../../../lib/native-active-shadow'
 import { GroupedToolTags } from './GroupedToolTags'
-import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
+import {
+  useNativePhoneWindow,
+  nativeContentWidth,
+  nativeSettingsPaneStyle,
+  nativeSkillsActionWidths,
+  NATIVE_PHONE_PICKER_INSET,
+  NATIVE_PHONE_CONTROL_SIZE,
+  NATIVE_PHONE_ROW_GAP,
+} from '../../../lib/native-phone-layout'
 
 interface Skill {
   name: string
@@ -44,8 +52,19 @@ interface SkillsPanelProps {
   visible: boolean
 }
 
+const NATIVE_REFRESH_SIZE = NATIVE_PHONE_CONTROL_SIZE
+
 export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) {
-  const comfortable = useIsNativePhoneLayout()
+  const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  // Same math as the Settings section picker (`screenWidth - 24`). Pixel
+  // widths — not `flex: 1` — so Yoga cannot shrink Library / CTA to content.
+  const contentWidth = comfortable
+    ? nativeContentWidth(pageWidth, NATIVE_PHONE_PICKER_INSET)
+    : 0
+  const gutter = comfortable ? NATIVE_PHONE_PICKER_INSET / 2 : 16
+  const actionWidths = comfortable
+    ? nativeSkillsActionWidths(pageWidth, NATIVE_REFRESH_SIZE, NATIVE_PHONE_ROW_GAP)
+    : { row: 0, library: 0, refresh: NATIVE_REFRESH_SIZE }
   const [skills, setSkills] = useState<Skill[]>([])
   const [bundledSkills, setBundledSkills] = useState<BundledSkill[]>([])
   const [registrySkills, setRegistrySkills] = useState<RegistrySkill[]>([])
@@ -246,11 +265,30 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
   )
 
   return (
-    <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
-      <View className={cn('border-b border-border', comfortable ? 'px-4 py-3.5 gap-2' : 'px-4 py-3 flex-row items-center gap-2')}>
-        <View className="flex-row items-center gap-2">
+    <View
+      collapsable={false}
+      className={comfortable ? undefined : 'absolute inset-0 flex-col'}
+      style={
+        comfortable
+          ? { ...nativeSettingsPaneStyle(pageWidth), display: visible ? 'flex' : 'none' }
+          : { display: visible ? 'flex' : 'none' }
+      }
+    >
+      <View
+        collapsable={false}
+        className={comfortable ? undefined : 'border-b border-border px-4 py-3 flex-row items-center gap-2'}
+        style={
+          comfortable
+            ? [nativeChrome.header, { width: pageWidth, maxWidth: pageWidth, paddingHorizontal: gutter }]
+            : undefined
+        }
+      >
+        <View
+          className={comfortable ? undefined : 'flex-row items-center gap-2'}
+          style={comfortable ? [nativeChrome.titleRow, { width: actionWidths.row }] : undefined}
+        >
           <Zap size={comfortable ? 20 : 16} className="text-muted-foreground" />
-          <View className="flex-1 min-w-0">
+          <View className={comfortable ? undefined : 'flex-1 min-w-0'} style={comfortable ? nativeChrome.titleText : undefined}>
             <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')} numberOfLines={1}>Skills</Text>
             <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
               {skills.length} installed
@@ -286,27 +324,31 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
           )}
         </View>
         {comfortable ? (
-          <View className="flex-row items-center gap-2">
-            <Pressable
-              onPress={() => { setShowLibrary(!showLibrary); setSearchQuery('') }}
-              role="button"
-              accessibilityLabel={showLibrary ? 'Close skill library' : 'Open skill library'}
-              accessibilityState={{ expanded: showLibrary }}
-              className={cn(
-                'h-11 flex-1 flex-row items-center justify-center gap-2 rounded-xl px-3',
-                showLibrary ? 'bg-primary' : 'bg-muted active:opacity-80',
-              )}
-            >
-              <BookOpen size={18} className={showLibrary ? 'text-primary-foreground' : 'text-foreground'} />
-              <Text className={cn('text-base font-medium', showLibrary ? 'text-primary-foreground' : 'text-foreground')}>
-                Library
-              </Text>
-            </Pressable>
+          <View
+            collapsable={false}
+            style={[nativeChrome.actionRow, { width: actionWidths.row }]}
+          >
+            <View collapsable={false} style={{ width: actionWidths.library }}>
+              <Pressable
+                onPress={() => { setShowLibrary(!showLibrary); setSearchQuery('') }}
+                role="button"
+                accessibilityLabel={showLibrary ? 'Close skill library' : 'Open skill library'}
+                accessibilityState={{ expanded: showLibrary }}
+                style={[nativeChrome.libraryButton, { width: actionWidths.library }]}
+                className={showLibrary ? 'bg-primary' : 'bg-muted active:opacity-80'}
+              >
+                <BookOpen size={18} className={showLibrary ? 'text-primary-foreground' : 'text-foreground'} />
+                <Text className={cn('text-base font-medium', showLibrary ? 'text-primary-foreground' : 'text-foreground')}>
+                  Library
+                </Text>
+              </Pressable>
+            </View>
             <Pressable
               onPress={loadSkills}
               role="button"
               accessibilityLabel="Refresh skills"
-              className="h-11 w-11 items-center justify-center rounded-xl bg-muted active:opacity-80"
+              style={nativeChrome.refreshButton}
+              className="bg-muted active:opacity-80"
             >
               <RefreshCw size={18} className="text-foreground" />
             </Pressable>
@@ -315,21 +357,37 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
       </View>
 
       {error && (
-        <View className="px-4 py-2 bg-destructive/10">
+        <View className="px-4 py-2 bg-destructive/10" style={comfortable ? { width: pageWidth } : undefined}>
           <Text className="text-xs text-destructive">{error}</Text>
         </View>
       )}
 
-      <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
+      <ScrollView
+        className={comfortable ? undefined : 'flex-1'}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        alwaysBounceVertical={comfortable}
+        style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+        contentContainerStyle={{
+          paddingHorizontal: comfortable ? gutter : 16,
+          paddingVertical: 16,
+          flexGrow: 1,
+          width: comfortable ? pageWidth : undefined,
+        }}
+      >
         {isLoading ? (
           <View className="items-center py-8">
             <ActivityIndicator size="small" />
             <Text className="text-sm text-muted-foreground mt-2">Loading skills...</Text>
           </View>
         ) : showLibrary ? (
-          <View className="gap-3">
+          <View className="gap-3" style={comfortable ? { width: contentWidth } : undefined}>
             {/* Library tabs */}
-            <View className={cn("flex-row gap-1 bg-muted/50 rounded-lg", comfortable ? "p-1.5" : "p-1")} role="tablist">
+            <View
+              className={cn("flex-row gap-1 bg-muted/50 rounded-lg", comfortable ? "p-1.5" : "p-1")}
+              style={comfortable ? { width: contentWidth, flexDirection: 'row' } : undefined}
+              role="tablist"
+            >
               <Pressable
                 onPress={() => { setLibraryTab('community'); setSearchQuery('') }}
                 role="tab"
@@ -340,7 +398,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                   comfortable ? 'min-h-11' : 'py-1.5',
                   communityPill.className,
                 )}
-                style={communityPill.style}
+                style={comfortable ? [{ flex: 1 }, communityPill.style] : communityPill.style}
               >
                 <Globe size={comfortable ? 16 : 12} className={libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground'} />
                 <Text className={cn(comfortable ? 'text-sm font-medium flex-1 text-center' : 'text-xs font-medium', libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>
@@ -357,7 +415,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                   comfortable ? 'min-h-11' : 'py-1.5',
                   bundledPill.className,
                 )}
-                style={bundledPill.style}
+                style={comfortable ? [{ flex: 1 }, bundledPill.style] : bundledPill.style}
               >
                 <BookOpen size={comfortable ? 16 : 12} className={libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground'} />
                 <Text className={cn(comfortable ? 'text-sm font-medium flex-1 text-center' : 'text-xs font-medium', libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>
@@ -369,7 +427,10 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
             {/* Community skills tab */}
             {libraryTab === 'community' ? (
               <View className="gap-3">
-                <View className="flex-row items-center gap-2 bg-muted/30 rounded-lg px-3 py-2">
+                <View
+                  className="flex-row items-center gap-2 bg-muted/30 rounded-lg px-3 py-2"
+                  style={comfortable ? { width: contentWidth, flexDirection: 'row', alignItems: 'center' } : undefined}
+                >
                   <Search size={14} className="text-muted-foreground" />
                   <TextInput
                     value={searchQuery}
@@ -377,6 +438,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                     placeholder={`Search ${registrySkills.length} community skills...`}
                     placeholderTextColor="#888"
                     className="flex-1 text-sm text-foreground"
+                    style={comfortable ? { width: Math.max(0, contentWidth - 24 - 14 - 8), flexShrink: 1 } : undefined}
                     autoCapitalize="none"
                     autoCorrect={false}
                     accessibilityLabel="Search community skills"
@@ -592,27 +654,30 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
             )}
           </View>
         ) : skills.length === 0 ? (
-          <View className="items-center py-12">
-            <Zap size={32} className="text-muted-foreground mb-3" />
-            <Text className={cn('text-muted-foreground mb-1', comfortable ? 'text-base' : 'text-sm')}>No skills installed</Text>
+          <View style={comfortable ? [nativeChrome.emptyState, { width: actionWidths.row }] : undefined} className={comfortable ? undefined : 'items-center py-12'}>
+            <Zap size={32} className="text-muted-foreground mb-3" style={comfortable ? { alignSelf: 'center' } : undefined} />
+            <Text className={cn('text-muted-foreground mb-1 text-center', comfortable ? 'text-base' : 'text-sm')}>No skills installed</Text>
             <Text className={cn('text-muted-foreground mb-3 text-center', comfortable ? 'text-sm leading-5' : 'text-xs')}>
               Skills teach your agent specific behaviors triggered by keywords.
             </Text>
-            <Pressable
-              onPress={() => setShowLibrary(true)}
-              role="button"
-              accessibilityLabel="Browse skill library"
-              className={cn(
-                'flex-row items-center gap-1 rounded-md bg-primary active:bg-primary/80',
-                comfortable ? 'min-h-12 px-5' : 'px-3 py-1.5',
-              )}
-            >
-              <BookOpen size={comfortable ? 18 : 12} className="text-primary-foreground" />
-              <Text className={cn('text-primary-foreground', comfortable ? 'text-base font-medium' : 'text-xs')}>Browse Skill Library</Text>
-            </Pressable>
+            <View collapsable={false} style={comfortable ? { width: actionWidths.row } : undefined}>
+              <Pressable
+                onPress={() => setShowLibrary(true)}
+                role="button"
+                accessibilityLabel="Browse skill library"
+                style={comfortable ? [nativeChrome.cta, { width: actionWidths.row }] : undefined}
+                className={cn(
+                  'flex-row items-center justify-center gap-2 bg-primary active:bg-primary/80',
+                  comfortable ? undefined : 'rounded-md px-3 py-1.5',
+                )}
+              >
+                <BookOpen size={comfortable ? 18 : 12} className="text-primary-foreground" />
+                <Text className={cn('text-primary-foreground', comfortable ? 'text-base font-medium' : 'text-xs')}>Browse Skill Library</Text>
+              </Pressable>
+            </View>
           </View>
         ) : (
-          <View className="gap-3">
+          <View className="gap-3" style={comfortable ? { width: contentWidth } : undefined}>
             {skills.map((skill) => {
               const isExpanded = expandedSkill === skill.name
               const content = skillContent[skill.name]
@@ -739,3 +804,55 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
     </View>
   )
 }
+
+const nativeChrome = StyleSheet.create({
+  header: {
+    paddingVertical: 14,
+    gap: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(127,127,127,0.35)',
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: NATIVE_PHONE_ROW_GAP,
+  },
+  titleText: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: NATIVE_PHONE_ROW_GAP,
+  },
+  libraryButton: {
+    height: NATIVE_REFRESH_SIZE,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 12,
+  },
+  refreshButton: {
+    width: NATIVE_REFRESH_SIZE,
+    height: NATIVE_REFRESH_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+  },
+  emptyState: {
+    paddingVertical: 48,
+    alignItems: 'stretch',
+  },
+  cta: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 12,
+  },
+})
+

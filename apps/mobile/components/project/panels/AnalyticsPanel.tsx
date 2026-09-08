@@ -17,7 +17,14 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
 import { api } from '../../../lib/api'
 import type { HttpClient } from '@shogo-ai/sdk'
-import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
+import {
+  useNativePhoneWindow,
+  nativeContentWidth,
+  nativeSettingsPaneStyle,
+  nativeTwoColumnCardWidth,
+  NATIVE_PHONE_CONTROL_SIZE,
+  NATIVE_PHONE_ROW_GAP,
+} from '../../../lib/native-phone-layout'
 
 type Period = '7d' | '30d' | '90d'
 type DailyCount = { date: string; count: number }
@@ -178,7 +185,12 @@ interface AnalyticsPanelProps {
 }
 
 export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelProps) {
-  const comfortable = useIsNativePhoneLayout()
+  const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const cardWidth = comfortable ? nativeTwoColumnCardWidth(pageWidth) : undefined
+  const innerWidth = comfortable ? nativeContentWidth(pageWidth) : 0
+  const periodTrackWidth = comfortable
+    ? Math.max(0, innerWidth - NATIVE_PHONE_CONTROL_SIZE - NATIVE_PHONE_ROW_GAP)
+    : 0
   const http = useDomainHttp()
   const [period, setPeriod] = useState<Period>('7d')
   const [selectedActivityDate, setSelectedActivityDate] = useState<string | null>(null)
@@ -203,9 +215,20 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
   if (!visible) return null
 
   return (
-    <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
+    <View
+      collapsable={false}
+      className={comfortable ? undefined : 'absolute inset-0 flex-col'}
+      style={
+        comfortable
+          ? { ...nativeSettingsPaneStyle(pageWidth), display: visible ? 'flex' : 'none' }
+          : { display: visible ? 'flex' : 'none' }
+      }
+    >
       {/* Header */}
-      <View className={cn('border-b border-border', comfortable ? 'px-4 py-3.5 gap-2' : 'px-4 py-3 flex-row items-center gap-2')}>
+      <View
+        className={cn('border-b border-border', comfortable ? 'px-4 py-3.5 gap-2' : 'px-4 py-3 flex-row items-center gap-2')}
+        style={comfortable ? { width: pageWidth, maxWidth: pageWidth } : undefined}
+      >
         <View className="flex-row items-center gap-2">
           <BarChart3 size={comfortable ? 20 : 16} className="text-muted-foreground" />
           <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')}>Analytics</Text>
@@ -234,8 +257,11 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
           )}
         </View>
         {comfortable ? (
-          <View className="flex-row items-center gap-2">
-            <View className="flex-1 flex-row rounded-full bg-muted p-1">
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: NATIVE_PHONE_ROW_GAP, width: innerWidth }}>
+            <View
+              className="flex-row rounded-full bg-muted p-1"
+              style={{ width: periodTrackWidth }}
+            >
               {(['7d', '30d', '90d'] as Period[]).map((p) => (
                 <Pressable
                   key={p}
@@ -243,7 +269,8 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
                     setPeriod(p)
                     setSelectedActivityDate(null)
                   }}
-                  className={cn('min-h-10 flex-1 items-center justify-center rounded-full', period === p ? 'bg-background' : '')}
+                  className={cn('min-h-10 items-center justify-center rounded-full', period === p ? 'bg-background' : '')}
+                  style={{ flex: 1 }}
                 >
                   <Text className={cn('text-sm font-medium', period === p ? 'text-foreground' : 'text-muted-foreground')}>
                     {p}
@@ -259,13 +286,28 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
       </View>
 
       {hasError && (
-        <View className="px-4 py-2 bg-destructive/10 flex-row items-center gap-1">
+        <View
+          className="px-4 py-2 bg-destructive/10 flex-row items-center gap-1"
+          style={comfortable ? { width: pageWidth } : undefined}
+        >
           <AlertTriangle size={12} className="text-destructive" />
           <Text className="text-xs text-destructive">{overview.error || usage.error || chat.error}</Text>
         </View>
       )}
 
-      <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
+      <ScrollView
+        className={comfortable ? undefined : 'flex-1'}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        alwaysBounceVertical={comfortable}
+        style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+        contentContainerStyle={{
+          padding: 16,
+          flexGrow: 1,
+          width: comfortable ? pageWidth : undefined,
+          paddingBottom: comfortable ? 40 : 16,
+        }}
+      >
         <View className="gap-4">
           {/* Overview stat cards */}
           <View className="flex-row flex-wrap gap-3">
@@ -275,6 +317,7 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
               value={overview.data?.messages}
               loading={overview.loading}
               comfortable={comfortable}
+              cardWidth={cardWidth}
             />
             <StatCard
               icon={<Zap size={16} className="text-muted-foreground" />}
@@ -282,6 +325,7 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
               value={overview.data?.usageEvents}
               loading={overview.loading}
               comfortable={comfortable}
+              cardWidth={cardWidth}
             />
             <StatCard
               icon={<Wrench size={16} className="text-muted-foreground" />}
@@ -289,6 +333,7 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
               value={chat.data?.totalToolCalls}
               loading={chat.loading}
               comfortable={comfortable}
+              cardWidth={cardWidth}
             />
             <StatCard
               icon={<Clock size={16} className="text-muted-foreground" />}
@@ -296,6 +341,7 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
               value={chat.data?.totalSessions}
               loading={chat.loading}
               comfortable={comfortable}
+              cardWidth={cardWidth}
             />
           </View>
 
@@ -550,19 +596,22 @@ function StatCard({
   value,
   loading,
   comfortable = false,
+  cardWidth,
 }: {
   icon: React.ReactNode
   label: string
   value?: number
   loading: boolean
   comfortable?: boolean
+  cardWidth?: number
 }) {
   return (
     <View
       className={cn(
         'border border-border rounded-lg p-3 min-w-0',
-        comfortable ? 'w-[48%]' : 'flex-1 min-w-[140px]',
+        comfortable ? undefined : 'flex-1 min-w-[140px]',
       )}
+      style={comfortable && cardWidth ? { width: cardWidth } : undefined}
     >
       <View className="flex-row items-center gap-1.5 mb-1">
         {icon}

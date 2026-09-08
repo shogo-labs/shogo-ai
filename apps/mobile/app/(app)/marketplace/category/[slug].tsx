@@ -25,6 +25,7 @@ import {
 } from '../../../../components/marketplace'
 import { findCategory } from '@shogo/shared-app'
 import { useGridColumns } from '../../../../hooks/useGridColumns'
+import { overlayScrollbarProps } from '../../../../lib/overlay-scrollbar'
 
 interface ListingFromAPI {
   id: string
@@ -232,6 +233,7 @@ export default observer(function CategoryLandingScreen() {
         keyExtractor={(item, index) => item?.slug ?? `spacer-${index}`}
         numColumns={numColumns}
         contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 32 }}
+        {...overlayScrollbarProps}
         renderItem={({ item }) => {
           if (!item) return <View className="flex-1 m-1.5" />
           return (
