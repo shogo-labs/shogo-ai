@@ -170,7 +170,12 @@ mock.module("../useVoiceInput", () => ({
 
 mock.module("../VoiceWaveform", () => ({ VoiceWaveform: () => null }))
 mock.module("../AttachSourceSheet", () => ({ AttachSourceSheet: () => null }))
-mock.module("../ContextTracker", () => ({ ContextTracker: () => null }))
+mock.module("../ContextTracker", () => ({
+  ContextTracker: () => null,
+  // `ContextBreakdownPanel` (rendered by the dock's `ContextUsageDockPanel`,
+  // now part of `ChatInput`'s tree) imports this alongside the component.
+  formatTokenCount: (tokens: number) => String(tokens),
+}))
 mock.module("../../../lib/visible-models", () => ({
   resolveShortName: (modelId: string) => modelId,
   resolveTier: () => "economy",

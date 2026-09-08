@@ -131,6 +131,46 @@ export function createChatDockStore(): ChatDockStore {
     return (panels.get(id)?.kind ?? "status") === "blocking"
   }
 
+  function chipsEqual(a: DockPanelChip | undefined, b: DockPanelChip | undefined): boolean {
+    if (a === b) return true
+    if (!a || !b) return false
+    return a.icon === b.icon && a.count === b.count && a.dot === b.dot
+  }
+
+  /**
+   * Whether two descriptors for the same id differ in any way that should
+   * actually trigger a re-render. Deliberately excludes `render` and
+   * `headerActions` — those legitimately get a fresh function/element
+   * reference on every render of the owning component (closures over
+   * local state), so comparing them by reference would always report
+   * "changed" and defeat the point of this check. The freshest descriptor
+   * is stored via `panels.set()` regardless, so the very next *real*
+   * notify (from this or any other panel) picks up new render output.
+   *
+   * Without this guard, `registerPanel` notified unconditionally on every
+   * call. Several panels rebuild their descriptor's non-render fields from
+   * unstable inputs (a getter returning a fresh array, inline object/prop
+   * literals, etc.) on every render — including renders forced by
+   * `ChatPanel`'s own subscription to this store's version. That combo is
+   * a `render -> registerPanel -> notify -> render` cycle with no exit,
+   * which trips React's "Maximum update depth exceeded" (error #185) and
+   * takes down the whole chat panel. See `ChangesDockPanel`.
+   */
+  function panelsObservablyEqual(a: DockPanelDescriptor, b: DockPanelDescriptor): boolean {
+    return (
+      (a.kind ?? "status") === (b.kind ?? "status") &&
+      a.order === b.order &&
+      a.title === b.title &&
+      a.icon === b.icon &&
+      a.summary === b.summary &&
+      a.accent === b.accent &&
+      (a.autoShow !== false) === (b.autoShow !== false) &&
+      !!a.defaultExpanded === !!b.defaultExpanded &&
+      !!a.onDismiss === !!b.onDismiss &&
+      chipsEqual(a.chip, b.chip)
+    )
+  }
+
   /** Evicts least-recently-expanded status panels until under the cap, protecting `keepId`. */
   function enforceExpandCap(keepId?: string): void {
     const cap = hasBlockingPanels() ? MAX_EXPANDED_WITH_BLOCKING : MAX_EXPANDED_STATUS_PANELS
@@ -173,9 +213,9 @@ export function createChatDockStore(): ChatDockStore {
       return filtered.sort((a, b) => a.order - b.order)
     },
     registerPanel(descriptor) {
-      const isNew = !panels.has(descriptor.id)
+      const existing = panels.get(descriptor.id)
       panels.set(descriptor.id, descriptor)
-      if (isNew) {
+      if (!existing) {
         const autoShow = descriptor.autoShow !== false
         const isBlocking = (descriptor.kind ?? "status") === "blocking"
         if (autoShow) {
@@ -192,8 +232,12 @@ export function createChatDockStore(): ChatDockStore {
             enforceExpandCap(descriptor.id)
           }
         }
+        notify()
+        return
       }
-      notify()
+      // Update (not first registration): only notify if something a
+      // consumer can actually observe changed. See `panelsObservablyEqual`.
+      if (!panelsObservablyEqual(existing, descriptor)) notify()
     },
     unregisterPanel(id) {
       if (!panels.has(id)) return

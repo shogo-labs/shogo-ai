@@ -65,6 +65,17 @@ export function createFileChangeStore(): FileChangeStore {
   const seenKeys = new Set<string>()
   const listeners = new Set<() => void>()
   let version = 0
+  // Cached snapshot for `getAll()` — recomputed only when data actually
+  // changes (mirrors `todoStateStore.getLatest()`'s cached-array pattern).
+  // `getAll()` used to map a fresh array on every call regardless of
+  // whether anything changed, which made every consumer's `useMemo`
+  // recompute on every unrelated re-render; combined with a dock panel
+  // registering unconditionally on every such recompute, that fed an
+  // infinite "render -> register -> notify -> render" loop that crashed
+  // the whole chat panel (React error #185, "Maximum update depth
+  // exceeded") — see `ChangesDockPanel`.
+  let snapshot: FileChangeItem[] = []
+  let snapshotVersion = -1
 
   function notify() {
     version++
@@ -76,7 +87,11 @@ export function createFileChangeStore(): FileChangeStore {
       return version
     },
     getAll() {
-      return order.map((path) => items.get(path)!).filter(Boolean)
+      if (snapshotVersion !== version) {
+        snapshot = order.map((path) => items.get(path)!).filter(Boolean)
+        snapshotVersion = version
+      }
+      return snapshot
     },
     registerChange(toolId, path, kind) {
       const key = `${toolId}:${path}:${kind}`

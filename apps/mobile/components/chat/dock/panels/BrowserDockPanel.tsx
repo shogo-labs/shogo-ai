@@ -10,7 +10,7 @@
  * top of `DockPanel` already unmounting collapsed bodies.
  */
 
-import { useSyncExternalStore } from "react"
+import { useMemo, useSyncExternalStore } from "react"
 import { Eye } from "lucide-react-native"
 import { LiveBrowserView } from "../../LiveBrowserView"
 import { subagentStreamStore } from "../../../../lib/subagent-stream-store"
@@ -18,34 +18,35 @@ import { useDockPanel } from "../useDockPanel"
 import type { DockPanelDescriptor } from "../../../../lib/chat-dock-store"
 
 export function BrowserDockPanel() {
-  useSyncExternalStore(
+  const version = useSyncExternalStore(
     subagentStreamStore.subscribe,
     () => subagentStreamStore.getVersion(),
     () => subagentStreamStore.getVersion(),
   )
 
-  let runningInstanceId: string | null = null
-  let runningAgentType: string | undefined
-  for (const data of subagentStreamStore.getAll().values()) {
-    if (data.status === "running" && data.instanceId) {
-      runningInstanceId = data.instanceId
-      runningAgentType = data.agentType
-      break
-    }
-  }
-
-  const descriptor: DockPanelDescriptor | null = runningInstanceId
-    ? {
-        id: "browser",
-        kind: "status",
-        order: 50,
-        title: "Live browser",
-        icon: Eye,
-        summary: runningAgentType,
-        chip: { icon: Eye, dot: true },
-        render: ({ expanded }) => <LiveBrowserView instanceId={runningInstanceId!} active={expanded} />,
+  const { runningInstanceId, runningAgentType } = useMemo(() => {
+    for (const data of subagentStreamStore.getAll().values()) {
+      if (data.status === "running" && data.instanceId) {
+        return { runningInstanceId: data.instanceId, runningAgentType: data.agentType }
       }
-    : null
+    }
+    return { runningInstanceId: null as string | null, runningAgentType: undefined as string | undefined }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version])
+
+  const descriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (!runningInstanceId) return null
+    return {
+      id: "browser",
+      kind: "status",
+      order: 50,
+      title: "Live browser",
+      icon: Eye,
+      summary: runningAgentType,
+      chip: { icon: Eye, dot: true },
+      render: ({ expanded }) => <LiveBrowserView instanceId={runningInstanceId} active={expanded} />,
+    }
+  }, [runningInstanceId, runningAgentType])
 
   useDockPanel(descriptor)
   return null
