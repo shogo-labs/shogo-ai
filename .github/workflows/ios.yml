@@ -8,8 +8,10 @@
 #
 # Environments:
 #   staging    — push to main branch (auto OTA to staging channel)
-#   production — push v* (unified release tag, e.g. v1.0.0) or ios-v* (iOS-only)
+#   production — push v* (unified release tag, e.g. v1.13.34) or ios-v* (iOS-only)
 #                or manual dispatch with environment=production
+#   Marketing version is taken from the git tag (same as desktop-release-*),
+#   not from the placeholder in apps/mobile/app.json.
 #
 # Decision matrix (same logic as android.yml):
 #   - Tag push (v* or ios-v*) → always full build + submit
@@ -49,13 +51,10 @@ on:
     tags:
       - 'ios-v*'
       - 'v[0-9]*'
-    paths:
-      - 'apps/mobile/**'
-      - 'packages/domain-stores/**'
-      - 'packages/shared-app/**'
-      - 'packages/shared-ui/**'
-      - 'packages/ui-kit/**'
-      - 'packages/sdk/**'
+    # No `paths` filter: GitHub ANDs tags with paths, so a unified `v*` tag
+    # whose commit did not touch apps/mobile would skip this workflow and
+    # ship App Store as the app.json placeholder instead of the tag.
+    # Main-branch path filtering lives in the `gate` job.
   workflow_dispatch:
     inputs:
       mode:
@@ -82,10 +81,33 @@ on:
 
 jobs:
   # ===========================================================================
+  # Skip main-branch pushes that do not touch mobile / this workflow.
+  # Tags and workflow_dispatch always continue.
+  # ===========================================================================
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    outputs:
+      skipped: ${{ steps.paths.outputs.skipped }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Skip unrelated main-branch changes
+        id: paths
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        run: bash scripts/ci/mobile-workflow-should-run.sh ios.yml
+
+  # ===========================================================================
   # Check if native code changed
   # ===========================================================================
   check-fingerprint:
     name: Check Native Fingerprint
+    needs: gate
+    if: ${{ needs.gate.outputs.skipped != 'true' }}
     runs-on: ubuntu-latest
     outputs:
       needs_build: ${{ steps.decide.outputs.needs_build }}
@@ -111,13 +133,14 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-tags: true
 
-      - name: Resolve app version from app.json
+      - name: Resolve app version from git tag
         id: resolve-version
-        run: |
-          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/mobile/app.json','utf8')).expo.version")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Using app.json version: $VERSION"
+        env:
+          MOBILE_RELEASE_ENV: ${{ steps.resolve-env.outputs.environment }}
+        run: bash scripts/ci/resolve-mobile-app-version.sh
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -319,6 +342,7 @@ jobs:
           echo "## iOS OTA Update Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.check-fingerprint.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Runtime Version:** ${{ needs.check-fingerprint.outputs.runtime_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
@@ -855,6 +879,7 @@ jobs:
           echo "## iOS Build Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.check-fingerprint.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **buildNumber:** $((${{ github.run_number }} + 100))" >> $GITHUB_STEP_SUMMARY
           echo "- **Profile:** $PROFILE_NAME" >> $GITHUB_STEP_SUMMARY
           echo "- **IPA artifact:** Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa" >> $GITHUB_STEP_SUMMARY
@@ -874,5 +899,5 @@ jobs:
 # gh workflow run ios.yml --ref main -f mode=full -f environment=production
 #
 # Or via tag (auto-triggers production build + submit):
-#   git tag v1.0.0 && git push origin v1.0.0          # unified release: triggers iOS + Android + macOS desktop + Windows desktop
-#   git tag ios-v1.0.0 && git push origin ios-v1.0.0  # iOS-only release
+#   git tag v1.13.35 && git push origin v1.13.35          # unified release: iOS + Android + macOS + Windows
+#   git tag ios-v1.13.35 && git push origin ios-v1.13.35  # iOS-only release
