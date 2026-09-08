@@ -16,6 +16,7 @@ import {
   Image,
   Platform,
   Modal,
+  useWindowDimensions,
 } from 'react-native'
 import {
   Cpu,
@@ -203,18 +204,25 @@ const periodActiveNativeShadow = Platform.select({
   default: undefined,
 })
 
+function useNativeComfortable() {
+  const { width } = useWindowDimensions()
+  return Platform.OS !== 'web' && width < 600
+}
+
 export function PeriodSelector({
   value,
   onChange,
+  comfortable = false,
 }: {
   value: AnalyticsPeriod
   onChange: (p: AnalyticsPeriod) => void
+  comfortable?: boolean
 }) {
   // Legacy selector — keep the four rolling-window pills only. The new
   // dashboard uses `DateRangePills` which adds 1d / MTD / Last month.
   const legacyPeriods: AnalyticsPeriod[] = ['7d', '30d', '90d', '1y']
   return (
-    <View className="flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5">
+    <View className={cn("flex-row items-center bg-muted rounded-lg gap-0.5", comfortable ? "p-1" : "p-0.5")}>
       {legacyPeriods.map((period) => {
         const isActive = value === period
         return (
@@ -222,14 +230,16 @@ export function PeriodSelector({
             key={period}
             onPress={() => onChange(period)}
             className={cn(
-              'px-3 py-1.5 rounded-md',
+              'flex-1 items-center rounded-md',
+              comfortable ? 'px-2 py-2.5' : 'px-3 py-1.5',
               isActive ? 'bg-background' : ''
             )}
             style={isActive ? periodActiveNativeShadow : undefined}
           >
             <Text
               className={cn(
-                'text-xs font-medium',
+                'font-medium',
+                comfortable ? 'text-sm' : 'text-xs',
                 isActive ? 'text-foreground' : 'text-muted-foreground'
               )}
             >
@@ -247,25 +257,27 @@ export function StatCard({
   value,
   icon: Icon,
   subtitle,
+  comfortable = false,
 }: {
   label: string
   value: number | string | undefined
   icon: React.ComponentType<{ size?: number; className?: string }>
   subtitle?: string
+  comfortable?: boolean
 }) {
   return (
-    <View className="flex-1 rounded-xl border border-border bg-card p-3 min-w-[140px]">
+    <View className={cn("flex-1 rounded-xl border border-border bg-card min-w-[140px]", comfortable ? "p-4" : "p-3")}>
       <View className="flex-row items-center justify-between mb-1">
-        <Text className="text-[10px] font-medium text-muted-foreground">{label}</Text>
-        <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
-          <Icon size={12} className="text-primary" />
+        <Text className={cn("font-medium text-muted-foreground", comfortable ? "text-sm" : "text-[10px]")}>{label}</Text>
+        <View className={cn("rounded bg-primary/10 items-center justify-center", comfortable ? "h-8 w-8" : "h-6 w-6")}>
+          <Icon size={comfortable ? 16 : 12} className="text-primary" />
         </View>
       </View>
-      <Text className="text-xl font-bold text-foreground">
+      <Text className={cn("font-bold text-foreground", comfortable ? "text-2xl" : "text-xl")}>
         {value === undefined ? '—' : typeof value === 'number' ? value.toLocaleString() : value}
       </Text>
       {subtitle && (
-        <Text className="text-[10px] text-muted-foreground mt-0.5">{subtitle}</Text>
+        <Text className={cn("text-muted-foreground mt-0.5", comfortable ? "text-xs" : "text-[10px]")}>{subtitle}</Text>
       )}
     </View>
   )
@@ -384,6 +396,7 @@ export function UsageSummaryView({
   onPageChange?: (p: number) => void
   currentPage?: number
 }) {
+  const comfortable = useNativeComfortable()
   const [sortKey, setSortKey] = useState<SortKey>('totalTokens')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -399,6 +412,154 @@ export function UsageSummaryView({
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     else { setSortKey(key); setSortDir('desc') }
+  }
+
+  const costKey: SortKey = isLocalMode ? 'totalRawUsd' : 'totalBilledUsd'
+  const costLabel = isLocalMode ? 'Raw $' : 'Billed $'
+
+  const pagination = onPageChange && data.total != null && data.limit != null && data.total > data.limit ? (() => {
+    const page = currentPage ?? data.page ?? 1
+    const totalPages = Math.max(1, Math.ceil(data.total / data.limit))
+    return (
+      <View className="flex-row items-center justify-between mt-3">
+        <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')}>
+          Page {page} of {totalPages} · {data.total.toLocaleString()} rows
+        </Text>
+        <View className="flex-row items-center gap-1">
+          <Pressable
+            onPress={() => onPageChange(page - 1)}
+            disabled={page <= 1}
+            className={cn('p-1.5 rounded-md border border-border', page <= 1 && 'opacity-30')}
+          >
+            <ChevronLeft size={comfortable ? 18 : 14} className="text-foreground" />
+          </Pressable>
+          <Pressable
+            onPress={() => onPageChange(page + 1)}
+            disabled={page >= totalPages}
+            className={cn('p-1.5 rounded-md border border-border', page >= totalPages && 'opacity-30')}
+          >
+            <ChevronRight size={comfortable ? 18 : 14} className="text-foreground" />
+          </Pressable>
+        </View>
+      </View>
+    )
+  })() : null
+
+  if (comfortable) {
+    const sortOptions: { key: SortKey; label: string }[] = [
+      { key: 'userEmail', label: 'User' },
+      { key: 'model', label: 'Model' },
+      { key: 'requestCount', label: 'Reqs' },
+      { key: 'totalTokens', label: 'Tokens' },
+      { key: costKey, label: costLabel },
+    ]
+
+    return (
+      <View>
+        <View className="mb-4 flex-row flex-wrap gap-2">
+          <View className="min-w-[46%] flex-1 rounded-xl border border-border/50 bg-muted/40 p-3">
+            <View className="mb-1 flex-row items-center gap-1.5">
+              <UserIcon size={14} className="text-muted-foreground" />
+              <Text className="text-sm text-muted-foreground">Users</Text>
+            </View>
+            <Text className="text-xl font-bold text-foreground">{data.totals?.uniqueUsers ?? 0}</Text>
+          </View>
+          <View className="min-w-[46%] flex-1 rounded-xl border border-border/50 bg-muted/40 p-3">
+            <View className="mb-1 flex-row items-center gap-1.5">
+              <Cpu size={14} className="text-muted-foreground" />
+              <Text className="text-sm text-muted-foreground">Models</Text>
+            </View>
+            <Text className="text-xl font-bold text-foreground">{data.totals?.uniqueModels ?? 0}</Text>
+          </View>
+          <View className="min-w-[46%] flex-1 rounded-xl border border-border/50 bg-muted/40 p-3">
+            <Text className="mb-1 text-sm text-muted-foreground">Requests</Text>
+            <Text className="text-xl font-bold text-foreground">{formatNumber(data.totals?.totalRequests)}</Text>
+          </View>
+          <View className="min-w-[46%] flex-1 rounded-xl border border-border/50 bg-muted/40 p-3">
+            <Text className="mb-1 text-sm text-muted-foreground">{costLabel}</Text>
+            <Text className="text-xl font-bold text-foreground" numberOfLines={1}>
+              {formatDollarCost(isLocalMode ? data.totals?.totalRawUsd : data.totals?.totalBilledUsd)}
+            </Text>
+          </View>
+        </View>
+
+        <View className="mb-3 flex-row flex-wrap gap-1.5">
+          {sortOptions.map((opt) => {
+            const active = sortKey === opt.key
+            return (
+              <Pressable
+                key={opt.label}
+                onPress={() => toggleSort(opt.key)}
+                className={cn(
+                  'flex-row items-center gap-1 rounded-full border px-3 py-1.5',
+                  active ? 'border-primary bg-primary/15' : 'border-border',
+                )}
+              >
+                <Text className={cn('text-sm', active ? 'font-medium text-foreground' : 'text-muted-foreground')}>
+                  {opt.label}
+                </Text>
+                {active ? (
+                  sortDir === 'asc'
+                    ? <ChevronUp size={14} className="text-foreground" />
+                    : <ChevronDown size={14} className="text-foreground" />
+                ) : null}
+              </Pressable>
+            )
+          })}
+        </View>
+
+        {sorted.length === 0 ? (
+          <View className="items-center py-8">
+            <Text className="text-base text-muted-foreground">No usage data for this period</Text>
+          </View>
+        ) : (
+          <View className="overflow-hidden rounded-xl border border-border">
+            {sorted.map((entry, i) => (
+              <View
+                key={`${entry.userId}-${entry.provider}-${entry.model}-${i}`}
+                className={cn(
+                  'gap-2 border-b border-border/50 px-3 py-3.5',
+                  i % 2 !== 0 && 'bg-muted/10',
+                  i === sorted.length - 1 && 'border-b-0',
+                )}
+              >
+                <View className="flex-row items-center gap-2">
+                  {entry.userImage ? (
+                    <Image source={{ uri: entry.userImage }} className="h-7 w-7 rounded-full" />
+                  ) : (
+                    <View className="h-7 w-7 items-center justify-center rounded-full bg-primary/20">
+                      <Text className="text-xs font-medium text-primary">
+                        {(entry.userName || entry.userEmail || '?')[0]?.toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <Text className="min-w-0 flex-1 text-base font-medium text-foreground" numberOfLines={1}>
+                    {entry.userName || entry.userEmail?.split('@')[0] || '—'}
+                  </Text>
+                </View>
+                <View className={cn('self-start rounded-md border px-2 py-1', getModelColor(entry.model))}>
+                  <Text className={cn('text-sm font-medium', getModelTextColor(entry.model))}>
+                    {getModelDisplayName(entry.model)}
+                  </Text>
+                </View>
+                <View className="flex-row items-center justify-between gap-3">
+                  <Text className="text-sm text-muted-foreground">
+                    {(entry.requestCount ?? 0).toLocaleString()} reqs
+                  </Text>
+                  <Text className="text-sm text-muted-foreground">
+                    {formatNumber(entry.totalTokens)} tokens
+                  </Text>
+                  <Text className="shrink-0 font-mono text-base font-medium text-foreground" numberOfLines={1}>
+                    {formatDollarCost(isLocalMode ? entry.totalRawUsd : entry.totalBilledUsd)}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+        {pagination}
+      </View>
+    )
   }
 
   return (
@@ -464,7 +625,7 @@ export function UsageSummaryView({
         <View className="border border-t-0 border-border rounded-b-lg overflow-hidden">
           {sorted.map((entry, i) => (
             <View
-              key={`${entry.userId}-${entry.model}`}
+              key={`${entry.userId}-${entry.provider}-${entry.model}-${i}`}
               className={cn(
                 'flex-row items-center p-2 border-b border-border/50',
                 i % 2 !== 0 && 'bg-muted/10'
@@ -505,34 +666,7 @@ export function UsageSummaryView({
         </View>
       )}
 
-      {/* Server-side pagination (the aggregated list can get long in prod) */}
-      {onPageChange && data.total != null && data.limit != null && data.total > data.limit && (() => {
-        const page = currentPage ?? data.page ?? 1
-        const totalPages = Math.max(1, Math.ceil(data.total / data.limit))
-        return (
-          <View className="flex-row items-center justify-between mt-3">
-            <Text className="text-xs text-muted-foreground">
-              Page {page} of {totalPages} · {data.total.toLocaleString()} rows
-            </Text>
-            <View className="flex-row items-center gap-1">
-              <Pressable
-                onPress={() => onPageChange(page - 1)}
-                disabled={page <= 1}
-                className={cn('p-1.5 rounded-md border border-border', page <= 1 && 'opacity-30')}
-              >
-                <ChevronLeft size={14} className="text-foreground" />
-              </Pressable>
-              <Pressable
-                onPress={() => onPageChange(page + 1)}
-                disabled={page >= totalPages}
-                className={cn('p-1.5 rounded-md border border-border', page >= totalPages && 'opacity-30')}
-              >
-                <ChevronRight size={14} className="text-foreground" />
-              </Pressable>
-            </View>
-          </View>
-        )
-      })()}
+      {pagination}
     </View>
   )
 }
@@ -548,12 +682,111 @@ export function UsageEventLogView({
   currentPage: number
   isLocalMode?: boolean
 }) {
+  const comfortable = useNativeComfortable()
   const totalPages = Math.ceil(data.total / data.limit)
+  const entries = data.entries ?? []
+
+  const pagination = totalPages > 1 ? (
+    <View className="flex-row items-center justify-between mt-3">
+      <Text className={cn("text-muted-foreground", comfortable ? "text-sm" : "text-xs")}>
+        Page {currentPage} of {totalPages}
+      </Text>
+      <View className="flex-row items-center gap-1">
+        <Pressable
+          onPress={() => onPageChange?.(currentPage - 1)}
+          disabled={currentPage <= 1}
+          className={cn('p-1.5 rounded-md border border-border', currentPage <= 1 && 'opacity-30')}
+        >
+          <ChevronLeft size={comfortable ? 18 : 14} className="text-foreground" />
+        </Pressable>
+        <Pressable
+          onPress={() => onPageChange?.(currentPage + 1)}
+          disabled={currentPage >= totalPages}
+          className={cn('p-1.5 rounded-md border border-border', currentPage >= totalPages && 'opacity-30')}
+        >
+          <ChevronRight size={comfortable ? 18 : 14} className="text-foreground" />
+        </Pressable>
+      </View>
+    </View>
+  ) : null
+
+  if (comfortable) {
+    return (
+      <View>
+        <Text className="mb-3 text-sm text-muted-foreground">
+          Showing {entries.length} of {data.total.toLocaleString()} events
+        </Text>
+        {entries.length === 0 ? (
+          <View className="items-center py-8">
+            <Text className="text-base text-muted-foreground">No usage events</Text>
+          </View>
+        ) : (
+          <View className="overflow-hidden rounded-xl border border-border">
+            {entries.map((entry, i) => (
+              <View
+                key={entry.id}
+                className={cn(
+                  'gap-2 border-b border-border/50 px-3 py-3.5',
+                  i % 2 !== 0 && 'bg-muted/10',
+                  i === entries.length - 1 && 'border-b-0',
+                )}
+              >
+                <View className="flex-row items-center justify-between gap-2">
+                  <Text className="text-sm text-muted-foreground">
+                    {new Date(entry.createdAt).toLocaleDateString(undefined, {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: 'numeric',
+                      minute: '2-digit',
+                    })}
+                  </Text>
+                  <View className="flex-row items-center gap-1">
+                    <Clock size={14} className="text-muted-foreground" />
+                    <Text className="text-sm text-muted-foreground">
+                      {formatDuration(entry.durationMs)}
+                    </Text>
+                  </View>
+                </View>
+                <View className="flex-row items-center gap-2">
+                  {entry.userImage ? (
+                    <Image source={{ uri: entry.userImage }} className="h-7 w-7 rounded-full" />
+                  ) : (
+                    <View className="h-7 w-7 items-center justify-center rounded-full bg-primary/20">
+                      <Text className="text-xs font-medium text-primary">
+                        {(entry.userName || entry.userEmail || '?')[0]?.toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <Text className="min-w-0 flex-1 text-base font-medium text-foreground" numberOfLines={1}>
+                    {entry.userName || entry.userEmail?.split('@')[0] || '—'}
+                  </Text>
+                </View>
+                <View className={cn('self-start rounded-md border px-2 py-1', getModelColor(entry.model))}>
+                  <Text className={cn('text-sm font-medium', getModelTextColor(entry.model))}>
+                    {getModelDisplayName(entry.model)}
+                  </Text>
+                </View>
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-sm text-muted-foreground">
+                    Tokens {formatNumber(entry.totalTokens)}
+                  </Text>
+                  <Text className="shrink-0 font-mono text-base font-medium text-foreground" numberOfLines={1}>
+                    {formatDollarCost(isLocalMode ? entry.rawUsd : entry.billedUsd)}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+        {pagination}
+      </View>
+    )
+  }
 
   return (
     <View>
       <Text className="text-xs text-muted-foreground mb-2">
-        Showing {(data.entries ?? []).length} of {data.total.toLocaleString()} events
+        Showing {entries.length} of {data.total.toLocaleString()} events
       </Text>
 
       {/* Header */}
@@ -569,13 +802,13 @@ export function UsageEventLogView({
       </View>
 
       {/* Rows */}
-      {(data.entries ?? []).length === 0 ? (
+      {entries.length === 0 ? (
         <View className="p-8 items-center border border-t-0 border-border rounded-b-lg">
           <Text className="text-sm text-muted-foreground">No usage events</Text>
         </View>
       ) : (
         <View className="border border-t-0 border-border rounded-b-lg overflow-hidden">
-          {(data.entries ?? []).map((entry, i) => (
+          {entries.map((entry, i) => (
             <View
               key={entry.id}
               className={cn(
@@ -622,30 +855,7 @@ export function UsageEventLogView({
         </View>
       )}
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <View className="flex-row items-center justify-between mt-3">
-          <Text className="text-xs text-muted-foreground">
-            Page {currentPage} of {totalPages}
-          </Text>
-          <View className="flex-row items-center gap-1">
-            <Pressable
-              onPress={() => onPageChange?.(currentPage - 1)}
-              disabled={currentPage <= 1}
-              className={cn('p-1.5 rounded-md border border-border', currentPage <= 1 && 'opacity-30')}
-            >
-              <ChevronLeft size={14} className="text-foreground" />
-            </Pressable>
-            <Pressable
-              onPress={() => onPageChange?.(currentPage + 1)}
-              disabled={currentPage >= totalPages}
-              className={cn('p-1.5 rounded-md border border-border', currentPage >= totalPages && 'opacity-30')}
-            >
-              <ChevronRight size={14} className="text-foreground" />
-            </Pressable>
-          </View>
-        </View>
-      )}
+      {pagination}
     </View>
   )
 }
@@ -673,47 +883,59 @@ export function UsageTableSection({
   title?: string
   isLocalMode?: boolean
 }) {
+  const comfortable = useNativeComfortable()
   const [view, setView] = useState<'summary' | 'detail'>('summary')
 
+  const viewToggle = (
+    <View className={cn('flex-row items-center overflow-hidden rounded-lg border border-border', comfortable && 'self-start rounded-xl')}>
+      <Pressable
+        onPress={() => setView('summary')}
+        className={cn(
+          comfortable ? 'px-4 py-2.5' : 'px-3 py-1.5',
+          view === 'summary' ? 'bg-primary' : ''
+        )}
+      >
+        <Text
+          className={cn(
+            comfortable ? 'text-base' : 'text-xs',
+            view === 'summary' ? 'text-primary-foreground' : 'text-muted-foreground'
+          )}
+        >
+          Summary
+        </Text>
+      </Pressable>
+      <Pressable
+        onPress={() => setView('detail')}
+        className={cn(
+          comfortable ? 'px-4 py-2.5' : 'px-3 py-1.5',
+          view === 'detail' ? 'bg-primary' : ''
+        )}
+      >
+        <Text
+          className={cn(
+            comfortable ? 'text-base' : 'text-xs',
+            view === 'detail' ? 'text-primary-foreground' : 'text-muted-foreground'
+          )}
+        >
+          Event Log
+        </Text>
+      </Pressable>
+    </View>
+  )
+
   return (
-    <View className="rounded-xl border border-border bg-card p-4">
-      <View className="flex-row items-center justify-between mb-4">
-        <Text className="text-sm font-semibold text-foreground">{title || 'AI Usage by User'}</Text>
-        <View className="flex-row items-center rounded-lg border border-border overflow-hidden">
-          <Pressable
-            onPress={() => setView('summary')}
-            className={cn(
-              'px-3 py-1.5',
-              view === 'summary' ? 'bg-primary' : ''
-            )}
-          >
-            <Text
-              className={cn(
-                'text-xs',
-                view === 'summary' ? 'text-primary-foreground' : 'text-muted-foreground'
-              )}
-            >
-              Summary
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setView('detail')}
-            className={cn(
-              'px-3 py-1.5',
-              view === 'detail' ? 'bg-primary' : ''
-            )}
-          >
-            <Text
-              className={cn(
-                'text-xs',
-                view === 'detail' ? 'text-primary-foreground' : 'text-muted-foreground'
-              )}
-            >
-              Event Log
-            </Text>
-          </Pressable>
+    <View className={cn('rounded-xl border border-border bg-card', comfortable ? 'p-3' : 'p-4')}>
+      {comfortable ? (
+        <View className="mb-4 gap-3">
+          <Text className="text-lg font-semibold text-foreground">{title || 'AI Usage by User'}</Text>
+          {viewToggle}
         </View>
-      </View>
+      ) : (
+        <View className="mb-4 flex-row items-center justify-between">
+          <Text className="text-sm font-semibold text-foreground">{title || 'AI Usage by User'}</Text>
+          {viewToggle}
+        </View>
+      )}
 
       {view === 'summary' ? (
         summaryLoading ? (

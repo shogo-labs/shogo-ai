@@ -53,6 +53,13 @@ mock.module('react-native-svg', () => svgStub)
 // `expo-secure-store` and the better-auth Expo plugin trigger native
 // module resolution at module-load time. Tests don't exercise auth, so
 // stub them out to avoid pulling in `expo-modules-core` etc.
+mock.module('expo-haptics', () => ({
+  impactAsync: () => Promise.resolve(),
+  notificationAsync: () => Promise.resolve(),
+  selectionAsync: () => Promise.resolve(),
+  ImpactFeedbackStyle: { Light: 'light', Medium: 'medium', Heavy: 'heavy' },
+  NotificationFeedbackType: { Success: 'success', Warning: 'warning', Error: 'error' },
+}))
 mock.module('expo-secure-store', () => ({
   getItemAsync: () => Promise.resolve(null),
   setItemAsync: () => Promise.resolve(),

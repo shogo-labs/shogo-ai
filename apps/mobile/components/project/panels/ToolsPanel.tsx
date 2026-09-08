@@ -30,6 +30,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
+import { useNativePhoneWindow, nativeContentWidth } from '../../../lib/native-phone-layout'
 
 const LOG_PREFIX = '[ToolsPanel]'
 import { useDomainHttp } from '../../../contexts/domain'
@@ -73,6 +74,8 @@ interface ToolsPanelProps {
 }
 
 export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
+  const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const contentWidth = comfortable ? nativeContentWidth(pageWidth) : 0
   const http = useDomainHttp()
   const [installedTools, setInstalledTools] = useState<InstalledTool[]>([])
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
@@ -359,15 +362,23 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
   }
 
   return (
-    <View className="absolute inset-0 flex-col">
-      <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
-        <Wrench size={16} className="text-muted-foreground" />
-        <Text className="text-sm font-medium text-foreground">Integrations</Text>
-        <Text className="text-xs text-muted-foreground">
-          {installedTools.length} installed
-        </Text>
-        <Pressable onPress={loadInstalledTools} className="ml-auto p-1 rounded-md active:bg-muted">
-          <RefreshCw size={14} className="text-muted-foreground" />
+    <View
+      className="absolute inset-0 flex-col"
+      style={comfortable ? { width: pageWidth, maxWidth: pageWidth } : undefined}
+    >
+      <View
+        className={cn('border-b border-border flex-row items-center gap-2', comfortable ? 'px-4 py-3.5' : 'px-4 py-3')}
+        style={comfortable ? { width: pageWidth } : undefined}
+      >
+        <Wrench size={comfortable ? 20 : 16} className="text-muted-foreground" />
+        <View style={comfortable ? { width: Math.max(0, pageWidth - 32 - 20 - 44 - 16) } : undefined} className={comfortable ? undefined : 'flex-1 min-w-0'}>
+          <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')} numberOfLines={1}>Integrations</Text>
+          <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
+            {installedTools.length} installed
+          </Text>
+        </View>
+        <Pressable onPress={loadInstalledTools} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
+          <RefreshCw size={comfortable ? 18 : 14} className="text-muted-foreground" />
         </Pressable>
       </View>
 
@@ -380,34 +391,45 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         </View>
       )}
 
-      <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
+      <ScrollView
+        className="flex-1"
+        style={comfortable ? { width: pageWidth } : undefined}
+        contentContainerStyle={{
+          padding: 16,
+          width: comfortable ? pageWidth : undefined,
+        }}
+      >
         {isLoading ? (
           <View className="items-center py-8">
             <ActivityIndicator size="small" />
             <Text className="text-sm text-muted-foreground mt-2">Loading tools...</Text>
           </View>
         ) : (
-          <View className="gap-4">
+          <View className="gap-4" style={comfortable ? { width: contentWidth } : undefined}>
             {/* Search & Discover Section */}
             <View className="gap-2">
-              <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              <Text className={cn('font-semibold text-muted-foreground uppercase tracking-wide', comfortable ? 'text-sm' : 'text-xs')}>
                 Search & Discover
               </Text>
-              <View className="flex-row items-center gap-2">
-                <View className="flex-1 flex-row items-center border border-border rounded-lg bg-background px-3">
-                  <Search size={14} className="text-muted-foreground" />
+              <View className={cn('gap-2', comfortable ? 'flex-col' : 'flex-row items-center')}>
+                <View
+                  className={cn('flex-row items-center border border-border rounded-lg bg-background px-3', comfortable ? 'min-h-12' : 'flex-1 w-full')}
+                  style={comfortable ? { width: contentWidth } : undefined}
+                >
+                  <Search size={comfortable ? 18 : 14} className="text-muted-foreground" />
                   <TextInput
-                    placeholder='Search tools (e.g. "google calendar", "slack", "postgres")...'
+                    placeholder={comfortable ? 'Search Slack, Calendar, Postgres' : 'Search tools (e.g. "google calendar", "slack", "postgres")...'}
                     placeholderTextColor="#999"
                     value={searchQuery}
                     onChangeText={setSearchQuery}
                     onSubmitEditing={handleSearch}
-                    className="flex-1 py-2 px-2 text-sm text-foreground"
+                    className={cn('py-2 px-2 text-foreground', comfortable ? 'text-base' : 'flex-1 text-sm')}
+                    style={comfortable ? { width: Math.max(0, contentWidth - 24 - 18 - 16) } : undefined}
                     returnKeyType="search"
                   />
                   {searchQuery.length > 0 && (
-                    <Pressable onPress={() => { setSearchQuery(''); setSearchResults([]) }} className="p-1">
-                      <X size={12} className="text-muted-foreground" />
+                    <Pressable onPress={() => { setSearchQuery(''); setSearchResults([]) }} className={comfortable ? 'h-10 w-10 items-center justify-center' : 'p-1'}>
+                      <X size={comfortable ? 18 : 12} className="text-muted-foreground" />
                     </Pressable>
                   )}
                 </View>
@@ -415,14 +437,16 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                   onPress={handleSearch}
                   disabled={isSearching || !searchQuery.trim()}
                   className={cn(
-                    'px-4 py-2 bg-primary rounded-lg active:bg-primary/80',
+                    'bg-primary rounded-lg active:bg-primary/80 items-center justify-center',
+                    comfortable ? 'h-12' : 'px-4 py-2',
                     (isSearching || !searchQuery.trim()) && 'opacity-50',
                   )}
+                  style={comfortable ? { width: contentWidth } : undefined}
                 >
                   {isSearching ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
-                    <Text className="text-sm font-medium text-primary-foreground">Search</Text>
+                    <Text className={cn('font-medium text-primary-foreground', comfortable ? 'text-base' : 'text-sm')}>Search</Text>
                   )}
                 </Pressable>
               </View>
@@ -447,9 +471,9 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                           <View className="w-8 h-8 rounded-md bg-muted items-center justify-center">
                             <Text className="text-sm">{result.icon || '🔧'}</Text>
                           </View>
-                          <View className="flex-1">
+                          <View className="flex-1 min-w-0">
                             <View className="flex-row items-center gap-2">
-                              <Text className="text-sm font-medium text-foreground">
+                              <Text className="flex-1 text-sm font-medium text-foreground" numberOfLines={1}>
                                 {result.name}
                               </Text>
                               <View className={cn(

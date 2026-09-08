@@ -15,13 +15,27 @@
  * click.
  *
  * The active section persists to AsyncStorage so reopening Settings returns
- * the user to the last-visited page. On narrow screens (< 768px wide) the
- * sidebar collapses to a horizontal scroller pinned to the top.
+ * the user to the last-visited page. On narrow web/tablet screens (< 768px)
+ * the sidebar collapses to a horizontal scroller. On native phones it becomes
+ * a single picker row that opens a grouped section sheet — wrapping chips
+ * overflow and steal too much vertical space on a handset.
  */
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
-import { View, Text, Pressable, ScrollView, useWindowDimensions, Platform } from 'react-native'
+import {
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+  useWindowDimensions,
+  Platform,
+  Modal,
+  StyleSheet,
+} from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { Check, ChevronDown, X } from 'lucide-react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cn } from '@shogo/shared-ui/primitives'
+import { isNativePhoneIntegrationsLayout, NATIVE_PHONE_PICKER_INSET } from '../../../lib/native-phone-layout'
 
 export interface SettingsSectionItem {
   id: string
@@ -65,8 +79,9 @@ const NARROW_BREAKPOINT = 768
 const SIDEBAR_WIDTH = 220
 
 export function SettingsPanel({ visible, groups, requestedItem }: SettingsPanelProps) {
-  const { width } = useWindowDimensions()
+  const { width, height } = useWindowDimensions()
   const isNarrow = width < NARROW_BREAKPOINT
+  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
 
   const flatItems = useMemo(
     () => groups.flatMap((g) => g.items),
@@ -129,12 +144,52 @@ export function SettingsPanel({ visible, groups, requestedItem }: SettingsPanelP
 
   if (!visible) return null
 
+  if (isNativePhone) {
+    return (
+      <View
+        collapsable={false}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          bottom: 0,
+          width,
+          maxWidth: width,
+        }}
+      >
+        <NativePhoneSidebar
+          groups={groups}
+          activeId={activeId}
+          onSelect={handleSelect}
+          screenWidth={width}
+          windowHeight={height}
+        />
+        <View collapsable={false} style={{ flex: 1, width, maxWidth: width }}>
+          {activeItem ? activeItem.render() : (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }}>
+              <Text className="text-sm text-muted-foreground">
+                No settings sections available.
+              </Text>
+            </View>
+          )}
+        </View>
+      </View>
+    )
+  }
+
   return (
-    <View
-      className="absolute inset-0 bg-background"
-      style={{ display: visible ? 'flex' : 'none' }}
-    >
-      <View className={cn('flex-1', isNarrow ? 'flex-col' : 'flex-row')}>
+      <View
+        className="absolute inset-0 bg-background"
+        style={{ display: visible ? 'flex' : 'none' }}
+      >
+      <View
+        style={{
+          flex: 1,
+          flexDirection: isNarrow ? 'column' : 'row',
+          width: '100%',
+          alignSelf: 'stretch',
+        }}
+      >
         {isNarrow ? (
           <NarrowSidebar
             groups={groups}
@@ -149,7 +204,7 @@ export function SettingsPanel({ visible, groups, requestedItem }: SettingsPanelP
           />
         )}
 
-        <View className="flex-1 min-h-0 relative">
+        <View className="flex-1 min-h-0 min-w-0 relative" style={{ width: '100%' }}>
           {activeItem ? (
             <View className="absolute inset-0">{activeItem.render()}</View>
           ) : (
@@ -226,6 +281,175 @@ function WideSidebar({
   )
 }
 
+function NativePhoneSidebar({
+  groups,
+  activeId,
+  onSelect,
+  screenWidth,
+  windowHeight,
+}: {
+  groups: SettingsSectionGroup[]
+  activeId: string | null
+  onSelect: (id: string) => void
+  screenWidth: number
+  windowHeight: number
+}) {
+  const [open, setOpen] = useState(false)
+  const insets = useSafeAreaInsets()
+  const activeItem =
+    groups.flatMap((group) => group.items).find((item) => item.id === activeId) ?? null
+  const ActiveIcon = activeItem?.icon
+  const pickerWidth = Math.max(0, screenWidth - NATIVE_PHONE_PICKER_INSET)
+
+  return (
+    <>
+      <View
+        collapsable={false}
+        style={{
+          width: screenWidth,
+          maxWidth: screenWidth,
+          paddingHorizontal: 12,
+          paddingVertical: 8,
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: 'rgba(127,127,127,0.35)',
+        }}
+      >
+        {/*
+          Width lives on a plain View, not the Pressable. RN Text defaults to
+          flexShrink: 1, so a content-sized row + numberOfLines={1} clips the
+          section name down to the icon and chevron.
+        */}
+        <View
+          collapsable={false}
+          style={[pickerStyles.shell, { width: pickerWidth }]}
+        >
+          <Pressable
+            onPress={() => setOpen(true)}
+            testID="settings-section-picker"
+            accessibilityRole="button"
+            accessibilityLabel={`Settings section, ${activeItem?.label ?? 'Select'}. Opens the section list.`}
+            style={[pickerStyles.pressable, { width: pickerWidth }]}
+          >
+            {ActiveIcon ? (
+              <ActiveIcon size={18} className="text-foreground" />
+            ) : null}
+            <Text
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              className="text-foreground"
+              style={pickerStyles.label}
+            >
+              {activeItem?.label ?? 'Settings'}
+            </Text>
+            <ChevronDown size={18} className="text-muted-foreground" />
+          </Pressable>
+        </View>
+      </View>
+
+      <Modal
+        visible={open}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setOpen(false)}
+      >
+        <View style={sheetStyles.root}>
+          <Pressable
+            style={sheetStyles.backdrop}
+            onPress={() => setOpen(false)}
+            accessibilityLabel="Dismiss"
+            accessibilityRole="button"
+          />
+          <View
+            className="w-full rounded-t-3xl border border-border border-b-0 bg-card"
+            style={{
+              maxHeight: Math.round(windowHeight * 0.78),
+              paddingBottom: Math.max(insets.bottom, 16),
+            }}
+          >
+            <View className="items-center pt-2 pb-1">
+              <View className="h-1 w-11 rounded-full bg-muted-foreground/35" />
+            </View>
+            <View className="flex-row items-center px-4 pb-3">
+              <Pressable
+                onPress={() => setOpen(false)}
+                hitSlop={8}
+                accessibilityLabel="Close"
+                accessibilityRole="button"
+                className="h-10 w-10 items-center justify-center rounded-full bg-muted"
+              >
+                <X size={18} className="text-foreground" />
+              </Pressable>
+              <Text className="flex-1 px-3 text-center text-[17px] font-semibold text-foreground">
+                Settings
+              </Text>
+              <View className="h-10 w-10" />
+            </View>
+            <ScrollView
+              style={{ maxHeight: Math.round(windowHeight * 0.62) }}
+              contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              {groups.map((group) => (
+                <View key={group.id} className="mb-3">
+                  <Text className="px-2 pt-2 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    {group.label}
+                  </Text>
+                  <View className="overflow-hidden rounded-2xl bg-muted/50">
+                    {group.items.map((item, index) => {
+                      const Icon = item.icon
+                      const isActive = item.id === activeId
+                      return (
+                        <Pressable
+                          key={item.id}
+                          testID={`settings-nav-${item.id}`}
+                          onPress={() => {
+                            onSelect(item.id)
+                            setOpen(false)
+                          }}
+                          className={cn(
+                            'min-h-12 flex-row items-center gap-3 px-3.5 py-2.5',
+                            index > 0 && 'border-t border-border/60',
+                            isActive && 'bg-muted',
+                          )}
+                          accessibilityRole="tab"
+                          accessibilityState={{ selected: isActive }}
+                          accessibilityLabel={item.label}
+                        >
+                          <Icon
+                            size={18}
+                            className={cn(
+                              isActive ? 'text-foreground' : 'text-muted-foreground',
+                            )}
+                          />
+                          <Text
+                            className={cn(
+                              'flex-1 text-[16px]',
+                              isActive
+                                ? 'font-semibold text-foreground'
+                                : 'text-foreground',
+                            )}
+                            numberOfLines={1}
+                          >
+                            {item.label}
+                          </Text>
+                          {isActive ? (
+                            <Check size={18} className="text-foreground" />
+                          ) : null}
+                        </Pressable>
+                      )
+                    })}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </>
+  )
+}
+
 function NarrowSidebar({
   groups,
   activeId,
@@ -236,6 +460,7 @@ function NarrowSidebar({
   onSelect: (id: string) => void
 }) {
   const isNative = Platform.OS !== 'web'
+
   return (
     <View className="border-b border-border bg-muted/40 dark:bg-black/20">
       <ScrollView
@@ -294,3 +519,38 @@ function NarrowSidebar({
     </View>
   )
 }
+
+const pickerStyles = StyleSheet.create({
+  shell: {
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: 'rgba(120,120,128,0.24)',
+    overflow: 'hidden',
+  },
+  pressable: {
+    height: 48,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  label: {
+    marginLeft: 12,
+    marginRight: 8,
+    flexGrow: 1,
+    flexShrink: 0,
+    minWidth: 72,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+})
+
+const sheetStyles = StyleSheet.create({
+  root: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+})

@@ -6,6 +6,7 @@ import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, C
 import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { GroupedToolTags } from './GroupedToolTags'
+import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
 
 interface Skill {
   name: string
@@ -43,6 +44,7 @@ interface SkillsPanelProps {
 }
 
 export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) {
+  const comfortable = useIsNativePhoneLayout()
   const [skills, setSkills] = useState<Skill[]>([])
   const [bundledSkills, setBundledSkills] = useState<BundledSkill[]>([])
   const [registrySkills, setRegistrySkills] = useState<RegistrySkill[]>([])
@@ -242,38 +244,71 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
 
   return (
     <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
-      <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
-        <Zap size={16} className="text-muted-foreground" />
-        <Text className="text-sm font-medium text-foreground">Skills</Text>
-        <Text className="text-xs text-muted-foreground">{skills.length} installed</Text>
-        {registrySkills.length > 0 && (
-          <Text className="text-xs text-muted-foreground">· {registrySkills.length} available</Text>
-        )}
-        <View className="ml-auto flex-row items-center gap-1">
-          <Pressable
-            onPress={() => { setShowLibrary(!showLibrary); setSearchQuery('') }}
-            role="button"
-            accessibilityLabel={showLibrary ? 'Close skill library' : 'Open skill library'}
-            accessibilityState={{ expanded: showLibrary }}
-            className={cn(
-              'flex-row items-center gap-1 px-2 py-1 rounded-md',
-              showLibrary ? 'bg-primary' : 'active:bg-muted',
-            )}
-          >
-            <BookOpen size={12} className={showLibrary ? 'text-primary-foreground' : 'text-muted-foreground'} />
-            <Text className={cn('text-xs', showLibrary ? 'text-primary-foreground' : 'text-muted-foreground')}>
-              Library
+      <View className={cn('border-b border-border', comfortable ? 'px-4 py-3.5 gap-2' : 'px-4 py-3 flex-row items-center gap-2')}>
+        <View className="flex-row items-center gap-2">
+          <Zap size={comfortable ? 20 : 16} className="text-muted-foreground" />
+          <View className="flex-1 min-w-0">
+            <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')} numberOfLines={1}>Skills</Text>
+            <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
+              {skills.length} installed
+              {registrySkills.length > 0 ? ` · ${registrySkills.length} available` : ''}
             </Text>
-          </Pressable>
-          <Pressable
-            onPress={loadSkills}
-            role="button"
-            accessibilityLabel="Refresh skills"
-            className="p-1 rounded-md active:bg-muted"
-          >
-            <RefreshCw size={14} className="text-muted-foreground" />
-          </Pressable>
+          </View>
+          {!comfortable && (
+            <View className="ml-auto flex-row items-center gap-1">
+              <Pressable
+                onPress={() => { setShowLibrary(!showLibrary); setSearchQuery('') }}
+                role="button"
+                accessibilityLabel={showLibrary ? 'Close skill library' : 'Open skill library'}
+                accessibilityState={{ expanded: showLibrary }}
+                className={cn(
+                  'flex-row items-center gap-1 px-2 py-1 rounded-md',
+                  showLibrary ? 'bg-primary' : 'active:bg-muted',
+                )}
+              >
+                <BookOpen size={12} className={showLibrary ? 'text-primary-foreground' : 'text-muted-foreground'} />
+                <Text className={cn('text-xs', showLibrary ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                  Library
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={loadSkills}
+                role="button"
+                accessibilityLabel="Refresh skills"
+                className="p-1 rounded-md active:bg-muted"
+              >
+                <RefreshCw size={14} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+          )}
         </View>
+        {comfortable ? (
+          <View className="flex-row items-center gap-2">
+            <Pressable
+              onPress={() => { setShowLibrary(!showLibrary); setSearchQuery('') }}
+              role="button"
+              accessibilityLabel={showLibrary ? 'Close skill library' : 'Open skill library'}
+              accessibilityState={{ expanded: showLibrary }}
+              className={cn(
+                'h-11 flex-1 flex-row items-center justify-center gap-2 rounded-xl px-3',
+                showLibrary ? 'bg-primary' : 'bg-muted active:opacity-80',
+              )}
+            >
+              <BookOpen size={18} className={showLibrary ? 'text-primary-foreground' : 'text-foreground'} />
+              <Text className={cn('text-base font-medium', showLibrary ? 'text-primary-foreground' : 'text-foreground')}>
+                Library
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={loadSkills}
+              role="button"
+              accessibilityLabel="Refresh skills"
+              className="h-11 w-11 items-center justify-center rounded-xl bg-muted active:opacity-80"
+            >
+              <RefreshCw size={18} className="text-foreground" />
+            </Pressable>
+          </View>
+        ) : null}
       </View>
 
       {error && (
@@ -291,19 +326,20 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
         ) : showLibrary ? (
           <View className="gap-3">
             {/* Library tabs */}
-            <View className="flex-row gap-1 bg-muted/50 rounded-lg p-1" role="tablist">
+            <View className={cn("flex-row gap-1 bg-muted/50 rounded-lg", comfortable ? "p-1.5" : "p-1")} role="tablist">
               <Pressable
                 onPress={() => { setLibraryTab('community'); setSearchQuery('') }}
                 role="tab"
                 accessibilityLabel={`Community skills, ${registrySkills.length} available`}
                 accessibilityState={{ selected: libraryTab === 'community' }}
                 className={cn(
-                  'flex-1 flex-row items-center justify-center gap-1.5 py-1.5 rounded-md',
+                  'flex-1 flex-row items-center justify-center gap-1.5 rounded-md',
+                  comfortable ? 'min-h-11' : 'py-1.5',
                   libraryTab === 'community' ? 'bg-background shadow-sm' : '',
                 )}
               >
-                <Globe size={12} className={libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground'} />
-                <Text className={cn('text-xs font-medium', libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground')}>
+                <Globe size={comfortable ? 16 : 12} className={libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground'} />
+                <Text className={cn(comfortable ? 'text-sm font-medium flex-1 text-center' : 'text-xs font-medium', libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>
                   Community ({registrySkills.length})
                 </Text>
               </Pressable>
@@ -313,12 +349,13 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 accessibilityLabel={`Built-in skills, ${bundledSkills.length} available`}
                 accessibilityState={{ selected: libraryTab === 'bundled' }}
                 className={cn(
-                  'flex-1 flex-row items-center justify-center gap-1.5 py-1.5 rounded-md',
+                  'flex-1 flex-row items-center justify-center gap-1.5 rounded-md',
+                  comfortable ? 'min-h-11' : 'py-1.5',
                   libraryTab === 'bundled' ? 'bg-background shadow-sm' : '',
                 )}
               >
-                <BookOpen size={12} className={libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground'} />
-                <Text className={cn('text-xs font-medium', libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground')}>
+                <BookOpen size={comfortable ? 16 : 12} className={libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground'} />
+                <Text className={cn(comfortable ? 'text-sm font-medium flex-1 text-center' : 'text-xs font-medium', libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>
                   Built-in ({bundledSkills.length})
                 </Text>
               </Pressable>
@@ -552,18 +589,21 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
         ) : skills.length === 0 ? (
           <View className="items-center py-12">
             <Zap size={32} className="text-muted-foreground mb-3" />
-            <Text className="text-sm text-muted-foreground mb-1">No skills installed</Text>
-            <Text className="text-xs text-muted-foreground mb-3">
+            <Text className={cn('text-muted-foreground mb-1', comfortable ? 'text-base' : 'text-sm')}>No skills installed</Text>
+            <Text className={cn('text-muted-foreground mb-3 text-center', comfortable ? 'text-sm leading-5' : 'text-xs')}>
               Skills teach your agent specific behaviors triggered by keywords.
             </Text>
             <Pressable
               onPress={() => setShowLibrary(true)}
               role="button"
               accessibilityLabel="Browse skill library"
-              className="flex-row items-center gap-1 px-3 py-1.5 rounded-md bg-primary active:bg-primary/80"
+              className={cn(
+                'flex-row items-center gap-1 rounded-md bg-primary active:bg-primary/80',
+                comfortable ? 'min-h-12 px-5' : 'px-3 py-1.5',
+              )}
             >
-              <BookOpen size={12} className="text-primary-foreground" />
-              <Text className="text-xs text-primary-foreground">Browse Skill Library</Text>
+              <BookOpen size={comfortable ? 18 : 12} className="text-primary-foreground" />
+              <Text className={cn('text-primary-foreground', comfortable ? 'text-base font-medium' : 'text-xs')}>Browse Skill Library</Text>
             </Pressable>
           </View>
         ) : (

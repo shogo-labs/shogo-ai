@@ -18,6 +18,7 @@ import {
   ScrollView,
   Platform,
   Modal,
+  useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
@@ -69,6 +70,8 @@ export const CommandPalette = observer(function CommandPalette({
   onClose,
 }: CommandPaletteProps) {
   const router = useRouter()
+  const { width } = useWindowDimensions()
+  const isNativePhone = Platform.OS !== 'web' && width < 600
   const projects = useProjectCollection()
   const { localMode, features } = usePlatformConfig()
   const [query, setQuery] = useState('')
@@ -113,7 +116,7 @@ export const CommandPalette = observer(function CommandPalette({
         category: 'navigation',
         keywords: ['shared', 'team'],
       },
-      features.marketplace && {
+      !isNativePhone && features.marketplace && {
         id: 'nav-marketplace',
         label: 'Marketplace',
         description: 'Browse agents and templates',
@@ -185,7 +188,7 @@ export const CommandPalette = observer(function CommandPalette({
     }
 
     return items
-  }, [projects?.all, localMode, features.marketplace])
+  }, [projects?.all, localMode, features.marketplace, isNativePhone])
 
   const filteredCommands = useMemo(() => {
     if (!query.trim()) return commands
@@ -305,8 +308,8 @@ export const CommandPalette = observer(function CommandPalette({
           )}
         >
           {/* Search input */}
-          <View className="flex-row items-center gap-3 px-4 py-3 border-b border-border">
-            <Search size={20} className="text-muted-foreground" />
+          <View className={cn('flex-row items-center border-b border-border', isNativePhone ? 'min-h-14 gap-3 px-4 py-3.5' : 'gap-3 px-4 py-3')}>
+            <Search size={isNativePhone ? 22 : 20} className="text-muted-foreground" />
             <TextInput
               ref={inputRef}
               value={query}
@@ -315,7 +318,7 @@ export const CommandPalette = observer(function CommandPalette({
               placeholderTextColor="#9ca3af"
               autoCapitalize="none"
               autoCorrect={false}
-              className="flex-1 text-base text-foreground web:outline-none no-focus-ring"
+              className={cn('flex-1 text-foreground web:outline-none no-focus-ring', isNativePhone ? 'text-lg' : 'text-base')}
               returnKeyType="go"
               onSubmitEditing={() => {
                 if (filteredCommands[selectedIndex]) {
@@ -331,8 +334,8 @@ export const CommandPalette = observer(function CommandPalette({
                 <Text className="text-[10px] font-mono text-muted-foreground">ESC</Text>
               </Pressable>
             ) : (
-              <Pressable onPress={onClose} className="p-1 rounded-md active:bg-muted">
-                <X size={16} className="text-muted-foreground" />
+              <Pressable onPress={onClose} className={cn('rounded-md active:bg-muted', isNativePhone ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
+                <X size={isNativePhone ? 22 : 16} className="text-muted-foreground" />
               </Pressable>
             )}
           </View>
@@ -364,25 +367,26 @@ export const CommandPalette = observer(function CommandPalette({
                             onPress={() => navigateTo(cmd.href)}
                             onHoverIn={() => setSelectedIndex(flatIndex)}
                             className={cn(
-                              'flex-row items-center gap-3 w-full px-4 py-2.5',
+                              'flex-row items-center w-full',
+                              isNativePhone ? 'min-h-14 gap-3 px-4 py-3.5' : 'gap-3 px-4 py-2.5',
                               isSelected
                                 ? 'bg-accent'
                                 : 'active:bg-accent/50',
                             )}
                           >
-                            <Icon size={16} className="text-muted-foreground" />
+                            <Icon size={isNativePhone ? 22 : 16} className="text-muted-foreground" />
                             <View className="flex-1 min-w-0">
-                              <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+                              <Text className={cn('font-medium text-foreground', isNativePhone ? 'text-base' : 'text-sm')} numberOfLines={1}>
                                 {cmd.label}
                               </Text>
                               {cmd.description && (
-                                <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                                <Text className={cn('text-muted-foreground', isNativePhone ? 'text-sm' : 'text-xs')} numberOfLines={1}>
                                   {cmd.description}
                                 </Text>
                               )}
                             </View>
                             {isSelected && (
-                              <ArrowRight size={16} className="text-muted-foreground" />
+                              <ArrowRight size={isNativePhone ? 20 : 16} className="text-muted-foreground" />
                             )}
                           </Pressable>
                         )

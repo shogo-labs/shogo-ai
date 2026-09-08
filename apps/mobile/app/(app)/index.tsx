@@ -8,7 +8,7 @@ import {
   Alert,
   StyleSheet,
   Keyboard,
-  KeyboardAvoidingView,
+  Dimensions,
   Animated,
   Easing,
   TouchableWithoutFeedback,
@@ -16,7 +16,7 @@ import {
   useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import { LinearGradient } from 'expo-linear-gradient'
 import Svg, { Defs, RadialGradient, Stop, Ellipse } from 'react-native-svg'
@@ -30,7 +30,7 @@ import {
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
-import { CompactChatInput } from '../../components/chat/CompactChatInput'
+import { CompactChatInput, ComposerPlusSection } from '../../components/chat/CompactChatInput'
 import type { FileAttachment, InteractionMode } from '../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../components/chat/ChatInput'
 import {
@@ -52,6 +52,7 @@ import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 import { TechStackPicker } from '../../components/chat/TechStackPicker'
 import { useTheme } from '../../contexts/theme'
+import { Layers } from 'lucide-react-native'
 
 /**
  * Default tech stack for blank projects created from the home composer.
@@ -127,41 +128,33 @@ function generateProjectNameFromPrompt(prompt: string): string {
 
 const LovableGradient = memo(function LovableGradient({ isDark }: { isDark: boolean }) {
   if (Platform.OS !== 'web') {
+    // ChatGPT iOS empty home is a flat canvas (true black / white) with only
+    // a whisper of cool depth — not the saturated Lovable aurora used on web.
     const baseColors: [string, string, string, string] = isDark
-      ? ['#101820', '#1e2027', '#3a2229', '#4a241f']
-      : ['#edf3f8', '#ebe8ed', '#f3e1e8', '#f5e1d8']
+      ? ['#000000', '#000000', '#0a0a0a', '#000000']
+      : ['#ffffff', '#f7f7f8', '#ffffff', '#fafafa']
     return (
       <View style={styles.gradientLayer} pointerEvents="none">
         <LinearGradient
           colors={baseColors}
-          locations={[0, 0.36, 0.68, 1]}
-          start={{ x: 0, y: 0.05 }}
-          end={{ x: 1, y: 1 }}
+          locations={[0, 0.42, 0.72, 1]}
+          start={{ x: 0.15, y: 0 }}
+          end={{ x: 0.85, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
         <Svg width="100%" height="100%" style={StyleSheet.absoluteFill}>
           <Defs>
             <RadialGradient id="orb1" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor="rgb(96,165,250)" stopOpacity={isDark ? 0.34 : 0.2} />
-              <Stop offset="45%" stopColor="rgb(147,197,253)" stopOpacity={isDark ? 0.16 : 0.1} />
-              <Stop offset="100%" stopColor="rgb(96,165,250)" stopOpacity={0} />
+              <Stop offset="0%" stopColor={isDark ? 'rgb(255,255,255)' : 'rgb(228,228,231)'} stopOpacity={isDark ? 0.06 : 0.35} />
+              <Stop offset="100%" stopColor={isDark ? 'rgb(255,255,255)' : 'rgb(228,228,231)'} stopOpacity={0} />
             </RadialGradient>
             <RadialGradient id="orb2" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor="rgb(244,114,182)" stopOpacity={isDark ? 0.38 : 0.2} />
-              <Stop offset="34%" stopColor="rgb(251,113,133)" stopOpacity={isDark ? 0.26 : 0.14} />
-              <Stop offset="65%" stopColor="rgb(249,115,22)" stopOpacity={isDark ? 0.16 : 0.08} />
-              <Stop offset="100%" stopColor="rgb(244,114,182)" stopOpacity={0} />
-            </RadialGradient>
-            <RadialGradient id="orb3" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor="rgb(251,113,133)" stopOpacity={isDark ? 0.28 : 0.15} />
-              <Stop offset="35%" stopColor="rgb(236,72,153)" stopOpacity={isDark ? 0.18 : 0.1} />
-              <Stop offset="65%" stopColor="rgb(249,115,22)" stopOpacity={isDark ? 0.12 : 0.06} />
-              <Stop offset="100%" stopColor="rgb(251,113,133)" stopOpacity={0} />
+              <Stop offset="0%" stopColor={isDark ? 'rgb(47,47,47)' : 'rgb(244,244,244)'} stopOpacity={isDark ? 0.45 : 0.5} />
+              <Stop offset="100%" stopColor={isDark ? 'rgb(47,47,47)' : 'rgb(244,244,244)'} stopOpacity={0} />
             </RadialGradient>
           </Defs>
-          <Ellipse cx="10%" cy="8%" rx="78%" ry="55%" fill="url(#orb1)" />
-          <Ellipse cx="94%" cy="26%" rx="82%" ry="68%" fill="url(#orb2)" />
-          <Ellipse cx="62%" cy="92%" rx="76%" ry="45%" fill="url(#orb3)" />
+          <Ellipse cx="18%" cy="12%" rx="58%" ry="38%" fill="url(#orb1)" />
+          <Ellipse cx="82%" cy="88%" rx="62%" ry="42%" fill="url(#orb2)" />
         </Svg>
       </View>
     )
@@ -230,6 +223,14 @@ const LovableGradient = memo(function LovableGradient({ isDark }: { isDark: bool
 // possibilities once and pick by index instead of building a new object
 // literal on every render.
 const COMPOSER_WRAPPER_NATIVE = { maxWidth: 680 }
+const COMPOSER_WRAPPER_NATIVE_LIGHT = {
+  maxWidth: 680,
+  shadowColor: '#000000',
+  shadowOffset: { width: 0, height: 6 },
+  shadowOpacity: 0.1,
+  shadowRadius: 16,
+  elevation: 5,
+} as const
 const CONTENT_MAX_WIDTH = { maxWidth: 680 } as const
 const COMPOSER_WRAPPER_WEB_LIGHT = {
   maxWidth: 680,
@@ -260,11 +261,17 @@ const HomeScreen = observer(function HomeScreen() {
   const http = useDomainHttp()
   const actions = useDomainActions()
   const isDark = useDarkMode()
-  const { width: screenWidth, height: screenHeight } = useWindowDimensions()
+  const { width: screenWidth } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isMobile = screenWidth < 640
   const isNativePhone = Platform.OS !== 'web' && isMobile
   const homeEntrance = useRef(new Animated.Value(Platform.OS === 'web' ? 1 : 0)).current
-  const homeKeyboardLift = useRef(new Animated.Value(0)).current
+  const restComposerPad = Math.max(insets.bottom, 12)
+  const restComposerSidePad = 16
+  const composerKeyboardPad = useRef(new Animated.Value(restComposerPad)).current
+  const composerSidePad = useRef(new Animated.Value(restComposerSidePad)).current
+  const composerKeyboardExpand = useRef(new Animated.Value(0)).current
+  const keyboardOpenRef = useRef(false)
 
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
@@ -299,42 +306,77 @@ const HomeScreen = observer(function HomeScreen() {
   }, [homeEntrance, isNativePhone])
 
   useEffect(() => {
-    if (!isNativePhone) {
-      homeKeyboardLift.setValue(0)
-      return
+    if (!keyboardOpenRef.current) {
+      composerKeyboardPad.setValue(restComposerPad)
+      composerSidePad.setValue(restComposerSidePad)
+      composerKeyboardExpand.setValue(0)
     }
+  }, [composerKeyboardExpand, composerKeyboardPad, composerSidePad, restComposerPad])
+
+  useEffect(() => {
+    if (!isNativePhone) return
 
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
 
+    const animateComposer = (opts: {
+      pad: number
+      sidePad: number
+      expand: number
+      duration?: number
+    }) => {
+      const duration = opts.duration && opts.duration > 0 ? opts.duration : Platform.OS === 'ios' ? 250 : 180
+      const easing = Easing.out(Easing.cubic)
+      Animated.parallel([
+        Animated.timing(composerKeyboardPad, {
+          toValue: opts.pad,
+          duration,
+          easing,
+          useNativeDriver: false,
+        }),
+        Animated.timing(composerSidePad, {
+          toValue: opts.sidePad,
+          duration,
+          easing,
+          useNativeDriver: false,
+        }),
+        Animated.timing(composerKeyboardExpand, {
+          toValue: opts.expand,
+          duration,
+          easing,
+          useNativeDriver: false,
+        }),
+      ]).start()
+    }
+
     const showSub = Keyboard.addListener(showEvent, (event) => {
-      const keyboardHeight = event.endCoordinates?.height ?? Math.round(screenHeight * 0.38)
-      const lift = Math.min(
-        Math.round(screenHeight * 0.22),
-        Math.max(112, Math.round(keyboardHeight * 0.44)),
-      )
-      Animated.timing(homeKeyboardLift, {
-        toValue: -lift,
-        duration: event.duration ?? 240,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start()
+      keyboardOpenRef.current = true
+      const windowHeight = Dimensions.get('window').height
+      const keyboardTop = event.endCoordinates?.screenY ?? windowHeight
+      const overlap = Math.max(0, windowHeight - keyboardTop)
+      animateComposer({
+        pad: Math.max(8, overlap),
+        sidePad: 0,
+        expand: 1,
+        duration: event.duration,
+      })
     })
 
     const hideSub = Keyboard.addListener(hideEvent, (event) => {
-      Animated.timing(homeKeyboardLift, {
-        toValue: 0,
-        duration: event.duration ?? 220,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start()
+      keyboardOpenRef.current = false
+      animateComposer({
+        pad: restComposerPad,
+        sidePad: restComposerSidePad,
+        expand: 0,
+        duration: event.duration,
+      })
     })
 
     return () => {
       showSub.remove()
       hideSub.remove()
     }
-  }, [homeKeyboardLift, isNativePhone, screenHeight])
+  }, [composerKeyboardExpand, composerKeyboardPad, composerSidePad, isNativePhone, restComposerPad])
 
   /**
    * Draft project the homepage opens behind the scenes for a creation
@@ -688,6 +730,7 @@ const HomeScreen = observer(function HomeScreen() {
           chatScope: consumed.chatScope,
           initialMessage: text,
           initialInteractionMode: submissionInteractionMode,
+          ...(Platform.OS !== 'web' ? { tab: 'chat-fullscreen' } : {}),
         },
       } as any)
 
@@ -825,6 +868,7 @@ const HomeScreen = observer(function HomeScreen() {
           chatSessionId: chatSession.id,
           initialMessage: onboardingMessage,
           showIntegrations: '1',
+          ...(Platform.OS !== 'web' ? { tab: 'chat-fullscreen' } : {}),
         },
       } as any)
     } catch (error) {
@@ -843,15 +887,13 @@ const HomeScreen = observer(function HomeScreen() {
   // value, mobx ticks, etc.).
   const heroTitleStyle = useMemo(
     () => ({
-      fontSize: isNativePhone ? 28 : isMobile ? 26 : 36,
-      lineHeight: isNativePhone ? 35 : isMobile ? 34 : 44,
-      letterSpacing: isNativePhone ? -0.35 : -0.5,
+      fontSize: isNativePhone ? 32 : isMobile ? 26 : 36,
+      lineHeight: isNativePhone ? 40 : isMobile ? 34 : 44,
+      letterSpacing: isNativePhone ? -0.45 : -0.5,
       ...(isNativePhone
         ? {
-            color: isDark ? '#f8fafc' : '#273244',
-            textShadowColor: isDark ? 'rgba(0,0,0,0.28)' : 'rgba(255,255,255,0.5)',
-            textShadowOffset: { width: 0, height: 2 },
-            textShadowRadius: 12,
+            color: isDark ? '#ececec' : '#0d0d0d',
+            fontWeight: '600' as const,
           }
         : {}),
     }),
@@ -866,7 +908,9 @@ const HomeScreen = observer(function HomeScreen() {
       ? isDark
         ? COMPOSER_WRAPPER_WEB_DARK
         : COMPOSER_WRAPPER_WEB_LIGHT
-      : COMPOSER_WRAPPER_NATIVE
+      : isNativePhone && !isDark
+        ? COMPOSER_WRAPPER_NATIVE_LIGHT
+        : COMPOSER_WRAPPER_NATIVE
 
   // Unauthenticated local-mode sessions bounce back to the root router — but
   // NEVER navigate during render. Calling `router.replace()` in the render body
@@ -900,95 +944,128 @@ const HomeScreen = observer(function HomeScreen() {
     )
   }
 
+  const greeting = (
+    <Text
+      className={`text-center text-foreground ${isNativePhone ? 'font-semibold' : 'font-bold mb-2'}`}
+      style={heroTitleStyle}
+    >
+      {isNativePhone ? `What's on your mind,\n${firstName}?` : `What's on your mind, ${firstName}?`}
+    </Text>
+  )
+
+  const composer = (
+    <View className={isNativePhone ? 'w-full' : 'w-full rounded-2xl'} style={composerWrapperStyle}>
+      <CompactChatInput
+        onSubmit={handlePromptSubmit}
+        isLoading={isCreating}
+        placeholder={homeComposerPlaceholder}
+        agentPlaceholderActive={interactionMode === 'agent'}
+        value={prompt}
+        onChange={handlePromptChange}
+        interactionMode={interactionMode}
+        onInteractionModeChange={handleHomeInteractionModeChange}
+        selectedModel={selectedModel}
+        onModelChange={handleHomeModelChange}
+        isPro={hasAdvancedModelAccess}
+        onUpgradeClick={() => router.push('/billing')}
+        onStartVoiceProjectCreation={
+          Platform.OS === 'web' && features.ezMode
+            ? handleStartVoiceProjectCreation
+            : undefined
+        }
+        prominentMobile={isNativePhone}
+        prominentColorScheme={isDark ? 'dark' : 'light'}
+        keyboardExpand={isNativePhone ? composerKeyboardExpand : undefined}
+        leadingControls={
+          isNativePhone ? undefined : (
+            <View className="flex-row items-center gap-1">
+              <ProjectSourceMenu
+                workspaceId={currentWorkspace?.id}
+                variant="chip"
+              />
+              <TechStackPicker
+                value={techStackId}
+                onChange={handleTechStackChange}
+                disabled={isCreating}
+              />
+            </View>
+          )
+        }
+        plusMenuExtras={
+          isNativePhone ? (
+            <ComposerPlusSection id="stack" label="Tech stack" Icon={Layers}>
+              <TechStackPicker
+                value={techStackId}
+                onChange={handleTechStackChange}
+                disabled={isCreating}
+                presentation="list"
+              />
+            </ComposerPlusSection>
+          ) : undefined
+        }
+      />
+    </View>
+  )
+
+  const nativeEntranceStyle = {
+    opacity: homeEntrance,
+    transform: [
+      {
+        scale: homeEntrance.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.985, 1],
+        }),
+      },
+    ],
+  }
+
   const screen = (
-    <View className="flex-1 bg-background">
-      <View className="relative flex-1 items-center justify-center px-4">
-        <LovableGradient isDark={isDark} />
-
-        <Animated.View
-          className="relative w-full items-center justify-center"
-          style={[
-            CONTENT_MAX_WIDTH,
-            isNativePhone
-              ? {
-                  opacity: homeEntrance,
-                  transform: [
-                    { translateY: homeKeyboardLift },
-                    {
-                      scale: homeEntrance.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [0.985, 1],
-                      }),
-                    },
-                  ],
-                }
-              : null,
-          ]}
-        >
-          <Text
-            className={`text-center font-bold text-foreground ${isNativePhone ? 'mb-3' : 'mb-2'}`}
-            style={heroTitleStyle}
+    <View
+      className="flex-1 bg-background"
+      style={isNativePhone ? { backgroundColor: isDark ? '#000000' : '#ffffff' } : undefined}
+    >
+      {isNativePhone ? (
+        <View className="relative flex-1">
+          <LovableGradient isDark={isDark} />
+          <Animated.View
+            className="flex-1 items-center justify-center"
+            style={[
+              CONTENT_MAX_WIDTH,
+              {
+                alignSelf: 'center',
+                width: '100%',
+                paddingTop: insets.top + 56,
+                paddingHorizontal: 32,
+                paddingBottom: 16,
+              },
+              nativeEntranceStyle,
+            ]}
           >
-            What's on your mind, {firstName}?
-          </Text>
-
-          <View className="w-full rounded-2xl" style={composerWrapperStyle}>
-            <CompactChatInput
-              onSubmit={handlePromptSubmit}
-              isLoading={isCreating}
-              placeholder={homeComposerPlaceholder}
-              agentPlaceholderActive={interactionMode === 'agent'}
-              value={prompt}
-              onChange={handlePromptChange}
-              interactionMode={interactionMode}
-              onInteractionModeChange={handleHomeInteractionModeChange}
-              selectedModel={selectedModel}
-              onModelChange={handleHomeModelChange}
-              isPro={hasAdvancedModelAccess}
-              onUpgradeClick={() => router.push('/billing')}
-              onStartVoiceProjectCreation={
-                Platform.OS === 'web' && features.ezMode
-                  ? handleStartVoiceProjectCreation
-                  : undefined
-              }
-              prominentMobile={isNativePhone}
-              prominentColorScheme={isDark ? 'dark' : 'light'}
-              // Consolidated "where does this project come from?" entry
-              // point. Sits at the leftmost edge of the toolbar so it
-              // reads as "what am I creating?" before model + mode.
-              // Selecting "Blank" is a no-op (the composer itself IS
-              // the blank-project surface — the project is created on
-              // Send, not while typing); "Open folder" / "Import" fire
-              // their flows immediately and route into the resulting
-              // project.
-              leadingControls={
-                <View
-                  className={
-                    isNativePhone
-                      ? "min-w-0 flex-row items-center gap-1"
-                      : "flex-row items-center gap-1"
-                  }
-                >
-                  <ProjectSourceMenu
-                    workspaceId={currentWorkspace?.id}
-                    variant="chip"
-                    prominentMobile={isNativePhone}
-                  />
-                  {/* Tech stack for the project this composer will create.
-                      Persisted into settings.techStackId on Send so the
-                      Configuration screen reflects the real stack. */}
-                  <TechStackPicker
-                    value={techStackId}
-                    onChange={handleTechStackChange}
-                    disabled={isCreating}
-                    prominentMobile={isNativePhone}
-                  />
-                </View>
-              }
-            />
-          </View>
-        </Animated.View>
-      </View>
+            {greeting}
+          </Animated.View>
+          <Animated.View
+            className="w-full"
+            style={[CONTENT_MAX_WIDTH, nativeEntranceStyle, { alignSelf: 'center' }]}
+          >
+            <Animated.View
+              style={{
+                paddingBottom: composerKeyboardPad,
+                paddingHorizontal: composerSidePad,
+              }}
+            >
+              {composer}
+            </Animated.View>
+          </Animated.View>
+        </View>
+      ) : (
+        <View className="relative flex-1 items-center justify-center px-4">
+          <LovableGradient isDark={isDark} />
+          <Animated.View className="relative w-full items-center justify-center" style={CONTENT_MAX_WIDTH}>
+            {greeting}
+            {composer}
+          </Animated.View>
+        </View>
+      )}
     </View>
   )
 
@@ -996,14 +1073,9 @@ const HomeScreen = observer(function HomeScreen() {
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        enabled={!isNativePhone}
-        keyboardVerticalOffset={0}
-        style={{ flex: 1 }}
-      >
+      <View style={{ flex: 1 }}>
         {screen}
-      </KeyboardAvoidingView>
+      </View>
     </TouchableWithoutFeedback>
   )
 })

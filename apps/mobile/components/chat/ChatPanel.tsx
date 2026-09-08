@@ -50,6 +50,7 @@ import { useChat, type UIMessage } from "@ai-sdk/react"
 import { useRouter } from "expo-router"
 import { DefaultChatTransport } from "ai"
 import AsyncStorage from "@react-native-async-storage/async-storage"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
 import {
   extractTextContent,
   formatErrorMessage,
@@ -135,6 +136,7 @@ const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
 import { TurnList } from "./turns"
 import {
   MessageEditProvider,
+  dispatchNativeInlineEditTap,
   type MessageEditOptions,
 } from "./turns/MessageEditContext"
 import { EditConfirmDialogHost } from "./turns/EditConfirmDialog"
@@ -788,6 +790,7 @@ export const ChatPanel = observer(function ChatPanel({
   enrichMessage,
 }: ChatPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
   const ideBridge = useIdeBridge(ideMode)
 
@@ -917,6 +920,7 @@ export const ChatPanel = observer(function ChatPanel({
   const isUserAtBottomRef = useRef(true)
   /** Native only: true = follow new content; set false the instant the user drags */
   const stickToBottomRef = useRef(true)
+  const nativeEditTapStartRef = useRef<{ x: number; y: number } | null>(null)
   const isLoadingOlderRef = useRef(false)
   const contentHeightBeforeLoadRef = useRef(0)
   const prevDisplayLengthRef = useRef(0)
@@ -961,6 +965,7 @@ export const ChatPanel = observer(function ChatPanel({
   /** Mirrors stick/at-bottom into React so we can show the "Jump to latest"
    * pill. Source of truth for streaming follow remains the refs above. */
   const [isFollowing, setIsFollowing] = useState(true)
+  const [nativeInlineEditing, setNativeInlineEditing] = useState(false)
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
@@ -1017,12 +1022,26 @@ export const ChatPanel = observer(function ChatPanel({
     scrollViewRef.current?.scrollToEnd({ animated: true })
   }, [markProgrammaticScroll])
 
+  const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false)
+
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
       scrollToBottomIfFollowing(true)
     })
     return () => sub.remove()
   }, [scrollToBottomIfFollowing])
+
+  useEffect(() => {
+    if (!isNativePhoneLayout) return
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow"
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide"
+    const showSub = Keyboard.addListener(showEvent, () => setNativeKeyboardOpen(true))
+    const hideSub = Keyboard.addListener(hideEvent, () => setNativeKeyboardOpen(false))
+    return () => {
+      showSub.remove()
+      hideSub.remove()
+    }
+  }, [isNativePhoneLayout])
 
   useEffect(() => {
     return () => {
@@ -5363,10 +5382,30 @@ export const ChatPanel = observer(function ChatPanel({
               "max-w-3xl w-full self-center",
             )}
             contentContainerStyle={nativePhonePanelWidth ? { width: nativePhonePanelWidth } : undefined}
-            keyboardShouldPersistTaps="handled"
+            keyboardShouldPersistTaps={
+              isNative && nativeInlineEditing ? "always" : "handled"
+            }
+            onTouchStart={(e) => {
+              if (Platform.OS === "web") return
+              const { pageX, pageY } = e.nativeEvent
+              nativeEditTapStartRef.current = { x: pageX, y: pageY }
+            }}
+            onTouchEnd={(e) => {
+              if (Platform.OS === "web") return
+              const start = nativeEditTapStartRef.current
+              nativeEditTapStartRef.current = null
+              if (!start) return
+              const { pageX, pageY } = e.nativeEvent
+              if (Math.hypot(pageX - start.x, pageY - start.y) > 12) return
+              dispatchNativeInlineEditTap(pageX, pageY)
+            }}
+            onTouchCancel={() => {
+              nativeEditTapStartRef.current = null
+            }}
             onScroll={isNative ? undefined : handleMessagesScrollWeb}
             onScrollBeginDrag={() => {
               if (isNative) {
+                nativeEditTapStartRef.current = null
                 stickToBottomRef.current = false
                 setIsFollowing(false)
               }
@@ -5430,7 +5469,12 @@ export const ChatPanel = observer(function ChatPanel({
               </Pressable>
             )}
             {displayMessages.length > 0 ? (
-              <MessageEditProvider {...messageEditValue}>
+              <MessageEditProvider
+                {...messageEditValue}
+                onInlineEditingChange={
+                  Platform.OS === "web" ? undefined : setNativeInlineEditing
+                }
+              >
                 <TurnList
                   messages={displayMessages}
                   isStreaming={isStreaming}
@@ -5783,10 +5827,23 @@ export const ChatPanel = observer(function ChatPanel({
             />
           )}
 
-          {/* Input */}
+          {/* Input — hidden on native while a historical bubble is being
+              edited so taps go to the transcript (cancel) instead of a
+              second composer, matching ChatGPT. Web keeps both and uses
+              the existing document mousedown handler. */}
+          {!(isNative && nativeInlineEditing) ? (
           <View
             className="bg-transparent max-w-3xl w-full self-center mt-1"
-            style={nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined}
+            style={[
+              nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined,
+              isNativePhoneLayout
+                ? {
+                    paddingBottom: nativeKeyboardOpen
+                      ? 8
+                      : Math.max(insets.bottom, 12),
+                  }
+                : undefined,
+            ]}
           >
             <WorktreeBar
               agentUrl={resolvedAgentUrl}
@@ -5838,6 +5895,17 @@ export const ChatPanel = observer(function ChatPanel({
               onOpenIdeFile={ideBridge.openFile}
             />
           </View>
+          ) : (
+            <Pressable
+              onPress={() => dispatchNativeInlineEditTap(-1, -1)}
+              accessibilityLabel="Cancel editing"
+              style={
+                isNativePhoneLayout
+                  ? { paddingBottom: Math.max(insets.bottom, 12), minHeight: 28 }
+                  : { minHeight: 28 }
+              }
+            />
+          )}
         </KeyboardAvoidingView>
       </View>
     </ChatContextProvider>

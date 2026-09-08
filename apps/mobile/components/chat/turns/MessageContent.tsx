@@ -26,6 +26,11 @@ export interface MessageContentProps {
   message: UIMessage
   isStreaming?: boolean
   className?: string
+  /**
+   * Native ChatGPT-style user bubble: attachments sit above a navy
+   * pill, body text is white. Web/desktop keep the default `default`.
+   */
+  variant?: "default" | "userBubble"
 }
 
 interface ImagePart {
@@ -195,11 +200,13 @@ function DocumentThumbnail({
   mediaType,
   name,
   index,
+  onUserBubble = false,
 }: {
   url: string
   mediaType: string
   name?: string
   index: number
+  onUserBubble?: boolean
 }) {
   const [showModal, setShowModal] = useState(false)
   const [showVideoModal, setShowVideoModal] = useState(false)
@@ -277,18 +284,26 @@ function DocumentThumbnail({
       ) : (
         <Pressable
           onPress={handlePress}
-          className="flex-row items-center gap-2 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 max-w-[220px]"
+          className={cn(
+            "flex-row items-center gap-2 rounded-2xl px-2.5 py-1.5 max-w-[220px]",
+            onUserBubble
+              ? "bg-[#2a2a2a] border border-white/10"
+              : "border border-border bg-muted/40",
+          )}
           accessibilityLabel={`File attachment ${index + 1}: ${title}`}
           accessibilityRole="button"
         >
-          <View className="h-7 w-7 items-center justify-center rounded-md bg-primary/15 flex-shrink-0">
-            <FileText size={14} className="text-primary" />
+          <View className={cn(
+            "h-7 w-7 items-center justify-center rounded-md flex-shrink-0",
+            onUserBubble ? "bg-[#3b82f6]/25" : "bg-primary/15",
+          )}>
+            <FileText size={14} className={onUserBubble ? "text-[#60a5fa]" : "text-primary"} color={onUserBubble ? "#60a5fa" : undefined} />
           </View>
           <View className="flex-1 min-w-0">
-            <Text className="text-[11px] font-medium text-foreground" numberOfLines={1}>
+            <Text className={cn("text-[11px] font-medium", onUserBubble ? "text-white" : "text-foreground")} numberOfLines={1}>
               {title}
             </Text>
-            <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+            <Text className={cn("text-[10px]", onUserBubble ? "text-white/55" : "text-muted-foreground")} numberOfLines={1}>
               {loading ? "Loading…" : typeLabel}
             </Text>
           </View>
@@ -317,11 +332,13 @@ export function MessageContent({
   message,
   isStreaming = false,
   className,
+  variant = "default",
 }: MessageContentProps) {
   const content = extractTextContent(message)
   const images = extractImageParts(message)
   const files = extractFileParts(message)
   const isUser = message.role === "user"
+  const userBubble = isUser && variant === "userBubble"
   // Only show the preview card when there's genuinely long typed text and no
   // file attachments. When file chips are present the text body is just the
   // typed portion (short) so we always render it inline — matching ChatGPT.
@@ -334,10 +351,8 @@ export function MessageContent({
   // For users we render full-width and let EditableUserMessage own
   // the bubble chrome (bg, rounding, click target) — see
   // `apps/mobile/components/chat/turns/EditableUserMessage.tsx`.
-  // Concretely: this used to be `max-w-[85%] bg-secondary ml-auto`
-  // (a right-aligned chat bubble) but the new edit/resend UX needs
-  // the user row to be a full-width clickable target so the entire
-  // row can swap into an in-place ChatInput on press.
+  // Native phone passes `variant="userBubble"` so attachments sit
+  // above a navy ChatGPT-style pill.
   const baseClasses = cn(
     isUser
       ? "w-full bg-transparent"
@@ -346,38 +361,74 @@ export function MessageContent({
   )
 
   if (isUser) {
+    const attachmentRow = (images.length > 0 || files.length > 0) ? (
+      <View className={cn("flex-row flex-wrap gap-2", userBubble && "justify-end")}>
+        {images.map((img, i) => (
+          <ImageThumbnail
+            key={`${message.id}-img-${i}`}
+            url={img.url}
+            mediaType={img.mediaType}
+            index={i}
+          />
+        ))}
+        {files.map((file, i) => (
+          <DocumentThumbnail
+            key={`${message.id}-file-${i}`}
+            url={file.url}
+            mediaType={file.mediaType}
+            name={file.name}
+            index={i}
+            onUserBubble={userBubble}
+          />
+        ))}
+      </View>
+    ) : null
+
+    const body = content ? (
+      isLongText ? (
+        <LongTextPreviewCard text={content} title="Your Message" />
+      ) : (
+        <Text
+          className={
+            userBubble
+              ? "text-[16px] leading-[22px] text-white"
+              : Platform.OS !== "web"
+                ? "text-base leading-6 text-foreground"
+                : "text-xs text-foreground"
+          }
+          selectable={!userBubble}
+        >
+          {content}
+        </Text>
+      )
+    ) : null
+
+    if (userBubble) {
+      return (
+        <View className={cn(baseClasses, "items-end gap-1.5")}>
+          {attachmentRow}
+          {body ? (
+            <View
+              className="px-4 py-2.5"
+              style={{
+                backgroundColor: "#2a4365",
+                borderTopLeftRadius: 20,
+                borderTopRightRadius: 20,
+                borderBottomLeftRadius: 20,
+                borderBottomRightRadius: 6,
+              }}
+            >
+              {body}
+            </View>
+          ) : null}
+        </View>
+      )
+    }
+
     return (
       <View className={cn(baseClasses, "gap-2")}>
-        {(images.length > 0 || files.length > 0) && (
-          <View className="flex-row flex-wrap gap-2">
-            {images.map((img, i) => (
-              <ImageThumbnail
-                key={`${message.id}-img-${i}`}
-                url={img.url}
-                mediaType={img.mediaType}
-                index={i}
-              />
-            ))}
-            {files.map((file, i) => (
-              <DocumentThumbnail
-                key={`${message.id}-file-${i}`}
-                url={file.url}
-                mediaType={file.mediaType}
-                name={file.name}
-                index={i}
-              />
-            ))}
-          </View>
-        )}
-        {content ? (
-          isLongText ? (
-            <LongTextPreviewCard text={content} title="Your Message" />
-          ) : (
-            <Text className={Platform.OS !== "web" ? "text-base leading-6 text-foreground" : "text-xs text-foreground"} selectable>
-              {content}
-            </Text>
-          )
-        ) : null}
+        {attachmentRow}
+        {body}
       </View>
     )
   }

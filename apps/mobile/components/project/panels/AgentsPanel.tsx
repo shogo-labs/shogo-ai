@@ -23,6 +23,7 @@ import {
 } from "lucide-react-native"
 import { Motion } from "@legendapp/motion"
 import { cn } from "@shogo/shared-ui/primitives"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { subagentStreamStore, type SubagentStreamData } from "../../../lib/subagent-stream-store"
 import { stopSubagent } from "../../../lib/subagent-stop"
 import { resolveShortName } from "../../../lib/visible-models"
@@ -727,6 +728,7 @@ function AgentDetailView({ agent, onBack }: { agent: AgentTypeInfo; onBack: () =
 }
 
 function RegistrySubTab() {
+  const comfortable = useIsNativePhoneLayout()
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
 
   const teamVersion = useSyncExternalStore(
@@ -759,11 +761,14 @@ function RegistrySubTab() {
         <Pressable
           key={t.name}
           onPress={() => setSelectedAgent(t.name)}
-          className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5 gap-1 active:bg-muted/40"
+          className={cn(
+            "rounded-lg border border-border/40 bg-muted/20 gap-1 active:bg-muted/40",
+            comfortable ? "px-4 py-3.5" : "px-3 py-2.5",
+          )}
         >
           <View className="flex-row items-center gap-2">
-            <Bot className="text-muted-foreground" size={14} />
-            <Text className="flex-1 text-xs font-semibold text-foreground">{t.name}</Text>
+            <Bot className="text-muted-foreground" size={comfortable ? 18 : 14} />
+            <Text className={cn("flex-1 font-semibold text-foreground", comfortable ? "text-base" : "text-xs")}>{t.name}</Text>
             {t.builtin && (
               <Text className="text-[9px] text-muted-foreground font-mono px-1 py-0.5 rounded bg-muted/40">
                 built-in
@@ -772,7 +777,7 @@ function RegistrySubTab() {
             <ChevronRight className="text-muted-foreground/40" size={14} />
           </View>
           {t.description && (
-            <Text className="text-[10px] text-muted-foreground" numberOfLines={2}>
+            <Text className={cn("text-muted-foreground", comfortable ? "text-sm" : "text-[10px]")} numberOfLines={2}>
               {t.description}
             </Text>
           )}
@@ -788,9 +793,9 @@ function RegistrySubTab() {
       ))}
 
       {!hasCustom && (
-        <View className="rounded-lg border border-dashed border-border/40 px-3 py-4 items-center gap-2 mt-2">
-          <Zap className="text-muted-foreground/30" size={20} />
-          <Text className="text-xs text-muted-foreground/60 text-center">
+        <View className="rounded-lg border border-dashed border-border/40 px-3 py-4 mt-2">
+          <Zap className="text-muted-foreground/30 mb-2 self-center" size={20} />
+          <Text className="text-xs text-muted-foreground/60 text-center w-full">
             Ask Shogo to create a custom agent for specialized tasks
           </Text>
         </View>
@@ -811,6 +816,7 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
 ]
 
 export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelProps) {
+  const comfortable = useIsNativePhoneLayout()
   const [subTab, setSubTab] = useState<SubTab>("activity")
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [expandedMemberIds, setExpandedMemberIds] = useState<Set<string>>(new Set())
@@ -844,8 +850,8 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
   return (
     <View className="absolute inset-0 flex-col" style={{ display: visible ? "flex" : "none" }}>
       {/* Sub-tab toggle */}
-      <View className="px-4 py-2 border-b border-border flex-row items-center gap-2">
-        <View className="flex-row rounded-md border border-border" role="tablist">
+      <View className={cn("border-b border-border", comfortable ? "px-3 py-2.5" : "px-4 py-2 flex-row items-center gap-2")}>
+        <View className={cn(comfortable ? "flex-row gap-2" : "flex-row rounded-md border border-border")} role="tablist">
           {SUB_TABS.map((tab) => (
             <Pressable
               key={tab.id}
@@ -854,15 +860,22 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
               accessibilityLabel={tab.label}
               accessibilityState={{ selected: subTab === tab.id }}
               className={cn(
-                "px-3 py-1.5 rounded-md",
-                subTab === tab.id ? "bg-primary" : "active:bg-muted",
+                comfortable
+                  ? "min-h-11 min-w-0 flex-1 items-center justify-center rounded-full px-2"
+                  : "px-3 py-1.5 rounded-md",
+                subTab === tab.id
+                  ? comfortable ? "bg-muted" : "bg-primary"
+                  : comfortable ? "bg-muted/40 active:bg-muted" : "active:bg-muted",
               )}
             >
               <Text
                 className={cn(
-                  "text-xs font-medium",
-                  subTab === tab.id ? "text-primary-foreground" : "text-muted-foreground",
+                  comfortable ? "text-[14px]" : "text-xs font-medium",
+                  subTab === tab.id
+                    ? comfortable ? "font-semibold text-foreground" : "text-primary-foreground"
+                    : "text-muted-foreground",
                 )}
+                numberOfLines={1}
               >
                 {tab.label}
               </Text>

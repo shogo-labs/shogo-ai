@@ -7,8 +7,8 @@
  * Narrow screens (< 768px): slide-over drawer with backdrop overlay
  *
  * Sections:
- *  - Logo row: gradient "S" badge + "Shogo" text + collapse toggle
- *  - Primary nav: Home + Search (Cmd+K) [+ Meetings in local mode]
+ *  - Logo row: wordmark + collapse toggle (web) or search (native drawer)
+ *  - Primary nav: Home [+ Marketplace] [+ Search on web] [+ Meetings in local mode]
  *  - PROJECTS tree: every project, each expandable to reveal its chats
  *  - Upgrade to Pro CTA
  *  - Consolidated account button (workspace switcher + resource links +
@@ -26,6 +26,7 @@ import {
   Modal,
   Animated,
   Easing,
+  BackHandler,
   useWindowDimensions,
   Platform,
   ActivityIndicator,
@@ -107,6 +108,7 @@ import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { useNativeDrawerCloseSwipe } from '../../lib/use-native-drawer-swipe'
 import { invitationEvents } from '../../lib/invitation-events'
 import { chatSessionEvents, chatActivityEvents } from '../../lib/chat-session-events'
 import {
@@ -469,6 +471,104 @@ function getSidebarChatScrollStyle(chatRowHeight: number | null, rowCount: numbe
 // collapse behind a "More" toggle.
 const MAX_VISIBLE_PROJECTS = 5
 
+const PROJECT_SORT_OPTIONS: { value: ProjectSort; label: string }[] = [
+  { value: 'recent', label: 'Recent' },
+  { value: 'name', label: 'Name' },
+]
+const PROJECT_SCOPE_OPTIONS: { value: ProjectScope; label: string }[] = [
+  { value: 'all', label: 'All projects' },
+  { value: 'mine', label: 'My projects' },
+]
+
+function ProjectFilterSheet({
+  visible,
+  sort,
+  scope,
+  onSort,
+  onScope,
+  onClose,
+  bottomInset,
+}: {
+  visible: boolean
+  sort: ProjectSort
+  scope: ProjectScope
+  onSort: (sort: ProjectSort) => void
+  onScope: (scope: ProjectScope) => void
+  onClose: () => void
+  bottomInset: number
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View className="flex-1 justify-end">
+        <Pressable
+          accessibilityLabel="Dismiss filter menu"
+          onPress={onClose}
+          className="flex-1 bg-black/50"
+        />
+        <View
+          className="bg-card border-t border-border px-5 pt-2"
+          style={{
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            paddingBottom: Math.max(bottomInset, 16),
+          }}
+        >
+          <View className="w-10 h-1 rounded-full bg-muted-foreground/40 self-center mb-4 mt-1" />
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className="text-xl font-semibold text-foreground">Filter & sort</Text>
+            <Pressable
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="Done"
+              className="h-11 px-2 items-center justify-center"
+            >
+              <Text className="text-base font-semibold text-primary">Done</Text>
+            </Pressable>
+          </View>
+
+          <Text className="pt-2 pb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Sort by
+          </Text>
+          {PROJECT_SORT_OPTIONS.map((opt) => (
+            <Pressable
+              key={opt.value}
+              onPress={() => onSort(opt.value)}
+              role={MENU_ITEM_RADIO_ROLE}
+              accessibilityState={{ checked: sort === opt.value }}
+              className="flex-row items-center min-h-14 gap-3 px-1 active:bg-muted rounded-xl"
+            >
+              <Text className={cn('text-lg flex-1', sort === opt.value ? 'text-foreground font-medium' : 'text-muted-foreground')}>
+                {opt.label}
+              </Text>
+              {sort === opt.value ? <Check size={20} className="text-primary" /> : null}
+            </Pressable>
+          ))}
+
+          <View className="h-px bg-border my-2" />
+
+          <Text className="pt-1 pb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Show
+          </Text>
+          {PROJECT_SCOPE_OPTIONS.map((opt) => (
+            <Pressable
+              key={opt.value}
+              onPress={() => onScope(opt.value)}
+              role={MENU_ITEM_RADIO_ROLE}
+              accessibilityState={{ checked: scope === opt.value }}
+              className="flex-row items-center min-h-14 gap-3 px-1 active:bg-muted rounded-xl"
+            >
+              <Text className={cn('text-lg flex-1', scope === opt.value ? 'text-foreground font-medium' : 'text-muted-foreground')}>
+                {opt.label}
+              </Text>
+              {scope === opt.value ? <Check size={20} className="text-primary" /> : null}
+            </Pressable>
+          ))}
+        </View>
+      </View>
+    </Modal>
+  )
+}
+
 const ProjectTreeItem = observer(function ProjectTreeItem({
   project,
   collapsed,
@@ -640,10 +740,13 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
     // Clicking a project name is an explicit "take me to this project's main
     // surface" intent: Canvas for canvas-capable projects, fullscreen Chat
     // for chat-only agents, the external preview for folder-linked projects.
-    // We pass it as a `tab` param the project layout applies (with precedence
-    // over the saved last-tab). `tabNonce` forces re-application when the
-    // project is already open and the tab value is unchanged.
-    const tab = defaultTabForProject(project)
+    // Native phone always lands on Chat — the user can switch to Canvas after
+    // open. We pass it as a `tab` param the project layout applies (with
+    // precedence over the saved last-tab). `tabNonce` forces re-application
+    // when the project is already open and the tab value is unchanged.
+    const tab = mobileProjectFirstTapShowsChats
+      ? 'chat-fullscreen'
+      : defaultTabForProject(project)
     if (!isActive) {
       router.push({
         pathname: '/(app)/projects/[id]',
@@ -655,7 +758,7 @@ const ProjectTreeItem = observer(function ProjectTreeItem({
       router.setParams({ tab, tabNonce: String(Date.now()) } as any)
     }
     onNavPress?.()
-  }, [router, project, onNavPress, isActive])
+  }, [router, project, onNavPress, isActive, mobileProjectFirstTapShowsChats])
 
   const handleProjectPress = useCallback(() => {
     if (mobileProjectFirstTapShowsChats && !isActive && !expanded) {
@@ -1084,12 +1187,19 @@ function UserMenuContent({
   onNavigate,
   isSuperAdmin,
   onClose,
-}: UserMenuProps & { onClose: () => void }) {
+  isNative = false,
+}: UserMenuProps & { onClose: () => void; isNative?: boolean }) {
+  const [appearanceOpen, setAppearanceOpen] = useState(false)
   const { theme, setTheme } = useTheme()
   const { localMode, shogoKeyConnected } = usePlatformConfig()
   // The Creator hub (marketplace publishing + referrals) is cloud-backed, so
   // it only appears in local/desktop mode once signed in to Shogo Cloud.
   const showCreator = !localMode || !!shogoKeyConnected
+  const rowClass = isNative
+    ? "flex-row items-center gap-3 px-4 py-3.5 active:bg-muted"
+    : "flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+  const rowText = isNative ? "text-base text-foreground" : "text-sm text-foreground"
+  const rowIcon = isNative ? 20 : 18
 
   return (
     <>
@@ -1099,21 +1209,74 @@ function UserMenuContent({
           onPress={() => { onNavigate('/(app)/profile'); onClose() }}
           role="menuitem"
           accessibilityLabel="Profile"
-          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+          className={rowClass}
         >
-          <User size={18} className="text-muted-foreground" />
-          <Text className="text-sm text-foreground">Profile</Text>
+          <User size={rowIcon} className="text-muted-foreground" />
+          <Text className={rowText}>Profile</Text>
         </Pressable>
+
+        <Pressable
+          onPress={() => setAppearanceOpen((open) => !open)}
+          role="menuitem"
+          accessibilityLabel="Appearance"
+          accessibilityState={{ expanded: appearanceOpen }}
+          className={rowClass}
+        >
+          <Monitor size={rowIcon} className="text-muted-foreground" />
+          <Text className={cn(rowText, 'flex-1')}>Appearance</Text>
+          {appearanceOpen ? (
+            <ChevronDown size={isNative ? 18 : 14} className="text-muted-foreground" />
+          ) : (
+            <ChevronRight size={isNative ? 18 : 14} className="text-muted-foreground" />
+          )}
+        </Pressable>
+
+        {appearanceOpen && (
+          <View accessibilityLabel="Theme options" className={cn('pr-4 py-1', isNative ? 'pl-12' : 'pl-11')}>
+            {([
+              { value: 'light' as const, label: 'Light', Icon: Sun },
+              { value: 'dark' as const, label: 'Dark', Icon: Moon },
+              { value: 'system' as const, label: 'System', Icon: Monitor },
+            ] as const).map(({ value, label, Icon }) => (
+              <Pressable
+                key={value}
+                onPress={() => setTheme(value)}
+                accessibilityRole="radio"
+                accessibilityLabel={label}
+                accessibilityState={{ checked: theme === value }}
+                className={cn(
+                  'flex-row items-center rounded-md px-2 active:bg-muted',
+                  isNative ? 'min-h-12 gap-3 py-3' : 'gap-3 py-2.5',
+                )}
+              >
+                <Icon
+                  size={isNative ? 18 : 16}
+                  className={theme === value ? 'text-primary' : 'text-muted-foreground'}
+                />
+                <Text
+                  className={cn(
+                    'flex-1',
+                    isNative ? 'text-base' : 'text-sm',
+                    theme === value ? 'text-primary font-medium' : 'text-foreground',
+                  )}
+                >
+                  {label}
+                </Text>
+                {theme === value && <Check size={isNative ? 18 : 16} className="text-primary" />}
+              </Pressable>
+            ))}
+          </View>
+        )}
 
         {showCreator && (
           <Pressable
             onPress={() => { onNavigate('/(app)/creator'); onClose() }}
             role="menuitem"
             accessibilityLabel="Creator"
-            className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+            className={rowClass}
           >
-            <Store size={18} className="text-muted-foreground" />
-            <Text className="text-sm text-foreground">Creator</Text>
+            <Store size={rowIcon} className="text-muted-foreground" />
+            <Text className={rowText}>Creator</Text>
           </Pressable>
         )}
 
@@ -1123,10 +1286,10 @@ function UserMenuContent({
             onPress={() => { onNavigate('/(admin)'); onClose() }}
             role="menuitem"
             accessibilityLabel="Admin panel"
-            className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+            className={rowClass}
           >
-            <Shield size={18} className="text-primary" />
-            <Text className="text-sm text-foreground">Admin</Text>
+            <Shield size={rowIcon} className="text-primary" />
+            <Text className={rowText}>Admin</Text>
           </Pressable>
         )}
       </View>
@@ -1140,10 +1303,10 @@ function UserMenuContent({
               onPress={() => { onSignOut(); onClose() }}
               role="menuitem"
               accessibilityLabel="Sign out"
-              className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+              className={rowClass}
             >
-              <LogOut size={18} className="text-muted-foreground" />
-              <Text className="text-sm text-foreground">Sign Out</Text>
+              <LogOut size={rowIcon} className="text-muted-foreground" />
+              <Text className={rowText}>Sign Out</Text>
             </Pressable>
           </View>
         </>
@@ -1166,6 +1329,7 @@ interface WorkspaceMenuSectionProps {
   onCreateWorkspace: () => void
   localMode?: boolean
   onClose: () => void
+  isNative?: boolean
 }
 
 function WorkspaceMenuSection({
@@ -1180,6 +1344,7 @@ function WorkspaceMenuSection({
   onCreateWorkspace,
   localMode,
   onClose,
+  isNative = false,
 }: WorkspaceMenuSectionProps) {
   const posthog = usePostHogSafe()
 
@@ -1192,17 +1357,17 @@ function WorkspaceMenuSection({
   return (
     <>
       {currentWorkspace && (
-        <View className="px-4 py-3">
+        <View className={cn('px-4', isNative ? 'py-4' : 'py-3')}>
           <View className="flex-row items-start gap-3">
-            <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
-              <Text className="text-sm font-medium text-primary">{wsInitial}</Text>
+            <View className={cn('rounded-lg bg-primary/10 items-center justify-center', isNative ? 'h-11 w-11' : 'h-10 w-10')}>
+              <Text className={cn('font-medium text-primary', isNative ? 'text-base' : 'text-sm')}>{wsInitial}</Text>
             </View>
             <View className="flex-1 min-w-0">
-              <Text className="font-medium text-foreground" numberOfLines={1}>
+              <Text className={cn('font-medium text-foreground', isNative && 'text-lg')} numberOfLines={1}>
                 {currentWorkspace.name}
               </Text>
               {showBilling && (
-                <Text className="text-xs text-muted-foreground">
+                <Text className={cn('text-muted-foreground', isNative ? 'text-sm mt-0.5' : 'text-xs')}>
                   {planType} Plan {'\u00B7'} 1 member
                 </Text>
               )}
@@ -1215,18 +1380,24 @@ function WorkspaceMenuSection({
         <View className="px-3 pb-2 flex-row gap-2">
           <Pressable
             onPress={() => { onNavigate('/(app)/settings'); onClose() }}
-            className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
+            className={cn(
+              'flex-1 flex-row items-center justify-center gap-1.5 rounded-md border border-border active:bg-muted',
+              isNative ? 'h-10' : 'h-8',
+            )}
           >
-            <Settings size={14} className="text-muted-foreground" />
-            <Text className="text-xs text-foreground">Settings</Text>
+            <Settings size={isNative ? 16 : 14} className="text-muted-foreground" />
+            <Text className={cn('text-foreground', isNative ? 'text-sm' : 'text-xs')}>Settings</Text>
           </Pressable>
           {!localMode && (
             <Pressable
               onPress={() => { onNavigate('/(app)/settings?tab=people'); onClose() }}
-              className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
+              className={cn(
+                'flex-1 flex-row items-center justify-center gap-1.5 rounded-md border border-border active:bg-muted',
+                isNative ? 'h-10' : 'h-8',
+              )}
             >
-              <Users size={14} className="text-muted-foreground" />
-              <Text className="text-xs text-foreground">Invite</Text>
+              <Users size={isNative ? 16 : 14} className="text-muted-foreground" />
+              <Text className={cn('text-foreground', isNative ? 'text-sm' : 'text-xs')}>Invite</Text>
             </Pressable>
           )}
         </View>
@@ -1235,13 +1406,14 @@ function WorkspaceMenuSection({
       {showBilling && currentWorkspace && (
         <>
           <View className="h-px bg-border" />
-          <View className="px-4 py-3 gap-2">
-            <Text className="text-sm text-muted-foreground">Usage</Text>
+          <View className={cn('px-4 gap-2', isNative ? 'py-3.5' : 'py-3')}>
+            <Text className={cn('text-muted-foreground', isNative ? 'text-base' : 'text-sm')}>Usage</Text>
             <CompactUsageWindows
               windows={billingData.usageWindows}
               overage={billingData.effectiveBalance
                 ? { enabled: billingData.effectiveBalance.overageEnabled, accumulatedUsd: billingData.effectiveBalance.overageAccumulatedUsd }
                 : undefined}
+              comfortable={isNative}
             />
           </View>
         </>
@@ -1251,13 +1423,13 @@ function WorkspaceMenuSection({
         <View className="px-3 py-2">
           <Pressable
             onPress={() => { trackEvent(posthog, EVENTS.UPGRADE_CLICKED); onNavigate('/(app)/billing'); onClose() }}
-            className="flex-row items-center justify-center gap-2 h-9 rounded-md"
+            className={cn('flex-row items-center justify-center gap-2 rounded-md', isNative ? 'h-11' : 'h-9')}
             style={Platform.OS === 'web'
               ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
               : { backgroundColor: '#7c3aed' }}
           >
-            <Zap size={16} className="text-white" />
-            <Text className="text-sm font-medium text-white">Upgrade to Pro</Text>
+            <Zap size={isNative ? 18 : 16} className="text-white" />
+            <Text className={cn('font-medium text-white', isNative ? 'text-base' : 'text-sm')}>Upgrade to Pro</Text>
           </Pressable>
         </View>
       )}
@@ -1265,7 +1437,7 @@ function WorkspaceMenuSection({
       <View className="h-px bg-border" />
 
       <View className="py-1">
-        <Text className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <Text className={cn('px-4 py-1.5 font-semibold uppercase tracking-wider text-muted-foreground', isNative ? 'text-sm' : 'text-[11px]')}>
           All workspaces
         </Text>
         {workspaces.map((ws: any) => {
@@ -1279,14 +1451,14 @@ function WorkspaceMenuSection({
                 }
                 onClose()
               }}
-              className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
+              className={cn('flex-row items-center gap-2 px-4 active:bg-muted', isNative ? 'py-2.5' : 'py-2')}
             >
-              <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
-                <Text className="text-[10px] font-medium text-primary">
+              <View className={cn('rounded bg-primary/10 items-center justify-center', isNative ? 'h-7 w-7' : 'h-6 w-6')}>
+                <Text className={cn('font-medium text-primary', isNative ? 'text-xs' : 'text-[10px]')}>
                   {ws.name?.[0]?.toUpperCase() ?? 'W'}
                 </Text>
               </View>
-              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+              <Text className={cn('text-foreground flex-1', isNative ? 'text-base' : 'text-sm')} numberOfLines={1}>
                 {ws.name}
               </Text>
               {showBilling && (() => {
@@ -1299,7 +1471,7 @@ function WorkspaceMenuSection({
                   : 'Free'
                 return (
                   <View className={cn('rounded px-1.5 py-0.5', isPaid ? 'bg-primary/10' : 'bg-muted')}>
-                    <Text className={cn('text-[10px]', isPaid ? 'text-primary font-medium' : 'text-muted-foreground')}>{label}</Text>
+                    <Text className={cn(isNative ? 'text-xs' : 'text-[10px]', isPaid ? 'text-primary font-medium' : 'text-muted-foreground')}>{label}</Text>
                   </View>
                 )
               })()}
@@ -1313,10 +1485,10 @@ function WorkspaceMenuSection({
         {!localMode && (
           <Pressable
             onPress={() => { onClose(); onCreateWorkspace() }}
-            className="flex-row items-center gap-2 px-4 py-2 rounded-md active:bg-muted"
+            className={cn('flex-row items-center gap-2 px-4 rounded-md active:bg-muted', isNative ? 'py-2.5' : 'py-2')}
           >
-            <Plus size={16} className="text-muted-foreground" />
-            <Text className="text-sm text-foreground">Create new workspace</Text>
+            <Plus size={isNative ? 18 : 16} className="text-muted-foreground" />
+            <Text className={cn('text-foreground', isNative ? 'text-base' : 'text-sm')}>Create new workspace</Text>
           </Pressable>
         )}
       </View>
@@ -1330,10 +1502,12 @@ function AccountNavLinks({
   localMode,
   onNavigate,
   onClose,
+  isNative = false,
 }: {
   localMode?: boolean
   onNavigate: (href: string) => void
   onClose: () => void
+  isNative?: boolean
 }) {
   const items: Array<{ icon: React.ElementType; label: string; href: string }> = [
     // { icon: Star, label: 'Starred', href: '/(app)/starred' },
@@ -1349,29 +1523,29 @@ function AccountNavLinks({
           onPress={() => { onNavigate(href); onClose() }}
           role="menuitem"
           accessibilityLabel={label}
-          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+          className={cn('flex-row items-center gap-3 px-4 active:bg-muted', isNative ? 'py-3.5' : 'py-3')}
         >
-          <Icon size={18} className="text-muted-foreground" />
-          <Text className="text-sm text-foreground">{label}</Text>
+          <Icon size={isNative ? 20 : 18} className="text-muted-foreground" />
+          <Text className={cn('text-foreground', isNative ? 'text-base' : 'text-sm')}>{label}</Text>
         </Pressable>
       ))}
       <Pressable
         onPress={() => { Linking.openURL('https://docs.shogo.ai/'); onClose() }}
         role="menuitem"
         accessibilityLabel="Docs"
-        className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+        className={cn('flex-row items-center gap-3 px-4 active:bg-muted', isNative ? 'py-3.5' : 'py-3')}
       >
-        <ExternalLink size={18} className="text-muted-foreground" />
-        <Text className="text-sm text-foreground">Docs</Text>
+        <ExternalLink size={isNative ? 20 : 18} className="text-muted-foreground" />
+        <Text className={cn('text-foreground', isNative ? 'text-base' : 'text-sm')}>Docs</Text>
       </Pressable>
       <Pressable
         onPress={() => { Linking.openURL('https://docs.shogo.ai/changelog'); onClose() }}
         role="menuitem"
         accessibilityLabel="What's New"
-        className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+        className={cn('flex-row items-center gap-3 px-4 active:bg-muted', isNative ? 'py-3.5' : 'py-3')}
       >
-        <Sparkles size={18} className="text-muted-foreground" />
-        <Text className="text-sm text-foreground">What's New</Text>
+        <Sparkles size={isNative ? 20 : 18} className="text-muted-foreground" />
+        <Text className={cn('text-foreground', isNative ? 'text-base' : 'text-sm')}>What's New</Text>
       </Pressable>
     </View>
   )
@@ -1450,12 +1624,14 @@ function AccountMenu({
         onCreateWorkspace={onCreateWorkspace}
         localMode={localMode}
         onClose={close}
+        isNative={isNative}
       />
       <View className="h-px bg-border" />
       <AccountNavLinks
         localMode={localMode}
         onNavigate={onNavigate}
         onClose={close}
+        isNative={isNative}
       />
       <View className="h-px bg-border" />
       <UserMenuContent
@@ -1464,6 +1640,7 @@ function AccountMenu({
         onNavigate={onNavigate}
         isSuperAdmin={isSuperAdmin}
         onClose={close}
+        isNative={isNative}
       />
     </>
   )
@@ -1542,7 +1719,7 @@ function AccountMenu({
             <View className="items-center pt-2 pb-1">
               <View className="w-10 h-1 rounded-full bg-muted-foreground/30" />
             </View>
-            <ScrollView className="max-h-[480px]" showsVerticalScrollIndicator={false}>
+            <ScrollView className={isNative ? "max-h-[560px]" : "max-h-[480px]"} showsVerticalScrollIndicator={false}>
               {menuSections}
             </ScrollView>
           </Pressable>
@@ -1638,11 +1815,13 @@ function CreateWorkspaceModal({
 
 interface AppSidebarProps {
   isOpen?: boolean
+  /** Keep the drawer mounted while a swipe is in progress (isOpen may still be false). */
+  visible?: boolean
   onClose?: () => void
   drawerProgress?: Animated.Value
 }
 
-export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawerProgress: externalDrawerProgress }: AppSidebarProps) {
+export const AppSidebar = observer(function AppSidebar({ isOpen, visible, onClose, drawerProgress: externalDrawerProgress }: AppSidebarProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const router = useRouter()
@@ -1651,6 +1830,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
   const isNativeDrawer = Platform.OS !== 'web' && !isWide
   const drawerTopInset = isNativeDrawer ? Math.max(insets.top, 56) : insets.top
   const drawerBottomInset = isNativeDrawer ? Math.max(insets.bottom, 18) : insets.bottom
+  // Sit above the home indicator / rounded corner without the extra min-height
+  // padding that used to look like a second empty row.
+  const drawerFooterInset = isNativeDrawer ? Math.max(insets.bottom, 12) : insets.bottom
   const drawerSideInset = isNativeDrawer ? Math.max(insets.left, 4) : 0
   const drawerPanelWidth = isNativeDrawer ? Math.min(288, Math.max(264, width - 48)) : undefined
   const animatedDrawerWidth = drawerPanelWidth ?? 288
@@ -1861,30 +2043,46 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
   const isPaidPlan = billingData.hasActiveSubscription || (workspacePlan?.planId !== 'free' && workspacePlan?.status === 'active')
 
   useEffect(() => {
-    if (!isNativeDrawer || !isOpen) return
-    drawerProgress.setValue(0)
+    if (!isOpen) setFilterMenuOpen(false)
+  }, [isOpen])
+
+  const closeNativeDrawer = useCallback(() => {
+    onClose?.()
+  }, [onClose])
+
+  const reopenNativeDrawer = useCallback(() => {
     Animated.timing(drawerProgress, {
       toValue: 1,
-      duration: 230,
+      duration: 180,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start()
-  }, [drawerProgress, isNativeDrawer, isOpen])
+  }, [drawerProgress])
 
-  const closeNativeDrawer = useCallback(() => {
-    if (!isNativeDrawer) {
-      onClose?.()
-      return
-    }
-    Animated.timing(drawerProgress, {
-      toValue: 0,
-      duration: 170,
-      easing: Easing.in(Easing.cubic),
-      useNativeDriver: true,
-    }).start(() => {
-      onClose?.()
+  const closeSwipeHandlers = useNativeDrawerCloseSwipe({
+    enabled: isNativeDrawer && !!isOpen,
+    drawerWidth: animatedDrawerWidth,
+    drawerProgress,
+    onClose: closeNativeDrawer,
+    onCancelClose: reopenNativeDrawer,
+  })
+  const backdropSwipeHandlers = useNativeDrawerCloseSwipe({
+    enabled: isNativeDrawer && !!isOpen,
+    drawerWidth: animatedDrawerWidth,
+    drawerProgress,
+    onClose: closeNativeDrawer,
+    onCancelClose: reopenNativeDrawer,
+    closeOnTap: true,
+  })
+
+  useEffect(() => {
+    if (!isNativeDrawer || !isOpen) return
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      closeNativeDrawer()
+      return true
     })
-  }, [drawerProgress, isNativeDrawer, onClose])
+    return () => sub.remove()
+  }, [closeNativeDrawer, isNativeDrawer, isOpen])
 
   const toggleCollapse = useCallback(() => {
     if (isNativeDrawer) {
@@ -1950,12 +2148,24 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
   }, [signOut, posthog])
 
   const onNavPress = useCallback(() => {
-    if (!isWide) closeNativeDrawer()
-  }, [closeNativeDrawer, isWide])
+    if (!isWide) onClose?.()
+  }, [isWide, onClose])
+
+  const prevPathnameRef = useRef(pathname)
+  useEffect(() => {
+    if (prevPathnameRef.current === pathname) return
+    prevPathnameRef.current = pathname
+    if (isOpen && isNativeDrawer) onClose?.()
+  }, [drawerProgress, isNativeDrawer, isOpen, onClose, pathname])
 
   const handleSearchPress = useCallback(() => {
+    if (isNativeDrawer) {
+      router.push('/(app)/search' as any)
+      onNavPress()
+      return
+    }
     setCommandPaletteOpen(true)
-  }, [setCommandPaletteOpen])
+  }, [isNativeDrawer, onNavPress, router, setCommandPaletteOpen])
 
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
   const isMeetingsPage = pathname.startsWith('/meetings') || pathname.startsWith('/(app)/meetings')
@@ -1987,9 +2197,19 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
             >
               <ShogoWordmark className={isNativeDrawer ? 'h-7 w-[120px]' : 'h-[22px] w-[94px]'} />
             </Pressable>
-            <Pressable onPress={toggleCollapse} className={cn('items-center justify-center rounded-md active:bg-muted', isNativeDrawer ? 'h-11 w-11' : 'h-8 w-8')}>
-              <PanelLeftClose size={isNativeDrawer ? 20 : 12} className="text-muted-foreground" />
-            </Pressable>
+            {isNativeDrawer ? (
+              <Pressable
+                onPress={handleSearchPress}
+                accessibilityLabel="Search"
+                className="h-11 w-11 items-center justify-center rounded-md active:bg-muted"
+              >
+                <Search size={22} className="text-muted-foreground" />
+              </Pressable>
+            ) : (
+              <Pressable onPress={toggleCollapse} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
+                <PanelLeftClose size={12} className="text-muted-foreground" />
+              </Pressable>
+            )}
           </>
         )}
         {collapsed && (
@@ -2036,13 +2256,15 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
               onNavPress={onNavPress}
             />
           )}
-          <NavItem
-            icon={Search}
-            label="Search"
-            collapsed={collapsed}
-            shortcut={formatModKey('k')}
-            onPress={handleSearchPress}
-          />
+          {!isNativeDrawer && (
+            <NavItem
+              icon={Search}
+              label="Search"
+              collapsed={collapsed}
+              shortcut={formatModKey('k')}
+              onPress={handleSearchPress}
+            />
+          )}
           {localMode && (
             <NavItem
               icon={Mic}
@@ -2062,83 +2284,90 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
               <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground', isNativeDrawer ? 'text-sm' : 'text-[11px]')}>
                 Projects
               </Text>
-              <Popover
-                placement="bottom right"
-                size="sm"
-                isOpen={filterMenuOpen}
-                onOpen={() => setFilterMenuOpen(true)}
-                onClose={() => setFilterMenuOpen(false)}
-                trigger={(triggerProps) => (
-                  <Pressable
-                    {...triggerProps}
-                    role="button"
-                    accessibilityLabel="Filter and sort projects"
-                    accessibilityState={{ expanded: filterMenuOpen }}
-                    className={cn('items-center justify-center rounded-md active:bg-muted', isNativeDrawer ? 'h-11 w-11' : 'h-6 w-6')}
-                  >
-                    <SlidersHorizontal size={isNativeDrawer ? 20 : 13} className="text-muted-foreground" />
-                  </Pressable>
-                )}
-              >
-                <PopoverBackdrop />
-                <PopoverContent className="w-[200px] p-0">
-                  <PopoverBody>
-                    <View className="py-1">
-                      <Text className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                        Sort by
-                      </Text>
-                      {([
-                        { value: 'recent' as const, label: 'Recent' },
-                        { value: 'name' as const, label: 'Name' },
-                      ]).map((opt) => (
-                        <Pressable
-                          key={opt.value}
-                          onPress={() => updateProjectFilter({ sort: opt.value })}
-                          role={MENU_ITEM_RADIO_ROLE}
-                          accessibilityState={{ checked: projectFilter.sort === opt.value }}
-                          className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
-                        >
-                          <Text
-                            className={cn(
-                              'text-sm flex-1',
-                              projectFilter.sort === opt.value ? 'text-foreground' : 'text-muted-foreground',
-                            )}
+              {Platform.OS === 'web' ? (
+                <Popover
+                  placement="bottom right"
+                  size="sm"
+                  isOpen={filterMenuOpen}
+                  onOpen={() => setFilterMenuOpen(true)}
+                  onClose={() => setFilterMenuOpen(false)}
+                  trigger={(triggerProps) => (
+                    <Pressable
+                      {...triggerProps}
+                      role="button"
+                      accessibilityLabel="Filter and sort projects"
+                      accessibilityState={{ expanded: filterMenuOpen }}
+                      className="h-6 w-6 items-center justify-center rounded-md active:bg-muted"
+                    >
+                      <SlidersHorizontal size={13} className="text-muted-foreground" />
+                    </Pressable>
+                  )}
+                >
+                  <PopoverBackdrop />
+                  <PopoverContent className="w-[200px] p-0">
+                    <PopoverBody>
+                      <View className="py-1">
+                        <Text className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          Sort by
+                        </Text>
+                        {PROJECT_SORT_OPTIONS.map((opt) => (
+                          <Pressable
+                            key={opt.value}
+                            onPress={() => updateProjectFilter({ sort: opt.value })}
+                            role={MENU_ITEM_RADIO_ROLE}
+                            accessibilityState={{ checked: projectFilter.sort === opt.value }}
+                            className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                           >
-                            {opt.label}
-                          </Text>
-                          {projectFilter.sort === opt.value && <Check size={14} className="text-primary" />}
-                        </Pressable>
-                      ))}
-                      <View className="h-px bg-border my-1" />
-                      <Text className="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                        Show
-                      </Text>
-                      {([
-                        { value: 'all' as const, label: 'All projects' },
-                        { value: 'mine' as const, label: 'My projects' },
-                      ]).map((opt) => (
-                        <Pressable
-                          key={opt.value}
-                          onPress={() => updateProjectFilter({ scope: opt.value })}
-                          role={MENU_ITEM_RADIO_ROLE}
-                          accessibilityState={{ checked: projectFilter.scope === opt.value }}
-                          className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
-                        >
-                          <Text
-                            className={cn(
-                              'text-sm flex-1',
-                              projectFilter.scope === opt.value ? 'text-foreground' : 'text-muted-foreground',
-                            )}
+                            <Text
+                              className={cn(
+                                'text-sm flex-1',
+                                projectFilter.sort === opt.value ? 'text-foreground' : 'text-muted-foreground',
+                              )}
+                            >
+                              {opt.label}
+                            </Text>
+                            {projectFilter.sort === opt.value && <Check size={14} className="text-primary" />}
+                          </Pressable>
+                        ))}
+                        <View className="h-px bg-border my-1" />
+                        <Text className="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          Show
+                        </Text>
+                        {PROJECT_SCOPE_OPTIONS.map((opt) => (
+                          <Pressable
+                            key={opt.value}
+                            onPress={() => updateProjectFilter({ scope: opt.value })}
+                            role={MENU_ITEM_RADIO_ROLE}
+                            accessibilityState={{ checked: projectFilter.scope === opt.value }}
+                            className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                           >
-                            {opt.label}
-                          </Text>
-                          {projectFilter.scope === opt.value && <Check size={14} className="text-primary" />}
-                        </Pressable>
-                      ))}
-                    </View>
-                  </PopoverBody>
-                </PopoverContent>
-              </Popover>
+                            <Text
+                              className={cn(
+                                'text-sm flex-1',
+                                projectFilter.scope === opt.value ? 'text-foreground' : 'text-muted-foreground',
+                              )}
+                            >
+                              {opt.label}
+                            </Text>
+                            {projectFilter.scope === opt.value && <Check size={14} className="text-primary" />}
+                          </Pressable>
+                        ))}
+                      </View>
+                    </PopoverBody>
+                  </PopoverContent>
+                </Popover>
+              ) : (
+                <Pressable
+                  onPress={() => setFilterMenuOpen(true)}
+                  role="button"
+                  accessibilityLabel="Filter and sort projects"
+                  accessibilityState={{ expanded: filterMenuOpen }}
+                  hitSlop={8}
+                  className={cn('items-center justify-center rounded-md active:bg-muted', isNativeDrawer ? 'h-11 w-11' : 'h-8 w-8')}
+                >
+                  <SlidersHorizontal size={isNativeDrawer ? 20 : 16} className="text-muted-foreground" />
+                </Pressable>
+              )}
             </View>
           )}
           {workspaceProjects.length === 0 ? (
@@ -2184,7 +2413,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
       </ScrollView>
 
       {/* ── Bottom Section ── */}
-      <View className="border-t border-border" style={{ paddingBottom: drawerBottomInset }}>
+      <View className="border-t border-border" style={{ paddingBottom: drawerFooterInset }}>
         {/* Upgrade to Pro CTA */}
         {features.billing && !collapsed && !isPaidPlan && (
           <View className={cn('px-2', isNativeDrawer ? 'pt-3' : 'pt-2')}>
@@ -2210,7 +2439,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
         <View
           className={cn(
             'flex-row items-center border-t border-border',
-            isNativeDrawer ? 'min-h-[76px] gap-3 p-3' : 'gap-2 p-2',
+            isNativeDrawer ? 'min-h-14 gap-2.5 px-3 pt-2 pb-1' : 'gap-2 p-2',
             collapsed ? 'justify-center' : 'px-3'
           )}
         >
@@ -2235,7 +2464,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
             />
           </View>
 
-          {!collapsed && <NotificationBell size={isNativeDrawer ? 22 : 18} />}
+          {!collapsed && <NotificationBell size={isNativeDrawer ? 22 : 18} onPress={onNavPress} />}
 
           {!collapsed && (
             <Pressable
@@ -2397,6 +2626,17 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
         visible={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
       />
+      {Platform.OS !== 'web' ? (
+        <ProjectFilterSheet
+          visible={filterMenuOpen}
+          sort={projectFilter.sort}
+          scope={projectFilter.scope}
+          onSort={(sort) => updateProjectFilter({ sort })}
+          onScope={(scope) => updateProjectFilter({ scope })}
+          onClose={() => setFilterMenuOpen(false)}
+          bottomInset={drawerBottomInset}
+        />
+      ) : null}
 
     </View>
   )
@@ -2409,51 +2649,51 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose, drawer
     )
   }
 
-  if (!isOpen) return null
-
   if (isNativeDrawer) {
+    if (!visible && !isOpen) return null
+
     const drawerTranslateX = drawerProgress.interpolate({
       inputRange: [0, 1],
       outputRange: [-animatedDrawerWidth, 0],
     })
 
     return (
-      <Modal
-        visible={isOpen}
-        transparent
-        animationType="none"
-        statusBarTranslucent
-        onRequestClose={closeNativeDrawer}
+      <View
+        pointerEvents={isOpen ? 'box-none' : 'none'}
+        style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 50 }}
       >
-        <View style={{ flex: 1 }}>
-          <Pressable
-            onPress={closeNativeDrawer}
-            style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
-          >
-            <Animated.View
-              pointerEvents="none"
-              style={[
-                { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(0,0,0,0.58)' },
-                { opacity: drawerProgress },
-              ]}
-            />
-          </Pressable>
+        <View
+          {...backdropSwipeHandlers}
+          accessibilityRole="button"
+          accessibilityLabel="Close sidebar"
+          style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
+        >
           <Animated.View
+            pointerEvents="none"
             style={[
-              {
-                height: '100%',
-                zIndex: 10,
-                width: animatedDrawerWidth,
-                transform: [{ translateX: drawerTranslateX }],
-              },
+              { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(0,0,0,0.58)' },
+              { opacity: drawerProgress },
             ]}
-          >
-            {sidebarContent}
-          </Animated.View>
+          />
         </View>
-      </Modal>
+        <Animated.View
+          {...closeSwipeHandlers}
+          style={[
+            {
+              height: '100%',
+              zIndex: 10,
+              width: animatedDrawerWidth,
+              transform: [{ translateX: drawerTranslateX }],
+            },
+          ]}
+        >
+          {sidebarContent}
+        </Animated.View>
+      </View>
     )
   }
+
+  if (!isOpen) return null
 
   return (
     <View

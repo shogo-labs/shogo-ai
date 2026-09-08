@@ -48,6 +48,8 @@ import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NativeWorkTrigger } from "../NativeActivitySheet"
 
 /**
  * Throttle a streaming value so heavy downstream work (markdown parsing, part
@@ -286,7 +288,12 @@ function scanTransparentRun(
   return { endIdx: lastToolIdx + 1, toolCount }
 }
 
-function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
+function groupConsecutiveParts(
+  parts: MessagePart[],
+  opts?: { minWorkGroup?: number },
+): GroupedMessagePart[] {
+  const minEditing = opts?.minWorkGroup ?? MIN_EDITING_GROUP_SIZE
+  const minExploration = opts?.minWorkGroup ?? MIN_EXPLORATION_GROUP_SIZE
   const result: GroupedMessagePart[] = []
   let i = 0
 
@@ -324,7 +331,7 @@ function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
           p.type === "tool" &&
           (isEditingTool(p.tool) || isShellRunCommand(p.tool)),
       )
-      if (hasEditing && toolCount >= MIN_EDITING_GROUP_SIZE) {
+      if (hasEditing && toolCount >= minEditing) {
         result.push({
           type: "editing-group",
           items: slice,
@@ -333,7 +340,7 @@ function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
         i = endIdx
         continue
       }
-      if (!hasEditing && toolCount >= MIN_EXPLORATION_GROUP_SIZE) {
+      if (!hasEditing && toolCount >= minExploration) {
         result.push({
           type: "exploration-group",
           items: slice,
@@ -600,6 +607,7 @@ export const AssistantContent = memo(
     className,
   }: AssistantContentProps) {
   const chatContext = useChatContextSafe()
+  const nativePhone = useIsNativePhoneLayout()
 
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
@@ -688,8 +696,8 @@ export const AssistantContent = memo(
   }, [orderedParts, todoStateStore])
 
   const groupedParts = useMemo(
-    () => groupConsecutiveParts(orderedParts),
-    [orderedParts],
+    () => groupConsecutiveParts(orderedParts, nativePhone ? { minWorkGroup: 1 } : undefined),
+    [orderedParts, nativePhone],
   )
 
   if (groupedParts.length === 0) {
@@ -904,36 +912,57 @@ export const AssistantContent = memo(
           }
 
           if (part.tool.toolName === "exec" || part.tool.toolName === "Bash") {
-            return (
+            const exec = (
               <ExecWidget
-                key={part.id}
                 tool={part.tool}
                 isExpanded={expandedTools.has(part.id)}
                 onToggle={getToggle(part.id)}
               />
             )
+            if (nativePhone) {
+              return (
+                <NativeWorkTrigger key={part.id} label="Worked" title="Command">
+                  {exec}
+                </NativeWorkTrigger>
+              )
+            }
+            return <View key={part.id}>{exec}</View>
           }
 
           if (part.tool.toolName === "write_file" || part.tool.toolName === "Write") {
-            return (
+            const write = (
               <WriteFileWidget
-                key={part.id}
                 tool={part.tool}
                 isExpanded={expandedTools.has(part.id)}
                 onToggle={getToggle(part.id)}
               />
             )
+            if (nativePhone) {
+              return (
+                <NativeWorkTrigger key={part.id} label="Worked" title="File">
+                  {write}
+                </NativeWorkTrigger>
+              )
+            }
+            return <View key={part.id}>{write}</View>
           }
 
           if (part.tool.toolName === "edit_file" || part.tool.toolName === "Edit" || part.tool.toolName === "StrReplace") {
-            return (
+            const edit = (
               <EditFileWidget
-                key={part.id}
                 tool={part.tool}
                 isExpanded={expandedTools.has(part.id)}
                 onToggle={getToggle(part.id)}
               />
             )
+            if (nativePhone) {
+              return (
+                <NativeWorkTrigger key={part.id} label="Worked" title="File">
+                  {edit}
+                </NativeWorkTrigger>
+              )
+            }
+            return <View key={part.id}>{edit}</View>
           }
 
           if (part.tool.toolName === "browser") {
@@ -948,25 +977,39 @@ export const AssistantContent = memo(
           }
 
           if (MINIMAL_TOOL_NAMES.has(part.tool.toolName)) {
-            return (
+            const row = (
               <InlineToolWidget
-                key={part.id}
                 tool={part.tool}
                 variant="minimal"
                 isExpanded={expandedTools.has(part.id)}
                 onToggle={getToggle(part.id)}
               />
             )
+            if (nativePhone) {
+              return (
+                <NativeWorkTrigger key={part.id} label="Worked" title="Work">
+                  {row}
+                </NativeWorkTrigger>
+              )
+            }
+            return <View key={part.id}>{row}</View>
           }
 
-          return (
+          const other = (
             <InlineToolWidget
-              key={part.id}
               tool={part.tool}
               isExpanded={expandedTools.has(part.id)}
               onToggle={getToggle(part.id)}
             />
           )
+          if (nativePhone) {
+            return (
+              <NativeWorkTrigger key={part.id} label="Worked" title="Work">
+                {other}
+              </NativeWorkTrigger>
+            )
+          }
+          return <View key={part.id}>{other}</View>
         }
 
         if (part.type === "image") {

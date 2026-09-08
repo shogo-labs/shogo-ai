@@ -23,6 +23,8 @@ import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown } from "lucide-react-native"
 import { MarkdownText } from "../MarkdownText"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NativeActivitySheet, useInsideActivitySheet } from "../NativeActivitySheet"
 
 const ANIM_DURATION = 500
 const STREAM_MAX_HEIGHT = 200
@@ -106,6 +108,8 @@ export interface ThinkingWidgetProps {
   isStreaming?: boolean
   durationSeconds?: number
   className?: string
+  /** Inside a work sheet — render details inline, don't open another sheet. */
+  embedded?: boolean
 }
 
 function ThinkingWidgetImpl({
@@ -113,6 +117,7 @@ function ThinkingWidgetImpl({
   isStreaming = false,
   durationSeconds,
   className,
+  embedded = false,
 }: ThinkingWidgetProps) {
   const [isOpen, setIsOpen] = useState(isStreaming)
   const userClosedRef = useRef(false)
@@ -124,6 +129,9 @@ function ThinkingWidgetImpl({
   const colorScheme = useColorScheme()
   const innerScrollRef = useRef<ScrollView>(null)
   const userScrolledThinkingRef = useRef(false)
+  const nativePhone = useIsNativePhoneLayout()
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const insideSheet = useInsideActivitySheet()
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current !== null) {
@@ -186,7 +194,9 @@ function ThinkingWidgetImpl({
   const label = isStreaming
     ? "Thinking…"
     : duration !== undefined
-      ? `Thought for ${duration}s`
+      ? nativePhone
+        ? `Thought ${duration}s`
+        : `Thought for ${duration}s`
       : "Thought"
 
   const hasText = text.length > 0
@@ -251,6 +261,53 @@ function ThinkingWidgetImpl({
     },
     [measuredHeight, isStreaming],
   )
+
+  if (embedded || insideSheet) {
+    return (
+      <View className={cn("", className)}>
+        <Pressable
+          onPress={toggleOpen}
+          className="flex-row items-center gap-1.5 self-start py-1"
+          role="button"
+          accessibilityLabel={label}
+        >
+          <Text className="text-[15px] text-muted-foreground">{label}</Text>
+          <ChevronDown
+            size={14}
+            className="text-muted-foreground"
+            style={{ transform: [{ rotate: isOpen ? "180deg" : "0deg" }] }}
+          />
+        </Pressable>
+        {isOpen && hasText ? (
+          <View className="pt-1 pb-2">
+            <MarkdownText variant="thinking">{text}</MarkdownText>
+          </View>
+        ) : null}
+      </View>
+    )
+  }
+
+  if (nativePhone) {
+    return (
+      <View className={cn("py-0.5", className)}>
+        <Pressable
+          onPress={() => hasText && setSheetOpen(true)}
+          className="self-start py-1"
+          role="button"
+          accessibilityLabel={label}
+        >
+          <Text className="text-[15px] text-muted-foreground">{label}</Text>
+        </Pressable>
+        <NativeActivitySheet
+          visible={sheetOpen}
+          title={label}
+          onClose={() => setSheetOpen(false)}
+        >
+          {hasText ? <MarkdownText variant="thinking">{text}</MarkdownText> : null}
+        </NativeActivitySheet>
+      </View>
+    )
+  }
 
   return (
     <View className={cn("", className)}>

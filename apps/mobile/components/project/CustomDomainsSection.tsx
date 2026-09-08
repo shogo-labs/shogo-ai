@@ -519,8 +519,8 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
         const stalledWaitMs = group.map((d) => d.retriggerCooldownMs).find((ms) => ms != null) ?? null
         return (
           <View key={groupKey(group[0])} className="mb-2 p-3 rounded-lg border border-border gap-2">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+            <View className="flex-row items-center justify-between gap-2">
+              <Text className="text-sm text-foreground flex-1 min-w-0" numberOfLines={1}>
                 {primary.hostname}
               </Text>
               <Pressable
@@ -574,7 +574,7 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
             {group.map((d) => (
               <View key={d.id} className="gap-2 pt-1">
                 <View className="flex-row items-center gap-2">
-                  <Text className="text-[12px] font-mono text-foreground flex-1" numberOfLines={1}>
+                  <Text className="text-[12px] font-mono text-foreground flex-1 min-w-0" numberOfLines={1}>
                     {d.hostname}
                   </Text>
                   {d.primary ? (
@@ -696,7 +696,7 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
           autoCorrect={false}
           keyboardType="url"
           onSubmitEditing={handleAdd}
-          className="flex-1 h-9 px-3 text-sm text-foreground border border-border rounded-lg web:outline-none"
+          className="flex-1 min-w-0 h-9 px-3 text-sm text-foreground border border-border rounded-lg web:outline-none"
         />
         <Pressable
           onPress={handleAdd}

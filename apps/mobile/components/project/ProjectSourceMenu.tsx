@@ -48,10 +48,11 @@ import {
 } from 'lucide-react-native'
 import { ProjectImportModal } from '../projects/ProjectImportModal'
 import { CloudProjectPickerModal } from '../projects/CloudProjectPickerModal'
+import { useComposerPlusClose } from '../chat/AttachSourceSheet'
 import { useOpenLocalFolder } from './useOpenLocalFolder'
 import { useOpenCloudProject } from './useOpenCloudProject'
 
-export type ProjectSourceVariant = 'chip' | 'button'
+export type ProjectSourceVariant = 'chip' | 'button' | 'list'
 
 export interface ProjectSourceMenuProps {
   workspaceId: string | undefined
@@ -85,6 +86,7 @@ export function ProjectSourceMenu({
   const { width } = useWindowDimensions()
   const isNativePhone = Platform.OS !== 'web' && width < 600
   const useProminentChip = prominentMobile && isNativePhone
+  const closePlusSheet = useComposerPlusClose()
   const [open, setOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [cloudOpen, setCloudOpen] = useState(false)
@@ -104,23 +106,27 @@ export function ProjectSourceMenu({
 
   const handleSelectBlank = useCallback(() => {
     setOpen(false)
+    closePlusSheet?.()
     onSelectBlank?.()
-  }, [onSelectBlank])
+  }, [closePlusSheet, onSelectBlank])
 
   const handleSelectFolder = useCallback(() => {
     setOpen(false)
+    closePlusSheet?.()
     void openFolder()
-  }, [openFolder])
+  }, [closePlusSheet, openFolder])
 
   const handleSelectImport = useCallback(() => {
     setOpen(false)
-    setImportOpen(true)
-  }, [])
+    closePlusSheet?.()
+    setTimeout(() => setImportOpen(true), 320)
+  }, [closePlusSheet])
 
   const handleSelectCloud = useCallback(() => {
     setOpen(false)
-    setCloudOpen(true)
-  }, [])
+    closePlusSheet?.()
+    setTimeout(() => setCloudOpen(true), 320)
+  }, [closePlusSheet])
 
   const handleCloudOpened = useCallback(
     (project: { id: string; name: string }) => {
@@ -146,6 +152,76 @@ export function ProjectSourceMenu({
     [onProjectOpened, router],
   )
 
+  const menuRows = (
+    <View className="py-1">
+      <Pressable
+        onPress={handleSelectBlank}
+        className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
+      >
+        <View className="w-8 items-center">
+          <Sparkles size={16} className="text-muted-foreground" />
+        </View>
+        <View className="flex-1">
+          <Text className="text-sm font-medium text-foreground">Blank project</Text>
+          <Text className="text-[11px] text-muted-foreground">
+            Describe what you want to build. Shogo creates the project for you.
+          </Text>
+        </View>
+        <Check size={14} className="text-primary" />
+      </Pressable>
+
+      {canOpenFolder ? (
+        <Pressable
+          onPress={handleSelectFolder}
+          disabled={isPicking}
+          className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
+        >
+          <View className="w-8 items-center">
+            <FolderOpen size={16} className="text-muted-foreground" />
+          </View>
+          <View className="flex-1">
+            <Text className="text-sm font-medium text-foreground">Open folder…</Text>
+            <Text className="text-[11px] text-muted-foreground">
+              Pick a folder on this machine with the system file dialog.
+            </Text>
+          </View>
+        </Pressable>
+      ) : null}
+
+      {canOpenCloud ? (
+        <Pressable
+          onPress={handleSelectCloud}
+          className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
+        >
+          <View className="w-8 items-center">
+            <Cloud size={16} className="text-muted-foreground" />
+          </View>
+          <View className="flex-1">
+            <Text className="text-sm font-medium text-foreground">Open from Cloud…</Text>
+            <Text className="text-[11px] text-muted-foreground">
+              Sync a cloud project to this machine; edits sync back automatically.
+            </Text>
+          </View>
+        </Pressable>
+      ) : null}
+
+      <Pressable
+        onPress={handleSelectImport}
+        className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
+      >
+        <View className="w-8 items-center">
+          <Download size={16} className="text-muted-foreground" />
+        </View>
+        <View className="flex-1">
+          <Text className="text-sm font-medium text-foreground">Import .shogo…</Text>
+          <Text className="text-[11px] text-muted-foreground">
+            Restore a project previously exported from Shogo.
+          </Text>
+        </View>
+      </Pressable>
+    </View>
+  )
+
   const trigger = (triggerProps: any) =>
     variant === 'chip' ? (
       <Pressable
@@ -153,31 +229,39 @@ export function ProjectSourceMenu({
         accessibilityLabel="Project source"
         className={cn(
           useProminentChip
-            ? 'h-7 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-1.5'
+            ? 'h-7 w-7 items-center justify-center rounded-lg border border-border/45 bg-muted/30'
             : 'h-[22px] flex-row items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-1.5',
           'active:opacity-80',
           isPicking && 'opacity-60',
         )}
         testID="project-source-menu-trigger"
       >
-        <Sparkles className="text-muted-foreground" size={12} />
-        <Text className={useProminentChip ? 'text-[11px] text-foreground/85' : 'text-[11px] text-muted-foreground'}>New</Text>
-        <ChevronDown className="text-muted-foreground/70" size={8} />
+        <Sparkles className="text-muted-foreground" size={useProminentChip ? 13 : 12} />
+        {useProminentChip ? null : (
+          <>
+            <Text className="text-[11px] text-muted-foreground">New</Text>
+            <ChevronDown className="text-muted-foreground/70" size={8} />
+          </>
+        )}
       </Pressable>
     ) : (
       <Pressable
         {...triggerProps}
         accessibilityLabel="New project"
         className={cn(
-          'flex-row items-center gap-1.5 px-3 py-2 rounded-lg',
-          'bg-primary active:opacity-80',
+          'flex-row items-center rounded-lg bg-primary active:opacity-80',
+          isNativePhone
+            ? 'h-12 w-full justify-center gap-2 px-4'
+            : 'gap-1.5 px-3 py-2',
           isPicking && 'opacity-70',
         )}
         testID="project-source-menu-trigger"
       >
-        <FilePlus2 size={14} className="text-primary-foreground" />
-        <Text className="text-xs font-medium text-primary-foreground">New project</Text>
-        <ChevronDown size={12} className="text-primary-foreground/70" />
+        <FilePlus2 size={isNativePhone ? 18 : 14} className="text-primary-foreground" />
+        <Text className={cn('font-medium text-primary-foreground', isNativePhone ? 'text-base' : 'text-xs')}>
+          New project
+        </Text>
+        <ChevronDown size={isNativePhone ? 16 : 12} className="text-primary-foreground/70" />
       </Pressable>
     )
 
@@ -187,91 +271,27 @@ export function ProjectSourceMenu({
   // downward). Wrong placement clips the menu off-screen.
   const placement: 'top' | 'bottom left' = variant === 'chip' ? 'top' : 'bottom left'
 
+  const menu = variant === 'list' ? (
+    menuRows
+  ) : (
+    <Popover
+      placement={placement}
+      size="xs"
+      isOpen={open}
+      onOpen={() => setOpen(true)}
+      onClose={() => setOpen(false)}
+      trigger={trigger}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="w-[280px] p-0">
+        {menuRows}
+      </PopoverContent>
+    </Popover>
+  )
+
   return (
     <>
-      <Popover
-        placement={placement}
-        size="xs"
-        isOpen={open}
-        onOpen={() => setOpen(true)}
-        onClose={() => setOpen(false)}
-        trigger={trigger}
-      >
-        <PopoverBackdrop />
-        <PopoverContent className="w-[280px] p-0">
-          <View className="py-1">
-            {/* Blank project — the implicit default of the composer. We
-                still render it explicitly so the menu reads as a
-                complete set of choices, not "two random alternatives." */}
-            <Pressable
-              onPress={handleSelectBlank}
-              className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
-            >
-              <View className="w-8 items-center">
-                <Sparkles size={16} className="text-muted-foreground" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-sm font-medium text-foreground">Blank project</Text>
-                <Text className="text-[11px] text-muted-foreground">
-                  Describe what you want to build. Shogo creates the project for you.
-                </Text>
-              </View>
-              {/* The check mark advertises "this is what Send does." */}
-              <Check size={14} className="text-primary" />
-            </Pressable>
-
-            {canOpenFolder ? (
-              <Pressable
-                onPress={handleSelectFolder}
-                disabled={isPicking}
-                className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
-              >
-                <View className="w-8 items-center">
-                  <FolderOpen size={16} className="text-muted-foreground" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-sm font-medium text-foreground">Open folder…</Text>
-                  <Text className="text-[11px] text-muted-foreground">
-                    Pick a folder on this machine with the system file dialog.
-                  </Text>
-                </View>
-              </Pressable>
-            ) : null}
-
-            {canOpenCloud ? (
-              <Pressable
-                onPress={handleSelectCloud}
-                className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
-              >
-                <View className="w-8 items-center">
-                  <Cloud size={16} className="text-muted-foreground" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-sm font-medium text-foreground">Open from Cloud…</Text>
-                  <Text className="text-[11px] text-muted-foreground">
-                    Sync a cloud project to this machine; edits sync back automatically.
-                  </Text>
-                </View>
-              </Pressable>
-            ) : null}
-
-            <Pressable
-              onPress={handleSelectImport}
-              className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
-            >
-              <View className="w-8 items-center">
-                <Download size={16} className="text-muted-foreground" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-sm font-medium text-foreground">Import .shogo…</Text>
-                <Text className="text-[11px] text-muted-foreground">
-                  Restore a project previously exported from Shogo.
-                </Text>
-              </View>
-            </Pressable>
-          </View>
-        </PopoverContent>
-      </Popover>
+      {menu}
 
       {/* Import modal lives here so the menu is the single owner. */}
       {workspaceId ? (

@@ -21,7 +21,15 @@ import { notificationEvents } from '../../lib/notification-events'
 
 const POLL_INTERVAL_MS = 60_000
 
-export function NotificationBell({ size = 22, className }: { size?: number; className?: string }) {
+export function NotificationBell({
+  size = 22,
+  className,
+  onPress,
+}: {
+  size?: number
+  className?: string
+  onPress?: () => void
+}) {
   const router = useRouter()
   const http = useDomainHttp()
   const [count, setCount] = useState(0)
@@ -62,7 +70,10 @@ export function NotificationBell({ size = 22, className }: { size?: number; clas
 
   return (
     <Pressable
-      onPress={() => router.push('/(app)/notifications' as any)}
+      onPress={() => {
+        onPress?.()
+        router.push('/(app)/notifications' as any)
+      }}
       accessibilityRole="button"
       accessibilityLabel={count > 0 ? `Notifications, ${count} unread` : 'Notifications'}
       className={cn('relative p-1.5 rounded-md active:bg-muted', className)}

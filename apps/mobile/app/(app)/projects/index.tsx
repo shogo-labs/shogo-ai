@@ -109,6 +109,49 @@ function getTimeAgo(timestamp: number): string {
   return formatDistanceToNow(new Date(timestamp), { addSuffix: true })
 }
 
+function NativeChoiceSheet<T extends string>({
+  visible,
+  title,
+  options,
+  value,
+  onSelect,
+  onClose,
+}: {
+  visible: boolean
+  title: string
+  options: { value: T; label: string }[]
+  value: T
+  onSelect: (value: T) => void
+  onClose: () => void
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View className="flex-1 justify-end">
+        <Pressable className="flex-1 bg-black/50" onPress={onClose} accessibilityLabel="Dismiss" />
+        <View className="rounded-t-3xl border-t border-border bg-card px-5 pt-2 pb-8">
+          <View className="mb-3 mt-1 h-1 w-10 self-center rounded-full bg-muted-foreground/40" />
+          <Text className="mb-2 text-xl font-semibold text-foreground">{title}</Text>
+          {options.map((opt) => (
+            <Pressable
+              key={opt.value}
+              onPress={() => {
+                onSelect(opt.value)
+                onClose()
+              }}
+              className="min-h-14 flex-row items-center gap-3 rounded-xl px-1 active:bg-muted"
+            >
+              <Text className={cn('flex-1 text-lg', value === opt.value ? 'font-medium text-foreground' : 'text-muted-foreground')}>
+                {opt.label}
+              </Text>
+              {value === opt.value ? <Check size={20} className="text-primary" /> : null}
+            </Pressable>
+          ))}
+        </View>
+      </View>
+    </Modal>
+  )
+}
+
 // ─── DraggableView (web HTML5 drag source) ────────────────
 
 function DraggableView({
@@ -226,6 +269,7 @@ export default observer(function AllProjectsPage() {
   const toast = useToast()
   const { width } = useWindowDimensions()
   const isNativeMobile = Platform.OS === 'ios' || Platform.OS === 'android'
+  const comfortable = isNativeMobile && width < 600
 
   type VisibilityFilter = 'any' | 'public' | 'private'
   type StatusFilter = 'any' | 'draft' | 'active' | 'archived'
@@ -749,14 +793,16 @@ export default observer(function AllProjectsPage() {
     const items: ListItem[] = [{ type: 'create' }]
     currentFolders.forEach((f) => items.push({ type: 'folder', data: f }))
     filteredProjects.forEach((p) => items.push({ type: 'project', data: p }))
-    const remainder = items.length % numColumns
-    if (remainder !== 0) {
-      for (let i = 0; i < numColumns - remainder; i++) {
-        items.push({ type: 'spacer' })
+    if (!comfortable) {
+      const remainder = items.length % numColumns
+      if (remainder !== 0) {
+        for (let i = 0; i < numColumns - remainder; i++) {
+          items.push({ type: 'spacer' })
+        }
       }
     }
     return items
-  }, [currentFolders, filteredProjects, numColumns])
+  }, [currentFolders, filteredProjects, numColumns, comfortable])
 
   const renderGridItem = useCallback(
     ({ item }: { item: ListItem }) => {
@@ -766,23 +812,20 @@ export default observer(function AllProjectsPage() {
 
       if (item.type === 'create') {
         return (
-          <Pressable
-            onPress={handleCreateProject}
-            className="flex-1 m-1.5 rounded-2xl border-2 border-dashed border-border overflow-hidden"
-          >
-            <View
-              className="flex-1 items-center justify-center"
-              style={{
-                minHeight:
-                  Platform.OS === 'ios' || Platform.OS === 'android' ? 168 : 180,
-              }}
+          <View style={{ flex: 1, margin: comfortable ? 6 : 6 }}>
+            <Pressable
+              onPress={handleCreateProject}
+              className="items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-border"
+              style={{ height: comfortable ? 196 : 228 }}
             >
-              <View className="w-12 h-12 rounded-full bg-muted items-center justify-center mb-2">
-                <Plus size={24} className="text-muted-foreground" />
+              <View className={cn('items-center justify-center rounded-full bg-muted mb-2', comfortable ? 'h-14 w-14' : 'h-12 w-12')}>
+                <Plus size={comfortable ? 28 : 24} className="text-muted-foreground" />
               </View>
-              <Text className="text-sm text-muted-foreground">Create new project</Text>
-            </View>
-          </Pressable>
+              <Text className={cn('text-muted-foreground', comfortable ? 'text-base' : 'text-sm')}>
+                Create new project
+              </Text>
+            </Pressable>
+          </View>
         )
       }
 
@@ -790,26 +833,27 @@ export default observer(function AllProjectsPage() {
         const folder = item.data
         const projectCount = allProjects.filter((p) => p.folderId === folder.id).length
         return (
+          <View style={{ flex: 1 }}>
           <DroppableView onDrop={(projectId) => handleDragToFolder(projectId, folder.id)}>
             {(isDragOver) => (
               <View
                 className={cn(
-                  'flex-1 m-1.5 rounded-2xl border bg-card overflow-hidden',
+                  'w-full overflow-hidden rounded-2xl border bg-card',
                   isDragOver ? 'border-2 border-primary bg-primary/5' : 'border-border',
                 )}
+                style={{ margin: 6 }}
               >
                 <Pressable
                   onPress={() => handleFolderPress(folder)}
-                  className="flex-1"
                 >
-                  <View className="bg-muted/40 items-center justify-center" style={{ height: 180 }}>
+                  <View className="items-center justify-center bg-muted/40" style={{ height: comfortable ? 120 : 180 }}>
                     <FolderOpen size={36} className={isDragOver ? 'text-primary/50' : 'text-muted-foreground/30'} />
                   </View>
-                  <View className="px-3 py-2.5">
-                    <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
+                  <View className={cn('px-3', comfortable ? 'py-3' : 'py-2.5')}>
+                    <Text className={cn('font-medium text-foreground', comfortable ? 'text-base' : 'text-sm')} numberOfLines={1}>
                       {folder.name}
                     </Text>
-                    <Text className="text-xs text-muted-foreground mt-0.5">
+                    <Text className={cn('text-muted-foreground mt-0.5', comfortable ? 'text-sm' : 'text-xs')}>
                       {projectCount} project{projectCount !== 1 ? 's' : ''}
                     </Text>
                   </View>
@@ -860,6 +904,7 @@ export default observer(function AllProjectsPage() {
               </View>
             )}
           </DroppableView>
+          </View>
         )
       }
 
@@ -868,6 +913,7 @@ export default observer(function AllProjectsPage() {
       const isStarred = starredIds.has(project.id)
       const isSelected = selectedIds.has(project.id)
       return (
+        <View style={{ flex: 1 }}>
         <DraggableView dragId={project.id} disabled={selectMode}>
           <ProjectCard
             name={project.name || 'Untitled'}
@@ -877,7 +923,7 @@ export default observer(function AllProjectsPage() {
             isStarred={isStarred}
             selectMode={selectMode}
             compact={Platform.OS === 'ios' || Platform.OS === 'android'}
-            className="flex-1 m-1.5"
+            className="m-1.5"
             onPress={() => {
               if (selectMode) {
                 setSelectedIds((prev) => {
@@ -969,6 +1015,7 @@ export default observer(function AllProjectsPage() {
             )}
           />
         </DraggableView>
+        </View>
       )
     },
     [
@@ -989,6 +1036,7 @@ export default observer(function AllProjectsPage() {
       user?.name,
       actionMenuProjectId,
       actionMenuFolderId,
+      comfortable,
     ],
   )
 
@@ -998,12 +1046,15 @@ export default observer(function AllProjectsPage() {
         return (
           <Pressable
             onPress={handleCreateProject}
-            className="flex-row items-center gap-3 px-4 py-3 border-b border-border/50"
+            className={cn(
+              'flex-row items-center border-b border-border/50',
+              comfortable ? 'min-h-16 gap-3 px-4 py-3.5' : 'gap-3 px-4 py-3',
+            )}
           >
-            <View className="w-12 h-8 rounded-md bg-muted items-center justify-center">
-              <Plus size={16} className="text-muted-foreground" />
+            <View className={cn('items-center justify-center rounded-md bg-muted', comfortable ? 'h-12 w-16' : 'h-8 w-12')}>
+              <Plus size={comfortable ? 22 : 16} className="text-muted-foreground" />
             </View>
-            <Text className="text-sm text-muted-foreground">Create new project</Text>
+            <Text className={cn('text-muted-foreground', comfortable ? 'text-base' : 'text-sm')}>Create new project</Text>
           </Pressable>
         )
       }
@@ -1016,7 +1067,8 @@ export default observer(function AllProjectsPage() {
             {(isDragOver) => (
               <View
                 className={cn(
-                  'flex-row items-center gap-3 px-4 py-3 border-b',
+                  'flex-row items-center border-b',
+                  comfortable ? 'min-h-16 gap-3 px-4 py-3.5' : 'gap-3 px-4 py-3',
                   isDragOver ? 'border-primary bg-primary/5 border-b-2' : 'border-border/50',
                 )}
               >
@@ -1106,7 +1158,8 @@ export default observer(function AllProjectsPage() {
             }}
             onLongPress={() => handleProjectActions(project)}
             className={cn(
-              'flex-row items-center gap-3 px-4 py-3 border-b border-border/50',
+              'flex-row items-center border-b border-border/50',
+              comfortable ? 'min-h-16 gap-3 px-4 py-3.5' : 'gap-3 px-4 py-3',
               isSelected && 'bg-primary/5',
             )}
           >
@@ -1135,7 +1188,7 @@ export default observer(function AllProjectsPage() {
             )}
 
             {/* Thumbnail */}
-            <View className="w-12 h-8 rounded-md items-center justify-center bg-muted/40 overflow-hidden">
+            <View className={cn('rounded-md items-center justify-center bg-muted/40 overflow-hidden', comfortable ? 'h-12 w-16' : 'h-8 w-12')}>
               {(project as any).thumbnailUrl ? (
                 <Image
                   source={{ uri: (project as any).thumbnailUrl }}
@@ -1151,10 +1204,10 @@ export default observer(function AllProjectsPage() {
 
             {/* Details */}
             <View className="flex-1 min-w-0">
-              <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
+              <Text className={cn('font-medium text-foreground', comfortable ? 'text-base' : 'text-sm')} numberOfLines={1}>
                 {project.name}
               </Text>
-              <Text className="text-xs text-muted-foreground">
+              <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')}>
                 Edited {getTimeAgo(project.updatedAt || project.createdAt)}
               </Text>
             </View>
@@ -1168,7 +1221,7 @@ export default observer(function AllProjectsPage() {
                 className="p-2"
               >
                 <Star
-                  size={16}
+                  size={comfortable ? 20 : 16}
                   className={isStarred ? 'text-yellow-500' : 'text-muted-foreground'}
                   fill={isStarred ? '#eab308' : 'transparent'}
                 />
@@ -1242,6 +1295,7 @@ export default observer(function AllProjectsPage() {
       selectMode,
       actionMenuProjectId,
       actionMenuFolderId,
+      comfortable,
     ],
   )
 
@@ -1286,8 +1340,8 @@ export default observer(function AllProjectsPage() {
   return (
     <View className="flex-1 bg-background">
       {/* Header */}
-      <View className="flex-row items-center px-4 pt-3 pb-1">
-        <Text className="text-lg font-semibold text-foreground">Projects</Text>
+      <View className={cn('flex-row items-center px-4', comfortable ? 'pt-2 pb-2' : 'pt-3 pb-1')}>
+        <Text className={cn('font-semibold text-foreground', comfortable ? 'text-2xl' : 'text-lg')}>Projects</Text>
       </View>
 
       {/* Breadcrumb navigation */}
@@ -1295,17 +1349,105 @@ export default observer(function AllProjectsPage() {
         <View className="flex-row items-center gap-1 px-4 py-2 border-b border-border">
           <Pressable
             onPress={handleBackToRoot}
-            className="flex-row items-center gap-1 px-2 py-1 rounded-md"
+            className={cn('flex-row items-center gap-1 rounded-md px-2', comfortable ? 'min-h-11 py-2' : 'py-1')}
           >
-            <ArrowLeft size={14} className="text-muted-foreground" />
-            <Text className="text-sm text-muted-foreground">All Projects</Text>
+            <ArrowLeft size={comfortable ? 18 : 14} className="text-muted-foreground" />
+            <Text className={cn('text-muted-foreground', comfortable ? 'text-base' : 'text-sm')}>All Projects</Text>
           </Pressable>
-          <ChevronRight size={14} className="text-muted-foreground" />
-          <Text className="text-sm font-medium text-foreground px-2">{currentFolder.name}</Text>
+          <ChevronRight size={comfortable ? 18 : 14} className="text-muted-foreground" />
+          <Text className={cn('font-medium text-foreground px-2', comfortable ? 'text-base' : 'text-sm')}>{currentFolder.name}</Text>
         </View>
       )}
 
-      {/* Filters bar — single row on wide, stacked on narrow */}
+      {comfortable ? (
+        <View className="px-4 pb-3 gap-3">
+          <View className="h-12 flex-row items-center rounded-xl border border-input bg-card px-3">
+            <Search size={20} className="text-muted-foreground" />
+            <TextInput
+              className="ml-2 flex-1 py-0 text-base text-foreground"
+              placeholder="Search projects..."
+              placeholderTextColor="#71717a"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
+              textAlignVertical="center"
+            />
+          </View>
+
+          <View className="flex-row gap-2">
+            {currentWorkspace?.id ? (
+              <View className="flex-1">
+                <ProjectSourceMenu
+                  workspaceId={currentWorkspace.id}
+                  variant="button"
+                  onSelectBlank={handleCreateProject}
+                  onProjectOpened={handleImportCompleted}
+                />
+              </View>
+            ) : null}
+            <Pressable
+              onPress={() => setNewFolderModalVisible(true)}
+              className="h-12 flex-row items-center gap-2 rounded-xl border border-input px-4 active:bg-muted"
+            >
+              <FolderPlus size={20} className="text-muted-foreground" />
+              <Text className="text-base text-foreground">Folder</Text>
+            </Pressable>
+          </View>
+
+          <View className="flex-row flex-wrap items-center gap-2">
+            <Pressable
+              onPress={() => setSortOpen(true)}
+              className="h-11 flex-row items-center gap-1.5 rounded-xl border border-input px-3"
+            >
+              <Text className="text-base text-foreground">{sortLabel}</Text>
+              <ChevronDown size={18} className="text-muted-foreground" />
+            </Pressable>
+            <Pressable
+              onPress={() => setVisibilityOpen(true)}
+              className="h-11 flex-row items-center gap-1.5 rounded-xl border border-input px-3"
+            >
+              <Text className="text-base text-foreground">{visibilityLabel}</Text>
+              <ChevronDown size={18} className="text-muted-foreground" />
+            </Pressable>
+            <Pressable
+              onPress={() => setStatusOpen(true)}
+              className="h-11 flex-row items-center gap-1.5 rounded-xl border border-input px-3"
+            >
+              <Text className="text-base text-foreground">{statusLabel}</Text>
+              <ChevronDown size={18} className="text-muted-foreground" />
+            </Pressable>
+            <View className="flex-1" />
+            <Pressable
+              onPress={handleToggleSelect}
+              className={cn(
+                'h-11 w-11 items-center justify-center rounded-xl',
+                selectMode ? 'bg-primary/10' : 'border border-input',
+              )}
+            >
+              <CheckSquare size={22} className={selectMode ? 'text-primary' : 'text-muted-foreground'} />
+            </Pressable>
+            <Pressable
+              onPress={() => setViewMode('grid')}
+              className={cn(
+                'h-11 w-11 items-center justify-center rounded-xl',
+                viewMode === 'grid' ? 'bg-secondary' : 'border border-input',
+              )}
+            >
+              <LayoutGrid size={22} className={viewMode === 'grid' ? 'text-foreground' : 'text-muted-foreground'} />
+            </Pressable>
+            <Pressable
+              onPress={() => setViewMode('list')}
+              className={cn(
+                'h-11 w-11 items-center justify-center rounded-xl',
+                viewMode === 'list' ? 'bg-secondary' : 'border border-input',
+              )}
+            >
+              <List size={22} className={viewMode === 'list' ? 'text-foreground' : 'text-muted-foreground'} />
+            </Pressable>
+          </View>
+        </View>
+      ) : (
       <View className="px-4 py-2 gap-2">
         <View className="flex-row items-center gap-2 flex-wrap">
           {/* Search */}
@@ -1440,10 +1582,6 @@ export default observer(function AllProjectsPage() {
           {/* Spacer */}
           <View className="flex-1" />
 
-          {/* Consolidated "New project" — blank / open folder / import.
-              Owns the import modal internally; the page-level
-              `ProjectImportModal` below remains for the "More options
-              → Import project" Alert path. */}
           {currentWorkspace?.id ? (
             <ProjectSourceMenu
               workspaceId={currentWorkspace.id}
@@ -1502,6 +1640,7 @@ export default observer(function AllProjectsPage() {
           </View>
         </View>
       </View>
+      )}
 
       {/* Content */}
 
@@ -1520,7 +1659,9 @@ export default observer(function AllProjectsPage() {
           }
           renderItem={renderGridItem}
           numColumns={numColumns}
+          columnWrapperStyle={{ alignItems: 'flex-start' }}
           contentContainerClassName="p-1"
+          contentContainerStyle={{ paddingBottom: 32 }}
           onRefresh={handleRefresh}
           refreshing={isRefreshing}
           ListEmptyComponent={
@@ -1613,6 +1754,47 @@ export default observer(function AllProjectsPage() {
       </Modal>
 
       {/* Import Project Modal */}
+      {comfortable && (
+        <>
+          <NativeChoiceSheet
+            visible={sortOpen}
+            title="Sort"
+            value={sortBy}
+            options={[
+              { value: 'lastEdited', label: 'Last edited' },
+              { value: 'dateCreated', label: 'Date created' },
+              { value: 'alphabetical', label: 'Alphabetical' },
+            ]}
+            onSelect={setSortBy}
+            onClose={() => setSortOpen(false)}
+          />
+          <NativeChoiceSheet
+            visible={visibilityOpen}
+            title="Visibility"
+            value={visibilityFilter}
+            options={[
+              { value: 'any', label: 'Any visibility' },
+              { value: 'public', label: 'Public' },
+              { value: 'private', label: 'Private' },
+            ]}
+            onSelect={setVisibilityFilter}
+            onClose={() => setVisibilityOpen(false)}
+          />
+          <NativeChoiceSheet
+            visible={statusOpen}
+            title="Status"
+            value={statusFilter}
+            options={[
+              { value: 'any', label: 'Any status' },
+              { value: 'draft', label: 'Draft' },
+              { value: 'active', label: 'Active' },
+              { value: 'archived', label: 'Archived' },
+            ]}
+            onSelect={setStatusFilter}
+            onClose={() => setStatusOpen(false)}
+          />
+        </>
+      )}
       {currentWorkspace?.id && (
         <ProjectImportModal
           open={importModalVisible}

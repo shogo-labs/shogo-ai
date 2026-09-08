@@ -17,6 +17,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
 import { api } from '../../../lib/api'
 import type { HttpClient } from '@shogo-ai/sdk'
+import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
 
 type Period = '7d' | '30d' | '90d'
 type DailyCount = { date: string; count: number }
@@ -177,6 +178,7 @@ interface AnalyticsPanelProps {
 }
 
 export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelProps) {
+  const comfortable = useIsNativePhoneLayout()
   const http = useDomainHttp()
   const [period, setPeriod] = useState<Period>('7d')
   const [selectedActivityDate, setSelectedActivityDate] = useState<string | null>(null)
@@ -203,31 +205,57 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
   return (
     <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
       {/* Header */}
-      <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
-        <BarChart3 size={16} className="text-muted-foreground" />
-        <Text className="text-sm font-medium text-foreground">Analytics</Text>
-
-        <View className="ml-auto flex-row items-center gap-2">
-          <View className="flex-row rounded-md border border-border">
-            {(['7d', '30d', '90d'] as Period[]).map((p) => (
-              <Pressable
-                key={p}
-                onPress={() => {
-                  setPeriod(p)
-                  setSelectedActivityDate(null)
-                }}
-                className={cn('px-2 py-1', period === p ? 'bg-primary' : 'active:bg-muted')}
-              >
-                <Text className={cn('text-xs', period === p ? 'text-primary-foreground' : 'text-muted-foreground')}>
-                  {p}
-                </Text>
+      <View className={cn('border-b border-border', comfortable ? 'px-4 py-3.5 gap-2' : 'px-4 py-3 flex-row items-center gap-2')}>
+        <View className="flex-row items-center gap-2">
+          <BarChart3 size={comfortable ? 20 : 16} className="text-muted-foreground" />
+          <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')}>Analytics</Text>
+          {!comfortable && (
+            <View className="ml-auto flex-row items-center gap-2">
+              <View className="flex-row rounded-md border border-border">
+                {(['7d', '30d', '90d'] as Period[]).map((p) => (
+                  <Pressable
+                    key={p}
+                    onPress={() => {
+                      setPeriod(p)
+                      setSelectedActivityDate(null)
+                    }}
+                    className={cn('px-2 py-1', period === p ? 'bg-primary' : 'active:bg-muted')}
+                  >
+                    <Text className={cn('text-xs', period === p ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                      {p}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Pressable onPress={handleRefresh} className="p-1 rounded-md active:bg-muted">
+                <RefreshCw size={14} className="text-muted-foreground" />
               </Pressable>
-            ))}
-          </View>
-          <Pressable onPress={handleRefresh} className="p-1 rounded-md active:bg-muted">
-            <RefreshCw size={14} className="text-muted-foreground" />
-          </Pressable>
+            </View>
+          )}
         </View>
+        {comfortable ? (
+          <View className="flex-row items-center gap-2">
+            <View className="flex-1 flex-row rounded-full bg-muted p-1">
+              {(['7d', '30d', '90d'] as Period[]).map((p) => (
+                <Pressable
+                  key={p}
+                  onPress={() => {
+                    setPeriod(p)
+                    setSelectedActivityDate(null)
+                  }}
+                  className={cn('min-h-10 flex-1 items-center justify-center rounded-full', period === p ? 'bg-background' : '')}
+                >
+                  <Text className={cn('text-sm font-medium', period === p ? 'text-foreground' : 'text-muted-foreground')}>
+                    {p}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <Pressable onPress={handleRefresh} className="h-11 w-11 items-center justify-center rounded-full bg-muted">
+              <RefreshCw size={18} className="text-foreground" />
+            </Pressable>
+          </View>
+        ) : null}
       </View>
 
       {hasError && (
@@ -246,24 +274,28 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
               label="Messages"
               value={overview.data?.messages}
               loading={overview.loading}
+              comfortable={comfortable}
             />
             <StatCard
               icon={<Zap size={16} className="text-muted-foreground" />}
               label="Usage Events"
               value={overview.data?.usageEvents}
               loading={overview.loading}
+              comfortable={comfortable}
             />
             <StatCard
               icon={<Wrench size={16} className="text-muted-foreground" />}
               label="Tool Calls"
               value={chat.data?.totalToolCalls}
               loading={chat.loading}
+              comfortable={comfortable}
             />
             <StatCard
               icon={<Clock size={16} className="text-muted-foreground" />}
               label="Sessions"
               value={chat.data?.totalSessions}
               loading={chat.loading}
+              comfortable={comfortable}
             />
           </View>
 
@@ -517,19 +549,26 @@ function StatCard({
   label,
   value,
   loading,
+  comfortable = false,
 }: {
   icon: React.ReactNode
   label: string
   value?: number
   loading: boolean
+  comfortable?: boolean
 }) {
   return (
-    <View className="border border-border rounded-lg p-3 flex-1 min-w-[140px]">
+    <View
+      className={cn(
+        'border border-border rounded-lg p-3 min-w-0',
+        comfortable ? 'w-[48%]' : 'flex-1 min-w-[140px]',
+      )}
+    >
       <View className="flex-row items-center gap-1.5 mb-1">
         {icon}
-        <Text className="text-xs text-muted-foreground">{label}</Text>
+        <Text className={cn('flex-1 text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>{label}</Text>
       </View>
-      <Text className="text-xl font-bold text-foreground">{loading ? '...' : (value?.toLocaleString() ?? 0)}</Text>
+      <Text className={cn('font-bold text-foreground', comfortable ? 'text-2xl' : 'text-xl')}>{loading ? '...' : (value?.toLocaleString() ?? 0)}</Text>
     </View>
   )
 }

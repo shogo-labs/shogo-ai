@@ -67,9 +67,11 @@ export function UsageWindowBar({
 function CompactWindowRow({
   label,
   display,
+  comfortable = false,
 }: {
   label: string
   display: { pct: number; uncapped: boolean; empty: boolean }
+  comfortable?: boolean
 }) {
   const { pct, uncapped, empty } = display
 
@@ -80,12 +82,12 @@ function CompactWindowRow({
       : `${pct}% used`
 
   return (
-    <View className="gap-1">
+    <View className={comfortable ? "gap-1.5" : "gap-1"}>
       <View className="flex-row items-center justify-between">
-        <Text className="text-xs text-muted-foreground">{label}</Text>
-        <Text className="text-xs font-medium text-foreground">{usageText}</Text>
+        <Text className={cn(comfortable ? "text-sm" : "text-xs", "text-muted-foreground")}>{label}</Text>
+        <Text className={cn(comfortable ? "text-sm" : "text-xs", "font-medium text-foreground")}>{usageText}</Text>
       </View>
-      <View className="h-1.5 rounded-full bg-muted overflow-hidden">
+      <View className={cn("rounded-full bg-muted overflow-hidden", comfortable ? "h-2" : "h-1.5")}>
         {!uncapped && (
           <View
             className={cn('h-full rounded-full', pct >= 100 ? 'bg-destructive' : 'bg-primary')}
@@ -100,9 +102,12 @@ function CompactWindowRow({
 export function CompactUsageWindows({
   windows,
   overage,
+  comfortable = false,
 }: {
   windows: UsageWindows | undefined
   overage?: UsageOverageContext
+  /** Slightly larger labels for the native account sheet. */
+  comfortable?: boolean
 }) {
   const { fiveHour, weekly } = getWindowDisplays(windows)
   const atLimit = fiveHour.atLimit || weekly.atLimit
@@ -112,13 +117,13 @@ export function CompactUsageWindows({
   const notice = getUsageLimitNotice({ atLimit, overage, countdown })
 
   return (
-    <View className="gap-2.5">
-      <CompactWindowRow label="5-hour window" display={fiveHour} />
-      <CompactWindowRow label="Weekly window" display={weekly} />
+    <View className={comfortable ? "gap-3" : "gap-2.5"}>
+      <CompactWindowRow label="5-hour window" display={fiveHour} comfortable={comfortable} />
+      <CompactWindowRow label="Weekly window" display={weekly} comfortable={comfortable} />
       {notice ? (
         <Text
           className={cn(
-            'text-xs',
+            comfortable ? 'text-sm' : 'text-xs',
             notice.tone === 'overage' ? 'text-foreground' : 'text-muted-foreground',
           )}
         >

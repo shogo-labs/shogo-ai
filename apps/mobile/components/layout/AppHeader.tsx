@@ -3,14 +3,17 @@
 /**
  * AppHeader - Mobile application header
  *
- * Shows a hamburger menu button on narrow screens to toggle the sidebar drawer,
- * plus the current page title derived from the active route.
+ * Web (narrow): hamburger + title + bell in a compact bar.
+ * Native home: no bar — menu and bell float over the page so the gradient
+ * can go edge-to-edge. Other native screens keep an in-flow chrome row
+ * without a filled bar. Wide web keeps the persistent sidebar and renders
+ * nothing.
  */
 
 import { Platform, View, Text, Pressable, useWindowDimensions } from 'react-native'
 import { usePathname } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Menu } from 'lucide-react-native'
-import { ShogoWordmark } from '../branding/ShogoWordmark'
 import { NotificationBell } from '../notifications/NotificationBell'
 
 function isHomePathname(pathname: string): boolean {
@@ -34,6 +37,9 @@ function getTitleFromPathname(pathname: string): string {
   return 'Shogo'
 }
 
+const overlayControlClass =
+  'h-10 w-10 items-center justify-center rounded-full bg-muted p-0'
+
 interface AppHeaderProps {
   onMenuPress?: () => void
 }
@@ -41,12 +47,62 @@ interface AppHeaderProps {
 export function AppHeader({ onMenuPress }: AppHeaderProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
+  const insets = useSafeAreaInsets()
   const isWide = Platform.OS === 'web' && width >= 768
-  const showNativeHomeMark = Platform.OS !== 'web' && isHomePathname(pathname)
+  const isHome = isHomePathname(pathname)
   const title = getTitleFromPathname(pathname)
 
-  // On wide screens the sidebar is persistent, so no header needed
   if (isWide) return null
+
+  if (Platform.OS !== 'web') {
+    const overlay = isHome
+    return (
+      <View
+        pointerEvents="box-none"
+        style={
+          overlay
+            ? {
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                zIndex: 30,
+                paddingTop: insets.top + 6,
+                paddingHorizontal: 14,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }
+            : {
+                paddingTop: 6,
+                paddingBottom: 6,
+                paddingHorizontal: 14,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }
+        }
+      >
+        <Pressable
+          onPress={onMenuPress}
+          accessibilityRole="button"
+          accessibilityLabel="Open menu"
+          hitSlop={4}
+          className={overlayControlClass}
+        >
+          <Menu size={22} className="text-foreground" />
+        </Pressable>
+        {isHome ? (
+          <View className="flex-1" pointerEvents="none" />
+        ) : (
+          <Text className="flex-1 text-center text-base font-semibold text-foreground" numberOfLines={1}>
+            {title}
+          </Text>
+        )}
+        <NotificationBell className={overlayControlClass} />
+      </View>
+    )
+  }
 
   return (
     <View className="h-14 flex-row items-center border-b border-border bg-card px-4 gap-3">
@@ -56,11 +112,7 @@ export function AppHeader({ onMenuPress }: AppHeaderProps) {
       >
         <Menu size={22} className="text-foreground" />
       </Pressable>
-      {showNativeHomeMark ? (
-        <ShogoWordmark compact className="h-6 w-6" />
-      ) : (
-        <Text className="text-base font-semibold text-foreground">{title}</Text>
-      )}
+      <Text className="text-base font-semibold text-foreground">{title}</Text>
       <View className="flex-1" />
       <NotificationBell />
     </View>

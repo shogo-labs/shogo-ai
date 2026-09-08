@@ -24,6 +24,10 @@ import {
   ScrollView,
   Platform,
   useWindowDimensions,
+  useColorScheme,
+  Animated,
+  Easing,
+  Modal,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -33,6 +37,14 @@ import {
 } from "@/components/ui/popover"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
+import {
+  CHATGPT_COMPOSER,
+  ComposerPlusCloseContext,
+  ComposerPlusSection,
+  PLUS_ATTACH_ROWS,
+  PlusAccordionContext,
+} from "./ComposerPlusMenu"
+import type { NativePickedAttachment } from "../../lib/native-attachment-picker"
 import { ContextTracker } from "./ContextTracker"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
 import { ModelPickerMenu, getNativeModelMenuWidth } from "./ModelPickerMenu"
@@ -61,6 +73,7 @@ import {
   Languages,
   Play,
   WifiOff,
+  Cloud,
 } from "lucide-react-native"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
@@ -147,6 +160,9 @@ const CHAT_INPUT_MIN_HEIGHT = 60
 const CHAT_INPUT_MAX_HEIGHT = 200
 const CHAT_INPUT_NATIVE_MIN_HEIGHT = 52
 const CHAT_INPUT_NATIVE_MAX_HEIGHT = 160
+const CHAT_INPUT_PROMINENT_MIN_HEIGHT = 24
+const CHAT_INPUT_PROMINENT_MAX_HEIGHT = 100
+const CHAT_INPUT_PROMINENT_LINE_HEIGHT = 22
 
 function compactNativeModelLabel(modelId: string): string {
   const label = resolveShortName(modelId)
@@ -456,13 +472,28 @@ function ChatInputImpl({
   flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
-  const { width: windowWidth } = useWindowDimensions()
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const colorScheme = useColorScheme()
   const effectiveIsPro = features.billing ? isPro : true
   const isNative = Platform.OS !== "web"
   const isNativePhone = Platform.OS !== "web" && windowWidth < 600
-  const inputMinHeight = isNative ? CHAT_INPUT_NATIVE_MIN_HEIGHT : CHAT_INPUT_MIN_HEIGHT
-  const inputMaxHeight = isNative ? CHAT_INPUT_NATIVE_MAX_HEIGHT : CHAT_INPUT_MAX_HEIGHT
-  const modelTriggerMaxWidth = Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
+  const useProminentComposer = isNativePhone && !flush
+  const chatgptComposer = useProminentComposer && colorScheme !== "light"
+    ? CHATGPT_COMPOSER.dark
+    : CHATGPT_COMPOSER.light
+  const inputMinHeight = useProminentComposer
+    ? CHAT_INPUT_PROMINENT_MIN_HEIGHT
+    : isNative
+      ? CHAT_INPUT_NATIVE_MIN_HEIGHT
+      : CHAT_INPUT_MIN_HEIGHT
+  const inputMaxHeight = useProminentComposer
+    ? CHAT_INPUT_PROMINENT_MAX_HEIGHT
+    : isNative
+      ? CHAT_INPUT_NATIVE_MAX_HEIGHT
+      : CHAT_INPUT_MAX_HEIGHT
+  const modelTriggerMaxWidth = useProminentComposer
+    ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
+    : Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
   const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
 
   const bridge = useChatBridgeOptional()
@@ -516,10 +547,29 @@ function ChatInputImpl({
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false)
+  const [plusExpandedId, setPlusExpandedId] = useState<string | null>(null)
+  const [isFocused, setIsFocused] = useState(false)
+  const focusProgress = useRef(new Animated.Value(0)).current
 
   useEffect(() => {
     inputValueRef.current = inputValue
   }, [inputValue])
+
+  useEffect(() => {
+    if (!useProminentComposer) return
+    setInputHeight((h) => Math.min(inputMaxHeight, Math.max(inputMinHeight, h)))
+  }, [inputMaxHeight, inputMinHeight, useProminentComposer])
+
+  useEffect(() => {
+    if (!useProminentComposer) return
+    Animated.timing(focusProgress, {
+      toValue: isFocused ? 1 : 0,
+      duration: isFocused ? 170 : 140,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start()
+  }, [focusProgress, isFocused, useProminentComposer])
 
   const [internalModel, setInternalModel] = useState<string>(
     effectiveIsPro ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
@@ -950,6 +1000,48 @@ function ChatInputImpl({
     setAttachSheetOpen(true)
   }, [])
 
+  const applyPickedFiles = useCallback((picked: NativePickedAttachment[]) => {
+    setPendingFiles((prev) => {
+      const room = MAX_FILES - prev.length
+      if (room <= 0) return prev
+      const added = picked.slice(0, room).map((f) => ({
+        id: f.id,
+        dataUrl: f.dataUrl,
+        name: f.name,
+        type: f.type,
+        size: f.size,
+      }))
+      if (picked.length > room) {
+        setFileError(`Maximum ${MAX_FILES} files allowed`)
+      } else {
+        setFileError(null)
+      }
+      return [...prev, ...added]
+    })
+  }, [])
+
+  const closePlusMenu = useCallback(() => {
+    setPlusMenuOpen(false)
+    setPlusExpandedId(null)
+  }, [])
+
+  const togglePlusSection = useCallback((id: string) => {
+    setPlusExpandedId((current) => (current === id ? null : id))
+  }, [])
+
+  const handlePlusAttach = useCallback((action: (typeof PLUS_ATTACH_ROWS)[number]["action"]) => {
+    closePlusMenu()
+    void import("../../lib/native-attachment-picker").then(({ executeNativeAttachAction }) => {
+      executeNativeAttachAction(action, {
+        currentCount: pendingFiles.length,
+        maxFiles: MAX_FILES,
+        maxFileSizeBytes: MAX_FILE_SIZE,
+        onFiles: applyPickedFiles,
+        onError: (message) => setFileError(message),
+      })
+    })
+  }, [applyPickedFiles, closePlusMenu, pendingFiles.length])
+
   const processFiles = useCallback((files: FileList | File[]) => {
     Array.from(files).forEach((file: File) => {
       const lowerName = file.name.toLowerCase()
@@ -1345,6 +1437,8 @@ function ChatInputImpl({
     return <File className="h-4 w-4 text-muted-foreground" size={16} />
   }, [])
 
+  const ComposerShell = useProminentComposer ? Animated.View : View
+
   return (
     // `flush` callers (EditableUserMessage's inline edit) want the
     // bordered input box to extend to the parent's left/right
@@ -1353,7 +1447,7 @@ function ChatInputImpl({
     // composer from whatever sits beneath it (file previews,
     // toolbar dropdowns, etc.).
     <View className={cn(
-      flush ? "pb-3" : isNative ? "px-2 pb-4 pt-0" : "p-3 pt-0",
+      flush ? "pb-3" : useProminentComposer ? "px-3 pb-0 pt-0" : isNative ? "px-2 pb-4 pt-0" : "p-3 pt-0",
     )}>
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
@@ -1434,6 +1528,11 @@ function ChatInputImpl({
       {/* Queued messages */}
       {queuedMessages.length > 0 && (() => {
         const offlineCount = queuedMessages.filter((m) => m.offline).length
+        const queueComfortable = isNativePhone
+        const qIconWrap = queueComfortable
+          ? "h-11 w-11 items-center justify-center rounded-xl"
+          : "h-6 w-6 items-center justify-center rounded"
+        const qIconSize = queueComfortable ? 20 : 12
         return (
         <View className={cn(
           "rounded-t-lg border-x border-t overflow-hidden",
@@ -1443,22 +1542,25 @@ function ChatInputImpl({
         )}>
           <Pressable
             onPress={() => setQueueExpanded((prev) => !prev)}
-            className="w-full flex-row items-center justify-between px-2 py-1"
+            className={cn(
+              "w-full flex-row items-center justify-between",
+              queueComfortable ? "min-h-12 px-3 py-3" : "px-2 py-1",
+            )}
           >
-            <View className="flex-row items-center gap-2">
+            <View className={cn("flex-row items-center", queueComfortable ? "gap-3" : "gap-2")}>
               <ChevronDown
                 className={cn(
                   "h-4 w-4",
                   offlineCount > 0 ? "text-orange-600 dark:text-orange-400" : "text-muted-foreground",
                   !queueExpanded && "-rotate-90"
                 )}
-                size={16}
+                size={queueComfortable ? 20 : 16}
               />
               {offlineCount > 0 && (
-                <WifiOff size={13} className="text-orange-600 dark:text-orange-400" />
+                <WifiOff size={queueComfortable ? 18 : 13} className="text-orange-600 dark:text-orange-400" />
               )}
               <Text className={cn(
-                "text-sm",
+                queueComfortable ? "text-base font-medium" : "text-sm",
                 offlineCount > 0 ? "text-orange-700 dark:text-orange-300" : "text-foreground",
               )}>
                 {offlineCount > 0
@@ -1505,34 +1607,45 @@ function ChatInputImpl({
                     onPress={() => onEditQueuedMessage?.(msg.id)}
                     accessibilityLabel="Queued message"
                     className={cn(
-                      "group flex-row items-center gap-2 px-2 py-1.5 border-b border-border/40 last:border-b-0",
+                      "group flex-row items-center border-b border-border/40 last:border-b-0",
+                      queueComfortable ? "min-h-14 gap-3 px-3 py-2.5" : "gap-2 px-2 py-1.5",
                       Platform.OS === "web" && "hover:bg-muted/40"
                     )}
                   >
                     {msg.offline ? (
-                      <WifiOff size={11} className="text-orange-600 dark:text-orange-400 flex-shrink-0" />
+                      <WifiOff size={queueComfortable ? 16 : 11} className="text-orange-600 dark:text-orange-400 flex-shrink-0" />
                     ) : (
-                      <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
+                      <View className={cn(
+                        "rounded-full border border-muted-foreground/30 flex-shrink-0",
+                        queueComfortable ? "h-4 w-4" : "h-3 w-3",
+                      )} />
                     )}
                     {previewImage && (
                       <Image
                         source={{ uri: previewImage.dataUrl }}
-                        className="h-7 w-7 rounded border border-border flex-shrink-0"
+                        className={cn(
+                          "rounded border border-border flex-shrink-0",
+                          queueComfortable ? "h-10 w-10" : "h-7 w-7",
+                        )}
                         resizeMode="cover"
                       />
                     )}
                     <View className="flex-1 min-w-0">
-                      <Text className="text-xs text-foreground" numberOfLines={1}>
+                      <Text
+                        className={cn("text-foreground", queueComfortable ? "text-base" : "text-xs")}
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                      >
                         {primaryText}
                       </Text>
                       {trimmedContent && files.length > 0 && (
                         <View className="flex-row items-center gap-1 mt-0.5">
                           <ImageIcon
                             className="h-3 w-3 text-muted-foreground"
-                            size={10}
+                            size={queueComfortable ? 14 : 10}
                           />
                           <Text
-                            className="text-[10px] text-muted-foreground"
+                            className={cn("text-muted-foreground", queueComfortable ? "text-sm" : "text-[10px]")}
                             numberOfLines={1}
                           >
                             {imageFiles.length > 0 && otherFiles.length > 0
@@ -1546,7 +1659,8 @@ function ChatInputImpl({
                     </View>
                     <View
                       className={cn(
-                        "flex-row items-center gap-0.5",
+                        "flex-row items-center flex-shrink-0",
+                        queueComfortable ? "gap-1" : "gap-0.5",
                         // Fade in on row hover via CSS group-hover so
                         // crossing onto a child button doesn't tear the
                         // visibility state down. Native always shows them
@@ -1587,7 +1701,7 @@ function ChatInputImpl({
                                 return (
                                   <View
                                     className={cn(
-                                      "h-6 w-6 items-center justify-center rounded",
+                                      qIconWrap,
                                       active && "bg-muted-foreground/25",
                                     )}
                                   >
@@ -1596,7 +1710,7 @@ function ChatInputImpl({
                                         "h-3 w-3",
                                         active ? "text-foreground" : "text-muted-foreground",
                                       )}
-                                      size={12}
+                                      size={qIconSize}
                                     />
                                   </View>
                                 )
@@ -1616,7 +1730,7 @@ function ChatInputImpl({
                                 return (
                                   <View
                                     className={cn(
-                                      "h-6 w-6 items-center justify-center rounded",
+                                      qIconWrap,
                                       active && "bg-muted-foreground/25",
                                     )}
                                   >
@@ -1625,7 +1739,7 @@ function ChatInputImpl({
                                         "h-3 w-3",
                                         active ? "text-foreground" : "text-muted-foreground",
                                       )}
-                                      size={12}
+                                      size={qIconSize}
                                     />
                                   </View>
                                 )
@@ -1647,7 +1761,7 @@ function ChatInputImpl({
                             return (
                               <View
                                 className={cn(
-                                  "h-6 w-6 items-center justify-center rounded",
+                                  qIconWrap,
                                   active && "bg-muted-foreground/25",
                                 )}
                               >
@@ -1656,7 +1770,7 @@ function ChatInputImpl({
                                     "h-3 w-3",
                                     active ? "text-foreground" : "text-muted-foreground",
                                   )}
-                                  size={12}
+                                  size={qIconSize}
                                 />
                               </View>
                             )
@@ -1676,7 +1790,7 @@ function ChatInputImpl({
                             return (
                               <View
                                 className={cn(
-                                  "h-6 w-6 items-center justify-center rounded",
+                                  qIconWrap,
                                   active && "bg-muted-foreground/25",
                                 )}
                               >
@@ -1685,7 +1799,7 @@ function ChatInputImpl({
                                     "h-3 w-3",
                                     active ? "text-foreground" : "text-muted-foreground",
                                   )}
-                                  size={12}
+                                  size={qIconSize}
                                 />
                               </View>
                             )
@@ -1705,7 +1819,7 @@ function ChatInputImpl({
                             return (
                               <View
                                 className={cn(
-                                  "h-6 w-6 items-center justify-center rounded",
+                                  qIconWrap,
                                   active && "bg-destructive/20",
                                 )}
                               >
@@ -1714,7 +1828,7 @@ function ChatInputImpl({
                                     "h-3 w-3",
                                     active ? "text-destructive" : "text-muted-foreground",
                                   )}
-                                  size={12}
+                                  size={qIconSize}
                                 />
                               </View>
                             )
@@ -1846,19 +1960,32 @@ function ChatInputImpl({
         )}
 
         {/* Main input container */}
-        <View
+        <ComposerShell
           ref={dropZoneRef as any}
           className={cn(
-            "relative border bg-muted/30 overflow-hidden",
-            queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl",
-            isDragOver ? "border-primary border-dashed" : "border-border/60",
-            // Accent ring for the inline-edit "active edit target"
-            // state. Drag-over still takes precedence (its dashed
-            // primary border is more important to surface than the
-            // edit-target highlight). The inner border stays at
-            // 1px so toggling `highlighted` doesn't shift layout.
+            "relative overflow-hidden",
+            !useProminentComposer && "border bg-muted/30",
+            !useProminentComposer && (queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl"),
+            !useProminentComposer && (isDragOver ? "border-primary border-dashed" : "border-border/60"),
             highlighted && !isDragOver && "ring-2 ring-primary/70"
           )}
+          style={
+            useProminentComposer
+              ? {
+                  overflow: "hidden" as const,
+                  borderTopLeftRadius: 28,
+                  borderTopRightRadius: 28,
+                  borderBottomLeftRadius: 28,
+                  borderBottomRightRadius: 28,
+                  borderWidth: 1,
+                  borderColor: focusProgress.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [chatgptComposer.border, chatgptComposer.borderFocus],
+                  }),
+                  backgroundColor: chatgptComposer.fill,
+                }
+              : undefined
+          }
         >
         {/* Hidden file input for web (including mobile-web on Android/iOS browsers) */}
         {Platform.OS === "web" && (
@@ -1966,7 +2093,282 @@ function ChatInputImpl({
             the highlight overlay below, so the old chip row above the box is
             gone. References themselves are still tracked + sent on submit. */}
 
-        <View className="relative">
+        <View
+          className={
+            useProminentComposer
+              ? "flex-row items-center justify-between min-h-[48px] overflow-hidden py-1 pl-2.5 pr-1.5"
+              : undefined
+          }
+        >
+        {useProminentComposer ? (
+          <>
+            <Pressable
+              onPress={() => setPlusMenuOpen(true)}
+              hitSlop={6}
+              disabled={disabled || isProcessingFiles}
+              role="button"
+              accessibilityLabel="Add"
+              className={cn(
+                "h-8 w-8 items-center justify-center active:opacity-70",
+                (disabled || isProcessingFiles) && "opacity-40",
+              )}
+              testID="project-composer-plus"
+            >
+              <Plus
+                color={chatgptComposer.icon}
+                size={22}
+                strokeWidth={2}
+              />
+            </Pressable>
+            <Modal
+              visible={plusMenuOpen}
+              transparent
+              animationType="fade"
+              statusBarTranslucent
+              onRequestClose={closePlusMenu}
+            >
+              <View className="flex-1 justify-end">
+                <Pressable
+                  className="absolute left-0 right-0 top-0 bottom-0 bg-black/50"
+                  onPress={closePlusMenu}
+                  accessibilityLabel="Dismiss menu"
+                />
+                <View
+                  className="z-10 mx-3 mb-3 overflow-hidden rounded-2xl border border-border bg-card"
+                  style={{ maxHeight: Math.round(windowHeight * 0.72) }}
+                >
+                <ComposerPlusCloseContext.Provider value={closePlusMenu}>
+                  <PlusAccordionContext.Provider
+                    value={{ expandedId: plusExpandedId, toggle: togglePlusSection }}
+                  >
+                    <ScrollView
+                      bounces={false}
+                      keyboardShouldPersistTaps="handled"
+                      style={{ maxHeight: Math.round(windowHeight * 0.72) }}
+                    >
+                      <ComposerPlusSection
+                        id="mode"
+                        label="Mode"
+                        value={currentInteractionConfig.label}
+                        Icon={currentInteractionConfig.Icon}
+                      >
+                        <View className="py-1">
+                          {INTERACTION_MODES.map((mode) => {
+                            const isSelected = mode.id === interactionMode
+                            return (
+                              <Pressable
+                                key={mode.id}
+                                onPress={() => {
+                                  handleInteractionModeChange(mode.id)
+                                }}
+                                className={cn(
+                                  "flex-row items-center gap-3 p-3 rounded-lg mb-1",
+                                  isSelected &&
+                                    mode.id === "agent" &&
+                                    "bg-accent",
+                                  isSelected &&
+                                    mode.id === "plan" &&
+                                    "border border-amber-500/35 bg-amber-500/12",
+                                  isSelected &&
+                                    mode.id === "ask" &&
+                                    "border border-emerald-500/35 bg-emerald-500/12"
+                                )}
+                              >
+                                <View className="w-8 items-center">
+                                  <mode.Icon
+                                    className={cn(
+                                      "h-3.5 w-3.5",
+                                      isSelected &&
+                                        mode.id === "plan" &&
+                                        "text-amber-400",
+                                      isSelected &&
+                                        mode.id === "ask" &&
+                                        "text-emerald-400",
+                                      (!isSelected || mode.id === "agent") &&
+                                        "text-muted-foreground"
+                                    )}
+                                    size={14}
+                                  />
+                                </View>
+                                <View className="flex-1">
+                                  <Text
+                                    className={cn(
+                                      "font-medium text-sm",
+                                      isSelected &&
+                                        mode.id === "plan" &&
+                                        "text-amber-400",
+                                      isSelected &&
+                                        mode.id === "ask" &&
+                                        "text-emerald-400",
+                                      (!isSelected || mode.id === "agent") &&
+                                        "text-foreground"
+                                    )}
+                                  >
+                                    {mode.label}
+                                  </Text>
+                                  <Text className="text-xs text-muted-foreground">
+                                    {mode.description}
+                                  </Text>
+                                </View>
+                              </Pressable>
+                            )
+                          })}
+                          {interactionMode === "plan" ? (
+                            <Pressable
+                              testID="dual-plan-toggle"
+                              disabled={disabled}
+                              onPress={() => onDualPlanChange?.(!dualPlan)}
+                              accessibilityLabel="Also generate a stakeholder summary"
+                              className={cn(
+                                "mx-1 mb-1 flex-row items-center gap-3 rounded-lg p-3",
+                                dualPlan
+                                  ? "border border-sky-500/35 bg-sky-500/12"
+                                  : "bg-muted/40",
+                              )}
+                            >
+                              <View className="w-8 items-center">
+                                <Languages
+                                  className={dualPlan ? "text-sky-400" : "text-muted-foreground"}
+                                  size={14}
+                                />
+                              </View>
+                              <View className="flex-1">
+                                <Text className="text-sm font-medium text-foreground">
+                                  Stakeholder summary
+                                </Text>
+                                <Text className="text-xs text-muted-foreground">
+                                  Also generate a summary for stakeholders
+                                </Text>
+                              </View>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      </ComposerPlusSection>
+                      <ComposerPlusSection
+                        id="environment"
+                        label="Environment"
+                        Icon={Cloud}
+                      >
+                        <EnvironmentPicker
+                          disabled={disabled || isProcessingFiles}
+                          presentation="list"
+                          listActive={plusExpandedId === "environment"}
+                        />
+                      </ComposerPlusSection>
+                      {quickActions.length > 0 ? (
+                        <ComposerPlusSection
+                          id="quick-actions"
+                          label="Quick actions"
+                          Icon={Zap}
+                        >
+                          <View className="py-1">
+                            {quickActions.map((action) => (
+                              <Pressable
+                                key={action.label}
+                                onPress={() => {
+                                  onQuickActionClick?.(action.prompt)
+                                  closePlusMenu()
+                                }}
+                                className="flex-row items-center gap-3 p-3 rounded-lg mb-1"
+                              >
+                                <View className="w-8 items-center">
+                                  <Zap className="h-3.5 w-3.5 text-amber-400" size={14} />
+                                </View>
+                                <View className="flex-1">
+                                  <Text className="font-medium text-sm text-foreground">
+                                    {action.label}
+                                  </Text>
+                                  <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                                    {action.prompt}
+                                  </Text>
+                                </View>
+                              </Pressable>
+                            ))}
+                          </View>
+                        </ComposerPlusSection>
+                      ) : null}
+                      <View className="border-t border-border/50 pt-1 pb-1">
+                        {PLUS_ATTACH_ROWS.map(({ action, label, hint, Icon }) => (
+                          <Pressable
+                            key={action}
+                            onPress={() => handlePlusAttach(action)}
+                            disabled={pendingFiles.length >= MAX_FILES}
+                            className="flex-row items-center gap-3 px-3 py-3 active:bg-muted/50"
+                          >
+                            <View className="h-8 w-8 items-center justify-center rounded-lg bg-muted/40">
+                              <Icon size={16} className="text-foreground" />
+                            </View>
+                            <View className="min-w-0 flex-1">
+                              <Text className="text-sm font-medium text-foreground">{label}</Text>
+                              <Text className="text-xs text-muted-foreground">{hint}</Text>
+                            </View>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </ScrollView>
+                  </PlusAccordionContext.Provider>
+                </ComposerPlusCloseContext.Provider>
+                </View>
+              </View>
+            </Modal>
+            <Popover
+              placement="top"
+              size="xs"
+              isOpen={modelPickerOpen}
+              onOpen={() => setModelPickerOpen(true)}
+              onClose={() => setModelPickerOpen(false)}
+              trigger={(triggerProps) => (
+                <Pressable
+                  {...triggerProps}
+                  hitSlop={6}
+                  disabled={disabled}
+                  className="h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
+                  style={{ maxWidth: modelTriggerMaxWidth }}
+                >
+                  <Text
+                    className="text-[12px] text-foreground/90"
+                    numberOfLines={1}
+                  >
+                    {compactNativeModelLabel(currentModelId)}
+                  </Text>
+                  <ChevronDown className="flex-shrink-0 text-muted-foreground/70" size={10} />
+                </Pressable>
+              )}
+            >
+              <PopoverBackdrop />
+              <PopoverContent
+                className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
+                style={{ width: nativeModelMenuWidth }}
+              >
+                <ModelPickerMenu
+                  currentModelId={currentModelId}
+                  effectiveIsPro={effectiveIsPro}
+                  onSelect={(modelId) => {
+                    handleModelChange(modelId)
+                    setModelPickerOpen(false)
+                  }}
+                />
+              </PopoverContent>
+            </Popover>
+          </>
+        ) : null}
+
+        <View
+          className={cn(
+            "relative",
+            useProminentComposer && "min-w-0 flex-1",
+          )}
+          style={
+            useProminentComposer
+              ? {
+                  minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                  overflow: "hidden",
+                  marginLeft: 4,
+                  marginRight: 4,
+                }
+              : undefined
+          }
+        >
           {/* Highlight backdrop: a transparent mirror of the composer text that
               paints a pill behind each "@mention". The real TextInput sits on
               top (zIndex) so typed text stays crisp and the caret is native;
@@ -1976,8 +2378,9 @@ function ChatInputImpl({
           <View
             pointerEvents="none"
             className={cn(
-              "absolute top-0 bottom-0 left-0 right-0 overflow-hidden px-4",
-              isNative ? "pt-3" : "pt-4",
+              "absolute top-0 bottom-0 left-0 right-0 overflow-hidden",
+              useProminentComposer ? "px-1" : "px-4",
+              useProminentComposer ? undefined : isNative ? "pt-3" : "pt-4",
             )}
             style={{ zIndex: 0 }}
           >
@@ -2031,6 +2434,8 @@ function ChatInputImpl({
             setOverlayScrollY((e.nativeEvent as any)?.contentOffset?.y ?? 0)
           }}
           onSubmitEditing={handleSubmitEditing}
+          onFocus={useProminentComposer ? () => setIsFocused(true) : undefined}
+          onBlur={useProminentComposer ? () => setIsFocused(false) : undefined}
           onKeyPress={(e: any) => {
             // While the "@" menu is open, intercept navigation keys so they
             // drive the menu instead of the textarea / message submit.
@@ -2073,35 +2478,62 @@ function ChatInputImpl({
             }
           }}
           placeholder={placeholder}
-          placeholderTextColor="#9ca3af"
+          placeholderTextColor={useProminentComposer ? chatgptComposer.placeholder : "#9ca3af"}
           testID="project-composer-input"
           accessibilityLabel="Chat message input"
           editable={!disabled && !voiceInput.isRecording}
           multiline
-          blurOnSubmit={Platform.OS !== "web"}
+          {...(useProminentComposer
+            ? { scrollEnabled: inputHeight > CHAT_INPUT_PROMINENT_MIN_HEIGHT }
+            : null)}
+          blurOnSubmit={useProminentComposer || Platform.OS !== "web"}
           returnKeyType={Platform.OS === "web" ? undefined : "done"}
           onContentSizeChange={(e) => {
+            if (useProminentComposer && !composerDisplayValue) {
+              if (inputHeight !== CHAT_INPUT_PROMINENT_MIN_HEIGHT) {
+                setInputHeight(CHAT_INPUT_PROMINENT_MIN_HEIGHT)
+              }
+              return
+            }
             const h = e.nativeEvent.contentSize.height
-            const clamped = Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
-            if (clamped !== inputHeight) {
-              setInputHeight(clamped)
+            const next = useProminentComposer && h <= CHAT_INPUT_PROMINENT_LINE_HEIGHT + 8
+              ? CHAT_INPUT_PROMINENT_MIN_HEIGHT
+              : Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
+            if (next !== inputHeight) {
+              setInputHeight(next)
             }
           }}
           style={{
-            height: inputHeight,
+            height: useProminentComposer
+              ? Math.max(
+                  composerDisplayValue ? inputHeight : CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                  CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                )
+              : inputHeight,
             zIndex: 1,
-            ...(isNative ? { fontSize: 16, lineHeight: 22 } : {}),
+            ...(isNative ? { fontSize: 16, lineHeight: useProminentComposer ? CHAT_INPUT_PROMINENT_MIN_HEIGHT : 22 } : {}),
+            ...(useProminentComposer
+              ? {
+                  color: chatgptComposer.text,
+                  paddingHorizontal: 4,
+                  paddingTop: 0,
+                  paddingBottom: 0,
+                  margin: 0,
+                  backgroundColor: "transparent",
+                  ...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" } : null),
+                }
+              : {}),
           }}
           className={cn(
-            isNative
-              ? "min-h-[52px] max-h-[160px] w-full"
-              : "min-h-[60px] max-h-[200px] w-full",
-            "bg-transparent",
-            isNative ? "px-4 pt-3 text-base text-foreground" : "px-4 pt-4 text-xs text-foreground",
+            useProminentComposer
+              ? "w-full bg-transparent"
+              : isNative
+                ? "min-h-[52px] max-h-[160px] w-full bg-transparent px-4 pt-3 text-base text-foreground"
+                : "min-h-[60px] max-h-[200px] w-full bg-transparent px-4 pt-4 text-xs text-foreground",
             disabled && dimWhenDisabled && "opacity-50",
             Platform.OS === "web" && "outline-none no-focus-ring"
           )}
-          textAlignVertical="top"
+          textAlignVertical={useProminentComposer ? "center" : "top"}
         />
         </View>
 
@@ -2109,11 +2541,16 @@ function ChatInputImpl({
         <View
           className={cn(
             "flex-row items-center justify-between",
-            isNative ? "min-h-12 px-2 py-1" : "p-1.5",
-            isNativePhone && "items-end gap-y-1"
+            useProminentComposer
+              ? "flex-shrink-0"
+              : isNative
+                ? "min-h-12 px-2 py-1"
+                : "p-1.5",
+            !useProminentComposer && isNativePhone && "items-end gap-y-1"
           )}
         >
           {/* Left side buttons */}
+          {useProminentComposer ? null : (
           <View
             className={cn(
               "flex-row items-center",
@@ -2412,6 +2849,7 @@ function ChatInputImpl({
             </Popover>
 
           </View>
+          )}
 
           {/* Right side buttons */}
           {voiceInput.isRecording ? (
@@ -2431,14 +2869,15 @@ function ChatInputImpl({
               </Pressable>
             </View>
           ) : (
-          <View className="flex-row flex-shrink-0 items-center gap-1">
-            {contextUsage && (
+          <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "ml-1 gap-1" : "gap-1")}>
+            {contextUsage && !useProminentComposer && (
               <ContextTracker
                 inputTokens={contextUsage.inputTokens}
                 contextWindowTokens={contextUsage.contextWindowTokens}
               />
             )}
 
+            {useProminentComposer ? null : (
             <Pressable
               onPress={handleAttachClick}
               hitSlop={isNative ? 4 : undefined}
@@ -2461,6 +2900,7 @@ function ChatInputImpl({
                 size={isNative ? 18 : 12}
               />
             </Pressable>
+            )}
 
             {isStreaming ? (
               <>
@@ -2471,12 +2911,12 @@ function ChatInputImpl({
                   testID="stop-streaming"
                   className={cn(
                     "rounded-full bg-destructive items-center justify-center active:opacity-70",
-                    isNative ? "h-9 w-9" : "h-5 w-5",
+                    useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
                   )}
                 >
                   <Square
                     className="text-destructive-foreground m-auto"
-                    size={isNative ? 14 : 10}
+                    size={useProminentComposer ? 10 : isNative ? 14 : 10}
                   />
                 </Pressable>
                 {(inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) && (
@@ -2487,11 +2927,17 @@ function ChatInputImpl({
                     role="button"
                     accessibilityLabel="Queue message"
                     className={cn(
-                      "rounded-full items-center justify-center bg-primary",
-                      isNative ? "h-9 w-9" : "h-5 w-5",
+                      "rounded-full items-center justify-center",
+                      !useProminentComposer && "bg-primary",
+                      useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
                     )}
+                    style={useProminentComposer ? { backgroundColor: chatgptComposer.sendFill } : undefined}
                   >
-                    <ArrowUp className="h-3 w-3 text-primary-foreground" size={isNative ? 18 : 12} />
+                    <ArrowUp
+                      className={cn("h-3 w-3", !useProminentComposer && "text-primary-foreground")}
+                      color={useProminentComposer ? chatgptComposer.sendIcon : undefined}
+                      size={useProminentComposer ? 14 : isNative ? 18 : 12}
+                    />
                   </Pressable>
                 )}
               </>
@@ -2503,12 +2949,18 @@ function ChatInputImpl({
                 role="button"
                 accessibilityLabel="Send message"
                 className={cn(
-                  "rounded-full items-center justify-center bg-primary",
-                  isNative ? "h-9 w-9" : "h-5 w-5",
+                  "rounded-full items-center justify-center",
+                  !useProminentComposer && "bg-primary",
+                  useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
                   (disabled || isProcessingFiles) && "opacity-50"
                 )}
+                style={useProminentComposer ? { backgroundColor: chatgptComposer.sendFill } : undefined}
               >
-                <ArrowUp className="h-3 w-3 text-primary-foreground" size={isNative ? 18 : 12} />
+                <ArrowUp
+                  className={cn("h-3 w-3", !useProminentComposer && "text-primary-foreground")}
+                  color={useProminentComposer ? chatgptComposer.sendIcon : undefined}
+                  size={useProminentComposer ? 14 : isNative ? 18 : 12}
+                />
               </Pressable>
             ) : voiceInput.canRecord ? (
               <Pressable
@@ -2522,17 +2974,22 @@ function ChatInputImpl({
                 accessibilityLabel="Start voice recording"
                 className={cn(
                   "rounded-full items-center justify-center active:opacity-70",
-                  isNative ? "h-9 w-9 border border-border/45 bg-muted/30" : "h-5 w-5",
+                  useProminentComposer
+                    ? "h-8 w-8"
+                    : isNative
+                      ? "h-9 w-9 border border-border/45 bg-muted/30"
+                      : "h-5 w-5",
                 )}
               >
                 <Mic
                   className={cn(
                     "h-4 w-4",
-                    disabled || isProcessingFiles
+                    !useProminentComposer && (disabled || isProcessingFiles
                       ? "text-muted-foreground/40"
-                      : "text-muted-foreground"
+                      : "text-muted-foreground")
                   )}
-                  size={isNative ? 18 : 14}
+                  color={useProminentComposer ? (disabled || isProcessingFiles ? chatgptComposer.placeholder : chatgptComposer.icon) : undefined}
+                  size={useProminentComposer ? 20 : isNative ? 18 : 14}
                 />
               </Pressable>
             ) : null}
@@ -2540,6 +2997,7 @@ function ChatInputImpl({
           )}
         </View>
         </View>
+        </ComposerShell>
       </View>
 
       <ImagePreviewModal
@@ -2569,32 +3027,14 @@ function ChatInputImpl({
         />
       )}
 
-      {Platform.OS !== "web" && (
+      {Platform.OS !== "web" && !useProminentComposer && (
         <AttachSourceSheet
           open={attachSheetOpen}
           onOpenChange={setAttachSheetOpen}
           currentCount={pendingFiles.length}
           maxFiles={MAX_FILES}
           maxFileSizeBytes={MAX_FILE_SIZE}
-          onFiles={(picked) => {
-            setPendingFiles((prev) => {
-              const room = MAX_FILES - prev.length
-              if (room <= 0) return prev
-              const added = picked.slice(0, room).map((f) => ({
-                id: f.id,
-                dataUrl: f.dataUrl,
-                name: f.name,
-                type: f.type,
-                size: f.size,
-              }))
-              if (picked.length > room) {
-                setFileError(`Maximum ${MAX_FILES} files allowed`)
-              } else {
-                setFileError(null)
-              }
-              return [...prev, ...added]
-            })
-          }}
+          onFiles={applyPickedFiles}
           onError={(message) => setFileError(message)}
         />
       )}

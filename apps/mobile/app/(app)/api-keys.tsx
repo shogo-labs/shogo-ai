@@ -15,6 +15,8 @@ import {
   Pressable,
   Modal,
   ActivityIndicator,
+  Platform,
+  useWindowDimensions,
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { useRouter } from 'expo-router'
@@ -79,6 +81,8 @@ function PlatformIcon({ platform, size = 16 }: { platform?: string | null; size?
 export default observer(function ApiKeysPage() {
   const router = useRouter()
   const { user } = useAuth()
+  const { width: windowWidth } = useWindowDimensions()
+  const isNativePhone = Platform.OS !== 'web' && windowWidth < 600
   const workspaces = useWorkspaceCollection()
   const workspace = useActiveWorkspace()
   const http = useDomainHttp()
@@ -176,17 +180,25 @@ export default observer(function ApiKeysPage() {
   return (
     <View className="flex-1 bg-background">
       {/* Header */}
-      <View className="flex-row items-center gap-3 px-6 py-4 border-b border-border">
-        <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/settings')}>
-          <ArrowLeft size={20} className="text-foreground" />
+      <View className={cn("flex-row items-center gap-3 border-b border-border", isNativePhone ? "px-4 py-3" : "px-6 py-4")}>
+        <Pressable
+          onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/settings')}
+          hitSlop={8}
+          className={isNativePhone ? "h-11 w-11 items-center justify-center" : undefined}
+        >
+          <ArrowLeft size={isNativePhone ? 22 : 20} className="text-foreground" />
         </Pressable>
-        <View className="flex-1">
-          <Text className="text-xl font-bold text-foreground">Devices & API Keys</Text>
-          <Text className="text-sm text-muted-foreground">
+        <View className="flex-1 min-w-0">
+          <Text className={cn("font-bold text-foreground", isNativePhone ? "text-lg" : "text-xl")}>Devices & API Keys</Text>
+          <Text className={cn("text-muted-foreground", isNativePhone ? "text-sm mt-0.5" : "text-sm")}>
             Manage signed-in Shogo Desktop devices and long-lived keys
           </Text>
           {workspace?.id && (
-            <Text className="text-xs text-muted-foreground/70 font-mono mt-0.5">
+            <Text
+              className="text-xs text-muted-foreground/70 font-mono mt-0.5"
+              numberOfLines={1}
+              ellipsizeMode="middle"
+            >
               Workspace: {workspace.id}
             </Text>
           )}
@@ -195,18 +207,18 @@ export default observer(function ApiKeysPage() {
 
       <ScrollView
         className="flex-1"
-        contentContainerClassName="p-6 pb-20 max-w-3xl w-full mx-auto"
+        contentContainerClassName={isNativePhone ? "p-4 pb-24" : "p-6 pb-20 max-w-3xl w-full mx-auto"}
       >
         {/* Info banner */}
         <Card className="mb-6">
-          <CardContent className="p-4">
+          <CardContent className={isNativePhone ? "p-4" : "p-4"}>
             <View className="flex-row items-start gap-3">
-              <Monitor size={20} className="text-primary mt-0.5" />
-              <View className="flex-1">
-                <Text className="text-sm font-medium text-foreground">
+              <Monitor size={isNativePhone ? 22 : 20} className="text-primary mt-0.5" />
+              <View className="flex-1 min-w-0">
+                <Text className={cn("font-medium text-foreground", isNativePhone ? "text-base" : "text-sm")}>
                   Shogo Desktop signs in as a device
                 </Text>
-                <Text className="text-xs text-muted-foreground mt-1 leading-5">
+                <Text className={cn("text-muted-foreground mt-1", isNativePhone ? "text-sm leading-5" : "text-xs leading-5")}>
                   Each desktop install gets its own device credential. Signing out here
                   immediately revokes it. Use a manual API key only for headless / CI
                   environments that can't run the desktop login flow.
@@ -240,6 +252,48 @@ export default observer(function ApiKeysPage() {
           <Card className="mb-6">
             <CardContent className="p-0">
               {deviceKeys.map((key) => (
+                isNativePhone ? (
+                  <View
+                    key={key.id}
+                    className="gap-3 border-b border-border px-4 py-4 last:border-b-0"
+                  >
+                    <View className="flex-row items-start gap-3">
+                      <View className="h-11 w-11 items-center justify-center rounded-lg bg-muted">
+                        <PlatformIcon platform={key.devicePlatform} size={20} />
+                      </View>
+                      <View className="min-w-0 flex-1">
+                        <Text className="text-base font-semibold text-foreground" numberOfLines={2}>
+                          {key.deviceName || key.name}
+                        </Text>
+                        {key.user?.email ? (
+                          <Text className="mt-0.5 text-sm text-muted-foreground" numberOfLines={1}>
+                            {key.user.email}
+                          </Text>
+                        ) : null}
+                        <Text className="mt-0.5 text-sm text-muted-foreground">
+                          {formatLastSeen(key.lastSeenAt || key.lastUsedAt)}
+                        </Text>
+                        <View className="mt-2 flex-row flex-wrap items-center gap-2">
+                          <Badge variant="outline">
+                            <Text className="text-xs">{platformLabel(key.devicePlatform)}</Text>
+                          </Badge>
+                          {key.deviceAppVersion ? (
+                            <Text className="text-xs text-muted-foreground">v{key.deviceAppVersion}</Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    </View>
+                    <Pressable
+                      onPress={() => setRevokeTarget(key)}
+                      className="h-11 flex-row items-center justify-center gap-2 rounded-lg border border-border"
+                      accessibilityRole="button"
+                      accessibilityLabel={`Sign out ${key.deviceName || key.name}`}
+                    >
+                      <LogOut size={16} className="text-muted-foreground" />
+                      <Text className="text-sm font-medium text-foreground">Sign out</Text>
+                    </Pressable>
+                  </View>
+                ) : (
                 <View
                   key={key.id}
                   className="flex-row items-center gap-3 px-4 py-3 border-b border-border last:border-b-0"
@@ -273,6 +327,7 @@ export default observer(function ApiKeysPage() {
                     <Text className="text-xs text-muted-foreground">Sign out</Text>
                   </Pressable>
                 </View>
+                )
               ))}
               <View className="px-4 py-2.5">
                 <Text className="text-xs text-muted-foreground">
@@ -287,38 +342,39 @@ export default observer(function ApiKeysPage() {
         <Pressable
           testID="manual-api-keys-toggle"
           onPress={() => setShowManualKeys((v) => !v)}
-          className="flex-row items-center gap-2 mb-3 py-1"
+          className={cn("flex-row items-center gap-2 mb-3 py-1", isNativePhone && "min-h-11")}
           accessibilityRole="button"
           accessibilityState={{ expanded: showManualKeys }}
         >
           {showManualKeys ? (
-            <ChevronDown size={16} className="text-muted-foreground" />
+            <ChevronDown size={isNativePhone ? 20 : 16} className="text-muted-foreground" />
           ) : (
-            <ChevronRight size={16} className="text-muted-foreground" />
+            <ChevronRight size={isNativePhone ? 20 : 16} className="text-muted-foreground" />
           )}
-          <Text className="text-base font-semibold text-foreground">
+          <Text className={cn("font-semibold text-foreground", isNativePhone ? "text-lg" : "text-base")}>
             Manual API keys
           </Text>
-          <Text className="text-xs text-muted-foreground">
+          <Text className={cn("text-muted-foreground", isNativePhone ? "text-sm" : "text-xs")}>
             ({userKeys.length}) · advanced
           </Text>
         </Pressable>
 
         {showManualKeys && (
           <>
-            <Text className="text-xs text-muted-foreground mb-3 leading-5">
+            <Text className={cn("mb-3 leading-5 text-muted-foreground", isNativePhone ? "text-sm" : "text-xs")}>
               Long-lived keys for CI, scripting, or headless environments. Most users should
               sign in via the desktop app instead.
             </Text>
-            <View className="flex-row justify-end mb-3">
+            <View className={cn("mb-3", isNativePhone ? undefined : "flex-row justify-end")}>
               <Button
-                size="sm"
+                size={isNativePhone ? "lg" : "sm"}
                 testID="create-api-key-btn"
                 onPress={() => setShowCreateModal(true)}
+                className={isNativePhone ? "w-full" : undefined}
               >
                 <View className="flex-row items-center gap-1.5">
-                  <Plus size={14} color="#fff" />
-                  <Text className="text-sm font-medium text-primary-foreground">Create Key</Text>
+                  <Plus size={isNativePhone ? 16 : 14} color="#fff" />
+                  <Text className={cn("font-medium text-primary-foreground", isNativePhone ? "text-base" : "text-sm")}>Create Key</Text>
                 </View>
               </Button>
             </View>
@@ -329,6 +385,54 @@ export default observer(function ApiKeysPage() {
                   <Text className="text-sm text-muted-foreground">
                     No manual keys yet.
                   </Text>
+                </CardContent>
+              </Card>
+            ) : isNativePhone ? (
+              <Card>
+                <CardContent className="p-0">
+                  {userKeys.map((key) => (
+                    <View key={key.id} className="gap-2 border-b border-border px-4 py-4 last:border-b-0">
+                      <View className="flex-row items-start gap-3">
+                        <View className="min-w-0 flex-1">
+                          <Text className="text-base font-semibold text-foreground" numberOfLines={2}>
+                            {key.name}
+                          </Text>
+                          {key.user?.name || key.user?.email ? (
+                            <Text className="mt-0.5 text-sm text-muted-foreground" numberOfLines={1}>
+                              {key.user?.name || key.user?.email}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <Pressable
+                          onPress={() => setRevokeTarget(key)}
+                          hitSlop={8}
+                          className="h-11 w-11 items-center justify-center rounded-lg"
+                          accessibilityRole="button"
+                          accessibilityLabel={`Revoke ${key.name}`}
+                        >
+                          <Trash2 size={20} className="text-muted-foreground" />
+                        </Pressable>
+                      </View>
+                      <Text className="font-mono text-sm text-muted-foreground" numberOfLines={1}>
+                        {key.keyPrefix}...
+                      </Text>
+                      <Text className="text-sm text-muted-foreground">
+                        Last used{' '}
+                        {key.lastUsedAt
+                          ? new Date(key.lastUsedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                          : 'Never'}
+                      </Text>
+                      <Text className="text-sm text-muted-foreground">
+                        Created{' '}
+                        {new Date(key.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </Text>
+                    </View>
+                  ))}
+                  <View className="px-4 py-3">
+                    <Text className="text-sm text-muted-foreground">
+                      {userKeys.length} key{userKeys.length !== 1 ? 's' : ''}
+                    </Text>
+                  </View>
                 </CardContent>
               </Card>
             ) : (

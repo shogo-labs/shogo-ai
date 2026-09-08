@@ -19,17 +19,15 @@
  *     fresh sends — matching user mental model.
  *
  * Display vs edit:
- *   - DISPLAY: full-width Pressable with the original text +
- *     attachments inside. Clicking anywhere on the row enters edit
- *     mode (child Pressables on image / file thumbnails capture
- *     their own presses, so opening a thumbnail does NOT trigger
- *     edit). On web a single hover-revealed "Retry from here" icon
- *     sits on the right; on native it is always visible.
- *   - EDIT: full ChatInput + a Cancel button below. ChatInput's
- *     own send button (or ⌘↩) triggers `onSubmit`, which we route
- *     through the same destructive-confirmation + optional file
- *     revert pipeline as the previous in-place TextInput flow.
- *     Escape cancels (web).
+ *   - DISPLAY (web / tablet): full-width Pressable. Clicking the row
+ *     enters edit mode. On web a hover-revealed "Retry from here" icon
+ *     sits on the right; on native tablet it is always visible.
+ *   - DISPLAY (native phone): ChatGPT-style right-aligned navy bubble.
+ *     Long-press opens Copy / Edit / Retry. Edit and Retry still use
+ *     the existing rewind confirmation dialogs.
+ *   - EDIT: full ChatInput. ChatInput's send button (or ⌘↩) triggers
+ *     `onSubmit`, routed through the same destructive-confirmation +
+ *     optional file-revert pipeline. Escape cancels (web).
  *
  * Guards (same as the previous v1):
  *   - Disabled entirely while the agent is streaming — editing
@@ -49,8 +47,17 @@ import {
   useRef,
   useState,
 } from "react"
-import { View, Pressable, Platform, ActivityIndicator } from "react-native"
+import {
+  View,
+  Pressable,
+  Platform,
+  ActivityIndicator,
+  ActionSheetIOS,
+  Alert,
+} from "react-native"
 import { RotateCcw } from "lucide-react-native"
+import * as Clipboard from "expo-clipboard"
+import * as Haptics from "expo-haptics"
 import type { UIMessage } from "@ai-sdk/react"
 import { cn } from "@shogo/shared-ui/primitives"
 import { extractTextContent } from "@shogo/shared-app/chat"
@@ -69,6 +76,48 @@ import {
   type FileAttachment,
   type RestoreDraftRequest,
 } from "../ChatInput"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+
+function showNativeUserMessageActions(opts: {
+  canMutate: boolean
+  onCopy: () => void
+  onEdit: () => void
+  onRetry: () => void
+}) {
+  const rows: { label: string; run: () => void; destructive?: boolean }[] = [
+    { label: "Copy", run: opts.onCopy },
+  ]
+  if (opts.canMutate) {
+    rows.push({ label: "Edit", run: opts.onEdit })
+    rows.push({ label: "Retry from here", run: opts.onRetry, destructive: true })
+  }
+
+  if (Platform.OS === "ios") {
+    const options = [...rows.map((r) => r.label), "Cancel"]
+    const destructiveIndex = rows.findIndex((r) => r.destructive)
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        options,
+        cancelButtonIndex: options.length - 1,
+        destructiveButtonIndex: destructiveIndex >= 0 ? destructiveIndex : undefined,
+      },
+      (index) => {
+        if (index == null || index >= rows.length) return
+        rows[index]?.run()
+      },
+    )
+    return
+  }
+
+  Alert.alert("Message", undefined, [
+    ...rows.map((r) => ({
+      text: r.label,
+      onPress: r.run,
+      style: (r.destructive ? "destructive" : "default") as "destructive" | "default",
+    })),
+    { text: "Cancel", style: "cancel" as const },
+  ])
+}
 
 export interface EditableUserMessageProps {
   message: UIMessage
@@ -109,6 +158,7 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   className,
 }: EditableUserMessageProps) {
   const ctx = useMessageEditContext()
+  const nativePhone = useIsNativePhoneLayout()
 
   const [isEditing, setIsEditing] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -160,6 +210,34 @@ export const EditableUserMessage = memo(function EditableUserMessage({
     setBusy(false)
     setRestoreDraftRequest(null)
   }, [])
+
+  const handleNativeOutsideTap = useCallback(
+    (pageX: number, pageY: number) => {
+      const node = containerRef.current
+      if (!node) {
+        handleCancelEdit()
+        return
+      }
+      node.measureInWindow((x, y, width, height) => {
+        const pad = 12
+        if (
+          pageX >= x - pad &&
+          pageX <= x + width + pad &&
+          pageY >= y - pad &&
+          pageY <= y + height + pad
+        ) {
+          return
+        }
+        handleCancelEdit()
+      })
+    },
+    [handleCancelEdit],
+  )
+
+  useEffect(() => {
+    if (!isEditing || !ctx) return
+    return ctx.registerInlineEditCancel(handleNativeOutsideTap)
+  }, [isEditing, ctx, handleNativeOutsideTap])
 
   // Escape cancels the edit (web only — native keyboard dismissal
   // is handled by the OS chrome around the TextInput). We attach
@@ -344,14 +422,39 @@ export const EditableUserMessage = memo(function EditableUserMessage({
     })
   }, [ctx, message.id, dispatchRewind])
 
+  const handleCopy = useCallback(async () => {
+    if (!originalText) return
+    try {
+      await Clipboard.setStringAsync(originalText)
+    } catch {
+      // Clipboard can be unavailable in some simulators — ignore.
+    }
+  }, [originalText])
+
+  const handleNativeLongPress = useCallback(() => {
+    if (busy) return
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {})
+    showNativeUserMessageActions({
+      canMutate: interactive,
+      onCopy: () => {
+        void handleCopy()
+      },
+      onEdit: handleStartEdit,
+      onRetry: () => {
+        void handleRetry()
+      },
+    })
+  }, [busy, interactive, handleCopy, handleStartEdit, handleRetry])
+
   // ─── EDIT MODE ────────────────────────────────────────────────
   // Just ChatInput rendered inline, with `highlighted` toggled on
   // so the accent ring sits directly on the visible input box (no
   // outer wrapper styling, no padding, no banner, no separate
   // cancel chrome). The ring is the only mode signal. Cancellation
-  // is handled by the global Escape handler and the
-  // outside-mousedown handler above (web), or by submitting (which
-  // routes through the destructive-confirm dialog regardless).
+  // is handled by Escape + outside-mousedown on web, and by a
+  // hit-tested tap on the transcript (or hiding the bottom composer)
+  // on native. Submitting still routes through the destructive-confirm
+  // dialog regardless.
   //
   // We can't draw the ring from a wrapping <View> at this level
   // because ChatInput's outermost element carries `p-3 pt-0` of
@@ -366,7 +469,7 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   // handle from the component directly without an invasive change.
   if (isEditing && ctx) {
     return (
-      <View ref={containerRef} className="w-full">
+      <View ref={containerRef} collapsable={false} className="w-full">
         <ChatInput
           onSubmit={handleChatInputSubmit}
           disabled={busy}
@@ -398,11 +501,34 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   }
 
   // ─── DISPLAY MODE ─────────────────────────────────────────────
-  // Full-width Pressable. Click anywhere on the row → edit mode.
-  // Image / file thumbnails inside MessageContent each own a
-  // Pressable, so their `onPress` captures the gesture before it
-  // bubbles to this outer Pressable — opening an attachment does
-  // NOT switch the bubble into edit mode.
+  // Web / tablet: full-width Pressable. Click anywhere on the row →
+  // edit mode. Native phone: ChatGPT-style right-aligned navy bubble;
+  // long-press opens Copy / Edit / Retry (existing rewind dialogs
+  // still run after Edit or Retry). Image / file thumbnails inside
+  // MessageContent each own a Pressable, so opening an attachment
+  // does NOT switch the bubble into edit mode.
+  if (nativePhone) {
+    return (
+      <View className={cn("w-full items-end px-1", className)}>
+        <Pressable
+          onLongPress={handleNativeLongPress}
+          delayLongPress={400}
+          disabled={busy}
+          accessibilityRole="button"
+          accessibilityLabel="Your message. Long press for copy, edit, and retry."
+          className={cn("max-w-[85%]", busy && "opacity-60")}
+        >
+          <MessageContent message={message} variant="userBubble" />
+        </Pressable>
+        {busy ? (
+          <View className="mt-1 pr-2">
+            <ActivityIndicator size="small" />
+          </View>
+        ) : null}
+      </View>
+    )
+  }
+
   return (
     <Pressable
       onPress={handleStartEdit}

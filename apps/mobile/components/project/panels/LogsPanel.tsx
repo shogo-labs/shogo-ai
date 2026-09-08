@@ -23,6 +23,7 @@ import {
 import { runtimeEntryToParsed } from './runtime-entry-to-parsed'
 import { clearProject } from '../../../lib/runtime-logs/runtime-log-store'
 import { useRuntimeLogStream } from '../../../lib/runtime-logs/useRuntimeLogStream'
+import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
 
 const ROW_HEIGHT = 24
 
@@ -39,6 +40,8 @@ interface LogsPanelProps {
  * older clients but this component no longer talks to it directly.
  */
 export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
+  const comfortable = useIsNativePhoneLayout()
+  const rowHeight = comfortable ? 36 : ROW_HEIGHT
   const [searchQuery, setSearchQuery] = useState('')
   const [searchVisible, setSearchVisible] = useState(false)
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('all')
@@ -127,9 +130,9 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
     const time = formatTime(item.ts)
     const colors = LEVEL_COLORS[item.level]
     return (
-      <View className="flex-row px-4 py-0.5 items-start" style={{ minHeight: ROW_HEIGHT }}>
+      <View className="flex-row px-4 py-0.5 items-start" style={{ minHeight: rowHeight }}>
         {time ? (
-          <Text className="text-zinc-600 text-xs font-mono mr-2 w-[70px]" numberOfLines={1}>
+          <Text className={cn('text-zinc-600 font-mono mr-2 w-[70px]', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
             {time}
           </Text>
         ) : null}
@@ -141,7 +144,7 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
           </View>
         )}
         <Text
-          className={cn('text-xs font-mono flex-1', item.level === 'error' ? 'text-red-300' : item.level === 'warn' ? 'text-amber-200' : 'text-zinc-300')}
+          className={cn('font-mono flex-1', comfortable ? 'text-sm' : 'text-xs', item.level === 'error' ? 'text-red-300' : item.level === 'warn' ? 'text-amber-200' : 'text-zinc-300')}
           selectable
         >
           {item.message}
@@ -151,8 +154,8 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
   }
 
   const getItemLayout = (_data: any, index: number) => ({
-    length: ROW_HEIGHT,
-    offset: ROW_HEIGHT * index,
+    length: rowHeight,
+    offset: rowHeight * index,
     index,
   })
 
@@ -161,22 +164,23 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
       {/* ---- Header toolbar ---- */}
       <View className="px-4 py-3 border-b border-border flex-col gap-2">
         <View className="flex-row items-center gap-2">
-          <ScrollText size={16} className="text-muted-foreground" />
-          <Text className="text-sm font-medium text-foreground">Agent Logs</Text>
-          <Text className="text-xs text-muted-foreground">{parsedLogs.length} entries</Text>
-          {levelCounts.error > 0 && (
-            <Text className="text-xs text-red-400">({levelCounts.error} errors)</Text>
-          )}
+          <ScrollText size={comfortable ? 20 : 16} className="text-muted-foreground" />
+          <View className="flex-1 min-w-0">
+            <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')} numberOfLines={1}>Agent Logs</Text>
+            <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
+              {parsedLogs.length} entries{levelCounts.error > 0 ? ` · ${levelCounts.error} errors` : ''}
+            </Text>
+          </View>
 
-          <View className="ml-auto flex-row items-center gap-3">
-            <Pressable onPress={toggleSearch} className="p-1 rounded-md active:bg-muted">
-              <Search size={14} className={searchVisible ? 'text-indigo-400' : 'text-muted-foreground'} />
+          <View className="flex-row items-center gap-1">
+            <Pressable onPress={toggleSearch} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
+              <Search size={comfortable ? 18 : 14} className={searchVisible ? 'text-indigo-400' : 'text-muted-foreground'} />
             </Pressable>
-            <Pressable onPress={handleExport} className="p-1 rounded-md active:bg-muted">
-              <Download size={14} className="text-muted-foreground" />
+            <Pressable onPress={handleExport} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
+              <Download size={comfortable ? 18 : 14} className="text-muted-foreground" />
             </Pressable>
-            <Pressable onPress={handleClear} className="p-1 rounded-md active:bg-muted">
-              <Trash2 size={14} className="text-muted-foreground" />
+            <Pressable onPress={handleClear} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
+              <Trash2 size={comfortable ? 18 : 14} className="text-muted-foreground" />
             </Pressable>
           </View>
         </View>
@@ -203,7 +207,7 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
         )}
 
         {/* ---- Level filter pills ---- */}
-        <View className="flex-row items-center gap-1.5">
+        <View className="flex-row flex-wrap gap-1.5">
           {LEVEL_FILTERS.map((lf) => {
             const isActive = levelFilter === lf
             const count = lf === 'all' ? parsedLogs.length : levelCounts[lf]
@@ -212,13 +216,14 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
                 key={lf}
                 onPress={() => setLevelFilter(lf)}
                 className={cn(
-                  'px-2 py-0.5 rounded-full',
+                  'rounded-full',
+                  comfortable ? 'px-3 py-2' : 'px-2 py-0.5',
                   isActive ? 'bg-zinc-700' : 'bg-zinc-800/50',
                 )}
               >
                 <Text
                   className={cn(
-                    'text-xs capitalize',
+                    comfortable ? 'text-sm capitalize' : 'text-xs capitalize',
                     isActive ? 'text-zinc-100' : 'text-zinc-500',
                     lf === 'error' && count > 0 && 'text-red-400',
                   )}

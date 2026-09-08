@@ -121,7 +121,7 @@ export const ProjectCard = memo(function ProjectCard({
       {/* Header */}
       <View
         style={{
-          height: compact ? 100 : 180,
+          height: compact ? 120 : 180,
           backgroundColor: isDark ? `${color}18` : `${color}0d`,
           borderBottomWidth: 1,
           borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
@@ -136,7 +136,7 @@ export const ProjectCard = memo(function ProjectCard({
           />
         ) : (
           <View className="items-center justify-center gap-2">
-            <FolderOpen size={compact ? 24 : 32} style={{ color: `${color}99` }} />
+            <FolderOpen size={32} style={{ color: `${color}99` }} />
             {!compact && (
               <Text
                 style={{ color, fontSize: 11, fontWeight: '600', opacity: 0.7 }}
@@ -178,7 +178,7 @@ export const ProjectCard = memo(function ProjectCard({
             )}
           >
             <Star
-              size={isNativeMobile ? 16 : 14}
+              size={isNativeMobile ? 18 : 14}
               style={{
                 color: isStarred ? '#eab308' : isNativeMobile ? '#94a3b8' : undefined,
               }}
@@ -204,7 +204,7 @@ export const ProjectCard = memo(function ProjectCard({
             <View className="flex-row items-start gap-2">
               <View className="flex-1 min-w-0">
                 <Text
-                  className="font-semibold text-[14px] leading-[18px] text-card-foreground"
+                  className="font-semibold text-base leading-5 text-card-foreground"
                   numberOfLines={2}
                 >
                   {name || 'Untitled'}
@@ -217,7 +217,7 @@ export const ProjectCard = memo(function ProjectCard({
               <View className="flex-1 min-w-0">
                 {subtitle ? (
                   <Text
-                    className="text-[11px] leading-[16px] text-muted-foreground"
+                    className="text-sm leading-5 text-muted-foreground"
                     numberOfLines={2}
                   >
                     {subtitle}

@@ -28,6 +28,7 @@ import { agentFetch } from '../../../lib/agent-fetch'
 import { API_URL } from '../../../lib/api'
 import { resolveShortName } from '../../../lib/visible-models'
 import { usePlatformConfig } from '../../../lib/platform-config'
+import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
 import { MarkdownText } from '../../chat/MarkdownText'
 
 const CONTEXT_FILES = [
@@ -203,6 +204,7 @@ function timeUntil(dateStr: string): string {
 }
 
 export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: StatusPanelProps) {
+  const comfortable = useIsNativePhoneLayout()
   const { localMode } = usePlatformConfig()
   const [status, setStatus] = useState<AgentStatusData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -378,25 +380,27 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
   return (
     <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
       {/* Header */}
-      <View className="px-4 py-3 border-b border-border flex-row items-center gap-2 bg-muted/30">
-        <Activity size={16} className="text-muted-foreground" />
-        <Text className="text-sm font-medium text-foreground">Agent Status</Text>
-        {status && (
-          <View className="flex-row items-center gap-1.5 ml-2">
-            {status.running ? (
-              <View className="flex-row items-center gap-1" accessibilityLabel="Agent is running">
-                <View className="h-2 w-2 rounded-full bg-emerald-500" />
-                <Text className="text-xs text-emerald-500">Running</Text>
-              </View>
-            ) : (
-              <View className="flex-row items-center gap-1" accessibilityLabel="Agent is stopped">
-                <View className="h-2 w-2 rounded-full bg-muted-foreground/50" />
-                <Text className="text-xs text-muted-foreground">Stopped</Text>
-              </View>
-            )}
-          </View>
-        )}
-        <View className="ml-auto flex-row items-center gap-2">
+      <View className={cn('border-b border-border flex-row items-center gap-2 bg-muted/30', comfortable ? 'px-4 py-3.5' : 'px-4 py-3')}>
+        <Activity size={comfortable ? 20 : 16} className="text-muted-foreground" />
+        <View className="flex-1 min-w-0">
+          <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')} numberOfLines={1}>Agent Status</Text>
+          {status && (
+            <View className="flex-row items-center gap-1.5 mt-0.5">
+              {status.running ? (
+                <View className="flex-row items-center gap-1" accessibilityLabel="Agent is running">
+                  <View className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <Text className={cn(comfortable ? 'text-sm' : 'text-xs', 'text-emerald-500')}>Running</Text>
+                </View>
+              ) : (
+                <View className="flex-row items-center gap-1" accessibilityLabel="Agent is stopped">
+                  <View className="h-2 w-2 rounded-full bg-muted-foreground/50" />
+                  <Text className={cn(comfortable ? 'text-sm' : 'text-xs', 'text-muted-foreground')}>Stopped</Text>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+        <View className="flex-row items-center gap-2">
           {lastFetchedAt && !error && (
             <View className="flex-row items-center gap-1">
               <View className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
@@ -407,9 +411,9 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
             onPress={loadInitial}
             role="button"
             accessibilityLabel="Refresh agent status"
-            className="p-1 rounded-md active:bg-muted"
+            className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}
           >
-            <RefreshCw size={14} className="text-muted-foreground" />
+            <RefreshCw size={comfortable ? 18 : 14} className="text-muted-foreground" />
           </Pressable>
         </View>
       </View>
@@ -444,6 +448,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                 icon={<Timer size={16} className="text-emerald-500" />}
                 label="Uptime"
                 value={formatUptime(status.uptimeSeconds)}
+                comfortable={comfortable}
               />
               <StatCard
                 icon={
@@ -454,11 +459,13 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                 }
                 label="Channels"
                 value={`${connectedChannels}/${totalChannels}`}
+                comfortable={comfortable}
               />
               <StatCard
                 icon={<Brain size={16} className="text-purple-500" />}
                 label="Context"
                 value={status.memory ? `${status.memory.fileCount} files` : contextMarkdown ? 'Loaded' : '—'}
+                comfortable={comfortable}
               />
             </View>
 
@@ -878,23 +885,28 @@ function StatCard({
   icon,
   label,
   value,
+  comfortable = false,
 }: {
   icon: React.ReactNode
   label: string
   value: string
+  comfortable?: boolean
 }) {
   return (
     <View
-      className="flex-1 min-w-[140px] px-3 py-2.5 rounded-lg border border-border/40 bg-card gap-1.5"
+      className={cn(
+        'min-w-0 px-3 py-2.5 rounded-lg border border-border/40 bg-card gap-1.5',
+        comfortable ? 'w-[48%]' : 'flex-1 min-w-[140px]',
+      )}
       accessibilityLabel={`${label}: ${value}`}
     >
       <View className="flex-row items-center gap-1.5">
         {icon}
-        <Text className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+        <Text className="flex-1 text-[10px] uppercase tracking-wider text-muted-foreground font-medium" numberOfLines={1}>
           {label}
         </Text>
       </View>
-      <Text className="text-lg font-semibold text-foreground tracking-tight">{value}</Text>
+      <Text className={cn('font-semibold text-foreground tracking-tight', comfortable ? 'text-xl' : 'text-lg')} numberOfLines={1}>{value}</Text>
     </View>
   )
 }

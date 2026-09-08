@@ -114,20 +114,24 @@ export function ProviderSetupCard({
 
   const loadKeys = useCallback(async () => {
     const next: Record<string, { configured: boolean; mask: string }> = {}
-    if (localMode) {
-      const masks = await platform.getProviderKeyMasks()
-      for (const p of SETUP_PROVIDERS) {
-        const m = masks[p.id]
-        next[p.id] = { configured: !!m, mask: m || '' }
+    try {
+      if (localMode) {
+        const masks = await platform.getProviderKeyMasks()
+        for (const p of SETUP_PROVIDERS) {
+          const m = masks[p.id]
+          next[p.id] = { configured: !!m, mask: m || '' }
+        }
+      } else {
+        const masks = await platform.getAdminProviderKeyMasks()
+        for (const p of SETUP_PROVIDERS) {
+          const info = masks[p.id]
+          next[p.id] = { configured: !!info?.configured, mask: info?.mask || '' }
+        }
       }
-    } else {
-      const masks = await platform.getAdminProviderKeyMasks()
-      for (const p of SETUP_PROVIDERS) {
-        const info = masks[p.id]
-        next[p.id] = { configured: !!info?.configured, mask: info?.mask || '' }
-      }
+      setKeyState(next)
+    } catch (err) {
+      console.error('[ProviderSetupCard] Failed to load keys:', err)
     }
-    setKeyState(next)
   }, [platform, localMode])
 
   const loadEnabled = useCallback(async () => {

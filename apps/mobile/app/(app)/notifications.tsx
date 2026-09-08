@@ -9,7 +9,7 @@
  * state in one go. The bell badge stays in sync via `notificationEvents`.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, Pressable, ScrollView, RefreshControl, ActivityIndicator } from 'react-native'
+import { View, Text, Pressable, ScrollView, RefreshControl, ActivityIndicator, Platform } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -126,26 +126,28 @@ export default observer(function NotificationsScreen() {
     notificationEvents.emit()
   }, [items, actions])
 
+  const isNative = Platform.OS !== 'web'
+
   return (
     <View className="flex-1 bg-background">
       {/* Header */}
-      <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
+      <View className={cn('flex-row items-center gap-2 px-4 border-b border-border', isNative ? 'py-4' : 'py-3')}>
         <Pressable
           onPress={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
           accessibilityLabel="Back"
-          className="p-1.5 -ml-1.5 rounded-md active:bg-muted"
+          className={cn('rounded-md active:bg-muted', isNative ? 'p-2 -ml-2' : 'p-1.5 -ml-1.5')}
         >
-          <ArrowLeft size={20} className="text-foreground" />
+          <ArrowLeft size={isNative ? 24 : 20} className="text-foreground" />
         </Pressable>
-        <Text className="text-base font-semibold text-foreground flex-1">Notifications</Text>
+        <Text className={cn('font-semibold text-foreground flex-1', isNative ? 'text-xl' : 'text-base')}>Notifications</Text>
         {unread.length > 0 && (
           <Pressable
             onPress={markAllRead}
             accessibilityLabel="Mark all as read"
             className="flex-row items-center gap-1.5 px-2 py-1 rounded-md active:bg-muted"
           >
-            <CheckCheck size={16} className="text-muted-foreground" />
-            <Text className="text-xs text-muted-foreground">Mark all read</Text>
+            <CheckCheck size={isNative ? 18 : 16} className="text-muted-foreground" />
+            <Text className={cn('text-muted-foreground', isNative ? 'text-sm' : 'text-xs')}>Mark all read</Text>
           </Pressable>
         )}
       </View>
@@ -155,10 +157,12 @@ export default observer(function NotificationsScreen() {
           <ActivityIndicator />
         </View>
       ) : items.length === 0 ? (
-        <View className="flex-1 items-center justify-center px-8 gap-2">
-          <Bell size={28} className="text-muted-foreground" />
-          <Text className="text-sm font-medium text-foreground">You're all caught up</Text>
-          <Text className="text-xs text-muted-foreground text-center">
+        <View className={cn('flex-1 items-center justify-center px-8', isNative ? 'gap-3' : 'gap-2')}>
+          <Bell size={isNative ? 44 : 28} className="text-muted-foreground" />
+          <Text className={cn('font-semibold text-foreground text-center', isNative ? 'text-2xl' : 'text-sm')}>
+            You're all caught up
+          </Text>
+          <Text className={cn('text-muted-foreground text-center', isNative ? 'text-base leading-6 max-w-[280px]' : 'text-xs')}>
             Billing receipts, usage alerts, and workspace updates will show up here.
           </Text>
         </View>
@@ -175,27 +179,32 @@ export default observer(function NotificationsScreen() {
                 key={n.id}
                 onPress={() => handleOpen(n)}
                 className={cn(
-                  'flex-row gap-3 px-4 py-3 border-b border-border active:bg-muted/50',
+                  'flex-row gap-3 px-4 border-b border-border active:bg-muted/50',
+                  isNative ? 'py-4' : 'py-3',
                   isUnread && 'bg-primary/5',
                 )}
               >
                 <View className="mt-0.5">
-                  <Icon size={18} className={color} />
+                  <Icon size={isNative ? 22 : 18} className={color} />
                 </View>
                 <View className="flex-1">
                   <View className="flex-row items-center gap-2">
                     <Text
-                      className={cn('text-sm flex-1', isUnread ? 'font-semibold text-foreground' : 'text-foreground')}
+                      className={cn(
+                        'flex-1',
+                        isNative ? 'text-base' : 'text-sm',
+                        isUnread ? 'font-semibold text-foreground' : 'text-foreground',
+                      )}
                       numberOfLines={1}
                     >
                       {n.title}
                     </Text>
                     {isUnread && <View className="h-2 w-2 rounded-full bg-primary shrink-0" />}
                   </View>
-                  <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={3}>
+                  <Text className={cn('text-muted-foreground mt-0.5', isNative ? 'text-sm' : 'text-xs')} numberOfLines={3}>
                     {n.message}
                   </Text>
-                  <Text className="text-[11px] text-muted-foreground mt-1">{relativeTime(n.createdAt)}</Text>
+                  <Text className={cn('text-muted-foreground mt-1', isNative ? 'text-xs' : 'text-[11px]')}>{relativeTime(n.createdAt)}</Text>
                 </View>
               </Pressable>
             )

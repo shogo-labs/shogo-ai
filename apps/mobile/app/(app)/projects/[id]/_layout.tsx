@@ -56,7 +56,7 @@ import { canvasDisabledRedirect } from '../../../../lib/project-preview-tab'
 import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
-import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
+import { isNativePhoneIntegrationsLayout, nativePhoneFillStyle } from '../../../../lib/native-phone-layout'
 import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas, isPreviewFailed } from '../../../../lib/preview-gate'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
@@ -1432,7 +1432,9 @@ export default observer(function ProjectLayout() {
   // Narrow (mobile) chat-session picker that temporarily replaces the chat
   // panel with the session list. Auto-closes when the user leaves the chat tab.
   const [narrowChatPickerOpen, setNarrowChatPickerOpen] = useState(false)
-  const [previewTab, setPreviewTab] = useState('canvas')
+  const [previewTab, setPreviewTab] = useState(
+    Platform.OS !== 'web' && nativePhone && !isWide ? 'chat-fullscreen' : 'canvas',
+  )
   // Ephemeral "the app needs your attention" override (e.g. the agent called
   // ask_user). Layered ON TOP of previewTab via effectiveTab below, and never
   // persisted. Decoupling attention from previewTab is what stops transient
@@ -1440,13 +1442,19 @@ export default observer(function ProjectLayout() {
   // (root cause of the "chat is always fullscreen" bug).
   const [attentionTab, setAttentionTab] = useState<string | null>(null)
   const effectiveTab = attentionTab ?? previewTab
+  // Set when the user (or Agent Type switch) explicitly asks for canvas this
+  // session. Stops the canvas-disabled effect and a stale `?tab=chat-fullscreen`
+  // from the sidebar from snapping them back to chat-only. Declared before the
+  // project-open effect so a new project can clear a leftover intent.
+  const userRequestedCanvasRef = useRef(false)
 
   useEffect(() => {
-    if (Platform.OS !== 'web' && nativePhone && !isWide) {
-      setActiveTab('chat')
-      setNarrowChatPickerOpen(false)
-    }
-  }, [projectId, nativePhone, isWide])
+    if (Platform.OS === 'web' || !nativePhone) return
+    userRequestedCanvasRef.current = false
+    setActiveTab('chat')
+    setPreviewTab('chat-fullscreen')
+    setNarrowChatPickerOpen(false)
+  }, [projectId, nativePhone])
 
   // Close the narrow picker as soon as the layout shifts off the chat tab
   // (e.g. user switched to canvas, or the viewport widened into split mode).
@@ -1517,10 +1525,6 @@ export default observer(function ProjectLayout() {
   // (and thus its `workingMode`) is known. Tracks the project it ran for so a
   // navigation to a different project re-applies.
   const previewTabInitForRef = useRef<string | null>(null)
-  // Set when the user (or Agent Type switch) explicitly asks for canvas this
-  // session. Stops the canvas-disabled effect and a stale `?tab=chat-fullscreen`
-  // from the sidebar from snapping them back to chat-only.
-  const userRequestedCanvasRef = useRef(false)
 
   // Sidebar "open project" tab intent. Clicking a project name in the sidebar
   // deep-links a `tab` param (canvas / chat-fullscreen / external-preview). It
@@ -1548,12 +1552,38 @@ export default observer(function ProjectLayout() {
     const token = `${projectId}:${requested}:${params.tabNonce ?? ''}`
     if (appliedTabIntentRef.current === token) return
     // A leftover `?tab=chat-fullscreen` from opening this project while it
-    // was still chat-only must not override a Canvas click this session.
-    if (userRequestedCanvasRef.current && requested === 'chat-fullscreen') return
+    // was still chat-only must not override a Canvas click this session on
+    // web/desktop. Native phone always honors Chat as the landing tab, even
+    // if the user had Canvas open before navigating home and back.
+    if (
+      userRequestedCanvasRef.current &&
+      requested === 'chat-fullscreen' &&
+      (Platform.OS === 'web' || !nativePhone)
+    ) {
+      return
+    }
+    if (nativePhone && requested === 'chat-fullscreen') {
+      userRequestedCanvasRef.current = false
+    }
     appliedTabIntentRef.current = token
     previewTabInitForRef.current = projectId
+    const nativePhoneChat =
+      Platform.OS !== 'web' && nativePhone && !isWide
+    const landingTab =
+      requested === 'canvas' ||
+      requested === 'chat-fullscreen' ||
+      requested === 'external-preview'
+    // Native phone always opens on Chat. Ignore leftover `?tab=canvas` from a
+    // previous visit or the sidebar's desktop landing-tab policy. Explicit
+    // in-session Canvas (top-bar tap, agent-type switch) sets
+    // userRequestedCanvasRef first and still applies.
+    if (nativePhoneChat && landingTab && !userRequestedCanvasRef.current) {
+      setPreviewTab('chat-fullscreen')
+      setActiveTab('chat')
+      return
+    }
     setPreviewTab(requested)
-    if (Platform.OS !== 'web' && nativePhone && !isWide) {
+    if (nativePhoneChat) {
       setActiveTab(requested === 'chat-fullscreen' ? 'chat' : 'canvas')
     }
   }, [projectId, params.tab, params.tabNonce, nativePhone, isWide])
@@ -2492,7 +2522,7 @@ export default observer(function ProjectLayout() {
 
   const narrowOnCanvas = !isWide && activeTab === 'canvas'
   /** Native-only: float above Files / Terminal / … (those layers use z-20). Omit on Expo web so web layout stays unchanged. */
-  const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web'
+  const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web' && !nativePhone
 
   /** Keeps the narrow-mode Chat FAB above the software keyboard (absolute positioning ignores keyboard inset). Web unchanged. */
   const [narrowCanvasKeyboardInset, setNarrowCanvasKeyboardInset] = useState(0)
@@ -2775,6 +2805,7 @@ export default observer(function ProjectLayout() {
   const nativePhoneCanvasFrame = Platform.OS !== 'web' && nativePhone && !isWide && activeTab === 'canvas'
   const nativePhoneStandalonePanel = nativePhoneCanvasFrame && STANDALONE_PANELS.includes(effectiveTab)
   const nativePhonePlansOverlay = nativePhoneCanvasFrame && effectiveTab === 'plans'
+  const nativePhoneFill = nativePhoneCanvasFrame ? nativePhoneFillStyle(width) : undefined
   const enableNativePhoneChatPicker = Platform.OS !== 'web' && nativePhone && !isWide
 
   // Defined after `chatHidden` so it can drive the canvas's `fullBleed`
@@ -3151,7 +3182,12 @@ export default observer(function ProjectLayout() {
               `overflow-hidden` keeps the chat column's slide-out (negative
               marginLeft when collapsed) clipped to this row instead of
               poking past the workspace's left edge. */}
-          <View className={cn('flex-1 overflow-hidden', isWide && 'flex-row')} ref={splitRowRef}>
+          <View
+            className={cn('flex-1 overflow-hidden', isWide && 'flex-row')}
+            ref={splitRowRef}
+            collapsable={nativePhone && !isWide ? false : undefined}
+            style={nativePhone && !isWide ? { width, flex: 1 } : undefined}
+          >
             {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
             {(() => {
               // The app sidebar (main app layout) is now the single home for
@@ -3341,7 +3377,7 @@ export default observer(function ProjectLayout() {
           )}
           style={
             nativePhoneCanvasFrame
-              ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%', alignSelf: 'stretch' }
+              ? nativePhoneFill
               : undefined
           }
         >
@@ -3359,7 +3395,7 @@ export default observer(function ProjectLayout() {
               className="absolute inset-0"
               style={
                 nativePhoneCanvasFrame
-                  ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%' }
+                  ? nativePhoneFill
                   : undefined
               }
             >
@@ -3387,7 +3423,7 @@ export default observer(function ProjectLayout() {
             )}
             style={
               nativePhoneStandalonePanel
-                ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%', alignSelf: 'stretch' }
+                ? nativePhoneFill
                 : undefined
             }
             pointerEvents={
@@ -3686,7 +3722,7 @@ export default observer(function ProjectLayout() {
           <View
             className="absolute inset-0 z-40 bg-background"
             pointerEvents="auto"
-            style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%' }}
+            style={nativePhoneFill}
           >
             <PanelErrorBoundary panelName="Plans">
               <PlansPanel

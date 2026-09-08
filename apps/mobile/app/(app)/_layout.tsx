@@ -17,7 +17,7 @@
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
-import { ActivityIndicator, Animated, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator, Animated, Easing, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
@@ -31,6 +31,7 @@ import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
 import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
 import { mark as csMark } from '../../lib/cold-start-timing'
+import { nativeDrawerPanelWidth, useNativeDrawerOpenSwipe } from '../../lib/use-native-drawer-swipe'
 
 csMark('app:layout:module-load')
 
@@ -57,6 +58,7 @@ export default function AppLayout() {
   const isNativeApp = Platform.OS !== 'web'
   const isWide = !isNativeApp && width >= 768
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [drawerGestureActive, setDrawerGestureActive] = useState(false)
   const drawerProgress = useRef(new Animated.Value(0)).current
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
 
@@ -68,6 +70,9 @@ export default function AppLayout() {
   // The notifications inbox provides its own header (back + mark-all-read), so
   // suppress the app header on narrow screens to avoid stacking two headers.
   const isNotificationsPage = pathname === '/notifications' || pathname === '/(app)/notifications'
+  const isApiKeysPage = pathname === '/api-keys' || pathname === '/(app)/api-keys'
+  const isProfilePage = pathname === '/profile' || pathname === '/(app)/profile'
+  const isSearchPage = pathname === '/search' || pathname === '/(app)/search'
 
   usePostHogIdentify()
   const posthog = usePostHogSafe()
@@ -129,14 +134,47 @@ export default function AppLayout() {
     } catch {}
   }, [isAuthenticated, user])
 
-  const openDrawer = useCallback(() => setDrawerOpen(true), [])
-  const closeDrawer = useCallback(() => setDrawerOpen(false), [])
+  const nativeDrawerWidth = nativeDrawerPanelWidth(width)
+  const resetDrawer = useCallback(() => {
+    drawerProgress.setValue(0)
+    setDrawerOpen(false)
+    setDrawerGestureActive(false)
+  }, [drawerProgress])
+  const openDrawer = useCallback(() => {
+    setDrawerGestureActive(false)
+    setDrawerOpen(true)
+    Animated.timing(drawerProgress, {
+      toValue: 1,
+      duration: 230,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start()
+  }, [drawerProgress])
+  const closeDrawer = useCallback(() => {
+    Animated.timing(drawerProgress, {
+      toValue: 0,
+      duration: 170,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (!finished) return
+      resetDrawer()
+    })
+  }, [drawerProgress, resetDrawer])
+  const nativeDrawerSwipe = isNativeApp && !isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && !isApiKeysPage && !isProfilePage && !isSearchPage
+  const openSwipeHandlers = useNativeDrawerOpenSwipe({
+    enabled: nativeDrawerSwipe,
+    drawerWidth: nativeDrawerWidth,
+    drawerProgress,
+    isOpen: drawerOpen,
+    onOpenChange: setDrawerOpen,
+    onGestureChange: setDrawerGestureActive,
+  })
 
   useEffect(() => {
     if (!isWide) return
-    drawerProgress.setValue(0)
-    setDrawerOpen(false)
-  }, [drawerProgress, isWide])
+    resetDrawer()
+  }, [isWide, resetDrawer])
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return
@@ -200,30 +238,33 @@ export default function AppLayout() {
   const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
   const nativeHomeChrome = isNativeApp && isHomePage && !isIdeEmbed
   const shouldShiftHomeForDrawer = nativeHomeChrome
+  const drawerVisible = drawerOpen || drawerGestureActive
   const drawerContentStyle = shouldShiftHomeForDrawer
-    ? {
-        transform: [
-          {
-            translateX: drawerProgress.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0, Math.min(64, Math.max(48, width * 0.14))],
-            }),
-          },
-          {
-            scale: drawerProgress.interpolate({
-              inputRange: [0, 1],
-              outputRange: [1, 0.97],
-            }),
-          },
-        ],
-      }
+    ? drawerVisible
+      ? {
+          transform: [
+            {
+              translateX: drawerProgress.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, Math.min(64, Math.max(48, width * 0.14))],
+              }),
+            },
+            {
+              scale: drawerProgress.interpolate({
+                inputRange: [0, 1],
+                outputRange: [1, 0.97],
+              }),
+            },
+          ],
+        }
+      : { transform: [{ translateX: 0 }, { scale: 1 }] }
     : undefined
 
   return (
     <DomainProvider>
       <SafeAreaView
-        className={nativeHomeChrome ? "flex-1 bg-card" : "flex-1 bg-background"}
-        edges={nativeHomeChrome ? ['top', 'left', 'right'] : undefined}
+        className="flex-1 bg-background"
+        edges={nativeHomeChrome ? ['left', 'right'] : undefined}
       >
         <View className="flex-1 flex-row">
           {showSidebar && <AppSidebar />}
@@ -235,17 +276,19 @@ export default function AppLayout() {
             content width. Pass `flex: 1` via `style` instead, which works
             regardless of NativeWind interop registration.
           */}
-          <Animated.View style={[{ flex: 1 }, drawerContentStyle]}>
-            {!isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && <AppHeader onMenuPress={openDrawer} />}
-            <View className="flex-1">
-              {localMode && !isIdeEmbed && <RecordingIndicator />}
-              <Slot />
-            </View>
-          </Animated.View>
+          <View style={{ flex: 1 }} collapsable={false} {...openSwipeHandlers}>
+            <Animated.View style={[{ flex: 1 }, drawerContentStyle]}>
+              {!isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && !isApiKeysPage && !isProfilePage && !isSearchPage && <AppHeader onMenuPress={openDrawer} />}
+              <View className="flex-1">
+                {localMode && !isIdeEmbed && <RecordingIndicator />}
+                <Slot />
+              </View>
+            </Animated.View>
+          </View>
         </View>
 
         {!isWide && (
-          <AppSidebar isOpen={drawerOpen} onClose={closeDrawer} drawerProgress={drawerProgress} />
+          <AppSidebar isOpen={drawerOpen} visible={drawerVisible} onClose={closeDrawer} drawerProgress={drawerProgress} />
         )}
       </SafeAreaView>
     </DomainProvider>

@@ -121,7 +121,7 @@ export function AlwaysOnSection({
   const control = !planAllowsAlwaysOn ? (
     <Pressable onPress={goToBilling} className="flex-row items-center gap-3">
       <Zap size={16} className="text-muted-foreground" />
-      <View className="flex-1">
+      <View className="flex-1 min-w-0">
         <View className="flex-row items-center gap-2">
           <Text className="text-sm font-medium text-foreground">Always on</Text>
           <View className="rounded px-1.5 bg-primary/10">
@@ -137,7 +137,7 @@ export function AlwaysOnSection({
   ) : (
     <>
       <View className="flex-row items-center justify-between">
-        <View className="flex-1 pr-3">
+        <View className="flex-1 min-w-0 pr-3">
           <View className="flex-row items-center gap-1.5">
             <Zap size={14} className="text-foreground" />
             <Text className="text-sm font-medium text-foreground">Always on</Text>

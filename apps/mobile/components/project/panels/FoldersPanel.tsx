@@ -39,6 +39,7 @@ import {
 } from 'lucide-react-native'
 import { useDomainHttp, useProjectCollection } from '../../../contexts/domain'
 import { api, API_URL } from '../../../lib/api'
+import { useNativePhoneWindow, nativeContentWidth, NATIVE_PHONE_SECTION_INSET } from '../../../lib/native-phone-layout'
 
 interface ProjectFolder {
   id: string
@@ -77,6 +78,8 @@ interface FoldersPanelProps {
 export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps) {
   const http = useDomainHttp()
   const projectCollection = useProjectCollection()
+  const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const contentWidth = comfortable ? nativeContentWidth(pageWidth) : 0
   const [project, setProject] = useState<ProjectShape | null>(null)
   const [attachments, setAttachments] = useState<AttachmentShape[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -360,17 +363,29 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
     <View
       testID="folders-panel"
       className="absolute inset-0 flex-col bg-background"
-      style={{ display: visible ? 'flex' : 'none' }}
+      style={{
+        display: visible ? 'flex' : 'none',
+        ...(comfortable ? { width: pageWidth, maxWidth: pageWidth } : null),
+      }}
     >
-      <View className="px-4 py-3 border-b border-border flex-row items-center justify-between">
-        <View className="flex-row items-center gap-2">
-          <FolderTree size={16} className="text-muted-foreground" />
-          <Text className="text-sm font-semibold text-foreground">Folders & projects</Text>
+      <View
+        className={cn('border-b border-border flex-row items-center justify-between gap-2', comfortable ? 'px-4 py-3.5' : 'px-4 py-3')}
+        style={comfortable ? { width: pageWidth } : undefined}
+      >
+        <View className={comfortable ? undefined : 'flex-1 min-w-0 flex-row items-center gap-2'} style={comfortable ? { flexDirection: 'row', alignItems: 'center', gap: 8, width: pageWidth - 32 } : undefined}>
+          <FolderTree size={comfortable ? 20 : 16} className="text-muted-foreground" />
+          <Text
+            className={cn('font-semibold text-foreground', comfortable ? 'text-lg' : 'text-sm flex-1')}
+            numberOfLines={1}
+            style={comfortable ? { width: Math.max(0, pageWidth - 32 - 28) } : undefined}
+          >
+            Folders & projects
+          </Text>
         </View>
         {restarting ? (
           <View testID="runtime-restarting" className="flex-row items-center gap-1.5">
             <ActivityIndicator size="small" />
-            <Text className="text-[11px] text-muted-foreground">Restarting context…</Text>
+            <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-[11px]')}>Restarting context…</Text>
           </View>
         ) : null}
       </View>
@@ -380,13 +395,21 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
           <ActivityIndicator size="small" />
         </View>
       ) : (
-        <ScrollView className="flex-1" contentContainerClassName="pb-6">
+        <ScrollView
+          className="flex-1"
+          style={comfortable ? { width: pageWidth } : undefined}
+          contentContainerStyle={{
+            paddingBottom: comfortable ? 40 : 24,
+            flexGrow: 1,
+            width: comfortable ? pageWidth : undefined,
+          }}
+        >
           {/* Trust banner (external only). */}
           {isExternal ? (
             project?.trustLevel === 'restricted' ? (
               <View className="mx-4 mt-3 rounded-lg border border-amber-300/50 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 flex-row items-start gap-2">
                 <ShieldAlert size={16} className="text-amber-600 mt-0.5" />
-                <View className="flex-1">
+                <View className="flex-1 min-w-0">
                   <Text className="text-xs font-medium text-amber-800 dark:text-amber-200">
                     Workspace is restricted
                   </Text>
@@ -426,14 +449,14 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
           ) : null}
 
           {/* ─── Linked folders ─────────────────────────────────────── */}
-          <View className="px-4 mt-4">
-            <View className="flex-row items-center justify-between mb-2">
+          <View className={cn('w-full px-4', comfortable ? 'mt-5' : 'mt-4')}>
+            <View className={cn(comfortable ? 'mb-3 gap-2' : 'flex-row items-center justify-between mb-2')}>
               <View className="flex-row items-center gap-1.5">
-                <Folder size={13} className="text-muted-foreground" />
-                <Text className="text-xs font-semibold text-foreground">Linked folders</Text>
+                <Folder size={comfortable ? 18 : 13} className="text-muted-foreground" />
+                <Text className={cn('font-semibold text-foreground', comfortable ? 'text-base' : 'text-xs')}>Linked folders</Text>
                 {folders.length > 0 ? (
                   <View className="bg-muted rounded-full px-1.5 py-0.5">
-                    <Text className="text-[10px] font-medium text-muted-foreground">{folders.length}</Text>
+                    <Text className={cn('font-medium text-muted-foreground', comfortable ? 'text-xs' : 'text-[10px]')}>{folders.length}</Text>
                   </View>
                 ) : null}
               </View>
@@ -443,17 +466,19 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                   onPress={handleAddFolder}
                   disabled={busy !== null}
                   className={cn(
-                    'flex-row items-center gap-1.5 rounded-lg px-2.5 py-1',
+                    'flex-row items-center gap-1.5 rounded-lg',
+                    comfortable ? 'h-12 w-full justify-center px-4' : 'px-2.5 py-1',
                     busy === 'add-folder' ? 'bg-muted' : 'bg-primary active:opacity-80',
                   )}
                 >
                   <FolderPlus
-                    size={13}
+                    size={comfortable ? 18 : 13}
                     className={busy === 'add-folder' ? 'text-muted-foreground' : 'text-primary-foreground'}
                   />
                   <Text
                     className={cn(
-                      'text-[11px] font-medium',
+                      'font-medium',
+                      comfortable ? 'text-base' : 'text-[11px]',
                       busy === 'add-folder' ? 'text-muted-foreground' : 'text-primary-foreground',
                     )}
                   >
@@ -464,8 +489,18 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
             </View>
 
             {folders.length === 0 ? (
-              <View className="rounded-lg border border-dashed border-border px-4 py-5 items-center">
-                <Text className="text-[11px] text-muted-foreground text-center">
+              <View
+                className="rounded-lg border border-dashed border-border"
+                style={{
+                  alignSelf: 'stretch',
+                  paddingHorizontal: 16,
+                  paddingVertical: comfortable ? 24 : 20,
+                }}
+              >
+                <Text
+                  className={cn('text-muted-foreground', comfortable ? 'text-base' : 'text-[11px]')}
+                  style={comfortable ? { width: Math.max(0, contentWidth - NATIVE_PHONE_SECTION_INSET), flexShrink: 1 } : { flexShrink: 1 }}
+                >
                   {desktop?.pickFolders
                     ? 'No folders linked. Add a folder on your machine to give the agent access.'
                     : 'Folder linking is available in the Shogo desktop app.'}
@@ -477,7 +512,10 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                   <View
                     key={folder.id}
                     testID={`linked-folder-${folder.id}`}
-                    className="rounded-lg border border-border bg-card px-3 py-2.5 flex-row items-start gap-2"
+                    className={cn(
+                      'rounded-lg border border-border bg-card flex-row items-start gap-2',
+                      comfortable ? 'px-4 py-3.5' : 'px-3 py-2.5',
+                    )}
                   >
                     <View className="mt-0.5">
                       {folder.isPrimary ? (
@@ -486,9 +524,9 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                         <Folder size={16} className="text-muted-foreground" />
                       )}
                     </View>
-                    <View className="flex-1">
+                    <View className="flex-1 min-w-0">
                       <View className="flex-row items-center gap-2">
-                        <Text className="text-xs font-medium text-foreground" numberOfLines={1}>
+                        <Text className={cn('flex-1 font-medium text-foreground', comfortable ? 'text-base' : 'text-xs')} numberOfLines={1}>
                           {basename(folder.path)}
                         </Text>
                         {folder.isPrimary ? (
@@ -499,7 +537,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                           </View>
                         ) : null}
                       </View>
-                      <Text className="text-[11px] text-muted-foreground font-mono mt-0.5" numberOfLines={1}>
+                      <Text className={cn('text-muted-foreground font-mono mt-0.5', comfortable ? 'text-sm' : 'text-[11px]')} numberOfLines={1}>
                         {folder.path}
                       </Text>
                     </View>
@@ -531,7 +569,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                           {busy === `remove-folder-${folder.id}` ? (
                             <ActivityIndicator size="small" />
                           ) : (
-                            <Trash2 size={13} className="text-destructive" />
+                            <Trash2 size={comfortable ? 18 : 13} className="text-destructive" />
                           )}
                         </Pressable>
                       ) : null}
@@ -543,14 +581,14 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
           </View>
 
           {/* ─── Attached projects ──────────────────────────────────── */}
-          <View className="px-4 mt-5">
-            <View className="flex-row items-center justify-between mb-2">
+          <View className={cn('w-full px-4', comfortable ? 'mt-6' : 'mt-5')}>
+            <View className={cn(comfortable ? 'mb-3 gap-2' : 'flex-row items-center justify-between mb-2')}>
               <View className="flex-row items-center gap-1.5">
-                <Boxes size={13} className="text-muted-foreground" />
-                <Text className="text-xs font-semibold text-foreground">Attached projects</Text>
+                <Boxes size={comfortable ? 18 : 13} className="text-muted-foreground" />
+                <Text className={cn('font-semibold text-foreground', comfortable ? 'text-base' : 'text-xs')}>Attached projects</Text>
                 {attachments.length > 0 ? (
                   <View className="bg-muted rounded-full px-1.5 py-0.5">
-                    <Text className="text-[10px] font-medium text-muted-foreground">{attachments.length}</Text>
+                    <Text className={cn('font-medium text-muted-foreground', comfortable ? 'text-xs' : 'text-[10px]')}>{attachments.length}</Text>
                   </View>
                 ) : null}
               </View>
@@ -558,10 +596,13 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                 testID="attachments-add-project"
                 onPress={() => setPickerOpen((v) => !v)}
                 disabled={busy !== null}
-                className="flex-row items-center gap-1.5 rounded-lg bg-primary px-2.5 py-1 active:opacity-80"
+                className={cn(
+                  'flex-row items-center gap-1.5 rounded-lg bg-primary active:opacity-80',
+                  comfortable ? 'h-12 w-full justify-center px-4' : 'px-2.5 py-1',
+                )}
               >
-                <Plus size={13} className="text-primary-foreground" />
-                <Text className="text-[11px] font-medium text-primary-foreground">Add project</Text>
+                <Plus size={comfortable ? 18 : 13} className="text-primary-foreground" />
+                <Text className={cn('font-medium text-primary-foreground', comfortable ? 'text-base' : 'text-[11px]')}>Add project</Text>
               </Pressable>
             </View>
 
@@ -571,8 +612,11 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                 className="mb-2 rounded-lg border border-border bg-card overflow-hidden"
               >
                 {attachCandidates.length === 0 ? (
-                  <View className="px-3 py-4 items-center">
-                    <Text className="text-[11px] text-muted-foreground text-center">
+                  <View className={cn(comfortable ? 'px-4 py-5' : 'px-3 py-4')}>
+                    <Text
+                      className={cn('text-muted-foreground', comfortable ? 'text-base' : 'text-[11px]')}
+                      style={comfortable ? { width: Math.max(0, contentWidth - NATIVE_PHONE_SECTION_INSET), flexShrink: 1 } : { flexShrink: 1 }}
+                    >
                       No other projects in this workspace to attach.
                     </Text>
                   </View>
@@ -583,10 +627,13 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                       testID={`attach-pick-${p.id}`}
                       onPress={() => handleAttachProject(p.id)}
                       disabled={busy !== null}
-                      className="flex-row items-center gap-2 px-3 py-2.5 border-b border-border active:bg-muted"
+                      className={cn(
+                        'flex-row items-center gap-2 border-b border-border active:bg-muted',
+                        comfortable ? 'min-h-12 px-4 py-3' : 'px-3 py-2.5',
+                      )}
                     >
-                      <Boxes size={14} className="text-muted-foreground" />
-                      <Text className="text-xs text-foreground flex-1" numberOfLines={1}>
+                      <Boxes size={comfortable ? 18 : 14} className="text-muted-foreground" />
+                      <Text className={cn('text-foreground flex-1', comfortable ? 'text-base' : 'text-xs')} numberOfLines={1}>
                         {p.name || p.id}
                       </Text>
                       {busy === `attach-${p.id}` ? <ActivityIndicator size="small" /> : null}
@@ -597,8 +644,18 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
             ) : null}
 
             {attachments.length === 0 ? (
-              <View className="rounded-lg border border-dashed border-border px-4 py-5 items-center">
-                <Text className="text-[11px] text-muted-foreground text-center">
+              <View
+                className="rounded-lg border border-dashed border-border"
+                style={{
+                  alignSelf: 'stretch',
+                  paddingHorizontal: 16,
+                  paddingVertical: comfortable ? 24 : 20,
+                }}
+              >
+                <Text
+                  className={cn('text-muted-foreground', comfortable ? 'text-base' : 'text-[11px]')}
+                  style={comfortable ? { width: Math.max(0, contentWidth - NATIVE_PHONE_SECTION_INSET), flexShrink: 1 } : { flexShrink: 1 }}
+                >
                   Attach another project to read and edit across both in the same chat.
                 </Text>
               </View>
@@ -608,14 +665,17 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                   <View
                     key={att.id}
                     testID={`attached-project-${att.attachedProjectId}`}
-                    className="rounded-lg border border-border bg-card px-3 py-2.5 flex-row items-center gap-2"
+                    className={cn(
+                      'rounded-lg border border-border bg-card flex-row items-center gap-2',
+                      comfortable ? 'px-4 py-3.5' : 'px-3 py-2.5',
+                    )}
                   >
                     <Boxes size={16} className="text-muted-foreground" />
-                    <View className="flex-1">
-                      <Text className="text-xs font-medium text-foreground" numberOfLines={1}>
+                    <View className="flex-1 min-w-0">
+                      <Text className={cn('font-medium text-foreground', comfortable ? 'text-base' : 'text-xs')} numberOfLines={1}>
                         {att.attachedProjectName || att.attachedProjectId}
                       </Text>
-                      <Text className="text-[10px] text-muted-foreground mt-0.5">
+                      <Text className={cn('text-muted-foreground mt-0.5', comfortable ? 'text-sm' : 'text-[10px]')}>
                         {att.attachMode === 'readonly' ? 'Read-only' : 'Read / write'}
                       </Text>
                     </View>
@@ -630,7 +690,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                       disabled={busy !== null}
                       className="rounded-md px-2 py-1 active:bg-muted"
                     >
-                      <Text className="text-[10px] text-muted-foreground underline">
+                      <Text className={cn('text-muted-foreground underline', comfortable ? 'text-sm' : 'text-[10px]')}>
                         {att.attachMode === 'readonly' ? 'Allow edits' : 'Make read-only'}
                       </Text>
                     </Pressable>
@@ -643,7 +703,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                       {busy === `detach-${att.attachedProjectId}` ? (
                         <ActivityIndicator size="small" />
                       ) : (
-                        <Trash2 size={13} className="text-destructive" />
+                        <Trash2 size={comfortable ? 18 : 13} className="text-destructive" />
                       )}
                     </Pressable>
                   </View>

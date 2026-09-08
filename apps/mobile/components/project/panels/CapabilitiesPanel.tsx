@@ -2,6 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
+import { useNativePhoneWindow, nativeContentWidth, NATIVE_PHONE_SECTION_INSET } from '../../../lib/native-phone-layout'
+
+const AGENT_TYPE_ICON = 22
+const STACK_ICON_BOX = 44
+const ROW_GAP = 12
 import {
   Globe,
   Monitor,
@@ -277,6 +282,10 @@ export function CapabilitiesConfigPane({
   selectedModel: controlledModelId,
   onModelChange: controlledOnModelChange,
 }: CapabilitiesConfigPaneProps) {
+  const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const stackWidth = comfortable ? nativeContentWidth(pageWidth) : 0
+  const typeTextWidth = Math.max(0, stackWidth - NATIVE_PHONE_SECTION_INSET - AGENT_TYPE_ICON - ROW_GAP)
+  const stackTextWidth = Math.max(0, stackWidth - NATIVE_PHONE_SECTION_INSET - STACK_ICON_BOX - ROW_GAP)
   const { localMode } = usePlatformConfig()
   const canSelectAllModels = localMode || isPaidPlan
   const [expandedCap, setExpandedCap] = useState<string | null>(null)
@@ -436,11 +445,19 @@ export function CapabilitiesConfigPane({
   const enabledCount = CAPABILITIES.filter(c => capabilities[c.key]).length
 
   return (
-    <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 24 }}>
+    <ScrollView
+      style={comfortable ? { width: pageWidth, flex: 1 } : undefined}
+      className={comfortable ? undefined : 'flex-1'}
+      contentContainerStyle={{
+        paddingBottom: comfortable ? 40 : 24,
+        flexGrow: 1,
+        width: comfortable ? pageWidth : undefined,
+      }}
+    >
       {/* Agent type selector */}
-      <View className="px-4 pt-3 pb-1">
-        <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Agent Type</Text>
-        <View className="flex-row gap-2">
+      <View style={{ width: comfortable ? pageWidth : '100%', paddingHorizontal: 16, paddingBottom: 4, paddingTop: comfortable ? 16 : 12 }}>
+        <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground mb-2', comfortable ? 'text-xs' : 'text-[10px]')}>Agent Type</Text>
+        <View style={comfortable ? { width: stackWidth, gap: 8 } : undefined} className={comfortable ? undefined : 'flex-row gap-2'}>
           {AGENT_TYPES.map(({ mode, label, description, icon: Icon }) => {
             const isActive = activeMode === mode
             return (
@@ -448,20 +465,42 @@ export function CapabilitiesConfigPane({
                 key={mode}
                 onPress={() => onModeChange?.(mode)}
                 className={cn(
-                  'flex-1 border rounded-lg px-3 py-2.5 items-center gap-1.5',
+                  'border rounded-lg',
                   isActive
                     ? 'border-primary bg-primary/10'
                     : 'border-border active:bg-muted',
                 )}
+                style={
+                  comfortable
+                    ? {
+                        width: stackWidth,
+                        minHeight: 72,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 12,
+                        paddingHorizontal: 16,
+                        paddingVertical: 14,
+                      }
+                    : { flex: 1, paddingHorizontal: 12, paddingVertical: 10, alignItems: 'center', gap: 6 }
+                }
               >
-                <Icon size={18} className={isActive ? 'text-primary' : 'text-muted-foreground'} />
-                <Text className={cn(
-                  'text-xs font-semibold',
-                  isActive ? 'text-primary' : 'text-foreground',
-                )}>
-                  {label}
-                </Text>
-                <Text className="text-[10px] text-muted-foreground text-center">{description}</Text>
+                <Icon size={comfortable ? 22 : 18} className={isActive ? 'text-primary' : 'text-muted-foreground'} />
+                <View style={comfortable ? { width: typeTextWidth } : undefined}>
+                  <Text className={cn(
+                    'font-semibold',
+                    comfortable ? 'text-base' : 'text-xs',
+                    isActive ? 'text-primary' : 'text-foreground',
+                    !comfortable && 'text-center',
+                  )}>
+                    {label}
+                  </Text>
+                  <Text
+                    className={cn('text-muted-foreground', comfortable ? 'text-sm mt-0.5' : 'text-[10px] text-center')}
+                    style={comfortable ? { width: typeTextWidth } : undefined}
+                  >
+                    {description}
+                  </Text>
+                </View>
               </Pressable>
             )
           })}
@@ -470,13 +509,23 @@ export function CapabilitiesConfigPane({
 
       {/* Tech Stack selector */}
       {techStacks.length > 0 && (
-        <View className="px-4 pt-3 pb-1">
-          <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Tech Stack</Text>
-          <View className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3">
-            <View className="w-8 h-8 rounded-md items-center justify-center bg-primary/10">
-              <Layers size={15} className="text-primary" />
+        <View style={{ width: comfortable ? pageWidth : '100%', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 }}>
+          <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground mb-2', comfortable ? 'text-xs' : 'text-[10px]')}>Tech Stack</Text>
+          <View
+            className="border border-border rounded-lg bg-background"
+            style={{
+              width: comfortable ? stackWidth : undefined,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 12,
+              paddingHorizontal: comfortable ? 16 : 12,
+              paddingVertical: comfortable ? 14 : 10,
+            }}
+          >
+            <View className={cn('rounded-md items-center justify-center bg-primary/10', comfortable ? 'h-11 w-11' : 'w-8 h-8')}>
+              <Layers size={comfortable ? 18 : 15} className="text-primary" />
             </View>
-            <View className="flex-1">
+            <View style={comfortable ? { width: stackTextWidth } : undefined} className={comfortable ? undefined : 'flex-1 min-w-0'}>
               <Text className="text-xs text-muted-foreground">Stack</Text>
               <Popover
                 placement="bottom left"
@@ -487,12 +536,17 @@ export function CapabilitiesConfigPane({
                   <Pressable
                     {...triggerProps}
                     onPress={() => setStackPickerOpen(prev => !prev)}
-                    className="flex-row items-center gap-1.5 mt-0.5"
+                    className={comfortable ? undefined : 'flex-row items-center gap-1.5 mt-0.5 min-w-0'}
+                    style={comfortable ? { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, width: stackTextWidth } : undefined}
                   >
-                    <Text className="text-sm font-medium text-foreground">
+                    <Text
+                      className={cn('font-medium text-foreground', comfortable ? 'text-base' : 'text-sm flex-1')}
+                      numberOfLines={1}
+                      style={comfortable ? { width: Math.max(0, stackTextWidth - 22) } : undefined}
+                    >
                       {techStacks.find(s => s.id === techStackId)?.name ?? 'None'}
                     </Text>
-                    <ChevronDown size={14} className="text-muted-foreground" />
+                    <ChevronDown size={comfortable ? 18 : 14} className="text-muted-foreground" />
                   </Pressable>
                 )}
               >
@@ -547,7 +601,7 @@ export function CapabilitiesConfigPane({
             <View className="mt-2 border border-destructive/40 bg-destructive/5 rounded-lg p-3">
               <View className="flex-row items-start gap-2">
                 <AlertTriangle size={14} className="text-destructive mt-0.5" />
-                <View className="flex-1">
+                <View className="flex-1 min-w-0">
                   <Text className="text-sm font-medium text-foreground mb-1">
                     Reset project to {pendingStackChange.name}?
                   </Text>
@@ -582,12 +636,22 @@ export function CapabilitiesConfigPane({
       )}
 
       {/* Model selector */}
-      <View className="px-4 pt-3 pb-1">
-        <View className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3">
-          <View className="w-8 h-8 rounded-md items-center justify-center bg-primary/10">
-            <Cpu size={15} className="text-primary" />
+      <View style={{ width: comfortable ? pageWidth : '100%', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 }}>
+        <View
+          className="border border-border rounded-lg"
+          style={{
+            width: comfortable ? stackWidth : undefined,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+            paddingHorizontal: comfortable ? 16 : 12,
+            paddingVertical: comfortable ? 14 : 10,
+          }}
+        >
+          <View className={cn('rounded-md items-center justify-center bg-primary/10', comfortable ? 'h-11 w-11' : 'w-8 h-8')}>
+            <Cpu size={comfortable ? 18 : 15} className="text-primary" />
           </View>
-          <View className="flex-1">
+          <View style={comfortable ? { width: stackTextWidth } : undefined} className={comfortable ? undefined : 'flex-1 min-w-0'}>
             <Text className="text-xs text-muted-foreground">Model</Text>
             <Popover
               placement="bottom left"
@@ -598,17 +662,22 @@ export function CapabilitiesConfigPane({
                 <Pressable
                   {...triggerProps}
                   onPress={() => setModelPickerOpen(prev => !prev)}
-                  className="flex-row items-center gap-1.5 mt-0.5"
+                  className={comfortable ? undefined : 'flex-row items-center gap-1.5 mt-0.5 min-w-0'}
+                  style={comfortable ? { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, width: stackTextWidth } : undefined}
                   disabled={modelUpdating}
                 >
                   {modelUpdating ? (
                     <ActivityIndicator size="small" />
                   ) : (
                     <>
-                      <Text className="text-sm font-medium text-foreground">
+                      <Text
+                        className={cn('font-medium text-foreground', comfortable ? 'text-base' : 'text-sm flex-1')}
+                        numberOfLines={1}
+                        style={comfortable ? { width: Math.max(0, stackTextWidth - 22) } : undefined}
+                      >
                         {resolvedModel?.displayName ?? currentModel?.name ?? 'Loading...'}
                       </Text>
-                      <ChevronDown size={14} className="text-muted-foreground" />
+                      <ChevronDown size={comfortable ? 18 : 14} className="text-muted-foreground" />
                     </>
                   )}
                 </Pressable>
@@ -690,27 +759,29 @@ export function CapabilitiesConfigPane({
       </View>
 
       {/* Advanced capabilities (collapsible) */}
-      <View className="px-4 pt-4">
+      <View style={{ width: comfortable ? pageWidth : undefined }} className={comfortable ? 'px-4 pt-4' : 'w-full px-4 pt-4'}>
         <Pressable
           onPress={() => setAdvancedOpen(prev => !prev)}
-          className="flex-row items-center gap-2 py-2"
+          className={comfortable ? undefined : 'flex-row items-center gap-2 py-2'}
+          style={comfortable ? { width: stackWidth, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 } : undefined}
         >
-          <Settings size={14} className="text-muted-foreground" />
-          <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex-1">
+          <Settings size={comfortable ? 18 : 14} className="text-muted-foreground" />
+          <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground', comfortable ? 'text-xs' : 'text-[10px] flex-1 min-w-0')}>
             Advanced
           </Text>
-          <Text className="text-[10px] text-muted-foreground mr-1">
+          <View style={comfortable ? { flexGrow: 1 } : undefined} />
+          <Text className={cn('text-muted-foreground mr-1', comfortable ? 'text-sm' : 'text-[10px]')}>
             {enabledCount}/{CAPABILITIES.length} enabled
           </Text>
           {advancedOpen ? (
-            <ChevronDown size={14} className="text-muted-foreground" />
+            <ChevronDown size={comfortable ? 18 : 14} className="text-muted-foreground" />
           ) : (
-            <ChevronRight size={14} className="text-muted-foreground" />
+            <ChevronRight size={comfortable ? 18 : 14} className="text-muted-foreground" />
           )}
         </Pressable>
 
         {advancedOpen && (
-          <View className="gap-2 pt-1">
+          <View className="gap-2 pt-1" style={comfortable ? { width: stackWidth } : undefined}>
             {CAPABILITIES.map((cap) => {
               const enabled = capabilities[cap.key]
               const isExpanded = expandedCap === cap.key
@@ -738,9 +809,9 @@ export function CapabilitiesConfigPane({
                       )}>
                         <Icon size={15} className={enabled ? 'text-primary' : 'text-muted-foreground'} />
                       </View>
-                      <View className="flex-1">
+                      <View className="flex-1 min-w-0">
                         <View className="flex-row items-center gap-2">
-                          <Text className="text-sm font-medium text-foreground">{cap.label}</Text>
+                          <Text className="text-sm font-medium text-foreground flex-1" numberOfLines={1}>{cap.label}</Text>
                           {cap.badgeLabel === 'Beta' ? (
                             <View className="px-1.5 py-0.5 rounded bg-amber-500/15">
                               <Text className="text-[9px] font-semibold uppercase tracking-wide text-amber-600">Beta</Text>

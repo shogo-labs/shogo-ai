@@ -18,6 +18,7 @@ import {
   TextInput,
   Platform,
   Modal,
+  StyleSheet,
   type StyleProp,
   type ViewStyle,
 } from 'react-native'
@@ -28,6 +29,7 @@ import {
   PopoverContent,
 } from '@/components/ui/popover'
 import { useRouter } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   ArrowLeft,
   PanelLeftClose,
@@ -70,6 +72,7 @@ import {
   History,
   ShieldAlert,
   ShieldCheck,
+  Share2,
 } from 'lucide-react-native'
 import { cn, Badge } from '@shogo/shared-ui/primitives'
 import type { UsageWindows } from '@shogo/shared-app/hooks'
@@ -213,6 +216,119 @@ function useWebTitle(title?: string) {
     }
   }, [title])
   return ref
+}
+
+function NativeCircleButton({
+  icon: Icon,
+  onPress,
+  accessibilityLabel,
+  testID,
+  active,
+}: {
+  icon: React.ElementType
+  onPress: () => void
+  accessibilityLabel: string
+  testID?: string
+  active?: boolean
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={4}
+      testID={testID}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+      className={cn(
+        'h-10 w-10 items-center justify-center rounded-full',
+        active ? 'bg-primary' : 'bg-muted',
+      )}
+    >
+      <Icon size={20} className={active ? 'text-primary-foreground' : 'text-foreground'} />
+    </Pressable>
+  )
+}
+
+function NativeBottomSheet({
+  visible,
+  onClose,
+  children,
+  maxHeightFraction = 0.78,
+}: {
+  visible: boolean
+  onClose: () => void
+  children: React.ReactNode
+  maxHeightFraction?: number
+}) {
+  const { height } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={onClose}
+    >
+      <View style={styles.sheetRoot}>
+        <Pressable
+          style={styles.sheetBackdrop}
+          onPress={onClose}
+          accessibilityLabel="Dismiss"
+          accessibilityRole="button"
+        />
+        <View
+          className="w-full rounded-t-3xl border border-border border-b-0 bg-card"
+          style={{
+            maxHeight: Math.round(height * maxHeightFraction),
+            paddingBottom: Math.max(insets.bottom, 16),
+          }}
+        >
+          <View className="items-center pt-2 pb-1">
+            <View className="h-1 w-11 rounded-full bg-muted-foreground/35" />
+          </View>
+          {children}
+        </View>
+      </View>
+    </Modal>
+  )
+}
+
+const styles = StyleSheet.create({
+  sheetRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  sheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+})
+
+function NativeSheetCircleAction({
+  icon: Icon,
+  label,
+  onPress,
+  active,
+}: {
+  icon: React.ElementType
+  label: string
+  onPress: () => void
+  active?: boolean
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={8}
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      className="min-w-[64px] items-center gap-1.5 py-1"
+    >
+      <View className="h-12 w-12 items-center justify-center rounded-full bg-muted">
+        <Icon size={20} className={active ? 'text-primary' : 'text-foreground'} />
+      </View>
+      <Text className="text-[11px] text-muted-foreground">{label}</Text>
+    </Pressable>
+  )
 }
 
 function BarIconButton({
@@ -424,6 +540,8 @@ export function ProjectTopBar({
   const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
   const [showDropdown, setShowDropdown] = useState(false)
   const [dropdownKey, setDropdownKey] = useState(0)
+  const [showProjectSheet, setShowProjectSheet] = useState(false)
+  const [showTabsSheet, setShowTabsSheet] = useState(false)
   const [showNarrowMore, setShowNarrowMore] = useState(false)
   const [chatMoreOpen, setChatMoreOpen] = useState(false)
   const [chatRenameOpen, setChatRenameOpen] = useState(false)
@@ -435,6 +553,7 @@ export function ProjectTopBar({
 
   const handleProjectSelect = useCallback((selectedId: string) => {
     setShowDropdown(false)
+    setShowProjectSheet(false)
     if (selectedId === projectId) return
     if (onProjectSwitch) {
       onProjectSwitch(selectedId)
@@ -558,6 +677,171 @@ export function ProjectTopBar({
   }
 
   if (!isWide) {
+    if (isNativePhone) {
+      const onChat = narrowActiveTab === 'chat'
+      const projectMenu = (
+        <ProjectDropdownContent
+          key={dropdownKey}
+          variant="sheet"
+          sheetVisible={showProjectSheet}
+          projects={projects}
+          currentProjectId={projectId}
+          projectName={projectName}
+          onSelect={handleProjectSelect}
+          onGoToDashboard={handleBack}
+          onClose={() => setShowProjectSheet(false)}
+          workspaceName={workspaceName}
+          planLabel={planLabel}
+          usageWindows={usageWindows}
+          usageOverage={usageOverage}
+          ownerName={ownerName}
+          projectCreatedAt={projectCreatedAt}
+          projectModifiedAt={projectModifiedAt}
+          isStarred={isStarred}
+          onRenameProject={onRenameProject}
+          onToggleStar={onToggleStar}
+          onMoveToFolder={onMoveToFolder}
+          folders={folders}
+          canvasThemeSupported={canvasThemeSupported}
+        />
+      )
+      return (
+        <>
+          <View className="h-14 bg-background">
+            <Pressable
+              onPress={() => {
+                setDropdownKey((k) => k + 1)
+                setShowProjectSheet(true)
+              }}
+              className="absolute top-0 bottom-0 items-center justify-center px-2"
+              style={{ left: 52, right: onChat ? 52 : 100 }}
+              accessibilityLabel={`${projectName}. Project options`}
+              accessibilityRole="button"
+              testID="project-switcher-trigger"
+            >
+              <Text
+                className="text-[17px] font-semibold text-foreground text-center"
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {projectName}
+              </Text>
+            </Pressable>
+            <View className="flex-1 flex-row items-center justify-between px-3" pointerEvents="box-none">
+              <NativeCircleButton
+                icon={ChevronLeft}
+                onPress={handleBack}
+                accessibilityLabel="Back to home"
+                testID="project-native-back"
+              />
+              <View className="flex-row items-center gap-2">
+                {showTrustBadge && (
+                  <TrustBadge
+                    trustLevel={trustLevel!}
+                    onToggle={onToggleTrust!}
+                    busy={trustBusy}
+                    compact
+                  />
+                )}
+                {!onChat && (
+                  <NativeCircleButton
+                    icon={MessageSquare}
+                    onPress={() => handleTabPress('chat-fullscreen')}
+                    accessibilityLabel="Chat"
+                    testID="project-native-chat"
+                  />
+                )}
+                <NativeCircleButton
+                  icon={MoreHorizontal}
+                  onPress={() => setShowTabsSheet(true)}
+                  accessibilityLabel="Project tabs"
+                  testID="project-native-more"
+                />
+              </View>
+            </View>
+          </View>
+
+          <NativeBottomSheet
+            visible={showTabsSheet}
+            onClose={() => setShowTabsSheet(false)}
+            maxHeightFraction={0.62}
+          >
+            <View className="flex-row items-center px-4 pb-2">
+              <NativeCircleButton
+                icon={X}
+                onPress={() => setShowTabsSheet(false)}
+                accessibilityLabel="Close"
+              />
+            </View>
+            <ScrollView
+              bounces={false}
+              keyboardShouldPersistTaps="handled"
+              className="px-2"
+            >
+              {narrowPrimaryTabs.filter((tab) => tab.id !== 'chat-fullscreen').map((tab) => {
+                const Icon = tab.icon
+                const active = getTabActive(tab.id)
+                return (
+                  <Pressable
+                    key={tab.id}
+                    onPress={() => {
+                      handleTabPress(tab.id)
+                      setShowTabsSheet(false)
+                    }}
+                    className={cn(
+                      'flex-row items-center gap-3 rounded-2xl px-3 py-3.5 min-h-14',
+                      active ? 'bg-muted' : 'active:bg-muted/60',
+                    )}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={tab.label}
+                  >
+                    <View className={cn(
+                      'h-10 w-10 items-center justify-center rounded-full',
+                      active ? 'bg-primary' : 'bg-background',
+                    )}>
+                      <Icon
+                        size={20}
+                        className={active ? 'text-primary-foreground' : 'text-foreground'}
+                      />
+                    </View>
+                    <Text className={cn(
+                      'flex-1 text-base',
+                      active ? 'font-semibold text-foreground' : 'text-foreground',
+                    )}>
+                      {tab.label}
+                    </Text>
+                    {active ? <Check size={18} className="text-primary" /> : null}
+                  </Pressable>
+                )
+              })}
+              {onOpenChatSessions ? (
+                <Pressable
+                  onPress={() => {
+                    setShowTabsSheet(false)
+                    if (!onChat) handleTabPress('chat-fullscreen')
+                    onOpenChatSessions()
+                  }}
+                  className={cn(
+                    'flex-row items-center gap-3 rounded-2xl px-3 py-3.5 min-h-14',
+                    chatSessionsOpen ? 'bg-muted' : 'active:bg-muted/60',
+                  )}
+                  accessibilityLabel={chatSessionsOpen ? 'Hide chat history' : 'Chat history'}
+                >
+                  <View className="h-10 w-10 items-center justify-center rounded-full bg-background">
+                    <History size={20} className="text-foreground" />
+                  </View>
+                  <Text className="flex-1 text-base text-foreground">Chat history</Text>
+                </Pressable>
+              ) : null}
+            </ScrollView>
+          </NativeBottomSheet>
+
+          {projectMenu}
+        </>
+      )
+    }
+
     return (
       <View
         className="h-10 bg-background/95 flex-row items-center px-2 web:sticky web:top-0"
@@ -1144,6 +1428,8 @@ function ProjectDropdownContent({
   onMoveToFolder,
   folders,
   canvasThemeSupported,
+  variant = 'popover',
+  sheetVisible = false,
 }: {
   projects: ProjectSwitcherItem[]
   currentProjectId: string
@@ -1164,101 +1450,26 @@ function ProjectDropdownContent({
   onMoveToFolder?: (folderId: string | null) => void
   folders: { id: string; name: string }[]
   canvasThemeSupported?: boolean | null
+  variant?: 'popover' | 'sheet'
+  sheetVisible?: boolean
 }) {
   const [view, setView] = useState<DropdownView>('menu')
   const router = useRouter()
-
-  if (view === 'switcher') {
-    return (
-      <ProjectSwitcherView
-        projects={projects}
-        currentProjectId={currentProjectId}
-        onSelect={onSelect}
-        onGoToDashboard={onGoToDashboard}
-        onBack={() => setView('menu')}
-      />
-    )
-  }
-
-  return (
-    <ProjectMenuView
-      projectId={currentProjectId}
-      projectName={projectName}
-      workspaceName={workspaceName}
-      planLabel={planLabel}
-      usageWindows={usageWindows}
-      usageOverage={usageOverage}
-      onGoToDashboard={onGoToDashboard}
-      onSwitchProject={() => setView('switcher')}
-      onClose={onClose}
-      router={router}
-      ownerName={ownerName}
-      projectCreatedAt={projectCreatedAt}
-      projectModifiedAt={projectModifiedAt}
-      isStarred={isStarred}
-      onRenameProject={onRenameProject}
-      onToggleStar={onToggleStar}
-      onMoveToFolder={onMoveToFolder}
-      folders={folders}
-      canvasThemeSupported={canvasThemeSupported}
-    />
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Panel 1: Main Menu (Lovable Screenshot 1)
-// ---------------------------------------------------------------------------
-
-function ProjectMenuView({
-  projectId,
-  projectName,
-  workspaceName,
-  planLabel,
-  usageWindows,
-  usageOverage,
-  onGoToDashboard,
-  onSwitchProject,
-  onClose,
-  router,
-  ownerName,
-  projectCreatedAt,
-  projectModifiedAt,
-  isStarred,
-  onRenameProject,
-  onToggleStar,
-  onMoveToFolder,
-  folders,
-  canvasThemeSupported,
-}: {
-  projectId: string
-  projectName: string
-  workspaceName: string
-  planLabel: string
-  usageWindows?: UsageWindows
-  usageOverage?: UsageOverageContext
-  onGoToDashboard: () => void
-  onSwitchProject: () => void
-  onClose: () => void
-  router: any
-  ownerName: string
-  projectCreatedAt?: string | number
-  projectModifiedAt?: string | number
-  isStarred: boolean
-  onRenameProject?: (newName: string) => void
-  onToggleStar?: () => void
-  onMoveToFolder?: (folderId: string | null) => void
-  folders: { id: string; name: string }[]
-  canvasThemeSupported?: boolean | null
-}) {
-  const isNative = Platform.OS !== 'web'
   const [showDetailsModal, setShowDetailsModal] = useState(false)
   const [showRenameModal, setShowRenameModal] = useState(false)
   const [showMoveModal, setShowMoveModal] = useState(false)
   const [showExportModal, setShowExportModal] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
-  const [isDownloadingZip, setIsDownloadingZip] = useState(false)
-  const { features } = usePlatformConfig()
-  const showBilling = features.billing
+  const isSheet = variant === 'sheet'
+
+  const presentOverlay = useCallback((open: () => void) => {
+    if (!isSheet) {
+      open()
+      return
+    }
+    onClose()
+    setTimeout(open, 320)
+  }, [isSheet, onClose])
 
   const runExport = useCallback(async (options: {
     includeChats: boolean
@@ -1267,7 +1478,7 @@ function ProjectMenuView({
     if (isExporting) return
     setIsExporting(true)
     try {
-      const { blob, filename } = await api.exportProjectBlob(projectId, {
+      const { blob, filename } = await api.exportProjectBlob(currentProjectId, {
         includeChats: options.includeChats,
         password: options.password,
       })
@@ -1313,71 +1524,190 @@ function ProjectMenuView({
     } finally {
       setIsExporting(false)
     }
-  }, [projectId, isExporting, onClose])
+  }, [currentProjectId, isExporting, onClose])
 
-  const handleExportProject = useCallback(() => {
-    setShowExportModal(true)
-  }, [])
+  const menu = (
+    <ProjectMenuView
+      projectId={currentProjectId}
+      projectName={projectName}
+      workspaceName={workspaceName}
+      planLabel={planLabel}
+      usageWindows={usageWindows}
+      usageOverage={usageOverage}
+      onGoToDashboard={onGoToDashboard}
+      onSwitchProject={() => setView('switcher')}
+      onClose={onClose}
+      router={router}
+      ownerName={ownerName}
+      projectCreatedAt={projectCreatedAt}
+      projectModifiedAt={projectModifiedAt}
+      isStarred={isStarred}
+      onRenameProject={onRenameProject}
+      onToggleStar={onToggleStar}
+      onMoveToFolder={onMoveToFolder}
+      folders={folders}
+      canvasThemeSupported={canvasThemeSupported}
+      variant={variant}
+      isExporting={isExporting}
+      onRequestRename={() => presentOverlay(() => setShowRenameModal(true))}
+      onRequestExport={() => presentOverlay(() => setShowExportModal(true))}
+      onRequestDetails={() => presentOverlay(() => setShowDetailsModal(true))}
+      onRequestMove={() => presentOverlay(() => setShowMoveModal(true))}
+    />
+  )
 
-  // Plain source ZIP — the "Download project (ZIP)" most users mean (no
-  // `.shogo` metadata). Routes through the source-only export, which is
-  // Kubernetes-safe (the legacy `GET /download` tar.gz route 404s in k8s).
-  const runSourceDownload = useCallback(async () => {
-    if (isDownloadingZip) return
-    setIsDownloadingZip(true)
-    try {
-      const { blob, filename } = await api.exportProjectBlob(projectId, {
-        sourceOnly: true,
-      })
+  const body = view === 'switcher' ? (
+    <ProjectSwitcherView
+      projects={projects}
+      currentProjectId={currentProjectId}
+      onSelect={onSelect}
+      onGoToDashboard={onGoToDashboard}
+      onBack={() => setView('menu')}
+    />
+  ) : menu
 
-      if (Platform.OS === 'web' && typeof document !== 'undefined') {
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = filename
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
-      } else if (Platform.OS !== 'web') {
-        const { documentDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
-        const Sharing = await import('expo-sharing')
-        const dir = documentDirectory
-        if (!dir) throw new Error('Could not access app storage')
-        const fileUri = `${dir}${filename}`
-        const arrayBuf = await blob.arrayBuffer()
-        const bytes = new Uint8Array(arrayBuf)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-        const base64 = btoa(binary)
-        await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
-        await Sharing.shareAsync(fileUri, {
-          mimeType: 'application/zip',
-          UTI: 'public.zip-archive' as any,
-          dialogTitle: 'Download Project',
-        })
-      }
-      onClose()
-    } catch (err: any) {
-      console.error('[ProjectTopBar] Source download failed:', err)
-      if (Platform.OS !== 'web') {
-        const { Alert } = await import('react-native')
-        Alert.alert('Download Failed', err.message || 'Failed to download project')
-      } else if (typeof window !== 'undefined') {
-        window.alert(`Download Failed: ${err?.message || 'Failed to download project'}`)
-      }
-    } finally {
-      setIsDownloadingZip(false)
-    }
-  }, [projectId, isDownloadingZip, onClose])
+  const overlays = (
+    <>
+      <ProjectDetailsModal
+        visible={showDetailsModal}
+        onClose={() => setShowDetailsModal(false)}
+        projectName={projectName}
+        workspaceName={workspaceName}
+        ownerName={ownerName}
+        createdAt={projectCreatedAt}
+        modifiedAt={projectModifiedAt}
+      />
+      <RenameProjectModal
+        visible={showRenameModal}
+        currentName={projectName}
+        onClose={() => setShowRenameModal(false)}
+        onRename={(newName) => {
+          onRenameProject?.(newName)
+          setShowRenameModal(false)
+          onClose()
+        }}
+      />
+      <MoveToFolderModal
+        visible={showMoveModal}
+        folders={folders}
+        onClose={() => setShowMoveModal(false)}
+        onMove={(folderId) => {
+          onMoveToFolder?.(folderId)
+          setShowMoveModal(false)
+          onClose()
+        }}
+      />
+      <ProjectExportModal
+        open={showExportModal}
+        onOpenChange={(o) => { if (!isExporting) setShowExportModal(o) }}
+        isExporting={isExporting}
+        onExport={runExport}
+      />
+    </>
+  )
+
+  if (isSheet) {
+    return (
+      <>
+        <NativeBottomSheet visible={sheetVisible} onClose={onClose}>
+          <View className="flex-row items-center px-4 pb-1">
+            <NativeCircleButton
+              icon={X}
+              onPress={onClose}
+              accessibilityLabel="Close"
+            />
+          </View>
+          <ScrollView
+            bounces={false}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+          >
+            {body}
+          </ScrollView>
+        </NativeBottomSheet>
+        {overlays}
+      </>
+    )
+  }
+
+  return (
+    <>
+      {body}
+      {overlays}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Panel 1: Main Menu (Lovable Screenshot 1)
+// ---------------------------------------------------------------------------
+
+function ProjectMenuView({
+  projectId,
+  projectName,
+  workspaceName,
+  planLabel,
+  usageWindows,
+  usageOverage,
+  onGoToDashboard,
+  onSwitchProject,
+  onClose,
+  router,
+  ownerName,
+  projectCreatedAt,
+  projectModifiedAt,
+  isStarred,
+  onRenameProject,
+  onToggleStar,
+  onMoveToFolder,
+  folders,
+  canvasThemeSupported,
+  variant = 'popover',
+  isExporting = false,
+  onRequestRename,
+  onRequestExport,
+  onRequestDetails,
+  onRequestMove,
+}: {
+  projectId: string
+  projectName: string
+  workspaceName: string
+  planLabel: string
+  usageWindows?: UsageWindows
+  usageOverage?: UsageOverageContext
+  onGoToDashboard: () => void
+  onSwitchProject: () => void
+  onClose: () => void
+  router: any
+  ownerName: string
+  projectCreatedAt?: string | number
+  projectModifiedAt?: string | number
+  isStarred: boolean
+  onRenameProject?: (newName: string) => void
+  onToggleStar?: () => void
+  onMoveToFolder?: (folderId: string | null) => void
+  folders: { id: string; name: string }[]
+  canvasThemeSupported?: boolean | null
+  variant?: 'popover' | 'sheet'
+  isExporting?: boolean
+  onRequestRename: () => void
+  onRequestExport: () => void
+  onRequestDetails: () => void
+  onRequestMove: () => void
+}) {
+  const isNative = Platform.OS !== 'web'
+  const { features } = usePlatformConfig()
+  const showBilling = features.billing
 
   const menuItems: {
+    id: string
     icon: React.ElementType
     label: string
     onPress: () => void
     trailing?: React.ReactNode
   }[] = [
     {
+      id: 'settings',
       icon: Settings,
       label: 'Settings',
       onPress: () => { onClose(); router.push('/(app)/settings' as any) },
@@ -1388,43 +1718,78 @@ function ProjectMenuView({
       ),
     },
     {
+      id: 'rename',
       icon: Pencil,
       label: 'Rename project',
-      onPress: () => { setShowRenameModal(true) },
+      onPress: onRequestRename,
     },
     {
+      id: 'star',
       icon: Star,
       label: isStarred ? 'Unstar project' : 'Star project',
       onPress: () => { onToggleStar?.(); onClose() },
     },
     {
+      id: 'move',
       icon: FolderInput,
       label: 'Move to folder',
-      onPress: () => { setShowMoveModal(true) },
+      onPress: onRequestMove,
     },
     {
+      id: 'details',
       icon: Info,
       label: 'Details',
-      onPress: () => { setShowDetailsModal(true) },
+      onPress: onRequestDetails,
     },
     {
+      id: 'export',
       icon: Upload,
       label: isExporting ? 'Exporting...' : 'Export project',
-      onPress: handleExportProject,
+      onPress: onRequestExport,
     },
   ]
+
+  const isSheet = variant === 'sheet'
+  const visibleMenuItems = isSheet
+    ? menuItems.filter((item) => item.id !== 'rename' && item.id !== 'star' && item.id !== 'export')
+    : menuItems
 
   return (
     <>
       <View>
-        {/* Go to Dashboard */}
-        <Pressable
-          onPress={onGoToDashboard}
-          className={cn('flex-row items-center gap-2 px-4 active:bg-muted border-b border-border', isNative ? 'min-h-12 py-3' : 'py-3')}
-        >
-          <ChevronLeft size={isNative ? 20 : 16} className="text-muted-foreground" />
-          <Text className={isNative ? "text-base font-medium text-foreground" : "text-sm font-medium text-foreground"}>Go to Dashboard</Text>
-        </Pressable>
+        {isSheet ? (
+          <>
+            <Text className="px-5 pt-1 pb-3 text-xl font-semibold text-foreground" numberOfLines={2}>
+              {projectName}
+            </Text>
+            <View className="flex-row items-center gap-4 px-5 pb-4">
+              <NativeSheetCircleAction
+                icon={Pencil}
+                label="Rename"
+                onPress={onRequestRename}
+              />
+              <NativeSheetCircleAction
+                icon={Star}
+                label={isStarred ? 'Unstar' : 'Star'}
+                onPress={() => { onToggleStar?.() }}
+                active={isStarred}
+              />
+              <NativeSheetCircleAction
+                icon={Share2}
+                label="Export"
+                onPress={onRequestExport}
+              />
+            </View>
+          </>
+        ) : (
+          <Pressable
+            onPress={onGoToDashboard}
+            className={cn('flex-row items-center gap-2 px-4 active:bg-muted border-b border-border', isNative ? 'min-h-12 py-3' : 'py-3')}
+          >
+            <ChevronLeft size={isNative ? 20 : 16} className="text-muted-foreground" />
+            <Text className={isNative ? "text-base font-medium text-foreground" : "text-sm font-medium text-foreground"}>Go to Dashboard</Text>
+          </Pressable>
+        )}
 
         {/* Workspace info + plan badge */}
         <Pressable
@@ -1452,12 +1817,13 @@ function ProjectMenuView({
                 )}
               </View>
             </View>
+            {isSheet ? <ChevronRight size={18} className="text-muted-foreground" /> : null}
           </View>
         </Pressable>
 
         {showBilling && (
           <View className="px-4 pb-3">
-            <View className="bg-card border border-border rounded-lg p-3 gap-2.5">
+            <View className={cn('border border-border rounded-lg p-3 gap-2.5', isSheet ? 'bg-muted' : 'bg-card')}>
               <Pressable
                 onPress={() => { onClose(); router.push('/(app)/billing' as any) }}
                 className="flex-row items-center justify-between"
@@ -1474,11 +1840,11 @@ function ProjectMenuView({
         <View className="h-px bg-border mx-3 my-1" />
 
         {/* Menu items */}
-        {menuItems.map((item) => {
+        {visibleMenuItems.map((item) => {
           const Icon = item.icon
           return (
             <Pressable
-              key={item.label}
+              key={item.id}
               onPress={item.onPress}
               className={cn('flex-row items-center gap-3 px-4 active:bg-muted', isNative ? 'min-h-12 py-3' : 'py-2.5')}
             >
@@ -1492,53 +1858,10 @@ function ProjectMenuView({
         {canvasThemeSupported !== false && (
           <>
             <View className="h-px bg-border mx-3 my-1" />
-            <AppearanceMenu />
+            <AppearanceMenu inline={isSheet} />
           </>
         )}
       </View>
-
-      {/* Project Details Modal */}
-      <ProjectDetailsModal
-        visible={showDetailsModal}
-        onClose={() => setShowDetailsModal(false)}
-        projectName={projectName}
-        workspaceName={workspaceName}
-        ownerName={ownerName}
-        createdAt={projectCreatedAt}
-        modifiedAt={projectModifiedAt}
-      />
-
-      {/* Rename Project Modal */}
-      <RenameProjectModal
-        visible={showRenameModal}
-        currentName={projectName}
-        onClose={() => setShowRenameModal(false)}
-        onRename={(newName) => {
-          onRenameProject?.(newName)
-          setShowRenameModal(false)
-          onClose()
-        }}
-      />
-
-      {/* Move to Folder Modal */}
-      <MoveToFolderModal
-        visible={showMoveModal}
-        folders={folders}
-        onClose={() => setShowMoveModal(false)}
-        onMove={(folderId) => {
-          onMoveToFolder?.(folderId)
-          setShowMoveModal(false)
-          onClose()
-        }}
-      />
-
-      {/* Export Project Modal */}
-      <ProjectExportModal
-        open={showExportModal}
-        onOpenChange={(o) => { if (!isExporting) setShowExportModal(o) }}
-        isExporting={isExporting}
-        onExport={runExport}
-      />
     </>
   )
 }
@@ -1677,9 +2000,37 @@ const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: 'system', label: 'System' },
 ]
 
-function AppearanceMenu() {
+function AppearanceMenu({ inline = false }: { inline?: boolean }) {
   const { theme, setTheme } = useTheme()
   const [popoverOpen, setPopoverOpen] = useState(false)
+
+  if (inline) {
+    return (
+      <View>
+        <View className="flex-row items-center gap-3 px-4 py-3">
+          <SunMoon size={20} className="text-muted-foreground" />
+          <Text className="text-base text-foreground flex-1">Appearance</Text>
+        </View>
+        {THEME_OPTIONS.map(({ value, label }) => (
+          <Pressable
+            key={value}
+            onPress={() => setTheme(value)}
+            className="flex-row items-center min-h-12 gap-2 px-4 py-2.5 pl-14 active:bg-muted"
+          >
+            <Text
+              className={cn(
+                'text-base flex-1',
+                theme === value ? 'text-foreground font-medium' : 'text-muted-foreground',
+              )}
+            >
+              {label}
+            </Text>
+            {theme === value ? <Check size={18} className="text-primary flex-shrink-0" /> : null}
+          </Pressable>
+        ))}
+      </View>
+    )
+  }
 
   return (
     <Popover

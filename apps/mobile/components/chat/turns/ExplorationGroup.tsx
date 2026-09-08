@@ -141,6 +141,7 @@ function ExplorationGroupImpl({
                 text={item.text}
                 isStreaming={item.isStreaming}
                 durationSeconds={item.durationSeconds}
+                embedded
               />
             )
           }

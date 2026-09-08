@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from 'react-native'
+import { View, Text, ScrollView, Pressable, ActivityIndicator, useWindowDimensions, Platform } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -63,6 +63,7 @@ export default observer(function ProfilePage() {
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
   const { width } = useWindowDimensions()
+  const isNativePhone = Platform.OS !== 'web' && width < 600
   const profileMaxWidth = width >= 1280 ? 880 : width >= 768 ? 760 : width
   const profilePadH = width >= 768 ? 24 : 16
 
@@ -135,8 +136,12 @@ export default observer(function ProfilePage() {
     >
       {/* Header */}
       <View className="flex-row items-center gap-3 mb-6">
-        <Pressable onPress={() => router.back()}>
-          <ArrowLeft size={20} className="text-foreground" />
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={8}
+          className={isNativePhone ? "h-11 w-11 items-center justify-center" : undefined}
+        >
+          <ArrowLeft size={isNativePhone ? 22 : 20} className="text-foreground" />
         </Pressable>
         <Text className="text-2xl font-bold text-foreground">Profile</Text>
       </View>
@@ -145,26 +150,48 @@ export default observer(function ProfilePage() {
       <Card className="mb-6">
         <CardHeader>
           <View className="flex-row items-center gap-2">
-            <User size={20} className="text-card-foreground" />
-            <CardTitle className="text-lg">Account Information</CardTitle>
+            <User size={isNativePhone ? 22 : 20} className="text-card-foreground" />
+            <CardTitle className={isNativePhone ? "text-xl" : "text-lg"}>Account Information</CardTitle>
           </View>
-          <CardDescription>Your account details</CardDescription>
+          <CardDescription className={isNativePhone ? "text-sm" : undefined}>Your account details</CardDescription>
         </CardHeader>
         <CardContent className="gap-4">
-          <View className="flex-row items-center gap-3">
-            <Mail size={16} className="text-muted-foreground" />
-            <Text className="text-sm text-muted-foreground">Email:</Text>
-            <Text className="text-sm font-medium text-foreground">
-              {currentUser.email}
-            </Text>
+          <View className={cn("flex-row gap-3", isNativePhone ? "items-start" : "items-center")}>
+            <Mail size={isNativePhone ? 20 : 16} className="text-muted-foreground" />
+            {isNativePhone ? (
+              <View className="min-w-0 flex-1">
+                <Text className="text-sm text-muted-foreground">Email</Text>
+                <Text className="text-base font-medium text-foreground" selectable>
+                  {currentUser.email}
+                </Text>
+              </View>
+            ) : (
+              <>
+                <Text className="text-sm text-muted-foreground">Email:</Text>
+                <Text className="text-sm font-medium text-foreground">
+                  {currentUser.email}
+                </Text>
+              </>
+            )}
           </View>
           {currentUser.name && (
-            <View className="flex-row items-center gap-3">
-              <User size={16} className="text-muted-foreground" />
-              <Text className="text-sm text-muted-foreground">Name:</Text>
-              <Text className="text-sm font-medium text-foreground">
-                {currentUser.name}
-              </Text>
+            <View className={cn("flex-row gap-3", isNativePhone ? "items-start" : "items-center")}>
+              <User size={isNativePhone ? 20 : 16} className="text-muted-foreground" />
+              {isNativePhone ? (
+                <View className="min-w-0 flex-1">
+                  <Text className="text-sm text-muted-foreground">Name</Text>
+                  <Text className="text-base font-medium text-foreground">
+                    {currentUser.name}
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <Text className="text-sm text-muted-foreground">Name:</Text>
+                  <Text className="text-sm font-medium text-foreground">
+                    {currentUser.name}
+                  </Text>
+                </>
+              )}
             </View>
           )}
         </CardContent>
@@ -174,10 +201,10 @@ export default observer(function ProfilePage() {
       <Card className="mb-6">
         <CardHeader>
           <View className="flex-row items-center gap-2">
-            <Building2 size={20} className="text-card-foreground" />
-            <CardTitle className="text-lg">Workspaces</CardTitle>
+            <Building2 size={isNativePhone ? 22 : 20} className="text-card-foreground" />
+            <CardTitle className={isNativePhone ? "text-xl" : "text-lg"}>Workspaces</CardTitle>
           </View>
-          <CardDescription>
+          <CardDescription className={isNativePhone ? "text-sm" : undefined}>
             Workspaces you belong to ({userWorkspaces.length})
           </CardDescription>
         </CardHeader>
@@ -185,13 +212,13 @@ export default observer(function ProfilePage() {
           {userWorkspaces.length === 0 ? (
             <View className="items-center py-8">
               <Building2
-                size={32}
+                size={isNativePhone ? 36 : 32}
                 className="text-muted-foreground mb-2 opacity-50"
               />
-              <Text className="text-sm text-muted-foreground text-center">
+              <Text className={cn("text-muted-foreground text-center", isNativePhone ? "text-base" : "text-sm")}>
                 You don't belong to any workspaces yet.
               </Text>
-              <Text className="text-xs text-muted-foreground mt-1 text-center">
+              <Text className={cn("text-muted-foreground mt-1 text-center", isNativePhone ? "text-sm" : "text-xs")}>
                 Create one using the workspace switcher in the header.
               </Text>
             </View>
@@ -203,6 +230,7 @@ export default observer(function ProfilePage() {
                   workspace={workspace}
                   role={getRoleForWorkspace(workspace.id)}
                   onManage={() => router.push('/(app)/settings')}
+                  comfortable={isNativePhone}
                 />
               ))}
             </View>
@@ -225,6 +253,8 @@ interface UserOverviewData {
 function UserUsageSection() {
   const http = useDomainHttp()
   const { features, localMode } = usePlatformConfig()
+  const { width } = useWindowDimensions()
+  const comfortable = Platform.OS !== 'web' && width < 600
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [logPage, setLogPage] = useState(1)
@@ -261,22 +291,23 @@ function UserUsageSection() {
     <Card className="mb-6">
       <CardHeader>
         <View className="flex-row items-center gap-2">
-          <BarChart3 size={20} className="text-card-foreground" />
-          <CardTitle className="text-lg">Usage & Spend</CardTitle>
+          <BarChart3 size={comfortable ? 22 : 20} className="text-card-foreground" />
+          <CardTitle className={comfortable ? "text-xl" : "text-lg"}>Usage & Spend</CardTitle>
         </View>
-        <CardDescription>Your usage across all workspaces</CardDescription>
+        <CardDescription className={comfortable ? "text-sm" : undefined}>Your usage across all workspaces</CardDescription>
       </CardHeader>
       <CardContent className="gap-4">
-        <PeriodSelector value={period} onChange={setPeriod} />
+        <PeriodSelector value={period} onChange={setPeriod} comfortable={comfortable} />
 
         {/* Overview stats */}
         <View className="flex-row flex-wrap gap-2">
-          <StatCard label="Sessions" value={overview.data?.chatSessions} icon={MessageSquare} />
-          <StatCard label="Usage Events" value={overview.data?.usageEvents} icon={Zap} />
+          <StatCard label="Sessions" value={overview.data?.chatSessions} icon={MessageSquare} comfortable={comfortable} />
+          <StatCard label="Usage Events" value={overview.data?.usageEvents} icon={Zap} comfortable={comfortable} />
           <StatCard
             label="Spend"
             value={overview.data?.totalSpendUsd !== undefined ? `$${overview.data.totalSpendUsd.toFixed(2)}` : undefined}
             icon={CreditCard}
+            comfortable={comfortable}
           />
         </View>
 
@@ -300,10 +331,12 @@ const WorkspaceCard = observer(function WorkspaceCard({
   workspace,
   role,
   onManage,
+  comfortable = false,
 }: {
   workspace: any
   role: string
   onManage: () => void
+  comfortable?: boolean
 }) {
   const { features } = usePlatformConfig()
   const {
@@ -314,23 +347,27 @@ const WorkspaceCard = observer(function WorkspaceCard({
 
   return (
     <View className="p-4 rounded-lg border border-border bg-card">
-      <View className="flex-row items-center justify-between mb-3">
-        <View className="flex-1">
-          <Text className="text-sm font-medium text-foreground">
+      <View className={cn(comfortable ? "gap-3" : "flex-row items-center justify-between mb-3")}>
+        <View className={comfortable ? undefined : "flex-1"}>
+          <Text className={cn("font-medium text-foreground", comfortable ? "text-base" : "text-sm")}>
             {workspace.name}
           </Text>
-          <Text className="text-xs text-muted-foreground">
+          <Text
+            className={cn("text-muted-foreground", comfortable ? "text-sm mt-0.5" : "text-xs")}
+            numberOfLines={1}
+            ellipsizeMode="middle"
+          >
             {workspace.slug}
           </Text>
         </View>
-        <View className="flex-row items-center gap-2">
+        <View className={cn("flex-row items-center gap-2", comfortable && "flex-wrap")}>
           <Badge variant={role === 'owner' ? 'default' : 'secondary'}>
-            {role}
+            <Text className={comfortable ? "text-xs" : undefined}>{role}</Text>
           </Badge>
-          <Button variant="ghost" size="sm" onPress={onManage}>
+          <Button variant="ghost" size={comfortable ? "lg" : "sm"} onPress={onManage}>
             <View className="flex-row items-center gap-1">
-              <Settings size={14} className="text-foreground" />
-              <Text className="text-xs font-medium text-foreground">
+              <Settings size={comfortable ? 16 : 14} className="text-foreground" />
+              <Text className={cn("font-medium text-foreground", comfortable ? "text-sm" : "text-xs")}>
                 Manage
               </Text>
             </View>

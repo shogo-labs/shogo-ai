@@ -9,7 +9,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import type { ImageSourcePropType } from 'react-native'
-import { View, Text, TextInput, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions, Image, useColorScheme, Alert as RNAlert, Linking } from 'react-native'
+import { View, Text, TextInput, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions, Image, useColorScheme, Alert as RNAlert, Linking, Animated, Easing } from 'react-native'
 import Svg, { G, Path, Rect } from 'react-native-svg'
 import { Eye, EyeOff, X } from 'lucide-react-native'
 import { Button } from '../primitives/Button'
@@ -213,6 +213,14 @@ function AppleContinueButton({
 
 const LOGIN_HERO_BREAKPOINT = 768
 
+/** Short native-landing typewriter lines. Keep similar length so the hero stays one line. */
+const NATIVE_LANDING_HERO_PHRASES = [
+  "Let's build",
+  'Build an agent',
+  'Create a canvas',
+  'Ship an app',
+] as const
+
 /** Light veil only — the compact web form sits over the login artwork. */
 const MOBILE_HERO_SCRIM_LIGHT = 'rgba(255, 255, 255, 0.1)'
 const MOBILE_HERO_SCRIM_DARK = 'rgba(9, 9, 11, 0.28)'
@@ -233,9 +241,9 @@ function openExternalUrl(url: string) {
   })
 }
 
-function ConsentNotice() {
+function ConsentNotice({ className }: { className?: string } = {}) {
   return (
-    <Text className="text-xs text-muted-foreground mt-1" style={{ flexWrap: 'wrap' }}>
+    <Text className={cn('text-xs text-muted-foreground mt-1', className)} style={{ flexWrap: 'wrap' }}>
       By continuing, you agree to our{' '}
       <Text
         className="text-brand-landing"
@@ -620,6 +628,8 @@ function NativeMobileLoginPanel({
   const [showEmailForm, setShowEmailForm] = useState(false)
   const [dismissed, setDismissed] = useState(false)
   const [typedHeroText, setTypedHeroText] = useState('')
+  const [heroIdle, setHeroIdle] = useState(false)
+  const cursorOpacity = useRef(new Animated.Value(1)).current
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const scrollRef = useRef<ScrollView>(null)
   const isNarrow = windowWidth < 375
@@ -627,34 +637,82 @@ function NativeMobileLoginPanel({
   const heroFontSize = isNarrow ? 34 : windowWidth >= 600 ? 48 : 42
   const heroLineHeight = heroFontSize + 6
   const cursorSize = isNarrow ? 30 : windowWidth >= 600 ? 40 : 36
+  const heroTextStyle = {
+    color: '#FFFFFF' as const,
+    fontSize: heroFontSize,
+    lineHeight: heroLineHeight,
+    fontWeight: '700' as const,
+    letterSpacing: -1.4,
+    textShadowColor: 'rgba(0, 0, 0, 0.72)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 12,
+  }
 
   useEffect(() => { if (error) setDismissed(false) }, [error])
   useEffect(() => {
-    const target = "Let's build"
+    if (!heroIdle) {
+      cursorOpacity.setValue(1)
+      return
+    }
+    const blink = Animated.loop(
+      Animated.sequence([
+        Animated.delay(180),
+        Animated.timing(cursorOpacity, {
+          toValue: 0.18,
+          duration: 320,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(cursorOpacity, {
+          toValue: 1,
+          duration: 320,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    )
+    blink.start()
+    return () => {
+      blink.stop()
+      cursorOpacity.setValue(1)
+    }
+  }, [heroIdle, cursorOpacity])
+  useEffect(() => {
+    let phraseIndex = 0
     let characterIndex = 0
     let deleting = false
     let animationTimer: ReturnType<typeof setTimeout>
 
-    const animate = () => {
-      characterIndex += deleting ? -1 : 1
-      setTypedHeroText(target.slice(0, characterIndex))
+    const tick = () => {
+      const target = NATIVE_LANDING_HERO_PHRASES[phraseIndex]
 
-      if (!deleting && characterIndex === target.length) {
-        deleting = true
-        animationTimer = setTimeout(animate, 1250)
+      if (!deleting) {
+        if (characterIndex >= target.length) {
+          setHeroIdle(true)
+          deleting = true
+          animationTimer = setTimeout(tick, 1550)
+          return
+        }
+        characterIndex += 1
+        setTypedHeroText(target.slice(0, characterIndex))
+        const typed = target[characterIndex - 1]
+        animationTimer = setTimeout(tick, typed === ' ' ? 82 : 44 + ((characterIndex * 11) % 20))
         return
       }
 
-      if (deleting && characterIndex === 0) {
+      setHeroIdle(false)
+      if (characterIndex <= 0) {
         deleting = false
-        animationTimer = setTimeout(animate, 520)
+        phraseIndex = (phraseIndex + 1) % NATIVE_LANDING_HERO_PHRASES.length
+        animationTimer = setTimeout(tick, 200)
         return
       }
-
-      animationTimer = setTimeout(animate, deleting ? 55 : 105)
+      characterIndex -= 1
+      setTypedHeroText(target.slice(0, characterIndex))
+      animationTimer = setTimeout(tick, 18)
     }
 
-    animationTimer = setTimeout(animate, 280)
+    animationTimer = setTimeout(tick, 240)
     return () => clearTimeout(animationTimer)
   }, [])
 
@@ -664,11 +722,50 @@ function NativeMobileLoginPanel({
   const scrollToBottom = () => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)
   }
+  const formHeroFontSize = isCompactHeight ? 26 : isNarrow ? 30 : 34
+  const formHeroLineHeight = formHeroFontSize + 6
+  const formCursorSize = isCompactHeight ? 24 : isNarrow ? 26 : 30
 
   if (!showEmailForm) {
     return (
       <View style={{ flex: 1, width: '100%', backgroundColor: '#000000', overflow: 'hidden' }}>
         <NativeLoginBackdrop source={heroSource} />
+        <View
+          accessible
+          accessibilityRole="header"
+          accessibilityLabel="Shogo AI"
+          style={{
+            zIndex: 1,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingTop: isCompactHeight ? 36 : 56,
+            paddingBottom: 12,
+          }}
+        >
+          <Image
+            source={shogoRadialCursor}
+            accessible={false}
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 20,
+              marginRight: 12,
+            }}
+            resizeMode="contain"
+          />
+          <Text
+            style={{
+              color: '#FFFFFF',
+              fontSize: 32,
+              lineHeight: 38,
+              fontWeight: '700',
+              letterSpacing: -0.5,
+            }}
+          >
+            Shogo AI
+          </Text>
+        </View>
         <View
           style={{
             flex: 1,
@@ -679,28 +776,11 @@ function NativeMobileLoginPanel({
             paddingBottom: isCompactHeight ? 32 : 80,
           }}
         >
-          <View style={{ width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
-            <Text
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.78}
-              maxFontSizeMultiplier={1.15}
-              style={{
-                color: '#FFFFFF',
-                fontSize: heroFontSize,
-                lineHeight: heroLineHeight,
-                fontWeight: '700',
-                letterSpacing: -1.4,
-                textAlign: 'center',
-                textShadowColor: 'rgba(0, 0, 0, 0.72)',
-                textShadowOffset: { width: 0, height: 2 },
-                textShadowRadius: 12,
-                flexShrink: 1,
-              }}
-            >
+          <View style={{ flexDirection: 'row', alignItems: 'center', alignSelf: 'center' }}>
+            <Text numberOfLines={1} maxFontSizeMultiplier={1.15} style={heroTextStyle}>
               {typedHeroText}
             </Text>
-            <Image
+            <Animated.Image
               source={shogoRadialCursor}
               accessible={false}
               style={{
@@ -709,7 +789,7 @@ function NativeMobileLoginPanel({
                 borderRadius: cursorSize / 2,
                 marginLeft: isNarrow ? 6 : 8,
                 marginTop: 6,
-                flexShrink: 0,
+                opacity: cursorOpacity,
               }}
               resizeMode="contain"
             />
@@ -760,7 +840,7 @@ function NativeMobileLoginPanel({
           </Pressable>
           <Text
             maxFontSizeMultiplier={1.3}
-            style={{ color: '#98989D', fontSize: 11, lineHeight: 16, textAlign: 'center', marginTop: isCompactHeight ? 10 : 14 }}
+            style={{ color: '#98989D', fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: isCompactHeight ? 10 : 14 }}
           >
             By continuing, you agree to Shogo&apos;s{' '}
             <Text
@@ -791,25 +871,96 @@ function NativeMobileLoginPanel({
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <NativeLoginBackdrop source={heroSource} />
-      <View style={{ zIndex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 12, paddingBottom: 10 }}>
-        <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '700', letterSpacing: -0.4 }}>Shogo</Text>
-        <Pressable
-          onPress={() => { setShowEmailForm(false); dismissError() }}
-          accessibilityRole="button"
-          accessibilityLabel="Close email login"
-          style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: '#2C2C2E', alignItems: 'center', justifyContent: 'center' }}
-        >
-          <X size={24} color="#FFFFFF" strokeWidth={2.5} />
-        </Pressable>
+      <View
+        style={{
+          zIndex: 2,
+          paddingHorizontal: 20,
+          paddingTop: isCompactHeight ? 8 : 16,
+          paddingBottom: 8,
+        }}
+      >
+        <View style={{ height: 44, alignItems: 'center', justifyContent: 'center' }}>
+          <View
+            accessible
+            accessibilityRole="header"
+            accessibilityLabel="Shogo AI"
+            style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 48 }}
+          >
+            <Image
+              source={shogoRadialCursor}
+              accessible={false}
+              style={{ width: 32, height: 32, borderRadius: 16, marginRight: 10 }}
+              resizeMode="contain"
+            />
+            <Text
+              numberOfLines={1}
+              style={{ color: '#FFFFFF', fontSize: isNarrow ? 22 : 26, lineHeight: 32, fontWeight: '700', letterSpacing: -0.4 }}
+            >
+              Shogo AI
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => { setShowEmailForm(false); dismissError() }}
+            accessibilityRole="button"
+            accessibilityLabel="Close email login"
+            style={{
+              position: 'absolute',
+              right: 0,
+              top: 1,
+              width: 42,
+              height: 42,
+              borderRadius: 21,
+              backgroundColor: '#2C2C2E',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <X size={24} color="#FFFFFF" strokeWidth={2.5} />
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView
         ref={scrollRef}
         style={{ flex: 1, zIndex: 1 }}
-        contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end', paddingTop: 24 }}
+        contentContainerStyle={{ flexGrow: 1 }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
       >
+        <View
+          style={{
+            flexGrow: 1,
+            minHeight: isCompactHeight ? 72 : 108,
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingHorizontal: isNarrow ? 18 : 28,
+            paddingVertical: 8,
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', alignSelf: 'center' }}>
+            <Text
+              numberOfLines={1}
+              maxFontSizeMultiplier={1.15}
+              style={{ ...heroTextStyle, fontSize: formHeroFontSize, lineHeight: formHeroLineHeight }}
+            >
+              {typedHeroText}
+            </Text>
+            <Animated.Image
+              source={shogoRadialCursor}
+              accessible={false}
+              style={{
+                width: formCursorSize,
+                height: formCursorSize,
+                borderRadius: formCursorSize / 2,
+                marginLeft: isNarrow ? 6 : 8,
+                marginTop: 4,
+                opacity: cursorOpacity,
+              }}
+              resizeMode="contain"
+            />
+          </View>
+        </View>
+
         <View
           style={{
             width: '100%',
@@ -819,14 +970,18 @@ function NativeMobileLoginPanel({
             borderTopLeftRadius: 34,
             borderTopRightRadius: 34,
             paddingHorizontal: 24,
-            paddingTop: 26,
+            paddingTop: 28,
             paddingBottom: 24,
           }}
         >
-          <Text className="text-2xl font-bold text-foreground">
+          <Text
+            style={{ color: '#FAFAFA', fontSize: 28, lineHeight: 34, fontWeight: '700', letterSpacing: -0.5 }}
+          >
             {activeTab === 'signin' ? 'Welcome back' : 'Create your Shogo account'}
           </Text>
-          <Text className="text-sm text-muted-foreground mt-1 mb-6">
+          <Text
+            style={{ color: '#A1A1AA', fontSize: 16, lineHeight: 22, marginTop: 6, marginBottom: 22 }}
+          >
             {activeTab === 'signin' ? 'Log in to keep building.' : 'Start turning your ideas into software.'}
           </Text>
 
@@ -838,9 +993,9 @@ function NativeMobileLoginPanel({
                 role="tab"
                 accessibilityState={{ selected: activeTab === tab }}
                 accessibilityLabel={tab === 'signin' ? 'Log in' : 'Sign up'}
-                className={cn('flex-1 py-2.5 rounded-lg items-center', activeTab === tab ? 'bg-card' : '')}
+                className={cn('flex-1 py-3 rounded-lg items-center', activeTab === tab ? 'bg-card' : '')}
               >
-                <Text className={cn('text-sm font-medium', activeTab === tab ? 'text-foreground' : 'text-muted-foreground')}>
+                <Text className={cn('text-base font-medium', activeTab === tab ? 'text-foreground' : 'text-muted-foreground')}>
                   {tab === 'signin' ? 'Log in' : 'Sign up'}
                 </Text>
               </Pressable>
@@ -867,7 +1022,7 @@ function NativeMobileLoginPanel({
           )}
 
           <View className="mt-5">
-            <ConsentNotice />
+            <ConsentNotice className="text-sm leading-5" />
           </View>
         </View>
       </ScrollView>
