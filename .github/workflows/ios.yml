@@ -360,9 +360,11 @@ jobs:
       github.event.inputs.mode != 'ota'
 
     env:
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    outputs:
+      should_submit: ${{ steps.submit-decision.outputs.should_submit }}
+      ipa_artifact: Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa
 
     steps:
       - name: Checkout
@@ -858,16 +860,6 @@ jobs:
             echo "should_submit=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload to App Store Connect (TestFlight)
-        if: steps.submit-decision.outputs.should_submit == 'true'
-        run: |
-          xcrun altool --upload-app \
-            -f "$IPA_PATH" \
-            -t ios \
-            -u "$APPLE_ID" \
-            -p "$APPLE_ID_PASSWORD" \
-            --verbose
-
       - name: Cleanup keychain
         if: always()
         run: |
@@ -884,7 +876,63 @@ jobs:
           echo "- **Profile:** $PROFILE_NAME" >> $GITHUB_STEP_SUMMARY
           echo "- **IPA artifact:** Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Submit:** ${{ steps.submit-decision.outputs.should_submit == 'true' && 'TestFlight (App Store Connect)' || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Submit:** ${{ steps.submit-decision.outputs.should_submit == 'true' && 'Queued (separate job)' || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # TestFlight upload — separate from xcodebuild so a credential failure
+  # (Apple -22910) can be retried without a 20+ minute rebuild. The IPA is
+  # already in artifacts from the build job.
+  # ===========================================================================
+  submit:
+    name: Upload to TestFlight
+    runs-on: macos-latest
+    needs: [check-fingerprint, build]
+    if: needs.build.outputs.should_submit == 'true'
+
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+
+    steps:
+      - name: Download IPA
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.build.outputs.ipa_artifact }}
+          path: /tmp/ipa
+
+      - name: Upload to App Store Connect (TestFlight)
+        run: |
+          set -uo pipefail
+          IPA_PATH=$(find /tmp/ipa -name '*.ipa' | head -1)
+          if [ -z "$IPA_PATH" ]; then
+            echo "::error::No IPA found in the downloaded artifact."
+            exit 1
+          fi
+          echo "Uploading $IPA_PATH"
+
+          set +e
+          OUT=$(xcrun altool --upload-app \
+            -f "$IPA_PATH" \
+            -t ios \
+            -u "$APPLE_ID" \
+            -p "$APPLE_ID_PASSWORD" \
+            --verbose 2>&1)
+          STATUS=$?
+          echo "$OUT"
+          if [ $STATUS -ne 0 ]; then
+            if echo "$OUT" | grep -q -- '-22910'; then
+              echo "::error::APPLE_ID_PASSWORD must be an app-specific password from https://account.apple.com/account/manage/section/security. The IPA is already built (see this run's artifacts). After updating the GitHub secret, re-run only this job."
+            fi
+            exit $STATUS
+          fi
+
+      - name: Summary
+        run: |
+          echo "## TestFlight upload" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **IPA:** \`${{ needs.build.outputs.ipa_artifact }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.check-fingerprint.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
 
 # Manual triggers:
