@@ -97,7 +97,11 @@ export function ComposerPlusSection({
           )}
         </View>
       </Pressable>
-      {expanded ? <View className="pb-1">{children}</View> : null}
+      {expanded ? (
+        <View className="pb-1" collapsable={false} style={{ width: "100%" }}>
+          {children}
+        </View>
+      ) : null}
     </View>
   )
 }

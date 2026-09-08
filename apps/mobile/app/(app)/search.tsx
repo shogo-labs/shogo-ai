@@ -8,22 +8,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
   Text,
   TextInput,
+  useColorScheme,
   View,
 } from 'react-native'
 import { useRouter } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import { formatDistanceToNow } from 'date-fns'
 import { Folder, Key, Search, Star, Users, X } from 'lucide-react-native'
 import { PlatformApi, type ApiKeyInfo } from '@shogo-ai/sdk'
-import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
+import { useTheme } from '../../contexts/theme'
 import {
   useDomainHttp,
   useMemberCollection,
@@ -33,6 +35,31 @@ import {
 } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { CHATGPT_COMPOSER } from '../../components/chat/ComposerPlusMenu'
+import {
+  nativeComposerKeyboardDuration,
+  nativeComposerKeyboardOpenFromSource,
+} from '../../lib/native-composer-keyboard'
+import {
+  nativeComposerKeyboardEasing,
+  nativeComposerKeyboardOverlapFromEvent,
+  useNativeComposerKeyboard,
+} from '../../lib/use-native-composer-keyboard'
+import { isNativePlatform, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
+
+const SEARCH_MIN_KEYBOARD_PAD = 8
+const SEARCH_TAB_ROW_HEIGHT = 52
+const SEARCH_PILL_HEIGHT = 36
+const SEARCH_PILL_RADIUS = 18
+const SEARCH_PILL_GAP = 8
+const SEARCH_PILL_PAD_X = 14
+const SEARCH_CANVAS = { dark: '#000000', light: '#ffffff' } as const
+const SEARCH_PILL_IDLE = { dark: '#2a2a2a', light: '#f4f4f5' } as const
+const SEARCH_PILL_COUNT_IDLE = CHATGPT_COMPOSER.dark.placeholder
+const SEARCH_PILL_COUNT_ACTIVE = {
+  dark: 'rgba(13,13,13,0.55)',
+  light: 'rgba(255,255,255,0.6)',
+} as const
 
 type SearchTab = 'all' | 'starred' | 'shared' | 'keys'
 
@@ -59,6 +86,10 @@ function timeAgo(timestamp?: number | string | null): string {
 export default observer(function SearchPage() {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
+  const { theme } = useTheme()
+  const systemColorScheme = useColorScheme()
+  const isDark = theme === 'dark' || (theme === 'system' && systemColorScheme === 'dark')
+  const pageBg = isDark ? SEARCH_CANVAS.dark : SEARCH_CANVAS.light
   const { localMode } = usePlatformConfig()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
@@ -68,6 +99,9 @@ export default observer(function SearchPage() {
   const http = useDomainHttp()
   const platform = useMemo(() => new PlatformApi(http), [http])
   const inputRef = useRef<TextInput>(null)
+  const insets = useSafeAreaInsets()
+  const restKeyboardPad = Math.max(insets.bottom, SEARCH_MIN_KEYBOARD_PAD)
+  const composerKeyboardPad = useRef(new Animated.Value(restKeyboardPad)).current
 
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState<SearchTab>('all')
@@ -81,9 +115,21 @@ export default observer(function SearchPage() {
   }, [router])
 
   useEffect(() => {
-    const t = setTimeout(() => inputRef.current?.focus(), 180)
+    const t = setTimeout(() => inputRef.current?.focus(), 250)
     return () => clearTimeout(t)
   }, [])
+
+  useNativeComposerKeyboard(isNativePlatform(), (event, source) => {
+    const overlap = nativeComposerKeyboardOverlapFromEvent(event)
+    const keyboardOpen = nativeComposerKeyboardOpenFromSource(source, overlap, restKeyboardPad)
+    if (keyboardOpen == null) return
+    Animated.timing(composerKeyboardPad, {
+      toValue: keyboardOpen ? overlap : restKeyboardPad,
+      duration: nativeComposerKeyboardDuration(event.duration),
+      easing: nativeComposerKeyboardEasing(),
+      useNativeDriver: false,
+    }).start()
+  })
 
   useEffect(() => {
     if (!isAuthenticated || !user?.id) return
@@ -252,18 +298,18 @@ export default observer(function SearchPage() {
   }
 
   return (
-    <KeyboardAvoidingView
-      className="flex-1 bg-background"
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    <View className="flex-1 bg-background" style={{ flex: 1, paddingTop: insets.top, backgroundColor: pageBg }}>
       <View className="flex-1">
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 }}
-          style={{ flexGrow: 0 }}
           keyboardShouldPersistTaps="handled"
+          style={{ height: SEARCH_TAB_ROW_HEIGHT, flexGrow: 0, flexShrink: 0 }}
+          contentContainerStyle={{
+            paddingHorizontal: NATIVE_PHONE_GUTTER,
+            alignItems: 'center',
+            height: SEARCH_TAB_ROW_HEIGHT,
+          }}
         >
           {tabs.map((item) => {
             const active = tab === item.id
@@ -273,15 +319,42 @@ export default observer(function SearchPage() {
                 onPress={() => setTab(item.id)}
                 accessibilityRole="tab"
                 accessibilityState={{ selected: active }}
-                className={cn(
-                  'mr-2 flex-row items-center rounded-full px-3.5 py-2',
-                  active ? 'bg-foreground' : 'bg-muted',
-                )}
+                style={{
+                  height: SEARCH_PILL_HEIGHT,
+                  marginRight: SEARCH_PILL_GAP,
+                  paddingHorizontal: SEARCH_PILL_PAD_X,
+                  borderRadius: SEARCH_PILL_RADIUS,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: active
+                    ? (isDark ? CHATGPT_COMPOSER.dark.text : CHATGPT_COMPOSER.light.text)
+                    : (isDark ? SEARCH_PILL_IDLE.dark : SEARCH_PILL_IDLE.light),
+                }}
               >
-                <Text className={cn('text-[13px] font-medium', active ? 'text-background' : 'text-foreground')}>
+                <Text
+                  style={{
+                    fontSize: 13,
+                    lineHeight: 18,
+                    fontWeight: '500',
+                    color: active
+                      ? (isDark ? CHATGPT_COMPOSER.dark.sendIcon : CHATGPT_COMPOSER.light.sendIcon)
+                      : (isDark ? CHATGPT_COMPOSER.dark.text : CHATGPT_COMPOSER.light.text),
+                    ...(Platform.OS === 'android' ? { includeFontPadding: false } : null),
+                  }}
+                >
                   {item.label}
                 </Text>
-                <Text className={cn('ml-1.5 text-[13px]', active ? 'text-background/70' : 'text-muted-foreground')}>
+                <Text
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 13,
+                    lineHeight: 18,
+                    color: active
+                      ? (isDark ? SEARCH_PILL_COUNT_ACTIVE.dark : SEARCH_PILL_COUNT_ACTIVE.light)
+                      : SEARCH_PILL_COUNT_IDLE,
+                    ...(Platform.OS === 'android' ? { includeFontPadding: false } : null),
+                  }}
+                >
                   {item.count}
                 </Text>
               </Pressable>
@@ -310,7 +383,16 @@ export default observer(function SearchPage() {
         )}
       </View>
 
-      <View className="flex-row items-center gap-2 px-3 pb-3 pt-2">
+      <Animated.View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingHorizontal: 12,
+          paddingTop: 8,
+          paddingBottom: composerKeyboardPad,
+          backgroundColor: pageBg,
+        }}
+      >
         <View className="h-12 min-w-0 flex-1 flex-row items-center rounded-full bg-muted px-4">
           <Search size={18} className="text-muted-foreground" />
           <TextInput
@@ -318,12 +400,13 @@ export default observer(function SearchPage() {
             value={query}
             onChangeText={setQuery}
             placeholder="Search"
-            placeholderTextColor="#8e8e8e"
-            autoFocus
+            placeholderTextColor={CHATGPT_COMPOSER.dark.placeholder}
             autoCorrect={false}
             autoCapitalize="none"
             returnKeyType="search"
+            automaticallyAdjustKeyboardInsets={false}
             className="ml-2 flex-1 text-[16px] text-foreground"
+            style={{ fontSize: 16, lineHeight: 20, paddingVertical: 0 }}
             accessibilityLabel="Search"
           />
           {query.length > 0 ? (
@@ -335,11 +418,11 @@ export default observer(function SearchPage() {
         <Pressable
           onPress={closeSearch}
           accessibilityLabel="Close search"
-          className="h-12 w-12 items-center justify-center rounded-full bg-muted"
+          className="ml-2 h-12 w-12 items-center justify-center rounded-full bg-muted"
         >
           <X size={20} className="text-foreground" />
         </Pressable>
-      </View>
-    </KeyboardAvoidingView>
+      </Animated.View>
+    </View>
   )
 })

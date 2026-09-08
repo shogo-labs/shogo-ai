@@ -8,7 +8,7 @@ import {
   Alert,
   StyleSheet,
   Keyboard,
-  Dimensions,
+  KeyboardAvoidingView,
   Animated,
   Easing,
   TouchableWithoutFeedback,
@@ -48,10 +48,24 @@ import { api, getOnboardingMessage } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
 import { getPendingLicenseCode, clearPendingLicenseCode } from '../../lib/pending-license'
-import { isNativeComposerKeyboardOpen, nativeComposerKeyboardPad } from '../../lib/native-composer-keyboard'
+import {
+  nativeComposerDockBottomPad,
+  nativeComposerKeyboardDuration,
+  nativeComposerKeyboardOpenFromSource,
+  NATIVE_COMPOSER_DOCK_FILL,
+  type NativeComposerKeyboardEvent,
+  type NativeComposerKeyboardSource,
+} from '../../lib/native-composer-keyboard'
+import {
+  nativeComposerKeyboardEasing,
+  nativeComposerKeyboardOverlapFromEvent,
+  useNativeComposerKeyboard,
+} from '../../lib/use-native-composer-keyboard'
+import { NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 import { TechStackPicker } from '../../components/chat/TechStackPicker'
+import { techStackDisplayName } from '../../lib/tech-stack-catalog'
 import { useTheme } from '../../contexts/theme'
 import { Layers } from 'lucide-react-native'
 
@@ -268,11 +282,22 @@ const HomeScreen = observer(function HomeScreen() {
   const isNativePhone = Platform.OS !== 'web' && isMobile
   const homeEntrance = useRef(new Animated.Value(Platform.OS === 'web' ? 1 : 0)).current
   const restComposerPad = Math.max(insets.bottom, 12)
-  const restComposerSidePad = 16
+  const restComposerSidePad = NATIVE_PHONE_GUTTER
+  const restComposerPadRef = useRef(restComposerPad)
+  restComposerPadRef.current = restComposerPad
   const composerKeyboardPad = useRef(new Animated.Value(restComposerPad)).current
   const composerSidePad = useRef(new Animated.Value(restComposerSidePad)).current
   const composerKeyboardExpand = useRef(new Animated.Value(0)).current
   const keyboardOpenRef = useRef(false)
+  const iosComposerAvoiding = Platform.OS === 'ios'
+  const composerDockFillAnim = useMemo(
+    () =>
+      composerKeyboardExpand.interpolate({
+        inputRange: [0, 1],
+        outputRange: isDark ? NATIVE_COMPOSER_DOCK_FILL.dark : NATIVE_COMPOSER_DOCK_FILL.light,
+      }),
+    [composerKeyboardExpand, isDark],
+  )
 
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
@@ -306,25 +331,10 @@ const HomeScreen = observer(function HomeScreen() {
     }).start()
   }, [homeEntrance, isNativePhone])
 
-  useEffect(() => {
-    if (!keyboardOpenRef.current) {
-      composerKeyboardPad.setValue(restComposerPad)
-      composerSidePad.setValue(restComposerSidePad)
-      composerKeyboardExpand.setValue(0)
-    }
-  }, [composerKeyboardExpand, composerKeyboardPad, composerSidePad, restComposerPad, restComposerSidePad])
-
-  useEffect(() => {
-    if (!isNativePhone) return
-
-    const animateComposer = (opts: {
-      pad: number
-      sidePad: number
-      expand: number
-      duration?: number
-    }) => {
-      const duration = opts.duration && opts.duration > 0 ? opts.duration : Platform.OS === 'ios' ? 250 : 180
-      const easing = Easing.out(Easing.cubic)
+  const animateComposer = useCallback(
+    (opts: { pad: number; sidePad: number; expand: number; duration?: number }) => {
+      const duration = nativeComposerKeyboardDuration(opts.duration)
+      const easing = nativeComposerKeyboardEasing()
       Animated.parallel([
         Animated.timing(composerKeyboardPad, {
           toValue: opts.pad,
@@ -345,53 +355,54 @@ const HomeScreen = observer(function HomeScreen() {
           useNativeDriver: false,
         }),
       ]).start()
-    }
+    },
+    [composerKeyboardExpand, composerKeyboardPad, composerSidePad],
+  )
 
-    const applyKeyboardFrame = (event: { duration?: number; endCoordinates?: { height?: number; screenY?: number } }) => {
-      const screenHeight = Dimensions.get('screen').height
-      const pad = nativeComposerKeyboardPad(event.endCoordinates, screenHeight)
-      const keyboardVisible = isNativeComposerKeyboardOpen(pad, restComposerPad)
-      keyboardOpenRef.current = keyboardVisible
-      if (!keyboardVisible) {
-        animateComposer({
-          pad: restComposerPad,
-          sidePad: restComposerSidePad,
-          expand: 0,
-          duration: event.duration,
-        })
-        return
-      }
+  const dockComposer = useCallback(
+    (event: NativeComposerKeyboardEvent, source: NativeComposerKeyboardSource) => {
+      const restPad = restComposerPadRef.current
+      const overlap = nativeComposerKeyboardOverlapFromEvent(event)
+      const keyboardOpen = nativeComposerKeyboardOpenFromSource(source, overlap, restPad)
+      if (keyboardOpen == null) return
+      keyboardOpenRef.current = keyboardOpen
       animateComposer({
-        pad,
+        pad: nativeComposerDockBottomPad({
+          keyboardOpen,
+          overlap,
+          restPad,
+          iosKeyboardAvoiding: iosComposerAvoiding,
+        }),
+        sidePad: keyboardOpen ? 0 : restComposerSidePad,
+        expand: keyboardOpen ? 1 : 0,
+        duration: event.duration,
+      })
+    },
+    [animateComposer, iosComposerAvoiding, restComposerSidePad],
+  )
+
+  const handleComposerFocusChange = useCallback(
+    (focused: boolean) => {
+      if (!isNativePhone || !focused) return
+      keyboardOpenRef.current = true
+      animateComposer({
+        pad: restComposerPadRef.current,
         sidePad: 0,
         expand: 1,
-        duration: event.duration,
       })
-    }
+    },
+    [animateComposer, isNativePhone],
+  )
 
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
-    const showSub = Keyboard.addListener(showEvent, applyKeyboardFrame)
-    const hideSub = Keyboard.addListener(hideEvent, (event) => {
-      keyboardOpenRef.current = false
-      animateComposer({
-        pad: restComposerPad,
-        sidePad: restComposerSidePad,
-        expand: 0,
-        duration: event.duration,
-      })
-    })
-    const changeSub =
-      Platform.OS === 'ios'
-        ? Keyboard.addListener('keyboardWillChangeFrame', applyKeyboardFrame)
-        : undefined
-
-    return () => {
-      showSub.remove()
-      hideSub.remove()
-      changeSub?.remove()
+  useEffect(() => {
+    if (!keyboardOpenRef.current) {
+      composerKeyboardPad.setValue(restComposerPad)
+      composerSidePad.setValue(restComposerSidePad)
+      composerKeyboardExpand.setValue(0)
     }
-  }, [composerKeyboardExpand, composerKeyboardPad, composerSidePad, isNativePhone, restComposerPad, restComposerSidePad])
+  }, [composerKeyboardExpand, composerKeyboardPad, composerSidePad, restComposerPad, restComposerSidePad])
+
+  useNativeComposerKeyboard(isNativePhone, dockComposer)
 
   /**
    * Draft project the homepage opens behind the scenes for a creation
@@ -991,6 +1002,7 @@ const HomeScreen = observer(function HomeScreen() {
         prominentMobile={isNativePhone}
         prominentColorScheme={isDark ? 'dark' : 'light'}
         keyboardExpand={isNativePhone ? composerKeyboardExpand : undefined}
+        onFocusChange={isNativePhone ? handleComposerFocusChange : undefined}
         leadingControls={
           isNativePhone ? undefined : (
             <View className="flex-row items-center gap-1">
@@ -1008,7 +1020,12 @@ const HomeScreen = observer(function HomeScreen() {
         }
         plusMenuExtras={
           isNativePhone ? (
-            <ComposerPlusSection id="stack" label="Tech stack" Icon={Layers}>
+            <ComposerPlusSection
+              id="stack"
+              label="Tech stack"
+              value={techStackDisplayName(techStackId)}
+              Icon={Layers}
+            >
               <TechStackPicker
                 value={techStackId}
                 onChange={handleTechStackChange}
@@ -1034,45 +1051,56 @@ const HomeScreen = observer(function HomeScreen() {
     ],
   }
 
+  const nativeHome = (
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: isDark ? '#000000' : '#ffffff' }}
+      behavior={iosComposerAvoiding ? 'padding' : undefined}
+      keyboardVerticalOffset={0}
+    >
+      <View className="relative flex-1">
+        <LovableGradient isDark={isDark} />
+        <Animated.View
+          className="flex-1 items-center justify-center"
+          style={[
+            CONTENT_MAX_WIDTH,
+            {
+              alignSelf: 'center',
+              width: '100%',
+              minHeight: 0,
+              paddingTop: insets.top + 56,
+              paddingHorizontal: 32,
+              paddingBottom: 16,
+            },
+            nativeEntranceStyle,
+          ]}
+        >
+          {greeting}
+        </Animated.View>
+        <View
+          className="w-full"
+          style={[CONTENT_MAX_WIDTH, { alignSelf: 'center' }]}
+        >
+          <Animated.View
+            style={{
+              paddingBottom: composerKeyboardPad,
+              paddingHorizontal: composerSidePad,
+              backgroundColor: composerDockFillAnim,
+            }}
+          >
+            {composer}
+          </Animated.View>
+        </View>
+      </View>
+    </KeyboardAvoidingView>
+  )
+
   const screen = (
     <View
       className="flex-1 bg-background"
       style={isNativePhone ? { backgroundColor: isDark ? '#000000' : '#ffffff' } : undefined}
     >
       {isNativePhone ? (
-        <View className="relative flex-1">
-          <LovableGradient isDark={isDark} />
-          <Animated.View
-            className="flex-1 items-center justify-center"
-            style={[
-              CONTENT_MAX_WIDTH,
-              {
-                alignSelf: 'center',
-                width: '100%',
-                minHeight: 0,
-                paddingTop: insets.top + 56,
-                paddingHorizontal: 32,
-                paddingBottom: 16,
-              },
-              nativeEntranceStyle,
-            ]}
-          >
-            {greeting}
-          </Animated.View>
-          <Animated.View
-            className="w-full"
-            style={[CONTENT_MAX_WIDTH, nativeEntranceStyle, { alignSelf: 'center' }]}
-          >
-            <Animated.View
-              style={{
-                paddingBottom: composerKeyboardPad,
-                paddingHorizontal: composerSidePad,
-              }}
-            >
-              {composer}
-            </Animated.View>
-          </Animated.View>
-        </View>
+        nativeHome
       ) : (
         <View className="relative flex-1 items-center justify-center px-4">
           <LovableGradient isDark={isDark} />

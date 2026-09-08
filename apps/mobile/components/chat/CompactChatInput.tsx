@@ -168,6 +168,8 @@ export interface CompactChatInputProps {
   plusMenuExtras?: React.ReactNode
   /** 0–1: home composer expands to keyboard width and squares its bottom corners. */
   keyboardExpand?: Animated.Value
+  /** Native home: start the keyboard-dock morph as soon as the field is focused. */
+  onFocusChange?: (focused: boolean) => void
   /** Native phone polish for the Home composer: larger touch targets, brighter text, and focus styling. */
   prominentMobile?: boolean
   /** Resolved native Home color scheme for the prominent composer surface. */
@@ -198,6 +200,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       leadingControls,
       plusMenuExtras,
       keyboardExpand,
+      onFocusChange,
       prominentMobile = false,
       prominentColorScheme = "dark",
     },
@@ -229,6 +232,14 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const [internalValue, setInternalValue] = useState("")
     const [inputHeight, setInputHeight] = useState(inputMinHeight)
     const [isFocused, setIsFocused] = useState(false)
+    const handleComposerFocus = useCallback(() => {
+      setIsFocused(true)
+      onFocusChange?.(true)
+    }, [onFocusChange])
+    const handleComposerBlur = useCallback(() => {
+      setIsFocused(false)
+      onFocusChange?.(false)
+    }, [onFocusChange])
     const focusProgress = useRef(new Animated.Value(0)).current
     const textInputRef = useRef<TextInput>(null)
     const pasteHandledRef = useRef(false)
@@ -645,6 +656,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           ? keyboardExpand.interpolate({
               inputRange: [0, 1],
               outputRange: [COMPACT_INPUT_PROMINENT_RADIUS, 0],
+              extrapolate: "clamp",
             })
           : COMPACT_INPUT_PROMINENT_RADIUS,
       [keyboardExpand],
@@ -655,6 +667,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           ? keyboardExpand.interpolate({
               inputRange: [0, 1],
               outputRange: [1, 0],
+              extrapolate: "clamp",
             })
           : 1,
       [keyboardExpand],
@@ -665,6 +678,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           ? keyboardExpand.interpolate({
               inputRange: [0, 1],
               outputRange: [chatgptComposer.border, "transparent"],
+              extrapolate: "clamp",
             })
           : focusProgress.interpolate({
               inputRange: [0, 1],
@@ -793,8 +807,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             accessibilityLabel="Describe the agent you want to build"
             value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : value}
             onChangeText={handleChangeText}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
+            onFocus={handleComposerFocus}
+            onBlur={handleComposerBlur}
             onSubmitEditing={handleSubmitEditing}
             onKeyPress={(e: any) => {
               if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
@@ -1122,14 +1136,15 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   accessibilityLabel="Describe the agent you want to build"
                   value={composerDisplayValue}
                   onChangeText={handleChangeText}
-                  onFocus={() => setIsFocused(true)}
-                  onBlur={() => setIsFocused(false)}
+                  onFocus={handleComposerFocus}
+                  onBlur={handleComposerBlur}
                   onSubmitEditing={handleSubmitEditing}
                   editable={!disabled && !isLoading && !voiceInput.isRecording}
                   multiline
                   scrollEnabled={inputHeight > COMPACT_INPUT_PROMINENT_MIN_HEIGHT}
                   blurOnSubmit
                   returnKeyType="done"
+                  automaticallyAdjustKeyboardInsets={false}
                   onContentSizeChange={(e) => {
                     if (composerEmpty) {
                       if (inputHeight !== COMPACT_INPUT_PROMINENT_MIN_HEIGHT) {

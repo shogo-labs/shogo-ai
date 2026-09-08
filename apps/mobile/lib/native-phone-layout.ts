@@ -22,8 +22,17 @@ function isAndroidHandsetByWindowSize(width: number, height: number): boolean {
   return Math.min(width, height) < ANDROID_TABLET_MIN_SHORTEST_EDGE
 }
 
+/** True on iOS/Android. Web (including desktop) stays on existing layouts. */
+export function isNativePlatform(): boolean {
+  return Platform.OS !== 'web'
+}
+
 /** Horizontal padding for native-phone Settings chrome (`px-4`). */
 export const NATIVE_PHONE_GUTTER = 16
+/** NativeWind `p-4` / `px-4` (chart cards, section padding). */
+export const NATIVE_WIND_SPACE_4 = 16
+/** NativeWind `p-0.5`. */
+export const NATIVE_WIND_SPACE_0_5 = 2
 /** Left+right gutter. */
 export const NATIVE_PHONE_SECTION_INSET = NATIVE_PHONE_GUTTER * 2
 /** Section picker inset (`paddingHorizontal: 12` on each side). */
@@ -44,7 +53,7 @@ export function isNativePhoneIntegrationsLayout(
   width: number,
   height: number,
 ): boolean {
-  if (Platform.OS === 'web') return false
+  if (!isNativePlatform()) return false
   if (Platform.OS === 'ios') return !isIOSPadDevice()
   if (Platform.OS === 'android') return isAndroidHandsetByWindowSize(width, height)
   return false
@@ -118,6 +127,16 @@ export function nativeEqualChipWidths(
     chip,
     lastChip: inner - chip * (count - 1),
   }
+}
+
+/** Chip width for a wrapping native grid (Growth metric toggles). */
+export function nativeGridChipWidth(
+  rowWidth: number,
+  columns: number,
+  gap = 0,
+): number {
+  const cols = Math.max(1, columns)
+  return Math.max(0, Math.floor((rowWidth - gap * (cols - 1)) / cols))
 }
 
 /**

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { nativeContentWidth, nativePhoneFillStyle, nativeSettingsPaneFill, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeTwoColumnCardWidth } from '../native-phone-layout'
+import { nativeContentWidth, nativePhoneFillStyle, nativeSettingsPaneFill, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth } from '../native-phone-layout'
 
 describe('nativeContentWidth', () => {
   test('subtracts the default section inset', () => {
@@ -60,6 +60,13 @@ describe('nativeSettingsPaneStyle', () => {
 describe('nativeTwoColumnCardWidth', () => {
   test('splits the padded pane into two equal cards with a gap', () => {
     expect(nativeTwoColumnCardWidth(402)).toBe(179)
+  })
+})
+
+describe('nativeGridChipWidth', () => {
+  test('splits a row into equal columns', () => {
+    expect(nativeGridChipWidth(320, 2, 0)).toBe(160)
+    expect(nativeGridChipWidth(320, 4, 0)).toBe(80)
   })
 })
 

@@ -245,14 +245,14 @@ export default function AppLayout() {
   }
 
   const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
-  const nativeHomeChrome = isNativeApp && isHomePage && !isIdeEmbed
+  const nativeEdgeToEdgeChrome = isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage)
 
   return (
     <DomainProvider>
       <SafeAreaView
         className="flex-1 bg-background"
         style={nativeSheetDrawer ? { backgroundColor: NATIVE_DRAWER_UNDERLAY_BACKGROUND } : undefined}
-        edges={nativeHomeChrome ? ['left', 'right'] : undefined}
+        edges={nativeEdgeToEdgeChrome ? ['left', 'right'] : undefined}
       >
         <View className="flex-1 flex-row">
           {showSidebar && <AppSidebar />}

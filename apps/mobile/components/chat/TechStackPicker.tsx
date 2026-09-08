@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/popover"
 import { cn } from "@shogo/shared-ui/primitives"
 import { api, createHttpClient, type TechStackSummary } from "../../lib/api"
+import { mergeTechStacks, FALLBACK_TECH_STACKS, techStackDisplayName } from "../../lib/tech-stack-catalog"
 import { useComposerPlusClose } from "./AttachSourceSheet"
 
 /**
@@ -59,7 +60,9 @@ export function TechStackPicker({ value, onChange, disabled, prominentMobile = f
   const useProminentChip = prominentMobile && isNativePhone
   const triggerMaxWidth = Math.max(useProminentChip ? 90 : 84, Math.min(useProminentChip ? 124 : 128, Math.floor(windowWidth * 0.28)))
   const [open, setOpen] = useState(false)
-  const [stacks, setStacks] = useState<TechStackSummary[]>([])
+  const [stacks, setStacks] = useState<TechStackSummary[]>(
+    presentation === "list" ? FALLBACK_TECH_STACKS : [],
+  )
   const fetchedRef = useRef(false)
   const closePlusSheet = useComposerPlusClose()
 
@@ -69,9 +72,15 @@ export function TechStackPicker({ value, onChange, disabled, prominentMobile = f
     const http = createHttpClient()
     api
       .getTechStacks(http)
-      .then((s) => setStacks(s))
+      .then((s) => {
+        if (presentation === "list") {
+          setStacks(mergeTechStacks(s))
+          return
+        }
+        setStacks(s)
+      })
       .catch((e) => console.error("[TechStackPicker] Failed to fetch tech stacks:", e))
-  }, [])
+  }, [presentation])
 
   const selected = useMemo(
     () => stacks.find((s) => s.id === value),
@@ -80,19 +89,21 @@ export function TechStackPicker({ value, onChange, disabled, prominentMobile = f
 
   // Until the list loads (or if the id has no match) we don't have a human
   // label, so fall back to a generic "Stack" rather than flashing the raw id.
-  const displayLabel = selected?.name ?? "Stack"
+  const displayLabel = techStackDisplayName(value, stacks)
 
-  // Nothing to choose from (tech-stacks dir missing on disk / fetch failed).
-  // Hide the chip entirely rather than render a dead control.
-  if (stacks.length === 0) return null
+  // Chip on web: hide until the API returns something. Native plus-sheet
+  // always has fallback rows so the accordion is never an empty chevron.
+  if (presentation !== "list" && stacks.length === 0) return null
 
   const stackRows = (
     <>
-      <View className="px-3 pt-3 pb-1">
-        <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-          Tech Stack
-        </Text>
-      </View>
+      {presentation === "chip" ? (
+        <View className="px-3 pt-3 pb-1">
+          <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+            Tech Stack
+          </Text>
+        </View>
+      ) : null}
       {stacks.map((stack) => {
         const isSelected = stack.id === value
         return (
@@ -109,6 +120,7 @@ export function TechStackPicker({ value, onChange, disabled, prominentMobile = f
               isSelected && "bg-primary/10",
               disabled && "opacity-60",
             )}
+            style={presentation === "list" ? { width: "100%", minHeight: 52 } : undefined}
           >
             <View className="flex-1">
               <Text
@@ -131,7 +143,11 @@ export function TechStackPicker({ value, onChange, disabled, prominentMobile = f
   )
 
   if (presentation === "list") {
-    return <View>{stackRows}</View>
+    return (
+      <View collapsable={false} style={{ width: "100%" }}>
+        {stackRows}
+      </View>
+    )
   }
 
   return (

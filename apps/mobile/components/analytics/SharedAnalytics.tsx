@@ -14,7 +14,6 @@ import {
   Pressable,
   ActivityIndicator,
   Image,
-  Platform,
   Modal,
   useWindowDimensions,
 } from 'react-native'
@@ -38,6 +37,7 @@ import {
 } from '@shogo/model-catalog'
 import { resolveShortName, resolveFamily } from '../../lib/visible-models'
 import { nativeActivePill } from '../../lib/native-active-shadow'
+import { nativeGridChipWidth, NATIVE_PHONE_GUTTER, NATIVE_WIND_SPACE_4, isNativePlatform } from '../../lib/native-phone-layout'
 import {
   StackedAreaChart,
   STACKED_PALETTE,
@@ -198,7 +198,7 @@ export const getModelDisplayName = resolveShortName
 
 function useNativeComfortable() {
   const { width } = useWindowDimensions()
-  return Platform.OS !== 'web' && width < 600
+  return isNativePlatform() && width < 600
 }
 
 export function PeriodSelector({
@@ -1593,20 +1593,40 @@ export function MetricToggle<T extends string>({
   value,
   onChange,
   options,
+  maxWidth,
 }: {
   value: T
   onChange: (v: T) => void
   options: { id: T; label: string }[]
+  /** Native phone: pin chip widths so Yoga cannot overflow the screen. */
+  maxWidth?: number
 }) {
+  const nativeGrid = isNativePlatform() && (maxWidth ?? 0) > 0
+  const columns = options.length >= 4 ? 2 : Math.max(1, options.length)
+  const chipWidth = nativeGrid && maxWidth != null ? nativeGridChipWidth(maxWidth, columns, 0) : undefined
   return (
-    <View className="flex-row flex-wrap items-center rounded-lg border border-border overflow-hidden">
+    <View
+      className={cn(
+        'flex-row flex-wrap items-center rounded-lg border border-border',
+        !nativeGrid && 'overflow-hidden',
+      )}
+      style={nativeGrid ? { width: maxWidth, maxWidth } : undefined}
+    >
       {options.map((o, i) => (
         <Pressable
           key={o.id}
           onPress={() => onChange(o.id)}
-          className={cn('px-2.5 py-1.5', value === o.id ? 'bg-primary' : '', i > 0 && 'border-l border-border')}
+          className={cn(
+            'items-center justify-center px-2.5 py-1.5',
+            value === o.id ? 'bg-primary' : '',
+            i > 0 && !nativeGrid && 'border-l border-border',
+          )}
+          style={chipWidth ? { width: chipWidth, maxWidth: chipWidth } : undefined}
         >
-          <Text className={cn('text-[11px]', value === o.id ? 'text-primary-foreground' : 'text-muted-foreground')}>
+          <Text
+            className={cn('text-[11px]', value === o.id ? 'text-primary-foreground' : 'text-muted-foreground')}
+            numberOfLines={1}
+          >
             {o.label}
           </Text>
         </Pressable>
@@ -1775,6 +1795,11 @@ export function MetricTrendChart({
    */
   baselines?: Record<string, number>
 }) {
+  const { width } = useWindowDimensions()
+  const isNativeNarrow = isNativePlatform()
+  const toggleWidth = isNativeNarrow
+    ? Math.max(0, width - NATIVE_PHONE_GUTTER * 2 - NATIVE_WIND_SPACE_4 * 2)
+    : undefined
   const [selected, setSelected] = useState<string>(metrics[0]?.id ?? '')
   const [mode, setMode] = useState<'daily' | 'cumulative'>('daily')
   const metric = metrics.find((m) => m.id === selected) ?? metrics[0]
@@ -1795,12 +1820,15 @@ export function MetricTrendChart({
 
   return (
     <View className="rounded-xl border border-border bg-card p-4 gap-3">
-      <View className="flex-row items-center justify-between flex-wrap gap-2">
-        <View className="flex-1 min-w-[140px]">
+      <View className={cn(isNativeNarrow ? 'gap-3' : 'flex-row items-center justify-between flex-wrap gap-2')}>
+        <View className={isNativeNarrow ? undefined : 'flex-1 min-w-[140px]'}>
           <Text className="text-sm font-semibold text-foreground">{title}</Text>
           {subtitle ? <Text className="text-xs text-muted-foreground">{subtitle}</Text> : null}
         </View>
-        <View className="flex-row items-center gap-2 flex-wrap">
+        <View
+          className={cn(isNativeNarrow ? 'gap-2' : 'flex-row items-center gap-2 flex-wrap')}
+          style={toggleWidth ? { width: toggleWidth, maxWidth: toggleWidth } : undefined}
+        >
           {allowCumulative ? (
             <MetricToggle
               value={mode}
@@ -1809,12 +1837,14 @@ export function MetricTrendChart({
                 { id: 'daily', label: 'Daily' },
                 { id: 'cumulative', label: 'Cumulative' },
               ]}
+              maxWidth={toggleWidth}
             />
           ) : null}
           <MetricToggle
             value={selected}
             onChange={setSelected}
             options={metrics.map((m) => ({ id: m.id, label: m.label }))}
+            maxWidth={toggleWidth}
           />
         </View>
       </View>
