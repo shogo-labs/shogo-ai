@@ -37,7 +37,7 @@ import { AttachSourceSheet } from "./AttachSourceSheet"
 import { ContextTracker } from "./ContextTracker"
 import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
-import { ComposerModelPicker } from "./ModelPickerMenu"
+import { ComposerModelPicker, getNativeModelMenuWidth } from "./ModelPickerMenu"
 import { DockChip } from "./dock/DockChip"
 import { DockChipRail } from "./dock/DockChipRail"
 import { QueueDockPanel } from "./dock/panels/QueueDockPanel"
@@ -471,6 +471,7 @@ function ChatInputImpl({
   const modelTriggerMaxWidth = useProminentComposer
     ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
     : Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
+  const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
   const bridge = useChatBridgeOptional()
   const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
   const ezActive = bridge?.ezModeActive ?? false
@@ -2246,6 +2247,7 @@ function ChatInputImpl({
               chevronSize={isNative ? 12 : 8}
               hitSlop={isNative ? 6 : undefined}
               label={isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
+              menuWidth={nativeModelMenuWidth}
               onSelect={handleModelChange}
             />
 

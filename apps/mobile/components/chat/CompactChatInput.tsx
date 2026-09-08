@@ -22,7 +22,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
-import { ComposerModelPicker } from "./ModelPickerMenu"
+import { ComposerModelPicker, getNativeModelMenuWidth } from "./ModelPickerMenu"
 import {
   ArrowUp,
   Plus,
@@ -225,6 +225,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const modelTriggerMaxWidth = useProminentComposer
       ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
       : Math.max(50, Math.min(62, Math.floor(windowWidth * 0.16)))
+    const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
     const [internalValue, setInternalValue] = useState("")
     const [inputHeight, setInputHeight] = useState(inputMinHeight)
     const [isFocused, setIsFocused] = useState(false)
@@ -1080,6 +1081,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 chevronSize={useCurrentNativeSizing ? 10 : 8}
                 hitSlop={useCurrentNativeSizing ? 6 : undefined}
                 label={isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
+                menuWidth={nativeModelMenuWidth}
                 onSelect={handleModelChange}
               />
             </View>

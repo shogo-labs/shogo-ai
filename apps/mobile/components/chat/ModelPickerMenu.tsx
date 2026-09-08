@@ -313,6 +313,7 @@ export function ComposerModelPicker({
   chevronSize,
   hitSlop,
   label,
+  menuWidth,
   onSelect,
 }: {
   currentModelId: string
@@ -325,6 +326,7 @@ export function ComposerModelPicker({
   chevronSize: number
   hitSlop?: number
   label: string
+  menuWidth?: number
   onSelect: (modelId: string) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -388,7 +390,10 @@ export function ComposerModelPicker({
       )}
     >
       <PopoverBackdrop />
-      <PopoverContent className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none">
+      <PopoverContent
+        className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
+        style={menuWidth ? { width: menuWidth } : undefined}
+      >
         {menu}
       </PopoverContent>
     </Popover>
