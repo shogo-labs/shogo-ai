@@ -212,6 +212,8 @@ function AppleContinueButton({
 }
 
 const LOGIN_HERO_BREAKPOINT = 768
+/** Responsive web viewports at or below this width use the native phone surface. */
+const LOGIN_PHONE_WEB_MAX_WIDTH = LOGIN_HERO_BREAKPOINT - 1
 
 /** Short native-landing typewriter lines. Keep similar length so the hero stays one line. */
 const NATIVE_LANDING_HERO_PHRASES = [
@@ -241,19 +243,33 @@ function openExternalUrl(url: string) {
   })
 }
 
-function ConsentNotice({ className }: { className?: string } = {}) {
+const CONSENT_ONE_LINE_STYLE = { fontSize: 11, lineHeight: 14, textAlign: 'center' } as const
+const CONSENT_WRAPPED_STYLE = {
+  fontSize: 11,
+  lineHeight: 14,
+  textAlign: 'center',
+  flexWrap: 'wrap',
+} as const
+const CONSENT_LINK_STYLE = { fontWeight: '600' } as const
+const CONSENT_LINK_UNDERLINED_STYLE = {
+  fontWeight: '600',
+  textDecorationLine: 'underline',
+} as const
+
+function ConsentNotice({ singleLine = false }: { singleLine?: boolean } = {}) {
+  const linkStyle = singleLine ? CONSENT_LINK_STYLE : CONSENT_LINK_UNDERLINED_STYLE
   return (
     <Text
-      className={cn('text-muted-foreground mt-1', className)}
-      numberOfLines={1}
-      adjustsFontSizeToFit
-      minimumFontScale={0.7}
-      style={{ fontSize: 11, lineHeight: 14, textAlign: 'center' }}
+      className="text-muted-foreground mt-1"
+      numberOfLines={singleLine ? 1 : undefined}
+      adjustsFontSizeToFit={singleLine}
+      minimumFontScale={singleLine ? 0.7 : undefined}
+      style={singleLine ? CONSENT_ONE_LINE_STYLE : CONSENT_WRAPPED_STYLE}
     >
       By continuing, you agree to our{' '}
       <Text
         className="text-brand-landing"
-        style={{ fontWeight: '600' }}
+        style={linkStyle}
         onPress={() => openExternalUrl(PRIVACY_URL)}
         accessibilityRole="link"
         accessibilityLabel="Privacy Policy"
@@ -263,7 +279,7 @@ function ConsentNotice({ className }: { className?: string } = {}) {
       {' '}and{' '}
       <Text
         className="text-brand-landing"
-        style={{ fontWeight: '600' }}
+        style={linkStyle}
         onPress={() => openExternalUrl(TERMS_URL)}
         accessibilityRole="link"
         accessibilityLabel="Terms of Use"
@@ -1031,7 +1047,7 @@ function NativeMobileLoginPanel({
           )}
 
           <View className="mt-5">
-            <ConsentNotice />
+            <ConsentNotice singleLine />
           </View>
         </View>
       </ScrollView>
@@ -1302,10 +1318,11 @@ export function LoginScreen(props: LoginScreenProps) {
   const { width } = useWindowDimensions()
   const isWeb = Platform.OS === 'web'
   const isDesktopWeb = isWeb && width >= LOGIN_HERO_BREAKPOINT
+  const isPhoneWeb = isWeb && width <= LOGIN_PHONE_WEB_MAX_WIDTH
   const scheme = props.colorScheme ?? 'light'
   const heroArtwork = resolveLoginHeroArtwork(scheme, props)
 
-  if (!isWeb) {
+  if (!isWeb || isPhoneWeb) {
     return <NativeMobileLoginPanel {...props} heroSource={heroArtwork} />
   }
 

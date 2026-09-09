@@ -59,7 +59,7 @@ import {
   nativeComposerKeyboardOverlapFromEvent,
   useNativeComposerKeyboard,
 } from '../../lib/use-native-composer-keyboard'
-import { nativePhoneCanvas, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
+import { nativePhoneCanvas, NATIVE_PHONE_GUTTER, isPhoneLayout } from '../../lib/native-phone-layout'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 import { TechStackPicker } from '../../components/chat/TechStackPicker'
@@ -116,8 +116,8 @@ function generateProjectNameFromPrompt(prompt: string): string {
   return nameWords.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ")
 }
 
-const LovableGradient = memo(function LovableGradient({ isDark }: { isDark: boolean }) {
-  if (Platform.OS !== 'web') {
+const LovableGradient = memo(function LovableGradient({ isDark, phone = false }: { isDark: boolean; phone?: boolean }) {
+  if (Platform.OS !== 'web' || phone) {
     // ChatGPT iOS empty home is a flat canvas (true black / white) with only
     // a whisper of cool depth — not the saturated Lovable aurora used on web.
     const baseColors: [string, string, string, string] = isDark
@@ -251,10 +251,10 @@ const HomeScreen = observer(function HomeScreen() {
   const http = useDomainHttp()
   const actions = useDomainActions()
   const isDark = useResolvedTheme() === 'dark'
-  const { width: screenWidth } = useWindowDimensions()
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions()
   const insets = useSafeAreaInsets()
   const isMobile = screenWidth < 640
-  const isNativePhone = Platform.OS !== 'web' && isMobile
+  const isNativePhone = isPhoneLayout(screenWidth, screenHeight)
   const homeEntrance = useRef(new Animated.Value(Platform.OS === 'web' ? 1 : 0)).current
   const restComposerPad = Math.max(insets.bottom, 12)
   const restComposerSidePad = NATIVE_PHONE_GUTTER
@@ -334,7 +334,7 @@ const HomeScreen = observer(function HomeScreen() {
     }
   }, [composerKeyboardPad, restComposerPad])
 
-  useNativeComposerKeyboard(isNativePhone, dockComposer)
+  useNativeComposerKeyboard(Platform.OS !== 'web' && isNativePhone, dockComposer)
 
   /**
    * Draft project the homepage opens behind the scenes for a creation
@@ -988,10 +988,11 @@ const HomeScreen = observer(function HomeScreen() {
       keyboardVerticalOffset={0}
     >
       <View className="relative flex-1">
-        <LovableGradient isDark={isDark} />
+        <LovableGradient isDark={isDark} phone />
         <Animated.View
           className="flex-1 items-center justify-center"
           style={[
+            { flex: 1, alignItems: 'center', justifyContent: 'center' },
             CONTENT_MAX_WIDTH,
             {
               alignSelf: 'center',
@@ -1042,7 +1043,7 @@ const HomeScreen = observer(function HomeScreen() {
     </View>
   )
 
-  if (Platform.OS === 'web') return screen
+  if (Platform.OS === 'web' && !isNativePhone) return screen
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>

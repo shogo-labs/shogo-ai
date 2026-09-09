@@ -56,7 +56,7 @@ import { canvasDisabledRedirect } from '../../../../lib/project-preview-tab'
 import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
-import { isNativePhoneIntegrationsLayout, nativePhoneFillStyle } from '../../../../lib/native-phone-layout'
+import { isPhoneLayout, nativePhoneFillStyle } from '../../../../lib/native-phone-layout'
 import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas, isPreviewFailed, previewStatusPollBase, nativeCanvasBaseReady, projectIdFromAgentProxyUrl, previewWakeUrl } from '../../../../lib/preview-gate'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
@@ -304,9 +304,9 @@ export default observer(function ProjectLayout() {
   const { width, height } = useWindowDimensions()
   const isWide = width >= WIDE_BREAKPOINT
   const insets = useSafeAreaInsets()
-  const nativePhone = isNativePhoneIntegrationsLayout(width, height)
+  const phoneLayout = isPhoneLayout(width, height)
   /** Handset + narrow project layout: float integrations above the composer. Tablets/web use default placement. */
-  const liftIntegrationsAboveComposer = nativePhone && !isWide
+  const liftIntegrationsAboveComposer = phoneLayout && !isWide
   const { user } = useAuth()
   const http = useDomainHttp()
   const toast = useToast()
@@ -1168,7 +1168,7 @@ export default observer(function ProjectLayout() {
             return
           }
           openTabsRestoredRef.current = true
-          setTabsHydration(Platform.OS !== 'web' && nativePhone ? 'fresh' : 'restored-empty')
+          setTabsHydration(Platform.OS !== 'web' && phoneLayout ? 'fresh' : 'restored-empty')
           return
         }
       } catch { /* ignore malformed data */ }
@@ -1179,7 +1179,7 @@ export default observer(function ProjectLayout() {
       openTabsRestoredRef.current = true
       setTabsHydration('fresh')
     })
-  }, [projectId, nativePhone])
+  }, [projectId, phoneLayout])
 
   // Persist open tabs to AsyncStorage on every change, including `[]`.
   // Storing the explicit empty array is what lets the next mount distinguish
@@ -1433,7 +1433,7 @@ export default observer(function ProjectLayout() {
   // panel with the session list. Auto-closes when the user leaves the chat tab.
   const [narrowChatPickerOpen, setNarrowChatPickerOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState(
-    Platform.OS !== 'web' && nativePhone && !isWide ? 'chat-fullscreen' : 'canvas',
+    Platform.OS !== 'web' && phoneLayout && !isWide ? 'chat-fullscreen' : 'canvas',
   )
   // Ephemeral "the app needs your attention" override (e.g. the agent called
   // ask_user). Layered ON TOP of previewTab via effectiveTab below, and never
@@ -1449,12 +1449,12 @@ export default observer(function ProjectLayout() {
   const userRequestedCanvasRef = useRef(false)
 
   useEffect(() => {
-    if (Platform.OS === 'web' || !nativePhone) return
+    if (Platform.OS === 'web' || !phoneLayout) return
     userRequestedCanvasRef.current = false
     setActiveTab('chat')
     setPreviewTab('chat-fullscreen')
     setNarrowChatPickerOpen(false)
-  }, [projectId, nativePhone])
+  }, [projectId, phoneLayout])
 
   // Close the narrow picker as soon as the layout shifts off the chat tab
   // (e.g. user switched to canvas, or the viewport widened into split mode).
@@ -1558,17 +1558,17 @@ export default observer(function ProjectLayout() {
     if (
       userRequestedCanvasRef.current &&
       requested === 'chat-fullscreen' &&
-      (Platform.OS === 'web' || !nativePhone)
+      (Platform.OS === 'web' || !phoneLayout)
     ) {
       return
     }
-    if (nativePhone && requested === 'chat-fullscreen') {
+    if (phoneLayout && requested === 'chat-fullscreen') {
       userRequestedCanvasRef.current = false
     }
     appliedTabIntentRef.current = token
     previewTabInitForRef.current = projectId
     const nativePhoneChat =
-      Platform.OS !== 'web' && nativePhone && !isWide
+      Platform.OS !== 'web' && phoneLayout && !isWide
     const landingTab =
       requested === 'canvas' ||
       requested === 'chat-fullscreen' ||
@@ -1586,13 +1586,13 @@ export default observer(function ProjectLayout() {
     if (nativePhoneChat) {
       setActiveTab(requested === 'chat-fullscreen' ? 'chat' : 'canvas')
     }
-  }, [projectId, params.tab, params.tabNonce, nativePhone, isWide])
+  }, [projectId, params.tab, params.tabNonce, phoneLayout, isWide])
 
   useEffect(() => {
     if (!projectId || !project) return
     if (previewTabInitForRef.current === projectId) return
     previewTabInitForRef.current = projectId
-    if (Platform.OS !== 'web' && nativePhone && !isWide) {
+    if (Platform.OS !== 'web' && phoneLayout && !isWide) {
       setPreviewTab('chat-fullscreen')
       AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
       return
@@ -1616,7 +1616,7 @@ export default observer(function ProjectLayout() {
     }).catch(() => {})
     // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
     AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
-  }, [projectId, project, isExternalProject, nativePhone, isWide])
+  }, [projectId, project, isExternalProject, phoneLayout, isWide])
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
@@ -2518,11 +2518,11 @@ export default observer(function ProjectLayout() {
 
   /** Native phone + narrow layout: float only on Chat tab (not Canvas / Files / Terminal / …). Web, tablet, and wide layouts unchanged. */
   const showIntegrationsCardUi =
-    showIntegrationsCard && (!nativePhone || isWide || activeTab === 'chat')
+    showIntegrationsCard && (!phoneLayout || isWide || activeTab === 'chat')
 
   const narrowOnCanvas = !isWide && activeTab === 'canvas'
   /** Native-only: float above Files / Terminal / … (those layers use z-20). Omit on Expo web so web layout stays unchanged. */
-  const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web' && !nativePhone
+  const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web' && !phoneLayout
 
   /** Keeps the narrow-mode Chat FAB above the software keyboard (absolute positioning ignores keyboard inset). Web unchanged. */
   const [narrowCanvasKeyboardInset, setNarrowCanvasKeyboardInset] = useState(0)
@@ -2716,7 +2716,7 @@ export default observer(function ProjectLayout() {
   )
 
   const nativePhoneChatViewportHeight =
-    Platform.OS !== 'web' && nativePhone && !isWide
+    Platform.OS !== 'web' && phoneLayout && !isWide
       ? Math.max(0, height - insets.top - insets.bottom - 24)
       : undefined
 
@@ -2802,11 +2802,11 @@ export default observer(function ProjectLayout() {
 
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
-  const nativePhoneCanvasFrame = Platform.OS !== 'web' && nativePhone && !isWide && activeTab === 'canvas'
+  const nativePhoneCanvasFrame = Platform.OS !== 'web' && phoneLayout && !isWide && activeTab === 'canvas'
   const nativePhoneStandalonePanel = nativePhoneCanvasFrame && STANDALONE_PANELS.includes(effectiveTab)
   const nativePhonePlansOverlay = nativePhoneCanvasFrame && effectiveTab === 'plans'
   const nativePhoneFill = nativePhoneCanvasFrame ? nativePhoneFillStyle(width) : undefined
-  const enableNativePhoneChatPicker = Platform.OS !== 'web' && nativePhone && !isWide
+  const enableNativePhoneChatPicker = Platform.OS !== 'web' && phoneLayout && !isWide
 
   // Defined after `chatHidden` so it can drive the canvas's `fullBleed`
   // prop — see comment on `fullBleed` for why the iframe's left margin
@@ -3186,8 +3186,8 @@ export default observer(function ProjectLayout() {
           <View
             className={cn('flex-1 overflow-hidden', isWide && 'flex-row')}
             ref={splitRowRef}
-            collapsable={nativePhone && !isWide ? false : undefined}
-            style={nativePhone && !isWide ? { width, flex: 1 } : undefined}
+            collapsable={phoneLayout && !isWide ? false : undefined}
+            style={phoneLayout && !isWide ? { width, flex: 1 } : undefined}
           >
             {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
             {(() => {

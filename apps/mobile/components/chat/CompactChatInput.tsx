@@ -16,6 +16,7 @@
 import React, { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
 import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, useWindowDimensions, Animated, Easing } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import { isPhoneLayout } from "../../lib/native-phone-layout"
 import {
   Popover,
   PopoverBackdrop,
@@ -204,7 +205,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const { width: windowWidth, height: windowHeight } = useWindowDimensions()
     const effectiveIsPro = features.billing ? isPro : true
     const isNative = Platform.OS !== "web"
-    const isNativePhone = Platform.OS !== "web" && windowWidth < 600
+    const isNativePhone = isPhoneLayout(windowWidth, windowHeight)
     const useProminentComposer = prominentMobile && isNativePhone
     const useLightProminentComposer = useProminentComposer && prominentColorScheme === "light"
     const chatgptComposer = useLightProminentComposer ? CHATGPT_COMPOSER.light : CHATGPT_COMPOSER.dark

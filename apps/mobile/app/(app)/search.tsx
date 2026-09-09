@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Native ChatGPT-style search page.
+ * ChatGPT-style search page.
  *
- * Opened from the sidebar search icon. Web keeps the command-palette modal.
+ * Opened from the phone sidebar search icon. Wide web keeps the command-palette modal.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -15,6 +15,7 @@ import {
   ScrollView,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native'
 import { useRouter } from 'expo-router'
@@ -45,7 +46,7 @@ import {
   nativeComposerKeyboardOverlapFromEvent,
   useNativeComposerKeyboard,
 } from '../../lib/use-native-composer-keyboard'
-import { isNativePlatform, nativePhoneCanvas, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
+import { isPhoneLayout, nativePhoneCanvas, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
 
 const SEARCH_MIN_KEYBOARD_PAD = 8
 const SEARCH_TAB_ROW_HEIGHT = 52
@@ -87,6 +88,9 @@ export default observer(function SearchPage() {
   const { user, isAuthenticated } = useAuth()
   const isDark = useResolvedTheme() === 'dark'
   const pageBg = nativePhoneCanvas(isDark)
+  const { width, height } = useWindowDimensions()
+  const isPhone = isPhoneLayout(width, height)
+  const isSupportedPlatform = Platform.OS !== 'web' || isPhone
   const { localMode } = usePlatformConfig()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
@@ -106,17 +110,17 @@ export default observer(function SearchPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (Platform.OS === 'web') {
+    if (!isSupportedPlatform) {
       router.replace('/(app)' as any)
     }
-  }, [router])
+  }, [isSupportedPlatform, router])
 
   useEffect(() => {
     const t = setTimeout(() => inputRef.current?.focus(), 250)
     return () => clearTimeout(t)
   }, [])
 
-  useNativeComposerKeyboard(isNativePlatform(), (event, source) => {
+  useNativeComposerKeyboard(Platform.OS !== 'web', (event, source) => {
     const overlap = nativeComposerKeyboardOverlapFromEvent(event)
     const keyboardOpen = nativeComposerKeyboardOpenFromSource(source, overlap, restKeyboardPad)
     if (keyboardOpen == null) return
@@ -273,7 +277,7 @@ export default observer(function SearchPage() {
             ? 'Nothing shared with you yet'
             : 'No projects yet'
 
-  if (Platform.OS === 'web') return null
+  if (!isSupportedPlatform) return null
 
   const renderRow = ({ item }: { item: SearchRow }) => {
     const Icon = item.kind === 'keys' ? Key : item.kind === 'starred' ? Star : item.kind === 'shared' ? Users : Folder
@@ -406,7 +410,6 @@ export default observer(function SearchPage() {
             autoCorrect={false}
             autoCapitalize="none"
             returnKeyType="search"
-            automaticallyAdjustKeyboardInsets={false}
             className="ml-2 flex-1 text-[16px] text-foreground"
             style={{ fontSize: 16, lineHeight: 20, paddingVertical: 0 }}
             accessibilityLabel="Search"
