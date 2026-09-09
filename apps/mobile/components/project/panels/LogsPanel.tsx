@@ -26,7 +26,7 @@ import { useRuntimeLogStream } from '../../../lib/runtime-logs/useRuntimeLogStre
 import {
   useNativePhoneWindow,
   nativeContentWidth,
-  nativeSettingsPaneStyle,
+  nativeSettingsPaneRootStyle,
 } from '../../../lib/native-phone-layout'
 
 const ROW_HEIGHT = 24
@@ -192,11 +192,7 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
     <View
       collapsable={false}
       className={comfortable ? undefined : 'absolute inset-0 flex-col'}
-      style={
-        comfortable
-          ? { ...nativeSettingsPaneStyle(pageWidth), display: visible ? 'flex' : 'none' }
-          : { display: visible ? 'flex' : 'none' }
-      }
+      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
     >
       {/* ---- Header toolbar ---- */}
       <View
@@ -293,7 +289,7 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
       <View
         className="flex-1 bg-zinc-950"
         collapsable={false}
-        style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
       >
         {!agentUrl ? (
           <View className="items-center py-8 px-4">
@@ -320,7 +316,7 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
             alwaysBounceVertical={comfortable}
             onScroll={handleScroll}
             scrollEventThrottle={100}
-            style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+            style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
             contentContainerStyle={{
               paddingVertical: 8,
               width: comfortable ? pageWidth : undefined,

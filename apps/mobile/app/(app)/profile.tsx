@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, ScrollView, Pressable, ActivityIndicator, useWindowDimensions, Platform } from 'react-native'
+import { View, Text, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -55,6 +55,7 @@ import {
   Skeleton,
   cn,
 } from '@shogo/shared-ui/primitives'
+import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 
 export default observer(function ProfilePage() {
   const router = useRouter()
@@ -62,8 +63,8 @@ export default observer(function ProfilePage() {
   const store = useDomain() as IDomainStore
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
-  const { width } = useWindowDimensions()
-  const isNativePhone = Platform.OS !== 'web' && width < 600
+  const { width, height } = useWindowDimensions()
+  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
   const profileMaxWidth = width >= 1280 ? 880 : width >= 768 ? 760 : width
   const profilePadH = width >= 768 ? 24 : 16
 
@@ -253,8 +254,8 @@ interface UserOverviewData {
 function UserUsageSection() {
   const http = useDomainHttp()
   const { features, localMode } = usePlatformConfig()
-  const { width } = useWindowDimensions()
-  const comfortable = Platform.OS !== 'web' && width < 600
+  const { width, height } = useWindowDimensions()
+  const comfortable = isNativePhoneIntegrationsLayout(width, height)
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [logPage, setLogPage] = useState(1)

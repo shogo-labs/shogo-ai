@@ -20,7 +20,7 @@ import type { HttpClient } from '@shogo-ai/sdk'
 import {
   useNativePhoneWindow,
   nativeContentWidth,
-  nativeSettingsPaneStyle,
+  nativeSettingsPaneRootStyle,
   nativeTwoColumnCardWidth,
   NATIVE_PHONE_CONTROL_SIZE,
   NATIVE_PHONE_ROW_GAP,
@@ -218,11 +218,7 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
     <View
       collapsable={false}
       className={comfortable ? undefined : 'absolute inset-0 flex-col'}
-      style={
-        comfortable
-          ? { ...nativeSettingsPaneStyle(pageWidth), display: visible ? 'flex' : 'none' }
-          : { display: visible ? 'flex' : 'none' }
-      }
+      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
     >
       {/* Header */}
       <View
@@ -300,7 +296,7 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
         alwaysBounceVertical={comfortable}
-        style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
         contentContainerStyle={{
           padding: 16,
           flexGrow: 1,

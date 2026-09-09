@@ -36,16 +36,7 @@ import {
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { CHATGPT_COMPOSER } from '../../components/chat/ComposerPlusMenu'
-import {
-  nativeComposerDockBottomPad,
-  nativeComposerKeyboardDuration,
-  nativeComposerKeyboardOpenFromSource,
-} from '../../lib/native-composer-keyboard'
-import {
-  nativeComposerKeyboardEasing,
-  nativeComposerKeyboardOverlapFromEvent,
-  useNativeComposerKeyboard,
-} from '../../lib/use-native-composer-keyboard'
+import { useNativeComposerDockPad } from '../../lib/use-native-composer-keyboard'
 import { isPhoneLayout, nativePhoneCanvas, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
 
 const SEARCH_MIN_KEYBOARD_PAD = 8
@@ -102,7 +93,11 @@ export default observer(function SearchPage() {
   const inputRef = useRef<TextInput>(null)
   const insets = useSafeAreaInsets()
   const restKeyboardPad = Math.max(insets.bottom, SEARCH_MIN_KEYBOARD_PAD)
-  const composerKeyboardPad = useRef(new Animated.Value(restKeyboardPad)).current
+  const composerKeyboardPad = useNativeComposerDockPad({
+    enabled: Platform.OS !== 'web',
+    restPad: restKeyboardPad,
+    iosKeyboardAvoiding: false,
+  })
 
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState<SearchTab>('all')
@@ -119,23 +114,6 @@ export default observer(function SearchPage() {
     const t = setTimeout(() => inputRef.current?.focus(), 250)
     return () => clearTimeout(t)
   }, [])
-
-  useNativeComposerKeyboard(Platform.OS !== 'web', (event, source) => {
-    const overlap = nativeComposerKeyboardOverlapFromEvent(event)
-    const keyboardOpen = nativeComposerKeyboardOpenFromSource(source, overlap, restKeyboardPad)
-    if (keyboardOpen == null) return
-    Animated.timing(composerKeyboardPad, {
-      toValue: nativeComposerDockBottomPad({
-        keyboardOpen,
-        overlap,
-        restPad: restKeyboardPad,
-        iosKeyboardAvoiding: false,
-      }),
-      duration: nativeComposerKeyboardDuration(event.duration),
-      easing: nativeComposerKeyboardEasing(),
-      useNativeDriver: false,
-    }).start()
-  })
 
   useEffect(() => {
     if (!isAuthenticated || !user?.id) return

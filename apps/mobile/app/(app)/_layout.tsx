@@ -18,7 +18,7 @@
  * Auth guard redirects unauthenticated users to sign-in (or root in local mode).
  */
 
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { ActivityIndicator, Animated, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -35,13 +35,7 @@ import { RecordingIndicator } from '../../components/meetings/RecordingIndicator
 import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
 import { mark as csMark } from '../../lib/cold-start-timing'
 import { nativePhoneCanvas } from '../../lib/native-phone-layout'
-import {
-  nativeDrawerPanelWidth,
-  snapNativeDrawer,
-  useNativeDrawerSheetSwipe,
-  useNativeDrawerSheetStyle,
-  nativeDrawerUnderlayStyle,
-} from '../../lib/use-native-drawer-swipe'
+import { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe'
 
 csMark('app:layout:module-load')
 
@@ -69,8 +63,6 @@ export default function AppLayout() {
   const isDark = useResolvedTheme() === 'dark'
   const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const isWide = !isNativeApp && width >= 768
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const drawerProgress = useRef(new Animated.Value(0)).current
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
 
   const isProjectDetail = /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, '/'))
@@ -146,24 +138,6 @@ export default function AppLayout() {
     } catch {}
   }, [isAuthenticated, user])
 
-  const nativeDrawerWidth = nativeDrawerPanelWidth(width)
-  const resetDrawer = useCallback(() => {
-    drawerProgress.setValue(0)
-    setDrawerOpen(false)
-  }, [drawerProgress])
-  const openDrawer = useCallback(() => {
-    setDrawerOpen(true)
-    snapNativeDrawer(drawerProgress, true)
-  }, [drawerProgress])
-  const closeDrawer = useCallback(() => {
-    snapNativeDrawer(drawerProgress, false, (open) => {
-      if (!open) resetDrawer()
-    })
-  }, [drawerProgress, resetDrawer])
-  const toggleDrawer = useCallback(() => {
-    if (drawerOpen) closeDrawer()
-    else openDrawer()
-  }, [closeDrawer, drawerOpen, openDrawer])
   const suppressNarrowAppHeader =
     isProjectDetail ||
     isBillingPage ||
@@ -173,15 +147,21 @@ export default function AppLayout() {
     isSearchPage ||
     isProjectChatsPage
   const nativeDrawerSwipe = !isWide && !isIdeEmbed && !suppressNarrowAppHeader
-  const sheetSwipeHandlers = useNativeDrawerSheetSwipe({
-    enabled: nativeDrawerSwipe,
-    drawerWidth: nativeDrawerWidth,
-    drawerProgress,
-    isOpen: drawerOpen,
-    onOpenChange: setDrawerOpen,
-  })
   const nativeSheetDrawer = !isWide && !isIdeEmbed
-  const { sheetStyle, sheetClipStyle } = useNativeDrawerSheetStyle(drawerProgress, nativeDrawerWidth)
+  const {
+    drawerOpen,
+    sheetSwipeHandlers,
+    sheetStyle,
+    sheetClipStyle,
+    underlayStyle: nativeDrawerUnderlay,
+    closeDrawer,
+    toggleDrawer,
+    resetDrawer,
+  } = useNativeSheetDrawer({
+    windowWidth: width,
+    isDark,
+    swipeEnabled: nativeDrawerSwipe,
+  })
 
   useEffect(() => {
     if (!isWide) return
@@ -273,7 +253,7 @@ export default function AppLayout() {
                 pointerEvents={drawerOpen ? 'auto' : 'none'}
                 accessibilityElementsHidden={!drawerOpen}
                 importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
-                style={nativeDrawerUnderlayStyle(nativeDrawerWidth, isDark)}
+                style={nativeDrawerUnderlay}
               >
                 <AppSidebar
                   isOpen={drawerOpen}

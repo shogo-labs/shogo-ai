@@ -39,6 +39,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 
 // ─── Types ────────────────────────────────────────────────
 
@@ -70,8 +71,8 @@ export const CommandPalette = observer(function CommandPalette({
   onClose,
 }: CommandPaletteProps) {
   const router = useRouter()
-  const { width } = useWindowDimensions()
-  const isNativePhone = Platform.OS !== 'web' && width < 600
+  const { width, height } = useWindowDimensions()
+  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
   const projects = useProjectCollection()
   const { localMode, features } = usePlatformConfig()
   const [query, setQuery] = useState('')

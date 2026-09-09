@@ -14,7 +14,7 @@
  */
 
 import React, { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
-import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, useWindowDimensions, Animated, Easing } from "react-native"
+import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, useWindowDimensions, Animated } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { isPhoneLayout } from "../../lib/native-phone-layout"
 import {
@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/popover"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
 import { ComposerModelPicker, getNativeModelMenuWidth } from "./ModelPickerMenu"
+import { WebTooltip } from "./WebTooltip"
 import {
   ArrowUp,
   Plus,
@@ -67,6 +68,7 @@ import {
   PROMINENT_COMPOSER_CHROME_Z_INDEX,
   PROMINENT_COMPOSER_FONT_SIZE,
   PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
+  PROMINENT_COMPOSER_HEIGHT_EASING,
   PROMINENT_COMPOSER_LINE_HEIGHT,
   PROMINENT_COMPOSER_MAX_HEIGHT,
   PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
@@ -76,7 +78,9 @@ import {
   PROMINENT_COMPOSER_PADDING_TOP,
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+  ProminentAnimatedTextInput,
   nextProminentComposerHeight,
+  prominentModelTriggerMaxWidth,
   useProminentComposerExpansion,
 } from "./useProminentComposerExpansion"
 import { EnvironmentPicker } from "./EnvironmentPicker"
@@ -103,34 +107,8 @@ const MAX_FILES = 10
 // via `useProminentComposerExpansion` so home and project composers cannot drift.
 const COMPACT_INPUT_MIN_HEIGHT = 80
 const COMPACT_INPUT_MAX_HEIGHT = 200
-const COMPACT_INPUT_PROMINENT_MIN_HEIGHT = PROMINENT_COMPOSER_MIN_HEIGHT
-const COMPACT_INPUT_PROMINENT_MAX_HEIGHT = PROMINENT_COMPOSER_MAX_HEIGHT
-const COMPACT_INPUT_PROMINENT_LINE_HEIGHT = PROMINENT_COMPOSER_LINE_HEIGHT
-const COMPACT_INPUT_PROMINENT_PADDING_TOP = PROMINENT_COMPOSER_PADDING_TOP
-const COMPACT_INPUT_PROMINENT_PADDING_HORIZONTAL = PROMINENT_COMPOSER_PADDING_HORIZONTAL
-const COMPACT_INPUT_PROMINENT_PADDING_BOTTOM = PROMINENT_COMPOSER_PADDING_BOTTOM
-const COMPACT_INPUT_PROMINENT_RADIUS = PROMINENT_COMPOSER_RADIUS
-const COMPACT_INPUT_HEIGHT_ANIMATION_DURATION = PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION
-const COMPACT_INPUT_HEIGHT_EASING = Easing.out(Easing.cubic)
-const AnimatedTextInput = Animated.createAnimatedComponent(TextInput)
 const COMPACT_INPUT_NATIVE_MIN_HEIGHT = 48
 const COMPACT_INPUT_NATIVE_MAX_HEIGHT = 144
-
-/**
- * Show a native browser tooltip on hover (web only). Wraps children in a
- * `display: contents` div with the `title` attribute so layout is unaffected
- * and the trigger's own ref (e.g. for popover positioning) isn't disturbed.
- * On native this is a transparent passthrough — the icon click opens the
- * popover menu which already shows the full label.
- */
-function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
-  if (Platform.OS !== "web") return <>{children}</>
-  return React.createElement(
-    "div",
-    { title: label, style: { display: "contents" } },
-    children,
-  )
-}
 
 interface AttachedFile {
   id: string
@@ -232,17 +210,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const chatgptComposer = useLightProminentComposer ? CHATGPT_COMPOSER.light : CHATGPT_COMPOSER.dark
     const useCurrentNativeSizing = isNative && !useProminentComposer
     const inputMinHeight = useProminentComposer
-      ? COMPACT_INPUT_PROMINENT_MIN_HEIGHT
+      ? PROMINENT_COMPOSER_MIN_HEIGHT
       : useCurrentNativeSizing
         ? COMPACT_INPUT_NATIVE_MIN_HEIGHT
         : COMPACT_INPUT_MIN_HEIGHT
     const inputMaxHeight = useProminentComposer
-      ? COMPACT_INPUT_PROMINENT_MAX_HEIGHT
+      ? PROMINENT_COMPOSER_MAX_HEIGHT
       : useCurrentNativeSizing
         ? COMPACT_INPUT_NATIVE_MAX_HEIGHT
         : COMPACT_INPUT_MAX_HEIGHT
     const modelTriggerMaxWidth = useProminentComposer
-      ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
+      ? prominentModelTriggerMaxWidth(windowWidth)
       : Math.max(50, Math.min(62, Math.floor(windowWidth * 0.16)))
     const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
     const [internalValue, setInternalValue] = useState("")
@@ -330,7 +308,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       Animated.timing(focusProgress, {
         toValue: isFocused ? 1 : 0,
         duration: isFocused ? 170 : 140,
-        easing: Easing.out(Easing.cubic),
+        easing: PROMINENT_COMPOSER_HEIGHT_EASING,
         useNativeDriver: false,
       }).start()
     }, [focusProgress, isFocused, useProminentComposer])
@@ -590,21 +568,21 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       empty: composerEmpty,
       text: composerDisplayValue,
       inputHeight,
-      minHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
-      lineHeight: COMPACT_INPUT_PROMINENT_LINE_HEIGHT,
-      paddingTop: COMPACT_INPUT_PROMINENT_PADDING_TOP,
-      paddingHorizontal: COMPACT_INPUT_PROMINENT_PADDING_HORIZONTAL,
-      paddingBottom: COMPACT_INPUT_PROMINENT_PADDING_BOTTOM,
-      duration: COMPACT_INPUT_HEIGHT_ANIMATION_DURATION,
-      easing: COMPACT_INPUT_HEIGHT_EASING,
+      minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
+      lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
+      paddingTop: PROMINENT_COMPOSER_PADDING_TOP,
+      paddingHorizontal: PROMINENT_COMPOSER_PADDING_HORIZONTAL,
+      paddingBottom: PROMINENT_COMPOSER_PADDING_BOTTOM,
+      duration: PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
+      easing: PROMINENT_COMPOSER_HEIGHT_EASING,
     })
 
     useEffect(() => {
       if (!useProminentComposer) return
       Animated.timing(inputHeightAnimation, {
         toValue: inputHeight,
-        duration: COMPACT_INPUT_HEIGHT_ANIMATION_DURATION,
-        easing: COMPACT_INPUT_HEIGHT_EASING,
+        duration: PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
+        easing: PROMINENT_COMPOSER_HEIGHT_EASING,
         useNativeDriver: false,
       }).start()
     }, [inputHeight, inputHeightAnimation, useProminentComposer])
@@ -616,7 +594,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
         return
       }
       if (wasProminentStackedRef.current && !prominentExpansion.stacked) {
-        setInputHeight(COMPACT_INPUT_PROMINENT_MIN_HEIGHT)
+        setInputHeight(PROMINENT_COMPOSER_MIN_HEIGHT)
       }
       wasProminentStackedRef.current = prominentExpansion.stacked
     }, [prominentExpansion.stacked, useProminentComposer])
@@ -719,10 +697,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             useProminentComposer
               ? {
                   overflow: "hidden" as const,
-                  borderTopLeftRadius: COMPACT_INPUT_PROMINENT_RADIUS,
-                  borderTopRightRadius: COMPACT_INPUT_PROMINENT_RADIUS,
-                  borderBottomLeftRadius: COMPACT_INPUT_PROMINENT_RADIUS,
-                  borderBottomRightRadius: COMPACT_INPUT_PROMINENT_RADIUS,
+                  borderTopLeftRadius: PROMINENT_COMPOSER_RADIUS,
+                  borderTopRightRadius: PROMINENT_COMPOSER_RADIUS,
+                  borderBottomLeftRadius: PROMINENT_COMPOSER_RADIUS,
+                  borderBottomRightRadius: PROMINENT_COMPOSER_RADIUS,
                   borderWidth: 1,
                   borderColor: keyboardBorderColor,
                   backgroundColor: chatgptComposer.fill,
@@ -1133,7 +1111,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 style={{
                   flex: 1,
                   minWidth: 0,
-                  minHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
+                  minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
                   marginLeft: 4,
                   marginRight: 4,
                 }}
@@ -1295,7 +1273,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   height: 0,
                   overflow: "hidden",
                   fontSize: PROMINENT_COMPOSER_FONT_SIZE,
-                  lineHeight: COMPACT_INPUT_PROMINENT_LINE_HEIGHT,
+                  lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
                 }}
                 onTextLayout={prominentExpansion.onMeasureTextLayout}
               >
@@ -1320,16 +1298,16 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                       left: 4,
                       right: 4,
                       top: prominentExpansion.stacked ? 0 : 1,
-                      height: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
+                      height: PROMINENT_COMPOSER_MIN_HEIGHT,
                       fontSize: PROMINENT_COMPOSER_FONT_SIZE,
-                      lineHeight: COMPACT_INPUT_PROMINENT_LINE_HEIGHT,
+                      lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
                       color: chatgptComposer.placeholder,
                     }}
                   >
                     {placeholderText}
                   </Text>
                 ) : null}
-                <AnimatedTextInput
+                <ProminentAnimatedTextInput
                   ref={textInputRef}
                   testID="home-composer-input"
                   placeholder=""
@@ -1347,7 +1325,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   }}
                   editable={!disabled && !isLoading && !voiceInput.isRecording}
                   multiline
-                  scrollEnabled={prominentExpansion.stacked && inputHeight > COMPACT_INPUT_PROMINENT_MIN_HEIGHT}
+                  scrollEnabled={prominentExpansion.stacked && inputHeight > PROMINENT_COMPOSER_MIN_HEIGHT}
                   blurOnSubmit={Platform.OS !== "web"}
                   returnKeyType={Platform.OS === "web" ? undefined : "done"}
                   onContentSizeChange={(e) => {
@@ -1355,9 +1333,9 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     prominentExpansion.reportContentHeight(h)
                     const next = nextProminentComposerHeight(h, {
                       empty: composerEmpty,
-                      minHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
+                      minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
                       maxHeight: inputMaxHeight,
-                      lineHeight: COMPACT_INPUT_PROMINENT_LINE_HEIGHT,
+                      lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
                     })
                     if (next !== inputHeight) {
                       setInputHeight(next)
@@ -1365,11 +1343,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   }}
                   style={{
                     width: "100%",
-                    minHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
+                    minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
                     height: inputHeightAnimation,
                     color: chatgptComposer.text,
                     fontSize: PROMINENT_COMPOSER_FONT_SIZE,
-                    lineHeight: COMPACT_INPUT_PROMINENT_LINE_HEIGHT,
+                    lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
                     paddingHorizontal: prominentExpansion.stacked ? 0 : 4,
                     paddingTop: prominentExpansion.stacked ? 0 : 1,
                     paddingBottom: prominentExpansion.stacked ? 0 : 1,

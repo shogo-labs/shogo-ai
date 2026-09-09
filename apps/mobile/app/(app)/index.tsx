@@ -47,18 +47,8 @@ import { api, getOnboardingMessage } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
 import { getPendingLicenseCode, clearPendingLicenseCode } from '../../lib/pending-license'
-import {
-  nativeComposerDockBottomPad,
-  nativeComposerKeyboardDuration,
-  nativeComposerKeyboardOpenFromSource,
-  type NativeComposerKeyboardEvent,
-  type NativeComposerKeyboardSource,
-} from '../../lib/native-composer-keyboard'
-import {
-  nativeComposerKeyboardEasing,
-  nativeComposerKeyboardOverlapFromEvent,
-  useNativeComposerKeyboard,
-} from '../../lib/use-native-composer-keyboard'
+import { NATIVE_COMPOSER_KEYBOARD_GAP } from '../../lib/native-composer-keyboard'
+import { useNativeComposerDockPad } from '../../lib/use-native-composer-keyboard'
 import { nativePhoneCanvas, NATIVE_PHONE_GUTTER, isPhoneLayout } from '../../lib/native-phone-layout'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
@@ -256,13 +246,14 @@ const HomeScreen = observer(function HomeScreen() {
   const isMobile = screenWidth < 640
   const isNativePhone = isPhoneLayout(screenWidth, screenHeight)
   const homeEntrance = useRef(new Animated.Value(Platform.OS === 'web' ? 1 : 0)).current
-  const restComposerPad = Math.max(insets.bottom, 12)
+  const restComposerPad = Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
   const restComposerSidePad = NATIVE_PHONE_GUTTER
-  const restComposerPadRef = useRef(restComposerPad)
-  restComposerPadRef.current = restComposerPad
-  const composerKeyboardPad = useRef(new Animated.Value(restComposerPad)).current
-  const keyboardOpenRef = useRef(false)
   const iosComposerAvoiding = Platform.OS === 'ios'
+  const composerKeyboardPad = useNativeComposerDockPad({
+    enabled: Platform.OS !== 'web' && isNativePhone,
+    restPad: restComposerPad,
+    iosKeyboardAvoiding: iosComposerAvoiding,
+  })
 
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
@@ -295,46 +286,6 @@ const HomeScreen = observer(function HomeScreen() {
       useNativeDriver: true,
     }).start()
   }, [homeEntrance, isNativePhone])
-
-  const animateComposer = useCallback(
-    (opts: { pad: number; duration?: number }) => {
-      Animated.timing(composerKeyboardPad, {
-        toValue: opts.pad,
-        duration: nativeComposerKeyboardDuration(opts.duration),
-        easing: nativeComposerKeyboardEasing(),
-        useNativeDriver: false,
-      }).start()
-    },
-    [composerKeyboardPad],
-  )
-
-  const dockComposer = useCallback(
-    (event: NativeComposerKeyboardEvent, source: NativeComposerKeyboardSource) => {
-      const restPad = restComposerPadRef.current
-      const overlap = nativeComposerKeyboardOverlapFromEvent(event)
-      const keyboardOpen = nativeComposerKeyboardOpenFromSource(source, overlap, restPad)
-      if (keyboardOpen == null) return
-      keyboardOpenRef.current = keyboardOpen
-      animateComposer({
-        pad: nativeComposerDockBottomPad({
-          keyboardOpen,
-          overlap,
-          restPad,
-          iosKeyboardAvoiding: iosComposerAvoiding,
-        }),
-        duration: event.duration,
-      })
-    },
-    [animateComposer, iosComposerAvoiding],
-  )
-
-  useEffect(() => {
-    if (!keyboardOpenRef.current) {
-      composerKeyboardPad.setValue(restComposerPad)
-    }
-  }, [composerKeyboardPad, restComposerPad])
-
-  useNativeComposerKeyboard(Platform.OS !== 'web' && isNativePhone, dockComposer)
 
   /**
    * Draft project the homepage opens behind the scenes for a creation

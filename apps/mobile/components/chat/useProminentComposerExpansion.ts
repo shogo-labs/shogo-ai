@@ -15,6 +15,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Animated,
+  Easing,
+  TextInput,
   type LayoutChangeEvent,
   type NativeSyntheticEvent,
   type TextLayoutEventData,
@@ -39,6 +41,12 @@ export const PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH = 10000
 export const PROMINENT_COMPOSER_OVERLAY_Z_INDEX = 4
 export const PROMINENT_COMPOSER_TOOLBAR_Z_INDEX = 3
 export const PROMINENT_COMPOSER_CHROME_Z_INDEX = 5
+export const PROMINENT_COMPOSER_HEIGHT_EASING = Easing.out(Easing.cubic)
+export const ProminentAnimatedTextInput = Animated.createAnimatedComponent(TextInput)
+
+export function prominentModelTriggerMaxWidth(windowWidth: number): number {
+  return Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
+}
 
 export function shouldStackProminentComposer({
   empty,

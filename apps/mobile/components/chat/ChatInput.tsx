@@ -24,7 +24,6 @@ import {
   ScrollView,
   Platform,
   Animated,
-  Easing,
   useWindowDimensions,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -41,6 +40,7 @@ import { ContextTracker } from "./ContextTracker"
 import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
 import { ComposerModelPicker, getNativeModelMenuWidth } from "./ModelPickerMenu"
+import { WebTooltip } from "./WebTooltip"
 import { DockChip } from "./dock/DockChip"
 import { DockChipRail } from "./dock/DockChipRail"
 import { QueueDockPanel } from "./dock/panels/QueueDockPanel"
@@ -85,6 +85,7 @@ import {
   PROMINENT_COMPOSER_CHROME_Z_INDEX,
   PROMINENT_COMPOSER_FONT_SIZE,
   PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
+  PROMINENT_COMPOSER_HEIGHT_EASING,
   PROMINENT_COMPOSER_LINE_HEIGHT,
   PROMINENT_COMPOSER_MAX_HEIGHT,
   PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
@@ -95,7 +96,9 @@ import {
   PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION,
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+  ProminentAnimatedTextInput,
   nextProminentComposerHeight,
+  prominentModelTriggerMaxWidth,
   useProminentComposerExpansion,
 } from "./useProminentComposerExpansion"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
@@ -161,31 +164,12 @@ const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
  * On native this is a transparent passthrough — the icon click opens the
  * popover menu which already shows the full label.
  */
-function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
-  if (Platform.OS !== "web") return <>{children}</>
-  return React.createElement(
-    "div",
-    { title: label, style: { display: "contents" } },
-    children,
-  )
-}
-
 // Non-prominent bounds stay file-local. Phone prominent metrics are shared
 // via `useProminentComposerExpansion` so home and project composers cannot drift.
 const CHAT_INPUT_MIN_HEIGHT = 60
 const CHAT_INPUT_MAX_HEIGHT = 200
 const CHAT_INPUT_NATIVE_MIN_HEIGHT = 52
 const CHAT_INPUT_NATIVE_MAX_HEIGHT = 160
-const CHAT_INPUT_PROMINENT_MIN_HEIGHT = PROMINENT_COMPOSER_MIN_HEIGHT
-const CHAT_INPUT_PROMINENT_MAX_HEIGHT = PROMINENT_COMPOSER_MAX_HEIGHT
-const CHAT_INPUT_PROMINENT_LINE_HEIGHT = PROMINENT_COMPOSER_LINE_HEIGHT
-const CHAT_INPUT_PROMINENT_PADDING_TOP = PROMINENT_COMPOSER_PADDING_TOP
-const CHAT_INPUT_PROMINENT_PADDING_HORIZONTAL = PROMINENT_COMPOSER_PADDING_HORIZONTAL
-const CHAT_INPUT_PROMINENT_PADDING_BOTTOM = PROMINENT_COMPOSER_PADDING_BOTTOM
-const CHAT_INPUT_HEIGHT_ANIMATION_DURATION = PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION
-const CHAT_INPUT_PLACEHOLDER_FADE_DURATION = PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION
-const CHAT_INPUT_HEIGHT_EASING = Easing.out(Easing.cubic)
-const AnimatedTextInput = Animated.createAnimatedComponent(TextInput)
 
 interface AttachedFile {
   id: string
@@ -488,17 +472,17 @@ function ChatInputImpl({
   const useProminentComposer = isNativePhone && !flush
   const chatgptComposer = resolvedTheme === "light" ? CHATGPT_COMPOSER.light : CHATGPT_COMPOSER.dark
   const inputMinHeight = useProminentComposer
-    ? CHAT_INPUT_PROMINENT_MIN_HEIGHT
+    ? PROMINENT_COMPOSER_MIN_HEIGHT
     : isNative
       ? CHAT_INPUT_NATIVE_MIN_HEIGHT
       : CHAT_INPUT_MIN_HEIGHT
   const inputMaxHeight = useProminentComposer
-    ? CHAT_INPUT_PROMINENT_MAX_HEIGHT
+    ? PROMINENT_COMPOSER_MAX_HEIGHT
     : isNative
       ? CHAT_INPUT_NATIVE_MAX_HEIGHT
       : CHAT_INPUT_MAX_HEIGHT
   const modelTriggerMaxWidth = useProminentComposer
-    ? Math.max(54, Math.min(80, Math.floor(windowWidth * 0.18)))
+    ? prominentModelTriggerMaxWidth(windowWidth)
     : Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
   const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
   const bridge = useChatBridgeOptional()
@@ -1224,8 +1208,8 @@ function ChatInputImpl({
 
     Animated.timing(inputHeightAnimation, {
       toValue: inputHeight,
-      duration: CHAT_INPUT_HEIGHT_ANIMATION_DURATION,
-      easing: CHAT_INPUT_HEIGHT_EASING,
+      duration: PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
+      easing: PROMINENT_COMPOSER_HEIGHT_EASING,
       useNativeDriver: false,
     }).start()
   }, [inputHeight, inputHeightAnimation, useProminentComposer])
@@ -1235,8 +1219,8 @@ function ChatInputImpl({
 
     Animated.timing(placeholderOpacity, {
       toValue: composerEmpty ? 1 : 0,
-      duration: CHAT_INPUT_PLACEHOLDER_FADE_DURATION,
-      easing: CHAT_INPUT_HEIGHT_EASING,
+      duration: PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION,
+      easing: PROMINENT_COMPOSER_HEIGHT_EASING,
       useNativeDriver: true,
     }).start()
   }, [composerEmpty, placeholderOpacity, useProminentComposer])
@@ -1246,13 +1230,13 @@ function ChatInputImpl({
     empty: composerEmpty,
     text: composerDisplayValue,
     inputHeight,
-    minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
-    lineHeight: CHAT_INPUT_PROMINENT_LINE_HEIGHT,
-    paddingTop: CHAT_INPUT_PROMINENT_PADDING_TOP,
-    paddingHorizontal: CHAT_INPUT_PROMINENT_PADDING_HORIZONTAL,
-    paddingBottom: CHAT_INPUT_PROMINENT_PADDING_BOTTOM,
-    duration: CHAT_INPUT_HEIGHT_ANIMATION_DURATION,
-    easing: CHAT_INPUT_HEIGHT_EASING,
+    minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
+    lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
+    paddingTop: PROMINENT_COMPOSER_PADDING_TOP,
+    paddingHorizontal: PROMINENT_COMPOSER_PADDING_HORIZONTAL,
+    paddingBottom: PROMINENT_COMPOSER_PADDING_BOTTOM,
+    duration: PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
+    easing: PROMINENT_COMPOSER_HEIGHT_EASING,
   })
 
   const wasProminentStackedRef = useRef(false)
@@ -1262,7 +1246,7 @@ function ChatInputImpl({
       return
     }
     if (wasProminentStackedRef.current && !prominentExpansion.stacked) {
-      setInputHeightTarget(CHAT_INPUT_PROMINENT_MIN_HEIGHT)
+      setInputHeightTarget(PROMINENT_COMPOSER_MIN_HEIGHT)
     }
     wasProminentStackedRef.current = prominentExpansion.stacked
   }, [prominentExpansion.stacked, setInputHeightTarget, useProminentComposer])
@@ -2373,7 +2357,7 @@ function ChatInputImpl({
               style={{
                 flex: 1,
                 minWidth: 0,
-                minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
                 marginLeft: 4,
                 marginRight: 4,
               }}
@@ -2543,7 +2527,7 @@ function ChatInputImpl({
                 height: 0,
                 overflow: "hidden",
                 fontSize: PROMINENT_COMPOSER_FONT_SIZE,
-                lineHeight: CHAT_INPUT_PROMINENT_LINE_HEIGHT,
+                lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
               }}
               onTextLayout={prominentExpansion.onMeasureTextLayout}
             >
@@ -2573,16 +2557,16 @@ function ChatInputImpl({
                   left: 4,
                   right: 4,
                   top: prominentExpansion.stacked ? 0 : 1,
-                  height: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                  height: PROMINENT_COMPOSER_MIN_HEIGHT,
                   fontSize: PROMINENT_COMPOSER_FONT_SIZE,
-                  lineHeight: CHAT_INPUT_PROMINENT_LINE_HEIGHT,
+                  lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
                   color: chatgptComposer.placeholder,
                   opacity: placeholderOpacity,
                 }}
               >
                 {placeholder}
               </Animated.Text>
-              <AnimatedTextInput
+              <ProminentAnimatedTextInput
                 ref={textInputRef}
                 testID="project-composer-input"
                 placeholder=""
@@ -2596,7 +2580,7 @@ function ChatInputImpl({
                 onSubmitEditing={handleSubmitEditing}
                 editable={!disabled && !voiceInput.isRecording}
                 multiline
-                scrollEnabled={prominentExpansion.stacked && inputHeight > CHAT_INPUT_PROMINENT_MIN_HEIGHT}
+                scrollEnabled={prominentExpansion.stacked && inputHeight > PROMINENT_COMPOSER_MIN_HEIGHT}
                 blurOnSubmit
                 returnKeyType="done"
                 onContentSizeChange={(e) => {
@@ -2606,9 +2590,9 @@ function ChatInputImpl({
                   prominentExpansion.reportContentHeight(h)
                   const next = nextProminentComposerHeight(h, {
                     empty: !currentText.trim(),
-                    minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                    minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
                     maxHeight: inputMaxHeight,
-                    lineHeight: CHAT_INPUT_PROMINENT_LINE_HEIGHT,
+                    lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
                   })
                   if (next !== inputHeightRef.current) {
                     setInputHeightTarget(next)
@@ -2616,11 +2600,11 @@ function ChatInputImpl({
                 }}
                 style={{
                   width: "100%",
-                  minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                  minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
                   height: inputHeightAnimation,
                   color: chatgptComposer.text,
                   fontSize: PROMINENT_COMPOSER_FONT_SIZE,
-                  lineHeight: CHAT_INPUT_PROMINENT_LINE_HEIGHT,
+                  lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
                   paddingHorizontal: prominentExpansion.stacked ? 0 : 4,
                   paddingTop: prominentExpansion.stacked ? 0 : 1,
                   paddingBottom: prominentExpansion.stacked ? 0 : 1,

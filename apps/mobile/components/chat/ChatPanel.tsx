@@ -93,19 +93,8 @@ import { workspaceProjectFilter } from "../../lib/project-load"
 import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } from "../../lib/ai-consent"
 
 import { isNativePhoneIntegrationsLayout, isPhoneLayout } from "../../lib/native-phone-layout"
-import {
-  NATIVE_COMPOSER_KEYBOARD_GAP,
-  nativeComposerDockBottomPad,
-  nativeComposerKeyboardDuration,
-  nativeComposerKeyboardOpenFromSource,
-  type NativeComposerKeyboardEvent,
-  type NativeComposerKeyboardSource,
-} from "../../lib/native-composer-keyboard"
-import {
-  nativeComposerKeyboardEasing,
-  nativeComposerKeyboardOverlapFromEvent,
-  useNativeComposerKeyboard,
-} from "../../lib/use-native-composer-keyboard"
+import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
+import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
 import { chatSessionEvents } from "../../lib/chat-session-events"
 import { useActiveInstance } from "../../contexts/active-instance"
@@ -970,43 +959,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [nativeInlineEditing, setNativeInlineEditing] = useState(false)
   const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false)
   const restComposerPad = Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
-  const composerKeyboardPad = useRef(new Animated.Value(restComposerPad)).current
-  const nativeKeyboardOpenRef = useRef(false)
-  const iosComposerAvoiding = Platform.OS === "ios"
-  const handleNativeKeyboardFrame = useCallback(
-    (event: NativeComposerKeyboardEvent, source: NativeComposerKeyboardSource) => {
-      const overlap = nativeComposerKeyboardOverlapFromEvent(event)
-      const keyboardOpen = nativeComposerKeyboardOpenFromSource(
-        source,
-        overlap,
-        restComposerPad,
-      )
-      if (keyboardOpen == null) return
-      nativeKeyboardOpenRef.current = keyboardOpen
-      setNativeKeyboardOpen(keyboardOpen)
-      Animated.timing(composerKeyboardPad, {
-        toValue: nativeComposerDockBottomPad({
-          keyboardOpen,
-          overlap,
-          restPad: restComposerPad,
-          iosKeyboardAvoiding: iosComposerAvoiding,
-        }),
-        duration: nativeComposerKeyboardDuration(event.duration),
-        easing: nativeComposerKeyboardEasing(),
-        useNativeDriver: false,
-      }).start()
-    },
-    [composerKeyboardPad, iosComposerAvoiding, restComposerPad],
-  )
-  useNativeComposerKeyboard(
-    Platform.OS !== "web" && isNativePhoneLayout,
-    handleNativeKeyboardFrame,
-  )
-  useEffect(() => {
-    if (!nativeKeyboardOpenRef.current) {
-      composerKeyboardPad.setValue(restComposerPad)
-    }
-  }, [composerKeyboardPad, restComposerPad])
+  // Native phone chat uses the measured keyboard overlap below. Keeping the
+  // KAV lift enabled here makes the composer depend on two independent layout
+  // adjustments, which can leave it behind the keyboard in project chat.
+  const iosComposerAvoiding = Platform.OS === "ios" && !isNativePhoneLayout
+  const composerKeyboardPad = useNativeComposerDockPad({
+    enabled: Platform.OS !== "web" && isNativePhoneLayout,
+    restPad: restComposerPad,
+    iosKeyboardAvoiding: iosComposerAvoiding,
+    onOpenChange: setNativeKeyboardOpen,
+  })
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
@@ -5805,7 +5767,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
         {/* Chat Panel — full width on mobile (no resize handle) */}
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior={
+            isNativePhoneLayout
+              ? undefined
+              : Platform.OS === "ios"
+                ? "padding"
+                : "height"
+          }
           className="flex-1 flex-col bg-background"
           keyboardVerticalOffset={
             isNativePhoneLayout ? 0 : Platform.OS === "ios" ? 90 : 50
@@ -6039,7 +6007,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               accessibilityLabel="Cancel editing"
               style={
                 isPhoneViewport
-                  ? { paddingBottom: Math.max(insets.bottom, 12), minHeight: 28 }
+                  ? { paddingBottom: Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP), minHeight: 28 }
                   : { minHeight: 28 }
               }
             />

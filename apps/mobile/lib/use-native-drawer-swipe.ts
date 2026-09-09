@@ -5,7 +5,7 @@
  * is a foreground sheet the user drags to the right. One progress value
  * (0 closed → 1 open) drives sheet translation and left-corner radius.
  */
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
   PanResponder,
@@ -161,6 +161,72 @@ export function snapNativeDrawer(
   }).start(({ finished }) => {
     if (finished) onSettled?.(open)
   })
+}
+
+/**
+ * Shared sheet-drawer controller for the app and admin shells.
+ * `overlayOpenWithoutSnap` is the narrow-web overlay path (admin): toggle
+ * opens without springing the sheet.
+ */
+export function useNativeSheetDrawer({
+  windowWidth,
+  isDark,
+  swipeEnabled,
+  overlayOpenWithoutSnap = false,
+}: {
+  windowWidth: number
+  isDark: boolean
+  swipeEnabled: boolean
+  overlayOpenWithoutSnap?: boolean
+}) {
+  const drawerProgress = useRef(new Animated.Value(0)).current
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const drawerWidth = nativeDrawerPanelWidth(windowWidth)
+
+  const resetDrawer = useCallback(() => {
+    drawerProgress.setValue(0)
+    setDrawerOpen(false)
+  }, [drawerProgress])
+
+  const openDrawer = useCallback(() => {
+    setDrawerOpen(true)
+    snapNativeDrawer(drawerProgress, true)
+  }, [drawerProgress])
+
+  const closeDrawer = useCallback(() => {
+    snapNativeDrawer(drawerProgress, false, (open) => {
+      if (!open) resetDrawer()
+    })
+  }, [drawerProgress, resetDrawer])
+
+  const toggleDrawer = useCallback(() => {
+    if (drawerOpen) closeDrawer()
+    else if (overlayOpenWithoutSnap) setDrawerOpen(true)
+    else openDrawer()
+  }, [closeDrawer, drawerOpen, openDrawer, overlayOpenWithoutSnap])
+
+  const sheetSwipeHandlers = useNativeDrawerSheetSwipe({
+    enabled: swipeEnabled,
+    drawerWidth,
+    drawerProgress,
+    isOpen: drawerOpen,
+    onOpenChange: setDrawerOpen,
+  })
+  const { sheetStyle, sheetClipStyle } = useNativeDrawerSheetStyle(drawerProgress, drawerWidth)
+
+  return {
+    drawerOpen,
+    drawerWidth,
+    drawerProgress,
+    sheetSwipeHandlers,
+    sheetStyle,
+    sheetClipStyle,
+    underlayStyle: nativeDrawerUnderlayStyle(drawerWidth, isDark),
+    openDrawer,
+    closeDrawer,
+    toggleDrawer,
+    resetDrawer,
+  }
 }
 
 export function useNativeDrawerSheetSwipe({

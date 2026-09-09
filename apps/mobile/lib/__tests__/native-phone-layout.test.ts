@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { nativeContentWidth, nativePhoneCanvas, nativePhoneFillStyle, nativeSettingsPaneFill, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, NATIVE_PHONE_CANVAS, isPhoneLayout, WEB_PHONE_MAX_WIDTH } from '../native-phone-layout'
+import { nativeContentWidth, nativePhoneCanvas, nativePhoneFillStyle, nativeSettingsPaneFill, nativeSettingsPaneRootStyle, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, NATIVE_PHONE_CANVAS, NATIVE_PHONE_GUTTER, NATIVE_WIND_SPACE_4, isPhoneLayout, WEB_PHONE_MAX_WIDTH } from '../native-phone-layout'
 
 describe('isPhoneLayout', () => {
   test('treats a narrow web viewport as phone chrome', () => {
@@ -88,6 +88,19 @@ describe('nativePhoneFillStyle', () => {
       width: 402,
       maxWidth: 402,
     })
+  })
+})
+
+describe('nativeSettingsPaneRootStyle', () => {
+  test('pins a pixel width on phone and leaves overlay panes unstyled', () => {
+    expect(nativeSettingsPaneRootStyle(402, true)).toEqual(nativeSettingsPaneStyle(402))
+    expect(nativeSettingsPaneRootStyle(402, false)).toBeUndefined()
+  })
+})
+
+describe('native gutter tokens', () => {
+  test('NativeWind p-4 matches the phone gutter', () => {
+    expect(NATIVE_WIND_SPACE_4).toBe(NATIVE_PHONE_GUTTER)
   })
 })
 

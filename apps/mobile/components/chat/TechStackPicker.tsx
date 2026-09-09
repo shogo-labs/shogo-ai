@@ -16,7 +16,7 @@
  * reflects what the runtime would seed even before the user touches it.
  */
 import React, { useEffect, useMemo, useRef, useState } from "react"
-import { View, Text, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native"
+import { View, Text, Pressable, ScrollView, useWindowDimensions } from "react-native"
 import { Layers, ChevronDown, Check } from "lucide-react-native"
 import {
   Popover,
@@ -27,21 +27,8 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { api, createHttpClient, type TechStackSummary } from "../../lib/api"
 import { mergeTechStacks, FALLBACK_TECH_STACKS, techStackDisplayName } from "../../lib/tech-stack-catalog"
 import { useComposerPlusClose } from "./AttachSourceSheet"
-
-/**
- * Show a native browser tooltip on hover (web only). Wraps children in a
- * `display: contents` div with the `title` attribute so layout is unaffected
- * and the trigger's own ref (popover positioning) isn't disturbed. On native
- * this is a transparent passthrough — the icon click opens the popover.
- */
-function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
-  if (Platform.OS !== "web") return <>{children}</>
-  return React.createElement(
-    "div",
-    { title: label, style: { display: "contents" } },
-    children,
-  )
-}
+import { WebTooltip } from "./WebTooltip"
+import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 
 export interface TechStackPickerProps {
   /** Currently selected stack id (e.g. "react-app"). */
@@ -55,8 +42,8 @@ export interface TechStackPickerProps {
 }
 
 export function TechStackPicker({ value, onChange, disabled, prominentMobile = false, presentation = "chip" }: TechStackPickerProps) {
-  const { width: windowWidth } = useWindowDimensions()
-  const isNativePhone = Platform.OS !== "web" && windowWidth < 600
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const isNativePhone = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
   const useProminentChip = prominentMobile && isNativePhone
   const triggerMaxWidth = Math.max(useProminentChip ? 90 : 84, Math.min(useProminentChip ? 124 : 128, Math.floor(windowWidth * 0.28)))
   const [open, setOpen] = useState(false)

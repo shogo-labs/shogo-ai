@@ -2,8 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useRef } from 'react'
-import { Dimensions, Easing, Keyboard, Platform } from 'react-native'
+import { Animated, Dimensions, Easing, Keyboard, Platform } from 'react-native'
 import {
+  nativeComposerDockBottomPad,
+  nativeComposerKeyboardDuration,
+  nativeComposerKeyboardOpenFromSource,
   nativeComposerKeyboardOverlap,
   NATIVE_COMPOSER_KEYBOARD_EASING,
   type NativeComposerKeyboardEvent,
@@ -58,4 +61,57 @@ export function useNativeComposerKeyboard(
       onFrameRef.current(event, source)
     })
   }, [enabled])
+}
+
+/**
+ * Shared home / project / search dock pad. One Animated.Value, one keyboard
+ * subscription, and the same rest-pad resync when safe-area insets change.
+ */
+export function useNativeComposerDockPad({
+  enabled,
+  restPad,
+  iosKeyboardAvoiding,
+  onOpenChange,
+}: {
+  enabled: boolean
+  restPad: number
+  iosKeyboardAvoiding: boolean
+  onOpenChange?: (open: boolean) => void
+}): Animated.Value {
+  const pad = useRef(new Animated.Value(restPad)).current
+  const restPadRef = useRef(restPad)
+  const avoidingRef = useRef(iosKeyboardAvoiding)
+  const openRef = useRef(false)
+  const onOpenChangeRef = useRef(onOpenChange)
+  restPadRef.current = restPad
+  avoidingRef.current = iosKeyboardAvoiding
+  onOpenChangeRef.current = onOpenChange
+
+  useNativeComposerKeyboard(enabled, (event, source) => {
+    const rest = restPadRef.current
+    const overlap = nativeComposerKeyboardOverlapFromEvent(event)
+    const keyboardOpen = nativeComposerKeyboardOpenFromSource(source, overlap, rest)
+    if (keyboardOpen == null) return
+    openRef.current = keyboardOpen
+    onOpenChangeRef.current?.(keyboardOpen)
+    Animated.timing(pad, {
+      toValue: nativeComposerDockBottomPad({
+        keyboardOpen,
+        overlap,
+        restPad: rest,
+        iosKeyboardAvoiding: avoidingRef.current,
+      }),
+      duration: nativeComposerKeyboardDuration(event.duration),
+      easing: nativeComposerKeyboardEasing(),
+      useNativeDriver: false,
+    }).start()
+  })
+
+  useEffect(() => {
+    if (!openRef.current) {
+      pad.setValue(restPad)
+    }
+  }, [pad, restPad])
+
+  return pad
 }

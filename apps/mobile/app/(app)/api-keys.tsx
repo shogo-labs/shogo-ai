@@ -15,7 +15,6 @@ import {
   Pressable,
   Modal,
   ActivityIndicator,
-  Platform,
   useWindowDimensions,
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
@@ -50,6 +49,7 @@ import {
   Badge,
   cn,
 } from '@shogo/shared-ui/primitives'
+import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 
 function formatLastSeen(ts: string | null | undefined): string {
   if (!ts) return 'Never'
@@ -81,8 +81,8 @@ function PlatformIcon({ platform, size = 16 }: { platform?: string | null; size?
 export default observer(function ApiKeysPage() {
   const router = useRouter()
   const { user } = useAuth()
-  const { width: windowWidth } = useWindowDimensions()
-  const isNativePhone = Platform.OS !== 'web' && windowWidth < 600
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const isNativePhone = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
   const workspaces = useWorkspaceCollection()
   const workspace = useActiveWorkspace()
   const http = useDomainHttp()

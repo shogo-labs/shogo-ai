@@ -34,26 +34,13 @@ import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { API_URL } from "../../lib/api"
 import { authClient } from "../../lib/auth-client"
 import { useComposerPlusClose } from "./AttachSourceSheet"
+import { WebTooltip } from "./WebTooltip"
+import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 
 function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === "web") return {}
   const cookie = (authClient as any).getCookie?.()
   return cookie ? { Cookie: cookie } : {}
-}
-
-/**
- * Show a native browser tooltip on hover (web only). Wraps children in a
- * `display: contents` div with the `title` attribute so layout is unaffected
- * and the trigger's own ref isn't disturbed. On native this is a transparent
- * passthrough — the icon click opens the popover menu.
- */
-function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
-  if (Platform.OS !== "web") return <>{children}</>
-  return React.createElement(
-    "div",
-    { title: label, style: { display: "contents" } },
-    children,
-  )
 }
 
 function StatusDot({ status }: { status: Instance["status"] }) {
@@ -77,8 +64,8 @@ export interface EnvironmentPickerProps {
 }
 
 export function EnvironmentPicker({ disabled, prominentMobile = false, compactMobile = false, presentation = "icon", listActive = false }: EnvironmentPickerProps) {
-  const { width } = useWindowDimensions()
-  const isNativePhone = Platform.OS !== "web" && width < 600
+  const { width, height } = useWindowDimensions()
+  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
   const useProminentTrigger = prominentMobile && isNativePhone
   const useCompactTrigger = compactMobile && isNativePhone
   const [open, setOpen] = useState(false)

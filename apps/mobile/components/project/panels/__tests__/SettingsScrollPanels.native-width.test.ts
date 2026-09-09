@@ -11,7 +11,7 @@ function readPanel(name: string): string {
 describe('native settings panes scroll and fill the phone width', () => {
   test('StatusPanel pins a bounded ScrollView', () => {
     const source = readPanel('StatusPanel.tsx')
-    expect(source).toContain('nativeSettingsPaneStyle')
+    expect(source).toContain('nativeSettingsPaneRootStyle')
     expect(source).toContain('alwaysBounceVertical={comfortable}')
     expect(source).toContain('nestedScrollEnabled')
     expect(source).toContain('nativeTwoColumnCardWidth')
@@ -21,7 +21,7 @@ describe('native settings panes scroll and fill the phone width', () => {
 
   test('AnalyticsPanel pins a bounded ScrollView', () => {
     const source = readPanel('AnalyticsPanel.tsx')
-    expect(source).toContain('nativeSettingsPaneStyle')
+    expect(source).toContain('nativeSettingsPaneRootStyle')
     expect(source).toContain('alwaysBounceVertical={comfortable}')
     expect(source).toContain('nestedScrollEnabled')
     expect(source).toContain('periodTrackWidth')
@@ -32,7 +32,7 @@ describe('native settings panes scroll and fill the phone width', () => {
 
   test('LogsPanel fills the pane and lets rows use the full width', () => {
     const source = readPanel('LogsPanel.tsx')
-    expect(source).toContain('nativeSettingsPaneStyle')
+    expect(source).toContain('nativeSettingsPaneRootStyle')
     expect(source).toContain('alwaysBounceVertical={comfortable}')
     expect(source).toContain('nestedScrollEnabled')
     expect(source).toContain('getItemLayout={comfortable ? undefined : getItemLayout}')

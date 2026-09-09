@@ -35,7 +35,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Check, ChevronDown, X } from 'lucide-react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cn } from '@shogo/shared-ui/primitives'
-import { isNativePhoneIntegrationsLayout, nativeSettingsPaneStyle, NATIVE_PHONE_PICKER_INSET } from '../../../lib/native-phone-layout'
+import { isNativePhoneIntegrationsLayout, nativeContentWidth, nativeSettingsPaneStyle, NATIVE_PHONE_PICKER_INSET, NATIVE_PHONE_PICKER_GUTTER, NATIVE_PHONE_HAIRLINE_COLOR } from '../../../lib/native-phone-layout'
 
 export interface SettingsSectionItem {
   id: string
@@ -300,7 +300,7 @@ function NativePhoneSidebar({
   const activeItem =
     groups.flatMap((group) => group.items).find((item) => item.id === activeId) ?? null
   const ActiveIcon = activeItem?.icon
-  const pickerWidth = Math.max(0, screenWidth - NATIVE_PHONE_PICKER_INSET)
+  const pickerWidth = nativeContentWidth(screenWidth, NATIVE_PHONE_PICKER_INSET)
 
   return (
     <>
@@ -309,10 +309,10 @@ function NativePhoneSidebar({
         style={{
           width: screenWidth,
           maxWidth: screenWidth,
-          paddingHorizontal: 12,
+          paddingHorizontal: NATIVE_PHONE_PICKER_GUTTER,
           paddingVertical: 8,
           borderBottomWidth: StyleSheet.hairlineWidth,
-          borderBottomColor: 'rgba(127,127,127,0.35)',
+          borderBottomColor: NATIVE_PHONE_HAIRLINE_COLOR,
         }}
       >
         {/*

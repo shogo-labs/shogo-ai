@@ -79,6 +79,7 @@ import { api } from '../../../lib/api'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { ProjectImportModal } from '../../../components/projects/ProjectImportModal'
 import { ProjectSourceMenu } from '../../../components/project/ProjectSourceMenu'
+import { isNativePhoneIntegrationsLayout } from '../../../lib/native-phone-layout'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 
 // Types
@@ -267,9 +268,9 @@ export default observer(function AllProjectsPage() {
   const actions = useDomainActions()
   const isRemoteSource = useIsRemoteSource()
   const toast = useToast()
-  const { width } = useWindowDimensions()
+  const { width, height } = useWindowDimensions()
   const isNativeMobile = Platform.OS === 'ios' || Platform.OS === 'android'
-  const comfortable = isNativeMobile && width < 600
+  const comfortable = isNativePhoneIntegrationsLayout(width, height)
 
   type VisibilityFilter = 'any' | 'public' | 'private'
   type StatusFilter = 'any' | 'draft' | 'active' | 'archived'
