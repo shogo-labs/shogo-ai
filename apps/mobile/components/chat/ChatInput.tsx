@@ -396,6 +396,8 @@ export interface ChatInputProps {
    * over this prop.
    */
   highlighted?: boolean
+  /** Removes the idle bottom breathing room while the native keyboard is open. */
+  keyboardOpen?: boolean
   /**
    * Strip the outer wrapper's horizontal padding so the visible
    * input box sits flush against its parent's left/right edges.
@@ -449,6 +451,7 @@ function ChatInputImpl({
   onOpenIdeFile,
   dimWhenDisabled = true,
   highlighted = false,
+  keyboardOpen = false,
   flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
@@ -1399,7 +1402,13 @@ function ChatInputImpl({
     // composer from whatever sits beneath it (file previews,
     // toolbar dropdowns, etc.).
     <View className={cn(
-      flush ? "pb-3" : useProminentComposer ? "px-3 pb-2 pt-0" : isNative ? "px-2 pb-4 pt-0" : "p-3 pt-0",
+      flush
+        ? "pb-3"
+        : useProminentComposer
+          ? cn("px-3 pt-0", !keyboardOpen && "pb-2")
+          : isNative
+            ? "px-2 pb-4 pt-0"
+            : "p-3 pt-0",
     )}>
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">

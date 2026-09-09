@@ -124,7 +124,12 @@ import {
 } from "../../lib/chat-stall-watchdog"
 import { createTodoStateStore, TodoStateStoreContext } from "../../lib/todo-state-store"
 import { createFileChangeStore, FileChangeStoreContext } from "../../lib/file-change-store"
-import { createChatDockStore, ChatDockStoreContext, useChatDockStore, type DockPanelDescriptor } from "../../lib/chat-dock-store"
+import {
+  createChatDockStore,
+  ChatDockStoreContext,
+  useChatDockStore,
+  type DockPanelDescriptor,
+} from "../../lib/chat-dock-store"
 import { useDockPanel } from "./dock/useDockPanel"
 import { ChatDock } from "./dock/ChatDock"
 import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
@@ -722,7 +727,7 @@ function normalizePlanData(plan: PlanData): PlanData {
 // Component
 // ============================================================
 
-export const ChatPanel = observer(function ChatPanel({
+const ChatPanelContent = observer(function ChatPanelContent({
   mode = "full",
   featureId,
   featureName,
@@ -770,6 +775,7 @@ export const ChatPanel = observer(function ChatPanel({
   ideMode = false,
   enrichMessage,
 }: ChatPanelProps) {
+  const chatDockStore = useChatDockStore()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const insets = useSafeAreaInsets()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
@@ -922,6 +928,7 @@ export const ChatPanel = observer(function ChatPanel({
    * follow. 40px is forgiving enough that a soft release after a peek-up does
    * not snap follow back on against the user's intent. */
   const STICK_BOTTOM_PX = 40
+  const NATIVE_KEYBOARD_COMPOSER_GAP = 8
   const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastScrollTimeRef = useRef(0)
   const SCROLL_THROTTLE_MS = 300
@@ -1214,8 +1221,6 @@ export const ChatPanel = observer(function ChatPanel({
   // changed files, live browser, running tasks, queue, worktree, plus the
   // blocking permission/question/connectivity panels). One per ChatPanel —
   // see chat-dock-store.ts.
-  const chatDockStore = useMemo(() => createChatDockStore(), [])
-
   useEffect(() => {
     pendingPlanRef.current = null
     setPendingPlan(null)
@@ -5720,7 +5725,6 @@ export const ChatPanel = observer(function ChatPanel({
   return (
     <TodoStateStoreContext.Provider value={todoStateStore}>
     <FileChangeStoreContext.Provider value={fileChangeStore}>
-    <ChatDockStoreContext.Provider value={chatDockStore}>
     <ChatContextProvider value={contextValue}>
       {/* Hosts the destructive-confirmation modal for in-place message
           edit and "retry from here". Rendered once per ChatPanel and
@@ -5941,7 +5945,7 @@ export const ChatPanel = observer(function ChatPanel({
               isPhoneViewport
                 ? {
                     paddingBottom: nativeKeyboardOpen
-                      ? 8
+                      ? NATIVE_KEYBOARD_COMPOSER_GAP
                       : Math.max(insets.bottom, 12),
                   }
                 : undefined,
@@ -5989,6 +5993,7 @@ export const ChatPanel = observer(function ChatPanel({
               ideContext={ideBridge.context}
               ideFileSearch={ideBridge.listFiles}
               onOpenIdeFile={ideBridge.openFile}
+              keyboardOpen={nativeKeyboardOpen}
             />
           </View>
           ) : (
@@ -6005,8 +6010,17 @@ export const ChatPanel = observer(function ChatPanel({
         </KeyboardAvoidingView>
       </View>
     </ChatContextProvider>
-    </ChatDockStoreContext.Provider>
     </FileChangeStoreContext.Provider>
     </TodoStateStoreContext.Provider>
   )
 })
+
+export function ChatPanel(props: ChatPanelProps) {
+  const chatDockStore = useMemo(() => createChatDockStore(), [])
+
+  return (
+    <ChatDockStoreContext.Provider value={chatDockStore}>
+      <ChatPanelContent {...props} />
+    </ChatDockStoreContext.Provider>
+  )
+}

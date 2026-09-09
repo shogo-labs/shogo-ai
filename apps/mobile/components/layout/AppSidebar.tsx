@@ -1804,15 +1804,21 @@ function CreateWorkspaceModal({
 interface AppSidebarProps {
   isOpen?: boolean
   onClose?: () => void
+  /** Override drawer rendering for responsive or embedded surfaces. */
+  isNativeDrawer?: boolean
 }
 
-export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
+export const AppSidebar = observer(function AppSidebar({
+  isOpen,
+  onClose,
+  isNativeDrawer: nativeDrawerOverride,
+}: AppSidebarProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const isWide = Platform.OS === 'web' && width >= 768
-  const isNativeDrawer = !isWide
+  const isNativeDrawer = nativeDrawerOverride ?? !isWide
   const isDark = useResolvedTheme() === 'dark'
   const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const drawerTopInset = isNativeDrawer ? nativeDrawerTopInset(insets.top) : insets.top

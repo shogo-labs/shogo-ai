@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * ChatGPT iOS canvas tokens. Native applies these always; web applies them
- * only on a phone-sized viewport so desktop studio/Electron stay on global.css.
+ * ChatGPT iOS canvas tokens. Native handsets apply these; web applies them
+ * only on a phone-sized viewport so tablets, desktop studio, and Electron stay
+ * on their existing theme surfaces.
  */
 import { vars } from 'nativewind'
 

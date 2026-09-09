@@ -302,7 +302,11 @@ export default function AppLayout() {
         </View>
 
         {!isWide && !nativeSheetDrawer && (
-          <AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />
+          <AppSidebar
+            isOpen={drawerOpen}
+            onClose={closeDrawer}
+            isNativeDrawer={false}
+          />
         )}
       </SafeAreaView>
     </DomainProvider>

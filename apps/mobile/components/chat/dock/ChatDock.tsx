@@ -31,7 +31,7 @@
  * `isFirst`) rather than each being its own nested card.
  */
 
-import { useCallback, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useSyncExternalStore } from "react"
 import { View, StyleSheet, ScrollView, Platform, useColorScheme, type LayoutChangeEvent } from "react-native"
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -71,6 +71,11 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
   const blockingPanels = store.getPanels("blocking")
   const hasContent = statusPanels.length > 0 || blockingPanels.length > 0
 
+  useEffect(() => {
+    if (hasContent || store.getHeight() === 0) return
+    store.setHeight(0)
+  }, [hasContent, store])
+
   const handleLayout = useCallback(
     (e: LayoutChangeEvent) => {
       store.setHeight(e.nativeEvent.layout.height)
@@ -79,8 +84,6 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
   )
 
   if (!hasContent) {
-    // Nothing to show — relax the message list's reserved padding back to zero.
-    if (store.getHeight() !== 0) store.setHeight(0)
     return null
   }
 
