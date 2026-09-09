@@ -10,11 +10,14 @@ import { GroupedToolTags } from './GroupedToolTags'
 import {
   useNativePhoneWindow,
   nativeContentWidth,
-  nativeSettingsPaneStyle,
+  nativeSettingsPaneRootStyle,
   nativeSkillsActionWidths,
   NATIVE_PHONE_PICKER_INSET,
+  NATIVE_PHONE_PICKER_GUTTER,
+  NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_CONTROL_SIZE,
   NATIVE_PHONE_ROW_GAP,
+  NATIVE_PHONE_HAIRLINE_COLOR,
 } from '../../../lib/native-phone-layout'
 
 interface Skill {
@@ -52,8 +55,6 @@ interface SkillsPanelProps {
   visible: boolean
 }
 
-const NATIVE_REFRESH_SIZE = NATIVE_PHONE_CONTROL_SIZE
-
 export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) {
   const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
   // Same math as the Settings section picker (`screenWidth - 24`). Pixel
@@ -61,10 +62,10 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
   const contentWidth = comfortable
     ? nativeContentWidth(pageWidth, NATIVE_PHONE_PICKER_INSET)
     : 0
-  const gutter = comfortable ? NATIVE_PHONE_PICKER_INSET / 2 : 16
+  const gutter = comfortable ? NATIVE_PHONE_PICKER_GUTTER : NATIVE_PHONE_GUTTER
   const actionWidths = comfortable
-    ? nativeSkillsActionWidths(pageWidth, NATIVE_REFRESH_SIZE, NATIVE_PHONE_ROW_GAP)
-    : { row: 0, library: 0, refresh: NATIVE_REFRESH_SIZE }
+    ? nativeSkillsActionWidths(pageWidth, NATIVE_PHONE_CONTROL_SIZE, NATIVE_PHONE_ROW_GAP)
+    : { row: 0, library: 0, refresh: NATIVE_PHONE_CONTROL_SIZE }
   const [skills, setSkills] = useState<Skill[]>([])
   const [bundledSkills, setBundledSkills] = useState<BundledSkill[]>([])
   const [registrySkills, setRegistrySkills] = useState<RegistrySkill[]>([])
@@ -268,11 +269,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
     <View
       collapsable={false}
       className={comfortable ? undefined : 'absolute inset-0 flex-col'}
-      style={
-        comfortable
-          ? { ...nativeSettingsPaneStyle(pageWidth), display: visible ? 'flex' : 'none' }
-          : { display: visible ? 'flex' : 'none' }
-      }
+      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
     >
       <View
         collapsable={false}
@@ -367,7 +364,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
         alwaysBounceVertical={comfortable}
-        style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
         contentContainerStyle={{
           paddingHorizontal: comfortable ? gutter : 16,
           paddingVertical: 16,
@@ -810,7 +807,7 @@ const nativeChrome = StyleSheet.create({
     paddingVertical: 14,
     gap: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(127,127,127,0.35)',
+    borderBottomColor: NATIVE_PHONE_HAIRLINE_COLOR,
   },
   titleRow: {
     flexDirection: 'row',
@@ -828,7 +825,7 @@ const nativeChrome = StyleSheet.create({
     gap: NATIVE_PHONE_ROW_GAP,
   },
   libraryButton: {
-    height: NATIVE_REFRESH_SIZE,
+    height: NATIVE_PHONE_CONTROL_SIZE,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -836,8 +833,8 @@ const nativeChrome = StyleSheet.create({
     borderRadius: 12,
   },
   refreshButton: {
-    width: NATIVE_REFRESH_SIZE,
-    height: NATIVE_REFRESH_SIZE,
+    width: NATIVE_PHONE_CONTROL_SIZE,
+    height: NATIVE_PHONE_CONTROL_SIZE,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 12,

@@ -9,7 +9,7 @@ const source = readFileSync(resolve(import.meta.dir, '../AgentsPanel.tsx'), 'utf
 describe('AgentsPanel native phone tabs', () => {
   test('pins equal pixel chip widths so Activity and Registry are not ellipsized', () => {
     expect(source).toContain('nativeEqualChipWidths')
-    expect(source).toContain('nativeSettingsPaneStyle')
+    expect(source).toContain('nativeSettingsPaneRootStyle')
     expect(source).toContain('chips.chip')
     expect(source).toContain('chips.lastChip')
     expect(source).not.toContain('min-w-0 flex-1')

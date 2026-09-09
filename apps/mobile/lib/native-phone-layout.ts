@@ -43,13 +43,17 @@ export function isPhoneLayout(width: number, height: number): boolean {
 /** Horizontal padding for native-phone Settings chrome (`px-4`). */
 export const NATIVE_PHONE_GUTTER = 16
 /** NativeWind `p-4` / `px-4` (chart cards, section padding). */
-export const NATIVE_WIND_SPACE_4 = 16
+export const NATIVE_WIND_SPACE_4 = NATIVE_PHONE_GUTTER
 /** NativeWind `p-0.5`. */
 export const NATIVE_WIND_SPACE_0_5 = 2
 /** Left+right gutter. */
 export const NATIVE_PHONE_SECTION_INSET = NATIVE_PHONE_GUTTER * 2
 /** Section picker inset (`paddingHorizontal: 12` on each side). */
 export const NATIVE_PHONE_PICKER_INSET = 24
+/** One side of `NATIVE_PHONE_PICKER_INSET`. */
+export const NATIVE_PHONE_PICKER_GUTTER = NATIVE_PHONE_PICKER_INSET / 2
+/** Hairline used on native Settings / Skills / Agents chrome. */
+export const NATIVE_PHONE_HAIRLINE_COLOR = 'rgba(127,127,127,0.35)'
 /** Tap target for native phone icon buttons (Library refresh, period refresh). */
 export const NATIVE_PHONE_CONTROL_SIZE = 44
 /** Row gap between native phone chrome controls (`gap-2`). */
@@ -179,6 +183,14 @@ export function nativeSettingsPaneStyle(width: number): ViewStyle {
     maxWidth: width,
     alignSelf: 'stretch',
   }
+}
+
+/** Phone pane uses a pinned width; web/tablet overlay panes keep className layout. */
+export function nativeSettingsPaneRootStyle(
+  width: number,
+  comfortable: boolean,
+): ViewStyle | undefined {
+  return comfortable ? nativeSettingsPaneStyle(width) : undefined
 }
 
 /**

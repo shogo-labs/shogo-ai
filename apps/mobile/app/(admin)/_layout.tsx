@@ -27,11 +27,7 @@ import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { nativePhoneCanvas, WEB_PHONE_MAX_WIDTH } from '../../lib/native-phone-layout'
 import {
-  nativeDrawerPanelWidth,
-  snapNativeDrawer,
-  useNativeDrawerSheetSwipe,
-  useNativeDrawerSheetStyle,
-  nativeDrawerUnderlayStyle,
+  useNativeSheetDrawer,
   nativeDrawerTopInset,
   nativeDrawerSideInset,
   nativeDrawerFooterInset,
@@ -547,40 +543,24 @@ function AdminLayoutInner() {
   const isWide = !isNativeApp && width >= 900
   const nativeSheetDrawer =
     isNativeApp || (Platform.OS === 'web' && width <= WEB_PHONE_MAX_WIDTH)
-  const nativeDrawerWidth = nativeDrawerPanelWidth(width)
-  const drawerProgress = useRef(new Animated.Value(0)).current
   const { isSuperAdmin, scopes, hasAdminAccess, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
   const { localMode } = usePlatformConfig()
   const infraHealth = useInfraHealth(isSuperAdmin)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-
-  const resetDrawer = useCallback(() => {
-    drawerProgress.setValue(0)
-    setDrawerOpen(false)
-  }, [drawerProgress])
-  const openDrawer = useCallback(() => {
-    setDrawerOpen(true)
-    snapNativeDrawer(drawerProgress, true)
-  }, [drawerProgress])
-  const closeDrawer = useCallback(() => {
-    snapNativeDrawer(drawerProgress, false, (open) => {
-      if (!open) resetDrawer()
-    })
-  }, [drawerProgress, resetDrawer])
-  const toggleDrawer = useCallback(() => {
-    if (drawerOpen) closeDrawer()
-    else if (nativeSheetDrawer) openDrawer()
-    else setDrawerOpen(true)
-  }, [closeDrawer, drawerOpen, nativeSheetDrawer, openDrawer])
-
-  const sheetSwipeHandlers = useNativeDrawerSheetSwipe({
-    enabled: nativeSheetDrawer,
-    drawerWidth: nativeDrawerWidth,
-    drawerProgress,
-    isOpen: drawerOpen,
-    onOpenChange: setDrawerOpen,
+  const {
+    drawerOpen,
+    sheetSwipeHandlers,
+    sheetStyle,
+    sheetClipStyle,
+    underlayStyle: nativeDrawerUnderlay,
+    closeDrawer,
+    toggleDrawer,
+    resetDrawer,
+  } = useNativeSheetDrawer({
+    windowWidth: width,
+    isDark,
+    swipeEnabled: nativeSheetDrawer,
+    overlayOpenWithoutSnap: !nativeSheetDrawer,
   })
-  const { sheetStyle, sheetClipStyle } = useNativeDrawerSheetStyle(drawerProgress, nativeDrawerWidth)
 
   const sidebarProps = {
     userName,
@@ -654,7 +634,7 @@ function AdminLayoutInner() {
               pointerEvents={drawerOpen ? 'auto' : 'none'}
               accessibilityElementsHidden={!drawerOpen}
               importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
-              style={nativeDrawerUnderlayStyle(nativeDrawerWidth, isDark)}
+              style={nativeDrawerUnderlay}
             >
               <AdminSidebar {...sidebarProps} isNativeDrawer onClose={closeDrawer} />
             </View>

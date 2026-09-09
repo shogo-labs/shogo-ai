@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from "bun:test"
-import { shouldStackProminentComposer, nextProminentComposerHeight } from "../useProminentComposerExpansion"
+import { shouldStackProminentComposer, nextProminentComposerHeight, prominentModelTriggerMaxWidth } from "../useProminentComposerExpansion"
 
 describe("shouldStackProminentComposer", () => {
   const base = {
@@ -81,5 +81,13 @@ describe("nextProminentComposerHeight", () => {
         lineHeight: 22,
       }),
     ).toBe(24)
+  })
+})
+
+describe("prominentModelTriggerMaxWidth", () => {
+  test("clamps the Auto chip so home and project composers stay aligned", () => {
+    expect(prominentModelTriggerMaxWidth(390)).toBe(70)
+    expect(prominentModelTriggerMaxWidth(200)).toBe(54)
+    expect(prominentModelTriggerMaxWidth(800)).toBe(80)
   })
 })

@@ -26,10 +26,13 @@ import { cn } from "@shogo/shared-ui/primitives"
 import {
   useIsNativePhoneLayout,
   useNativePhoneWindow,
-  nativeSettingsPaneStyle,
+  nativeSettingsPaneRootStyle,
   nativeEqualChipWidths,
-  NATIVE_PHONE_PICKER_INSET,
+  NATIVE_PHONE_PICKER_GUTTER,
+  NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_ROW_GAP,
+  NATIVE_PHONE_CONTROL_SIZE,
+  NATIVE_PHONE_HAIRLINE_COLOR,
 } from "../../../lib/native-phone-layout"
 import { subagentStreamStore, type SubagentStreamData } from "../../../lib/subagent-stream-store"
 import { stopSubagent } from "../../../lib/subagent-stop"
@@ -822,12 +825,10 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: "registry", label: "Registry" },
 ]
 
-const NATIVE_TAB_GAP = NATIVE_PHONE_ROW_GAP
-
 export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelProps) {
   const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
-  const gutter = comfortable ? NATIVE_PHONE_PICKER_INSET / 2 : 16
-  const chips = comfortable ? nativeEqualChipWidths(pageWidth, SUB_TABS.length, NATIVE_TAB_GAP) : { row: 0, chip: 0, lastChip: 0 }
+  const gutter = comfortable ? NATIVE_PHONE_PICKER_GUTTER : NATIVE_PHONE_GUTTER
+  const chips = comfortable ? nativeEqualChipWidths(pageWidth, SUB_TABS.length, NATIVE_PHONE_ROW_GAP) : { row: 0, chip: 0, lastChip: 0 }
   const [subTab, setSubTab] = useState<SubTab>("activity")
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [expandedMemberIds, setExpandedMemberIds] = useState<Set<string>>(new Set())
@@ -862,11 +863,7 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
     <View
       collapsable={false}
       className={comfortable ? undefined : "absolute inset-0 flex-col"}
-      style={
-        comfortable
-          ? { ...nativeSettingsPaneStyle(pageWidth), display: visible ? "flex" : "none" }
-          : { display: visible ? "flex" : "none" }
-      }
+      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
     >
       {/* Sub-tab toggle */}
       <View
@@ -927,7 +924,7 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
       {/* Sub-tab content */}
       <View
         className={comfortable ? undefined : "flex-1 relative"}
-        style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
       >
         {subTab === "activity" && (
           <ActivitySubTab expandedIds={expandedIds} toggleExpanded={toggleExpanded} agentUrl={agentUrl} />
@@ -949,15 +946,15 @@ const nativeChrome = StyleSheet.create({
   tabBar: {
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(127,127,127,0.35)",
+    borderBottomColor: NATIVE_PHONE_HAIRLINE_COLOR,
   },
   tabRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: NATIVE_TAB_GAP,
+    gap: NATIVE_PHONE_ROW_GAP,
   },
   tab: {
-    height: 44,
+    height: NATIVE_PHONE_CONTROL_SIZE,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 999,

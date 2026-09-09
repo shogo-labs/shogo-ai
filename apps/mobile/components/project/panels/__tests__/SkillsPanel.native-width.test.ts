@@ -8,7 +8,7 @@ const source = readFileSync(resolve(import.meta.dir, '../SkillsPanel.tsx'), 'utf
 
 describe('SkillsPanel native phone width', () => {
   test('fills the settings pane so the list can scroll', () => {
-    expect(source).toContain('nativeSettingsPaneStyle')
+    expect(source).toContain('nativeSettingsPaneRootStyle')
     expect(source).toContain('alwaysBounceVertical={comfortable}')
     expect(source).toContain('collapsable={false}')
     expect(source).toContain('NATIVE_PHONE_PICKER_INSET')

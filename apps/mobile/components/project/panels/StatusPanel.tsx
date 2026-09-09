@@ -30,7 +30,7 @@ import { resolveShortName } from '../../../lib/visible-models'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import {
   useNativePhoneWindow,
-  nativeSettingsPaneStyle,
+  nativeSettingsPaneRootStyle,
   nativeTwoColumnCardWidth,
 } from '../../../lib/native-phone-layout'
 import { MarkdownText } from '../../chat/MarkdownText'
@@ -386,11 +386,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
     <View
       collapsable={false}
       className={comfortable ? undefined : 'absolute inset-0 flex-col'}
-      style={
-        comfortable
-          ? { ...nativeSettingsPaneStyle(pageWidth), display: visible ? 'flex' : 'none' }
-          : { display: visible ? 'flex' : 'none' }
-      }
+      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
     >
       {/* Header */}
       <View
@@ -450,7 +446,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
         alwaysBounceVertical={comfortable}
-        style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
         contentContainerStyle={{
           padding: 16,
           flexGrow: 1,

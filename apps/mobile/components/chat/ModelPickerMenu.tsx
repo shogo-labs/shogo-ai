@@ -27,6 +27,7 @@ import {
 } from "../../lib/visible-models"
 import { useIsSuperAdmin } from "../../lib/use-is-super-admin"
 import { NativeActivitySheet } from "./NativeActivitySheet"
+import { NATIVE_PHONE_SECTION_INSET } from "../../lib/native-phone-layout"
 import {
   Popover,
   PopoverBackdrop,
@@ -64,7 +65,7 @@ const INFO_PANEL_WIDTH = 232
 const WEB_MENU_WIDTH = 280
 
 export function getNativeModelMenuWidth(windowWidth: number): number {
-  return Math.max(240, Math.min(WEB_MENU_WIDTH, Math.floor(windowWidth - 32)))
+  return Math.max(240, Math.min(WEB_MENU_WIDTH, Math.floor(windowWidth - NATIVE_PHONE_SECTION_INSET)))
 }
 
 function ModelInfoPanel({ model }: { model: PickerModel }) {

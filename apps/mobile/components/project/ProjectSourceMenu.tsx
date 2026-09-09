@@ -29,7 +29,7 @@
  * this one element.
  */
 import React, { useCallback, useState } from 'react'
-import { Platform, Pressable, Text, useWindowDimensions, View } from 'react-native'
+import { Pressable, Text, useWindowDimensions, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -51,6 +51,7 @@ import { CloudProjectPickerModal } from '../projects/CloudProjectPickerModal'
 import { useComposerPlusClose } from '../chat/AttachSourceSheet'
 import { useOpenLocalFolder } from './useOpenLocalFolder'
 import { useOpenCloudProject } from './useOpenCloudProject'
+import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 
 export type ProjectSourceVariant = 'chip' | 'button' | 'list'
 
@@ -83,8 +84,8 @@ export function ProjectSourceMenu({
   onProjectOpened,
 }: ProjectSourceMenuProps) {
   const router = useRouter()
-  const { width } = useWindowDimensions()
-  const isNativePhone = Platform.OS !== 'web' && width < 600
+  const { width, height } = useWindowDimensions()
+  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
   const useProminentChip = prominentMobile && isNativePhone
   const closePlusSheet = useComposerPlusClose()
   const [open, setOpen] = useState(false)

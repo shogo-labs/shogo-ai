@@ -37,7 +37,7 @@ import {
 } from '@shogo/model-catalog'
 import { resolveShortName, resolveFamily } from '../../lib/visible-models'
 import { nativeActivePill } from '../../lib/native-active-shadow'
-import { nativeContentWidth, nativeGridChipWidth, NATIVE_WIND_SPACE_4, isNativePlatform } from '../../lib/native-phone-layout'
+import { nativeContentWidth, nativeGridChipWidth, NATIVE_WIND_SPACE_4, isNativePhoneIntegrationsLayout, isNativePlatform } from '../../lib/native-phone-layout'
 import {
   StackedAreaChart,
   STACKED_PALETTE,
@@ -197,8 +197,8 @@ export const getModelDisplayName = resolveShortName
 // =============================================================================
 
 function useNativeComfortable() {
-  const { width } = useWindowDimensions()
-  return isNativePlatform() && width < 600
+  const { width, height } = useWindowDimensions()
+  return isNativePhoneIntegrationsLayout(width, height)
 }
 
 export function PeriodSelector({
