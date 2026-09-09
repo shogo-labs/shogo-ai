@@ -19,7 +19,7 @@
  * ChatMessageCollection). EditableUserMessage is the consumer.
  */
 
-import { createContext, useContext, useMemo, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useMemo, useRef, type ReactNode } from "react"
 import type { UIMessage } from "@ai-sdk/react"
 import type { PrecedingCheckpointResult } from "@shogo/shared-app/chat"
 import type { FileAttachment } from "../ChatInput"
@@ -163,13 +163,39 @@ export interface MessageEditContextValue {
     isPro: boolean
     onUpgradeClick?: () => void
   }
+
+  /**
+   * Native-only: register the in-place editor so a tap on the transcript
+   * (or anywhere else) can hit-test the composer and cancel if it landed
+   * outside. Returns an unsubscribe used when the row leaves edit mode.
+   */
+  registerInlineEditCancel: (
+    cancel: (pageX: number, pageY: number) => void,
+  ) => () => void
 }
 
 const MessageEditContext = createContext<MessageEditContextValue | null>(null)
 
+/**
+ * Native transcript taps (ScrollView onTouchEnd) call this so the
+ * in-place editor can cancel when the press landed outside its box.
+ * No-op when nothing is being edited.
+ */
+let nativeInlineEditTapHandler: ((pageX: number, pageY: number) => void) | null =
+  null
+
+export function dispatchNativeInlineEditTap(pageX: number, pageY: number): void {
+  nativeInlineEditTapHandler?.(pageX, pageY)
+}
+
 export interface MessageEditProviderProps
-  extends MessageEditContextValue {
+  extends Omit<
+    MessageEditContextValue,
+    "registerInlineEditCancel"
+  > {
   children: ReactNode
+  /** Fired when a historical bubble enters or leaves inline edit mode. */
+  onInlineEditingChange?: (editing: boolean) => void
 }
 
 export function MessageEditProvider({
@@ -180,8 +206,29 @@ export function MessageEditProvider({
   canEditMessage,
   getPrecedingCheckpoint,
   composerProps,
+  onInlineEditingChange,
   children,
 }: MessageEditProviderProps) {
+  const cancelRef = useRef<((pageX: number, pageY: number) => void) | null>(null)
+
+  const registerInlineEditCancel = useCallback(
+    (cancel: (pageX: number, pageY: number) => void) => {
+      cancelRef.current = cancel
+      onInlineEditingChange?.(true)
+      nativeInlineEditTapHandler = (pageX, pageY) => {
+        cancelRef.current?.(pageX, pageY)
+      }
+      return () => {
+        if (cancelRef.current === cancel) {
+          cancelRef.current = null
+          nativeInlineEditTapHandler = null
+          onInlineEditingChange?.(false)
+        }
+      }
+    },
+    [onInlineEditingChange],
+  )
+
   const value = useMemo<MessageEditContextValue>(
     () => ({
       editMessage,
@@ -191,6 +238,7 @@ export function MessageEditProvider({
       canEditMessage,
       getPrecedingCheckpoint,
       composerProps,
+      registerInlineEditCancel,
     }),
     [
       editMessage,
@@ -200,6 +248,7 @@ export function MessageEditProvider({
       canEditMessage,
       getPrecedingCheckpoint,
       composerProps,
+      registerInlineEditCancel,
     ],
   )
   return (

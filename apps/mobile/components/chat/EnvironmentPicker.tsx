@@ -19,7 +19,7 @@
  * already rewrites `agentUrl` through `${apiUrl}/api/instances/:id/p/...`,
  * so the chat + canvas + SSE streams all follow automatically.
  */
-import React, { useState, useMemo } from "react"
+import React, { useState, useMemo, useEffect } from "react"
 import { View, Text, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native"
 import { Cloud, Laptop, Check, RefreshCw } from "lucide-react-native"
 import {
@@ -33,26 +33,14 @@ import { useInstancePicker, type Instance } from "@shogo/shared-app/hooks"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { API_URL } from "../../lib/api"
 import { authClient } from "../../lib/auth-client"
+import { useComposerPlusClose } from "./AttachSourceSheet"
+import { WebTooltip } from "./WebTooltip"
+import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 
 function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === "web") return {}
   const cookie = (authClient as any).getCookie?.()
   return cookie ? { Cookie: cookie } : {}
-}
-
-/**
- * Show a native browser tooltip on hover (web only). Wraps children in a
- * `display: contents` div with the `title` attribute so layout is unaffected
- * and the trigger's own ref isn't disturbed. On native this is a transparent
- * passthrough — the icon click opens the popover menu.
- */
-function WebTooltip({ label, children }: { label: string; children: React.ReactNode }) {
-  if (Platform.OS !== "web") return <>{children}</>
-  return React.createElement(
-    "div",
-    { title: label, style: { display: "contents" } },
-    children,
-  )
 }
 
 function StatusDot({ status }: { status: Instance["status"] }) {
@@ -69,14 +57,19 @@ export interface EnvironmentPickerProps {
   disabled?: boolean
   prominentMobile?: boolean
   compactMobile?: boolean
+  /** `list` renders options inline (plus-sheet). Default is the toolbar icon. */
+  presentation?: "icon" | "list"
+  /** When presentation is `list`, refresh paired machines when this becomes true. */
+  listActive?: boolean
 }
 
-export function EnvironmentPicker({ disabled, prominentMobile = false, compactMobile = false }: EnvironmentPickerProps) {
-  const { width } = useWindowDimensions()
-  const isNativePhone = Platform.OS !== "web" && width < 600
+export function EnvironmentPicker({ disabled, prominentMobile = false, compactMobile = false, presentation = "icon", listActive = false }: EnvironmentPickerProps) {
+  const { width, height } = useWindowDimensions()
+  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
   const useProminentTrigger = prominentMobile && isNativePhone
   const useCompactTrigger = compactMobile && isNativePhone
   const [open, setOpen] = useState(false)
+  const closePlusSheet = useComposerPlusClose()
   const workspace = useActiveWorkspace()
   const { instance: activeInstance, setInstance, clearInstance } = useActiveInstance()
 
@@ -102,37 +95,12 @@ export function EnvironmentPicker({ disabled, prominentMobile = false, compactMo
     ? <Laptop className="text-emerald-500" size={useCompactTrigger ? 13 : useProminentTrigger ? 16 : 14} />
     : <Cloud className="text-muted-foreground" size={useCompactTrigger ? 13 : useProminentTrigger ? 16 : 14} />
 
-  return (
-    <Popover
-      placement="top"
-      size="xs"
-      isOpen={open}
-      onOpen={() => { setOpen(true); refresh() }}
-      onClose={() => setOpen(false)}
-      trigger={(triggerProps) => (
-        <WebTooltip label={`Environment: ${displayLabel}`}>
-          <Pressable
-            {...triggerProps}
-            disabled={disabled}
-            hitSlop={useProminentTrigger && !useCompactTrigger ? 6 : undefined}
-            accessibilityLabel={`Environment: ${displayLabel}`}
-            className={cn(
-              useCompactTrigger
-                ? "h-7 w-7 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
-                : useProminentTrigger
-                  ? "h-8 w-8 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
-                : "h-[22px] w-[22px] items-center justify-center rounded-md",
-              activeInstance && "bg-emerald-500/10",
-            )}
-          >
-            {triggerIcon}
-          </Pressable>
-        </WebTooltip>
-      )}
-    >
-      <PopoverBackdrop />
-      <PopoverContent className="w-[280px] p-0 max-h-[360px]">
-        <ScrollView>
+  useEffect(() => {
+    if (presentation === "list" && listActive) refresh()
+  }, [listActive])
+
+  const menuBody = (
+        <View>
           <View className="px-3 pt-3 pb-1 flex-row items-center justify-between">
             <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
               Run Agent On
@@ -154,7 +122,9 @@ export function EnvironmentPicker({ disabled, prominentMobile = false, compactMo
             onPress={() => {
               clearInstance()
               setOpen(false)
+              closePlusSheet?.()
             }}
+            disabled={disabled}
             className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted/60"
           >
             <Cloud className="h-4 w-4 text-foreground" size={16} />
@@ -196,10 +166,11 @@ export function EnvironmentPicker({ disabled, prominentMobile = false, compactMo
             return (
               <Pressable
                 key={inst.id}
-                disabled={isConnecting}
+                disabled={isConnecting || disabled}
                 onPress={async () => {
                   await select(inst)
                   setOpen(false)
+                  closePlusSheet?.()
                 }}
                 className={cn(
                   "flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted/60",
@@ -234,7 +205,9 @@ export function EnvironmentPicker({ disabled, prominentMobile = false, compactMo
                 onPress={() => {
                   disconnect()
                   setOpen(false)
+                  closePlusSheet?.()
                 }}
+                disabled={disabled}
                 className="px-3 py-2.5 active:bg-muted/60"
               >
                 <Text className="text-xs text-destructive font-medium">
@@ -243,6 +216,45 @@ export function EnvironmentPicker({ disabled, prominentMobile = false, compactMo
               </Pressable>
             </>
           )}
+        </View>
+  )
+
+  if (presentation === "list") {
+    return menuBody
+  }
+
+  return (
+    <Popover
+      placement="top"
+      size="xs"
+      isOpen={open}
+      onOpen={() => { setOpen(true); refresh() }}
+      onClose={() => setOpen(false)}
+      trigger={(triggerProps) => (
+        <WebTooltip label={`Environment: ${displayLabel}`}>
+          <Pressable
+            {...triggerProps}
+            disabled={disabled}
+            hitSlop={useProminentTrigger && !useCompactTrigger ? 6 : undefined}
+            accessibilityLabel={`Environment: ${displayLabel}`}
+            className={cn(
+              useCompactTrigger
+                ? "h-7 w-7 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
+                : useProminentTrigger
+                  ? "h-8 w-8 items-center justify-center rounded-lg border border-border/45 bg-muted/30"
+                : "h-[22px] w-[22px] items-center justify-center rounded-md",
+              activeInstance && "bg-emerald-500/10",
+            )}
+          >
+            {triggerIcon}
+          </Pressable>
+        </WebTooltip>
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="w-[280px] p-0 max-h-[360px]">
+        <ScrollView>
+          {menuBody}
         </ScrollView>
       </PopoverContent>
     </Popover>

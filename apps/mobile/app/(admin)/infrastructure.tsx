@@ -36,6 +36,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
+import { nativeActivePill } from '../../lib/native-active-shadow'
 
 const LOCAL_API_BASE = `${API_URL}/api/admin`
 const AUTO_REFRESH_INTERVAL = 15_000
@@ -435,14 +436,17 @@ function HistoryPeriodSelector({
 }) {
   return (
     <View className="flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5">
-      {(Object.keys(HISTORY_PERIOD_LABELS) as HistoryPeriod[]).map((p) => (
+      {(Object.keys(HISTORY_PERIOD_LABELS) as HistoryPeriod[]).map((p) => {
+        const pill = nativeActivePill(value === p)
+        return (
         <Pressable
           key={p}
           onPress={() => onChange(p)}
           className={cn(
             'px-2.5 py-1 rounded-md',
-            value === p ? 'bg-background shadow-sm' : ''
+            pill.className,
           )}
+          style={pill.style}
         >
           <Text
             className={cn(
@@ -453,7 +457,8 @@ function HistoryPeriodSelector({
             {HISTORY_PERIOD_LABELS[p]}
           </Text>
         </Pressable>
-      ))}
+        )
+      })}
     </View>
   )
 }
@@ -477,14 +482,17 @@ function RegionSelector({
 
   return (
     <View className="flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5">
-      {allRegions.map((r) => (
+      {allRegions.map((r) => {
+        const pill = nativeActivePill(selected === r.id)
+        return (
         <Pressable
           key={r.id}
           onPress={() => onChange(r.id)}
           className={cn(
             'flex-row items-center gap-1.5 px-2.5 py-1.5 rounded-md',
-            selected === r.id ? 'bg-background shadow-sm' : ''
+            pill.className,
           )}
+          style={pill.style}
         >
           <Globe
             size={11}
@@ -508,7 +516,8 @@ function RegionSelector({
             <View className="h-1.5 w-1.5 rounded-full bg-green-400" />
           )}
         </Pressable>
-      ))}
+        )
+      })}
     </View>
   )
 }

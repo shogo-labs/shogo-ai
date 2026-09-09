@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { View, Text, Pressable, Image } from 'react-native'
+import { View, Text, Pressable, Image, Platform } from 'react-native'
 import { Star, Download, ArrowRight } from 'lucide-react-native'
 import { CreatorChip, type CreatorTier } from './CreatorChip'
 import { PriceTag, type PricingModel } from './PriceTag'
@@ -33,6 +33,13 @@ export interface AgentTileListing {
 }
 
 export type AgentTileSize = 'spotlight' | 'featured' | 'medium' | 'compact'
+
+/** NativeWind `min-h-[180px]` — pixel minHeight so Yoga cannot collapse the hero. */
+const TILE_SPOTLIGHT_MIN_HEIGHT = 180
+/** NativeWind `h-32`. */
+const TILE_FEATURED_PREVIEW_HEIGHT = 128
+/** NativeWind `h-24` — pixel height so Yoga cannot collapse the grid preview. */
+const TILE_MEDIUM_PREVIEW_HEIGHT = 96
 
 interface AgentTileProps {
   listing: AgentTileListing
@@ -76,8 +83,8 @@ function SpotlightTile({ listing, onPress }: { listing: AgentTileListing; onPres
       style={{ backgroundColor: `${accent}1a` }}
     >
       <View
-        className="flex-row p-6 gap-5 min-h-[180px]"
-        style={{ backgroundColor: `${accent}12` }}
+        className="flex-row p-6 gap-5"
+        style={{ minHeight: TILE_SPOTLIGHT_MIN_HEIGHT, backgroundColor: `${accent}12` }}
       >
         <View className="flex-1 justify-between gap-4 min-w-0">
           <View className="flex-row items-center gap-2">
@@ -159,8 +166,8 @@ function FeaturedTile({ listing, onPress }: { listing: AgentTileListing; onPress
     >
       {/* Preview area — uses first screenshot when present, gradient fallback otherwise */}
       <View
-        className="h-32 items-center justify-center"
-        style={{ backgroundColor: `${accent}22` }}
+        className="items-center justify-center"
+        style={{ height: TILE_FEATURED_PREVIEW_HEIGHT, backgroundColor: `${accent}22` }}
       >
         {listing.previewUrl ? (
           <Image
@@ -219,11 +226,16 @@ function MediumTile({ listing, onPress }: { listing: AgentTileListing; onPress: 
   return (
     <Pressable
       onPress={onPress}
-      className="flex-1 m-1.5 rounded-2xl border border-border bg-card overflow-hidden active:opacity-90"
+      className={
+        Platform.OS === 'web'
+          ? 'flex-1 m-1.5 rounded-2xl border border-border bg-card overflow-hidden active:opacity-90'
+          : 'm-1.5 rounded-2xl border border-border bg-card overflow-hidden active:opacity-90'
+      }
+      style={Platform.OS === 'web' ? undefined : { width: '100%' }}
     >
       <View
-        className="h-24 items-center justify-center relative"
-        style={{ backgroundColor: `${accent}14` }}
+        className="items-center justify-center relative"
+        style={{ height: TILE_MEDIUM_PREVIEW_HEIGHT, backgroundColor: `${accent}14` }}
       >
         {listing.iconUrl ? (
           <Image

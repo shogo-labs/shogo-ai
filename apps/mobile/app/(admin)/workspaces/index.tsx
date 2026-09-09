@@ -30,6 +30,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
+import { nativeActivePill } from '../../../lib/native-active-shadow'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -221,7 +222,9 @@ function WorkspacesListHeader({
             isWide ? 'w-[360px]' : '',
           )}
         >
-          {SIZE_OPTIONS.map((s) => (
+          {SIZE_OPTIONS.map((s) => {
+            const pill = nativeActivePill(sizeFilter === s.value)
+            return (
             <Pressable
               key={s.value}
               onPress={() => {
@@ -230,8 +233,9 @@ function WorkspacesListHeader({
               }}
               className={cn(
                 'flex-1 items-center py-1.5 rounded-md',
-                sizeFilter === s.value ? 'bg-background shadow-sm' : '',
+                pill.className,
               )}
+              style={pill.style}
             >
               <Text
                 className={cn(
@@ -242,7 +246,8 @@ function WorkspacesListHeader({
                 {s.label}
               </Text>
             </Pressable>
-          ))}
+            )
+          })}
         </View>
       </View>
 

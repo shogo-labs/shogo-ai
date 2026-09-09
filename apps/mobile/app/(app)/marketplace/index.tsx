@@ -47,7 +47,8 @@ import {
   PopoverContent,
 } from '@/components/ui/popover'
 import { useDebouncedValue } from '../../../hooks/useDebouncedValue'
-import { useGridColumns } from '../../../hooks/useGridColumns'
+import { useMarketplaceGridLayout, MARKETPLACE_GRID_PAD_X, marketplaceGridCellClass } from '../../../hooks/useGridColumns'
+import { overlayScrollbarProps } from '../../../lib/overlay-scrollbar'
 
 interface ListingFromAPI {
   id: string
@@ -181,7 +182,7 @@ function getLucideIcon(name: string) {
 export default observer(function MarketplaceHomeScreen() {
   const router = useRouter()
   const http = useDomainHttp()
-  const numColumns = useGridColumns()
+  const { numColumns, cellStyle } = useMarketplaceGridLayout()
   const { user } = useAuth()
 
   const [searchQuery, setSearchQuery] = useState('')
@@ -426,16 +427,18 @@ export default observer(function MarketplaceHomeScreen() {
 
   const renderGridItem = useCallback(
     ({ item }: { item: AgentTileListing | null }) => {
-      if (!item) return <View className="flex-1 m-1.5" />
+      if (!item) return <View className="flex-1 m-1.5" style={cellStyle} />
       return (
-        <AgentTile
-          size="medium"
-          listing={item}
-          onPress={() => handleCardPress(item.slug)}
-        />
+        <View style={cellStyle} className={marketplaceGridCellClass(cellStyle)}>
+          <AgentTile
+            size="medium"
+            listing={item}
+            onPress={() => handleCardPress(item.slug)}
+          />
+        </View>
       )
     },
-    [handleCardPress],
+    [cellStyle, handleCardPress],
   )
 
   const renderListItem = useCallback(
@@ -822,7 +825,8 @@ export default observer(function MarketplaceHomeScreen() {
             extraData={`${sortMode}-${browseFocus ?? 'home'}`}
             numColumns={numColumns}
             columnWrapperStyle={numColumns > 1 ? { gap: 0 } : undefined}
-            contentContainerStyle={{ paddingBottom: 32, paddingHorizontal: 12 }}
+            contentContainerStyle={{ paddingBottom: 32, paddingHorizontal: MARKETPLACE_GRID_PAD_X }}
+            {...overlayScrollbarProps}
             ListHeaderComponent={ListHeader}
             onEndReached={handleLoadMore}
             onEndReachedThreshold={0.5}
@@ -872,6 +876,7 @@ export default observer(function MarketplaceHomeScreen() {
             renderItem={renderListItem}
             extraData={`${sortMode}-${browseFocus ?? 'home'}`}
             contentContainerStyle={{ paddingBottom: 32 }}
+            {...overlayScrollbarProps}
             ListHeaderComponent={ListHeader}
             onEndReached={handleLoadMore}
             onEndReachedThreshold={0.5}
@@ -1236,7 +1241,11 @@ function formatCount(n: number): string {
 
 function BrowseSkeleton() {
   return (
-    <ScrollView className="flex-1" contentContainerStyle={{ padding: 20, gap: 24 }}>
+    <ScrollView
+      className="flex-1"
+      contentContainerStyle={{ padding: 20, gap: 24 }}
+      {...overlayScrollbarProps}
+    >
       <View className="h-44 rounded-3xl bg-muted/40" />
       <View className="gap-3">
         <View className="h-5 w-40 rounded bg-muted/40" />

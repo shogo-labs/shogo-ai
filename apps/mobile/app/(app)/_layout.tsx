@@ -4,7 +4,9 @@
  * (app) layout - Responsive app shell
  *
  * Wide screens (>= 768px): persistent sidebar + content side by side
- * Narrow screens (< 768px): header with hamburger + drawer sidebar overlay
+ * Narrow screens (< 768px):
+ *  - Native: hamburger + two-layer sheet drawer (sidebar under the moving screen)
+ *  - Web: header with hamburger + overlay sidebar
  *
  * Route-aware visibility:
  *  - Home page (wide): sidebar visible, NO header
@@ -16,7 +18,7 @@
  * Auth guard redirects unauthenticated users to sign-in (or root in local mode).
  */
 
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { ActivityIndicator, Animated, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -26,11 +28,14 @@ import { API_URL } from '../../lib/api'
 import { trackSignUp, trackLogin } from '../../lib/tracking'
 import { usePostHogIdentify, usePostHogSafe } from '../../contexts/posthog'
 import { DomainProvider } from '../../contexts/domain'
+import { useResolvedTheme } from '../../contexts/theme'
 import { AppSidebar } from '../../components/layout/AppSidebar'
 import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
 import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
 import { mark as csMark } from '../../lib/cold-start-timing'
+import { nativePhoneCanvas, NATIVE_PHONE_HOME_CANVAS } from '../../lib/native-phone-layout'
+import { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe'
 
 csMark('app:layout:module-load')
 
@@ -55,9 +60,9 @@ export default function AppLayout() {
   const ideAutoSignInAttempted = useRef(false)
   const { width } = useWindowDimensions()
   const isNativeApp = Platform.OS !== 'web'
+  const isDark = useResolvedTheme() === 'dark'
+  const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const isWide = !isNativeApp && width >= 768
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const drawerProgress = useRef(new Animated.Value(0)).current
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
 
   const isProjectDetail = /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, '/'))
@@ -68,6 +73,10 @@ export default function AppLayout() {
   // The notifications inbox provides its own header (back + mark-all-read), so
   // suppress the app header on narrow screens to avoid stacking two headers.
   const isNotificationsPage = pathname === '/notifications' || pathname === '/(app)/notifications'
+  const isApiKeysPage = pathname === '/api-keys' || pathname === '/(app)/api-keys'
+  const isProfilePage = pathname === '/profile' || pathname === '/(app)/profile'
+  const isSearchPage = pathname === '/search' || pathname === '/(app)/search'
+  const isProjectChatsPage = pathname === '/project-chats' || pathname === '/(app)/project-chats'
 
   usePostHogIdentify()
   const posthog = usePostHogSafe()
@@ -129,14 +138,36 @@ export default function AppLayout() {
     } catch {}
   }, [isAuthenticated, user])
 
-  const openDrawer = useCallback(() => setDrawerOpen(true), [])
-  const closeDrawer = useCallback(() => setDrawerOpen(false), [])
+  const suppressNarrowAppHeader =
+    isProjectDetail ||
+    isBillingPage ||
+    isNotificationsPage ||
+    isApiKeysPage ||
+    isProfilePage ||
+    isSearchPage ||
+    isProjectChatsPage
+  const nativeDrawerSwipe = !isWide && !isIdeEmbed && !suppressNarrowAppHeader
+  const nativeSheetDrawer = !isWide && !isIdeEmbed
+  const {
+    drawerOpen,
+    sheetSwipeHandlers,
+    sheetStyle,
+    sheetClipStyle,
+    underlayStyle: nativeDrawerUnderlay,
+    closeDrawer,
+    toggleDrawer,
+    resetDrawer,
+  } = useNativeSheetDrawer({
+    windowWidth: width,
+    isDark,
+    swipeEnabled: nativeDrawerSwipe,
+    closedCanvas: isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined,
+  })
 
   useEffect(() => {
     if (!isWide) return
-    drawerProgress.setValue(0)
-    setDrawerOpen(false)
-  }, [drawerProgress, isWide])
+    resetDrawer()
+  }, [isWide, resetDrawer])
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return
@@ -198,32 +229,14 @@ export default function AppLayout() {
   }
 
   const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
-  const nativeHomeChrome = isNativeApp && isHomePage && !isIdeEmbed
-  const shouldShiftHomeForDrawer = nativeHomeChrome
-  const drawerContentStyle = shouldShiftHomeForDrawer
-    ? {
-        transform: [
-          {
-            translateX: drawerProgress.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0, Math.min(64, Math.max(48, width * 0.14))],
-            }),
-          },
-          {
-            scale: drawerProgress.interpolate({
-              inputRange: [0, 1],
-              outputRange: [1, 0.97],
-            }),
-          },
-        ],
-      }
-    : undefined
+  const nativeEdgeToEdgeChrome = isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage)
 
   return (
     <DomainProvider>
       <SafeAreaView
-        className={nativeHomeChrome ? "flex-1 bg-card" : "flex-1 bg-background"}
-        edges={nativeHomeChrome ? ['top', 'left', 'right'] : undefined}
+        className="flex-1 bg-background"
+        style={nativeSheetDrawer ? { backgroundColor: nativeDrawerCanvas } : undefined}
+        edges={nativeEdgeToEdgeChrome ? ['left', 'right'] : undefined}
       >
         <View className="flex-1 flex-row">
           {showSidebar && <AppSidebar />}
@@ -235,17 +248,46 @@ export default function AppLayout() {
             content width. Pass `flex: 1` via `style` instead, which works
             regardless of NativeWind interop registration.
           */}
-          <Animated.View style={[{ flex: 1 }, drawerContentStyle]}>
-            {!isWide && !isIdeEmbed && !isProjectDetail && !isBillingPage && !isNotificationsPage && <AppHeader onMenuPress={openDrawer} />}
-            <View className="flex-1">
-              {localMode && !isIdeEmbed && <RecordingIndicator />}
-              <Slot />
-            </View>
-          </Animated.View>
+          <View style={{ flex: 1, overflow: 'hidden' }} collapsable={false}>
+            {nativeSheetDrawer ? (
+              <View
+                pointerEvents={drawerOpen ? 'auto' : 'none'}
+                accessibilityElementsHidden={!drawerOpen}
+                importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
+                style={nativeDrawerUnderlay}
+              >
+                <AppSidebar
+                  isOpen={drawerOpen}
+                  onClose={closeDrawer}
+                />
+              </View>
+            ) : null}
+            <Animated.View
+              collapsable={false}
+              {...sheetSwipeHandlers}
+              style={[{ flex: 1, zIndex: 1 }, nativeSheetDrawer ? sheetStyle : undefined]}
+            >
+              <Animated.View style={sheetClipStyle}>
+                <View className="flex-1">
+                  {!isWide && !isIdeEmbed && !suppressNarrowAppHeader && (
+                    <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
+                  )}
+                  <View className="flex-1">
+                    {localMode && !isIdeEmbed && <RecordingIndicator />}
+                    <Slot />
+                  </View>
+                </View>
+              </Animated.View>
+            </Animated.View>
+          </View>
         </View>
 
-        {!isWide && (
-          <AppSidebar isOpen={drawerOpen} onClose={closeDrawer} drawerProgress={drawerProgress} />
+        {!isWide && !nativeSheetDrawer && (
+          <AppSidebar
+            isOpen={drawerOpen}
+            onClose={closeDrawer}
+            isNativeDrawer={false}
+          />
         )}
       </SafeAreaView>
     </DomainProvider>

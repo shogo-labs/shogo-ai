@@ -12,7 +12,7 @@
 // rollback on tap.
 
 import { useCallback, useMemo, useState } from 'react'
-import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
+import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet } from 'react-native'
 import Svg, { Path, Line, Circle, Text as SvgText, G } from 'react-native-svg'
 import {
   AlertTriangle,
@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Rocket,
 } from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
 
 import {
   useCheckpoints,
@@ -40,11 +41,14 @@ import {
 } from './types'
 import { avatarColor, initials, isAiAuthor, relativeTime } from './gitAvatar'
 import { CreateCheckpointModal, RollbackConfirmModal } from '../../CheckpointModals'
+import { useNativePhoneWindow } from '../../../../../lib/native-phone-layout'
 
 const CHECKPOINT_RING = '#f59e0b'
 const LIVE_RING = '#10b981'
 
 export function CheckpointGraphNative({ projectId }: { projectId: string }) {
+  const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const rowHeight = comfortable ? 48 : ROW_HEIGHT
   const nativeHeaders = useMemo(
     () =>
       (): Record<string, string> => {
@@ -130,20 +134,67 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
 
   const canCreate = !graph.disabledForExternalMode && !checkpointsDisabled
   const gWidth = graphWidth(maxLanes)
-  const totalHeight = rows.length * ROW_HEIGHT
+  const totalHeight = rows.length * rowHeight
 
   return (
-    <View className="h-full w-full flex-col bg-background">
+    <View className="h-full w-full flex-col bg-background" style={{ width: pageWidth, maxWidth: pageWidth, flex: 1 }} collapsable={false}>
       {/* Header */}
-      <View className="px-4 py-3 border-b border-border flex-row items-center justify-between">
+      {comfortable ? (
+        <View
+          style={{
+            width: pageWidth,
+            maxWidth: pageWidth,
+            paddingHorizontal: 16,
+            paddingVertical: 14,
+            borderBottomWidth: StyleSheet.hairlineWidth,
+            borderBottomColor: 'rgba(127,127,127,0.35)',
+            gap: 12,
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, width: pageWidth - 32 }}>
+            <GitBranch size={18} className="text-muted-foreground" />
+            <Text className="text-lg font-semibold text-foreground" numberOfLines={1} style={{ width: Math.max(0, pageWidth - 32 - 26 - 48) }}>
+              {graph.currentBranch ?? 'Checkpoints'}
+            </Text>
+            {graph.commits.length > 0 ? (
+              <View className="bg-muted rounded-full px-1.5 py-0.5">
+                <Text className="text-xs font-medium text-muted-foreground">
+                  {graph.commits.length}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, width: pageWidth - 32 }}>
+            {canCreate ? (
+              <Pressable
+                onPress={() => setShowCreate(true)}
+                disabled={isMutating}
+                className="flex-row items-center justify-center gap-1.5 rounded-lg bg-primary active:opacity-80"
+                style={{ width: Math.max(0, pageWidth - 32 - 44 - 8), minHeight: 44, paddingHorizontal: 16 }}
+              >
+                <BookmarkPlus size={18} className="text-primary-foreground" />
+                <Text className="text-base font-medium text-primary-foreground">Create</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              onPress={() => graph.refetch()}
+              className="rounded-lg border border-border active:bg-muted items-center justify-center"
+              style={{ width: 44, height: 44 }}
+            >
+              <RefreshCw size={18} className="text-muted-foreground" />
+            </Pressable>
+          </View>
+        </View>
+      ) : (
+      <View className={cn("px-4 border-b border-border flex-row items-center justify-between", comfortable ? "py-3.5" : "py-3")}>
         <View className="flex-row items-center gap-2 flex-1 min-w-0">
-          <GitBranch size={14} className="text-muted-foreground" />
-          <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+          <GitBranch size={comfortable ? 18 : 14} className="text-muted-foreground" />
+          <Text className={cn("font-semibold text-foreground", comfortable ? "text-lg" : "text-sm")} numberOfLines={1}>
             {graph.currentBranch ?? 'Checkpoints'}
           </Text>
           {graph.commits.length > 0 && (
             <View className="bg-muted rounded-full px-1.5 py-0.5">
-              <Text className="text-[10px] font-medium text-muted-foreground">
+              <Text className={cn("font-medium text-muted-foreground", comfortable ? "text-xs" : "text-[10px]")}>
                 {graph.commits.length}
               </Text>
             </View>
@@ -154,20 +205,24 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
             <Pressable
               onPress={() => setShowCreate(true)}
               disabled={isMutating}
-              className="flex-row items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 active:opacity-80"
+              className={cn(
+                "flex-row items-center gap-1.5 rounded-lg bg-primary active:opacity-80",
+                comfortable ? "min-h-11 px-4" : "px-3 py-1.5",
+              )}
             >
-              <BookmarkPlus size={14} className="text-primary-foreground" />
-              <Text className="text-xs font-medium text-primary-foreground">Create</Text>
+              <BookmarkPlus size={comfortable ? 18 : 14} className="text-primary-foreground" />
+              <Text className={cn("font-medium text-primary-foreground", comfortable ? "text-base" : "text-xs")}>Create</Text>
             </Pressable>
           )}
           <Pressable
             onPress={() => graph.refetch()}
-            className="p-1.5 rounded-lg border border-border active:bg-muted"
+            className={cn("rounded-lg border border-border active:bg-muted", comfortable ? "h-11 w-11 items-center justify-center" : "p-1.5")}
           >
-            <RefreshCw size={14} className="text-muted-foreground" />
+            <RefreshCw size={comfortable ? 18 : 14} className="text-muted-foreground" />
           </Pressable>
         </View>
       </View>
+      )}
 
       {/* Content */}
       {graph.disabledForExternalMode ? (
@@ -211,7 +266,7 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
           <View className="flex-row" style={{ minHeight: totalHeight }}>
             {/* Graph column (svg lanes + nodes) */}
             <View style={{ width: gWidth, height: totalHeight }}>
-              <GraphSvg rows={rows} width={gWidth} height={totalHeight} selectedSha={selectedSha} />
+              <GraphSvg rows={rows} width={gWidth} height={totalHeight} selectedSha={selectedSha} rowHeight={rowHeight} />
             </View>
 
             {/* Message column */}
@@ -222,6 +277,8 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
                   row={row}
                   selected={!!row.sha && row.sha === selectedSha}
                   onPress={() => handleRowPress(row)}
+                  rowHeight={rowHeight}
+                  comfortable={comfortable}
                 />
               ))}
             </View>
@@ -262,18 +319,20 @@ function GraphSvg({
   width,
   height,
   selectedSha,
+  rowHeight = ROW_HEIGHT,
 }: {
   rows: DisplayRow[]
   width: number
   height: number
   selectedSha: string | null
+  rowHeight?: number
 }) {
   return (
     <Svg width={width} height={height}>
       {/* Lane connectors (drawn first so nodes sit on top) */}
       {rows.map((row, i) => {
-        const topY = i * ROW_HEIGHT + ROW_HEIGHT / 2
-        const bottomY = (i + 1) * ROW_HEIGHT + ROW_HEIGHT / 2
+        const topY = i * rowHeight + rowHeight / 2
+        const bottomY = (i + 1) * rowHeight + rowHeight / 2
         return row.edges.map((e, j) => {
           const x1 = laneCenterX(e.fromLane)
           const x2 = laneCenterX(e.toLane)
@@ -299,7 +358,7 @@ function GraphSvg({
       {/* Commit / WIP nodes */}
       {rows.map((row, i) => {
         const cx = laneCenterX(row.lane)
-        const cy = i * ROW_HEIGHT + ROW_HEIGHT / 2
+        const cy = i * rowHeight + rowHeight / 2
         const selected = !!row.sha && row.sha === selectedSha
 
         if (row.kind === 'wip') {
@@ -371,38 +430,42 @@ function MessageRow({
   row,
   selected,
   onPress,
+  rowHeight = ROW_HEIGHT,
+  comfortable = false,
 }: {
   row: DisplayRow
   selected: boolean
   onPress: () => void
+  rowHeight?: number
+  comfortable?: boolean
 }) {
   return (
     <Pressable
       onPress={onPress}
       className={selected ? 'bg-muted' : undefined}
-      style={{ height: ROW_HEIGHT }}
+      style={{ height: rowHeight }}
     >
       <View className="flex-1 flex-row items-center gap-2 pr-3">
         {row.kind === 'wip' ? (
           <>
-            <Text className="text-xs font-mono text-muted-foreground">// WIP</Text>
+            <Text className={cn('font-mono text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')}>// WIP</Text>
             {row.wipCount ? (
-              <Text className="text-[10px] text-emerald-500">+{row.wipCount}</Text>
+              <Text className={cn('text-emerald-500', comfortable ? 'text-xs' : 'text-[10px]')}>+{row.wipCount}</Text>
             ) : null}
           </>
         ) : (
           <>
-            {row.isLive && <Rocket size={11} color={LIVE_RING} />}
+            {row.isLive && <Rocket size={comfortable ? 14 : 11} color={LIVE_RING} />}
             {row.isCheckpoint && (
-              <BookmarkPlus size={11} color={CHECKPOINT_RING} />
+              <BookmarkPlus size={comfortable ? 14 : 11} color={CHECKPOINT_RING} />
             )}
-            <Text className="text-[13px] text-foreground flex-1" numberOfLines={1}>
+            <Text className={cn('text-foreground flex-1', comfortable ? 'text-base' : 'text-[13px]')} numberOfLines={1}>
               {row.commit!.subject}
             </Text>
-            <Text className="text-[10px] text-muted-foreground">
+            <Text className={cn('text-muted-foreground', comfortable ? 'text-xs' : 'text-[10px]')}>
               {relativeTime(row.commit!.date)}
             </Text>
-            <Text className="text-[10px] font-mono text-muted-foreground">
+            <Text className={cn('font-mono text-muted-foreground', comfortable ? 'text-xs' : 'text-[10px]')}>
               {row.commit!.shortSha}
             </Text>
           </>

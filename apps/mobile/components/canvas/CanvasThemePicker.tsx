@@ -17,6 +17,7 @@ import { createPortal } from 'react-dom'
 import { Text } from '@/components/ui/text'
 import { Sun, Moon, Monitor, Palette, Check } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { nativeActivePill } from '../../lib/native-active-shadow'
 import { useCanvasTheme } from './CanvasThemeContext'
 import { CANVAS_THEMES, type CanvasColorScheme } from './canvas-themes'
 
@@ -72,14 +73,17 @@ export function CanvasThemePicker() {
     <View className="flex-row items-center gap-1.5">
       {/* Color scheme toggle (segmented control) */}
       <View className="flex-row items-center bg-muted rounded-lg p-0.5">
-        {SCHEME_OPTIONS.map(({ id, icon: Icon, label }) => (
+        {SCHEME_OPTIONS.map(({ id, icon: Icon, label }) => {
+          const pill = nativeActivePill(colorScheme === id)
+          return (
           <Pressable
             key={id}
             onPress={() => setColorScheme(id)}
             className={cn(
               'px-2 py-1 rounded-md flex-row items-center gap-1',
-              colorScheme === id && 'bg-background shadow-sm',
+              pill.className,
             )}
+            style={pill.style}
           >
             <Icon
               size={13}
@@ -96,7 +100,8 @@ export function CanvasThemePicker() {
               {label}
             </Text>
           </Pressable>
-        ))}
+          )
+        })}
       </View>
 
       {/* Color theme picker trigger */}

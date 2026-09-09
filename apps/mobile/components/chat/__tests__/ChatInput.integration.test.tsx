@@ -133,6 +133,9 @@ mock.module("../useVoiceInput", () => ({
 
 mock.module("../VoiceWaveform", () => ({ VoiceWaveform: () => null }))
 mock.module("../AttachSourceSheet", () => ({ AttachSourceSheet: () => null }))
+mock.module("../../../lib/native-attachment-picker", () => ({
+  executeNativeAttachAction: () => {},
+}))
 mock.module("../ContextTracker", () => ({
   ContextTracker: () => null,
   // `ContextBreakdownPanel` (rendered by the dock's `ContextUsageDockPanel`,
@@ -145,6 +148,7 @@ mock.module("../../../lib/visible-models", () => ({
 }))
 mock.module("../ModelPickerMenu", () => ({
   ModelPickerMenu: () => null,
+  ComposerModelPicker: () => null,
   getNativeModelMenuWidth: () => 280,
 }))
 mock.module("../FileViewerModal", () => ({ FileViewerModal: () => null }))
@@ -188,7 +192,7 @@ describe("ChatInput integration — mobile-web TextInput changes", () => {
         />,
       )
 
-      const input = screen.getByPlaceholderText("Ask Shogo...") as HTMLTextAreaElement
+      const input = screen.getByTestId("project-composer-input") as HTMLTextAreaElement
 
       await act(async () => {
         fireEvent.change(input, { target: { value: "@" } })
@@ -222,7 +226,7 @@ describe("ChatInput integration — mobile-web TextInput changes", () => {
       </Profiler>,
     )
 
-    const input = screen.getByPlaceholderText("Ask Shogo...") as HTMLTextAreaElement
+    const input = screen.getByTestId("project-composer-input") as HTMLTextAreaElement
 
     await act(async () => {
       fireEvent.change(input, { target: { value: "@ali" } })

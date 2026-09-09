@@ -42,6 +42,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
+import { nativeActivePill } from '../../lib/native-active-shadow'
 
 const API_BASE = `${API_URL}/api/admin`
 const AUTO_REFRESH_INTERVAL = 15_000
@@ -481,13 +482,16 @@ function FilterRow({
     </Pressable>
   )
 
-  const SortBtn = ({ label, value }: { label: string; value: SortKey }) => (
+  const SortBtn = ({ label, value }: { label: string; value: SortKey }) => {
+    const pill = nativeActivePill(sort === value)
+    return (
     <Pressable
       onPress={() => onSortChange(value)}
       className={cn(
         'px-2.5 py-1 rounded-md',
-        sort === value ? 'bg-background shadow-sm' : ''
+        pill.className,
       )}
+      style={pill.style}
     >
       <Text
         className={cn(
@@ -498,7 +502,8 @@ function FilterRow({
         {label}
       </Text>
     </Pressable>
-  )
+    )
+  }
 
   return (
     <View className="bg-card border border-border rounded-xl p-3 mb-4 gap-2">

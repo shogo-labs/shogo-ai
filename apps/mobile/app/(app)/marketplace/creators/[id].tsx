@@ -27,7 +27,7 @@ import {
   TIER_LABEL,
   type CreatorTier,
 } from '../../../../components/marketplace'
-import { useGridColumns } from '../../../../hooks/useGridColumns'
+import { useMarketplaceGridLayout, MARKETPLACE_GRID_PAD_X, marketplaceGridCellClass } from '../../../../hooks/useGridColumns'
 
 interface CreatorPublicProfile {
   id: string
@@ -119,7 +119,7 @@ export default observer(function CreatorProfileScreen() {
   const router = useRouter()
   const { id } = useLocalSearchParams<{ id: string }>()
   const http = useDomainHttp()
-  const numColumns = useGridColumns()
+  const { numColumns, cellStyle } = useMarketplaceGridLayout()
 
   const [profile, setProfile] = useState<CreatorPublicProfile | null>(null)
   const [listings, setListings] = useState<CreatorListing[]>([])
@@ -225,7 +225,7 @@ export default observer(function CreatorProfileScreen() {
         data={restListings}
         keyExtractor={(item) => item.slug}
         numColumns={viewMode === 'list' ? 1 : numColumns}
-        contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 32 }}
+        contentContainerStyle={{ paddingHorizontal: MARKETPLACE_GRID_PAD_X, paddingBottom: 32 }}
         ListHeaderComponent={
           <View>
             {/* Hero */}
@@ -411,11 +411,13 @@ export default observer(function CreatorProfileScreen() {
             )
           }
           return (
-            <AgentTile
-              size="medium"
-              listing={toTileListing(item, profile)}
-              onPress={() => handleListingPress(item.slug)}
-            />
+            <View style={cellStyle} className={marketplaceGridCellClass(cellStyle)}>
+              <AgentTile
+                size="medium"
+                listing={toTileListing(item, profile)}
+                onPress={() => handleListingPress(item.slug)}
+              />
+            </View>
           )
         }}
         ListEmptyComponent={

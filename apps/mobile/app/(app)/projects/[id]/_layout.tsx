@@ -56,8 +56,8 @@ import { canvasDisabledRedirect } from '../../../../lib/project-preview-tab'
 import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
-import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
-import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas, isPreviewFailed } from '../../../../lib/preview-gate'
+import { isPhoneLayout, nativePhoneFillStyle } from '../../../../lib/native-phone-layout'
+import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas, isPreviewFailed, previewStatusPollBase, nativeCanvasBaseReady, projectIdFromAgentProxyUrl, previewWakeUrl } from '../../../../lib/preview-gate'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
 import {
@@ -304,9 +304,9 @@ export default observer(function ProjectLayout() {
   const { width, height } = useWindowDimensions()
   const isWide = width >= WIDE_BREAKPOINT
   const insets = useSafeAreaInsets()
-  const nativePhone = isNativePhoneIntegrationsLayout(width, height)
+  const phoneLayout = isPhoneLayout(width, height)
   /** Handset + narrow project layout: float integrations above the composer. Tablets/web use default placement. */
-  const liftIntegrationsAboveComposer = nativePhone && !isWide
+  const liftIntegrationsAboveComposer = phoneLayout && !isWide
   const { user } = useAuth()
   const http = useDomainHttp()
   const toast = useToast()
@@ -1168,7 +1168,7 @@ export default observer(function ProjectLayout() {
             return
           }
           openTabsRestoredRef.current = true
-          setTabsHydration(Platform.OS !== 'web' && nativePhone ? 'fresh' : 'restored-empty')
+          setTabsHydration(Platform.OS !== 'web' && phoneLayout ? 'fresh' : 'restored-empty')
           return
         }
       } catch { /* ignore malformed data */ }
@@ -1179,7 +1179,7 @@ export default observer(function ProjectLayout() {
       openTabsRestoredRef.current = true
       setTabsHydration('fresh')
     })
-  }, [projectId, nativePhone])
+  }, [projectId, phoneLayout])
 
   // Persist open tabs to AsyncStorage on every change, including `[]`.
   // Storing the explicit empty array is what lets the next mount distinguish
@@ -1432,7 +1432,9 @@ export default observer(function ProjectLayout() {
   // Narrow (mobile) chat-session picker that temporarily replaces the chat
   // panel with the session list. Auto-closes when the user leaves the chat tab.
   const [narrowChatPickerOpen, setNarrowChatPickerOpen] = useState(false)
-  const [previewTab, setPreviewTab] = useState('canvas')
+  const [previewTab, setPreviewTab] = useState(
+    Platform.OS !== 'web' && phoneLayout && !isWide ? 'chat-fullscreen' : 'canvas',
+  )
   // Ephemeral "the app needs your attention" override (e.g. the agent called
   // ask_user). Layered ON TOP of previewTab via effectiveTab below, and never
   // persisted. Decoupling attention from previewTab is what stops transient
@@ -1440,13 +1442,19 @@ export default observer(function ProjectLayout() {
   // (root cause of the "chat is always fullscreen" bug).
   const [attentionTab, setAttentionTab] = useState<string | null>(null)
   const effectiveTab = attentionTab ?? previewTab
+  // Set when the user (or Agent Type switch) explicitly asks for canvas this
+  // session. Stops the canvas-disabled effect and a stale `?tab=chat-fullscreen`
+  // from the sidebar from snapping them back to chat-only. Declared before the
+  // project-open effect so a new project can clear a leftover intent.
+  const userRequestedCanvasRef = useRef(false)
 
   useEffect(() => {
-    if (Platform.OS !== 'web' && nativePhone && !isWide) {
-      setActiveTab('chat')
-      setNarrowChatPickerOpen(false)
-    }
-  }, [projectId, nativePhone, isWide])
+    if (Platform.OS === 'web' || !phoneLayout) return
+    userRequestedCanvasRef.current = false
+    setActiveTab('chat')
+    setPreviewTab('chat-fullscreen')
+    setNarrowChatPickerOpen(false)
+  }, [projectId, phoneLayout])
 
   // Close the narrow picker as soon as the layout shifts off the chat tab
   // (e.g. user switched to canvas, or the viewport widened into split mode).
@@ -1517,10 +1525,6 @@ export default observer(function ProjectLayout() {
   // (and thus its `workingMode`) is known. Tracks the project it ran for so a
   // navigation to a different project re-applies.
   const previewTabInitForRef = useRef<string | null>(null)
-  // Set when the user (or Agent Type switch) explicitly asks for canvas this
-  // session. Stops the canvas-disabled effect and a stale `?tab=chat-fullscreen`
-  // from the sidebar from snapping them back to chat-only.
-  const userRequestedCanvasRef = useRef(false)
 
   // Sidebar "open project" tab intent. Clicking a project name in the sidebar
   // deep-links a `tab` param (canvas / chat-fullscreen / external-preview). It
@@ -1548,21 +1552,47 @@ export default observer(function ProjectLayout() {
     const token = `${projectId}:${requested}:${params.tabNonce ?? ''}`
     if (appliedTabIntentRef.current === token) return
     // A leftover `?tab=chat-fullscreen` from opening this project while it
-    // was still chat-only must not override a Canvas click this session.
-    if (userRequestedCanvasRef.current && requested === 'chat-fullscreen') return
+    // was still chat-only must not override a Canvas click this session on
+    // web/desktop. Native phone always honors Chat as the landing tab, even
+    // if the user had Canvas open before navigating home and back.
+    if (
+      userRequestedCanvasRef.current &&
+      requested === 'chat-fullscreen' &&
+      (Platform.OS === 'web' || !phoneLayout)
+    ) {
+      return
+    }
+    if (phoneLayout && requested === 'chat-fullscreen') {
+      userRequestedCanvasRef.current = false
+    }
     appliedTabIntentRef.current = token
     previewTabInitForRef.current = projectId
+    const nativePhoneChat =
+      Platform.OS !== 'web' && phoneLayout && !isWide
+    const landingTab =
+      requested === 'canvas' ||
+      requested === 'chat-fullscreen' ||
+      requested === 'external-preview'
+    // Native phone always opens on Chat. Ignore leftover `?tab=canvas` from a
+    // previous visit or the sidebar's desktop landing-tab policy. Explicit
+    // in-session Canvas (top-bar tap, agent-type switch) sets
+    // userRequestedCanvasRef first and still applies.
+    if (nativePhoneChat && landingTab && !userRequestedCanvasRef.current) {
+      setPreviewTab('chat-fullscreen')
+      setActiveTab('chat')
+      return
+    }
     setPreviewTab(requested)
-    if (Platform.OS !== 'web' && nativePhone && !isWide) {
+    if (nativePhoneChat) {
       setActiveTab(requested === 'chat-fullscreen' ? 'chat' : 'canvas')
     }
-  }, [projectId, params.tab, params.tabNonce, nativePhone, isWide])
+  }, [projectId, params.tab, params.tabNonce, phoneLayout, isWide])
 
   useEffect(() => {
     if (!projectId || !project) return
     if (previewTabInitForRef.current === projectId) return
     previewTabInitForRef.current = projectId
-    if (Platform.OS !== 'web' && nativePhone && !isWide) {
+    if (Platform.OS !== 'web' && phoneLayout && !isWide) {
       setPreviewTab('chat-fullscreen')
       AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
       return
@@ -1586,7 +1616,7 @@ export default observer(function ProjectLayout() {
     }).catch(() => {})
     // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
     AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
-  }, [projectId, project, isExternalProject, nativePhone, isWide])
+  }, [projectId, project, isExternalProject, phoneLayout, isWide])
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
@@ -2488,11 +2518,11 @@ export default observer(function ProjectLayout() {
 
   /** Native phone + narrow layout: float only on Chat tab (not Canvas / Files / Terminal / …). Web, tablet, and wide layouts unchanged. */
   const showIntegrationsCardUi =
-    showIntegrationsCard && (!nativePhone || isWide || activeTab === 'chat')
+    showIntegrationsCard && (!phoneLayout || isWide || activeTab === 'chat')
 
   const narrowOnCanvas = !isWide && activeTab === 'canvas'
   /** Native-only: float above Files / Terminal / … (those layers use z-20). Omit on Expo web so web layout stays unchanged. */
-  const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web'
+  const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web' && !phoneLayout
 
   /** Keeps the narrow-mode Chat FAB above the software keyboard (absolute positioning ignores keyboard inset). Web unchanged. */
   const [narrowCanvasKeyboardInset, setNarrowCanvasKeyboardInset] = useState(0)
@@ -2686,7 +2716,7 @@ export default observer(function ProjectLayout() {
   )
 
   const nativePhoneChatViewportHeight =
-    Platform.OS !== 'web' && nativePhone && !isWide
+    Platform.OS !== 'web' && phoneLayout && !isWide
       ? Math.max(0, height - insets.top - insets.bottom - 24)
       : undefined
 
@@ -2772,10 +2802,11 @@ export default observer(function ProjectLayout() {
 
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
-  const nativePhoneCanvasFrame = Platform.OS !== 'web' && nativePhone && !isWide && activeTab === 'canvas'
+  const nativePhoneCanvasFrame = Platform.OS !== 'web' && phoneLayout && !isWide && activeTab === 'canvas'
   const nativePhoneStandalonePanel = nativePhoneCanvasFrame && STANDALONE_PANELS.includes(effectiveTab)
   const nativePhonePlansOverlay = nativePhoneCanvasFrame && effectiveTab === 'plans'
-  const enableNativePhoneChatPicker = Platform.OS !== 'web' && nativePhone && !isWide
+  const nativePhoneFill = nativePhoneCanvasFrame ? nativePhoneFillStyle(width) : undefined
+  const enableNativePhoneChatPicker = Platform.OS !== 'web' && phoneLayout && !isWide
 
   // Defined after `chatHidden` so it can drive the canvas's `fullBleed`
   // prop — see comment on `fullBleed` for why the iframe's left margin
@@ -2784,6 +2815,7 @@ export default observer(function ProjectLayout() {
     <CanvasPanel
       agentUrl={agentUrl}
       canvasBaseUrl={canvasBaseUrl}
+      previewUrl={previewUrl}
       onRefresh={reconnect}
       // True whenever the canvas owns the entire viewport (chat fullscreen
       // / collapsed in wide split, or narrow with the canvas tab active).
@@ -3151,7 +3183,12 @@ export default observer(function ProjectLayout() {
               `overflow-hidden` keeps the chat column's slide-out (negative
               marginLeft when collapsed) clipped to this row instead of
               poking past the workspace's left edge. */}
-          <View className={cn('flex-1 overflow-hidden', isWide && 'flex-row')} ref={splitRowRef}>
+          <View
+            className={cn('flex-1 overflow-hidden', isWide && 'flex-row')}
+            ref={splitRowRef}
+            collapsable={phoneLayout && !isWide ? false : undefined}
+            style={phoneLayout && !isWide ? { width, flex: 1 } : undefined}
+          >
             {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
             {(() => {
               // The app sidebar (main app layout) is now the single home for
@@ -3341,7 +3378,7 @@ export default observer(function ProjectLayout() {
           )}
           style={
             nativePhoneCanvasFrame
-              ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%', alignSelf: 'stretch' }
+              ? nativePhoneFill
               : undefined
           }
         >
@@ -3359,7 +3396,7 @@ export default observer(function ProjectLayout() {
               className="absolute inset-0"
               style={
                 nativePhoneCanvasFrame
-                  ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%' }
+                  ? nativePhoneFill
                   : undefined
               }
             >
@@ -3387,7 +3424,7 @@ export default observer(function ProjectLayout() {
             )}
             style={
               nativePhoneStandalonePanel
-                ? { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%', alignSelf: 'stretch' }
+                ? nativePhoneFill
                 : undefined
             }
             pointerEvents={
@@ -3686,7 +3723,7 @@ export default observer(function ProjectLayout() {
           <View
             className="absolute inset-0 z-40 bg-background"
             pointerEvents="auto"
-            style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%' }}
+            style={nativePhoneFill}
           >
             <PanelErrorBoundary panelName="Plans">
               <PlansPanel
@@ -4048,6 +4085,7 @@ function usePreviewReadiness(
 function CanvasPanel({
   agentUrl,
   canvasBaseUrl,
+  previewUrl,
   onRefresh,
   fullBleed = false,
   iframeRefreshKey = 0,
@@ -4056,6 +4094,7 @@ function CanvasPanel({
 }: {
   agentUrl: string | null
   canvasBaseUrl?: string | null
+  previewUrl?: string | null
   onRefresh?: () => void
   fullBleed?: boolean
   iframeRefreshKey?: number
@@ -4070,31 +4109,32 @@ function CanvasPanel({
   ) => void
 }) {
   // Phase-level visibility into what the runtime is doing while we wait
-  // (installing deps, building, starting the API server, …). Drives the
-  // user-facing "what's happening" label below in place of the previous
-  // generic "Connecting to agent runtime…" + misleading "Send a message
-  // in the Chat tab to wake the agent" hint (the runtime already starts
-  // via `runtime/prewarm`; chat sends are not what wakes it).
+  // (installing deps, building, starting the API server, …).
   //
-  // This poll is same-origin (via the agent-proxy), so it also serves as the
-  // canvas readiness signal below — avoiding a cross-origin probe of the
-  // preview host that would spam the console with CORS errors while booting.
-  //
-  // In workspace-runtime mode `canvasBaseUrl` carries a `/p/<id>` suffix, so
-  // the per-project preview status lives at `${canvasBaseUrl}/preview/status`
-  // (the global manager stays idle there). Detect that and override the poll
-  // base so the phase label reflects the project actually being previewed.
-  const workspacePreviewBase =
-    canvasBaseUrl && /\/p\/[^/]+$/.test(canvasBaseUrl) ? canvasBaseUrl : null
+  // Always poll `/preview/status` through the authenticated agent-proxy.
+  // Native fetch does not send cookies, so hitting the public preview host
+  // (or the proxy without a Cookie header) 401s forever and the gate shows
+  // "Connection timed out — The agent runtime could not be reached".
   const { phase: previewPhase, running: previewRunning, apiReady } = usePreviewPhase(
     agentUrl,
-    workspacePreviewBase,
+    canvasBaseUrl,
   )
 
   // Gate the canvas iframe on the same-origin `running` signal (no cross-origin
   // probe of the preview host → no CORS console noise). Until ready, this is
   // null so the loading screen stays visible.
   const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl, previewRunning)
+
+  // iPhone: do not wait for `running`. `/sandbox/url` already returned a
+  // tokenized preview URL; loading it is what wakes a sleeping preview.
+  // Waiting on the status poll deadlocks (WebView never mounts → preview
+  // never wakes → 60s "Connection timed out" while chat already works).
+  const nativeBaseReady = nativeCanvasBaseReady({
+    native: Platform.OS !== 'web',
+    agentUrl,
+    previewUrl,
+    canvasBaseUrl,
+  })
 
   // Don't load the app UI until the project's API sidecar is responding —
   // otherwise the SPA renders and fires `/api/*` calls into a server that
@@ -4106,11 +4146,23 @@ function CanvasPanel({
   // we don't want a live preview to flash back to a spinner on every save.
   const [apiLatched, setApiLatched] = useState(false)
   useEffect(() => {
-    if (apiReady) setApiLatched(true)
-  }, [apiReady])
+    if (apiReady || nativeBaseReady) setApiLatched(true)
+  }, [apiReady, nativeBaseReady])
+
+  // Resume a sleeping metal/Knative preview the same way a browser tab does.
+  // `/preview/start` is kicked from usePreviewPhase when status is not running —
+  // do not POST it again here.
+  useEffect(() => {
+    if (Platform.OS === 'web' || !agentUrl) return
+    const id = projectIdFromAgentProxyUrl(agentUrl)
+    if (id && API_URL) {
+      void fetch(previewWakeUrl(API_URL, id), { cache: 'no-store' }).catch(() => {})
+    }
+  }, [agentUrl])
 
   // Dev server reachable (non-404 root) AND the agent runtime is up.
-  const baseReady = !!agentUrl && !!readyCanvasBaseUrl
+  // Native skips the `running` poll and loads the tokenized document instead.
+  const baseReady = nativeBaseReady || (!!agentUrl && !!readyCanvasBaseUrl)
 
   // Two independent fallbacks, deliberately kept separate:
   //
@@ -4204,7 +4256,9 @@ function CanvasPanel({
               Connection timed out
             </Text>
             <Text className="text-muted-foreground text-center text-sm">
-              The agent runtime could not be reached. This may be a temporary issue — try refreshing or come back later.
+              {agentUrl
+                ? 'The live preview did not become ready. Try Retry, or send a chat message and open Previews again.'
+                : 'The agent runtime could not be reached. This may be a temporary issue — try refreshing or come back later.'}
             </Text>
             {onRefresh && (
               <Pressable
@@ -4245,7 +4299,8 @@ function CanvasPanel({
     >
       <CanvasWebView
         agentUrl={agentUrl}
-        canvasBaseUrl={readyCanvasBaseUrl}
+        canvasBaseUrl={nativeBaseReady ? (canvasBaseUrl ?? readyCanvasBaseUrl) : readyCanvasBaseUrl}
+        previewUrl={previewUrl}
         refreshKey={iframeRefreshKey}
         onCanvasCapabilities={onCanvasCapabilities}
         onCanvasError={onCanvasError}
@@ -4295,11 +4350,7 @@ const PHASE_LABELS: Record<string, string> = {
  */
 function usePreviewPhase(
   agentUrl: string | null,
-  // Workspace runtimes host each project under `/p/<id>/`, so the global
-  // `${agentUrl}/preview/status` (the shared runtime's idle global manager)
-  // reports a stale phase. When set, this overrides the status base so the
-  // poll targets the per-project `/p/<id>/preview/status` instead.
-  statusBaseOverride?: string | null,
+  canvasBaseUrl?: string | null,
 ): { phase: string; running: boolean; apiReady: boolean; apiServerPhase: string } {
   const [phase, setPhase] = useState<string>('idle')
   const [running, setRunning] = useState<boolean>(false)
@@ -4310,7 +4361,10 @@ function usePreviewPhase(
   const [apiReady, setApiReady] = useState<boolean>(false)
   const [apiServerPhase, setApiServerPhase] = useState<string>('idle')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const statusBase = statusBaseOverride || agentUrl
+  const inFlightRef = useRef(false)
+  const kickedStartRef = useRef(false)
+  const statusBase = previewStatusPollBase(agentUrl, canvasBaseUrl)
+  const pollTimeoutMs = Platform.OS === 'web' ? 5_000 : 20_000
 
   useEffect(() => {
     // Reset on status-base change so consumers see a fresh "idle" phase on
@@ -4320,15 +4374,17 @@ function usePreviewPhase(
     setRunning(false)
     setApiReady(false)
     setApiServerPhase('idle')
+    kickedStartRef.current = false
 
     if (!statusBase) return
 
     let cancelled = false
     const poll = async () => {
+      if (inFlightRef.current) return
+      inFlightRef.current = true
       try {
-        const resp = await fetch(`${statusBase}/preview/status`, {
-          credentials: Platform.OS === 'web' ? 'include' : 'omit',
-          signal: AbortSignal.timeout(5000),
+        const resp = await agentFetch(`${statusBase}/preview/status`, {
+          signal: AbortSignal.timeout(pollTimeoutMs),
         })
         if (cancelled) return
         if (resp.ok) {
@@ -4337,6 +4393,10 @@ function usePreviewPhase(
           if (data.apiServerPhase) setApiServerPhase(data.apiServerPhase)
           setApiReady(resolveApiReady(data))
           if (data.running) setRunning(true)
+          if (!data.running && !kickedStartRef.current) {
+            kickedStartRef.current = true
+            void agentFetch(`${statusBase}/preview/start`, { method: 'POST' }).catch(() => {})
+          }
           // Stop only once the preview is running AND the API is ready — the
           // prebuilt-dist path reports `running` before the sidecar binds, so
           // `running` alone would stop the poll too early.
@@ -4346,9 +4406,14 @@ function usePreviewPhase(
               pollRef.current = null
             }
           }
+        } else {
+          console.warn('[preview/status]', resp.status, statusBase)
         }
-      } catch {
-        // Pod may not be reachable yet
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.warn('[preview/status] poll failed', message)
+      } finally {
+        inFlightRef.current = false
       }
     }
 
@@ -4362,7 +4427,7 @@ function usePreviewPhase(
         pollRef.current = null
       }
     }
-  }, [statusBase])
+  }, [statusBase, pollTimeoutMs])
 
   return { phase, running, apiReady, apiServerPhase }
 }

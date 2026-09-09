@@ -31,19 +31,27 @@
  * `isFirst`) rather than each being its own nested card.
  */
 
-import { useCallback, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useSyncExternalStore } from "react"
 import { View, StyleSheet, ScrollView, Platform, useColorScheme, type LayoutChangeEvent } from "react-native"
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useChatDockStore } from "../../../lib/chat-dock-store"
+import { isNativePlatform, NATIVE_PHONE_DOCK_COMPOSER_GAP } from "../../../lib/native-phone-layout"
 import { DockPanel } from "./DockPanel"
 
 const MAX_STATUS_HEIGHT = 420
 const MAX_STATUS_HEIGHT_RATIO = 0.45
 const FADE_HEIGHT = 16
+const DOCK_COMPOSER_GAP = isNativePlatform() ? NATIVE_PHONE_DOCK_COMPOSER_GAP : 6
 
 const styles = StyleSheet.create({
-  container: { position: "absolute", bottom: "100%", left: 0, right: 0 },
+  container: {
+    position: "absolute",
+    bottom: "100%",
+    left: 0,
+    right: 0,
+    paddingBottom: DOCK_COMPOSER_GAP,
+  },
   relative: { position: "relative" },
   topFade: { position: "absolute", top: 0, left: 0, right: 0, height: FADE_HEIGHT, pointerEvents: "none" },
   scrollContent: { paddingTop: 2, paddingBottom: 2 },
@@ -71,6 +79,11 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
   const blockingPanels = store.getPanels("blocking")
   const hasContent = statusPanels.length > 0 || blockingPanels.length > 0
 
+  useEffect(() => {
+    if (hasContent || store.getHeight() === 0) return
+    store.setHeight(0)
+  }, [hasContent, store])
+
   const handleLayout = useCallback(
     (e: LayoutChangeEvent) => {
       store.setHeight(e.nativeEvent.layout.height)
@@ -79,8 +92,6 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
   )
 
   if (!hasContent) {
-    // Nothing to show — relax the message list's reserved padding back to zero.
-    if (store.getHeight() !== 0) store.setHeight(0)
     return null
   }
 
@@ -95,7 +106,7 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
   return (
     <View
       style={styles.container}
-      className={cn("mb-1.5 w-full max-w-3xl self-center gap-1.5", HORIZONTAL_PADDING_CLASS, className)}
+      className={cn("w-full max-w-3xl self-center gap-1.5", HORIZONTAL_PADDING_CLASS, className)}
       pointerEvents="box-none"
       onLayout={handleLayout}
     >

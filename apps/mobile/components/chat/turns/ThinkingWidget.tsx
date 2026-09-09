@@ -24,6 +24,8 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown } from "lucide-react-native"
 import { MarkdownText } from "../MarkdownText"
 import { formatThoughtLabel } from "./workSummary"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NativeActivitySheet, useInsideActivitySheet } from "../NativeActivitySheet"
 
 const ANIM_DURATION = 500
 const STREAM_MAX_HEIGHT = 200
@@ -125,6 +127,9 @@ function ThinkingWidgetImpl({
   const colorScheme = useColorScheme()
   const innerScrollRef = useRef<ScrollView>(null)
   const userScrolledThinkingRef = useRef(false)
+  const nativePhone = useIsNativePhoneLayout()
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const insideSheet = useInsideActivitySheet()
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current !== null) {
@@ -248,6 +253,29 @@ function ThinkingWidgetImpl({
     },
     [measuredHeight, isStreaming],
   )
+
+  if (nativePhone && !insideSheet) {
+    const chatLabel = isStreaming ? "Thinking…" : "Thought"
+    return (
+      <View className={cn("py-0.5", className)}>
+        <Pressable
+          onPress={() => setSheetOpen(true)}
+          className="self-start py-1"
+          role="button"
+          accessibilityLabel={label}
+        >
+          <Text className="text-[15px] text-muted-foreground">{chatLabel}</Text>
+        </Pressable>
+        <NativeActivitySheet
+          visible={sheetOpen}
+          title={label}
+          onClose={() => setSheetOpen(false)}
+        >
+          <MarkdownText variant="thinking">{text}</MarkdownText>
+        </NativeActivitySheet>
+      </View>
+    )
+  }
 
   return (
     <View className={cn("", className)}>

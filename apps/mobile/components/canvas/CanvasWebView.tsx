@@ -13,6 +13,9 @@ import { useCallback, useEffect, useRef, useMemo, useState } from 'react'
 import { Platform, View, StyleSheet, ActivityIndicator, Text, TouchableOpacity } from 'react-native'
 import { useCanvasThemeOptional } from './CanvasThemeContext'
 import type { CanvasThemeVariant } from './canvas-themes'
+import { canvasDocumentUrl } from '../../lib/preview-gate'
+import { agentFetch } from '../../lib/agent-fetch'
+import { authClient } from '../../lib/auth-client'
 
 interface CanvasCapabilities {
   supportsTheme: boolean
@@ -38,6 +41,9 @@ interface CanvasWebViewProps {
   /** Direct runtime URL for the canvas iframe. When set, the iframe loads from
    *  here so fetch('/api/...') resolves same-origin — no proxy needed. */
   canvasBaseUrl?: string | null
+  /** Tokenized preview URL (`?__preview_token=`). Native WebView has no
+   *  Studio cookies, so it must load this instead of the bare canvas origin. */
+  previewUrl?: string | null
   onCanvasError?: (
     phase: 'compile' | 'runtime',
     error: string,
@@ -57,10 +63,9 @@ function postCanvasError(
     recentActions?: CanvasErrorAction[]
   },
 ) {
-  fetch(`${agentUrl}/agent/canvas/error`, {
+  agentFetch(`${agentUrl}/agent/canvas/error`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
     body: JSON.stringify(payload),
   }).catch(() => {})
 }
@@ -69,9 +74,13 @@ function postCanvasError(
 // CanvasWebView — public component
 // ---------------------------------------------------------------------------
 
-export function CanvasWebView({ agentUrl, canvasBaseUrl, onCanvasError, onCanvasCapabilities, refreshKey }: CanvasWebViewProps) {
-  const iframeBase = canvasBaseUrl || agentUrl
-  const canvasUrl = iframeBase ? `${iframeBase}/` : null
+export function CanvasWebView({ agentUrl, canvasBaseUrl, previewUrl, onCanvasError, onCanvasCapabilities, refreshKey }: CanvasWebViewProps) {
+  const canvasUrl = canvasDocumentUrl({
+    canvasBaseUrl,
+    agentUrl,
+    previewUrl,
+    native: Platform.OS !== 'web',
+  })
   const canvasTheme = useCanvasThemeOptional()
 
   const themeMessage = useMemo(() => {
@@ -236,12 +245,50 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
 // Native — react-native-webview + postMessage bridge
 // ---------------------------------------------------------------------------
 
+/**
+ * canvas-bridge.js only posts `canvas-ready` when it is inside an iframe
+ * (`window.parent !== window`). WKWebView is a top-level document, so that
+ * handshake never runs. Forward iframe-style postMessages to React Native
+ * and emit ready once the document is a top-level WebView page.
+ */
+export const NATIVE_CANVAS_MESSAGE_BRIDGE = `
+(function () {
+  function publish(payload) {
+    try {
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+      }
+    } catch (_err) {}
+  }
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.type === 'canvas-ready' || data.type === 'canvas-error' || data.type === 'canvas-capabilities') {
+      publish(data);
+    }
+  });
+  if (window.parent === window) {
+    publish({ type: 'canvas-ready' });
+  }
+  true;
+})();
+`
+
 function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
   const WebView = require('react-native-webview').default
   const webViewRef = useRef<any>(null)
   const readyRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<{ phase: string; message: string } | null>(null)
+
+  const nativeCookie = useMemo(
+    () => (Platform.OS !== 'web' ? (authClient as { getCookie?: () => string }).getCookie?.() : undefined),
+    [url],
+  )
+  const webViewSource = useMemo(() => {
+    if (!nativeCookie || !url.includes('/agent-proxy')) return { uri: url }
+    return { uri: url, headers: { Cookie: nativeCookie } }
+  }, [url, nativeCookie])
 
   const sendToWebView = useCallback((msg: unknown) => {
     webViewRef.current?.postMessage(JSON.stringify(msg))
@@ -258,6 +305,16 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
     if (themeMessage && readyRef.current) sendToWebView(themeMessage)
   }, [themeMessage, sendToWebView])
 
+  const dismissLoading = useCallback(() => {
+    if (readyRef.current) {
+      setLoading(false)
+      return
+    }
+    readyRef.current = true
+    setLoading(false)
+    if (themeMessage) sendToWebView(themeMessage)
+  }, [themeMessage, sendToWebView])
+
   const handleRetry = useCallback(() => {
     readyRef.current = false
     setError(null)
@@ -270,10 +327,7 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
       const msg = JSON.parse(e.nativeEvent.data)
 
       if (msg.type === 'canvas-ready') {
-        readyRef.current = true
-        setLoading(false)
-        setError(null)
-        if (themeMessage) sendToWebView(themeMessage)
+        dismissLoading()
       } else if (msg.type === 'canvas-capabilities') {
         onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
       } else if (msg.type === 'canvas-error') {
@@ -297,12 +351,15 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
         )
       }
     } catch {}
-  }, [agentUrl, sendToWebView, themeMessage, onCanvasError, onCanvasCapabilities])
+  }, [agentUrl, dismissLoading, onCanvasError, onCanvasCapabilities])
 
   const onNativeLoadEnd = useCallback(() => {
-    // The canvas runtime normally sends `canvas-ready`. If that bridge message
-    // is delayed, keep the centered loading state instead of showing a blank WebView.
-  }, [])
+    // Canvas-bridge only posts `canvas-ready` when `window.parent !== window`
+    // (iframe). A native WebView is a top-level document, so that handshake
+    // never fires and the overlay would sit on top of an already-painted
+    // preview. Document load is the native readiness signal.
+    dismissLoading()
+  }, [dismissLoading])
 
   const onNativeError = useCallback((e: { nativeEvent?: { description?: string; domain?: string } }) => {
     const message = e.nativeEvent?.description || e.nativeEvent?.domain || 'Unable to load preview'
@@ -314,7 +371,7 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
     <View style={styles.container}>
       <WebView
         ref={webViewRef}
-        source={{ uri: url }}
+        source={webViewSource}
         style={styles.webview}
         javaScriptEnabled={true}
         domStorageEnabled={true}
@@ -324,6 +381,7 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
         originWhitelist={['*']}
         allowsInlineMediaPlayback={true}
         mediaPlaybackRequiresUserAction={false}
+        injectedJavaScript={NATIVE_CANVAS_MESSAGE_BRIDGE}
       />
       {loading && !error && (
         <View style={styles.loadingOverlay}>

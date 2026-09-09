@@ -29,6 +29,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
+import { nativeActivePill } from '../../../lib/native-active-shadow'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -243,7 +244,9 @@ export default function AdminProjectsPage() {
             { value: 'draft', label: 'Draft' },
             { value: 'published', label: 'Published' },
             { value: 'archived', label: 'Archived' },
-          ].map((s) => (
+          ].map((s) => {
+            const pill = nativeActivePill(statusFilter === s.value)
+            return (
             <Pressable
               key={s.value}
               onPress={() => {
@@ -252,8 +255,9 @@ export default function AdminProjectsPage() {
               }}
               className={cn(
                 'flex-1 items-center py-1.5 rounded-md',
-                statusFilter === s.value ? 'bg-background shadow-sm' : '',
+                pill.className,
               )}
+              style={pill.style}
             >
               <Text
                 className={cn(
@@ -264,7 +268,8 @@ export default function AdminProjectsPage() {
                 {s.label}
               </Text>
             </Pressable>
-          ))}
+            )
+          })}
         </View>
       </View>
 

@@ -1502,9 +1502,20 @@ function isTrustedMediaOrigin(url: string): boolean {
   return false
 }
 
+/** Origin the renderer is actually served from. Packaged builds use `shogo://app`;
+ *  `IS_DEV` loads Metro at DESKTOP_DEV_URL (default http://localhost:8081). */
+function rendererCorsOrigin(): string {
+  if (!IS_DEV) return 'shogo://app'
+  try {
+    return new URL(process.env.DESKTOP_DEV_URL || 'http://localhost:8081').origin
+  } catch {
+    return 'http://localhost:8081'
+  }
+}
+
 function setupSessionHandlers(): void {
   const apiOrigin = getApiUrl()
-  const appOrigin = 'shogo://app'
+  const appOrigin = rendererCorsOrigin()
   const ses = session.defaultSession
 
   // Allow microphone (and other media) requests only from our own app
@@ -1562,6 +1573,9 @@ function setupSessionHandlers(): void {
       !isApiOrigin && /^https?:\/\/(localhost|127\.0\.0\.1):\d+/i.test(details.url)
 
     if (isApiOrigin || isLocalAgent) {
+      // Must match the renderer origin. Overwriting with `shogo://app` while
+      // IS_DEV serves Metro from http://localhost:8081 CORS-blocks every
+      // credentialed API call (`Failed to fetch` on /api/local/api-keys).
       headers['Access-Control-Allow-Origin'] = [appOrigin]
       headers['Access-Control-Allow-Credentials'] = ['true']
       headers['Access-Control-Allow-Methods'] = ['GET,POST,PUT,PATCH,DELETE,OPTIONS']
@@ -1582,7 +1596,10 @@ function setupSessionHandlers(): void {
       }
     }
 
-    if (isApiOrigin) {
+    // Packaged `shogo://` is cross-site to http://localhost:API, so cookies
+    // need SameSite=None; Secure. IS_DEV is same-site localhost HTTP — leave
+    // the server's Lax cookies alone (`Secure` would be ignored or dropped).
+    if (isApiOrigin && !IS_DEV) {
       const setCookies = headers['Set-Cookie'] || headers['set-cookie']
       if (setCookies) {
         const rewritten = setCookies.map((cookie: string) => {

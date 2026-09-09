@@ -39,7 +39,10 @@
 import { afterEach, describe, expect, mock, test } from "bun:test"
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import React from "react"
-import { createReactNativeMock } from "../../../test/react-native-mock"
+import { createReactNativeMock, reactNativeMockBase } from "../../../test/react-native-mock"
+
+const animationConfigs: Array<Record<string, unknown>> = []
+let latestContentSizeChange: ((event: any) => void) | undefined
 
 const Host = React.forwardRef<HTMLElement, any>(function Host(
   {
@@ -74,7 +77,7 @@ const TextInput = React.forwardRef<HTMLTextAreaElement, any>(function TextInput(
     multiline: _multiline,
     onChange,
     onChangeText,
-    onContentSizeChange: _onContentSizeChange,
+    onContentSizeChange,
     onKeyPress,
     onSelectionChange,
     onSubmitEditing,
@@ -87,6 +90,7 @@ const TextInput = React.forwardRef<HTMLTextAreaElement, any>(function TextInput(
   },
   ref,
 ) {
+  latestContentSizeChange = onContentSizeChange
   return (
     <textarea
       {...props}
@@ -129,6 +133,13 @@ const TextInput = React.forwardRef<HTMLTextAreaElement, any>(function TextInput(
 // value here, exercising the synchronous (non-rAF) commit path.
 mock.module("react-native", () =>
   createReactNativeMock({
+    Animated: {
+      ...reactNativeMockBase.Animated,
+      timing: ((_: unknown, config: Record<string, unknown>) => {
+        animationConfigs.push(config)
+        return { start: (callback?: () => void) => callback?.() }
+      }) as any,
+    },
     Image: Host,
     Platform: { OS: "ios" },
     Pressable: Host,
@@ -170,6 +181,9 @@ mock.module("../useVoiceInput", () => ({
 
 mock.module("../VoiceWaveform", () => ({ VoiceWaveform: () => null }))
 mock.module("../AttachSourceSheet", () => ({ AttachSourceSheet: () => null }))
+mock.module("../../../lib/native-attachment-picker", () => ({
+  executeNativeAttachAction: () => {},
+}))
 mock.module("../ContextTracker", () => ({
   ContextTracker: () => null,
   // `ContextBreakdownPanel` (rendered by the dock's `ContextUsageDockPanel`,
@@ -182,6 +196,7 @@ mock.module("../../../lib/visible-models", () => ({
 }))
 mock.module("../ModelPickerMenu", () => ({
   ModelPickerMenu: () => null,
+  ComposerModelPicker: () => null,
   getNativeModelMenuWidth: () => 280,
 }))
 mock.module("../FileViewerModal", () => ({ FileViewerModal: () => null }))
@@ -202,7 +217,11 @@ mock.module("../EnvironmentPicker", () => ({ EnvironmentPicker: () => null }))
 
 const { ChatInput } = await import("../ChatInput")
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  latestContentSizeChange = undefined
+  animationConfigs.length = 0
+})
 
 function renderChatInput() {
   render(
@@ -215,10 +234,61 @@ function renderChatInput() {
       placeholder="Ask Shogo..."
     />,
   )
-  return screen.getByPlaceholderText("Ask Shogo...") as HTMLTextAreaElement
+  return screen.getByTestId("project-composer-input") as HTMLTextAreaElement
 }
 
 describe("ChatInput — native caret regression guard", () => {
+  test("animates prominent height changes and fades the stable placeholder", () => {
+    const input = renderChatInput()
+    const contentSizeChangeBeforeTyping = latestContentSizeChange
+
+    act(() => {
+      fireEvent.change(input, { target: { value: "hello" } })
+      contentSizeChangeBeforeTyping?.({ nativeEvent: { contentSize: { height: 54 } } })
+    })
+
+    expect(
+      animationConfigs.some(
+        (config) =>
+          config.toValue === 54 &&
+          config.duration === 200 &&
+          config.useNativeDriver === false,
+      ),
+    ).toBe(true)
+
+    expect(screen.getByText("Ask Shogo...")).toBeTruthy()
+    expect(
+      animationConfigs.some(
+        (config) =>
+          config.toValue === 0 &&
+          config.duration === 150 &&
+          config.useNativeDriver === true,
+      ),
+    ).toBe(true)
+
+    act(() => {
+      fireEvent.change(input, { target: { value: "" } })
+      latestContentSizeChange?.({ nativeEvent: { contentSize: { height: 22 } } })
+    })
+
+    expect(
+      animationConfigs.some(
+        (config) =>
+          config.toValue === 24 &&
+          config.duration === 200 &&
+          config.useNativeDriver === false,
+      ),
+    ).toBe(true)
+    expect(
+      animationConfigs.some(
+        (config) =>
+          config.toValue === 1 &&
+          config.duration === 150 &&
+          config.useNativeDriver === true,
+      ),
+    ).toBe(true)
+  })
+
   test("on native, each keystroke commits synchronously (no rAF delay) so the controlled value never lags the native view", async () => {
     const input = renderChatInput()
 

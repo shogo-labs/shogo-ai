@@ -23,6 +23,11 @@ import {
 import { runtimeEntryToParsed } from './runtime-entry-to-parsed'
 import { clearProject } from '../../../lib/runtime-logs/runtime-log-store'
 import { useRuntimeLogStream } from '../../../lib/runtime-logs/useRuntimeLogStream'
+import {
+  useNativePhoneWindow,
+  nativeContentWidth,
+  nativeSettingsPaneRootStyle,
+} from '../../../lib/native-phone-layout'
 
 const ROW_HEIGHT = 24
 
@@ -39,6 +44,9 @@ interface LogsPanelProps {
  * older clients but this component no longer talks to it directly.
  */
 export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
+  const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const innerWidth = comfortable ? nativeContentWidth(pageWidth) : 0
+  const rowHeight = comfortable ? 36 : ROW_HEIGHT
   const [searchQuery, setSearchQuery] = useState('')
   const [searchVisible, setSearchVisible] = useState(false)
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('all')
@@ -127,21 +135,45 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
     const time = formatTime(item.ts)
     const colors = LEVEL_COLORS[item.level]
     return (
-      <View className="flex-row px-4 py-0.5 items-start" style={{ minHeight: ROW_HEIGHT }}>
+      <View
+        className={comfortable ? undefined : 'flex-row px-4 py-0.5 items-start'}
+        style={
+          comfortable
+            ? {
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                paddingHorizontal: 16,
+                paddingVertical: 2,
+                width: pageWidth,
+                minHeight: rowHeight,
+              }
+            : { minHeight: rowHeight }
+        }
+      >
         {time ? (
-          <Text className="text-zinc-600 text-xs font-mono mr-2 w-[70px]" numberOfLines={1}>
+          <Text
+            className={cn('text-zinc-600 font-mono', comfortable ? 'text-sm' : 'text-xs mr-2 w-[70px]')}
+            numberOfLines={1}
+            style={comfortable ? { width: 70, marginRight: 8, flexShrink: 0 } : undefined}
+          >
             {time}
           </Text>
         ) : null}
         {item.level !== 'info' && (
-          <View className={cn('rounded px-1 mr-2', colors.badge)}>
+          <View className={cn('rounded px-1 mr-2', colors.badge)} style={comfortable ? { flexShrink: 0 } : undefined}>
             <Text className={cn('text-xs font-mono uppercase', colors.text)}>
               {item.level}
             </Text>
           </View>
         )}
         <Text
-          className={cn('text-xs font-mono flex-1', item.level === 'error' ? 'text-red-300' : item.level === 'warn' ? 'text-amber-200' : 'text-zinc-300')}
+          className={cn(
+            'font-mono',
+            !comfortable && 'flex-1',
+            comfortable ? 'text-sm' : 'text-xs',
+            item.level === 'error' ? 'text-red-300' : item.level === 'warn' ? 'text-amber-200' : 'text-zinc-300',
+          )}
+          style={comfortable ? { flex: 1, minWidth: 0, flexShrink: 1 } : undefined}
           selectable
         >
           {item.message}
@@ -151,39 +183,53 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
   }
 
   const getItemLayout = (_data: any, index: number) => ({
-    length: ROW_HEIGHT,
-    offset: ROW_HEIGHT * index,
+    length: rowHeight,
+    offset: rowHeight * index,
     index,
   })
 
   return (
-    <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
+    <View
+      collapsable={false}
+      className={comfortable ? undefined : 'absolute inset-0 flex-col'}
+      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+    >
       {/* ---- Header toolbar ---- */}
-      <View className="px-4 py-3 border-b border-border flex-col gap-2">
-        <View className="flex-row items-center gap-2">
-          <ScrollText size={16} className="text-muted-foreground" />
-          <Text className="text-sm font-medium text-foreground">Agent Logs</Text>
-          <Text className="text-xs text-muted-foreground">{parsedLogs.length} entries</Text>
-          {levelCounts.error > 0 && (
-            <Text className="text-xs text-red-400">({levelCounts.error} errors)</Text>
-          )}
+      <View
+        className="px-4 py-3 border-b border-border flex-col gap-2"
+        style={comfortable ? { width: pageWidth, maxWidth: pageWidth } : undefined}
+      >
+        <View
+          className="flex-row items-center gap-2"
+          style={comfortable ? { width: nativeContentWidth(pageWidth) } : undefined}
+        >
+          <ScrollText size={comfortable ? 20 : 16} className="text-muted-foreground" />
+          <View className="flex-1 min-w-0">
+            <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')} numberOfLines={1}>Agent Logs</Text>
+            <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
+              {parsedLogs.length} entries{levelCounts.error > 0 ? ` · ${levelCounts.error} errors` : ''}
+            </Text>
+          </View>
 
-          <View className="ml-auto flex-row items-center gap-3">
-            <Pressable onPress={toggleSearch} className="p-1 rounded-md active:bg-muted">
-              <Search size={14} className={searchVisible ? 'text-indigo-400' : 'text-muted-foreground'} />
+          <View className="flex-row items-center gap-1">
+            <Pressable onPress={toggleSearch} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
+              <Search size={comfortable ? 18 : 14} className={searchVisible ? 'text-indigo-400' : 'text-muted-foreground'} />
             </Pressable>
-            <Pressable onPress={handleExport} className="p-1 rounded-md active:bg-muted">
-              <Download size={14} className="text-muted-foreground" />
+            <Pressable onPress={handleExport} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
+              <Download size={comfortable ? 18 : 14} className="text-muted-foreground" />
             </Pressable>
-            <Pressable onPress={handleClear} className="p-1 rounded-md active:bg-muted">
-              <Trash2 size={14} className="text-muted-foreground" />
+            <Pressable onPress={handleClear} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
+              <Trash2 size={comfortable ? 18 : 14} className="text-muted-foreground" />
             </Pressable>
           </View>
         </View>
 
         {/* ---- Search bar ---- */}
         {searchVisible && (
-          <View className="flex-row items-center gap-2 bg-zinc-900 rounded-md px-2 py-1">
+          <View
+            className="flex-row items-center gap-2 bg-zinc-900 rounded-md px-2 py-1"
+            style={comfortable ? { width: innerWidth } : undefined}
+          >
             <Search size={12} className="text-zinc-500" />
             <TextInput
               className="flex-1 text-xs text-zinc-200 font-mono py-0"
@@ -192,7 +238,7 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
               value={searchQuery}
               onChangeText={setSearchQuery}
               autoFocus
-              style={{ outline: 'none' } as any}
+              style={[{ outline: 'none' } as any, comfortable ? { flex: 1, minWidth: 0 } : undefined]}
             />
             {searchQuery ? (
               <Pressable onPress={() => setSearchQuery('')}>
@@ -203,7 +249,7 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
         )}
 
         {/* ---- Level filter pills ---- */}
-        <View className="flex-row items-center gap-1.5">
+        <View className="flex-row flex-wrap gap-1.5" style={comfortable ? { width: innerWidth } : undefined}>
           {LEVEL_FILTERS.map((lf) => {
             const isActive = levelFilter === lf
             const count = lf === 'all' ? parsedLogs.length : levelCounts[lf]
@@ -212,13 +258,14 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
                 key={lf}
                 onPress={() => setLevelFilter(lf)}
                 className={cn(
-                  'px-2 py-0.5 rounded-full',
+                  'rounded-full',
+                  comfortable ? 'px-3 py-2' : 'px-2 py-0.5',
                   isActive ? 'bg-zinc-700' : 'bg-zinc-800/50',
                 )}
               >
                 <Text
                   className={cn(
-                    'text-xs capitalize',
+                    comfortable ? 'text-sm capitalize' : 'text-xs capitalize',
                     isActive ? 'text-zinc-100' : 'text-zinc-500',
                     lf === 'error' && count > 0 && 'text-red-400',
                   )}
@@ -233,13 +280,17 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
 
       {/* ---- Cleared locally banner ---- */}
       {cleared && entries.length === 0 && (
-        <View className="px-4 py-1.5 bg-zinc-900">
+        <View className="px-4 py-1.5 bg-zinc-900" style={comfortable ? { width: pageWidth } : undefined}>
           <Text className="text-xs text-zinc-500 text-center">Cleared locally — server buffer unchanged</Text>
         </View>
       )}
 
       {/* ---- Log list ---- */}
-      <View className="flex-1 bg-zinc-950">
+      <View
+        className="flex-1 bg-zinc-950"
+        collapsable={false}
+        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+      >
         {!agentUrl ? (
           <View className="items-center py-8 px-4">
             <AlertCircle size={20} className="text-zinc-600 mb-2" />
@@ -259,10 +310,17 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
             data={filteredLogs}
             renderItem={renderLogRow}
             keyExtractor={(item) => String(item.id)}
-            getItemLayout={getItemLayout}
+            getItemLayout={comfortable ? undefined : getItemLayout}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            alwaysBounceVertical={comfortable}
             onScroll={handleScroll}
             scrollEventThrottle={100}
-            contentContainerStyle={{ paddingVertical: 8 }}
+            style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+            contentContainerStyle={{
+              paddingVertical: 8,
+              width: comfortable ? pageWidth : undefined,
+            }}
             initialNumToRender={50}
             maxToRenderPerBatch={30}
             windowSize={10}

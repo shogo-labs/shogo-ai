@@ -38,6 +38,11 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { api } from '../../../lib/api'
+import { useResolvedTheme } from '../../../contexts/theme'
+import {
+  isNativePhoneIntegrationsLayout,
+  nativePhoneCanvas,
+} from '../../../lib/native-phone-layout'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -260,9 +265,12 @@ function mountWebFileInput(input: HTMLInputElement): () => void {
 const NARROW_BREAKPOINT = 600
 
 export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowserPanelProps) {
-  const { width } = useWindowDimensions()
+  const { width, height } = useWindowDimensions()
   const isNarrow = width < NARROW_BREAKPOINT
   const isNative = Platform.OS !== 'web'
+  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
+  const isDark = useResolvedTheme() === 'dark'
+  const phoneCanvas = isNativePhone ? nativePhoneCanvas(isDark) : undefined
   const [showEditorOnNarrow, setShowEditorOnNarrow] = useState(false)
 
   const client = useMemo(
@@ -741,24 +749,35 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
 
   return (
     <View
-      className="absolute inset-0 flex-row"
-      style={
+      className={cn('absolute inset-0 flex-row', isNativePhone && 'bg-background')}
+      style={[
+        phoneCanvas ? { backgroundColor: phoneCanvas } : undefined,
         Platform.OS === 'ios' && nativeKeyboardHeight > 0
           ? { paddingBottom: nativeKeyboardHeight }
-          : undefined
-      }
+          : undefined,
+      ]}
     >
       {/* Sidebar */}
       <View
         className={cn(
-          'border-r border-border bg-muted/30 flex-col',
-          isNarrow ? 'flex-1' : 'w-56',
+          'flex-col',
+          isNativePhone
+            ? 'flex-1 bg-background'
+            : cn('border-r border-border bg-muted/30', isNarrow ? 'flex-1' : 'w-56'),
           !showSidebar && 'hidden',
         )}
+        style={phoneCanvas ? { backgroundColor: phoneCanvas } : undefined}
       >
         {/* Search bar */}
-        <View className={cn('border-b border-border', isNative ? 'p-3' : 'p-2')}>
-          <View className={cn('flex-row items-center bg-background border border-border rounded-md', isNative ? 'min-h-11 px-3' : 'px-2')}>
+        <View className={cn(
+          isNativePhone ? 'px-3 pt-2 pb-3' : cn('border-b border-border', isNative ? 'p-3' : 'p-2'),
+        )}>
+          <View className={cn(
+            'flex-row items-center rounded-md',
+            isNativePhone
+              ? 'min-h-11 px-3 border border-border'
+              : cn('bg-background border border-border', isNative ? 'min-h-11 px-3' : 'px-2'),
+          )}>
             <Search size={isNative ? 18 : 12} className="text-muted-foreground" />
             <TextInput
               value={searchQuery}

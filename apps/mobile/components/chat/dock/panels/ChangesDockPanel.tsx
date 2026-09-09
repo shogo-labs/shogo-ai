@@ -6,48 +6,15 @@
  */
 
 import { useMemo, useSyncExternalStore } from "react"
-import { View, Text } from "react-native"
-import { cn } from "@shogo/shared-ui/primitives"
-import { FileEdit, FilePlus, FileX, Files } from "lucide-react-native"
-import { useFileChangeStore, type FileChangeKind } from "../../../../lib/file-change-store"
+import { Files } from "lucide-react-native"
+import { useFileChangeStore } from "../../../../lib/file-change-store"
+import { useIsNativePhoneLayout } from "../../../../lib/native-phone-layout"
+import { ChangedFilesList } from "../../sessionActivity"
 import { useDockPanel } from "../useDockPanel"
 import type { DockPanelDescriptor } from "../../../../lib/chat-dock-store"
 
-const KIND_ICON: Record<FileChangeKind, typeof FileEdit> = {
-  write: FilePlus,
-  edit: FileEdit,
-  delete: FileX,
-}
-
-const KIND_COLOR: Record<FileChangeKind, string> = {
-  write: "text-emerald-500",
-  edit: "text-sky-500",
-  delete: "text-red-500",
-}
-
-function ChangesBody({ files }: { files: { path: string; kind: FileChangeKind }[] }) {
-  return (
-    <View className="gap-1">
-      {files.map(({ path, kind }) => {
-        const Icon = KIND_ICON[kind]
-        const fileName = path.split("/").pop() || path
-        return (
-          <View key={path} className="flex-row items-center gap-1.5">
-            <Icon size={12} className={cn("shrink-0", KIND_COLOR[kind])} />
-            <Text className="flex-1 text-[11px] text-foreground" numberOfLines={1}>
-              {fileName}
-            </Text>
-            <Text className="text-[9px] text-muted-foreground" numberOfLines={1}>
-              {path}
-            </Text>
-          </View>
-        )
-      })}
-    </View>
-  )
-}
-
 export function ChangesDockPanel() {
+  const nativePhone = useIsNativePhoneLayout()
   const store = useFileChangeStore()
   // `store.getAll()` returns a cached array that's only reallocated when
   // `version` changes, so gating on `version` here (rather than calling
@@ -60,7 +27,7 @@ export function ChangesDockPanel() {
   const files = useMemo(() => store.getAll(), [store, version])
 
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (files.length === 0) return null
+    if (nativePhone || files.length === 0) return null
     return {
       id: "changes",
       kind: "status",
@@ -68,10 +35,10 @@ export function ChangesDockPanel() {
       title: "Changed files",
       icon: Files,
       summary: `${files.length} file${files.length === 1 ? "" : "s"} changed`,
-      render: () => <ChangesBody files={files} />,
+      render: () => <ChangedFilesList files={files} variant="dock" />,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [files])
+  }, [files, nativePhone])
 
   useDockPanel(descriptor)
   return null

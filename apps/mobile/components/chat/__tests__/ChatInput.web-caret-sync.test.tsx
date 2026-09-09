@@ -75,6 +75,9 @@ mock.module("../useVoiceInput", () => ({
 
 mock.module("../VoiceWaveform", () => ({ VoiceWaveform: () => null }))
 mock.module("../AttachSourceSheet", () => ({ AttachSourceSheet: () => null }))
+mock.module("../../../lib/native-attachment-picker", () => ({
+  executeNativeAttachAction: () => {},
+}))
 mock.module("../ContextTracker", () => ({
   ContextTracker: () => null,
   // `ContextBreakdownPanel` (rendered by the dock's `ContextUsageDockPanel`,
@@ -87,6 +90,7 @@ mock.module("../../../lib/visible-models", () => ({
 }))
 mock.module("../ModelPickerMenu", () => ({
   ModelPickerMenu: () => null,
+  ComposerModelPicker: () => null,
   getNativeModelMenuWidth: () => 280,
 }))
 mock.module("../FileViewerModal", () => ({ FileViewerModal: () => null }))
@@ -120,7 +124,7 @@ function renderChatInput() {
       placeholder="Ask Shogo..."
     />,
   )
-  return screen.getByPlaceholderText("Ask Shogo...") as HTMLTextAreaElement
+  return screen.getByTestId("project-composer-input") as HTMLTextAreaElement
 }
 
 describe("ChatInput — web caret regression guard", () => {

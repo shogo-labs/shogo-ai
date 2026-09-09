@@ -16,6 +16,11 @@ import {
   shouldStopPreviewPoll,
   shouldShowCanvas,
   isPreviewFailed,
+  previewStatusPollBase,
+  canvasDocumentUrl,
+  nativeCanvasBaseReady,
+  projectIdFromAgentProxyUrl,
+  previewWakeUrl,
 } from '../preview-gate'
 
 describe('resolveApiReady', () => {
@@ -89,5 +94,109 @@ describe('shouldShowCanvas', () => {
 
   test('timeout is a safety valve: loads even if the API never went healthy', () => {
     expect(shouldShowCanvas({ baseReady: true, apiLatched: false, timedOut: true })).toBe(true)
+  })
+})
+
+describe('previewStatusPollBase', () => {
+  test('returns null without an agent proxy', () => {
+    expect(previewStatusPollBase(null, 'https://p.preview.shogo.ai/p/abc')).toBe(null)
+  })
+
+  test('polls the agent-proxy, not the public preview host', () => {
+    expect(
+      previewStatusPollBase(
+        'https://studio.shogo.ai/api/projects/abc/agent-proxy',
+        'https://abc.preview.shogo.ai',
+      ),
+    ).toBe('https://studio.shogo.ai/api/projects/abc/agent-proxy')
+  })
+
+  test('scopes workspace runtimes to /p/<id> on the proxy', () => {
+    expect(
+      previewStatusPollBase(
+        'https://studio.shogo.ai/api/projects/abc/agent-proxy/',
+        'https://preview.example/p/abc',
+      ),
+    ).toBe('https://studio.shogo.ai/api/projects/abc/agent-proxy/p/abc')
+  })
+})
+
+describe('canvasDocumentUrl', () => {
+  test('web loads the canvas origin, not the tokenized preview link', () => {
+    expect(
+      canvasDocumentUrl({
+        canvasBaseUrl: 'https://abc.preview.shogo.ai',
+        agentUrl: 'https://studio.shogo.ai/api/projects/abc/agent-proxy',
+        previewUrl: 'https://abc.preview.shogo.ai/?__preview_token=tok',
+        native: false,
+      }),
+    ).toBe('https://abc.preview.shogo.ai/')
+  })
+
+  test('native WebView loads the tokenized preview URL', () => {
+    expect(
+      canvasDocumentUrl({
+        canvasBaseUrl: 'https://abc.preview.shogo.ai',
+        agentUrl: 'https://studio.shogo.ai/api/projects/abc/agent-proxy',
+        previewUrl: 'https://abc.preview.shogo.ai/?__preview_token=tok',
+        native: true,
+      }),
+    ).toBe('https://abc.preview.shogo.ai/?__preview_token=tok')
+  })
+})
+
+describe('nativeCanvasBaseReady', () => {
+  test('web still waits for /preview/status running', () => {
+    expect(
+      nativeCanvasBaseReady({
+        native: false,
+        agentUrl: 'https://studio.shogo.ai/api/projects/abc/agent-proxy',
+        previewUrl: 'https://abc.preview.shogo.ai/?__preview_token=tok',
+        canvasBaseUrl: 'https://abc.preview.shogo.ai',
+      }),
+    ).toBe(false)
+  })
+
+  test('native is ready once sandbox/url returned a document URL', () => {
+    expect(
+      nativeCanvasBaseReady({
+        native: true,
+        agentUrl: 'https://studio.shogo.ai/api/projects/abc/agent-proxy',
+        previewUrl: 'https://abc.preview.shogo.ai/?__preview_token=tok',
+        canvasBaseUrl: null,
+      }),
+    ).toBe(true)
+  })
+
+  test('native is not ready without a runtime or document URL', () => {
+    expect(
+      nativeCanvasBaseReady({
+        native: true,
+        agentUrl: null,
+        previewUrl: 'https://abc.preview.shogo.ai/?__preview_token=tok',
+      }),
+    ).toBe(false)
+    expect(
+      nativeCanvasBaseReady({
+        native: true,
+        agentUrl: 'https://studio.shogo.ai/api/projects/abc/agent-proxy',
+      }),
+    ).toBe(false)
+  })
+})
+
+describe('projectIdFromAgentProxyUrl', () => {
+  test('extracts the project id from the proxy path', () => {
+    expect(
+      projectIdFromAgentProxyUrl('https://studio.shogo.ai/api/projects/abc-123/agent-proxy'),
+    ).toBe('abc-123')
+  })
+})
+
+describe('previewWakeUrl', () => {
+  test('hits the anonymous wake endpoint', () => {
+    expect(previewWakeUrl('https://studio.shogo.ai', 'abc-123')).toBe(
+      'https://studio.shogo.ai/api/preview/abc-123/wake',
+    )
   })
 })

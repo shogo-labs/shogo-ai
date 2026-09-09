@@ -24,10 +24,12 @@ import {
   AlertTriangle,
 } from 'lucide-react-native'
 import * as Clipboard from 'expo-clipboard'
+import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { API_URL } from '../../../lib/api'
 import { PhonePanel } from './PhonePanel'
+import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
 
 interface ChannelInfo {
   type: string
@@ -181,6 +183,7 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
 }
 
 export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAdvancedModelAccess = false }: ChannelsPanelProps) {
+  const comfortable = useIsNativePhoneLayout()
   const { features } = usePlatformConfig()
   const [channels, setChannels] = useState<ChannelInfo[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -442,21 +445,21 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
 
   return (
     <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
-      <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
-        <MessageSquare size={16} className="text-muted-foreground" />
+      <View className={cn('border-b border-border flex-row items-center gap-2', comfortable ? 'px-4 py-3.5' : 'px-4 py-3')}>
+        <MessageSquare size={comfortable ? 20 : 16} className="text-muted-foreground" />
         <View className="flex-1">
           <View className="flex-row items-center gap-2">
-            <Text className="text-sm font-medium text-foreground">Channels</Text>
-            <Text className="text-xs text-muted-foreground">
+            <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')}>Channels</Text>
+            <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')}>
               {channels.filter((c) => c.connected).length} connected
             </Text>
           </View>
-          <Text className="text-[10px] text-muted-foreground">
+          <Text className={cn('text-muted-foreground', comfortable ? 'text-sm mt-0.5' : 'text-[10px]')}>
             Configure below or ask the agent to set up for you
           </Text>
         </View>
-        <Pressable onPress={loadChannels} className="p-1 rounded-md active:bg-muted">
-          <RefreshCw size={14} className="text-muted-foreground" />
+        <Pressable onPress={loadChannels} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
+          <RefreshCw size={comfortable ? 18 : 14} className="text-muted-foreground" />
         </Pressable>
       </View>
 
@@ -465,14 +468,18 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
           of a cloud pod. See features/external-triggers/quickstart.md. */}
       {workspaceId && (
         <View className="px-4 py-2 border-b border-border">
-          <View className="flex-row items-center gap-2">
-            <Text className="text-[11px] text-muted-foreground">Run on:</Text>
+          <View className={cn(comfortable ? 'gap-2' : 'flex-row items-center gap-2')}>
+            <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-[11px]')}>Run on:</Text>
+            <View className="flex-1 min-w-0 flex-row items-center gap-2">
             <Pressable
               onPress={() => setRunOnPickerOpen((open) => !open)}
-              className="flex-1 flex-row items-center gap-1.5 px-2 py-1 border border-border rounded-md active:bg-muted"
+              className={cn(
+                'flex-1 min-w-0 flex-row items-center gap-1.5 border border-border rounded-md active:bg-muted',
+                comfortable ? 'min-h-12 px-3 py-2' : 'px-2 py-1',
+              )}
               disabled={runOn.loading || runOn.saving}
             >
-              <Text className="text-xs text-foreground flex-1" numberOfLines={1}>
+              <Text className={cn('text-foreground flex-1', comfortable ? 'text-base' : 'text-xs')} numberOfLines={1}>
                 {runOn.loading
                   ? 'Loading…'
                   : runOn.pinnedInstance
@@ -488,11 +495,12 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
             {runOn.pinnedInstance && !runOn.saving && (
               <Pressable
                 onPress={() => setPin(null)}
-                className="px-2 py-1 border border-border rounded-md active:bg-muted"
+                className={cn('border border-border rounded-md active:bg-muted', comfortable ? 'min-h-12 justify-center px-3' : 'px-2 py-1')}
               >
-                <Text className="text-[10px] text-muted-foreground">Unpin</Text>
+                <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-[10px]')}>Unpin</Text>
               </Pressable>
             )}
+            </View>
           </View>
           {runOn.error && (
             <Text className="text-[10px] text-destructive mt-1">{runOn.error}</Text>
@@ -599,7 +607,10 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                       setExpandedType(isExpanded ? null : type)
                       setFormError(null)
                     }}
-                    className="px-3 py-2.5 flex-row items-center gap-3 active:bg-muted/50"
+                    className={cn(
+                      'flex-row items-center gap-3 active:bg-muted/50',
+                      comfortable ? 'min-h-14 px-4 py-3.5' : 'px-3 py-2.5',
+                    )}
                     disabled={!isConnected && !hasForm}
                   >
                     <Text
@@ -608,9 +619,13 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                     >
                       {def.emoji}
                     </Text>
-                    <View className="flex-1">
+                    <View className="flex-1 min-w-0">
                       <Text
-                        className={`text-sm font-medium ${isConnected ? 'text-foreground' : 'text-muted-foreground'}`}
+                        className={cn(
+                          'font-medium',
+                          comfortable ? 'text-base' : 'text-sm',
+                          isConnected ? 'text-foreground' : 'text-muted-foreground',
+                        )}
                       >
                         {def.name}
                       </Text>
