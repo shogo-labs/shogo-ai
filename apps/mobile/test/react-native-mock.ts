@@ -76,6 +76,7 @@ export const reactNativeMockBase = {
     linear: (t: number) => t,
     ease: (t: number) => t,
     circle: (t: number) => t,
+    cubic: (t: number) => t * t * t,
     back:
       (_s = 1.5) =>
       (t: number) =>

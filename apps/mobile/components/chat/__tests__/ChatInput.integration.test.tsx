@@ -192,7 +192,7 @@ describe("ChatInput integration — mobile-web TextInput changes", () => {
         />,
       )
 
-      const input = screen.getByPlaceholderText("Ask Shogo...") as HTMLTextAreaElement
+      const input = screen.getByTestId("project-composer-input") as HTMLTextAreaElement
 
       await act(async () => {
         fireEvent.change(input, { target: { value: "@" } })
@@ -226,7 +226,7 @@ describe("ChatInput integration — mobile-web TextInput changes", () => {
       </Profiler>,
     )
 
-    const input = screen.getByPlaceholderText("Ask Shogo...") as HTMLTextAreaElement
+    const input = screen.getByTestId("project-composer-input") as HTMLTextAreaElement
 
     await act(async () => {
       fireEvent.change(input, { target: { value: "@ali" } })
