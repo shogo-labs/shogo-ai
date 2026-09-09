@@ -24,9 +24,10 @@ import {
   ScrollView,
   Platform,
   useWindowDimensions,
-  useColorScheme,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import { useResolvedTheme } from "../../contexts/theme"
+import { isPhoneLayout } from "../../lib/native-phone-layout"
 import {
   Popover,
   PopoverBackdrop,
@@ -452,12 +453,12 @@ function ChatInputImpl({
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
-  const colorScheme = useColorScheme()
+  const resolvedTheme = useResolvedTheme()
   const effectiveIsPro = features.billing ? isPro : true
   const isNative = Platform.OS !== "web"
-  const isNativePhone = Platform.OS !== "web" && windowWidth < 600
+  const isNativePhone = isPhoneLayout(windowWidth, windowHeight)
   const useProminentComposer = isNativePhone && !flush
-  const chatgptComposer = colorScheme === "light" ? CHATGPT_COMPOSER.light : CHATGPT_COMPOSER.dark
+  const chatgptComposer = resolvedTheme === "light" ? CHATGPT_COMPOSER.light : CHATGPT_COMPOSER.dark
   const inputMinHeight = useProminentComposer
     ? CHAT_INPUT_PROMINENT_MIN_HEIGHT
     : isNative

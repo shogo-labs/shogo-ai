@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { nativeContentWidth, nativePhoneCanvas, nativePhoneFillStyle, nativeSettingsPaneFill, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, NATIVE_PHONE_CANVAS } from '../native-phone-layout'
+import { nativeContentWidth, nativePhoneCanvas, nativePhoneFillStyle, nativeSettingsPaneFill, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, NATIVE_PHONE_CANVAS, isPhoneLayout, WEB_PHONE_MAX_WIDTH } from '../native-phone-layout'
+
+describe('isPhoneLayout', () => {
+  test('treats a narrow web viewport as phone chrome', () => {
+    expect(isPhoneLayout(390, 844)).toBe(true)
+    expect(isPhoneLayout(WEB_PHONE_MAX_WIDTH, 800)).toBe(true)
+    expect(isPhoneLayout(768, 800)).toBe(false)
+  })
+})
 
 describe('nativeContentWidth', () => {
   test('subtracts the default section inset', () => {

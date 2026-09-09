@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Handset vs tablet detection for native-only UI (Expo / React Native).
+ * Handset vs tablet detection for phone chrome and native Yoga workarounds.
  *
- * - Web: always treated as non-handset (existing web layout unchanged).
- * - iOS: iPad via `Platform.isPad` (runtime API; not always in TS types).
- * - Android: smallest window edge vs sw600dp-style threshold. Uses the same
- *   logical units as `useWindowDimensions()` (dp on Android, points on iOS).
+ * - Native iOS: iPad via `Platform.isPad`.
+ * - Native Android: smallest window edge vs sw600dp-style threshold.
+ * - Web: phone chrome at `WEB_PHONE_MAX_WIDTH` (iPhone Safari / Expo web).
+ *   Desktop studio and Electron stay on the existing wide layout.
+ * Yoga pixel-width helpers stay native-only (`isNativePhoneIntegrationsLayout`).
  */
 import { Platform, useWindowDimensions, type ViewStyle } from 'react-native'
 
@@ -22,9 +23,21 @@ function isAndroidHandsetByWindowSize(width: number, height: number): boolean {
   return Math.min(width, height) < ANDROID_TABLET_MIN_SHORTEST_EDGE
 }
 
-/** True on iOS/Android. Web (including desktop) stays on existing layouts. */
+/** True on iOS/Android. */
 export function isNativePlatform(): boolean {
   return Platform.OS !== 'web'
+}
+
+/** Matches app `isWide` (`width >= 768`). Phone chrome applies at or below this. */
+export const WEB_PHONE_MAX_WIDTH = 767
+
+/**
+ * Phone chrome: native handset, or a narrow web viewport.
+ * Does not enable Yoga pixel-width workarounds on web.
+ */
+export function isPhoneLayout(width: number, height: number): boolean {
+  if (isNativePlatform()) return isNativePhoneIntegrationsLayout(width, height)
+  return width <= WEB_PHONE_MAX_WIDTH
 }
 
 /** Horizontal padding for native-phone Settings chrome (`px-4`). */

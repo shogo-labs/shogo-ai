@@ -25,7 +25,7 @@ import {
 } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
-import { nativePhoneCanvas } from '../../lib/native-phone-layout'
+import { nativePhoneCanvas, WEB_PHONE_MAX_WIDTH } from '../../lib/native-phone-layout'
 import {
   nativeDrawerPanelWidth,
   snapNativeDrawer,
@@ -545,7 +545,8 @@ function AdminLayoutInner() {
   const isDark = useResolvedTheme() === 'dark'
   const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const isWide = !isNativeApp && width >= 900
-  const nativeSheetDrawer = isNativeApp
+  const nativeSheetDrawer =
+    isNativeApp || (Platform.OS === 'web' && width <= WEB_PHONE_MAX_WIDTH)
   const nativeDrawerWidth = nativeDrawerPanelWidth(width)
   const drawerProgress = useRef(new Animated.Value(0)).current
   const { isSuperAdmin, scopes, hasAdminAccess, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
@@ -670,7 +671,7 @@ function AdminLayoutInner() {
                     onMenuPress={toggleDrawer}
                     title={getPageTitle(pathname)}
                     menuOpen={drawerOpen}
-                    isNative={isNativeApp}
+                    isNative={nativeSheetDrawer}
                   />
                 )}
                 <View className="flex-1">

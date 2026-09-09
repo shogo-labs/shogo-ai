@@ -82,7 +82,7 @@ import { CompactUsageWindows } from '../billing/UsageWindows'
 import { PublishDropdown } from './PublishDropdown'
 import { CloudSyncStatusPill } from './CloudSyncStatusPill'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { isNativePhoneIntegrationsLayout, NATIVE_PHONE_CONTROL_SIZE } from '../../lib/native-phone-layout'
+import { isPhoneLayout, NATIVE_PHONE_CONTROL_SIZE } from '../../lib/native-phone-layout'
 import { api } from '../../lib/api'
 import { requestIdeActivity } from '../../lib/ide-activity-bus'
 import { ProjectExportModal } from './ProjectExportModal'
@@ -540,7 +540,7 @@ export function ProjectTopBar({
   const router = useRouter()
   const { width, height } = useWindowDimensions()
   const isWide = width >= 768
-  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
+  const isNativePhone = isPhoneLayout(width, height)
   const [showDropdown, setShowDropdown] = useState(false)
   const [dropdownKey, setDropdownKey] = useState(0)
   const [showProjectSheet, setShowProjectSheet] = useState(false)
@@ -611,7 +611,7 @@ export function ProjectTopBar({
   const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [
     ...narrowOverflowTabs.map(t => ({ id: t.id, label: t.label })),
-    ...(!hasActiveSubscription && !(Platform.OS !== 'web' && isNativePhone) ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
+    ...(!hasActiveSubscription && !isNativePhone ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
   ]
 
   const handleTabPress = useCallback((tabId: string) => {

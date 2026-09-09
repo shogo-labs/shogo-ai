@@ -172,7 +172,7 @@ export default function AppLayout() {
     isProfilePage ||
     isSearchPage ||
     isProjectChatsPage
-  const nativeDrawerSwipe = isNativeApp && !isWide && !isIdeEmbed && !suppressNarrowAppHeader
+  const nativeDrawerSwipe = !isWide && !isIdeEmbed && !suppressNarrowAppHeader
   const sheetSwipeHandlers = useNativeDrawerSheetSwipe({
     enabled: nativeDrawerSwipe,
     drawerWidth: nativeDrawerWidth,
@@ -180,7 +180,7 @@ export default function AppLayout() {
     isOpen: drawerOpen,
     onOpenChange: setDrawerOpen,
   })
-  const nativeSheetDrawer = isNativeApp && !isWide && !isIdeEmbed
+  const nativeSheetDrawer = !isWide && !isIdeEmbed
   const { sheetStyle, sheetClipStyle } = useNativeDrawerSheetStyle(drawerProgress, nativeDrawerWidth)
 
   useEffect(() => {
@@ -301,7 +301,7 @@ export default function AppLayout() {
           </View>
         </View>
 
-        {!isWide && !isNativeApp && (
+        {!isWide && !nativeSheetDrawer && (
           <AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />
         )}
       </SafeAreaView>

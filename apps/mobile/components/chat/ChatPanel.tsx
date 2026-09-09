@@ -91,7 +91,7 @@ import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } from "../../lib/ai-consent"
 
-import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
+import { isNativePhoneIntegrationsLayout, isPhoneLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
 import { chatSessionEvents } from "../../lib/chat-session-events"
 import { useActiveInstance } from "../../contexts/active-instance"
@@ -773,6 +773,7 @@ export const ChatPanel = observer(function ChatPanel({
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const insets = useSafeAreaInsets()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
+  const isPhoneViewport = isPhoneLayout(windowWidth, windowHeight)
   const ideBridge = useIdeBridge(ideMode)
 
   const { studioChat } = useSDKDomains()
@@ -5352,8 +5353,8 @@ export const ChatPanel = observer(function ChatPanel({
   )
 
   const errorMessage = error?.message ?? null
-  const nativePhonePanelWidth = isNativePhoneLayout ? Math.max(0, windowWidth) : undefined
-  const nativePhoneComposerWidth = isNativePhoneLayout ? Math.max(0, windowWidth) : undefined
+  const nativePhonePanelWidth = isPhoneViewport ? Math.max(0, windowWidth) : undefined
+  const nativePhoneComposerWidth = isPhoneViewport ? Math.max(0, windowWidth) : undefined
 
   // Memoizing the context value is the single biggest win for streaming
   // re-renders. Previously this was a fresh object literal on every
@@ -5772,7 +5773,7 @@ export const ChatPanel = observer(function ChatPanel({
             className="flex-1"
             style={chatMessagesScrollStyles.scroll}
             contentContainerClassName={cn(
-              isNativePhoneLayout ? "px-2 pt-2 pb-36" : "p-2 pb-[40px]",
+              isPhoneViewport ? "px-2 pt-2 pb-36" : "p-2 pb-[40px]",
               "max-w-3xl w-full self-center",
             )}
             contentContainerStyle={nativePhonePanelWidth ? { width: nativePhonePanelWidth } : undefined}
@@ -5937,7 +5938,7 @@ export const ChatPanel = observer(function ChatPanel({
             className="relative bg-transparent max-w-3xl w-full self-center mt-1"
             style={[
               nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined,
-              isNativePhoneLayout
+              isPhoneViewport
                 ? {
                     paddingBottom: nativeKeyboardOpen
                       ? 8
@@ -5995,7 +5996,7 @@ export const ChatPanel = observer(function ChatPanel({
               onPress={() => dispatchNativeInlineEditTap(-1, -1)}
               accessibilityLabel="Cancel editing"
               style={
-                isNativePhoneLayout
+                isPhoneViewport
                   ? { paddingBottom: Math.max(insets.bottom, 12), minHeight: 28 }
                   : { minHeight: 28 }
               }

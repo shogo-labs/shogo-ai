@@ -3,11 +3,9 @@
 /**
  * AppHeader - Mobile application header
  *
- * Web (narrow): hamburger + title + bell in a compact bar.
- * Native home: no bar — menu and bell float over the page so the gradient
- * can go edge-to-edge. Other native screens keep an in-flow chrome row
- * without a filled bar. Wide web keeps the persistent sidebar and renders
- * nothing.
+ * Wide web (>= 768px): persistent sidebar, no header.
+ * Phone (native or mobile web): menu and bell float over home; other
+ * screens keep an in-flow chrome row without a filled bar.
  */
 
 import { Platform, View, Text, Pressable, useWindowDimensions } from 'react-native'
@@ -55,9 +53,8 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
 
   if (isWide) return null
 
-  if (Platform.OS !== 'web') {
-    const overlay = isHome
-    return (
+  const overlay = isHome
+  return (
       <View
         pointerEvents="box-none"
         style={
@@ -102,22 +99,5 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
         )}
         <NotificationBell className={overlayControlClass} />
       </View>
-    )
-  }
-
-  return (
-    <View className="h-14 flex-row items-center border-b border-border bg-card px-4 gap-3">
-      <Pressable
-        onPress={onMenuPress}
-        accessibilityRole="button"
-        accessibilityLabel={menuOpen ? 'Close menu' : 'Open menu'}
-        className="p-1.5 -ml-1.5 rounded-md active:bg-muted"
-      >
-        <Menu size={22} className="text-foreground" />
-      </Pressable>
-      <Text className="text-base font-semibold text-foreground">{title}</Text>
-      <View className="flex-1" />
-      <NotificationBell />
-    </View>
   )
 }

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Native project chats page.
+ * Phone project chats page.
  *
  * Opened from the sidebar: tap a project → this list → tap a chat → project workspace.
- * Web keeps the in-sidebar accordion and never lands here.
+ * Wide web keeps the in-sidebar accordion and never lands here.
  *
  * Static route (like search.tsx) so Expo does not confuse `/project-chats/:id`
  * with `/projects/:id`.
@@ -16,12 +16,14 @@ import {
   Platform,
   Pressable,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { ArrowLeft, ChevronRight, Folder, MessageSquare, Plus } from 'lucide-react-native'
 import { useProjectCollection, useDomainHttp } from '../../contexts/domain'
+import { isPhoneLayout } from '../../lib/native-phone-layout'
 import {
   fetchProjectChatSessions,
   PROJECT_CHAT_PAGE_SIZE,
@@ -36,6 +38,9 @@ export default observer(function ProjectChatsPage() {
   const projectId = Array.isArray(params.id) ? params.id[0] : params.id
   const projects = useProjectCollection()
   const http = useDomainHttp()
+  const { width, height } = useWindowDimensions()
+  const isPhone = isPhoneLayout(width, height)
+  const isSupportedPlatform = Platform.OS !== 'web' || isPhone
 
   const [sessions, setSessions] = useState<ProjectChatListItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -75,20 +80,20 @@ export default observer(function ProjectChatsPage() {
   )
 
   useEffect(() => {
-    if (Platform.OS === 'web') {
+    if (!isSupportedPlatform) {
       router.replace('/(app)' as any)
     }
-  }, [router])
+  }, [isSupportedPlatform, router])
 
   useEffect(() => {
-    if (Platform.OS === 'web') return
+    if (!isSupportedPlatform) return
     void projects.loadAll().catch(() => undefined)
-  }, [projects])
+  }, [isSupportedPlatform, projects])
 
   useEffect(() => {
-    if (Platform.OS === 'web') return
+    if (!isSupportedPlatform) return
     void load()
-  }, [load])
+  }, [isSupportedPlatform, load])
 
   const goBack = useCallback(() => {
     if (router.canGoBack()) router.back()
@@ -146,7 +151,7 @@ export default observer(function ProjectChatsPage() {
     [sessions],
   )
 
-  if (Platform.OS === 'web') return null
+  if (!isSupportedPlatform) return null
 
   const title = project?.name || 'Project'
 

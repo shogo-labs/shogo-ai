@@ -1812,7 +1812,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const isWide = Platform.OS === 'web' && width >= 768
-  const isNativeDrawer = Platform.OS !== 'web' && !isWide
+  const isNativeDrawer = !isWide
   const isDark = useResolvedTheme() === 'dark'
   const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const drawerTopInset = isNativeDrawer ? nativeDrawerTopInset(insets.top) : insets.top
